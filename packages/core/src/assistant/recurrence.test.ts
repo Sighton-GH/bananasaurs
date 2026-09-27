@@ -14,9 +14,9 @@ describe('nextOccurrence', () => {
   });
   it('skips missed daily occurrences', () => {
     const anchor = at('2026-01-05T17:00:00Z');
-    expect(nextOccurrence(recurrence({ kind: 'daily' }), anchor, at('2026-01-10T18:00:00Z'), 0)).toBe(
-      at('2026-01-11T17:00:00Z'),
-    );
+    expect(
+      nextOccurrence(recurrence({ kind: 'daily' }), anchor, at('2026-01-10T18:00:00Z'), 0),
+    ).toBe(at('2026-01-11T17:00:00Z'));
   });
   it('skips weekends', () => {
     const anchor = at('2026-01-09T17:00:00Z');
@@ -29,9 +29,9 @@ describe('nextOccurrence', () => {
     expect(nextOccurrence(recurrence({ kind: 'weekly', days: [2, 4] }), anchor, anchor, 0)).toBe(
       at('2026-01-06T17:00:00Z'),
     );
-    expect(nextOccurrence(recurrence({ kind: 'weekly', days: [1], everyWeeks: 2 }), anchor, anchor, 0)).toBe(
-      at('2026-01-19T17:00:00Z'),
-    );
+    expect(
+      nextOccurrence(recurrence({ kind: 'weekly', days: [1], everyWeeks: 2 }), anchor, anchor, 0),
+    ).toBe(at('2026-01-19T17:00:00Z'));
   });
   it('clamps monthly dates', () => {
     const anchor = at('2026-01-31T17:00:00Z');
@@ -43,16 +43,29 @@ describe('nextOccurrence', () => {
   });
   it('honours end and count limits', () => {
     const anchor = at('2026-01-05T17:00:00Z');
-    expect(nextOccurrence(recurrence({ kind: 'daily' }, { endAt: anchor + 1 }), anchor, anchor, 0)).toBeUndefined();
-    expect(nextOccurrence(recurrence({ kind: 'daily' }, { maxCount: 1 }), anchor, anchor, 1)).toBeUndefined();
+    expect(
+      nextOccurrence(recurrence({ kind: 'daily' }, { endAt: anchor + 1 }), anchor, anchor, 0),
+    ).toBeUndefined();
+    expect(
+      nextOccurrence(recurrence({ kind: 'daily' }, { maxCount: 1 }), anchor, anchor, 1),
+    ).toBeUndefined();
   });
   it('keeps the local wall time over DST', () => {
     const anchor = at('2026-03-07T17:00:00Z');
     const next = nextOccurrence(recurrence({ kind: 'daily' }), anchor, anchor, 0);
     expect(next).toBe(at('2026-03-08T16:00:00Z'));
-    expect(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Vancouver', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(next)).toBe('09:00');
+    expect(
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Vancouver',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).format(next),
+    ).toBe('09:00');
   });
   it('rejects invalid time zones', () => {
-    expect(reminderRecurrence.safeParse({ pattern: { kind: 'daily' }, timeZone: 'Not/AZone' }).success).toBe(false);
+    expect(
+      reminderRecurrence.safeParse({ pattern: { kind: 'daily' }, timeZone: 'Not/AZone' }).success,
+    ).toBe(false);
   });
 });

@@ -3,12 +3,14 @@ import { nextOccurrence, type ReminderRecurrence } from './recurrence.js';
 
 export type ReminderStatus = 'scheduled' | 'delivering' | 'delivered' | 'cancelled' | 'failed';
 export const snowflakeString = z.string().regex(/^\d{17,20}$/);
-export const reminderMentions = z.object({
-  userIds: z.array(snowflakeString).max(25).default([]),
-  roleIds: z.array(snowflakeString).max(10).default([]),
-  everyone: z.boolean().default(false),
-  here: z.boolean().default(false),
-}).strict();
+export const reminderMentions = z
+  .object({
+    userIds: z.array(snowflakeString).max(25).default([]),
+    roleIds: z.array(snowflakeString).max(10).default([]),
+    everyone: z.boolean().default(false),
+    here: z.boolean().default(false),
+  })
+  .strict();
 export type ReminderMentions = z.infer<typeof reminderMentions>;
 export const NO_MENTIONS: ReminderMentions = reminderMentions.parse({});
 export interface Reminder {
@@ -173,17 +175,17 @@ export const deliverDueReminders = async (
   for (const reminder of await store.claimDue(now, limit, REMINDER_DELIVERY_STALE_MS)) {
     try {
       await delivery.send(reminder);
-       if (reminder.recurrence === undefined) await store.complete(reminder.id);
-       else {
-         const next = nextOccurrence(
-           reminder.recurrence,
-           reminder.dueAt,
-           Math.max(now, reminder.dueAt),
-           reminder.deliveredCount + 1,
-         );
-         if (next === undefined) await store.complete(reminder.id);
-         else await store.reschedule(reminder.id, next);
-       }
+      if (reminder.recurrence === undefined) await store.complete(reminder.id);
+      else {
+        const next = nextOccurrence(
+          reminder.recurrence,
+          reminder.dueAt,
+          Math.max(now, reminder.dueAt),
+          reminder.deliveredCount + 1,
+        );
+        if (next === undefined) await store.complete(reminder.id);
+        else await store.reschedule(reminder.id, next);
+      }
       delivered += 1;
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'delivery failed';

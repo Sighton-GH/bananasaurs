@@ -158,10 +158,16 @@ describe('deliverDueReminders', () => {
 
   it('completes a repeating series at its end', async () => {
     const due = Date.parse('2026-01-05T17:00:00Z');
-    const store = storeFor([reminder({
-      dueAt: due,
-      recurrence: reminderRecurrence.parse({ pattern: { kind: 'daily' }, timeZone: 'UTC', maxCount: 1 }),
-    })]);
+    const store = storeFor([
+      reminder({
+        dueAt: due,
+        recurrence: reminderRecurrence.parse({
+          pattern: { kind: 'daily' },
+          timeZone: 'UTC',
+          maxCount: 1,
+        }),
+      }),
+    ]);
     await deliverDueReminders(store, { send: vi.fn(async () => undefined) }, due);
     expect(store.complete).toHaveBeenCalledWith('r1');
   });
@@ -169,15 +175,21 @@ describe('deliverDueReminders', () => {
 
 describe('reminder drafts', () => {
   it('rejects overlong context', async () => {
-    await expect(createReminder({ ...reminder(), dueAt: Date.now() + 60_000, context: 'x'.repeat(301) }, storeFor([]))).rejects.toThrow(
-      'reminder context must be at most 300 characters',
-    );
+    await expect(
+      createReminder(
+        { ...reminder(), dueAt: Date.now() + 60_000, context: 'x'.repeat(301) },
+        storeFor([]),
+      ),
+    ).rejects.toThrow('reminder context must be at most 300 characters');
   });
 
   it('validates mentions', async () => {
     const { reminderMentions } = await import('./reminders.js');
     expect(reminderMentions.safeParse({ userIds: ['bad'] }).success).toBe(false);
-    expect(reminderMentions.safeParse({ userIds: Array.from({ length: 26 }, () => '11111111111111111') }).success).toBe(false);
+    expect(
+      reminderMentions.safeParse({ userIds: Array.from({ length: 26 }, () => '11111111111111111') })
+        .success,
+    ).toBe(false);
   });
 });
 

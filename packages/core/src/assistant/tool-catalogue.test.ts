@@ -38,7 +38,8 @@ describe('TOOL_CATALOGUE', () => {
     const skillIds = new Set(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id));
     for (const tool of TOOL_CATALOGUE) {
       for (const skillId of tool.skills) {
-        const catalogueId = skillId === 'create-reminder' || skillId === 'send-reminder' ? 'reminders' : skillId;
+        const catalogueId =
+          skillId === 'create-reminder' || skillId === 'send-reminder' ? 'reminders' : skillId;
         expect(skillIds.has(catalogueId), skillId).toBe(true);
       }
       expect(tool.skills).toContain('search-club');

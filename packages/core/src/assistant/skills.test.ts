@@ -23,16 +23,25 @@ describe('assistant skill scopes', () => {
 
   it('does not include acting skills in starters', () => {
     expect(STARTER_SKILL_IDS).not.toEqual(
-      expect.arrayContaining(CLUB_ASSISTANT_SKILLS.filter((entry) => entry.acts).map((entry) => entry.id)),
+      expect.arrayContaining(
+        CLUB_ASSISTANT_SKILLS.filter((entry) => entry.acts).map((entry) => entry.id),
+      ),
     );
   });
 
   it('uses the stored scope when present and the default otherwise', () => {
     expect(effectiveSkillScope(skill, undefined)).toEqual({ mode: 'everyone' });
     expect(effectiveSkillScope(skill, { roleIds: [] })).toEqual({ mode: 'everyone' });
-    expect(effectiveSkillScope(skill, { mode: 'everyone', roleIds: ['r'] })).toEqual({ mode: 'everyone' });
-    expect(effectiveSkillScope(skill, { mode: 'roles', roleIds: ['r'] })).toEqual({ mode: 'roles', roleIds: ['r'] });
-    expect(effectiveSkillScope(skill, { mode: 'owner', roleIds: ['r'] })).toEqual({ mode: 'owner' });
+    expect(effectiveSkillScope(skill, { mode: 'everyone', roleIds: ['r'] })).toEqual({
+      mode: 'everyone',
+    });
+    expect(effectiveSkillScope(skill, { mode: 'roles', roleIds: ['r'] })).toEqual({
+      mode: 'roles',
+      roleIds: ['r'],
+    });
+    expect(effectiveSkillScope(skill, { mode: 'owner', roleIds: ['r'] })).toEqual({
+      mode: 'owner',
+    });
   });
 
   it('applies every scope gate', () => {

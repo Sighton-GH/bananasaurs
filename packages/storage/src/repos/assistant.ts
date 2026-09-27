@@ -50,7 +50,10 @@ const toPromptWizard = (raw: string | null): PromptWizardAnswers | undefined => 
     return undefined;
   }
 };
-const toJson = <T>(raw: string | null, schema: { safeParse(value: unknown): { success: boolean; data?: T } }): T | undefined => {
+const toJson = <T>(
+  raw: string | null,
+  schema: { safeParse(value: unknown): { success: boolean; data?: T } },
+): T | undefined => {
   if (raw === null) return undefined;
   try {
     const parsed = schema.safeParse(JSON.parse(raw) as unknown);
@@ -354,7 +357,9 @@ const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder =
   status: r.status as ReminderStatus,
   dedupeKey: r.dedupeKey,
   mentions: toJson(r.mentionsJson, reminderMentions) ?? NO_MENTIONS,
-  ...(toJson(r.recurrenceJson, reminderRecurrence) === undefined ? {} : { recurrence: toJson(r.recurrenceJson, reminderRecurrence) }),
+  ...(toJson(r.recurrenceJson, reminderRecurrence) === undefined
+    ? {}
+    : { recurrence: toJson(r.recurrenceJson, reminderRecurrence) }),
   ...(r.context === null ? {} : { context: r.context }),
   deliveredCount: r.deliveredCount,
   ...(r.updatedAt === null ? {} : { updatedAt: r.updatedAt }),
@@ -565,22 +570,56 @@ const transitionReminder = (
 
 export const completeReminder = (scope: GuildScope, id: string): void =>
   write(scope, ({ db }) => {
-    const result = db.update(assistantReminders).set({ status: 'delivered', failureReason: null, deliveredCount: sql`${assistantReminders.deliveredCount} + 1` }).where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id), eq(assistantReminders.status, 'delivering'))).run();
-    if (result.changes !== 1) throw new Error(`reminder ${id} is not delivering; transition delivered refused`);
+    const result = db
+      .update(assistantReminders)
+      .set({
+        status: 'delivered',
+        failureReason: null,
+        deliveredCount: sql`${assistantReminders.deliveredCount} + 1`,
+      })
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.status, 'delivering'),
+        ),
+      )
+      .run();
+    if (result.changes !== 1)
+      throw new Error(`reminder ${id} is not delivering; transition delivered refused`);
   });
 
 export const rescheduleReminder = (scope: GuildScope, id: string, nextDueAt: number): void =>
   write(scope, ({ db }) => {
-    const result = db.update(assistantReminders).set({
-      status: 'scheduled', dueAt: nextDueAt, deliveredCount: sql`${assistantReminders.deliveredCount} + 1`,
-      claimedAt: null, nextAttemptAt: null, failureReason: null,
-    }).where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id), eq(assistantReminders.status, 'delivering'))).run();
-    if (result.changes !== 1) throw new Error(`reminder ${id} is not delivering; reschedule refused`);
+    const result = db
+      .update(assistantReminders)
+      .set({
+        status: 'scheduled',
+        dueAt: nextDueAt,
+        deliveredCount: sql`${assistantReminders.deliveredCount} + 1`,
+        claimedAt: null,
+        nextAttemptAt: null,
+        failureReason: null,
+      })
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.status, 'delivering'),
+        ),
+      )
+      .run();
+    if (result.changes !== 1)
+      throw new Error(`reminder ${id} is not delivering; reschedule refused`);
   });
 
 export const getReminder = (scope: GuildScope, id: string): StoredReminder | undefined =>
   read(scope, (db) => {
-    const row = db.select().from(assistantReminders).where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id))).get();
+    const row = db
+      .select()
+      .from(assistantReminders)
+      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .get();
     return row === undefined ? undefined : toReminder(row);
   });
 
@@ -588,29 +627,65 @@ export const listRemindersForCreator = (
   scope: GuildScope,
   creatorId: string,
   options: { readonly includeFinished: boolean },
-): readonly StoredReminder[] => read(scope, (db) => db.select().from(assistantReminders).where(scope.only(assistantReminders, eq(assistantReminders.creatorId, creatorId), options.includeFinished ? undefined : inArray(assistantReminders.status, ['scheduled', 'delivering']))).orderBy(asc(assistantReminders.dueAt)).all().map(toReminder));
+): readonly StoredReminder[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantReminders)
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.creatorId, creatorId),
+          options.includeFinished
+            ? undefined
+            : inArray(assistantReminders.status, ['scheduled', 'delivering']),
+        ),
+      )
+      .orderBy(asc(assistantReminders.dueAt))
+      .all()
+      .map(toReminder),
+  );
 
 export type ReminderUpdateResult = 'updated' | 'not-found' | 'not-editable';
 export const updateReminder = (
   scope: GuildScope,
   id: string,
-  patch: { readonly text?: string; readonly context?: string; readonly dueAt?: number; readonly destinationId?: string; readonly mentions?: ReminderMentions; readonly recurrence?: ReminderRecurrence | null },
+  patch: {
+    readonly text?: string;
+    readonly context?: string;
+    readonly dueAt?: number;
+    readonly destinationId?: string;
+    readonly mentions?: ReminderMentions;
+    readonly recurrence?: ReminderRecurrence | null;
+  },
   now: number,
-): ReminderUpdateResult => write(scope, ({ db }) => {
-  const row = db.select({ status: assistantReminders.status }).from(assistantReminders).where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id))).get();
-  if (row === undefined) return 'not-found';
-  if (row.status !== 'scheduled') return 'not-editable';
-  db.update(assistantReminders).set({
-    ...(patch.text === undefined ? {} : { text: patch.text }),
-    ...(patch.context === undefined ? {} : { context: patch.context }),
-    ...(patch.dueAt === undefined ? {} : { dueAt: patch.dueAt }),
-    ...(patch.destinationId === undefined ? {} : { destinationId: patch.destinationId }),
-    ...(patch.mentions === undefined ? {} : { mentionsJson: JSON.stringify(patch.mentions) }),
-    ...(patch.recurrence === undefined ? {} : { recurrenceJson: patch.recurrence === null ? null : JSON.stringify(patch.recurrence) }),
-    updatedAt: now,
-  }).where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id))).run();
-  return 'updated';
-});
+): ReminderUpdateResult =>
+  write(scope, ({ db }) => {
+    const row = db
+      .select({ status: assistantReminders.status })
+      .from(assistantReminders)
+      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .get();
+    if (row === undefined) return 'not-found';
+    if (row.status !== 'scheduled') return 'not-editable';
+    db.update(assistantReminders)
+      .set({
+        ...(patch.text === undefined ? {} : { text: patch.text }),
+        ...(patch.context === undefined ? {} : { context: patch.context }),
+        ...(patch.dueAt === undefined ? {} : { dueAt: patch.dueAt }),
+        ...(patch.destinationId === undefined ? {} : { destinationId: patch.destinationId }),
+        ...(patch.mentions === undefined ? {} : { mentionsJson: JSON.stringify(patch.mentions) }),
+        ...(patch.recurrence === undefined
+          ? {}
+          : {
+              recurrenceJson: patch.recurrence === null ? null : JSON.stringify(patch.recurrence),
+            }),
+        updatedAt: now,
+      })
+      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .run();
+    return 'updated';
+  });
 
 export const failReminder = (scope: GuildScope, id: string, reason: string): void =>
   transitionReminder(scope, id, 'delivering', { status: 'failed', failureReason: reason });
@@ -709,8 +784,8 @@ export const listSkillGrants = (scope: GuildScope): readonly AssistantSkillGrant
       .map((r) => ({
         skillId: r.skillId,
         roleIds: array(r.roleIdsJson),
-         userIds: array(r.userIdsJson),
-         ...(r.mode === null ? {} : { mode: r.mode as SkillScopeMode }),
+        userIds: array(r.userIdsJson),
+        ...(r.mode === null ? {} : { mode: r.mode as SkillScopeMode }),
       })),
   );
 export const putSkillGrant = (scope: GuildScope, input: AssistantSkillGrant, now: number): void =>
@@ -737,22 +812,33 @@ export const putSkillGrant = (scope: GuildScope, input: AssistantSkillGrant, now
   });
 export const setSkillScope = (
   scope: GuildScope,
-  input: { readonly skillId: string; readonly mode: SkillScopeMode; readonly roleIds: readonly string[] },
+  input: {
+    readonly skillId: string;
+    readonly mode: SkillScopeMode;
+    readonly roleIds: readonly string[];
+  },
   now: number,
 ): void =>
   write(scope, ({ db }) => {
-    const existing = db.select().from(assistantSkillGrants).where(scope.only(assistantSkillGrants, eq(assistantSkillGrants.skillId, input.skillId))).get();
-    db.insert(assistantSkillGrants).values({
-      guildId: scope.guildId,
-      skillId: input.skillId,
-      mode: input.mode,
-      roleIdsJson: JSON.stringify(input.roleIds),
-      userIdsJson: existing?.userIdsJson ?? '[]',
-      updatedAt: now,
-    }).onConflictDoUpdate({
-      target: [assistantSkillGrants.guildId, assistantSkillGrants.skillId],
-      set: { mode: input.mode, roleIdsJson: JSON.stringify(input.roleIds), updatedAt: now },
-    }).run();
+    const existing = db
+      .select()
+      .from(assistantSkillGrants)
+      .where(scope.only(assistantSkillGrants, eq(assistantSkillGrants.skillId, input.skillId)))
+      .get();
+    db.insert(assistantSkillGrants)
+      .values({
+        guildId: scope.guildId,
+        skillId: input.skillId,
+        mode: input.mode,
+        roleIdsJson: JSON.stringify(input.roleIds),
+        userIdsJson: existing?.userIdsJson ?? '[]',
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [assistantSkillGrants.guildId, assistantSkillGrants.skillId],
+        set: { mode: input.mode, roleIdsJson: JSON.stringify(input.roleIds), updatedAt: now },
+      })
+      .run();
   });
 /**
  * Adds roles to several skills' grants in one transaction. A union: existing

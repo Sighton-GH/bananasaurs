@@ -49,10 +49,14 @@ export const reminderRecurrence = z
   .strict();
 export type ReminderRecurrence = z.infer<typeof reminderRecurrence>;
 
-const weekdayNumber = (weekday: string): number =>
-  ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekday);
-
-const utcForLocal = (year: number, month: number, day: number, hour: number, minute: number, timeZone: string): number => {
+const utcForLocal = (
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): number => {
   let guess = Date.UTC(year, month - 1, day, hour, minute);
   const target = guess;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -69,7 +73,8 @@ const utcForLocal = (year: number, month: number, day: number, hour: number, min
   return guess;
 };
 
-const daysInMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+const daysInMonth = (year: number, month: number) =>
+  new Date(Date.UTC(year, month, 0)).getUTCDate();
 
 export const nextOccurrence = (
   recurrence: ReminderRecurrence,
@@ -95,7 +100,8 @@ export const nextOccurrence = (
       (pattern.kind === 'weekly' &&
         pattern.days.includes(weekday) &&
         Math.floor((anchorWeek + offset - anchorWeek) / 7) % pattern.everyWeeks === 0) ||
-      (pattern.kind === 'monthly' && day === Math.min(pattern.dayOfMonth, daysInMonth(year, month)));
+      (pattern.kind === 'monthly' &&
+        day === Math.min(pattern.dayOfMonth, daysInMonth(year, month)));
     if (!matches) continue;
     const candidate = utcForLocal(
       year,

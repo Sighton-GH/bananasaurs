@@ -1,9 +1,4 @@
-import type {
-  AssistantPrincipal,
-  AssistantSkill,
-  SkillDecision,
-  SkillScopeMode,
-} from './types.js';
+import type { AssistantPrincipal, AssistantSkill, SkillDecision, SkillScopeMode } from './types.js';
 
 export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
   {
@@ -143,7 +138,8 @@ export type SkillScope =
 
 export const effectiveSkillScope = (
   skill: AssistantSkill,
-  stored: { readonly mode?: SkillScopeMode | undefined; readonly roleIds: readonly string[] } | undefined,
+  stored:
+    { readonly mode?: SkillScopeMode | undefined; readonly roleIds: readonly string[] } | undefined,
 ): SkillScope => {
   if (stored?.mode === 'roles') return { mode: 'roles', roleIds: stored.roleIds };
   if (stored?.mode === 'owner') return { mode: 'owner' };
