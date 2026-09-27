@@ -217,6 +217,18 @@ describe('AssistantSkillsPage', () => {
     expect(within(web).getByRole('link', { name: 'Set up web search' })).toBeTruthy();
   });
 
+  it('labels each scope mode in plain words', () => {
+    expect(scopeLabel({ mode: 'everyone', roleIds: [] }, () => undefined)).toBe(
+      'Everyone who can ask',
+    );
+    expect(scopeLabel({ mode: 'owner', roleIds: [] }, () => undefined)).toBe('Owner only');
+    expect(
+      scopeLabel({ mode: 'roles', roleIds: ['r1', 'r2'] }, (id) =>
+        id === 'r1' ? 'Mods' : id === 'r2' ? 'Helpers' : undefined,
+      ),
+    ).toBe('Roles: @Mods, @Helpers');
+  });
+
   it('shows web search on when AI setup turned it on', async () => {
     renderPage({
       ...FULL,
