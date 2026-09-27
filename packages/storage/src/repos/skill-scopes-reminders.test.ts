@@ -71,6 +71,59 @@ describe('skill scopes and richer reminder storage', () => {
     t.close();
   });
 
+  it('executes the 0049 data SQL against seeded rows', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    const behaviour = (id: string, skillIds: readonly string[]) =>
+      putBehaviour(
+        a,
+        {
+          id,
+          guildId: A,
+          surface: 'bananasaurs',
+          name: id,
+          systemPrompt: 'prompt',
+          promptVersion: 1,
+          allowedSkillIds: [...skillIds],
+          callerRoleIds: [],
+          reviewerRoleIds: [],
+          resourceIds: [],
+          enabled: true,
+        },
+        1,
+      );
+    behaviour('b1', ['search-club', 'create-reminder']);
+    behaviour('b2', ['create-reminder', 'send-reminder', 'draft-agenda']);
+    behaviour('b3', ['search-club']);
+    putSkillGrant(
+      a,
+      { skillId: 'create-reminder', roleIds: ['555555555555555555'], userIds: [] },
+      2,
+    );
+    putSkillGrant(a, { skillId: 'send-reminder', roleIds: [], userIds: [] }, 2);
+    const sql = readFileSync(
+      fileURLToPath(
+        new URL('../../../../drizzle/0049_skill_scopes_and_reminder_fields.sql', import.meta.url),
+      ),
+      'utf8',
+    );
+    for (const chunk of sql.split('--> statement-breakpoint')) {
+      const statement = chunk.trim();
+      if (statement.startsWith('UPDATE') || statement.startsWith('DELETE'))
+        t.raw.exec(statement);
+    }
+    const byId = new Map(listBehaviours(a).map((entry) => [entry.id, entry.allowedSkillIds]));
+    expect([...(byId.get('b1') ?? [])].sort()).toEqual(['reminders', 'search-club']);
+    expect([...(byId.get('b2') ?? [])].sort()).toEqual(['draft-agenda', 'reminders']);
+    expect((byId.get('b2') ?? []).filter((id) => id === 'reminders')).toHaveLength(1);
+    expect(byId.get('b3')).toEqual(['search-club']);
+    expect(listSkillGrants(a)).toEqual([
+      { skillId: 'reminders', roleIds: ['555555555555555555'], userIds: [] },
+    ]);
+    t.close();
+  });
+
   it('has the requested migration tag and data rewrite', () => {
     const journal = JSON.parse(
       readFileSync(
