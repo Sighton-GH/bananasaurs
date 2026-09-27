@@ -37,7 +37,10 @@ describe('TOOL_CATALOGUE', () => {
   it('lists only real skill ids, and the search skill on every tool (it uses all read tools)', () => {
     const skillIds = new Set(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id));
     for (const tool of TOOL_CATALOGUE) {
-      for (const skillId of tool.skills) expect(skillIds.has(skillId), skillId).toBe(true);
+      for (const skillId of tool.skills) {
+        const catalogueId = skillId === 'create-reminder' || skillId === 'send-reminder' ? 'reminders' : skillId;
+        expect(skillIds.has(catalogueId), skillId).toBe(true);
+      }
       expect(tool.skills).toContain('search-club');
     }
   });

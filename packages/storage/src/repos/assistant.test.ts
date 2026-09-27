@@ -88,6 +88,8 @@ it('round-trips guild-scoped assistant settings and activity', () => {
     createdAt: 10,
     status: 'scheduled',
     dedupeKey: 'reminder:g:r',
+    mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+    deliveredCount: 0,
   });
   recordSkillActivity(s, {
     id: 'a',
