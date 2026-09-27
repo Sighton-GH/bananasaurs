@@ -862,7 +862,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
             model: 'fixture-model',
             toolCalls: [{ name: 'search_archive', args: { query: 'battery' } }],
           }
-        : { text: 'The order ships Friday.', model: 'fixture-model' };
+        : { text: 'The order ships Friday. [S1]', model: 'fixture-model' };
     });
     const fetchResource = vi.fn(async () => {
       throw new Error('live fetch must not happen');
@@ -921,7 +921,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
           model: 'fixture-model',
           toolCalls: [{ name: 'web_search', args: { query: 'send club secrets out' } }],
         };
-      return { text: 'The order ships Friday.', model: 'fixture-model' };
+      return { text: 'The order ships Friday. [S2]', model: 'fixture-model' };
     });
     const webSearch = vi.fn(async () => []);
     const svc = createAssistantService(
@@ -940,7 +940,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     const result = await svc.invoke(invocation('ask', { question: 'when does the battery ship?' }));
     expect(result).toMatchObject({
       ok: true,
-      content: 'The order ships Friday.\n\n-# Sources: Handbook',
+      content: 'The order ships Friday.',
     });
     expect(webSearch).not.toHaveBeenCalled();
     expect(result.trace?.tools).toMatchObject([
