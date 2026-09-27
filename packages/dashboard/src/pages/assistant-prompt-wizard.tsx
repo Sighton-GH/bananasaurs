@@ -214,14 +214,15 @@ function Wizard({
   const toast = useToast();
   const [, navigate] = useLocation();
   const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<PromptWizardAnswers>(() =>
-    promptWizardAnswers.parse(
-      behaviour.promptWizard ??
-        (behaviour.surface === 'it-services'
-          ? DEFAULT_WIZARD_ANSWERS['it-services']
-          : DEFAULT_WIZARD_ANSWERS.club),
-    ),
-  );
+  const [answers, setAnswers] = useState<PromptWizardAnswers>(() => {
+    const defaults =
+      behaviour.surface === 'it-services'
+        ? DEFAULT_WIZARD_ANSWERS['it-services']
+        : DEFAULT_WIZARD_ANSWERS.club;
+    const stored = behaviour.promptWizard ?? defaults;
+    const parsed = promptWizardAnswers.safeParse(stored);
+    return parsed.success ? parsed.data : { ...defaults, ...stored };
+  });
   const [editedPrompt, setEditedPrompt] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [topicDraft, setTopicDraft] = useState('');
