@@ -4,6 +4,7 @@ import {
   clipHeading,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  effectiveSkillScope,
   estimateTokens,
   JOB_KINDS,
   providerMayTrain,
@@ -12,6 +13,7 @@ import {
   resourceRefreshDedupeKey,
   SafeProvider,
   safeLogFields,
+  skillScopeAllows,
   stripNewTopic,
   type AssistantTrace,
   type CompiledAssistantContext,
@@ -19,7 +21,6 @@ import {
   type GenerationMessage,
   type Logger,
   type TextProvider,
-  validateReminderDraft,
 } from '@bananasaurs/core';
 import {
   archiveRepo,
@@ -323,7 +324,7 @@ export const createAssistantService = (
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
-        remind: 'create-reminder',
+        remind: 'reminders',
         remember: 'propose-memory',
         decision: 'record-decision',
         'review-plan': 'review-plan',
@@ -353,15 +354,26 @@ export const createAssistantService = (
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      // ADR 0064: passing the behaviour's "Who can ask" allows every skill in
-      // its allowlist. Owner-only skills stay owner-only; per-skill grants are
-      // no longer a gate.
-      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter(
-        (candidate) =>
-          input.behaviour.allowedSkillIds.includes(candidate.id) &&
-          (owner || candidate.ownerOnly !== true),
+      // B2b: the behaviour allowlist and the skill's own scope both gate the
+      // request, checked in code against the asker's live roles. Try-it
+      // counts as the owner for scopes (`config.write` authorised the caller).
+      const scopeOwner = owner || opts.skipCallerGate === true;
+      const grants = new Map(
+        assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant]),
       );
-      if (!permittedSkills.some((candidate) => candidate.id === skill)) {
+      const skillAllowed = (id: string): boolean => {
+        if (!input.behaviour.allowedSkillIds.includes(id)) return false;
+        const catalogueSkill = CLUB_ASSISTANT_SKILLS.find((candidate) => candidate.id === id);
+        if (catalogueSkill === undefined) return false;
+        return skillScopeAllows(effectiveSkillScope(catalogueSkill, grants.get(id)), {
+          owner: scopeOwner,
+          roleIds: input.callerRoleIds,
+        });
+      };
+      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) =>
+        skillAllowed(candidate.id),
+      );
+      if (!skillAllowed(skill)) {
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),
           at: now(),
@@ -369,73 +381,10 @@ export const createAssistantService = (
           skillId: skill,
           actorId: input.userId,
           outcome: 'denied',
-          detail: 'The skill is owner-only.',
         });
         return {
           ok: false,
-          content: 'Only the server owner can use this assistant skill. No action was taken.',
-        };
-      }
-      if (input.command === 'remind') {
-        // A reminder needs a real destination channel. Falling back to the
-        // user id produced a row that could never be delivered while the
-        // reply said "Reminder scheduled" (finding 7).
-        if (input.channelId === undefined)
-          return {
-            ok: false,
-            content: 'Reminders must run in a server channel. No reminder was scheduled.',
-          };
-        // The same validation every reminder write goes through (finding 8)
-        // - the slash path shares `createReminder`'s checks instead of
-        // carrying its own copy.
-        const draft = validateReminderDraft(
-          { dueAt: Date.parse(input.input.when ?? ''), text: input.input.text ?? '' },
-          now(),
-        );
-        if (!draft.ok)
-          return {
-            ok: false,
-            content: `${draft.error.charAt(0).toUpperCase()}${draft.error.slice(1)}. No reminder was scheduled.`,
-          };
-        const text = draft.text;
-        const dueAt = Date.parse(input.input.when ?? '');
-        const id = randomUUID();
-        // Hard rule 6: the dedupe key is the Discord interaction or message
-        // that asked for the reminder, not a fresh UUID, so a retried
-        // interaction cannot book the same reminder twice (finding 7).
-        const dedupeKey = `reminder:${scope.guildId}:${input.invocationId ?? id}`;
-        // The dedupe-key conflict comes back as a typed repo result: only
-        // that exact replay is the benign "already scheduled" answer, and a
-        // real write failure still throws instead of reading as success
-        // (should-fix; typed per the independent audit, round 2).
-        const insert = assistantRepo.insertReminder(scope, {
-          id,
-          guildId: scope.guildId,
-          creatorId: input.userId,
-          destinationId: input.channelId,
-          text,
-          dueAt,
-          createdAt: now(),
-          status: 'scheduled',
-          dedupeKey,
-        });
-        if (insert === 'duplicate') {
-          return {
-            ok: true,
-            content: 'That reminder is already scheduled. I did not create a duplicate.',
-          };
-        }
-        assistantRepo.recordSkillActivity(scope, {
-          id: randomUUID(),
-          at: now(),
-          behaviourId: input.behaviour.id,
-          skillId: skill,
-          actorId: input.userId,
-          outcome: 'completed',
-        });
-        return {
-          ok: true,
-          content: `Reminder scheduled for ${new Date(dueAt).toLocaleString('en-CA')}.`,
+          content: "You don't have access to that assistant skill. No action was taken.",
         };
       }
       if (input.command === 'find') {
