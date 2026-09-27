@@ -246,7 +246,9 @@ interface SelectedFile {
  * A repo refresh. Authenticated: `getRepo` + `listTree` + `selectRepoFiles`
  * (with `meta.include` when set), one cached document per selected file with
  * the file path as its title. Unauthenticated: README only, no `listTree`
- * (and no `getRepo` when the branch is already known). Rate limits record
+ * (and no `getRepo` when the branch is already known) — except a
+ * `meta.private` repository, which is turned off with no fetch at all, since
+ * no token can read it. Rate limits record
  * the retry sentence and keep the old chunks; files the selection no longer
  * names have their documents deleted.
  */
@@ -319,6 +321,18 @@ export async function refreshGithubRepo(
       include === undefined ? undefined : { include: [...include] },
     ).map((path) => ({ path, url: rawGitHubUrl(owner, repo, branch, path) }));
   } else {
+    // Without a token a private repository cannot be read at all (ADR 0083
+    // decision 4): turn it off instead of caching its README in the open.
+    // Nothing is fetched here — no public README, no API call.
+    if (resource.meta?.private === true) {
+      if (resource.enabled) deps.store.putResource(scope, { ...resource, enabled: false });
+      return fail(
+        scope,
+        resource,
+        deps,
+        'This repository is private and no GitHub token is saved. It has been turned off, so its cached text is no longer searched.',
+      );
+    }
     if (ref === undefined) {
       try {
         const detail = await deps.client.getRepo(owner, repo);

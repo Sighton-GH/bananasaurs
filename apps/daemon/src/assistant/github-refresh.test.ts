@@ -810,6 +810,33 @@ describe('refreshGithubRepo (unauthenticated)', () => {
         "GitHub can't find this repository, or the token can't read it. It has been turned off, so its cached text is no longer searched.",
     });
   });
+
+  it('a private repo with no token is turned off with no fetch at all', async () => {
+    const client = new FakeClient();
+    client.authenticated = false;
+    const fetcher = new FakeFetcher(async (url: string) => okFile(url, 'readme text'));
+    const { deps: d, store, cache } = deps(client, fetcher);
+    const privateRepo = repo({
+      meta: { owner: 'acme', repo: 'secret', branch: 'main', private: true },
+    });
+    store.rows.set('gh-acme-widget', privateRepo);
+
+    const outcome = await refreshGithubRepo(SCOPE, privateRepo, d);
+
+    expect(outcome).toBe('error');
+    expect(store.rows.get('gh-acme-widget')).toMatchObject({ enabled: false });
+    expect(fetcher.calls).toHaveLength(0);
+    expect(client.calls.getRepo).toBe(0);
+    expect(client.calls.listTree).toBe(0);
+    expect(client.calls.getFileRaw).toBe(0);
+    expect(cache.chunkCalls).toHaveLength(0);
+    expect(store.fetchRecords[0]).toMatchObject({
+      id: 'gh-acme-widget',
+      status: 'failed',
+      detail:
+        'This repository is private and no GitHub token is saved. It has been turned off, so its cached text is no longer searched.',
+    });
+  });
 });
 
 describe('refreshGithubResource', () => {
