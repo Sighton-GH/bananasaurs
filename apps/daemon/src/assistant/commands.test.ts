@@ -16,6 +16,7 @@ import {
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { createInteractionTokenSealer } from './interaction-token.js';
 import { PROVIDER_FAILURE_LOG_REASON } from './provider-failure.js';
+import { FakeDiscord } from '@bananasaurs/testkit';
 
 const guildId = '234567890123456789';
 const channelId = '345678901234567890';
@@ -308,6 +309,21 @@ describe('assistant command subscriber', () => {
       mentionedRoleIds: [club.mentionRoleId!],
       mentionsEveryone: false,
       attachments: [],
+    });
+    expect(h.queued[0]).toMatchObject({ authorName: 'Ama' });
+  });
+
+  it('carries the fake display name into the mention payload as authorName', async () => {
+    const h = harness();
+    const discord = new FakeDiscord({ guildId });
+    discord.onEvent((event) => h.subscriber.handle(event));
+    await discord.emitMessageCreate({
+      channelId,
+      messageId: '890123456789012351',
+      authorId: userId,
+      authorDisplayName: 'Ama',
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      mentionedRoleIds: [club.mentionRoleId!],
     });
     expect(h.queued[0]).toMatchObject({ authorName: 'Ama' });
   });

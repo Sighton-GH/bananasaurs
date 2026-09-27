@@ -381,6 +381,11 @@ export class FakeDiscord implements DiscordPort {
     authorIsBot?: boolean;
     /** The member's display name; absent unless a test needs it. */
     authorDisplayName?: string | undefined;
+    /**
+     * Role mentions as Discord reported them. Empty unless a test needs
+     * mention routing (the fake does not parse content); omitted means none.
+     */
+    mentionedRoleIds?: readonly Snowflake[];
     /** Every attachment on a `messageCreate` carries an id (PR-71). */
     attachments?: ReadonlyArray<{
       attachmentId: Snowflake;
@@ -411,7 +416,7 @@ export class FakeDiscord implements DiscordPort {
       editedTimestampMs: undefined,
       mentionedUserIds: [],
       authorRoleIds: [],
-      mentionedRoleIds: [],
+      mentionedRoleIds: [...(p.mentionedRoleIds ?? [])],
       mentionsEveryone: false,
       attachments,
     });
