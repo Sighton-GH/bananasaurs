@@ -1696,7 +1696,24 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
 
   it('adds a sources line with headings for pre-retrieved evidence', async () => {
     seedResource('handbook', 'Handbook', ['battery care guide for the club']);
-    const service = serviceWith(answering('Here is the care guide. [S1]'));
+    seedResource('alpha', 'Alpha', ['alpha care notes for the club']);
+    seedResource('beta', 'Beta', ['beta care notes for the club']);
+    seedResource('gamma', 'Gamma', ['gamma care notes for the club']);
+    const hit = (resourceId: string, snippet: string) => ({
+      resourceId,
+      chunkId: `c_${resourceId}_0`,
+      docId: `d_${resourceId}`,
+      headingPath: 'Guide › Part 0',
+      snippet,
+    });
+    const service = serviceWith(answering('Here is the care guide. [S1]'), {
+      cacheSearch: () => [
+        hit('handbook', 'battery care guide'),
+        hit('alpha', 'alpha care notes'),
+        hit('beta', 'beta care notes'),
+        hit('gamma', 'gamma care notes'),
+      ],
+    });
     const result = await service.invoke({
       guildId: GUILD,
       channelId: '567890123456789012',
@@ -1710,7 +1727,12 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     });
     expect(result.ok).toBe(true);
     const content = result.ok === true ? result.content : '';
-    expect(content).toContain('-# Sources: Handbook › Guide › Part 0');
+    const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
+    expect(line).toBe('-# Sources: Handbook › Guide › Part 0');
+    expect(content).not.toContain('Alpha');
+    expect(content).not.toContain('Beta');
+    expect(content).not.toContain('Gamma');
+    expect(content).not.toContain('[S');
   });
 
   it('clips a 5000-char pre-retrieved heading in the sources line', async () => {
