@@ -169,6 +169,7 @@ export const runToolLoop = async (input: {
   readonly reserveCall?: ReserveCall | undefined;
   readonly logger?: Pick<Logger, 'warn'> | undefined;
   readonly guildId?: string | undefined;
+  readonly citations?: CitationRegistry | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -317,6 +318,7 @@ export const runToolLoop = async (input: {
       logger: input.logger,
       guildId: input.guildId,
       now: input.now,
+      citations: input.citations,
       entryMs: ms,
     });
     if (answered !== undefined) {
@@ -401,6 +403,7 @@ const runEntry = async (deps: {
   readonly reserveCall?: ReserveCall | undefined;
   readonly logger?: Pick<Logger, 'warn'> | undefined;
   readonly guildId?: string | undefined;
+  readonly citations?: CitationRegistry | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
 }): Promise<EntrySuccess | undefined> => {
@@ -611,11 +614,20 @@ const runEntry = async (deps: {
         ms: callMs(),
         preview: result.text.slice(0, TOOL_RESULT_PREVIEW_CHARS),
       });
+      const citationText =
+        result.ok && deps.citations !== undefined && result.sources.length > 0
+          ? `\n\nCite as: ${result.sources
+              .map((source) => {
+                const tag = deps.citations!.tag({ title: source.title, url: source.url });
+                return `[${tag}] ${source.title}`;
+              })
+              .join('; ')}`
+          : '';
       toolMessages.push({
         role: 'tool',
         toolName: call.name,
         ...(call.id === undefined ? {} : { toolCallId: call.id }),
-        text: `[UNTRUSTED TOOL RESULT tool=${result.name}]\n${escapeUntrustedClose(result.text)}\n[/UNTRUSTED TOOL RESULT]`,
+        text: `[UNTRUSTED TOOL RESULT tool=${result.name}]\n${escapeUntrustedClose(result.text)}${citationText}\n[/UNTRUSTED TOOL RESULT]`,
       });
     }
     return toolMessages;

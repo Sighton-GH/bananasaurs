@@ -5,77 +5,66 @@ export interface CitableSource {
 }
 
 export interface CitationRegistry {
-  /** The tag for this source, e.g. 'S3'; the same source (url + heading) always gets the same tag. Tags count up from S1 per request. */
+  /** The tag for this source, e.g. 'S3'; the same source (url + heading) always gets the same tag. */
   tag(source: CitableSource): string;
   get(tag: string): CitableSource | undefined;
 }
 
 export const createCitationRegistry = (): CitationRegistry => {
-  const byKey = new Map<string, string>();
+  const byKey = new Map<string, { readonly tag: string; readonly source: CitableSource }>();
   const byTag = new Map<string, CitableSource>();
   let next = 1;
-  const keyOf = (source: CitableSource): string => `${source.url}\n${source.heading ?? ''}`;
+
+  const keyFor = (source: CitableSource): string => `${source.url}\u0000${source.heading ?? ''}`;
+
   return {
-    tag(source: CitableSource): string {
-      const key = keyOf(source);
+    tag(source) {
+      const key = keyFor(source);
       const existing = byKey.get(key);
-      if (existing !== undefined) return existing;
-      const made = `S${String(next)}`;
+      if (existing !== undefined) return existing.tag;
+      const tag = `S${String(next)}`;
       next += 1;
-      byKey.set(key, made);
-      byTag.set(made, source);
-      return made;
+      byKey.set(key, { tag, source });
+      byTag.set(tag, source);
+      return tag;
     },
-    get(tag: string): CitableSource | undefined {
+    get(tag) {
       return byTag.get(tag);
     },
   };
 };
 
-const TAG_GROUP_RE = /[ \t]*\[S\d{1,3}(?:,\s*S\d{1,3})*\]/g;
-const SINGLE_TAG_RE = /S\d{1,3}/g;
-const SOURCES_LINE_RE = /^\s*(?:-#\s*)?\**\s*sources?\s*\**\s*:/i;
+const CITATION_GROUP = /[ \t]*(\[S\d{1,3}(?:,[ \t]*S\d{1,3})*\])/g;
+const SOURCE_LINE = /^\s*(?:-#\s*)?\**\s*sources?\s*\**\s*:/i;
 
 /** Strips citation tags from the answer and returns the known sources it cited, in order of first appearance, deduplicated. */
 export const applyCitations = (
   text: string,
   registry: CitationRegistry,
 ): { readonly text: string; readonly cited: readonly CitableSource[] } => {
-  const lines = text.split('\n');
   const cited: CitableSource[] = [];
-  const seen = new Set<string>();
-  const out: string[] = [];
+  const seen = new Set<CitableSource>();
+  const lines = text.split('\n');
   let inFence = false;
-  for (const line of lines) {
+  const cleaned = lines.map((line) => {
     if (line.startsWith('```')) {
       inFence = !inFence;
-      out.push(line);
-      continue;
+      return line;
     }
-    if (inFence) {
-      out.push(line);
-      continue;
-    }
-    out.push(
-      line.replace(TAG_GROUP_RE, (group) => {
-        for (const found of group.match(SINGLE_TAG_RE) ?? []) {
-          if (seen.has(found)) continue;
-          const source = registry.get(found);
-          if (source === undefined) continue;
-          seen.add(found);
+    if (inFence) return line;
+    return line.replace(CITATION_GROUP, (_match, group: string) => {
+      const tags = group.slice(1, -1).split(/,[ \t]*/);
+      for (const tag of tags) {
+        const source = registry.get(tag);
+        if (source !== undefined && !seen.has(source)) {
+          seen.add(source);
           cited.push(source);
         }
-        return '';
-      }),
-    );
-  }
-  let result = out.join('\n');
-  const resultLines = result.split('\n');
-  let last = resultLines.length - 1;
-  while (last >= 0 && resultLines[last]!.trim() === '') last -= 1;
-  if (last >= 0 && SOURCES_LINE_RE.test(resultLines[last]!)) {
-    resultLines.splice(last, 1);
-    result = resultLines.join('\n');
-  }
-  return { text: result.trim(), cited };
+      }
+      return '';
+    });
+  });
+  while (cleaned.length > 0 && cleaned.at(-1)?.trim() === '') cleaned.pop();
+  if (cleaned.length > 0 && SOURCE_LINE.test(cleaned.at(-1)!)) cleaned.pop();
+  return { text: cleaned.join('\n').trimEnd(), cited };
 };
