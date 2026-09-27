@@ -94,13 +94,19 @@ export interface OutgoingMessage {
   components?: readonly unknown[] | undefined;
   /**
    * Discord's allowed_mentions. Absent means Discord's default, which parses
-   * every mention in the content — so the MCP send path always sets
-   * `{ parse: [] }` (ruling M5-D2). Not defaulted here: changing what panel
+   * every mention in the content — so most outputs set `{ parse: [] }`
+   * (ruling M5-D2). Not defaulted here: changing what panel
    * posts and log messages do is a behaviour change, and two guilds are
-   * being observed.
+   * being observed. Only reminder delivery may put `'everyone'` in `parse`
+   * or set `users`; every other output keeps `{ parse: [] }`.
    */
   allowedMentions?:
-    { readonly parse: readonly []; readonly roles?: readonly string[] | undefined } | undefined;
+    | {
+        readonly parse: readonly 'everyone'[];
+        readonly roles?: readonly string[] | undefined;
+        readonly users?: readonly string[] | undefined;
+      }
+    | undefined;
   /**
    * The message this one replies to (ADR 0072). When set, the REST adapter
    * emits `message_reference` and forces `allowed_mentions.replied_user:
