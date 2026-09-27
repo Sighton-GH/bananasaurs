@@ -176,6 +176,26 @@ describe('skill scopes and richer reminder storage', () => {
     t.close();
   });
 
+  it('filters creator reminders by finished status', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    const other = '555555555555555555';
+    insertReminder(a, { ...reminder(A, 'mine'), creatorId: U, dueAt: 1000 });
+    insertReminder(a, { ...reminder(A, 'theirs'), creatorId: other, dueAt: 1000 });
+    insertReminder(a, { ...reminder(A, 'finished'), creatorId: U, status: 'delivered', dueAt: 500 });
+    expect(listRemindersForCreator(a, U, { includeFinished: false }).map((r) => r.id)).toEqual([
+      'mine',
+    ]);
+    expect(
+      listRemindersForCreator(a, U, { includeFinished: true }).map((r) => r.id),
+    ).toEqual(['finished', 'mine']);
+    expect(listRemindersForCreator(a, other, { includeFinished: false }).map((r) => r.id)).toEqual([
+      'theirs',
+    ]);
+    t.close();
+  });
+
   it('has the requested migration tag and data rewrite', () => {
     const journal = JSON.parse(
       readFileSync(
