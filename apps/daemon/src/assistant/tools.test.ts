@@ -352,7 +352,8 @@ describe('acting tools (B2a)', () => {
             if (row.status !== 'scheduled') return 'not-editable' as const;
             const next = storedReminder({ ...row, ...(patch as object), updatedAt: NOW });
             if ((patch as { recurrence?: unknown }).recurrence === null) {
-              const { recurrence: _dropped, ...rest } = next;
+              const rest = { ...next };
+              delete rest.recurrence;
               rows.set(id, storedReminder(rest));
             } else rows.set(id, next);
             return 'updated' as const;
