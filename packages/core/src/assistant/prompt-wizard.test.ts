@@ -279,6 +279,24 @@ describe('buildSystemPrompt — omission of empty sections', () => {
       "Check the club's sources before answering from general knowledge.",
     );
   });
+
+  it('emits the exact citation tag sentence when citeSources is true', () => {
+    const withCite = promptWizardAnswers.parse({ ...minimalAnswers, citeSources: true });
+    expect(buildSystemPrompt(withCite, CONTEXT)).toContain(
+      "Tag each fact you take from a club source with that source's tag.",
+    );
+  });
+
+  it('never asks the model for a Sources line, even with sourcesLine: true', () => {
+    const prompts = [
+      buildSystemPrompt(DEFAULT_WIZARD_ANSWERS.club, CONTEXT),
+      buildSystemPrompt(DEFAULT_WIZARD_ANSWERS['it-services'], CONTEXT),
+      buildSystemPrompt(richAnswers, CONTEXT),
+      buildSystemPrompt(fullAnswers, CONTEXT),
+      buildSystemPrompt(minimalAnswers, CONTEXT),
+    ];
+    for (const prompt of prompts) expect(prompt).not.toContain('Sources line');
+  });
 });
 
 describe('buildSystemPrompt — 4,000 character cap and trim order', () => {
