@@ -63,7 +63,7 @@ describe('assistantTraceSchema', () => {
   });
 
   it('still parses an old trace without included', () => {
-    const { included: _included, ...oldTrace } = fixtureTrace({
+    const fullTrace = fixtureTrace({
       included: {
         toolsOffered: ['search_sources'],
         snippetChunkIds: ['chunk-1'],
@@ -71,6 +71,9 @@ describe('assistantTraceSchema', () => {
         historyTurns: 0,
       },
     });
+    const oldTrace = Object.fromEntries(
+      Object.entries(fullTrace).filter(([key]) => key !== 'included'),
+    );
     expect(assistantTraceSchema.parse(oldTrace)).toEqual(oldTrace);
   });
 

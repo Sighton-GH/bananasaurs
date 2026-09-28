@@ -1,17 +1,6 @@
 import { z } from 'zod';
 
 /**
- * One stored assistant run (ADR 0076): what the member asked, what the model
- * saw, what it called, what it cost, and where it failed. Written by the
- * invoke job in Task 14; read by the History list and detail pages.
- *
- * Large free-text fields (`sections[].text`, `toolCalls[].preview`) are
- * capped by `capTrace` before storage, so no single run can grow the table
- * without bound. No keys, tokens or sealed values ever belong in here
- * (hard rule 4) — the schema cannot enforce that, so the writer must.
- */
-
-/**
  * Which context blocks a reply saw (ADR 0088 decision 2). A separate schema
  * so the job cursor reuses the trace's own shape for it.
  */
@@ -23,6 +12,16 @@ export const assistantTraceIncludedSchema = z.object({
 });
 export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
 
+/**
+ * One stored assistant run (ADR 0076): what the member asked, what the model
+ * saw, what it called, what it cost, and where it failed. Written by the
+ * invoke job in Task 14; read by the History list and detail pages.
+ *
+ * Large free-text fields (`sections[].text`, `toolCalls[].preview`) are
+ * capped by `capTrace` before storage, so no single run can grow the table
+ * without bound. No keys, tokens or sealed values ever belong in here
+ * (hard rule 4) — the schema cannot enforce that, so the writer must.
+ */
 export const assistantTraceSchema = z.object({
   traceId: z.string().min(1),
   at: z.number().int(),
