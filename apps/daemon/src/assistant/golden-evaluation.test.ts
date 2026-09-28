@@ -215,7 +215,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
         queued.push(input.payload);
         return { enqueued: true };
       },
-      sealToken: (ref) => sealer.seal(ref),
+      sealToken: (ref: string) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
     });

@@ -115,7 +115,7 @@ const harness = (
         queued.push(input.payload);
         return { enqueued: reportEnqueued };
       },
-      sealToken: (ref) => sealer.seal(ref),
+      sealToken: (ref: string) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
       sendTyping,
@@ -554,7 +554,7 @@ describe('assistant command subscriber', () => {
       enqueue: () => {
         throw new Error('disk full');
       },
-      sealToken: (token) => token,
+      sealToken: (token: string) => token,
       now: () => 1,
       logger: pino({ level: 'silent' }),
       sendTyping,
@@ -946,7 +946,7 @@ describe('assistant answer feedback reactions (Task 20)', () => {
       defer: vi.fn(async () => undefined),
       respond: vi.fn(async () => undefined),
       enqueue: vi.fn(),
-      sealToken: (token) => token,
+      sealToken: (token: string) => token,
       now: () => 1,
       logger: pino({ level: 'silent' }),
       lookupMessage,
