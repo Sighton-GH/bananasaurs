@@ -2473,7 +2473,7 @@ describe('B2b: acting tool ports are wired', () => {
         text: 'Bring batteries',
         creatorId: OWNER,
         destinationId: CHANNEL,
-        dedupeKey: expect.stringContaining('reminder:int-ports-1:'),
+        dedupeKey: expect.stringContaining('reminder_int-ports-1_'),
       },
     ]);
     expect(
@@ -2776,7 +2776,7 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(stored.ok).toBe(true);
     const reminderId = assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))[0]?.id;
-    expect(reminderId).toMatch(/^rem:int-iso-a:[0-9a-f]{64}$/);
+    expect(reminderId).toMatch(/^rem_int-iso-a_[0-9a-f]{64}$/);
     // From guild B the same id is unknown: get (via edit), listForCreator
     // and listAll (via my_reminders) see nothing, and update and cancel fail.
     const toolTexts: (readonly string[])[] = [];

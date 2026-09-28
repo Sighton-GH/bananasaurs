@@ -297,7 +297,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     });
     expect(reminder.ok).toBe(true);
     expect(assistantRepo.listReminders(scope)).toMatchObject([
-      { text: 'Bring batteries', dedupeKey: expect.stringContaining('reminder:int-reminder:') },
+      { text: 'Bring batteries', dedupeKey: expect.stringContaining('reminder_int-reminder_') },
     ]);
 
     const decision = await service.invoke({
@@ -831,7 +831,7 @@ describe('Release 3 review fixes', () => {
     // store returns the same success summary, and only one reminder exists.
     expect(toolTexts[5]?.[0]).toContain('Reminder set');
     expect(assistantRepo.listReminders(scope)).toMatchObject([
-      { text: 'Bring batteries', dedupeKey: expect.stringContaining('reminder:int-5:') },
+      { text: 'Bring batteries', dedupeKey: expect.stringContaining('reminder_int-5_') },
     ]);
     expect(
       assistantRepo.listSkillActivity(scope, 10).find((a) => a.skillId === 'reminders'),

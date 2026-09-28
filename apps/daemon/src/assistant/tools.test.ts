@@ -845,7 +845,7 @@ describe('acting tools (B2a)', () => {
     expect(decision.actionSummary).toBe(
       '📝 Draft filed for owner review. It is not club policy until an owner saves it.',
     );
-    expect(proposed[1]?.id).toContain('decision:msg1:');
+    expect(proposed[1]?.id).toContain('decision_msg1_');
     const replay = await runAssistantTool(
       { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
       ports({

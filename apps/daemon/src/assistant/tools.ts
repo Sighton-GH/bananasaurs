@@ -316,7 +316,7 @@ const contentHash = (content: unknown): string =>
     .update(JSON.stringify(canonicalize(content)))
     .digest('hex');
 const contentKey = (prefix: string, invocationKey: string, content: unknown): string =>
-  `${prefix}:${invocationKey}:${contentHash(content)}`;
+  `${prefix}_${invocationKey}_${contentHash(content)}`;
 /** Stored reminder context: trimmed, whitespace collapsed, absent when empty. */
 const normaliseContext = (context: string | undefined): string | undefined => {
   if (context === undefined) return undefined;
