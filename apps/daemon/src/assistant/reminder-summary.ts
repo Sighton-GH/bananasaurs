@@ -126,16 +126,22 @@ export const reminderSummary = (
     action === 'set'
       ? `✅ Reminder set: **${summaryField(input.text).slice(0, 200)}**`
       : `✏️ Reminder updated: **${summaryField(input.text).slice(0, 200)}**`;
+  // An edit that left the targets alone omits Where and Pings: the caller
+  // passes no channel name then, and raw ids must never print.
   const lines = [
     head,
     `• When: ${when}`,
-    `• Where: #${summaryField(input.channelName ?? '')}`,
-    `• Pings: ${formatPings({
-      memberNames: input.memberNames ?? [],
-      roleNames: input.roleNames ?? [],
-      everyone: input.everyone ?? false,
-      here: input.here ?? false,
-    })}`,
+    ...(action === 'updated' && input.channelName === undefined
+      ? []
+      : [
+          `• Where: #${summaryField(input.channelName ?? '')}`,
+          `• Pings: ${formatPings({
+            memberNames: input.memberNames ?? [],
+            roleNames: input.roleNames ?? [],
+            everyone: input.everyone ?? false,
+            here: input.here ?? false,
+          })}`,
+        ]),
   ];
   const why = input.context === undefined ? '' : summaryField(input.context);
   if (why.length > 0) lines.push(`• Why: ${why}`);

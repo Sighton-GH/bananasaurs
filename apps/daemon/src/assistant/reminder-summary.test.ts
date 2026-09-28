@@ -87,6 +87,14 @@ describe('reminderSummary', () => {
     expect(text.split('\n')[0]).toBe(`✏️ Reminder updated: **${'x'.repeat(200)}**`);
   });
 
+  it('omits Where and Pings on an update that left the targets alone', () => {
+    const { channelName: _channel, memberNames: _members, roleNames: _roles, ...rest } = base;
+    const text = reminderSummary('updated', rest);
+    expect(text).not.toContain('• Where:');
+    expect(text).not.toContain('• Pings:');
+    expect(text.split('\n')[0]).toContain('✏️ Reminder updated:');
+  });
+
   it('adds the repeat phrase to the when line', () => {
     const text = reminderSummary('set', {
       ...base,

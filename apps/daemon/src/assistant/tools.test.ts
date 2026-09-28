@@ -658,6 +658,20 @@ describe('acting tools (B2a)', () => {
     ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
   });
 
+  it('omits Where and Pings from an edit summary when the targets did not change', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
+    const result = await runAssistantTool(
+      { name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.actionSummary).toContain('✏️ Reminder updated: **new**');
+    expect(result.actionSummary).not.toContain('• Where:');
+    expect(result.actionSummary).not.toContain('• Pings:');
+    expect(result.actionSummary).not.toContain('111111111111111111');
+  });
+
   it('stops repeating and maps not-editable', async () => {
     const { p, rows } = reminderPorts();
     rows.set(

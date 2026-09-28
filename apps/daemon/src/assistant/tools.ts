@@ -755,9 +755,13 @@ export const runAssistantTool = async (
             timeZone: ports.timeZone,
             recurrence: after.recurrence ?? undefined,
             context: after.context,
-            channelName: targets?.channelName ?? after.destinationId,
-            memberNames: targets?.memberNames ?? [...after.mentions.userIds],
-            roleNames: targets?.roleNames ?? [...after.mentions.roleIds],
+            ...(targets === undefined
+              ? {}
+              : {
+                  channelName: targets.channelName,
+                  memberNames: targets.memberNames,
+                  roleNames: targets.roleNames,
+                }),
             everyone: after.mentions.everyone,
             here: after.mentions.here,
           });
