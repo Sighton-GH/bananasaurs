@@ -2731,119 +2731,38 @@ describe('B2b: acting tool ports are wired', () => {
  * Sources line — and recorded on the trace detail as `actions`.
  */
 describe('B2b: action summaries in answers', () => {
-  const GUILD = parseGuildId('234567890123456789');
-  const CHANNEL = '567890123456789012';
-  const CLUB_ROLE = '678901234567890123';
-  const OWNER = '345678901234567890';
-  const NOW = 1_800_000_000_000;
+  const GUILD = B2B_GUILD;
+  const CHANNEL = B2B_CHANNEL;
+  const CLUB_ROLE = B2B_CLUB_ROLE;
+  const OWNER = B2B_OWNER;
+  const NOW = B2B_NOW;
 
-  const config = parseConfig({
-    DISCORD_BOT_TOKEN: 'test-token',
-    DISCORD_APPLICATION_ID: '123456789012345678',
-    BANANASAURS_GUILD_ALLOWLIST: GUILD,
-    BANANASAURS_OWNER_USER_ID: OWNER,
-    AI_PROVIDER: 'off',
-    AI_MODEL: 'fixture-model',
-    AI_PROFILE_COST_CLASS: 'free',
-  });
-
-  const direct = {
-    id: 'direct',
-    guildId: GUILD,
-    surface: 'direct-command' as const,
-    name: 'Club',
-    systemPrompt: 'Canadian English.',
-    promptVersion: 1,
-    callerRoleIds: [CLUB_ROLE],
-    reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'reminders'],
-    resourceIds: [],
-    enabled: true,
-  };
-
-  const usable = (provider: TextProvider): ChainEntry => ({
-    providerId: 'gemini',
-    model: 'model-a',
-    keyId: 'key_a',
-    keyLabel: 'Key A',
-    provider,
-    skip: undefined,
-    mayTrain: false,
-    rpmLimit: null,
-    rpdLimit: null,
-  });
-
-  let t: MigratedTestDatabase;
+  let h: ReturnType<typeof setupB2b>;
   beforeEach(() => {
-    t = openMigratedTestDatabase();
-    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Key A',
-      apiKeyEnc: 'sealed-key-a',
-      now: NOW,
-      keyId: 'key_a',
-    });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Test provider',
-      apiKeyEnc: 'sealed-key-test',
-      now: NOW,
-      keyId: 'key_test',
-    });
-    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
-    assistantRepo.putSkillGrant(
-      t.scopes.forGuild(GUILD),
-      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
-      NOW,
-    );
+    h = setupB2b(['search-club', 'reminders']);
   });
-  afterEach(() => t.close());
+  afterEach(() => h.t.close());
 
-  const scripted = (responses: GenerateTextResponse[]): TextProvider => {
-    const queue = [...responses];
-    return {
-      id: 'fake',
-      capabilities: new Set(['text', 'tools']),
-      generateText: async () => {
-        const next = queue.shift();
-        if (next === undefined) throw new Error('no scripted response');
-        return next;
+  const targetsOk = () => ({
+    memberChannels: async () => [],
+    resolveReminderTargets: async () => ({
+      ok: true as const,
+      targets: {
+        channelId: CHANNEL,
+        channelName: 'general',
+        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+        memberNames: [],
+        roleNames: [],
       },
-    };
-  };
-
-  const serviceWith = (provider: TextProvider, ports: AssistantServiceTestPorts = {}) =>
-    createAssistantService(
-      t.scopes.forGuild(GUILD),
-      t.scopes.instance(),
-      config,
-      () => NOW,
-      ports,
-      undefined,
-      undefined,
-      {
-        memberChannels: async () => [],
-        resolveReminderTargets: async () => ({
-          ok: true as const,
-          targets: {
-            channelId: CHANNEL,
-            channelName: 'general',
-            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
-            memberNames: [],
-            roleNames: [],
-          },
-        }),
-      },
-      () => [usable(provider)],
-    );
+    }),
+  });
 
   const actionsOf = (result: { detail?: AssistantTraceDetail }): readonly string[] =>
     result.detail?.actions ?? [];
 
   it('the posted answer ends with the summary and the trace records it', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2851,13 +2770,13 @@ describe('B2b: action summaries in answers', () => {
       },
       { text: 'All set.', model: 'model-a' },
     ]);
-    const service = serviceWith(provider);
+    const service = h.serviceWith(provider, targetsOk());
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
@@ -2871,7 +2790,7 @@ describe('B2b: action summaries in answers', () => {
   });
 
   it('the Sources line follows the summary when there is one', async () => {
-    assistantRepo.putResource(t.scopes.forGuild(GUILD), {
+    assistantRepo.putResource(h.t.scopes.forGuild(GUILD), {
       id: 'club-guide',
       guildId: GUILD,
       title: 'Club Guide',
@@ -2881,7 +2800,7 @@ describe('B2b: action summaries in answers', () => {
       reviewedAt: new Date(NOW).toISOString(),
     });
     const when = new Date(NOW + 3_600_000).toISOString();
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2889,7 +2808,7 @@ describe('B2b: action summaries in answers', () => {
       },
       { text: 'See the guide. [S1]', model: 'model-a' },
     ]);
-    const service = serviceWith(provider, {
+    const service = h.serviceWith(provider, targetsOk(), {
       cacheSearch: () => [
         {
           resourceId: 'club-guide',
@@ -2905,7 +2824,7 @@ describe('B2b: action summaries in answers', () => {
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'what does the guide say; remind me to bring batteries' },
       source: 'slash-command',
