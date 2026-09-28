@@ -931,6 +931,75 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(trace?.guard).toEqual({ removed: ['phone'] });
   });
 
+  it('writes included from the detail into the stored trace', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'short answer',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        history: [],
+        included: {
+          toolsOffered: ['search_sources'],
+          snippetChunkIds: ['c_1'],
+          quote: true,
+          historyTurns: 2,
+        },
+      },
+    }));
+    await h.run(mention({ invocationId: 'inv-included', messageId: '810000000000000024' }));
+
+    expect(traceRepo.getTrace(scope(), 'trace_inv-included')?.included).toEqual({
+      toolsOffered: ['search_sources'],
+      snippetChunkIds: ['c_1'],
+      quote: true,
+      historyTurns: 2,
+    });
+  });
+
+  it('a retry from an invoke-done cursor keeps the saved included', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'hello',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        history: [],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        included: {
+          toolsOffered: ['search_sources'],
+          snippetChunkIds: ['c_1'],
+          quote: false,
+          historyTurns: 1,
+        },
+      },
+    }));
+    const input = mention({ invocationId: 'inv-retry-included', messageId: '810000000000000025' });
+
+    // The first attempt invokes, saves invoke-done, then fails posting the answer.
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    const attempt1 = await h.run(input);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(attempt1.cursor).not.toBeNull();
+
+    // The retry resumes from that cursor: no second invoke, included kept.
+    const attempt2 = await h.run(input, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(h.inputs).toHaveLength(1);
+
+    expect(traceRepo.getTrace(scope(), 'trace_inv-retry-included')?.included).toEqual({
+      toolsOffered: ['search_sources'],
+      snippetChunkIds: ['c_1'],
+      quote: false,
+      historyTurns: 1,
+    });
+  });
+
   it('a result flag reaches the stored trace and survives a retry from the cursor', async () => {
     const h = harness(() => ({
       ok: true,
