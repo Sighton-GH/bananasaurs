@@ -29,9 +29,8 @@ const DETAIL = {
     finishReason: 'stop',
     usage: { promptTokens: 100, completionTokens: 20, thinkingTokens: 10 },
     sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
-     toolsOffered: ['search_sources', 'set_reminder'],
-     toolCalls: [
-
+    toolsOffered: ['search_sources', 'set_reminder'],
+    toolCalls: [
       {
         round: 1,
         name: 'search_sources',

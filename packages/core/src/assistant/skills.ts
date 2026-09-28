@@ -6,7 +6,8 @@ export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
     name: 'Search club knowledge',
     description:
       'Search enabled Discord archive and reviewed resources with permission-filtered citations.',
-    promptLine: "Search the club's archived messages and reviewed sources for what a member asks about.",
+    promptLine:
+      "Search the club's archived messages and reviewed sources for what a member asks about.",
     effect: 'read',
     requiredPermission: 'assistant.search',
     acts: false,

@@ -476,7 +476,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       evidence: [],
     });
     expect(compiled.systemInstruction).toContain(
-      'For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it\'s outside what you help with.',
+      "For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it's outside what you help with.",
     );
     expect(compiled.systemInstruction).not.toContain(LEGACY_BOUNDARIES_SENTENCE);
   });
