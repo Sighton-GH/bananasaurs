@@ -420,7 +420,7 @@ describe('AssistantPage', () => {
     expect(within(picker).getByText('Draft an announcement')).toBeTruthy();
     expect(within(picker).getByText('Drafts, never sends')).toBeTruthy();
     expect(within(picker).getAllByText('Reads').length).toBe(2);
-    expect(within(picker).getByText('Schedules · you confirm first')).toBeTruthy();
+    expect(within(picker).getByText('Schedules')).toBeTruthy();
     expect(
       screen.getByText(
         'Which kind of helper this is. It decides the safety rules it follows, for example IT help can open tickets.',
