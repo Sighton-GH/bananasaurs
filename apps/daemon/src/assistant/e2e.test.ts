@@ -297,7 +297,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     });
     expect(reminder.ok).toBe(true);
     expect(assistantRepo.listReminders(scope)).toMatchObject([
-      { text: 'Bring batteries', dedupeKey: 'reminder:int-reminder:0' },
+      { text: 'Bring batteries', dedupeKey: expect.stringContaining('reminder:int-reminder:') },
     ]);
 
     const decision = await service.invoke({
@@ -827,11 +827,11 @@ describe('Release 3 review fixes', () => {
     const retry = await service.invoke(base);
     expect(first.ok).toBe(true);
     expect(retry.ok).toBe(true);
-    // The retry reuses the invocation's idempotency key: the store reports
-    // the benign duplicate to the model, and only one reminder exists.
-    expect(toolTexts[5]?.[0]).toContain('already set');
+    // The retry reuses the invocation's content-derived idempotency key: the
+    // store returns the same success summary, and only one reminder exists.
+    expect(toolTexts[5]?.[0]).toContain('Reminder set');
     expect(assistantRepo.listReminders(scope)).toMatchObject([
-      { text: 'Bring batteries', dedupeKey: 'reminder:int-5:0' },
+      { text: 'Bring batteries', dedupeKey: expect.stringContaining('reminder:int-5:') },
     ]);
     expect(
       assistantRepo.listSkillActivity(scope, 10).find((a) => a.skillId === 'reminders'),
