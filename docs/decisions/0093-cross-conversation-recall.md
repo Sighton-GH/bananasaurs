@@ -14,7 +14,7 @@ REVIEW §E puts "memory extraction automation" after Release 3. The owner decide
    - It is maintained by the repo function that writes a summary, and deleted by the same paths that delete a conversation (retention, the dashboard delete, forgetting a member).
    - The migration backfills existing summaries.
    - Every query is guild-scoped (hard rule 2).
-2. **Tool `search_conversations`** `{ query: string (2–200) }` (skill `answer-questions`, read-only).
+2. **Tool `search_conversations`** `{ query: string (2–200) }` (skill `search-club`, read-only).
    - It matches summaries of other conversations, never the current one.
    - It is limited to conversations whose channel is in the audience of the answer channel (ADR 0090), intersected with the channels the asker can read. Try it uses the asker's channels only.
    - It returns at most 5 hits, newest first. Each is `#channel, <relative date>: topic — up to three facts`, with no participant names (D3 aggregation) and no bot claims.

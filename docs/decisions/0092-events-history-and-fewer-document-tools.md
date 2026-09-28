@@ -8,7 +8,7 @@ The most common question in the owner's sample is "when's the meeting?", and the
 
 ## Decision
 
-1. **`upcoming_events`** (no arguments; the skill `answer-questions`, read-only).
+1. **`upcoming_events`** (no arguments; the skill `search-club`, read-only).
    - It returns up to 10 items in the next 30 days, soonest first.
    - **Discord scheduled events,** fetched through a new port method `listScheduledEvents` (`GET /guilds/{id}/scheduled-events`; no gateway intent is needed).
      - An event tied to a channel is listed only when that channel is in the audience of the answer channel (ADR 0090).
@@ -19,7 +19,7 @@ The most common question in the owner's sample is "when's the meeting?", and the
      - Personal reminders (no channel ping) are never listed.
    - All text is untrusted evidence: redacted and neutralised.
    - Try it (no channel) lists external events only, plus reminders for channels the asker can read.
-2. **`channel_history`** `{ before?: string, limit?: 1–50 }` (skill `answer-questions`, read-only).
+2. **`channel_history`** `{ before?: string, limit?: 1–50 }` (skill `search-club`, read-only).
    - It reads the **current channel only**, through the ADR 0089 `fetchRecentMessages` port. It uses the same line format and cleaning as channel context.
    - `before` must be a message id that an earlier result in the same request returned (ADR 0071). The result ends with `Older: before=<id>` and registers that id as a handle. An unknown `before` refuses.
    - Without `before`, it starts just above the channel-context window.
