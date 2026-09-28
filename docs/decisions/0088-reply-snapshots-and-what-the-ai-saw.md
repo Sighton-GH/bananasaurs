@@ -35,7 +35,7 @@ The gaps:
    - the model and token counts.
 
    "View details" to History stays.
-4. **Disclosure.** `PRIVACY.md` says that reply snapshots can hold copies of club-source text, quoted messages, and, once slice 3 lands, channel messages that are later deleted from Discord. Snapshots are deleted with their conversation (the existing retention setting) and when a member is forgotten (ADR 0085 addendum).
+4. **Disclosure.** `PRIVACY.md` says that reply snapshots can hold copies of club-source text and of Discord message excerpts that tools returned (and, once slice 3 lands, recent channel messages), including messages later deleted from Discord. The quoted message itself stays out of the trace: `traceSections` swaps it for a placeholder, and that promise is kept. Snapshots are deleted with their conversation (the existing retention setting) and when a member is forgotten (ADR 0085 addendum).
 
 ## Consequences
 
