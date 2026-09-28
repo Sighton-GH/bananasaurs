@@ -2569,8 +2569,18 @@ describe('B2b: acting tool ports are wired', () => {
     ]);
   });
 
-  it('a try-it reminder attempt fails in target resolution with the permissions sentence', async () => {
+  const ACTING_TOOLS = [
+    'set_reminder',
+    'edit_reminder',
+    'cancel_reminder',
+    'my_reminders',
+    'propose_memory',
+    'propose_decision',
+  ];
+
+  it('try-it never acts: set_reminder is undeclared and nothing is stored', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
+    const declared: string[][] = [];
     const seen: { messages: unknown[] }[] = [];
     const queue: GenerateTextResponse[] = [
       {
@@ -2578,33 +2588,63 @@ describe('B2b: acting tool ports are wired', () => {
         model: 'model-a',
         toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
       },
-      { text: 'I could not set it.', model: 'model-a' },
+      { text: 'Here is what I would do.', model: 'model-a' },
     ];
     const provider: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
       generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
         seen.push({ messages: req.messages });
         const next = queue.shift();
         if (next === undefined) throw new Error('no scripted response');
         return next;
       },
     };
-    // No resolver port: the service fails closed, and try-it has no channel.
     const service = serviceWith(provider, { memberChannels: async () => [] });
     const result = await service.tryIt({
       behaviourId: 'direct',
       question: 'remind me to bring batteries',
       accountUsername: 'owner-name',
     });
-    expect(result.answer).toBe('I could not set it.');
+    expect(result.answer).toBe('Here is what I would do.');
     expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toEqual([]);
+    expect(assistantRepo.listDecisions(t.scopes.forGuild(GUILD))).toEqual([]);
+    // No acting tool is offered to the model...
+    for (const names of declared) for (const name of ACTING_TOOLS) expect(names).not.toContain(name);
+    // ...and the call the model makes anyway is refused in code.
     const toolTexts = (seen[1]?.messages as readonly { role: string; text: string }[])
       .filter((m) => m.role === 'tool')
       .map((m) => m.text);
-    expect(toolTexts[0]).toContain(
-      "I can't check permissions right now, so I didn't set the reminder.",
-    );
+    expect(toolTexts[0]).toContain("You're not allowed to use that here.");
+  });
+
+  it('an invocation without an id declares no acting tool', async () => {
+    const declared: string[][] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
+        return { text: 'Hi.', model: 'model-a' };
+      },
+    };
+    const service = serviceWith(provider, { memberChannels: async () => [] });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'hi' },
+      source: 'slash-command',
+    });
+    expect(result.ok).toBe(true);
+    expect(declared).toHaveLength(1);
+    for (const name of ACTING_TOOLS) expect(declared[0]).not.toContain(name);
+    // Read-only tools are still offered.
+    expect(declared[0]).toContain('search_archive');
   });
 
   it('a member refused by the scope cannot act even when the model tries', async () => {
