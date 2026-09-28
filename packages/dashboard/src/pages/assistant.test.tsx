@@ -527,7 +527,7 @@ describe('AssistantPage', () => {
     expect(screen.getByText('No behaviours yet')).toBeTruthy();
     expect(
       screen.getByText(
-        'Step 4 creates the club assistant, which members reach with /ask. To set up a tagged helper like @it-services instead, create a behaviour.',
+        'Step 4 creates the club assistant, which members reach by tagging @Bananasaurs. To set up a tagged helper like @it-services instead, create a behaviour.',
       ),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Create default behaviour' })).toBeNull();
