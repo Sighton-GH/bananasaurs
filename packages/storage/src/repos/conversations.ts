@@ -228,6 +228,25 @@ export const lookupMessage = (scope: GuildScope, messageId: string): KnownMessag
     };
   });
 
+/** Every Discord message id linked to one conversation (ADR 0089 channel context exclusion). */
+export const messageIdsForConversation = (
+  scope: GuildScope,
+  conversationId: string,
+): string[] =>
+  read(scope, (db) =>
+    db
+      .select({ messageId: assistantConversationMessages.messageId })
+      .from(assistantConversationMessages)
+      .where(
+        scope.only(
+          assistantConversationMessages,
+          eq(assistantConversationMessages.conversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => row.messageId),
+  );
+
 /** The author's most recent `open` conversation in this channel, if any. */
 export const latestForAuthor = (
   scope: GuildScope,

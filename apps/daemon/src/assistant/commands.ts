@@ -57,6 +57,18 @@ export interface AssistantInvocation {
    * self-only-with-a-quote rule holds for the whole conversation.
    */
   readonly quoteInHistory?: boolean | undefined;
+  /**
+   * ADR 0089: the channel-context evidence block the invoke job built from
+   * the channel's recent messages (and the thread starter), placed first in
+   * the user message by the service. Absent means no channel context — the
+   * window is off, the fetch failed, or the source is not a mention.
+   */
+  readonly channelContext?: string | undefined;
+  /**
+   * ADR 0089: how many channel-context lines `channelContext` holds, for the
+   * trace's `included.channelMessages`. Absent means none were sent.
+   */
+  readonly channelMessages?: number | undefined;
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
 }

@@ -17,6 +17,7 @@ import {
   type JobHandler,
   type Logger,
   type OutgoingMessage,
+  type RecentMessage,
 } from '@bananasaurs/core';
 import { conversationRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
 import type {
@@ -29,6 +30,7 @@ import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
+import { buildChannelContext } from '../assistant/channel-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 import { startTyping } from '../assistant/typing.js';
@@ -175,6 +177,9 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
           snippetChunkIds: [...detail.included.snippetChunkIds],
           quote: detail.included.quote,
           historyTurns: detail.included.historyTurns,
+          ...(detail.included.channelMessages === undefined
+            ? {}
+            : { channelMessages: detail.included.channelMessages }),
         },
       }),
 });
@@ -303,6 +308,21 @@ export const assistantInvokeHandler = (deps: {
         messageId: string,
       ) => Promise<{ authorId: string; authorName: string; content: string } | undefined>)
     | undefined;
+  /**
+   * ADR 0089: channel context for mentions — a guild-scoped closure over the
+   * Discord port's `fetchChannelMessages`. Absent means no channel context.
+   */
+  fetchChannelMessages?:
+    | ((
+        channelId: string,
+        opts: { before: string; limit: number },
+      ) => Promise<readonly RecentMessage[] | undefined>)
+    | undefined;
+  /**
+   * ADR 0089: the live channel-context window from the AI tuning settings
+   * (`assistant.channelContextMessages`). Absent means the window is off.
+   */
+  readonly channelContextMessages?: (() => number) | undefined;
   /**
    * Task 7: the live retry delays from the AI tuning settings
    * (`assistant.retryDelaysMs`). Absent means today's 10 s / 30 s / 90 s
@@ -459,6 +479,8 @@ export const assistantInvokeHandler = (deps: {
         let history: readonly GenerationMessage[] = [];
         let quoteEnvelope: string | undefined;
         let quoteInHistory = false;
+        let channelContext: string | undefined;
+        let channelMessages = 0;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -600,6 +622,101 @@ export const assistantInvokeHandler = (deps: {
           history = built.history;
           quoteEnvelope = built.quoteEnvelope;
           quoteInHistory = built.quoteInHistory;
+          // ADR 0089: channel context for mentions. The channel's recent
+          // messages (and, in a thread, the thread's starter) travel as
+          // untrusted background ahead of the question. A failed fetch flags
+          // the trace `channel-context-unavailable` and continues without
+          // the block — it never fails the answer. This sits inside the
+          // fresh-invoke branch, so a retry past `invoke-done` never fetches
+          // again.
+          const channelWindow = deps.channelContextMessages?.() ?? 0;
+          if (
+            payload.source === 'mention' &&
+            payload.messageId !== undefined &&
+            conversationId !== undefined &&
+            channelWindow > 0 &&
+            deps.fetchChannelMessages !== undefined
+          ) {
+            const flagUnavailable = (): void => {
+              if (!flags.includes('channel-context-unavailable'))
+                flags.push('channel-context-unavailable');
+            };
+            const invokingMessageId = payload.messageId;
+            // In a thread the starter comes first: message `threadId` in the
+            // parent channel, falling back to the thread itself (forum
+            // posts). Its `at` is the thread id's snowflake time — the fetch
+            // reports no timestamp of its own.
+            let starter:
+              | { authorName: string; content: string; at: number }
+              | undefined;
+            if (payload.threadParentId !== undefined && deps.fetchMessageContent !== undefined) {
+              try {
+                const first = await deps.fetchMessageContent(payload.threadParentId, channelId);
+                const fetched =
+                  first ?? (await deps.fetchMessageContent(channelId, channelId));
+                if (fetched === undefined) {
+                  deps.logger.warn(
+                    safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+                    'assistant thread starter fetch failed; continuing without the starter',
+                  );
+                  flagUnavailable();
+                } else {
+                  starter = {
+                    authorName: fetched.authorName,
+                    content: fetched.content,
+                    at: Number(BigInt(channelId) >> 22n) + 1420070400000,
+                  };
+                }
+              } catch (err) {
+                deps.logger.warn(
+                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                  'assistant thread starter fetch failed; continuing without the starter',
+                );
+                flagUnavailable();
+              }
+            }
+            try {
+              const fetched = await deps.fetchChannelMessages(channelId, {
+                before: invokingMessageId,
+                limit: channelWindow,
+              });
+              if (fetched === undefined) {
+                deps.logger.warn(
+                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+                  'assistant channel context fetch failed; continuing without the block',
+                );
+                flagUnavailable();
+              } else {
+                // Already-linked messages are in the transcript; the invoking
+                // message becomes the current question. Neither is repeated.
+                const exclude = new Set<string>([invokingMessageId]);
+                for (const id of conversationRepo.messageIdsForConversation(
+                  conv.scope,
+                  conversationId,
+                )) {
+                  exclude.add(id);
+                }
+                const context = buildChannelContext({
+                  messages: fetched,
+                  excludeMessageIds: exclude,
+                  ...(starter === undefined ? {} : { starter }),
+                  botUserId: conv.botUserId,
+                  botDisplayName: conv.botDisplayName,
+                  now: deps.now(),
+                });
+                if (context.block !== '') {
+                  channelContext = context.block;
+                  channelMessages = context.count;
+                }
+              }
+            } catch (err) {
+              deps.logger.warn(
+                safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                'assistant channel context fetch failed; continuing without the block',
+              );
+              flagUnavailable();
+            }
+          }
         }
         try {
           result = await deps.service.invoke({
@@ -615,6 +732,8 @@ export const assistantInvokeHandler = (deps: {
             history,
             ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
             ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
+            ...(channelContext === undefined ? {} : { channelContext }),
+            ...(channelMessages === 0 ? {} : { channelMessages }),
             askerName: payload.authorName,
           });
         } finally {
@@ -882,6 +1001,9 @@ export const assistantInvokeHandler = (deps: {
                     snippetChunkIds: [...detail.included.snippetChunkIds],
                     quote: detail.included.quote,
                     historyTurns: detail.included.historyTurns,
+                    ...(detail.included.channelMessages === undefined
+                      ? {}
+                      : { channelMessages: detail.included.channelMessages }),
                   },
                 }),
             timeline: [
