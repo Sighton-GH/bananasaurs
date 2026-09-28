@@ -9,6 +9,7 @@ import {
   type AssistantData,
   type GuildRoleInfo,
   type SkillDetail,
+  type SkillScopeMode,
   type SkillScopeView,
   type SkillTool,
 } from '../api/assistant.js';
