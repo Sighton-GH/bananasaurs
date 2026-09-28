@@ -122,16 +122,19 @@ describe('AssistantSkillsPage', () => {
     ).toBeTruthy();
   });
 
-  it('renders the catalogue without Discord permission claims', async () => {
+  it('renders the catalogue with scope and live-count badges and no confirm-first text', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
     const catalogue = screen.getByRole('heading', { name: 'Skill catalogue' }).closest('section')!;
     expect(within(catalogue).getAllByText('Search club knowledge').length).toBeGreaterThan(0);
     expect(within(catalogue).queryByText(/Needs the Discord permission/)).toBeNull();
     expect(within(catalogue).queryByText('assistant.search')).toBeNull();
-    expect(within(catalogue).getByText('You confirm first')).toBeTruthy();
-    expect(within(catalogue).getAllByText('Runs without asking').length).toBeGreaterThan(0);
-    expect(within(catalogue).getByText('owner only')).toBeTruthy();
+    expect(within(catalogue).getByText('Everyone who can ask')).toBeTruthy();
+    expect(within(catalogue).getByText('Roles: @Club Member')).toBeTruthy();
+    expect(within(catalogue).getByText('Owner only')).toBeTruthy();
+    expect(within(catalogue).getByText('3 active')).toBeTruthy();
+    expect(screen.queryByText(/confirm first/i)).toBeNull();
+    expect(screen.queryByText('Runs without asking')).toBeNull();
     expect(screen.getAllByRole('link', { name: 'Assistant history' }).length).toBeGreaterThan(0);
   });
 
