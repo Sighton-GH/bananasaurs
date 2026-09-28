@@ -910,10 +910,17 @@ export const createAssistantService = (
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
       const { text: citedText, cited } = applyCitations(loop.text, citations);
+      // B2b: code-written action summaries travel verbatim — after the answer
+      // text, before the Brave attribution and the Sources line — never
+      // through the model.
+      const summaryBlock =
+        loop.actionSummaries.length === 0 ? '' : `\n\n${loop.actionSummaries.join('\n\n')}`;
       // The escalation summary is built from the loop text below — before
       // the sources line is appended — so a ticket never carries it. Only a
       // normal answer grows the line.
-      const baseAnswer = loop.web ? `${citedText}${BRAVE_ATTRIBUTION}` : citedText;
+      const baseAnswer = loop.web
+        ? `${citedText}${summaryBlock}${BRAVE_ATTRIBUTION}`
+        : `${citedText}${summaryBlock}`;
       const answerText =
         baseAnswer +
         sourcesLine(
@@ -933,6 +940,10 @@ export const createAssistantService = (
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
+        // B2b: the summaries appended to the posted answer, in call order.
+        // Spread (not a declared field — `commands.ts` is owned by another
+        // task) so the runtime detail carries them without a type change.
+        ...(loop.actionSummaries.length === 0 ? {} : { actions: [...loop.actionSummaries] }),
       };
       sink.trace = {
         ...(loop.model === undefined ? {} : { model: loop.model }),
