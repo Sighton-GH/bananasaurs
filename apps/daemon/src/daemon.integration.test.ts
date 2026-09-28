@@ -14,6 +14,7 @@ import {
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  assistantRepo,
   automodRuleRepo,
   guildRepo,
   jobRepo,
@@ -638,5 +639,25 @@ describe('the backup timer (ADR 0034)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('the seeded default assistant', () => {
+  it('answers the bot tag on a fresh guild, exactly once', () => {
+    daemon = start();
+    const behaviours = assistantRepo.listBehaviours(t.scopes.forGuild(GUILD));
+    expect(behaviours).toHaveLength(1);
+    expect(behaviours[0]).toMatchObject({ id: 'default', answersBotTag: true });
+  });
+
+  it('never flags two behaviours: a restart keeps exactly one', async () => {
+    daemon = start();
+    await daemon.stop();
+    daemon = undefined as unknown as Daemon;
+    daemon = start();
+    const flagged = assistantRepo
+      .listBehaviours(t.scopes.forGuild(GUILD))
+      .filter((b) => b.answersBotTag === true);
+    expect(flagged.map((b) => b.id)).toEqual(['default']);
   });
 });

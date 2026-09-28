@@ -433,7 +433,9 @@ function RemindersCard({
                     {r.status === 'scheduled' && (
                       <Button onClick={() => setEditingId(r.id)}>Edit</Button>
                     )}
-                    <Button onClick={() => setCancelling(r)}>Cancel</Button>
+                    {r.status === 'scheduled' && (
+                      <Button onClick={() => setCancelling(r)}>Cancel</Button>
+                    )}
                   </span>
                 ),
               },

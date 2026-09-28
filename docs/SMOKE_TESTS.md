@@ -227,7 +227,7 @@ Preconditions: the daemon is up on a build that includes Slice 11;
 
 **Test guild only. Nothing here deletes anything.** Run signed in as the owner, with the daemon up on a build that includes ADRs 0069–0077 (migrations 0037–0046 applied) and a reviewed, enabled behaviour on the test guild. Record the run with timestamps.
 
-Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model chain with at least one Ready entry; the test guild has an enabled behaviour whose tag (for example `@bananasaurs`) members may use.
+Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model chain with at least one Ready entry; the test guild has an enabled behaviour whose tag (for example `@bananasaurs`) members may use. Before starting a build without slash commands, make sure one behaviour answers the bot tag.
 
 1. **Tag the bot.** Post a question in a visible channel tagging the bot (for example `@bananasaurs when is the next meeting?`).
    What you should see: the bot posts its answer as a Discord reply to your message, and if the answer uses a club source, it ends with a short `-# Sources:` line naming only that source; an answer that cites nothing has no Sources line.

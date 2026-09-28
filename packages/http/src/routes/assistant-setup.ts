@@ -214,7 +214,16 @@ const onStep = (
   status: AssistantProviderStatus,
   behaviours: readonly AssistantBehaviour[],
 ): SetupStep => {
-  const usable = behaviours.some((item) => item.enabled && item.callerRoleIds.length > 0);
+  // Only the /mod slash command remains (ADR 0086): a behaviour members can
+  // actually reach answers the bot tag, or is a non-direct behaviour with a
+  // mention role. A direct-command behaviour alone leaves members silent.
+  const usable = behaviours.some(
+    (item) =>
+      item.enabled &&
+      item.callerRoleIds.length > 0 &&
+      (item.answersBotTag === true ||
+        (item.surface !== 'direct-command' && item.mentionRoleId !== undefined)),
+  );
   if (status.enabled && usable) {
     return { id: 'on', state: 'done', detail: 'The assistant is on.' };
   }
@@ -224,7 +233,7 @@ const onStep = (
   return {
     id: 'on',
     state: 'todo',
-    detail: 'Turn on a behaviour that members can use.',
+    detail: 'Pick a behaviour that answers when members tag the bot.',
   };
 };
 

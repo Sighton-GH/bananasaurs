@@ -189,7 +189,7 @@ describe('AssistantPage', () => {
     renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
     const card = await screen.findByRole('button', { name: /Club Q and A/ });
     expect(within(card).getByText('Direct command')).toBeTruthy();
-    expect(within(card).getByText('Members use /ask')).toBeTruthy();
+    expect(within(card).getByText('Members tag @Bananasaurs')).toBeTruthy();
     expect(within(card).getByText('On')).toBeTruthy();
     const itCard = screen.getByRole('button', { name: /IT services/ });
     expect(within(itCard).getByText('Off')).toBeTruthy();
@@ -527,7 +527,7 @@ describe('AssistantPage', () => {
     expect(screen.getByText('No behaviours yet')).toBeTruthy();
     expect(
       screen.getByText(
-        'Step 4 creates the club assistant, which members reach with /ask. To set up a tagged helper like @it-services instead, create a behaviour.',
+        'Step 4 creates the club assistant, which members reach by tagging @Bananasaurs. To set up a tagged helper like @it-services instead, create a behaviour.',
       ),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Create default behaviour' })).toBeNull();
@@ -696,9 +696,7 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
     ).toEqual(['Nobody', 'Club assistant']);
     expect(again).toHaveProperty('value', '');
     expect(
-      screen.getByText(
-        'Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.',
-      ),
+      screen.getByText('Tagging the bot does nothing until you pick a behaviour.'),
     ).toBeTruthy();
   });
 

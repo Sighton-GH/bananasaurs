@@ -2,6 +2,7 @@ import { useState, type ReactElement } from 'react';
 import { Link } from 'wouter';
 import {
   behaviourUrl,
+  BOT_TAG_URL,
   STARTER_URL,
   type AssistantData,
   type SetupStepId,
@@ -130,6 +131,15 @@ function WhoAction({
                 'PUT',
               );
       if (result !== undefined) {
+        // Only the /mod slash command remains: the created behaviour answers
+        // the bot tag, but only when no other behaviour already does, so the
+        // single-flag invariant holds.
+        if (
+          data.behaviours.length === 0 &&
+          !data.behaviours.some((b) => b.answersBotTag === true)
+        ) {
+          await session.write(BOT_TAG_URL, { behaviourId: 'default' }, 'PUT');
+        }
         toast({ tone: 'ok', title: 'Saved who can ask' });
         reload();
       }
@@ -325,12 +335,10 @@ export function SetupTracker({
   const roleWays = mentions.map((name) => `by mentioning @${name}`).join(' or ');
   const askingLine =
     mentions.length === 0
-      ? botTag
-        ? 'Members can ask in Discord with /ask, or by tagging @Bananasaurs.'
-        : 'Members can ask in Discord with /ask.'
+      ? 'Members ask by tagging @Bananasaurs in Discord.'
       : botTag
-        ? `Members can ask in Discord with /ask, by tagging @Bananasaurs, or ${roleWays}.`
-        : `Members can ask in Discord with /ask, or ${roleWays}.`;
+        ? `Members ask by tagging @Bananasaurs in Discord, or ${roleWays}.`
+        : `Members ask in Discord ${roleWays}.`;
 
   if (setup.answering && !expanded) {
     return (

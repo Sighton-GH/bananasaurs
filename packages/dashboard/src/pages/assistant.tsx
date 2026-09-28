@@ -715,7 +715,7 @@ export function AssistantPage() {
             <div className="space-y-3">
               <EmptyState
                 title="No behaviours yet"
-                detail="Step 4 creates the club assistant, which members reach with /ask. To set up a tagged helper like @it-services instead, create a behaviour."
+                detail="Step 4 creates the club assistant, which members reach by tagging @Bananasaurs. To set up a tagged helper like @it-services instead, create a behaviour."
               />
               {creating && (
                 <CreateBehaviourForm
@@ -833,7 +833,7 @@ function BotTagCard({
       </div>
       {current === '' && (
         <p className="mt-2 text-xs text-hold">
-          Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.
+          Tagging the bot does nothing until you pick a behaviour.
         </p>
       )}
       {error !== undefined && (
@@ -1283,7 +1283,7 @@ function AssistantReady({
         {data.behaviours.map((item) => {
           const mention =
             item.surface === 'direct-command'
-              ? 'Members use /ask'
+              ? 'Members tag @Bananasaurs'
               : (() => {
                   const name = roleName(item.mentionRoleId);
                   return name === undefined ? 'Mention role not set' : `Members mention @${name}`;

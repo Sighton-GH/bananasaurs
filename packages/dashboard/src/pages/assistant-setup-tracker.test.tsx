@@ -260,9 +260,7 @@ describe('SetupTracker', () => {
         setup: { ...done, steps: [...done.steps] },
       }),
     );
-    expect(
-      screen.getByText('Members can ask in Discord with /ask, or by mentioning @Member.'),
-    ).toBeTruthy();
+    expect(screen.getByText('Members ask in Discord by mentioning @Member.')).toBeTruthy();
   });
 
   it('adds tagging @Bananasaurs to the answering line when a behaviour answers it', () => {
@@ -314,9 +312,7 @@ describe('SetupTracker', () => {
       }),
     );
     expect(
-      screen.getByText(
-        'Members can ask in Discord with /ask, by tagging @Bananasaurs, or by mentioning @Member.',
-      ),
+      screen.getByText('Members ask by tagging @Bananasaurs in Discord, or by mentioning @Member.'),
     ).toBeTruthy();
   });
 
@@ -374,6 +370,7 @@ describe('SetupTracker', () => {
   it('with no behaviours, Save who can ask creates the disabled club assistant', async () => {
     const mock = stubFetch([
       { method: 'PUT', url: '/api/assistant/behaviours/default', body: { ok: true } },
+      { method: 'PUT', url: '/api/assistant/bot-tag', body: { ok: true } },
     ]);
     const { reload } = renderTracker(baseData({ behaviours: [] }));
     const list = await screen.findByRole('list', { name: 'Setup steps' });
@@ -397,6 +394,10 @@ describe('SetupTracker', () => {
       callerRoleIds: ['role-member'],
       enabled: false,
     });
+    const botTag = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/assistant/bot-tag' && c[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(botTag)).toEqual({ behaviourId: 'default' });
     expect(reload).toHaveBeenCalled();
   });
 
@@ -691,7 +692,7 @@ describe('SetupTracker', () => {
       }),
     );
     expect(await screen.findByText('Answering')).toBeTruthy();
-    expect(screen.getByText('Members can ask in Discord with /ask.')).toBeTruthy();
+    expect(screen.getByText('Members ask by tagging @Bananasaurs in Discord.')).toBeTruthy();
     expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show setup steps' }));
     expect(screen.getByRole('list', { name: 'Setup steps' })).toBeTruthy();

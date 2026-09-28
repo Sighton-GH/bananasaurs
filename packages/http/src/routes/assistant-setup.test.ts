@@ -465,7 +465,7 @@ describe('computeAssistantSetup', () => {
       expect(stepById(setup, 'on')).toEqual({
         id: 'on',
         state: 'todo',
-        detail: 'Turn on a behaviour that members can use.',
+        detail: 'Pick a behaviour that answers when members tag the bot.',
       });
     });
 
@@ -477,7 +477,70 @@ describe('computeAssistantSetup', () => {
       expect(stepById(setup, 'on')).toEqual({
         id: 'on',
         state: 'todo',
-        detail: 'Turn on a behaviour that members can use.',
+        detail: 'Pick a behaviour that answers when members tag the bot.',
+      });
+    });
+
+    it('is todo for a direct-command behaviour that does not answer the bot tag', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [
+          behaviour({
+            surface: 'direct-command',
+            mentionRoleId: undefined,
+            callerRoleIds: ['222222222222222222'],
+          }),
+        ],
+      });
+      expect(stepById(setup, 'on')).toEqual({
+        id: 'on',
+        state: 'todo',
+        detail: 'Pick a behaviour that answers when members tag the bot.',
+      });
+    });
+
+    it('is done for a direct-command behaviour that answers the bot tag', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [
+          behaviour({
+            surface: 'direct-command',
+            mentionRoleId: undefined,
+            callerRoleIds: ['222222222222222222'],
+            answersBotTag: true,
+          }),
+        ],
+      });
+      expect(stepById(setup, 'on')).toEqual({
+        id: 'on',
+        state: 'done',
+        detail: 'The assistant is on.',
+      });
+    });
+
+    it('is done for a mention-role behaviour that answers the bot tag', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [behaviour({ answersBotTag: true })],
+      });
+      expect(stepById(setup, 'on')).toEqual({
+        id: 'on',
+        state: 'done',
+        detail: 'The assistant is on.',
+      });
+    });
+
+    it('is todo for a non-direct behaviour without a mention role or bot tag', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [
+          behaviour({ mentionRoleId: undefined, callerRoleIds: ['222222222222222222'] }),
+        ],
+      });
+      expect(stepById(setup, 'on')).toEqual({
+        id: 'on',
+        state: 'todo',
+        detail: 'Pick a behaviour that answers when members tag the bot.',
       });
     });
   });

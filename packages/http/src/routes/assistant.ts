@@ -674,12 +674,33 @@ export const registerAssistantRoutes = (
     if (!parsed.success) return badRequest(reply, parsed.error);
     const existing = assistantRepo.getReminder(session.scope, id);
     if (existing === undefined) return reply.status(404).send({ error: 'not-found' });
-    const draft = validateReminderDraft(
-      { dueAt: parsed.data.dueAt ?? existing.dueAt, text: parsed.data.text ?? existing.text },
-      deps.now(),
-    );
-    if (!draft.ok)
-      return reply.status(400).send({ error: 'invalid-reminder', message: draft.error });
+    const effectiveDueAt = parsed.data.dueAt ?? existing.dueAt;
+    const dueAtChanged = parsed.data.dueAt !== undefined && parsed.data.dueAt !== existing.dueAt;
+    // Validate `dueAt` in the future only when it changed: a retrying
+    // past-due row must still accept a text fix. Text is always validated
+    // through the shared draft so the stored value is the trimmed form.
+    let draftText: string | undefined;
+    if (parsed.data.text !== undefined || dueAtChanged) {
+      const draft = validateReminderDraft(
+        {
+          dueAt: dueAtChanged ? effectiveDueAt : deps.now() + 1000,
+          text: parsed.data.text ?? existing.text,
+        },
+        deps.now(),
+      );
+      if (!draft.ok)
+        return reply.status(400).send({ error: 'invalid-reminder', message: draft.error });
+      if (parsed.data.text !== undefined) draftText = draft.text;
+    }
+    const normalizedContext =
+      parsed.data.context === undefined
+        ? undefined
+        : parsed.data.context === null
+          ? null
+          : (() => {
+              const collapsed = parsed.data.context.trim().replace(/\s+/g, ' ');
+              return collapsed === '' ? null : collapsed;
+            })();
     // The dashboard never learns the club's time zone: a non-null repeat is
     // only an edit of an existing repeat, keeping its stored time zone.
     const recurrence =
@@ -708,18 +729,28 @@ export const registerAssistantRoutes = (
         error: 'recurrence-needs-time-zone',
         message: `Repeating reminders are created from chat, where the club's time zone is known.`,
       });
+    const effectiveRecurrence = recurrence === undefined ? existing.recurrence : recurrence;
+    const effectiveEndAt =
+      effectiveRecurrence === null || effectiveRecurrence === undefined
+        ? undefined
+        : effectiveRecurrence.endAt;
+    if (effectiveEndAt !== undefined && effectiveEndAt < effectiveDueAt)
+      return reply.status(400).send({
+        error: 'invalid-reminder',
+        message: `The repeat can't end before the reminder starts.`,
+      });
     const before: Record<string, JsonValue> = {};
     const after: Record<string, JsonValue> = {};
-    if (parsed.data.text !== undefined && parsed.data.text !== existing.text) {
+    if (draftText !== undefined && draftText !== existing.text) {
       before['text'] = existing.text;
-      after['text'] = parsed.data.text;
+      after['text'] = draftText;
     }
     if (
-      parsed.data.context !== undefined &&
-      (parsed.data.context ?? null) !== (existing.context ?? null)
+      normalizedContext !== undefined &&
+      (normalizedContext ?? null) !== (existing.context ?? null)
     ) {
       before['context'] = existing.context ?? null;
-      after['context'] = parsed.data.context;
+      after['context'] = normalizedContext;
     }
     if (parsed.data.dueAt !== undefined && parsed.data.dueAt !== existing.dueAt) {
       before['dueAt'] = existing.dueAt;
@@ -736,12 +767,12 @@ export const registerAssistantRoutes = (
       session.scope,
       id,
       {
-        ...(parsed.data.text === undefined ? {} : { text: parsed.data.text }),
-        ...(parsed.data.context === undefined
+        ...(draftText === undefined ? {} : { text: draftText }),
+        ...(normalizedContext === undefined
           ? {}
-          : parsed.data.context === null
+          : normalizedContext === null
             ? { context: null }
-            : { context: parsed.data.context }),
+            : { context: normalizedContext }),
         ...(parsed.data.dueAt === undefined ? {} : { dueAt: parsed.data.dueAt }),
         ...(recurrence === undefined ? {} : { recurrence }),
       },

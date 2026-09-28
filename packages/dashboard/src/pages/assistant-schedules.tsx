@@ -19,7 +19,7 @@ import { reminderTone } from './assistant-shared.js';
 /**
  * `/assistant/schedules`: reminders with destination, run time, honest
  * status including failures, and cancellation (ADR 0060). Reminders are
- * created in Discord with /remind after the requester confirms; this page
+ * created in Discord by asking the bot after the requester confirms; this page
  * reports and cancels, it does not create.
  */
 export function AssistantSchedulesPage() {
@@ -38,8 +38,8 @@ export function AssistantSchedulesPage() {
         empty={
           <Card title="Reminders">
             <p className="text-sm text-ink-muted">
-              No reminders scheduled. Members create them in Discord with the /remind command after
-              confirming the details; nothing here creates one.
+              No reminders scheduled. Members set reminders by asking the bot after confirming the
+              details; nothing here creates one.
             </p>
           </Card>
         }
