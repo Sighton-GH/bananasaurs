@@ -58,46 +58,9 @@ function harness(replies: { status: number; body?: unknown }[] = [{ status: 200,
   return { rest, requests };
 }
 
-describe('the Release 1 command set', () => {
-  it('is exactly /status, open to every member', () => {
-    expect(RELEASE_1_COMMANDS).toEqual([STATUS_COMMAND]);
-    expect(STATUS_COMMAND.name).toBe('status');
-    /**
-     * ADR 0033: `/status` carries no Discord-side permission gate. A value here
-     * would be a *second* authorisation decision layered under the one the ADR
-     * recorded, and one a guild admin could silently change in Server Settings.
-     */
-    expect(STATUS_COMMAND.default_member_permissions).toBeUndefined();
-  });
-});
-
-describe('the Release 3 command set', () => {
-  it('adds the member assistant commands and no privacy commands', () => {
-    expect(RELEASE_3_COMMANDS.map((command) => command.name)).toEqual([
-      'status',
-      'mod',
-      'ask',
-      'find',
-      'remind',
-      'remember',
-      'decision',
-      'review-plan',
-      'onboard',
-      'agenda',
-      'summarise',
-      'announce',
-      'checklist',
-      'handoff',
-    ]);
-    expect(
-      RELEASE_3_COMMANDS.some((command) => ['mydata', 'forgetme'].includes(command.name)),
-    ).toBe(false);
-  });
-});
-
-describe('the Release 2 command set', () => {
-  it('is Release 1 plus /mod', () => {
-    expect(RELEASE_2_COMMANDS).toEqual([STATUS_COMMAND, MOD_COMMAND]);
+describe('the registered command set', () => {
+  it('contains only /mod', () => {
+    expect(REGISTERED_COMMANDS.map((command) => command.name)).toEqual(['mod']);
   });
 
   it('/mod carries the five Task 6 subcommands, ban and purge (Task 7), note/evidence (Task 8), and history (Task 9)', () => {
@@ -196,8 +159,9 @@ describe('registerGuildCommands', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.method).toBe('PUT');
     expect(requests[0]?.path).toBe(`/api/v10/applications/${APPLICATION}/guilds/${GUILD}/commands`);
-    expect(requests[0]?.body).toEqual([
-      { name: 'status', description: STATUS_COMMAND.description, type: 1 },
+    expect(requests[0]?.body).toEqual([MOD_COMMAND]);
+    expect((requests[0]?.body as { name: string }[]).map((command) => command.name)).toEqual([
+      'mod',
     ]);
   });
 
