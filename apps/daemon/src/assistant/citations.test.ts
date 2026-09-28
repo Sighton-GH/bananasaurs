@@ -88,9 +88,7 @@ describe('citation registry', () => {
       cited: [known],
     });
     expect(applyCitations('Answer\nSources: https://x.test', registry).text).toBe('Answer');
-    expect(applyCitations('Answer\n-# Sources: Handbook, Wikipedia', registry).text).toBe(
-      'Answer',
-    );
+    expect(applyCitations('Answer\n-# Sources: Handbook, Wikipedia', registry).text).toBe('Answer');
     expect(applyCitations('Answer\nSources: Handbook', registry).text).toBe('Answer');
     expect(applyCitations('Answer\nSource: ask the treasurer', registry).text).toBe(
       'Answer\nSource: ask the treasurer',

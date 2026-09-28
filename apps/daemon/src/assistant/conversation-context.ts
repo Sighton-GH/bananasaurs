@@ -103,8 +103,7 @@ export const buildConversationContext = (input: ConversationContextInput): Conve
   const participants = names.size;
 
   const history: GenerationMessage[] = turns.map((turn) => {
-    if (turn.role === 'assistant')
-      return { role: 'assistant', text: neutraliseMarkers(turn.text) };
+    if (turn.role === 'assistant') return { role: 'assistant', text: neutraliseMarkers(turn.text) };
     if (turn.role === 'quote') {
       return {
         role: 'user',
