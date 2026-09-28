@@ -373,7 +373,7 @@ export const createAssistantService = (
           ok: false,
           content: 'This behaviour is not available to your server roles. No action was taken.',
         };
-      if (!input.behaviour.allowedSkillIds.includes(skill))
+      if (!input.behaviour.preferredSkillIds.includes(skill))
         return {
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
@@ -386,7 +386,7 @@ export const createAssistantService = (
         assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant]),
       );
       const skillAllowed = (id: string): boolean => {
-        if (!input.behaviour.allowedSkillIds.includes(id)) return false;
+        if (!input.behaviour.preferredSkillIds.includes(id)) return false;
         const catalogueSkill = CLUB_ASSISTANT_SKILLS.find((candidate) => candidate.id === id);
         if (catalogueSkill === undefined) return false;
         // Fix 1 (hard rule 6): acting tools need a durable idempotency key.

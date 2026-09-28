@@ -57,7 +57,7 @@ const behaviour = (
   callerRoleIds: ['333333333333333333'],
   systemPrompt: `Reviewed ${id} behaviour.`,
   promptVersion: 1,
-  allowedSkillIds: ['search-club', 'create-reminder', 'send-reminder'],
+  preferredSkillIds: ['search-club', 'create-reminder', 'send-reminder'],
   resourceIds: ['public'],
   enabled: true,
 });
@@ -97,7 +97,7 @@ const providerHarness = (cost: 'free' | 'paid' | 'unknown' = 'free') => {
 
 describe('Release 3 golden evaluation: permission and guild boundaries', () => {
   it('never grants configured skills that the member lacks', () => {
-    const visible = allowedSkills(behaviour('club').allowedSkillIds, {
+    const visible = allowedSkills(behaviour('club').preferredSkillIds, {
       guildId: guildA,
       userId,
       owner: false,
@@ -366,7 +366,7 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
       promptVersion: 1,
       callerRoleIds: [CLUB_ROLE],
       reviewerRoleIds: [],
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       resourceIds: ['readme'],
       enabled: true,
     };

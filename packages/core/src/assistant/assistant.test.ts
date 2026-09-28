@@ -25,7 +25,7 @@ const behaviour = {
   callerRoleIds: [],
   systemPrompt: 'Use Canadian English.',
   promptVersion: 1,
-  allowedSkillIds: ['search-club'],
+  preferredSkillIds: ['search-club'],
   resourceIds: ['web'],
   enabled: true,
 };

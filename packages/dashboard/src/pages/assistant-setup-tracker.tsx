@@ -116,7 +116,7 @@ function WhoAction({
                 name: 'Club assistant',
                 systemPrompt: DEFAULT_PROMPT,
                 promptVersion: 0,
-                allowedSkillIds: [],
+                preferredSkillIds: [],
                 resourceIds: [],
                 callerRoleIds: [...roleIds],
                 enabled: false,
@@ -197,7 +197,7 @@ function SkillsAction({
         const updated = await session.write(
           behaviourUrl(behaviour.id),
           behaviourBody(behaviour, {
-            allowedSkillIds: union([behaviour.allowedSkillIds, granted.skillIds]),
+            preferredSkillIds: union([behaviour.preferredSkillIds, granted.skillIds]),
           }),
           'PUT',
         );

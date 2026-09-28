@@ -23,7 +23,7 @@ const BEHAVIOURS = [
     name: 'Club assistant',
     systemPrompt: 'Answer with reviewed club knowledge only.',
     promptVersion: 1,
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: ['handbook'],
     enabled: true,
     callerRoleIds: ['role-club-member'],
@@ -36,7 +36,7 @@ const BEHAVIOURS = [
     name: 'IT help',
     systemPrompt: 'Answer IT questions.',
     promptVersion: 0,
-    allowedSkillIds: [],
+    preferredSkillIds: [],
     resourceIds: [],
     enabled: true,
     callerRoleIds: [],
@@ -308,7 +308,7 @@ describe('AssistantSkillPage', () => {
       };
       check();
     });
-    expect(bodyOf(put)).toMatchObject({ id: 'club', allowedSkillIds: [] });
+    expect(bodyOf(put)).toMatchObject({ id: 'club', preferredSkillIds: [] });
   });
 
   it("shows a 404 empty state with a link back for a skill that doesn't exist", async () => {

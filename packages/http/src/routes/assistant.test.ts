@@ -69,7 +69,7 @@ const body = (over: Record<string, unknown> = {}) => ({
   name: 'Club',
   systemPrompt: 'Be helpful.',
   promptVersion: 0,
-  allowedSkillIds: ['search-club'],
+  preferredSkillIds: ['search-club'],
   callerRoleIds: [],
   ticket: { reviewerRoleIds: [] },
   resourceIds: [],
@@ -1282,7 +1282,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();
     expect(
-      (await put(cookie, csrf, body({ id: 'club', allowedSkillIds: ['search-club'] }))).statusCode,
+      (await put(cookie, csrf, body({ id: 'club', preferredSkillIds: ['search-club'] }))).statusCode,
     ).toBe(200);
     expect(
       (
@@ -1294,7 +1294,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
             surface: 'help',
             mentionRoleId: ROLE_B,
             name: 'Help',
-            allowedSkillIds: [],
+            preferredSkillIds: [],
           }),
         )
       ).statusCode,
@@ -1644,7 +1644,7 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
       name: 'Club',
       surface: 'bananasaurs',
       enabled: true,
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       callerRoleIds: [],
       resourceIds: [],
       mentionRoleId: ROLE_A,

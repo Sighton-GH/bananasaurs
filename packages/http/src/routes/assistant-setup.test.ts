@@ -20,7 +20,7 @@ const behaviour = (over: Partial<AssistantBehaviour> = {}): AssistantBehaviour =
   name: 'Club',
   systemPrompt: 'Be helpful.',
   promptVersion: 1,
-  allowedSkillIds: ['search-club'],
+  preferredSkillIds: ['search-club'],
   resourceIds: [],
   enabled: true,
   ...over,
@@ -419,8 +419,8 @@ describe('computeAssistantSetup', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
         behaviours: [
-          behaviour({ allowedSkillIds: ['search-club', 'other-skill'] }),
-          behaviour({ id: 'second', enabled: false, allowedSkillIds: ['search-club'] }),
+          behaviour({ preferredSkillIds: ['search-club', 'other-skill'] }),
+          behaviour({ id: 'second', enabled: false, preferredSkillIds: ['search-club'] }),
         ],
         skills: [skill('search-club'), skill('other-skill'), skill('unused')],
       });
@@ -434,7 +434,7 @@ describe('computeAssistantSetup', () => {
     it('is todo when no behaviour allows a skill', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
-        behaviours: [behaviour({ allowedSkillIds: [] })],
+        behaviours: [behaviour({ preferredSkillIds: [] })],
       });
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',

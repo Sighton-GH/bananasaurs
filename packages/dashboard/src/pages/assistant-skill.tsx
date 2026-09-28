@@ -121,10 +121,10 @@ function BehaviourToggle({
     if (full === undefined) return;
     setBusy(true);
     try {
-      const allowedSkillIds = toggleIn(full.allowedSkillIds, skillId);
+      const preferredSkillIds = toggleIn(full.preferredSkillIds, skillId);
       const result = await session.write(
         behaviourUrl(full.id),
-        behaviourBody(full, { allowedSkillIds }),
+        behaviourBody(full, { preferredSkillIds }),
         'PUT',
       );
       if (result !== undefined) {

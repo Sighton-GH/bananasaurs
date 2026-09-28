@@ -34,8 +34,8 @@ function BehaviourAllowlistEditor({
   readonly onSaved: () => void;
 }) {
   const toast = useToast();
-  const [allowedSkillIds, setAllowedSkillIds] = useState<readonly string[]>(
-    behaviour.allowedSkillIds,
+  const [preferredSkillIds, setAllowedSkillIds] = useState<readonly string[]>(
+    behaviour.preferredSkillIds,
   );
   const [busy, setBusy] = useState(false);
 
@@ -44,7 +44,7 @@ function BehaviourAllowlistEditor({
     try {
       const result = await session.write(
         behaviourUrl(behaviour.id),
-        behaviourBody(behaviour, { allowedSkillIds }),
+        behaviourBody(behaviour, { preferredSkillIds }),
         'PUT',
       );
       if (result !== undefined) {
@@ -73,7 +73,7 @@ function BehaviourAllowlistEditor({
             <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
               <input
                 type="checkbox"
-                checked={allowedSkillIds.includes(skill.id)}
+                checked={preferredSkillIds.includes(skill.id)}
                 onChange={() => setAllowedSkillIds((ids) => toggleIn(ids, skill.id))}
               />
               <span>
@@ -84,7 +84,7 @@ function BehaviourAllowlistEditor({
           </li>
         ))}
       </ul>
-      {allowedSkillIds.length === 0 && (
+      {preferredSkillIds.length === 0 && (
         <p role="status" className="mt-2 text-xs text-hold">
           Nothing is allowed: this behaviour can answer from its instructions and reviewed sources,
           but cannot do anything.
@@ -93,7 +93,7 @@ function BehaviourAllowlistEditor({
       <div className="mt-2">
         <Button
           busy={busy}
-          disabled={allowedSkillIds.join('|') === behaviour.allowedSkillIds.join('|')}
+          disabled={preferredSkillIds.join('|') === behaviour.preferredSkillIds.join('|')}
           onClick={() => void save()}
         >
           Save allowlist

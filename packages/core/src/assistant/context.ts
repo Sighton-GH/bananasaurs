@@ -17,7 +17,7 @@ export interface CompiledAssistantContext {
   readonly systemInstruction: string;
   readonly evidenceEnvelope: string;
   readonly disclosurePlan: readonly string[];
-  readonly allowedSkillIds: readonly string[];
+  readonly skillIds: readonly string[];
   /**
    * The quotable prompt core the output guard watches for leaks: the
    * behaviour prompt plus the locked safety suffix plus the skills block.
@@ -168,7 +168,7 @@ export const compileAssistantContext = (input: {
     systemInstruction: sections.map((section) => section.text).join('\n\n'),
     evidenceEnvelope: blocks.join('\n\n'),
     disclosurePlan: evidence.map((item) => item.sourceId),
-    allowedSkillIds: input.skills.map((skill) => skill.id),
+    skillIds: input.skills.map((skill) => skill.id),
     protectedText,
     sections,
   };

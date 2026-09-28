@@ -193,7 +193,7 @@ const skillsStep = (
   behaviours: readonly AssistantBehaviour[],
   skills: readonly AssistantSkill[],
 ): SetupStep => {
-  const allowed = new Set(behaviours.flatMap((item) => item.allowedSkillIds));
+  const allowed = new Set(behaviours.flatMap((item) => item.preferredSkillIds));
   const ready = skills.filter((item) => allowed.has(item.id)).length;
   if (ready > 0) {
     return {

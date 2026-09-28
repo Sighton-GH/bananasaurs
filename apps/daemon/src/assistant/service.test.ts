@@ -77,7 +77,7 @@ describe('Task 6b fix round 2: ChainEntry.mayTrain training warning', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: [],
     enabled: true,
   };
@@ -268,7 +268,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: [],
     enabled: true,
   };
@@ -623,7 +623,7 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: ['handbook'],
     enabled: true,
   };
@@ -943,7 +943,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: [],
     enabled: true,
   };
@@ -1247,7 +1247,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: [],
     enabled: true,
   };
@@ -1939,7 +1939,7 @@ describe('Task 7: loop limits from the AI tuning settings', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: [],
     enabled: true,
   };
@@ -2053,7 +2053,7 @@ describe('Task 10 (b): busy chain throws ChainFailedError', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: [],
     enabled: true,
   };
@@ -2173,7 +2173,7 @@ const B2B_CONFIG = parseConfig({
   AI_PROFILE_COST_CLASS: 'free',
 });
 
-const setupB2b = (allowedSkillIds: readonly string[]) => {
+const setupB2b = (preferredSkillIds: readonly string[]) => {
   const t = openMigratedTestDatabase();
   guildRepo.upsertGuild(t.scopes.forGuild(B2B_GUILD), { name: 'fixture', now: B2B_NOW });
   assistantProvidersRepo.addKey(t.scopes.instance(), {
@@ -2199,7 +2199,7 @@ const setupB2b = (allowedSkillIds: readonly string[]) => {
     promptVersion: 1,
     callerRoleIds: [B2B_CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: [...allowedSkillIds],
+    preferredSkillIds: [...preferredSkillIds],
     resourceIds: [],
     enabled: true,
   };
@@ -2373,7 +2373,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     const service = h.serviceWith(wrap(generateText));
     const result = await service.invoke(
       ask({
-        behaviour: { ...h.direct, id: 'narrow', allowedSkillIds: ['search-club'] },
+        behaviour: { ...h.direct, id: 'narrow', preferredSkillIds: ['search-club'] },
         command: 'remember',
         input: { request: 'remember this' },
         userId: OWNER,
