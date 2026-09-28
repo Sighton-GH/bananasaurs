@@ -54,6 +54,12 @@ export interface LoopResult {
   readonly sources: readonly ToolSource[];
   readonly web: boolean;
   /**
+   * B2b: the code-written confirmations from ok tool results
+   * (`AssistantToolResult.actionSummary`), in call order. The service appends
+   * them to the posted answer and records them on the trace.
+   */
+  readonly actionSummaries: readonly string[];
+  /**
    * Present when every entry was skipped or failed and at least one failure
    * or skip was a daily cap: the earliest known reset, if any. The caller
    * answers the daily-cap reply instead of busy (Task Q).
@@ -182,8 +188,8 @@ export const runToolLoop = async (input: {
   const attempts: Attempt[] = [];
   const toolCalls: TraceToolCall[] = [];
   const sources: ToolSource[] = [];
-  let web = false;
-  let promptTokens = 0;
+  const actionSummaries: string[] = [];
+  let web = false;  let promptTokens = 0;
   let completionTokens = 0;
   let thinkingTokens = 0;
   let sawPrompt = false;
@@ -306,6 +312,7 @@ export const runToolLoop = async (input: {
       attempts,
       toolCalls,
       sources,
+      actionSummaries,
       budgets,
       recordUsage,
       noteError: (err) => {
@@ -335,6 +342,7 @@ export const runToolLoop = async (input: {
         toolCalls,
         usage: usageOf(),
         sources,
+        actionSummaries,
         web,
         ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
@@ -352,6 +360,7 @@ export const runToolLoop = async (input: {
     usage: usageOf(),
     guard: { removed: [] },
     sources,
+    actionSummaries,
     web,
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
@@ -411,6 +420,8 @@ const runEntry = async (deps: {
   readonly attempts: Attempt[];
   readonly toolCalls: TraceToolCall[];
   readonly sources: ToolSource[];
+  /** B2b: per-request summaries, shared across entries so failover never resets them. */
+  readonly actionSummaries: string[];
   /** Per-request budgets, shared across entries so failover never resets them. */
   readonly budgets: { callsUsed: number; resultChars: number };
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
@@ -628,6 +639,8 @@ const runEntry = async (deps: {
       if (result.ok) {
         for (const source of result.sources) deps.sources.push(source);
         if (result.web === true) deps.recordWeb();
+        // B2b: only ok results carry a summary — a refused tool adds none.
+        if (result.actionSummary !== undefined) deps.actionSummaries.push(result.actionSummary);
       }
       deps.toolCalls.push({
         ...traceBase,
