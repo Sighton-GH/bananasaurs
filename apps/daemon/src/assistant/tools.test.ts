@@ -745,6 +745,7 @@ describe('acting tools (B2a)', () => {
     expect(result.ok).toBe(true);
     const endAt = inserted[0]?.recurrence?.endAt;
     expect(endAt).toBeDefined();
+    if (endAt === undefined) throw new Error('missing endAt');
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Los_Angeles',
       year: 'numeric',
@@ -754,11 +755,11 @@ describe('acting tools (B2a)', () => {
       minute: '2-digit',
       second: '2-digit',
       hourCycle: 'h23',
-    }).formatToParts(endAt!);
+    }).formatToParts(endAt);
     const value = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
     expect(`${value('year')}-${value('month')}-${value('day')}`).toBe('2026-11-01');
     expect(`${value('hour')}:${value('minute')}:${value('second')}`).toBe('23:59:59');
-    expect(endAt! % 1000).toBe(999);
+    expect(endAt % 1000).toBe(999);
   });
 
   it('trims and collapses the stored context, omitting it when empty', async () => {
