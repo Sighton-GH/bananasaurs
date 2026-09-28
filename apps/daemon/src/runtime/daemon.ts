@@ -682,6 +682,15 @@ function applyConfiguredDryRun(
       },
       nowMs,
     );
+    // Only the /mod slash command remains (ADR 0086): the seeded behaviour
+    // is reachable by tagging the bot. `setBotTagBehaviour` clears the flag
+    // everywhere else first, so there is never two, and a re-save via
+    // `putBehaviour` never touches the flag.
+    if (
+      !assistantRepo.listBehaviours(scope).some((item) => item.answersBotTag === true)
+    ) {
+      assistantRepo.setBotTagBehaviour(scope, 'default', nowMs);
+    }
   }
   const current = guildRepo.readSafetyState(scope)?.dryRun;
   if (current === wanted) return;
