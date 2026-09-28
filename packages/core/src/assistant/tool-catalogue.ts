@@ -76,8 +76,25 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'search_archive',
     description:
-      "Search past messages in this Discord server's archived channels that the asking member can see.",
-    parameters: QUERY_PARAMETERS,
+      "Search past messages in this Discord server's archived channels that the asking member can see. To check whether a particular member said something, pass their name as from.",
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to search for.',
+          minLength: 1,
+          maxLength: 200,
+        },
+        from: {
+          type: 'string',
+          description:
+            "Only when checking whether one specific member said something: that member's name. Never use it to collect or summarise what someone said.",
+          maxLength: 100,
+        },
+      },
+      required: ['query'],
+    },
     rounds: 'first',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club'],
