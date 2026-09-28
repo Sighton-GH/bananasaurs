@@ -17,10 +17,8 @@ describe('TOOL_CATALOGUE', () => {
       'cancel_reminder',
       'propose_memory',
       'propose_decision',
-      'list_sources',
       'search_sources',
       'read_chunk',
-      'outline',
       'refresh_source',
     ]);
     expect(new Set(names).size).toBe(names.length);
@@ -31,9 +29,9 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  it('opens every round except read_chunk, outline and open_resource, which stay reachable in a follow-up round (ADR 0071)', () => {
+  it('opens every round except read_chunk and open_resource, which stay reachable in a follow-up round (ADR 0071)', () => {
     for (const tool of TOOL_CATALOGUE) {
-      if (tool.name === 'read_chunk' || tool.name === 'outline' || tool.name === 'open_resource')
+      if (tool.name === 'read_chunk' || tool.name === 'open_resource')
         expect(tool.rounds).toBe('all');
       else expect(tool.rounds).toBe('first');
     }
@@ -72,7 +70,7 @@ describe('TOOL_CATALOGUE', () => {
       expect(entry?.rounds).toBe('first');
       expect(entry?.actsForSkill).toBe(skill);
     }
-    const idTools = new Set(['read_chunk', 'outline', 'open_resource']);
+    const idTools = new Set(['read_chunk', 'open_resource']);
     for (const name of Object.keys(expected)) expect(idTools.has(name)).toBe(false);
   });
 
@@ -135,7 +133,7 @@ describe('TOOL_CATALOGUE', () => {
     expect(decision.description.toLowerCase()).toContain('draft');
   });
 
-  it('gives search_archive a bounded query string and open_resource a bounded id', () => {
+  it('gives search_archive a bounded query string and open_resource both ids with neither required', () => {
     const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_archive')!;
     expect(search.parameters.properties.query).toMatchObject({
       type: 'string',
@@ -149,36 +147,52 @@ describe('TOOL_CATALOGUE', () => {
       minLength: 1,
       maxLength: 64,
     });
+    expect(open.parameters.properties.docId).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+    });
+    expect(open.parameters.required ?? []).toEqual([]);
+    expect(open.rounds).toBe('all');
   });
 
   it('gives the cache tools camelCase parameters with the ruled bounds', () => {
-    const list = TOOL_CATALOGUE.find((tool) => tool.name === 'list_sources')!;
-    expect(list.parameters.properties.filter).toMatchObject({
-      type: 'string',
-      maxLength: 80,
-    });
-    expect(list.parameters.required ?? []).not.toContain('filter');
-    expect(list.rounds).toBe('first');
     const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_sources')!;
     expect(search.parameters.properties.query).toMatchObject({
       type: 'string',
       minLength: 2,
       maxLength: 200,
     });
-    expect(search.parameters.required).toEqual(['query']);
+    expect(search.parameters.required ?? []).not.toContain('query');
+    expect(search.parameters.properties.filter).toMatchObject({
+      type: 'string',
+      maxLength: 80,
+    });
+    expect(search.parameters.required ?? []).not.toContain('filter');
+    expect(search.description).toContain('Without a query it lists');
     expect(search.rounds).toBe('first');
     const read = TOOL_CATALOGUE.find((tool) => tool.name === 'read_chunk')!;
     expect(read.parameters.properties.chunkId).toMatchObject({ type: 'string' });
     expect(read.parameters.required).toEqual(['chunkId']);
     expect(read.rounds).toBe('all');
-    const outline = TOOL_CATALOGUE.find((tool) => tool.name === 'outline')!;
-    expect(outline.parameters.properties.docId).toMatchObject({ type: 'string' });
-    expect(outline.parameters.required).toEqual(['docId']);
-    expect(outline.rounds).toBe('all');
     const refresh = TOOL_CATALOGUE.find((tool) => tool.name === 'refresh_source')!;
     expect(refresh.parameters.properties.resourceId).toMatchObject({ type: 'string' });
     expect(refresh.parameters.required).toEqual(['resourceId']);
     expect(refresh.rounds).toBe('first');
+  });
+
+  it('names neither list_sources nor outline anywhere in the catalogue', () => {
+    const names = TOOL_CATALOGUE.map((tool) => tool.name);
+    expect(names).not.toContain('list_sources');
+    expect(names).not.toContain('outline');
+    for (const tool of TOOL_CATALOGUE) {
+      expect(tool.description).not.toContain("'list_sources'");
+      expect(tool.description).not.toContain("'outline'");
+      for (const property of Object.values(tool.parameters.properties)) {
+        expect(property.description ?? '').not.toContain("'list_sources'");
+        expect(property.description ?? '').not.toContain("'outline'");
+      }
+    }
   });
 
   it('gives search_archive an optional from for checking one member (ADR 0090 D3)', () => {

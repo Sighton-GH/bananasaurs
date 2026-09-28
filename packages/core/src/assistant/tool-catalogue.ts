@@ -101,18 +101,26 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'open_resource',
-    description: 'Open one of the club resources listed in the instructions, by its id.',
+    description:
+      'Open one of the club resources listed in the instructions by its resource id, with the outline of a document-like resource; or list the headings of one cached document by its doc id.',
     parameters: {
       type: 'object',
       properties: {
         resourceId: {
           type: 'string',
-          description: 'The resource id.',
+          description: 'The resource id. Give either this or docId.',
           minLength: 1,
           maxLength: 64,
         },
+        docId: {
+          type: 'string',
+          description:
+            'The doc id from search_sources, read_chunk or open_resource. Give either this or resourceId.',
+          minLength: 1,
+          maxLength: 128,
+        },
       },
-      required: ['resourceId'],
+      required: [],
     },
     rounds: 'all',
     outputLimit: 'Up to 4,000 characters of cached content.',
@@ -393,36 +401,24 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     actsForSkill: 'record-decision',
   },
   {
-    name: 'list_sources',
-    description:
-      'List the club sources cached for this server, with their ids for search_sources, read_chunk, outline, open_resource and refresh_source.',
-    parameters: {
-      type: 'object',
-      properties: {
-        filter: {
-          type: 'string',
-          description: 'Only sources whose id or title contains this text.',
-          minLength: 1,
-          maxLength: 80,
-        },
-      },
-      required: [],
-    },
-    rounds: 'first',
-    outputLimit: 'Up to 30 lines, one per source.',
-    skills: ['search-club'],
-  },
-  {
     name: 'search_sources',
-    description: 'Search the cached club sources for passages about the query.',
+    description:
+      'Search the cached club sources for passages about the query. Without a query it lists the cached sources, with their ids for read_chunk, open_resource and refresh_source.',
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'What to search for.',
+          description: 'What to search for. Omit it to list the cached sources.',
           minLength: 2,
           maxLength: 200,
+        },
+        filter: {
+          type: 'string',
+          description:
+            'Only sources whose id or title contains this text. Only used when query is omitted.',
+          minLength: 1,
+          maxLength: 80,
         },
         sourceIds: {
           type: 'array',
@@ -431,10 +427,10 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
           maxItems: 10,
         },
       },
-      required: ['query'],
+      required: [],
     },
     rounds: 'first',
-    outputLimit: 'Up to 6 hits, 2,000 characters total.',
+    outputLimit: 'Up to 30 lines, one per source, without a query; up to 6 hits otherwise.',
     skills: ['search-club'],
   },
   {
@@ -445,7 +441,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       properties: {
         chunkId: {
           type: 'string',
-          description: 'The chunk id from search_sources, read_chunk, outline or open_resource.',
+          description: 'The chunk id from search_sources, read_chunk or open_resource.',
           minLength: 1,
           maxLength: 128,
         },
@@ -459,25 +455,6 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     },
     rounds: 'all',
     outputLimit: 'Up to 4,000 characters including neighbours.',
-    skills: ['search-club'],
-  },
-  {
-    name: 'outline',
-    description: 'List the headings of one cached document by its doc id.',
-    parameters: {
-      type: 'object',
-      properties: {
-        docId: {
-          type: 'string',
-          description: 'The doc id from search_sources, read_chunk, outline or open_resource.',
-          minLength: 1,
-          maxLength: 128,
-        },
-      },
-      required: ['docId'],
-    },
-    rounds: 'all',
-    outputLimit: 'Up to 1,500 characters.',
     skills: ['search-club'],
   },
   {
