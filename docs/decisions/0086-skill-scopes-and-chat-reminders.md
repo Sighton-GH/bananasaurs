@@ -29,10 +29,10 @@ ping anyone, and cannot repeat, be listed, edited or cancelled from chat.
    idempotency key (`skill:<invocationId>:<tool>:<n>`, unique), logs it in
    skill activity, and answers. A tool is declared only when the asker's
    scope allows it, and is re-checked when it runs.
-3. **Injection guard (hard rule 3, ADR 0071).** Acting tools are offered in
-   the first tool round only, answering the asker's own current message.
-   Retrieved text, channel context and quoted messages can never trigger
-   one. When the request is ambiguous (time, channel, who to ping) or a
+3. **Injection guard (hard rule 3, ADR 0071).** Acting tools run only in
+   round 1, on the asker's own authority; when the message quotes another
+   message, reminders cannot ping roles, @everyone or @here (enforced in
+   code). When the request is ambiguous (time, channel, who to ping) or a
    value fails validation, the tool returns the problem and the bot asks the
    member instead of guessing.
 4. **One `reminders` skill** replaces `create-reminder` and `send-reminder`

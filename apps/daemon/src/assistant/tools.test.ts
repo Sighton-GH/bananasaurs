@@ -40,6 +40,7 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   timeZone: 'America/Vancouver',
   isOwner: false,
   skillAllowed: () => true,
+  quotePresent: false,
   invocationKey: 'msg1',
   currentChannelId: '111111111111111111',
   resolveReminderTargets: vi.fn(async () => ({
@@ -837,6 +838,97 @@ describe('acting tools (B2a)', () => {
       'failed',
       'Something went wrong saving that. Nothing was changed.',
     );
+  });
+
+  it('refuses role, everyone and here pings from a quoted reply without storing', async () => {
+    const refusal =
+      "I can't ping roles or everyone from a reply to someone else's message. Ask again without replying to it.";
+    const when = '2026-09-24T12:30:00-07:00';
+    for (const roles of [['Execs'], ['everyone'], ['here']]) {
+      const insert = vi.fn(() => 'created' as const);
+      const resolve = vi.fn(async () => ({
+        ok: true as const,
+        targets: {
+          channelId: '111111111111111111',
+          channelName: 'general',
+          mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+          memberNames: [],
+          roleNames: [],
+        },
+      }));
+      const p = ports({
+        quotePresent: true,
+        reminderStore: {
+          insert,
+          get: () => undefined,
+          update: () => 'not-found' as const,
+          cancel: () => false,
+          listForCreator: () => [],
+          listAll: () => [],
+        },
+        resolveReminderTargets: resolve,
+      });
+      const result = await runAssistantTool(
+        { name: 'set_reminder', args: { text: 'hi', when, roles } },
+        p,
+      );
+      expect(result).toMatchObject({ ok: false, text: refusal });
+      expect(insert).not.toHaveBeenCalled();
+      expect(resolve).not.toHaveBeenCalled();
+      expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'denied');
+    }
+  });
+
+  it('stores a member-only or no-ping reminder from a quoted reply', async () => {
+    const when = '2026-09-24T12:30:00-07:00';
+    const { p: memberPorts, rows: memberRows } = reminderPorts({ quotePresent: true });
+    const memberResult = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'hi', when, members: ['Ava'] } },
+      memberPorts,
+    );
+    expect(memberResult.ok).toBe(true);
+    expect(memberRows.size).toBe(1);
+    const { p: plainPorts, rows: plainRows } = reminderPorts({ quotePresent: true });
+    const plainResult = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'hi', when } },
+      plainPorts,
+    );
+    expect(plainResult.ok).toBe(true);
+    expect(plainRows.size).toBe(1);
+  });
+
+  it('allows a roles request without a quote', async () => {
+    const when = '2026-09-24T12:30:00-07:00';
+    const { p, rows } = reminderPorts({ quotePresent: false });
+    const result = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'hi', when, roles: ['Execs'] } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(rows.size).toBe(1);
+  });
+
+  it('refuses an edit that adds role, everyone or here pings from a quoted reply', async () => {
+    const refusal =
+      "I can't ping roles or everyone from a reply to someone else's message. Ask again without replying to it.";
+    const { p, rows } = reminderPorts({ quotePresent: true });
+    rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
+    const resolve = p.resolveReminderTargets as unknown as ReturnType<typeof vi.fn>;
+    for (const roles of [['Execs'], ['everyone'], ['here']]) {
+      const result = await runAssistantTool(
+        { name: 'edit_reminder', args: { reminderId: 'rem1', roles } },
+        p,
+      );
+      expect(result).toMatchObject({ ok: false, text: refusal });
+      expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'denied');
+    }
+    expect(resolve).not.toHaveBeenCalled();
+    expect(rows.get('rem1')?.text).toBe('old');
+    const memberEdit = await runAssistantTool(
+      { name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } },
+      p,
+    );
+    expect(memberEdit.ok).toBe(true);
   });
 });
 
