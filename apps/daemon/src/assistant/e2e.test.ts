@@ -507,7 +507,7 @@ describe('Release 3 review fixes', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'create-reminder'],
+    allowedSkillIds: ['search-club', 'reminders'],
     resourceIds: [],
     enabled: true,
   };
@@ -524,7 +524,7 @@ describe('Release 3 review fixes', () => {
     );
     assistantRepo.putSkillGrant(
       scope,
-      { skillId: 'create-reminder', roleIds: [CLUB_ROLE], userIds: [] },
+      { skillId: 'reminders', roleIds: [CLUB_ROLE], userIds: [] },
       NOW,
     );
   });
@@ -709,51 +709,132 @@ describe('Release 3 review fixes', () => {
     expect(network).toHaveBeenCalledTimes(1);
   });
 
-  it('finding 7: reminders refuse without a channel and dedupe on the interaction id', async () => {
+  it('finding 7: reminders resolve in the invocation channel and dedupe on the invocation id', async () => {
+    const when = new Date(NOW + 60_000).toISOString();
+    const queue = [
+      {
+        text: '',
+        model: 'fixture-model',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'I could not set it.', model: 'fixture-model' },
+      {
+        text: '',
+        model: 'fixture-model',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'Reminder noted.', model: 'fixture-model' },
+      {
+        text: '',
+        model: 'fixture-model',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'Reminder noted.', model: 'fixture-model' },
+    ];
+    const toolTexts: (readonly string[])[] = [];
+    const provider: TextProvider = {
+      id: 'fixture',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        toolTexts.push(
+          (req.messages as readonly { role: string; text: string }[])
+            .filter((m) => m.role === 'tool')
+            .map((m) => m.text),
+        );
+        const next = queue.shift();
+        if (next === undefined) throw new Error('no scripted response');
+        return next;
+      },
+    };
     const service = createAssistantService(
       t.scopes.forGuild(GUILD),
       t.scopes.instance(),
       config,
       () => NOW,
+      {},
+      undefined,
+      undefined,
       {
-        provider: undefined,
+        memberChannels: async () => [],
+        // No channel on the invocation means no resolution: the tool fails
+        // closed instead of booking a reminder that could never be delivered.
+        resolveReminderTargets: async (request: {
+          readonly channel?: string | undefined;
+          readonly members: readonly string[];
+          readonly roles: readonly string[];
+          readonly askerId: string;
+          readonly currentChannelId: string;
+        }) =>
+          request.currentChannelId === ''
+            ? {
+                ok: false as const,
+                problem: "I can't check permissions right now, so I didn't set the reminder.",
+              }
+            : {
+                ok: true as const,
+                targets: {
+                  channelId: CHANNEL,
+                  channelName: 'general',
+                  mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+                  memberNames: [],
+                  roleNames: [],
+                },
+              },
       },
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_test',
+          keyLabel: 'Key test',
+          provider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
     );
     const scope = t.scopes.forGuild(GUILD);
     const noChannel = await service.invoke({
       guildId: GUILD,
       channelId: undefined,
-      userId: MEMBER,
+      userId: OWNER,
       callerRoleIds: [CLUB_ROLE],
       behaviour: direct,
-      command: 'remind',
-      input: { when: new Date(NOW + 60_000).toISOString(), text: 'Bring batteries' },
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
       invocationId: 'int-4',
     });
-    expect(noChannel.ok).toBe(false);
+    expect(noChannel.ok).toBe(true);
     expect(assistantRepo.listReminders(scope)).toHaveLength(0);
+    expect(toolTexts[1]?.[0]).toContain("I can't check permissions right now");
 
     const base = {
       guildId: GUILD,
       channelId: CHANNEL,
-      userId: MEMBER,
+      userId: OWNER,
       callerRoleIds: [CLUB_ROLE],
       behaviour: direct,
-      command: 'remind' as const,
-      input: { when: new Date(NOW + 60_000).toISOString(), text: 'Bring batteries' },
+      command: 'ask' as const,
+      input: { question: 'remind me to bring batteries' },
       source: 'slash-command' as const,
       invocationId: 'int-5',
     };
     const first = await service.invoke(base);
     const retry = await service.invoke(base);
     expect(first.ok).toBe(true);
-    expect(retry.content).toContain('already scheduled');
-    expect(assistantRepo.listReminders(scope)).toHaveLength(1);
-    expect(assistantRepo.listSkillActivity(scope, 10)[0]).toMatchObject({
-      skillId: 'create-reminder',
-      outcome: 'completed',
-    });
+    expect(retry.ok).toBe(true);
+    // The retry reuses the invocation's idempotency key: the store reports
+    // the benign duplicate to the model, and only one reminder exists.
+    expect(toolTexts[5]?.[0]).toContain('already set');
+    expect(assistantRepo.listReminders(scope)).toMatchObject([
+      { text: 'Bring batteries', dedupeKey: 'reminder:int-5:0' },
+    ]);
+    expect(
+      assistantRepo.listSkillActivity(scope, 10).find((a) => a.skillId === 'reminders'),
+    ).toMatchObject({ outcome: 'completed', actorId: OWNER });
   });
 });
 
