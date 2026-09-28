@@ -374,6 +374,7 @@ describe('SetupTracker', () => {
   it('with no behaviours, Save who can ask creates the disabled club assistant', async () => {
     const mock = stubFetch([
       { method: 'PUT', url: '/api/assistant/behaviours/default', body: { ok: true } },
+      { method: 'PUT', url: '/api/assistant/bot-tag', body: { ok: true } },
     ]);
     const { reload } = renderTracker(baseData({ behaviours: [] }));
     const list = await screen.findByRole('list', { name: 'Setup steps' });
@@ -397,6 +398,10 @@ describe('SetupTracker', () => {
       callerRoleIds: ['role-member'],
       enabled: false,
     });
+    const botTag = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/assistant/bot-tag' && c[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(botTag)).toEqual({ behaviourId: 'default' });
     expect(reload).toHaveBeenCalled();
   });
 
