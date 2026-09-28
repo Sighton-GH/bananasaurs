@@ -25,7 +25,8 @@ import {
 import { resolveModelChain, ENV_KEY_ID, type ChainEntry } from './model-chain.js';
 import { LocalLimitError } from './local-limit.js';
 import { QuotaLedger } from './quota-ledger.js';
-import { createAssistantService, sanitizeMentionsForProvider } from './service.js';
+import { createAssistantService } from './service.js';
+import { sanitizeMentionsForProvider } from './mentions.js';
 import type { AssistantServiceTestPorts } from './service.js';
 import type { AssistantTraceDetail } from './commands.js';
 

@@ -59,21 +59,11 @@ import {
 } from './tools.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
+import { sanitizeMentionsForProvider } from './mentions.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
 import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
-/**
- * Raw Discord mention snowflakes carry no meaning to a provider and trip the
- * conservative outbound scan's long-digit detectors, so they are flattened to
- * readable tokens before anything leaves the process. Only the mention shape
- * is rewritten; bare numbers stay untouched.
- */
-export const sanitizeMentionsForProvider = (text: string): string =>
-  text
-    .replace(/<@&\d{17,20}>/g, '@role')
-    .replace(/<@!?\d{17,20}>/g, '@user')
-    .replace(/<#\d{17,20}>/g, '#channel');
 
 /**
  * Task 14: the trace's `sections` are the compiled context sections as
