@@ -19,6 +19,7 @@ import {
   type AssistantSkill,
   type ClubResource,
   type JsonValue,
+  type ReminderRecurrence,
   type SkillScopeMode,
 } from '@bananasaurs/core';
 import { assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
@@ -631,6 +632,21 @@ export const registerAssistantRoutes = (
   // Task E1: edit a reminder's text, context, due time or repeat from the
   // skill page. The repeat keeps the time zone it was created with in chat;
   // a one-off reminder cannot gain one here (ADR 0086 decision 5).
+  // Projects a stored repeat into plain audit JSON field by field, so the
+  // audit trail never carries a live object reference.
+  const recurrenceAuditValue = (r: ReminderRecurrence | undefined): JsonValue => {
+    if (r === undefined) return null;
+    return {
+      pattern:
+        r.pattern.kind === 'weekly'
+          ? { kind: r.pattern.kind, days: [...r.pattern.days], everyWeeks: r.pattern.everyWeeks }
+          : r.pattern.kind === 'monthly'
+            ? { kind: r.pattern.kind, dayOfMonth: r.pattern.dayOfMonth }
+            : { kind: r.pattern.kind },
+      ...(r.endAt === undefined ? {} : { endAt: r.endAt }),
+      ...(r.maxCount === undefined ? {} : { maxCount: r.maxCount }),
+    };
+  };
   app.patch('/api/assistant/reminders/:id', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
@@ -713,8 +729,8 @@ export const registerAssistantRoutes = (
       parsed.data.recurrence !== undefined &&
       JSON.stringify(recurrence ?? null) !== JSON.stringify(existing.recurrence ?? null)
     ) {
-      before['recurrence'] = JSON.parse(JSON.stringify(existing.recurrence ?? null));
-      after['recurrence'] = JSON.parse(JSON.stringify(recurrence));
+      before['recurrence'] = recurrenceAuditValue(existing.recurrence);
+      after['recurrence'] = recurrenceAuditValue(recurrence ?? undefined);
     }
     const result = assistantRepo.updateReminder(
       session.scope,
