@@ -18,6 +18,7 @@ import {
   validateResourceUrl,
   type AssistantSkill,
   type ClubResource,
+  type JsonValue,
   type SkillScopeMode,
 } from '@bananasaurs/core';
 import { assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
@@ -691,8 +692,8 @@ export const registerAssistantRoutes = (
         error: 'recurrence-needs-time-zone',
         message: `Repeating reminders are created from chat, where the club's time zone is known.`,
       });
-    const before: Record<string, unknown> = {};
-    const after: Record<string, unknown> = {};
+    const before: Record<string, JsonValue> = {};
+    const after: Record<string, JsonValue> = {};
     if (parsed.data.text !== undefined && parsed.data.text !== existing.text) {
       before['text'] = existing.text;
       after['text'] = parsed.data.text;
@@ -712,8 +713,8 @@ export const registerAssistantRoutes = (
       parsed.data.recurrence !== undefined &&
       JSON.stringify(recurrence ?? null) !== JSON.stringify(existing.recurrence ?? null)
     ) {
-      before['recurrence'] = existing.recurrence ?? null;
-      after['recurrence'] = recurrence;
+      before['recurrence'] = JSON.parse(JSON.stringify(existing.recurrence ?? null));
+      after['recurrence'] = JSON.parse(JSON.stringify(recurrence));
     }
     const result = assistantRepo.updateReminder(
       session.scope,
