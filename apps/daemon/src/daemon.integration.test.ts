@@ -14,6 +14,7 @@ import {
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  assistantRepo,
   automodRuleRepo,
   guildRepo,
   jobRepo,
