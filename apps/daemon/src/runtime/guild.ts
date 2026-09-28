@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ChannelType, type Client } from 'discord.js';
+import { ChannelType, type Client, type GuildMember } from 'discord.js';
 import {
   createConnectionSubscriber,
   editManagedPanel,
@@ -92,6 +92,10 @@ import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
 import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
+import {
+  resolveReminderTargets,
+  type ReminderTargetMember,
+} from '../assistant/reminder-targets.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -753,6 +757,68 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           userId,
         );
       },
+      // B2b: the acting reminder tools resolve their channel and mentions
+      // against the live guild, mirroring the `memberChannels` adapter above:
+      // an uncached guild fails closed inside `resolveReminderTargets`.
+      resolveReminderTargets: (request) => {
+        const live = client.guilds.cache.get(guildId);
+        if (live === undefined) return resolveReminderTargets(undefined, request);
+        const adaptMember = (member: GuildMember): ReminderTargetMember => ({
+          id: member.id,
+          displayName: member.displayName,
+          user: { username: member.user.username },
+          permissionsIn: (channel) => ({
+            has: (permission) => member.permissionsIn(channel.id).has(permission),
+          }),
+        });
+        return resolveReminderTargets(
+          {
+            channels: {
+              cache: new Map(
+                [...live.channels.cache.values()].map(
+                  (channel) =>
+                    [
+                      channel.id,
+                      {
+                        id: channel.id,
+                        name: channel.name,
+                        isTextBased: () => channel.isTextBased(),
+                        isThread: () => channel.isThread(),
+                      },
+                    ] as const,
+                ),
+              ),
+            },
+            roles: {
+              cache: new Map(
+                [...live.roles.cache.values()].map(
+                  (role) =>
+                    [
+                      role.id,
+                      { id: role.id, name: role.name, mentionable: role.mentionable },
+                    ] as const,
+                ),
+              ),
+            },
+            members: {
+              me: live.members.me === null ? null : adaptMember(live.members.me),
+              cache: new Map(
+                [...live.members.cache.values()].map(
+                  (member) => [member.id, adaptMember(member)] as const,
+                ),
+              ),
+              fetch: async (userId) => adaptMember(await live.members.fetch(userId)),
+              search: async ({ query, limit }) =>
+                new Map(
+                  [...(await live.members.search({ query, limit })).values()].map(
+                    (member) => [member.id, adaptMember(member)] as const,
+                  ),
+                ),
+            },
+          },
+          request,
+        );
+      },
     },
     deps.assistantChain ?? (() => []),
     // A defaulted parameter accepts `undefined`: absent in isolated uses,
@@ -809,7 +875,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         await discord.respondToInteraction(guildId, ref, message);
       },
       enqueue: (input) => {
-        jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
+        const result = jobRepo.enqueue(scope, {
+          ...input,
+          payload: JSON.stringify(input.payload),
+        });
+        return { enqueued: result.enqueued };
       },
       sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,

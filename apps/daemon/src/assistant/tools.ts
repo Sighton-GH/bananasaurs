@@ -103,7 +103,8 @@ export interface AssistantToolPorts {
     request: Omit<ReminderTargetRequest, 'askerId' | 'currentChannelId'>,
   ) => Promise<ReminderTargetResult>;
   readonly reminderStore: {
-    insert(reminder: Reminder): 'created' | 'duplicate';
+    /** Guild scope stays out of the tool: B2b's closure adds `scope.guildId`. */
+    insert(reminder: Omit<Reminder, 'guildId'>): 'created' | 'duplicate';
     get(id: string): StoredReminder | undefined;
     update(id: string, patch: ReminderPatch): 'updated' | 'not-found' | 'not-editable';
     cancel(id: string): boolean;
@@ -504,32 +505,36 @@ export const runAssistantTool = async (
       case 'my_reminders': {
         const gate = requireSkill(ports, name, 'reminders');
         if (gate !== undefined) return gate;
-        const { all } = parsed.data as { all?: boolean };
-        const rows =
-          all === true && ports.isOwner
-            ? ports.reminderStore.listAll()
-            : ports.reminderStore.listForCreator(ports.userId);
-        const unfinished = rows.filter(
-          (r) => r.status === 'scheduled' || r.status === 'delivering',
-        );
-        if (unfinished.length === 0) return evidence(name, 'No upcoming reminders.');
-        return evidence(
-          name,
-          unfinished
-            .map((r) => {
-              const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
-              if (r.recurrence !== undefined)
-                parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
-              const pings =
-                r.mentions.userIds.length +
-                r.mentions.roleIds.length +
-                (r.mentions.everyone ? 1 : 0) +
-                (r.mentions.here ? 1 : 0);
-              parts.push(`pings ${pings}`);
-              return parts.join(' · ');
-            })
-            .join('\n'),
-        );
+        try {
+          const { all } = parsed.data as { all?: boolean };
+          const rows =
+            all === true && ports.isOwner
+              ? ports.reminderStore.listAll()
+              : ports.reminderStore.listForCreator(ports.userId);
+          const unfinished = rows.filter(
+            (r) => r.status === 'scheduled' || r.status === 'delivering',
+          );
+          if (unfinished.length === 0) return evidence(name, 'No upcoming reminders.');
+          return evidence(
+            name,
+            unfinished
+              .map((r) => {
+                const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
+                if (r.recurrence !== undefined)
+                  parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
+                const pings =
+                  r.mentions.userIds.length +
+                  r.mentions.roleIds.length +
+                  (r.mentions.everyone ? 1 : 0) +
+                  (r.mentions.here ? 1 : 0);
+                parts.push(`pings ${pings}`);
+                return parts.join(' · ');
+              })
+              .join('\n'),
+          );
+        } catch (err) {
+          return failed(ports, name, 'reminders', err);
+        }
       }
       case 'set_reminder': {
         const gate = requireSkill(ports, name, 'reminders');
@@ -570,9 +575,8 @@ export const runAssistantTool = async (
           if (!resolved.ok) return { ...evidence(name, resolved.problem), ok: false };
           const targets: ResolvedReminderTargets = resolved.targets;
           const n = nextInvocationIndex(ports);
-          const reminder: Reminder = {
+          const reminder: Omit<Reminder, 'guildId'> = {
             id: `rem_${ports.invocationKey}_${n}`,
-            guildId: '',
             creatorId: ports.userId,
             destinationId: targets.channelId,
             text: draft.text,
@@ -731,11 +735,6 @@ export const runAssistantTool = async (
             timeZone: ports.timeZone,
             recurrence: stored.recurrence,
             context: stored.context,
-            channelName: stored.destinationId,
-            memberNames: [...stored.mentions.userIds],
-            roleNames: [...stored.mentions.roleIds],
-            everyone: stored.mentions.everyone,
-            here: stored.mentions.here,
           });
           return { ...evidence(name, summary), actionSummary: summary };
         } catch (err) {

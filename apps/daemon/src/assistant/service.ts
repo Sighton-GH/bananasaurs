@@ -4,6 +4,7 @@ import {
   clipHeading,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  effectiveSkillScope,
   estimateTokens,
   JOB_KINDS,
   providerMayTrain,
@@ -12,6 +13,7 @@ import {
   resourceRefreshDedupeKey,
   SafeProvider,
   safeLogFields,
+  skillScopeAllows,
   stripNewTopic,
   type AssistantTrace,
   type CompiledAssistantContext,
@@ -19,7 +21,6 @@ import {
   type GenerationMessage,
   type Logger,
   type TextProvider,
-  validateReminderDraft,
 } from '@bananasaurs/core';
 import {
   archiveRepo,
@@ -59,6 +60,7 @@ import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
+import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -77,11 +79,17 @@ export const sanitizeMentionsForProvider = (text: string): string =>
  * `context.ts` names them, plus `history` when history was sent (ruling).
  * The quoted envelope is user text, not a section — like the evidence
  * envelope it travels in the messages, never the system instruction.
+ *
+ * The trace's `user-message` section carries the same text minus the quoted
+ * message itself: the envelope arrives as its own part, so the trace swaps
+ * it for a placeholder while the provider request is unchanged.
  */
+const TRACE_QUOTE_PLACEHOLDER = '[quoted message: not kept in the trace]';
 const traceSections = (
   context: CompiledAssistantContext,
   history: readonly GenerationMessage[],
   userText: string,
+  quoteEnvelope?: string,
 ): AssistantTrace['sections'] => {
   const sections = context.sections.map((section) => ({
     name: section.name,
@@ -99,13 +107,17 @@ const traceSections = (
             { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
           ];
         })();
+  const tracedUserText =
+    quoteEnvelope === undefined || quoteEnvelope === ''
+      ? userText
+      : userText.replaceAll(quoteEnvelope, TRACE_QUOTE_PLACEHOLDER);
   return [
     ...withHistory,
     {
       name: 'user-message',
-      chars: userText.length,
-      estTokens: estimateTokens(userText),
-      text: userText,
+      chars: tracedUserText.length,
+      estTokens: estimateTokens(tracedUserText),
+      text: tracedUserText,
     },
   ];
 };
@@ -185,7 +197,21 @@ export interface AssistantDiscordPorts {
   readonly memberChannels: (
     userId: string,
   ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
+  /**
+   * B2b: resolves a reminder's channel and mentions against live Discord
+   * permissions. Optional so existing callers keep compiling — production
+   * (`runtime/guild.ts`) always provides it. Absent, the service fails
+   * closed with the permissions sentence.
+   */
+  readonly resolveReminderTargets?:
+    ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
 }
+/** B2b: the closed default — permissions cannot be checked, so no reminder. */
+const defaultResolveReminderTargets = (): Promise<ReminderTargetResult> =>
+  Promise.resolve({
+    ok: false,
+    problem: "I can't check permissions right now, so I didn't set the reminder.",
+  });
 export const createAssistantService = (
   scope: GuildScope,
   instance: InstanceScope,
@@ -194,7 +220,10 @@ export const createAssistantService = (
   testPorts: AssistantServiceTestPorts = {},
   liveConfig: () => Config = () => config,
   logger: Pick<Logger, 'warn'> = { warn: () => undefined },
-  discord: AssistantDiscordPorts = { memberChannels: () => Promise.resolve([]) },
+  discord: AssistantDiscordPorts = {
+    memberChannels: () => Promise.resolve([]),
+    resolveReminderTargets: () => defaultResolveReminderTargets(),
+  },
   /**
    * ADR 0075: the ordered, resolved model chain — built by
    * `ProviderConfigStore.chain()` at the composition root and handed down
@@ -304,6 +333,12 @@ export const createAssistantService = (
       skipMemberMemories?: boolean;
       /** Task 20: Try-it answers an escalation as text, never opening a ticket. */
       skipTicketWrite?: boolean;
+      /**
+       * Fix 1: Try-it (and any path without a durable invocation id) must
+       * never act — acting skills gate off, so their tools stay undeclared
+       * and refused.
+       */
+      skipActions?: boolean;
     } = {},
   ): Promise<AssistantInvocationResult> => {
     {
@@ -313,7 +348,7 @@ export const createAssistantService = (
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
-        remind: 'create-reminder',
+        remind: 'reminders',
         remember: 'propose-memory',
         decision: 'record-decision',
         'review-plan': 'review-plan',
@@ -343,15 +378,39 @@ export const createAssistantService = (
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      // ADR 0064: passing the behaviour's "Who can ask" allows every skill in
-      // its allowlist. Owner-only skills stay owner-only; per-skill grants are
-      // no longer a gate.
-      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter(
-        (candidate) =>
-          input.behaviour.allowedSkillIds.includes(candidate.id) &&
-          (owner || candidate.ownerOnly !== true),
+      // B2b: the behaviour allowlist and the skill's own scope both gate the
+      // request, checked in code against the asker's live roles. Try-it
+      // counts as the owner for scopes (`config.write` authorised the caller).
+      const scopeOwner = owner || opts.skipCallerGate === true;
+      const grants = new Map(
+        assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant]),
       );
-      if (!permittedSkills.some((candidate) => candidate.id === skill)) {
+      const skillAllowed = (id: string): boolean => {
+        if (!input.behaviour.allowedSkillIds.includes(id)) return false;
+        const catalogueSkill = CLUB_ASSISTANT_SKILLS.find((candidate) => candidate.id === id);
+        if (catalogueSkill === undefined) return false;
+        // Fix 1 (hard rule 6): acting tools need a durable idempotency key.
+        // Try-it must never act, and neither can a path without an
+        // invocation id — acting skills gate off, hiding their tools from
+        // the declarations and refusing them if the model calls them anyway.
+        if (catalogueSkill.acts && (opts.skipActions === true || input.invocationId === undefined))
+          return false;
+        return skillScopeAllows(effectiveSkillScope(catalogueSkill, grants.get(id)), {
+          owner: scopeOwner,
+          roleIds: input.callerRoleIds,
+        });
+      };
+      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) =>
+        skillAllowed(candidate.id),
+      );
+      // B2b: every acting tool's port, closed over this request's guild scope
+      // and asker. The invocation key is the Discord message or interaction
+      // that asked — the durable idempotency anchor, so a retried job reuses
+      // its keys. Empty on the no-actions path, where no acting tool can
+      // run, so the empty key is never used.
+      const invocationKey: string = input.invocationId ?? '';
+      const resolveTargets = discord.resolveReminderTargets ?? defaultResolveReminderTargets;
+      if (!skillAllowed(skill)) {
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),
           at: now(),
@@ -359,73 +418,10 @@ export const createAssistantService = (
           skillId: skill,
           actorId: input.userId,
           outcome: 'denied',
-          detail: 'The skill is owner-only.',
         });
         return {
           ok: false,
-          content: 'Only the server owner can use this assistant skill. No action was taken.',
-        };
-      }
-      if (input.command === 'remind') {
-        // A reminder needs a real destination channel. Falling back to the
-        // user id produced a row that could never be delivered while the
-        // reply said "Reminder scheduled" (finding 7).
-        if (input.channelId === undefined)
-          return {
-            ok: false,
-            content: 'Reminders must run in a server channel. No reminder was scheduled.',
-          };
-        // The same validation every reminder write goes through (finding 8)
-        // - the slash path shares `createReminder`'s checks instead of
-        // carrying its own copy.
-        const draft = validateReminderDraft(
-          { dueAt: Date.parse(input.input.when ?? ''), text: input.input.text ?? '' },
-          now(),
-        );
-        if (!draft.ok)
-          return {
-            ok: false,
-            content: `${draft.error.charAt(0).toUpperCase()}${draft.error.slice(1)}. No reminder was scheduled.`,
-          };
-        const text = draft.text;
-        const dueAt = Date.parse(input.input.when ?? '');
-        const id = randomUUID();
-        // Hard rule 6: the dedupe key is the Discord interaction or message
-        // that asked for the reminder, not a fresh UUID, so a retried
-        // interaction cannot book the same reminder twice (finding 7).
-        const dedupeKey = `reminder:${scope.guildId}:${input.invocationId ?? id}`;
-        // The dedupe-key conflict comes back as a typed repo result: only
-        // that exact replay is the benign "already scheduled" answer, and a
-        // real write failure still throws instead of reading as success
-        // (should-fix; typed per the independent audit, round 2).
-        const insert = assistantRepo.insertReminder(scope, {
-          id,
-          guildId: scope.guildId,
-          creatorId: input.userId,
-          destinationId: input.channelId,
-          text,
-          dueAt,
-          createdAt: now(),
-          status: 'scheduled',
-          dedupeKey,
-        });
-        if (insert === 'duplicate') {
-          return {
-            ok: true,
-            content: 'That reminder is already scheduled. I did not create a duplicate.',
-          };
-        }
-        assistantRepo.recordSkillActivity(scope, {
-          id: randomUUID(),
-          at: now(),
-          behaviourId: input.behaviour.id,
-          skillId: skill,
-          actorId: input.userId,
-          outcome: 'completed',
-        });
-        return {
-          ok: true,
-          content: `Reminder scheduled for ${new Date(dueAt).toLocaleString('en-CA')}.`,
+          content: "You don't have access to that assistant skill. No action was taken.",
         };
       }
       if (input.command === 'find') {
@@ -613,6 +609,45 @@ export const createAssistantService = (
         userId: input.userId,
         now,
         timeZone: currentConfig.BANANASAURS_TIME_ZONE,
+        // Try-it counts as the owner for scopes (`config.write` authorised
+        // the caller), so it sees the owner view of the acting tools.
+        isOwner: scopeOwner,
+        skillAllowed,
+        invocationKey,
+        currentChannelId: input.channelId,
+        resolveReminderTargets: (req) =>
+          resolveTargets({
+            ...req,
+            askerId: input.userId,
+            currentChannelId: input.channelId ?? '',
+          }),
+        reminderStore: {
+          insert: (reminder) =>
+            assistantRepo.insertReminder(scope, { ...reminder, guildId: scope.guildId }),
+          get: (id) => assistantRepo.getReminder(scope, id),
+          update: (id, patch) => assistantRepo.updateReminder(scope, id, patch, now()),
+          cancel: (id) => assistantRepo.cancelReminder(scope, id),
+          listForCreator: (creatorId) =>
+            assistantRepo.listRemindersForCreator(scope, creatorId, { includeFinished: true }),
+          listAll: () => assistantRepo.listReminders(scope),
+        },
+        proposeDraft: (d) =>
+          assistantRepo.insertDecisionDraftOnce(scope, {
+            ...d,
+            requesterId: input.userId,
+            provenance: `Assistant ${d.kind} via chat; behaviour=${input.behaviour.id}`,
+            at: now(),
+          }),
+        recordSkillActivity: (skillId, outcome, detail) =>
+          assistantRepo.recordSkillActivity(scope, {
+            id: randomUUID(),
+            at: now(),
+            behaviourId: input.behaviour.id,
+            skillId,
+            actorId: input.userId,
+            outcome,
+            ...(detail === undefined ? {} : { detail }),
+          }),
         searchArchive: (query) => searchArchive(input.userId, query),
         resources: () => resources,
         fetchResource,
@@ -624,7 +659,6 @@ export const createAssistantService = (
                 braveWebSearch({ apiKey: currentConfig.BRAVE_SEARCH_API_KEY! }, query)),
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
-        reminders: () => assistantRepo.listReminders(scope),
         cacheSearch: (q) =>
           resourceCacheRepo.searchChunks(scope, {
             query: q.query,
@@ -716,7 +750,7 @@ export const createAssistantService = (
        */
       const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
         const loopDetail = (): AssistantTraceDetail => ({
-          sections: traceSections(context, historyForLoop, userText),
+          sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
           history: historyForLoop,
           attempts: failed.attempts,
           toolCalls: failed.toolCalls,
@@ -826,6 +860,13 @@ export const createAssistantService = (
       // limited and never recorded.
       const reserveCall = (entry: ChainEntry) =>
         reserveEntryCall(instance, entry, scope.guildId, now());
+      // Task 20: the sources line contains only known resources whose tags the
+      // answer actually used. A web-only answer keeps just the Brave attribution.
+      const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
+      // The same check gates the loop's "Cite as" tags: only enabled,
+      // known resources are citable, so an untrusted title never prints raw.
+      const isKnownResource = (source: { title: string; url: string }): boolean =>
+        knownResource.has(`${source.title}${source.url}`);
       const loop = await runToolLoop({
         chain: chainEntries,
         systemInstruction:
@@ -857,6 +898,7 @@ export const createAssistantService = (
         guildId: scope.guildId,
         now,
         citations,
+        isCitable: isKnownResource,
       });
       // The loop records exactly one attempt per entry, in chain order, so
       // each attempt lines up with the entry that produced it.
@@ -881,26 +923,28 @@ export const createAssistantService = (
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
       const { text: citedText, cited } = applyCitations(loop.text, citations);
-      // Task 20: the sources line contains only known resources whose tags the
-      // answer actually used. A web-only answer keeps just the Brave attribution.
-      const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
+      // B2b: code-written action summaries travel verbatim — after the answer
+      // text, before the Brave attribution and the Sources line — never
+      // through the model.
+      const summaryBlock =
+        loop.actionSummaries.length === 0 ? '' : `\n\n${loop.actionSummaries.join('\n\n')}`;
       // The escalation summary is built from the loop text below — before
       // the sources line is appended — so a ticket never carries it. Only a
       // normal answer grows the line.
-      const baseAnswer = loop.web ? `${citedText}${BRAVE_ATTRIBUTION}` : citedText;
+      const baseAnswer = loop.web
+        ? `${citedText}${summaryBlock}${BRAVE_ATTRIBUTION}`
+        : `${citedText}${summaryBlock}`;
       const answerText =
         baseAnswer +
         sourcesLine(
-          cited
-            .filter((source) => knownResource.has(`${source.title}${source.url}`))
-            .map((source) => ({
-              title: source.title,
-              url: source.url,
-              ...(source.heading === undefined ? {} : { heading: source.heading }),
-            })),
+          cited.filter(isKnownResource).map((source) => ({
+            title: source.title,
+            url: source.url,
+            ...(source.heading === undefined ? {} : { heading: source.heading }),
+          })),
         );
       sink.detail = {
-        sections: traceSections(context, historyForLoop, userText),
+        sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
         history: historyForLoop,
         attempts: loop.attempts,
         toolCalls: loop.toolCalls,
@@ -909,6 +953,8 @@ export const createAssistantService = (
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
+        // B2b: the summaries appended to the posted answer, in call order.
+        ...(loop.actionSummaries.length === 0 ? {} : { actions: [...loop.actionSummaries] }),
       };
       sink.trace = {
         ...(loop.model === undefined ? {} : { model: loop.model }),
@@ -1122,7 +1168,14 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             askerName: input.accountUsername,
           },
           sink,
-          { skipCallerGate: true, skipMemberMemories: true, skipTicketWrite: true },
+          {
+            skipCallerGate: true,
+            skipMemberMemories: true,
+            skipTicketWrite: true,
+            // Fix 1: the dashboard sandbox never posts to Discord, so it
+            // never acts either — no reminders, drafts, or tickets.
+            skipActions: true,
+          },
         );
         if (!result.ok) outcome = 'refused';
       } catch (err) {

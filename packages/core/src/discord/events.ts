@@ -151,6 +151,12 @@ export interface MessageEvent extends Base {
   messageId: Snowflake;
   authorId: Snowflake | undefined;
   /**
+   * The author's display name: member nick, else global name, else username.
+   * `undefined` when the author is unknown (an uncached delete names nobody).
+   * Member-controlled, so every consumer treats it as untrusted.
+   */
+  authorDisplayName: string | undefined;
+  /**
    * `message.author.bot` — true for this bot, any other bot, and a webhook.
    * `false` when the author is unknown (an uncached delete names nobody).
    *

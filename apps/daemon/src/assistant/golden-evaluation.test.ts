@@ -72,6 +72,7 @@ const message = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   channelId,
   messageId: '890123456789012345',
   authorId: userId,
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: `<@&${bananaRole}> Where is the handbook?`,
   editedTimestampMs: undefined,
@@ -212,6 +213,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       respond,
       enqueue: (input) => {
         queued.push(input.payload);
+        return { enqueued: true };
       },
       sealToken: (ref) => sealer.seal(ref),
       now: () => 1,

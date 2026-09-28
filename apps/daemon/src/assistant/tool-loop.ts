@@ -17,7 +17,7 @@ import type { ChainEntry } from './model-chain.js';
 import type { QuotaLedger } from './quota-ledger.js';
 import type { AssistantToolResult, ToolSource } from './tools.js';
 import { attemptReasonFor } from './provider-failure.js';
-import { escapeUntrustedClose } from './untrusted.js';
+import { escapeUntrustedClose, neutraliseMarkers } from './untrusted.js';
 
 /**
  * The id argument of every follow-up tool (ADR 0071). Round 2+ offers only
@@ -53,6 +53,12 @@ export interface LoopResult {
   readonly guard: AssistantTrace['guard'];
   readonly sources: readonly ToolSource[];
   readonly web: boolean;
+  /**
+   * B2b: the code-written confirmations from ok tool results
+   * (`AssistantToolResult.actionSummary`), in call order. The service appends
+   * them to the posted answer and records them on the trace.
+   */
+  readonly actionSummaries: readonly string[];
   /**
    * Present when every entry was skipped or failed and at least one failure
    * or skip was a daily cap: the earliest known reset, if any. The caller
@@ -171,12 +177,18 @@ export const runToolLoop = async (input: {
   readonly logger?: Pick<Logger, 'warn'> | undefined;
   readonly guildId?: string | undefined;
   readonly citations?: CitationRegistry | undefined;
+  /**
+   * Whether a tool result's source may be tagged for citation. Absent means
+   * no source is citable and no "Cite as" line is emitted.
+   */
+  readonly isCitable?: ((source: { title: string; url: string }) => boolean) | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
   const attempts: Attempt[] = [];
   const toolCalls: TraceToolCall[] = [];
   const sources: ToolSource[] = [];
+  const actionSummaries: string[] = [];
   let web = false;
   let promptTokens = 0;
   let completionTokens = 0;
@@ -301,6 +313,7 @@ export const runToolLoop = async (input: {
       attempts,
       toolCalls,
       sources,
+      actionSummaries,
       budgets,
       recordUsage,
       noteError: (err) => {
@@ -320,6 +333,7 @@ export const runToolLoop = async (input: {
       guildId: input.guildId,
       now: input.now,
       citations: input.citations,
+      isCitable: input.isCitable,
       entryMs: ms,
     });
     if (answered !== undefined) {
@@ -329,6 +343,7 @@ export const runToolLoop = async (input: {
         toolCalls,
         usage: usageOf(),
         sources,
+        actionSummaries,
         web,
         ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
@@ -346,6 +361,7 @@ export const runToolLoop = async (input: {
     usage: usageOf(),
     guard: { removed: [] },
     sources,
+    actionSummaries,
     web,
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
@@ -382,6 +398,16 @@ const refusedMessage = (call: ToolCall, reason: string): GenerationMessage => ({
   text: `Refused: ${reason}`,
 });
 
+/** A tool-result title made safe to print in a "Cite as" line. */
+const cleanCitationTitle = (title: string): string =>
+  neutraliseMarkers(title)
+    .replaceAll('[', '')
+    .replaceAll(']', '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+    .trim();
+
 const runEntry = async (deps: {
   readonly entry: ChainEntry;
   readonly systemInstruction: string;
@@ -395,6 +421,8 @@ const runEntry = async (deps: {
   readonly attempts: Attempt[];
   readonly toolCalls: TraceToolCall[];
   readonly sources: ToolSource[];
+  /** B2b: per-request summaries, shared across entries so failover never resets them. */
+  readonly actionSummaries: string[];
   /** Per-request budgets, shared across entries so failover never resets them. */
   readonly budgets: { callsUsed: number; resultChars: number };
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
@@ -405,6 +433,7 @@ const runEntry = async (deps: {
   readonly logger?: Pick<Logger, 'warn'> | undefined;
   readonly guildId?: string | undefined;
   readonly citations?: CitationRegistry | undefined;
+  readonly isCitable?: ((source: { title: string; url: string }) => boolean) | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
 }): Promise<EntrySuccess | undefined> => {
@@ -522,6 +551,9 @@ const runEntry = async (deps: {
     calls: readonly ToolCall[],
   ): Promise<readonly GenerationMessage[]> => {
     const toolMessages: GenerationMessage[] = [];
+    // Hoisted so the tag call below needs no assertion: a `const` keeps its
+    // narrowing inside the citation closure.
+    const citations = deps.citations;
     for (let index = 0; index < calls.length; index += 1) {
       const call = calls[index]!;
       const traceBase = { round, name: call.name, args: call.args ?? {} };
@@ -608,6 +640,8 @@ const runEntry = async (deps: {
       if (result.ok) {
         for (const source of result.sources) deps.sources.push(source);
         if (result.web === true) deps.recordWeb();
+        // B2b: only ok results carry a summary — a refused tool adds none.
+        if (result.actionSummary !== undefined) deps.actionSummaries.push(result.actionSummary);
       }
       deps.toolCalls.push({
         ...traceBase,
@@ -616,13 +650,19 @@ const runEntry = async (deps: {
         preview: result.text.slice(0, TOOL_RESULT_PREVIEW_CHARS),
       });
       const citationText =
-        result.ok && deps.citations !== undefined && result.sources.length > 0
-          ? `\n\nCite as: ${result.sources
-              .map((source) => {
-                const tag = deps.citations!.tag({ title: source.title, url: source.url });
-                return `[${tag}] ${source.title}`;
-              })
-              .join('; ')}`
+        result.ok && citations !== undefined
+          ? (() => {
+              const entries: string[] = [];
+              for (const source of result.sources) {
+                // Untrusted titles are never printed raw: a source is tagged
+                // only when the caller says it is citable, and the printed
+                // title is neutralised, bracket-free, single-line and capped.
+                if (deps.isCitable?.(source) !== true) continue;
+                const tag = citations.tag({ title: source.title, url: source.url });
+                entries.push(`[${tag}] ${cleanCitationTitle(source.title)}`);
+              }
+              return entries.length === 0 ? '' : `\n\nCite as: ${entries.join('; ')}`;
+            })()
           : '';
       toolMessages.push({
         role: 'tool',

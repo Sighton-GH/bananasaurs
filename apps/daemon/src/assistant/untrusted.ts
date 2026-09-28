@@ -1,9 +1,5 @@
 /**
- * Untrusted content (quoted Discord messages, cached resource text, tool
- * results) travels inside `[UNTRUSTED …]…[/UNTRUSTED …]` envelopes, never as
- * instructions (hard rule 3). A closing marker inside the content itself
- * would end the envelope early and promote the rest, so every envelope entry
- * point neutralises it first through this one helper.
+ * Re-export of the shared core neutralisers (slice 1 final fix, step 1).
+ * Existing `./untrusted.js` imports keep working unchanged.
  */
-export const escapeUntrustedClose = (content: string): string =>
-  content.replace(/\[\/UNTRUSTED/gi, '[/untrusted-text');
+export { escapeUntrustedClose, neutraliseMarkers } from '@bananasaurs/core';

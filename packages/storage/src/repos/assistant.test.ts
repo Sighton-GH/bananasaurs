@@ -713,6 +713,57 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
     expect(getTrace(s, 'theirs')).toBeDefined();
     expect(getTrace(other, 'mine')).toBeDefined();
   });
+
+  it('deletes every conversation trace where the member took part, not just their own', () => {
+    const OTHER_GUILD = parseGuildId('999999999999999999');
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const s = t.scopes.forGuild(G);
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    createConversation(s, {
+      conversationId: 'conv-c1',
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'shared question',
+      source: 'discord',
+      at: 1_000,
+    });
+    appendTurn(s, {
+      conversationId: 'conv-c1',
+      turnId: 'turn-a',
+      at: 1_000,
+      role: 'user',
+      authorId: MEMBER,
+      authorName: 'Member A',
+      text: 'first question',
+    });
+    appendTurn(s, {
+      conversationId: 'conv-c1',
+      turnId: 'turn-b',
+      at: 1_001,
+      role: 'user',
+      authorId: OTHER,
+      authorName: 'Member B',
+      text: 'second question',
+    });
+    insertTrace(
+      s,
+      traceFixture({ traceId: 'trace-a1', userId: MEMBER, conversationId: 'conv-c1' }),
+    );
+    insertTrace(s, traceFixture({ traceId: 'trace-b1', userId: OTHER, conversationId: 'conv-c1' }));
+    insertTrace(s, traceFixture({ traceId: 'trace-b2', userId: OTHER, conversationId: 'conv-c2' }));
+    insertTrace(
+      other,
+      traceFixture({ traceId: 'trace-other', userId: MEMBER, conversationId: 'conv-c1' }),
+    );
+
+    forgetMember(s, MEMBER, 3_000);
+
+    expect(getTrace(s, 'trace-a1')).toBeUndefined();
+    expect(getTrace(s, 'trace-b1')).toBeUndefined();
+    expect(getTrace(s, 'trace-b2')).toBeDefined();
+    expect(getTrace(other, 'trace-other')).toBeDefined();
+  });
 });
 
 describe('setResourceEnabled (Task 8c)', () => {

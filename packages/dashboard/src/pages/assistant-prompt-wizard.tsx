@@ -243,6 +243,18 @@ function Wizard({
     setEditedPrompt(undefined);
   };
 
+  /**
+   * A group of friends reads as casual: picking that server type relaxes the
+   * tone, but only while the tone still has its default value — an explicit
+   * choice is never overridden. Club and team leave the tone as it is.
+   */
+  const pickServerType = (serverType: PromptWizardAnswers['serverType']): void =>
+    update(
+      serverType === 'friends' && answers.tone === DEFAULT_WIZARD_ANSWERS.club.tone
+        ? { ...answers, serverType, tone: 'casual' }
+        : { ...answers, serverType },
+    );
+
   const save = async (): Promise<void> => {
     if (!saveable) {
       toast({
@@ -319,19 +331,19 @@ function Wizard({
                   name="wizard-server-type"
                   label="A club"
                   checked={answers.serverType === 'club'}
-                  onPick={() => update({ ...answers, serverType: 'club' })}
+                  onPick={() => pickServerType('club')}
                 />
                 <RadioRow
                   name="wizard-server-type"
                   label="A team"
                   checked={answers.serverType === 'team'}
-                  onPick={() => update({ ...answers, serverType: 'team' })}
+                  onPick={() => pickServerType('team')}
                 />
                 <RadioRow
                   name="wizard-server-type"
                   label="A group of friends"
                   checked={answers.serverType === 'friends'}
-                  onPick={() => update({ ...answers, serverType: 'friends' })}
+                  onPick={() => pickServerType('friends')}
                 />
               </ul>
             </section>

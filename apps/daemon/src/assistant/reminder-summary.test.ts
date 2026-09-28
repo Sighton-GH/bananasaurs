@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeRecurrence, reminderSummary } from './reminder-summary.js';
+import { describeRecurrence, reminderSummary, summaryField } from './reminder-summary.js';
 
 const recurrence = (
   pattern: { kind: string; days?: number[]; everyWeeks?: number; dayOfMonth?: number },
@@ -103,5 +103,75 @@ describe('reminderSummary', () => {
     const when = reminderSummary('set', base).split('\n')[1]?.replace('• When: ', '');
     expect(text).toBe(`🗑️ Reminder cancelled: **Bring the charger** (${when})`);
     expect(text.split('\n')).toHaveLength(1);
+  });
+});
+
+describe('summaryField', () => {
+  it('collapses whitespace and trims', () => {
+    expect(summaryField('  a \n\t b  ')).toBe('a b');
+  });
+
+  it('escapes Discord markdown characters', () => {
+    expect(summaryField('x**y')).toBe('x\\*\\*y');
+    expect(summaryField('a\\b `c` _d_ ~e~ |f| >g')).toBe(
+      'a\\\\b \\`c\\` \\_d\\_ \\~e\\~ \\|f\\| \\>g',
+    );
+  });
+
+  it('neutralises mass mentions in any case and mention syntax', () => {
+    expect(summaryField('@everyone up')).toBe('@\u200beveryone up');
+    expect(summaryField('@HERE we go')).toBe('@\u200bHERE we go');
+    expect(summaryField('hi <@123> <#456> </cmd:789>')).toBe(
+      'hi <\u200b@123\\> <\u200b#456\\> <\u200b/cmd:789\\>',
+    );
+  });
+
+  it('neutralises hostile text interpolated into a summary', () => {
+    const text = reminderSummary('set', {
+      text: '**bold**\nline two @everyone <@123> <#456> <@&789>',
+      dueAt: Date.UTC(2026, 9, 29, 16, 0),
+      timeZone: 'America/Vancouver',
+      channelName: 'general',
+      memberNames: [],
+      roleNames: [],
+      everyone: false,
+      here: false,
+    });
+    const lines = text.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe(
+      '✅ Reminder set: **\\*\\*bold\\*\\* line two @\u200beveryone <\u200b@123\\> <\u200b#456\\> <\u200b@&789\\>**',
+    );
+    expect(text).not.toContain('@everyone');
+    expect(text).not.toContain('<@');
+    expect(text).not.toContain('<#');
+  });
+
+  it('escapes markdown in member names', () => {
+    const text = reminderSummary('set', {
+      text: 'Bring the charger',
+      dueAt: Date.UTC(2026, 9, 29, 16, 0),
+      timeZone: 'America/Vancouver',
+      channelName: 'general',
+      memberNames: ['x**y'],
+      roleNames: ['Mods'],
+      everyone: false,
+      here: false,
+    });
+    expect(text.split('\n')[3]).toBe('• Pings: @Mods, @x\\*\\*y');
+  });
+
+  it('leaves plain text unchanged apart from trimming', () => {
+    const text = reminderSummary('set', {
+      text: '  Bring the charger  ',
+      dueAt: Date.UTC(2026, 9, 29, 16, 0),
+      timeZone: 'America/Vancouver',
+      channelName: 'general',
+      memberNames: ['Ava'],
+      roleNames: ['Mods'],
+      everyone: false,
+      here: false,
+    });
+    expect(text.split('\n')[0]).toBe('✅ Reminder set: **Bring the charger**');
   });
 });

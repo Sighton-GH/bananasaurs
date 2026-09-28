@@ -311,6 +311,24 @@ describe('runAssistantTool', () => {
     expect(own.text).not.toContain('Someone else');
   });
 
+  it('records a my_reminders throw as failed', async () => {
+    const p = ports({
+      reminderStore: {
+        insert: () => 'created' as const,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => {
+          throw new Error('db down');
+        },
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool({ name: 'my_reminders', args: {} }, p);
+    expect(result).toMatchObject({ ok: false, text: 'The tool failed: db down' });
+    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'db down');
+  });
+
   it('gives the server card and the channels the member can view', async () => {
     const result = await runAssistantTool({ name: 'server_info', args: {} }, ports());
     expect(result.text).toContain('SFU Racerbot builds autonomous cars.');
@@ -339,7 +357,7 @@ describe('acting tools (B2a)', () => {
     return {
       p: ports({
         reminderStore: {
-          insert: (reminder: Reminder) => {
+          insert: (reminder: Omit<Reminder, 'guildId'>) => {
             if ([...rows.values()].some((r) => r.dedupeKey === reminder.dedupeKey))
               return 'duplicate';
             rows.set(reminder.id, storedReminder({ ...reminder }));
@@ -425,6 +443,58 @@ describe('acting tools (B2a)', () => {
     ).resolves.toMatchObject({ ok: false });
   });
 
+  it('refuses an invalid repeat without storing anything', async () => {
+    const insert = vi.fn(() => 'created' as const);
+    const p = ports({
+      reminderStore: {
+        insert,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    await expect(
+      runAssistantTool(
+        {
+          name: 'set_reminder',
+          args: { text: 'hi', when: '2026-09-24T12:30:00-07:00', repeat: { kind: 'weekly' } },
+        },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false, text: 'The repeat pattern was not valid.' });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it('refuses overlong text, members, roles and empty text without storing anything', async () => {
+    const insert = vi.fn(() => 'created' as const);
+    const p = ports({
+      reminderStore: {
+        insert,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const when = '2026-09-24T12:30:00-07:00';
+    const cases = [
+      { text: 'x'.repeat(1501), when },
+      { text: '', when },
+      { text: 'hi', when, members: Array(26).fill('user') },
+      { text: 'hi', when, roles: Array(11).fill('role') },
+    ];
+    for (const args of cases) {
+      await expect(runAssistantTool({ name: 'set_reminder', args }, p)).resolves.toMatchObject({
+        ok: false,
+        text: 'The tool arguments were not valid.',
+      });
+    }
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it('passes a target problem through without inserting', async () => {
     const insert = vi.fn(() => 'created' as const);
     const p = ports({
@@ -454,10 +524,10 @@ describe('acting tools (B2a)', () => {
   });
 
   it('is idempotent on the same invocation and unique across two calls', async () => {
-    const inserted: Reminder[] = [];
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
     const p = ports({
       reminderStore: {
-        insert: (reminder: Reminder) => {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
           if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
           inserted.push(reminder);
           return 'created';
@@ -477,7 +547,7 @@ describe('acting tools (B2a)', () => {
     const replay = ports({
       invocationKey: 'msg1',
       reminderStore: {
-        insert: (reminder: Reminder) => {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
           if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
           inserted.push(reminder);
           return 'created';
@@ -501,10 +571,10 @@ describe('acting tools (B2a)', () => {
   });
 
   it('builds a weekly recurrence from days', async () => {
-    const inserted: Reminder[] = [];
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
     const p = ports({
       reminderStore: {
-        insert: (reminder: Reminder) => {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
           inserted.push(reminder);
           return 'created';
         },
@@ -601,6 +671,26 @@ describe('acting tools (B2a)', () => {
       p,
     );
     expect(again).toMatchObject({ ok: false, text: "That reminder can't be cancelled now." });
+  });
+
+  it('refuses a cancel by another member and keeps the reminder scheduled', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', text: 'Bring the charger' }));
+    const stranger = ports({
+      userId: '999999999999999999',
+      reminderStore: p.reminderStore,
+    });
+    await expect(
+      runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'rem1' } }, stranger),
+    ).resolves.toMatchObject({ ok: false, text: 'You can only change reminders you set.' });
+    expect(rows.get('rem1')?.status).toBe('scheduled');
+  });
+
+  it('refuses a cancel for a missing id', async () => {
+    const { p } = reminderPorts();
+    await expect(
+      runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'missing' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
   });
 
   it('files memory and decision proposals with review wording', async () => {

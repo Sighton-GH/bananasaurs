@@ -475,6 +475,7 @@ describe('messages', () => {
         isPrivateThread: false,
         messageId: MESSAGE,
         authorId: USER,
+        authorDisplayName: 'member',
         authorIsBot: false,
         content: 'hello',
         editedTimestampMs: undefined,
@@ -485,6 +486,30 @@ describe('messages', () => {
         attachments: [],
       },
     ]);
+  });
+
+  it('carries the member nickname as the display name when present', () => {
+    const h = harness();
+    h.packet('MessageCreate', messageCreatePacket({ member: { nick: 'Nick', roles: [] } }));
+    expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'Nick' });
+  });
+
+  it('falls back to the global name, then the username', () => {
+    const h = harness();
+    h.packet(
+      'MessageCreate',
+      messageCreatePacket({
+        id: '444444444444444445',
+        author: { id: USER, username: 'member', global_name: 'Global', discriminator: '0' },
+      }),
+    );
+    expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'Global' });
+  });
+
+  it('uses the username when there is no nickname or global name', () => {
+    const h = harness();
+    h.packet('MessageCreate', messageCreatePacket({ id: '444444444444444446' }));
+    expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'member' });
   });
 
   /**
