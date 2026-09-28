@@ -131,6 +131,15 @@ function WhoAction({
                 'PUT',
               );
       if (result !== undefined) {
+        // Only the /mod slash command remains: the created behaviour answers
+        // the bot tag, but only when no other behaviour already does, so the
+        // single-flag invariant holds.
+        if (
+          data.behaviours.length === 0 &&
+          !data.behaviours.some((b) => b.answersBotTag === true)
+        ) {
+          await session.write(BOT_TAG_URL, { behaviourId: 'default' }, 'PUT');
+        }
         toast({ tone: 'ok', title: 'Saved who can ask' });
         reload();
       }
