@@ -57,6 +57,12 @@ const FULL = {
   resources: [],
   reminders: [],
   skills: SKILLS,
+  skillScopes: {
+    'search-club': { mode: 'everyone', roleIds: [], isDefault: true },
+    'create-reminder': { mode: 'roles', roleIds: ['role-club-member'], isDefault: false },
+    'send-reminder': { mode: 'owner', roleIds: [], isDefault: true },
+  },
+  skillItemCounts: { 'create-reminder': 3 },
   activity: [
     {
       id: 'a1',
