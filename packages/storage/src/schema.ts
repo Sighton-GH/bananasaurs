@@ -2332,6 +2332,7 @@ export const assistantConversationTurns = sqliteTable(
     text: text('text').notNull(),
     traceId: text('trace_id'),
     feedback: text('feedback'),
+    joinRule: text('join_rule'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.turnId] }),
@@ -2345,6 +2346,10 @@ export const assistantConversationTurns = sqliteTable(
     check(
       'assistant_conversation_turns_feedback',
       sql`(${t.feedback} IS NULL OR ${t.feedback} IN ('up','down'))`,
+    ),
+    check(
+      'assistant_conversation_turns_join_rule',
+      sql`(${t.joinRule} IS NULL OR ${t.joinRule} IN ('reply-to-bot','reply-to-turn','follow-up','thread','channel-follow-up','quoted-reply','reply-to-unknown-bot-message','new-topic','fresh'))`,
     ),
     index('assistant_conversation_turns_conversation').on(t.guildId, t.conversationId, t.at),
   ],
@@ -2375,5 +2380,38 @@ export const assistantConversationMessages = sqliteTable(
     check('assistant_conversation_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_conversation_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
     check('assistant_conversation_messages_role', sql`${t.role} IN ('user','assistant')`),
+  ],
+);
+
+export const assistantConversationLinks = sqliteTable(
+  'assistant_conversation_links',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    linkedConversationId: text('linked_conversation_id').notNull(),
+    kind: text('kind').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.conversationId, t.linkedConversationId, t.kind] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.linkedConversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_links_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check(
+      'assistant_conversation_links_not_self',
+      sql`${t.conversationId} <> ${t.linkedConversationId}`,
+    ),
+    check(
+      'assistant_conversation_links_kind',
+      sql`${t.kind} IN ('same-channel','thread-parent','recalled')`,
+    ),
+    index('assistant_conversation_links_linked').on(t.guildId, t.linkedConversationId),
   ],
 );
