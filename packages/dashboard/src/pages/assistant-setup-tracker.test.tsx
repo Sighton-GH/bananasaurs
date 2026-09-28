@@ -313,7 +313,7 @@ describe('SetupTracker', () => {
     );
     expect(
       screen.getByText(
-        'Members can ask in Discord with /ask, by tagging @Bananasaurs, or by mentioning @Member.',
+        'Members ask by tagging @Bananasaurs in Discord, or by mentioning @Member.',
       ),
     ).toBeTruthy();
   });
