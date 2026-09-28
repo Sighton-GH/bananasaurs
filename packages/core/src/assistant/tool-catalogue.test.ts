@@ -181,6 +181,13 @@ describe('TOOL_CATALOGUE', () => {
     expect(refresh.rounds).toBe('first');
   });
 
+  it('gives search_archive an optional from for checking one member (ADR 0090 D3)', () => {
+    const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_archive')!;
+    expect(search.parameters.properties.from).toMatchObject({ type: 'string', maxLength: 100 });
+    expect(search.parameters.required).toEqual(['query']);
+    expect(search.description).toContain('pass their name as from');
+  });
+
   it('gives search_sources.sourceIds array items with a bound of 10', () => {
     const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_sources')!;
     expect(search.parameters.properties.sourceIds).toMatchObject({

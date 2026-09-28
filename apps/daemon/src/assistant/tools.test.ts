@@ -150,6 +150,16 @@ describe('toolDeclarations', () => {
     expect(hidden).toContain('search_archive');
   });
 
+  it('declares search_archive with an optional from for checking one member', () => {
+    const search = toolDeclarations(ports()).find((tool) => tool.name === 'search_archive')!;
+    const params = search.parameters as unknown as {
+      readonly properties: Readonly<Record<string, unknown>>;
+      readonly required?: readonly string[];
+    };
+    expect(Object.keys(params.properties)).toEqual(expect.arrayContaining(['query', 'from']));
+    expect(params.required).toEqual(['query']);
+  });
+
   it('never drifts from TOOL_CATALOGUE: every declaration equals its catalogue entry', () => {
     const declared = toolDeclarations(ports());
     expect(declared).toHaveLength(TOOL_CATALOGUE.length);
