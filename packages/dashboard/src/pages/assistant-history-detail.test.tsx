@@ -29,7 +29,12 @@ const DETAIL = {
     finishReason: 'stop',
     usage: { promptTokens: 100, completionTokens: 20, thinkingTokens: 10 },
     sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
-    toolsOffered: ['search_sources', 'set_reminder'],
+    included: {
+      toolsOffered: ['search_sources', 'set_reminder'],
+      snippetChunkIds: [],
+      quote: false,
+      historyTurns: 0,
+    },
     toolCalls: [
       {
         round: 1,
@@ -110,13 +115,13 @@ describe('AssistantHistoryDetailPage', () => {
     );
   });
 
-  it('says tools were not recorded for a pre-G3 trace', async () => {
+  it('says tools were not recorded for a pre-included trace', async () => {
     stubFetch([
       {
         url: '/api/assistant/traces/trace-1',
         body: {
           ...DETAIL,
-          trace: { ...DETAIL.trace, toolsOffered: undefined },
+          trace: { ...DETAIL.trace, included: undefined },
         },
       },
     ]);

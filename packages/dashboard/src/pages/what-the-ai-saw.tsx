@@ -1,5 +1,4 @@
 import { useCallback, useState, type ReactElement } from 'react';
-import type { AssistantTrace } from '@bananasaurs/core';
 import { ApiError } from '../api.js';
 import { traceUrl, type TraceDetailResponse } from '../api/traces.js';
 import { useSession } from '../app/session.js';
@@ -47,35 +46,15 @@ export interface TraceIncluded {
   readonly historyTurns?: number;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
-
-const asStringList = (value: unknown): readonly string[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  const items: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') return undefined;
-    items.push(item);
-  }
-  return items;
-};
-
-/** Reads `trace.included` defensively: the field postdates this branch's `AssistantTrace`. */
-export const includedOf = (trace: AssistantTrace): TraceIncluded | undefined => {
-  if (!('included' in trace)) return undefined;
-  const raw: unknown = trace.included;
-  if (!isRecord(raw)) return undefined;
-  const toolsOffered = asStringList(raw['toolsOffered']);
-  const snippetChunkIds = asStringList(raw['snippetChunkIds']);
-  const quoteValue: unknown = raw['quote'];
-  const turnsValue: unknown = raw['historyTurns'];
+/** Reads the trace's typed `included` blocks; absent on rows written before ADR 0088. */
+export const includedOf = (trace: TraceDetailResponse['trace']): TraceIncluded | undefined => {
+  const included = trace.included;
+  if (included === undefined) return undefined;
   return {
-    ...(toolsOffered !== undefined ? { toolsOffered } : {}),
-    ...(snippetChunkIds !== undefined ? { snippetChunkIds } : {}),
-    ...(typeof quoteValue === 'boolean' ? { quote: quoteValue } : {}),
-    ...(typeof turnsValue === 'number' && Number.isInteger(turnsValue)
-      ? { historyTurns: turnsValue }
-      : {}),
+    toolsOffered: included.toolsOffered,
+    snippetChunkIds: included.snippetChunkIds,
+    quote: included.quote,
+    historyTurns: included.historyTurns,
   };
 };
 
