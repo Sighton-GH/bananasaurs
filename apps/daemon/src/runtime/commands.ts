@@ -1,6 +1,6 @@
 import type { Client } from 'discord.js';
 import { safeLogFields, type Config, type Logger } from '@bananasaurs/core';
-import { RELEASE_3_COMMANDS, registerGuildCommands } from '@bananasaurs/discord/rest';
+import { registerGuildCommands } from '@bananasaurs/discord/rest';
 
 /**
  * Telling Discord which slash commands exist (ADR 0032).
@@ -25,10 +25,8 @@ import { RELEASE_3_COMMANDS, registerGuildCommands } from '@bananasaurs/discord/
  * `login()` is still the right barrier: a rejected login means Discord refused
  * the token, and there is no point spending a request to be told so again.
  *
- * **Never throws.** A bot whose `/status` is missing or stale still connects,
- * moderates, logs and serves the dashboard; that is a degraded process, not a
- * broken one, and taking it down over a command list would be the larger
- * failure (ADR 0032).
+  * **Never throws.** A guild that refuses registration does not prevent the
+  * bot from connecting, moderating, logging and serving the dashboard (ADR 0032).
  */
 export async function announceCommands(
   config: Config,
@@ -41,9 +39,7 @@ export async function announceCommands(
     applicationId: config.DISCORD_APPLICATION_ID,
     // The allowlist, looped rather than indexed (CLAUDE.md rule 2).
     guildIds: config.BANANASAURS_GUILD_ALLOWLIST,
-    // Release 3: `/status` and `/mod` plus the assistant command set,
-    // explicit rather than the function's own `RELEASE_1_COMMANDS` default.
-    commands: RELEASE_3_COMMANDS,
+    // ADR 0086 leaves only `/mod` registered.
   });
 
   for (const result of results) {
@@ -65,7 +61,7 @@ export async function announceCommands(
           outcome: 'commands-not-registered',
           err: result.error,
         }),
-        'slash commands could not be registered; /status will be missing or stale',
+        'slash commands could not be registered; /mod will be missing or stale',
       );
     }
   }
