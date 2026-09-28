@@ -123,8 +123,15 @@ const patternOf = (draft: RecurrenceDraft): ReminderRecurrencePatternView => {
 
 const recurrenceBodyOf = (
   draft: RecurrenceDraft,
+  original: ReminderView['recurrence'],
 ): { pattern: ReminderRecurrencePatternView; endAt?: number; maxCount?: number } => {
-  const endAt = draft.endAt === '' ? undefined : fromLocalInput(draft.endAt);
+  const initialEndAtInput = original?.endAt === undefined ? '' : toLocalInput(original.endAt);
+  const endAt =
+    draft.endAt === initialEndAtInput
+      ? original?.endAt
+      : draft.endAt === ''
+        ? undefined
+        : fromLocalInput(draft.endAt);
   const parsedMax = Number.parseInt(draft.maxCount, 10);
   return {
     pattern: patternOf(draft),
@@ -151,7 +158,7 @@ function ReminderEditForm({
   const [initialRecurrence] = useState(() =>
     draftOf(reminder) === undefined
       ? undefined
-      : JSON.stringify(recurrenceBodyOf(draftOf(reminder)!)),
+      : JSON.stringify(recurrenceBodyOf(draftOf(reminder)!, reminder.recurrence)),
   );
   const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
@@ -182,7 +189,7 @@ function ReminderEditForm({
     const nextDue = dueInput === toLocalInput(reminder.dueAt) ? undefined : fromLocalInput(dueInput);
     if (nextDue !== undefined) patch['dueAt'] = nextDue;
     if (draft !== undefined && reminder.recurrence !== undefined) {
-      const next = recurrenceBodyOf(draft);
+      const next = recurrenceBodyOf(draft, reminder.recurrence);
       if (JSON.stringify(next) !== initialRecurrence) patch['recurrence'] = next;
     }
     if (Object.keys(patch).length === 0) {
