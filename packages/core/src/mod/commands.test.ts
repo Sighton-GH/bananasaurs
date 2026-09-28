@@ -6,7 +6,7 @@ import type { SlashCommandEvent } from '../discord/events.js';
 import type { InteractionRef, OutgoingMessage, Snowflake } from '../discord/port.js';
 import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
 import { parseGuildId } from '../ids.js';
-import type { SlashResponder } from '../ops/commands/status-slash.js';
+import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import {
   createModCommandSubscriber,
   MAX_TIMEOUT_MS,

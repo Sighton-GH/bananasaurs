@@ -4,7 +4,7 @@ import type { AuthzStore } from '../authz.js';
 import type { SlashCommandEvent } from '../discord/events.js';
 import type { InteractionRef, OutgoingMessage, Snowflake } from '../discord/port.js';
 import { parseGuildId } from '../ids.js';
-import type { SlashResponder } from '../ops/commands/status-slash.js';
+import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import {
   handleHistory,
   type HistoryCase,

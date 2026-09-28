@@ -209,13 +209,10 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       botUserId: '901234567890123456',
       guildId: guildA,
       service,
-      defer: vi.fn(async () => undefined),
-      respond,
       enqueue: (input) => {
         queued.push(input.payload);
         return { enqueued: true };
       },
-      sealToken: (ref: string) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
     });
