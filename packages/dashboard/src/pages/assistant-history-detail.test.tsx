@@ -29,6 +29,7 @@ const DETAIL = {
     finishReason: 'stop',
     usage: { promptTokens: 100, completionTokens: 20, thinkingTokens: 10 },
     sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
+    toolsOffered: ['search_sources', 'set_reminder'],
     toolCalls: [
       {
         round: 1,
@@ -96,6 +97,7 @@ describe('AssistantHistoryDetailPage', () => {
     expect(screen.getByText('system · 12 characters · about 3 tokens')).toBeTruthy();
     expect(screen.getByText('Be helpful.')).toBeTruthy();
     // Tool calls: round, tool, arguments, preview, ok/refused with reason.
+    expect(screen.getByText('search_sources, set_reminder')).toBeTruthy();
     expect(screen.getByText('search_sources')).toBeTruthy();
     expect(screen.getByText(/"query": "meeting"/)).toBeTruthy();
     expect(screen.getByText('unknown handle')).toBeTruthy();
@@ -106,6 +108,20 @@ describe('AssistantHistoryDetailPage', () => {
     expect(screen.getByRole('link', { name: 'Meetings' }).getAttribute('href')).toBe(
       'https://example.com/meetings',
     );
+  });
+
+  it('says tools were not recorded for a pre-G3 trace', async () => {
+    stubFetch([
+      {
+        url: '/api/assistant/traces/trace-1',
+        body: {
+          ...DETAIL,
+          trace: { ...DETAIL.trace, toolsOffered: undefined },
+        },
+      },
+    ]);
+    renderDetail();
+    expect(await screen.findByText('not recorded')).toBeTruthy();
   });
 
   it('shows which key each attempt ran on when the label is present', async () => {

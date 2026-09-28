@@ -66,6 +66,8 @@ export const assistantTraceSchema = z.object({
     }),
   ),
   guard: z.object({ removed: z.array(z.string()), blocked: z.string().optional() }),
+  /** Round-1 tool names the loop actually offered the provider; absent on rows written before Task G3. */
+  toolsOffered: z.array(z.string()).optional(),
   timeline: z.array(z.object({ label: z.string(), atMs: z.number().int().nonnegative() })),
   error: z.object({ kind: z.string(), message: z.string() }).optional(),
   discordMessageIds: z.array(z.string()),

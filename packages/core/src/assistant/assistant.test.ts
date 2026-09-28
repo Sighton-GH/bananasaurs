@@ -6,6 +6,7 @@ import {
   createReminder,
   deliverDueReminders,
   enabledResourcesForGuild,
+  LEGACY_BOUNDARIES_SENTENCE,
   LEGACY_TOOL_SENTENCE,
   OUTPUT_RULES,
   resolveAssistantBehaviour,
@@ -25,12 +26,35 @@ const behaviour = {
   callerRoleIds: [],
   systemPrompt: 'Use Canadian English.',
   promptVersion: 1,
-  allowedSkillIds: ['search-club'],
+  preferredSkillIds: ['search-club'],
   resourceIds: ['web'],
   enabled: true,
 };
 
 describe('assistant behaviour and permissions', () => {
+  it('emits the surface-specific guidance and replaces the slash-era fallback', () => {
+    const expected = {
+      'it-services':
+        'Act as the club IT service desk. Prefer exact diagnostics, access steps and escalation paths. Never invent credentials or claim an access change happened.',
+      help: 'Act as the club help desk. Give onboarding and club-process guidance from reviewed sources, cite them, and escalate when evidence is missing.',
+      bananasaurs:
+        'Act as the club assistant. Answer concisely in Canadian English, cite club sources and say when current evidence is missing.',
+      'direct-command': "Answer the member's message; use what you can do when they ask for it.",
+    } as const;
+
+    for (const [surface, instruction] of Object.entries(expected)) {
+      const compiled = compileAssistantContext({
+        behaviour: { ...behaviour, surface: surface as typeof behaviour.surface },
+        serverCard: 'card',
+        resources: [],
+        skills: [],
+        evidence: [],
+      });
+      expect(compiled.systemInstruction).toContain(instruction);
+      expect(compiled.systemInstruction).not.toContain('Follow the explicit command');
+    }
+  });
+
   it('selects different reviewed behaviour by tag and refuses ambiguous tags', () => {
     const itBehaviour = {
       ...behaviour,
@@ -440,6 +464,46 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.systemInstruction).not.toContain('search_sources');
   });
 
+  it('rewrites the old wizard boundaries sentence', () => {
+    const legacyBehaviour = {
+      ...behaviour,
+      systemPrompt: `WHAT YOU HELP WITH\n- Answer questions.${LEGACY_BOUNDARIES_SENTENCE}`,
+    };
+    const compiled = compileAssistantContext({
+      behaviour: legacyBehaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!],
+      evidence: [],
+    });
+    expect(compiled.systemInstruction).toContain(
+      "For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it's outside what you help with.",
+    );
+    expect(compiled.systemInstruction).not.toContain(LEGACY_BOUNDARIES_SENTENCE);
+  });
+
+  it('keeps acting abilities visible when the behaviour only describes questions', () => {
+    const reminders = CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!;
+    const compiled = compileAssistantContext({
+      behaviour: {
+        ...behaviour,
+        systemPrompt: 'WHAT YOU HELP WITH\n- Answer questions about the club.',
+      },
+      serverCard: 'card',
+      resources: [],
+      skills: [reminders],
+      evidence: [],
+    });
+    expect(compiled.systemInstruction).toContain(
+      `WHAT YOU CAN DO\nreminders: ${reminders.promptLine} You really can do this`,
+    );
+    expect(compiled.systemInstruction).toContain(
+      'These abilities are part of your job even if the description above does not list them.',
+    );
+    expect(compiled.systemInstruction).not.toContain('Effect=');
+    expect(compiled.systemInstruction).not.toContain('Acts=');
+  });
+
   it('strips the legacy sources lines from an old-wizard behaviour prompt', () => {
     const legacyBehaviour = {
       ...behaviour,
@@ -497,9 +561,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     expect(promptAt).toBeGreaterThanOrEqual(0);
     expect(suffixAt).toBeGreaterThan(promptAt + prompt.length);
     expect(cardAt).toBeGreaterThan(suffixAt + SAFETY_SUFFIX.length);
-    const skillsBlock = compiled.systemInstruction.slice(
-      compiled.systemInstruction.indexOf('ALLOWED SKILLS'),
-    );
+    const skillsBlock = compiled.sections.find((section) => section.name === 'skills')?.text ?? '';
     // protectedText is the quotable prompt core: behaviour prompt, suffix and
     // skills. The server card and resource list stay out so members may see them.
     expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}`);
@@ -528,7 +590,9 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
   it('skillInstructionLine is the exact per-skill line the compiler emits (factored, not duplicated)', () => {
     const skill = CLUB_ASSISTANT_SKILLS[0]!;
     const line = skillInstructionLine(skill);
-    expect(line).toBe(`${skill.id}: ${skill.description} Effect=${skill.effect}. Acts=no.`);
+    expect(line).toBe(`${skill.id}: ${skill.promptLine}`);
+    expect(line).not.toContain('Effect=');
+    expect(line).not.toContain('Acts=');
     const compiled = compileAssistantContext({
       behaviour,
       serverCard: 'card',
@@ -536,7 +600,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
       skills: [skill],
       evidence: [],
     });
-    expect(compiled.systemInstruction).toContain(`ALLOWED SKILLS\n${line}`);
+    expect(compiled.systemInstruction).toContain(`WHAT YOU CAN DO\n${line}`);
   });
   it('omits the empty resources section like the instruction join does', () => {
     const compiled = compileAssistantContext({
@@ -550,6 +614,68 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     expect(compiled.sections.map((section) => section.text).join('\n\n')).toBe(
       compiled.systemInstruction,
     );
+  });
+});
+
+describe('compileAssistantContext preferred skills and unavailable skills (ADR 0087)', () => {
+  const search = CLUB_ASSISTANT_SKILLS.find((s) => s.id === 'search-club')!;
+  const reminders = CLUB_ASSISTANT_SKILLS.find((s) => s.id === 'reminders')!;
+  const base = {
+    serverCard: 'card',
+    resources: [],
+    evidence: [],
+  } as const;
+
+  it('orders preferred skills first and suffixes them as this assistant\u2019s focus', () => {
+    const compiled = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: ['reminders'] },
+      skills: [search, reminders],
+    });
+    const block = compiled.sections.find((section) => section.name === 'skills')?.text ?? '';
+    const lines = block.split('\n').slice(1, 3);
+    expect(lines[0]).toContain('reminders:');
+    expect(lines[0]).toContain("(this assistant's focus)");
+    expect(lines[1]).toContain('search-club:');
+    expect(lines[1]).not.toContain('focus');
+  });
+
+  it('adds no suffix for an empty preference or one listing every allowed skill', () => {
+    const empty = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: [] },
+      skills: [search, reminders],
+    });
+    expect(empty.systemInstruction).not.toContain("(this assistant's focus)");
+    const all = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: ['search-club', 'reminders'] },
+      skills: [search, reminders],
+    });
+    expect(all.systemInstruction).not.toContain("(this assistant's focus)");
+  });
+
+  it('lists scope-denied skills plainly with their reasons', () => {
+    const compiled = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: [] },
+      skills: [search],
+      unavailableSkills: [{ skill: reminders, reason: 'owner only' }],
+    });
+    expect(compiled.systemInstruction).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(compiled.systemInstruction).toContain('- Reminders: owner only');
+    expect(compiled.systemInstruction).toContain('Do not suggest asking someone else to do it.');
+    expect(compiled.protectedText).toContain('NOT AVAILABLE TO THIS MEMBER');
+  });
+
+  it('renders a roles-scope reason with the role names', () => {
+    const compiled = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: [] },
+      skills: [search],
+      unavailableSkills: [{ skill: reminders, reason: 'only for Mods, Helpers' }],
+    });
+    expect(compiled.systemInstruction).toContain('- Reminders: only for Mods, Helpers');
   });
 });
 

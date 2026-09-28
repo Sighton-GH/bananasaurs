@@ -23,7 +23,7 @@ const BEHAVIOURS = [
     name: 'Club assistant',
     systemPrompt: 'Answer with reviewed club knowledge only.',
     promptVersion: 1,
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: ['handbook'],
     enabled: true,
     callerRoleIds: ['role-club-member'],
@@ -36,7 +36,7 @@ const BEHAVIOURS = [
     name: 'IT help',
     systemPrompt: 'Answer IT questions.',
     promptVersion: 0,
-    allowedSkillIds: [],
+    preferredSkillIds: [],
     resourceIds: [],
     enabled: true,
     callerRoleIds: [],
@@ -77,8 +77,8 @@ const SKILL_DETAIL = {
   instructionLine:
     'search-club: Search enabled Discord archive and reviewed resources. Effect=read. Confirmation=not required.',
   behaviours: [
-    { id: 'club', name: 'Club assistant', allowed: true },
-    { id: 'help', name: 'IT help', allowed: false },
+    { id: 'club', name: 'Club assistant', preferred: true },
+    { id: 'help', name: 'IT help', preferred: false },
   ],
   scope: { mode: 'everyone', roleIds: [], isDefault: true },
   whoCanUse: '@Club Member, and the server owner',
@@ -308,7 +308,7 @@ describe('AssistantSkillPage', () => {
       };
       check();
     });
-    expect(bodyOf(put)).toMatchObject({ id: 'club', allowedSkillIds: [] });
+    expect(bodyOf(put)).toMatchObject({ id: 'club', preferredSkillIds: [] });
   });
 
   it("shows a 404 empty state with a link back for a skill that doesn't exist", async () => {

@@ -20,7 +20,7 @@ const behaviour = (over: Partial<AssistantBehaviour> = {}): AssistantBehaviour =
   name: 'Club',
   systemPrompt: 'Be helpful.',
   promptVersion: 1,
-  allowedSkillIds: ['search-club'],
+  preferredSkillIds: ['search-club'],
   resourceIds: [],
   enabled: true,
   ...over,
@@ -415,26 +415,27 @@ describe('computeAssistantSetup', () => {
   });
 
   describe('skills', () => {
-    it('counts the skills behaviours allow; grants play no part (ADR 0064)', () => {
+    it('counts every catalogue skill; behaviour preferences play no part (ADR 0087)', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
         behaviours: [
-          behaviour({ allowedSkillIds: ['search-club', 'other-skill'] }),
-          behaviour({ id: 'second', enabled: false, allowedSkillIds: ['search-club'] }),
+          behaviour({ preferredSkillIds: ['search-club', 'other-skill'] }),
+          behaviour({ id: 'second', enabled: false, preferredSkillIds: ['search-club'] }),
         ],
         skills: [skill('search-club'), skill('other-skill'), skill('unused')],
       });
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',
         state: 'done',
-        detail: '2 skills are ready to use.',
+        detail: '3 skills are ready to use.',
       });
     });
 
-    it('is todo when no behaviour allows a skill', () => {
+    it('is todo when the catalogue is empty', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
-        behaviours: [behaviour({ allowedSkillIds: [] })],
+        behaviours: [behaviour({ preferredSkillIds: [] })],
+        skills: [],
       });
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',

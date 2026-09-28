@@ -120,7 +120,7 @@ function CreateBehaviourForm({
           name: name.trim(),
           systemPrompt: prompt.trim(),
           promptVersion: 0,
-          allowedSkillIds: skillIds,
+          preferredSkillIds: skillIds,
           resourceIds: [],
           callerRoleIds,
           enabled: false,

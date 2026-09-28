@@ -80,6 +80,13 @@ export interface LoopResult {
    * (e.g. a non-daily `quota` error) instead of becoming `invalid-request`.
    */
   readonly lastError?: ProviderError;
+  /**
+   * Task G3: the round-1 declaration names the loop actually sent to the
+   * provider (after `declarationsFor`), in first-sent order. The service
+   * records these on the trace detail so the History page can show what the
+   * model could have called, even when it called nothing.
+   */
+  readonly toolsOffered: readonly string[];
 }
 
 export interface LoopLimits {
@@ -206,6 +213,10 @@ export const runToolLoop = async (input: {
   const budgets = { callsUsed: 0, resultChars: 0 };
   // The last attempt's original provider error, for the caller to re-throw.
   let lastError: ProviderError | undefined;
+  // Task G3: round-1 declaration names actually sent, across chain entries,
+  // in first-sent order.
+  const toolsOffered: string[] = [];
+  const offeredSeen = new Set<string>();
 
   const recordUsage = (usage: GenerateTextResponse['usage']): void => {
     if (usage?.promptTokens !== undefined) {
@@ -322,6 +333,14 @@ export const runToolLoop = async (input: {
       recordWeb: () => {
         web = true;
       },
+      recordOffered: (names) => {
+        for (const name of names) {
+          if (!offeredSeen.has(name)) {
+            offeredSeen.add(name);
+            toolsOffered.push(name);
+          }
+        }
+      },
       onDailyCap: (resetAt) => {
         sawDailyCap = true;
         dailyResets.push(resetAt);
@@ -345,6 +364,7 @@ export const runToolLoop = async (input: {
         sources,
         actionSummaries,
         web,
+        toolsOffered: [...toolsOffered],
         ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
         ...(answered.outcome === 'failed' && sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
@@ -363,6 +383,7 @@ export const runToolLoop = async (input: {
     sources,
     actionSummaries,
     web,
+    toolsOffered: [...toolsOffered],
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
     ...(localLimit === undefined ? {} : { localLimit }),
@@ -428,6 +449,8 @@ const runEntry = async (deps: {
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
   readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: () => void;
+  /** Task G3: round-1 declaration names actually sent, in first-sent order. */
+  readonly recordOffered: (names: readonly string[]) => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
   readonly reserveCall?: ReserveCall | undefined;
   readonly logger?: Pick<Logger, 'warn'> | undefined;
@@ -527,6 +550,12 @@ const runEntry = async (deps: {
       return undefined;
     }
     const declarations = offerTools ? declarationsFor(deps.tools, provider, round) : [];
+    // Task G3: record what round 1 actually offered, after `declarationsFor`
+    // filtering (capability, ID-tool narrowing). Later entries may re-offer
+    // on failover; first-sent order is kept, duplicates dropped.
+    if (round === 1) {
+      deps.recordOffered(declarations.map((declaration) => declaration.name));
+    }
     const request: GenerateTextRequest = {
       model: entry.model,
       systemInstruction: deps.systemInstruction,

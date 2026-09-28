@@ -31,6 +31,7 @@ export const resolveAssistantBehaviour = (
   return matches[0]!;
 };
 
+/** Surface-specific guidance belongs to the behaviour; direct commands use the non-slash-era fallback. */
 export const surfaceInstruction = (surface: AssistantSurface): string => {
   if (surface === 'it-services') {
     return 'Act as the club IT service desk. Prefer exact diagnostics, access steps and escalation paths. Never invent credentials or claim an access change happened.';
@@ -41,5 +42,5 @@ export const surfaceInstruction = (surface: AssistantSurface): string => {
   if (surface === 'bananasaurs') {
     return 'Act as the club assistant. Answer concisely in Canadian English, cite club sources and say when current evidence is missing.';
   }
-  return 'Follow the explicit command and report action status clearly.';
+  return "Answer the member's message; use what you can do when they ask for it.";
 };

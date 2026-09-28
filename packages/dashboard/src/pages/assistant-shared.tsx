@@ -61,7 +61,7 @@ export const behaviourBody = (
     systemPrompt: string;
     callerRoleIds: readonly string[];
     resourceIds: readonly string[];
-    allowedSkillIds: readonly string[];
+    preferredSkillIds: readonly string[];
     ticket: { readonly channelId?: string; readonly reviewerRoleIds?: readonly string[] };
   }>,
 ) => ({
@@ -71,7 +71,7 @@ export const behaviourBody = (
   name: behaviour.name,
   systemPrompt: patch.systemPrompt ?? behaviour.systemPrompt,
   promptVersion: behaviour.promptVersion,
-  allowedSkillIds: patch.allowedSkillIds ?? behaviour.allowedSkillIds,
+  preferredSkillIds: patch.preferredSkillIds ?? behaviour.preferredSkillIds,
   resourceIds: patch.resourceIds ?? behaviour.resourceIds,
   enabled: patch.enabled ?? behaviour.enabled,
   ...(behaviour.callerRoleIds === undefined

@@ -94,7 +94,7 @@ describe('skill scopes and richer reminder storage', () => {
           name: id,
           systemPrompt: 'prompt',
           promptVersion: 1,
-          allowedSkillIds: [...skillIds],
+          preferredSkillIds: [...skillIds],
           callerRoleIds: [],
           reviewerRoleIds: [],
           resourceIds: [],
@@ -141,7 +141,7 @@ describe('skill scopes and richer reminder storage', () => {
         .trim();
       if (statement.startsWith('UPDATE') || statement.startsWith('DELETE')) t.raw.exec(statement);
     }
-    const byId = new Map(listBehaviours(a).map((entry) => [entry.id, entry.allowedSkillIds]));
+    const byId = new Map(listBehaviours(a).map((entry) => [entry.id, entry.preferredSkillIds]));
     expect([...(byId.get('b1') ?? [])].sort()).toEqual(['reminders', 'search-club']);
     expect([...(byId.get('b2') ?? [])].sort()).toEqual(['draft-agenda', 'reminders']);
     expect((byId.get('b2') ?? []).filter((id) => id === 'reminders')).toHaveLength(1);

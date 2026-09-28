@@ -69,7 +69,7 @@ const body = (over: Record<string, unknown> = {}) => ({
   name: 'Club',
   systemPrompt: 'Be helpful.',
   promptVersion: 0,
-  allowedSkillIds: ['search-club'],
+  preferredSkillIds: ['search-club'],
   callerRoleIds: [],
   ticket: { reviewerRoleIds: [] },
   resourceIds: [],
@@ -1277,12 +1277,13 @@ describe('GET /api/assistant/skills/:skillId', () => {
     expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
-  it('returns the skill, its exact instruction line, its tools and every behaviour with allowed', async () => {
+  it('returns the skill, its exact instruction line, its tools and every behaviour with preferred', async () => {
     grant('config.read');
     grant('config.write');
     const { cookie, csrf } = await signIn();
     expect(
-      (await put(cookie, csrf, body({ id: 'club', allowedSkillIds: ['search-club'] }))).statusCode,
+      (await put(cookie, csrf, body({ id: 'club', preferredSkillIds: ['search-club'] })))
+        .statusCode,
     ).toBe(200);
     expect(
       (
@@ -1294,7 +1295,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
             surface: 'help',
             mentionRoleId: ROLE_B,
             name: 'Help',
-            allowedSkillIds: [],
+            preferredSkillIds: [],
           }),
         )
       ).statusCode,
@@ -1305,7 +1306,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
     const parsed: {
       skill: { id: string };
       instructionLine: string;
-      behaviours: { id: string; name: string; allowed: boolean }[];
+      behaviours: { id: string; name: string; preferred: boolean }[];
       whoCanUse: string;
       tools: { name: string }[];
       command?: { name: string; options: unknown[] };
@@ -1315,8 +1316,8 @@ describe('GET /api/assistant/skills/:skillId', () => {
     expect(parsed.instructionLine).toBe(skillInstructionLine(skill));
     expect(parsed.behaviours).toEqual(
       expect.arrayContaining([
-        { id: 'club', name: 'Club', allowed: true },
-        { id: 'help', name: 'Help', allowed: false },
+        { id: 'club', name: 'Club', preferred: true },
+        { id: 'help', name: 'Help', preferred: false },
       ]),
     );
     expect(parsed.tools.map((t) => t.name)).toEqual(
@@ -1344,7 +1345,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
       });
     // Default: search-club is everyone, reminders is owner-only.
     expect((await get(cookie, 'search-club')).json<{ whoCanUse: string }>().whoCanUse).toBe(
-      'Everyone who can ask a behaviour that allows this skill, and the server owner.',
+      'Everyone who can ask the assistant, and the server owner.',
     );
     const ownerDefault = await get(cookie, 'reminders');
     expect(ownerDefault.json<{ whoCanUse: string }>().whoCanUse).toBe('Only the server owner.');
@@ -1644,7 +1645,7 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
       name: 'Club',
       surface: 'bananasaurs',
       enabled: true,
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       callerRoleIds: [],
       resourceIds: [],
       mentionRoleId: ROLE_A,
@@ -1729,7 +1730,6 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
       totalEstTokens: number;
     } = response.json();
     expect(parsed.sections.map((s) => s.name)).toEqual([
-      'surface',
       'behaviour-prompt',
       'safety-suffix',
       'output-rules',

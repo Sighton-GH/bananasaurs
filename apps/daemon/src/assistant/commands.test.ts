@@ -30,7 +30,7 @@ const direct: AssistantBehaviour = {
   callerRoleIds: [],
   systemPrompt: 'direct',
   promptVersion: 1,
-  allowedSkillIds: ['club-search', 'reminder-create'],
+  preferredSkillIds: ['club-search', 'reminder-create'],
   resourceIds: [],
   enabled: true,
 };
@@ -44,7 +44,7 @@ const club: AssistantBehaviour = {
   callerRoleIds: [],
   systemPrompt: 'club',
   promptVersion: 1,
-  allowedSkillIds: ['club-search'],
+  preferredSkillIds: ['club-search'],
   resourceIds: [],
   enabled: true,
 };

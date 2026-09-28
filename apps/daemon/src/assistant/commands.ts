@@ -114,6 +114,8 @@ export interface AssistantTraceDetail {
   readonly model?: string | undefined;
   readonly finishReason?: string | undefined;
   readonly web?: boolean | undefined;
+  /** Round-1 tool names the loop actually offered the provider (after `declarationsFor`). */
+  readonly toolsOffered?: readonly string[];
   /** B2b: the code-written action summaries appended to this answer. */
   readonly actions?: readonly string[];
 }

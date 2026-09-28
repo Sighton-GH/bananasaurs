@@ -21,7 +21,7 @@ export interface AssistantBehaviour {
   readonly systemPrompt: string;
   /** Monotonic revision used for conflict-safe dashboard editing. */
   readonly promptVersion: number;
-  readonly allowedSkillIds: readonly string[];
+  readonly preferredSkillIds: readonly string[];
   readonly resourceIds: readonly string[];
   readonly enabled: boolean;
   /**
@@ -39,6 +39,8 @@ export interface AssistantSkill {
   readonly id: string;
   readonly name: string;
   readonly description: string;
+  /** One plain second-person sentence saying what the member can ask for; no tool names. */
+  readonly promptLine: string;
   readonly effect: AssistantSkillEffect;
   readonly requiredPermission: string;
   readonly acts: boolean;

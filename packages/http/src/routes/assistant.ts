@@ -68,7 +68,7 @@ const behaviour = z.object({
   name: z.string().min(1).max(100),
   systemPrompt: z.string().min(1).max(4000),
   promptVersion: z.number().int().min(0),
-  allowedSkillIds: z
+  preferredSkillIds: z
     .array(z.enum(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id) as [string, ...string[]]))
     .max(CLUB_ASSISTANT_SKILLS.length),
   callerRoleIds: z.array(snowflake).max(100),
@@ -421,7 +421,7 @@ export const registerAssistantRoutes = (
         name: parsed.data.name,
         surface: parsed.data.surface,
         enabled: parsed.data.enabled,
-        allowedSkillIds: parsed.data.allowedSkillIds,
+        preferredSkillIds: parsed.data.preferredSkillIds,
         callerRoleIds: parsed.data.callerRoleIds,
         resourceIds: parsed.data.resourceIds,
         mentionRoleId: parsed.data.mentionRoleId ?? null,
@@ -444,7 +444,7 @@ export const registerAssistantRoutes = (
         name: parsed.data.name,
         systemPrompt: parsed.data.systemPrompt,
         promptVersion: (existing?.promptVersion ?? 0) + 1,
-        allowedSkillIds: parsed.data.allowedSkillIds,
+        preferredSkillIds: parsed.data.preferredSkillIds,
         callerRoleIds: parsed.data.callerRoleIds,
         ticketChannelId: parsed.data.ticket?.channelId,
         reviewerRoleIds: parsed.data.ticket?.reviewerRoleIds ?? [],
@@ -478,7 +478,10 @@ export const registerAssistantRoutes = (
       serverCard: assistantRepo.getServerCard(session.scope),
       resources: assistantRepo.listResources(session.scope).filter((r) => r.enabled),
       evidence: [],
-      skills: CLUB_ASSISTANT_SKILLS.filter((skill) => behaviour.allowedSkillIds.includes(skill.id)),
+      // ADR 0087: the preview is operator-scoped, not asker-scoped — every
+      // catalogue skill is shown with the behaviour's preference ordering.
+      skills: [...CLUB_ASSISTANT_SKILLS],
+      preferredSkillIds: behaviour.preferredSkillIds,
       toolsAvailable: true,
     });
     const sections = compiled.sections.map((section) => ({
@@ -980,7 +983,7 @@ export const registerAssistantRoutes = (
       scope.mode === 'owner'
         ? 'Only the server owner.'
         : scope.mode === 'everyone'
-          ? 'Everyone who can ask a behaviour that allows this skill, and the server owner.'
+          ? 'Everyone who can ask the assistant, and the server owner.'
           : `${scope.roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`).join(', ')} (among those who can ask), and the server owner.`;
     const recentRuns = assistantRepo
       .listSkillActivity(session.scope, 500)
@@ -1073,7 +1076,7 @@ export const registerAssistantRoutes = (
       behaviours: behaviours.map((b) => ({
         id: b.id,
         name: b.name,
-        allowed: b.allowedSkillIds.includes(skill.id),
+        preferred: b.preferredSkillIds.includes(skill.id),
       })),
       scope,
       whoCanUse,

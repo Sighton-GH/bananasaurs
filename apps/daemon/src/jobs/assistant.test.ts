@@ -39,7 +39,7 @@ const behaviour: AssistantBehaviour = {
   name: 'Ask',
   systemPrompt: 'sys',
   promptVersion: 1,
-  allowedSkillIds: [],
+  preferredSkillIds: [],
   resourceIds: [],
   enabled: true,
 };
