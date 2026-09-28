@@ -980,3 +980,57 @@ describe('Task 10 (a): classified failure code and journal line', () => {
     });
   });
 });
+
+describe('B2b: runToolLoop action summaries', () => {
+  it('carries ok tool results’ actionSummary in call order', async () => {
+    const { provider } = scripted([
+      toolAnswer([
+        { name: 'set_reminder', args: { text: 'Bring batteries' } },
+        { name: 'cancel_reminder', args: { reminderId: 'rem_1' } },
+      ]),
+      textAnswer('Done.'),
+    ]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        tools: loopTools(async (call) => ({
+          ...okResult(call.name),
+          actionSummary: `did ${call.name}`,
+        })),
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.actionSummaries).toEqual(['did set_reminder', 'did cancel_reminder']);
+  });
+
+  it('an ok result without an actionSummary adds nothing', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'handbook' } }]),
+      textAnswer('Found it.'),
+    ]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], { tools: loopTools(async (call) => okResult(call.name)) }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.actionSummaries).toEqual([]);
+  });
+
+  it('a refused tool adds no summary', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'set_reminder', args: { text: 'Bring batteries' } }]),
+      textAnswer('Could not.'),
+    ]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        tools: loopTools(async (call) => ({
+          name: call.name,
+          ok: false,
+          text: 'Refused.',
+          sources: [],
+        })),
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.toolCalls).toMatchObject([{ name: 'set_reminder', ok: false }]);
+    expect(result.actionSummaries).toEqual([]);
+  });
+});
