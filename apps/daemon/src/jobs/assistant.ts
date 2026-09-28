@@ -166,6 +166,7 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
   ...(detail.model === undefined ? {} : { model: detail.model }),
   ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
   ...(detail.web === undefined ? {} : { web: detail.web }),
+  ...(detail.toolsOffered === undefined ? {} : { toolsOffered: [...detail.toolsOffered] }),
 });
 
 /**
@@ -828,6 +829,9 @@ export const assistantInvokeHandler = (deps: {
             sections: detail?.sections ?? [],
             toolCalls: detail?.toolCalls ?? [],
             guard: detail?.guard ?? { removed: [] },
+            ...(detail?.toolsOffered === undefined
+              ? {}
+              : { toolsOffered: [...detail.toolsOffered] }),
             timeline: [
               { label: 'received', atMs: 0 },
               { label: 'invoke-done', atMs: Math.max(0, invokeDoneAt - startedAt) },

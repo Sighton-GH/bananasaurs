@@ -31,15 +31,14 @@ export const resolveAssistantBehaviour = (
   return matches[0]!;
 };
 
+/**
+ * Task G3: the slash commands are gone (ADR 0086), so a mention or bot-tag
+ * invocation gets no surface section — the compiler drops empty text. Only
+ * the `direct-command` drain path keeps a line, and it names no slash era.
+ */
 export const surfaceInstruction = (surface: AssistantSurface): string => {
-  if (surface === 'it-services') {
-    return 'Act as the club IT service desk. Prefer exact diagnostics, access steps and escalation paths. Never invent credentials or claim an access change happened.';
+  if (surface === 'direct-command') {
+    return "Answer the member's message; use what you can do when they ask for it.";
   }
-  if (surface === 'help') {
-    return 'Act as the club help desk. Give onboarding and club-process guidance from reviewed sources, cite them, and escalate when evidence is missing.';
-  }
-  if (surface === 'bananasaurs') {
-    return 'Act as the club assistant. Answer concisely in Canadian English, cite club sources and say when current evidence is missing.';
-  }
-  return 'Follow the explicit command and report action status clearly.';
+  return '';
 };

@@ -447,6 +447,7 @@ const assistantInvokeDetail = z.object({
   model: z.string().optional(),
   finishReason: assistantTraceSchema.shape.finishReason,
   web: z.boolean().optional(),
+  toolsOffered: z.array(z.string().min(1)).optional(),
 });
 
 export const assistantInvokeCursor = z.object({

@@ -236,6 +236,14 @@ export function AssistantHistoryDetailPage() {
                 )}
               </Card>
               <Card title="Tool calls">
+                <p className="mb-2 text-sm">
+                  <span className="text-ink-muted">Tools offered: </span>
+                  {trace.toolsOffered !== undefined && trace.toolsOffered.length > 0 ? (
+                    <span className="font-mono text-xs">{trace.toolsOffered.join(', ')}</span>
+                  ) : (
+                    <span className="text-ink-muted">none</span>
+                  )}
+                </p>
                 {trace.toolCalls.length === 0 ? (
                   <p className="text-sm text-ink-muted">No tool calls were made.</p>
                 ) : (
