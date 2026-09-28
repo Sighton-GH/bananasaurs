@@ -365,7 +365,12 @@ describe('AssistantPage', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
       target: { value: 'Answer new member questions from reviewed sources only.' },
     });
-    fireEvent.click(screen.getByRole('checkbox', { name: /Search club knowledge/ }));
+    fireEvent.click(
+      within(screen.getByRole('region', { name: 'Skills the new behaviour may use' })).getByRole(
+        'checkbox',
+        { name: /Search club knowledge/ },
+      ),
+    );
     const callers = screen.getByRole('list', { name: 'Who may use the new behaviour' });
     fireEvent.click(within(callers).getByRole('checkbox', { name: 'Club Member' }));
     fireEvent.click(screen.getAllByRole('button', { name: 'Create behaviour' })[0]!);
@@ -805,15 +810,40 @@ describe('AssistantPage: AI log channel (ADR 0065)', () => {
 });
 
 describe('AssistantPage: shared resources (ADR 0067)', () => {
-  it('says every resource is shared and the ticked ones are emphasised', async () => {
+  it('labels preferred resources with the check-first helper', async () => {
     renderPage();
-    const section = await screen.findByRole('region', { name: 'Emphasised resources' });
-    expect(within(section).getByText('Resources to emphasise')).toBeTruthy();
+    const section = await screen.findByRole('region', { name: 'Preferred resources' });
+    expect(within(section).getByText('Preferred resources')).toBeTruthy();
+    expect(within(section).getByText('Resources this assistant should check first.')).toBeTruthy();
+  });
+
+  it('edits preferred skills beside preferred resources and saves them whole-object', async () => {
+    const mock = renderPage();
+    const section = await screen.findByRole('region', { name: 'Preferred skills' });
+    expect(within(section).getByText('Preferred skills')).toBeTruthy();
     expect(
       within(section).getByText(
-        'Every enabled resource is available to every behaviour. Tick the ones this behaviour should prefer.',
+        "Skills this assistant should lean on first. This doesn't grant or block anything: who can use a skill is set on the Skills page.",
       ),
     ).toBeTruthy();
+    fireEvent.click(within(section).getByRole('checkbox', { name: /Link a club resource/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save access' }));
+    await screen.findByText('Club assistant access saved');
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/assistant/behaviours/club' && c[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({
+      id: 'club',
+      surface: 'bananasaurs',
+      mentionRoleId: 'role-club-assistant',
+      name: 'Club assistant',
+      systemPrompt: 'Answer with reviewed club knowledge only.',
+      promptVersion: 1,
+      preferredSkillIds: ['search-club', 'create-reminder', 'open-resource'],
+      resourceIds: ['handbook'],
+      enabled: true,
+      callerRoleIds: ['role-club-member'],
+    });
   });
 });
 
