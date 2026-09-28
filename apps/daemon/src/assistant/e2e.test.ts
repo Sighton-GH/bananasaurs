@@ -1133,7 +1133,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     // search the model may open a cached id, never search again.
     const round2 = (requests[1]?.tools ?? []).map((d) => d.name);
     expect(round2).toContain('open_resource');
-    expect(round2.every((n) => ['read_chunk', 'outline', 'open_resource'].includes(n))).toBe(true);
+    expect(round2.every((n) => ['read_chunk', 'open_resource'].includes(n))).toBe(true);
     // No per-request live fetching; the prompt carries the cache catalogue.
     expect(fetchResource).not.toHaveBeenCalled();
     expect(requests[0]?.systemInstruction).toContain('CLUB SOURCES');

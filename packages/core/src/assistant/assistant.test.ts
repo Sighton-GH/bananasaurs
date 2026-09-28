@@ -398,7 +398,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     enabled: true,
     reviewedAt: '2026-09-01T00:00:00.000Z',
   });
-  const forbidden = ['search_sources', 'read_chunk', 'outline', 'open_resource'];
+  const forbidden = ['search_sources', 'read_chunk', 'open_resource'];
 
   it('places the output-rules section right after the safety suffix, outside protectedText', () => {
     const compiled = compileAssistantContext({

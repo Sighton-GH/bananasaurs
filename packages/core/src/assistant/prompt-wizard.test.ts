@@ -225,7 +225,7 @@ describe('buildSystemPrompt — STYLE EXAMPLES', () => {
 });
 
 describe('buildSystemPrompt — no tool names in prose', () => {
-  const forbidden = ['search_sources', 'read_chunk', 'outline', 'open_resource'];
+  const forbidden = ['search_sources', 'read_chunk', 'open_resource'];
 
   it('never names tools for any preset or for richAnswers', () => {
     const prompts = [
