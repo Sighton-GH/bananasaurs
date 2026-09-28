@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../ids.js';
+import { CONTINUE_RULES, NEW_RULES } from '../assistant/conversation.js';
 import { assistantTraceSchema } from '../assistant/trace.js';
 
 /**
@@ -499,11 +500,11 @@ export const assistantInvokeCursor = z.object({
       z.object({
         kind: z.literal('continue'),
         conversationId: z.string().min(1),
-        rule: z.enum(['reply-to-bot', 'reply-to-turn', 'follow-up']),
+        rule: z.enum(CONTINUE_RULES),
       }),
       z.object({
         kind: z.literal('new'),
-        rule: z.enum(['quoted-reply', 'reply-to-unknown-bot-message', 'new-topic', 'fresh']),
+        rule: z.enum(NEW_RULES),
         quotedMessageId: z.string().min(1).optional(),
       }),
     ])
