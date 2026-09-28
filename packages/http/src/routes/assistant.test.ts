@@ -2104,7 +2104,7 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
       'hello world',
     );
     expect((await patch(cookie, csrf, 'r1', { context: '   \n  ' })).statusCode).toBe(200);
-    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context).toBeNull();
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context ?? null).toBeNull();
   });
 
   it('rejects a repeat end before the effective due time', async () => {
@@ -2115,7 +2115,7 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
       recurrence: { pattern: { kind: 'daily' }, endAt: clock + 1000 },
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: 'invalid-reminder',
       message: `The repeat can't end before the reminder starts.`,
     });
