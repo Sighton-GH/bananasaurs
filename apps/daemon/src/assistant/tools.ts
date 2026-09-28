@@ -331,6 +331,25 @@ interface RepeatArgs {
   readonly count?: number | undefined;
 }
 
+/** Milliseconds from local midnight in `timeZone` (0 exactly at midnight). */
+const wallMsSinceMidnight = (at: number, timeZone: string): number => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at);
+  const value = (type: string): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return (
+    value('hour') * 3_600_000 +
+    value('minute') * 60_000 +
+    value('second') * 1_000 +
+    (((at % 1_000) + 1_000) % 1_000)
+  );
+};
+
 const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
   let pattern: unknown;
   if (repeat.kind === 'daily') pattern = { kind: 'daily' };
@@ -351,7 +370,13 @@ const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
     if (!ISO_WITH_OFFSET.test(repeat.until)) return undefined;
     const parsed = Date.parse(repeat.until);
     if (!Number.isFinite(parsed)) return undefined;
-    endAt = parsed;
+    // "until Dec 31" arrives as local midnight, which as an exact instant
+    // would drop the Dec 31 occurrence while the summary reads as inclusive:
+    // treat exact local midnight as the end of that day (23:59:59.999 local).
+    endAt =
+      wallMsSinceMidnight(parsed, timeZone) === 0
+        ? parsed + 86_400_000 - wallMsSinceMidnight(parsed + 86_400_000, timeZone) - 1
+        : parsed;
   }
   return {
     pattern,

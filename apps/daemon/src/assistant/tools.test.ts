@@ -596,6 +596,37 @@ describe('acting tools (B2a)', () => {
     expect(result.actionSummary).toContain('every Tuesday and Thursday');
   });
 
+  it('treats a midnight until as the end of that day', async () => {
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
+    const p = ports({
+      reminderStore: {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'Standup',
+          when: '2026-09-24T12:30:00-07:00',
+          repeat: { kind: 'daily', until: '2026-12-31T00:00:00-07:00' },
+        },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    // Dec 31 itself is included: the end is 23:59:59.999 local, past its noon.
+    expect(inserted[0]?.recurrence?.endAt).toBe(Date.parse('2026-12-31T23:59:59.999-07:00'));
+  });
+
   it('trims and collapses the stored context, omitting it when empty', async () => {
     const inserted: Omit<Reminder, 'guildId'>[] = [];
     const store = {
