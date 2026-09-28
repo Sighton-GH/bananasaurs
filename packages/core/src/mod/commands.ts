@@ -14,7 +14,7 @@ import type { ModerationOutcome, ModerationRefusalReason } from '../effects/mode
 import type { GuildId, SnowflakeId } from '../ids.js';
 import { parseSnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
-import type { SlashResponder } from '../ops/commands/status-slash.js';
+import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { handleBanPreview, handlePurgePreview, type ModConfirmationDeps } from './confirmations.js';
 import { handleHistory, type HistoryDeps } from './history.js';

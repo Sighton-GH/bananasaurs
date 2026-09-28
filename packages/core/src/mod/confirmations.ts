@@ -10,7 +10,7 @@ import type { GuildId, SnowflakeId } from '../ids.js';
 import { parseSnowflakeId, snowflakeIdSchema } from '../ids.js';
 import { purgeDedupeKey, type ModPurgePayload } from '../jobs/kinds.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
-import type { SlashResponder } from '../ops/commands/status-slash.js';
+import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { BULK_DELETE_CEILING_MS } from './purge.js';
 import { MANUAL_RULE_ID } from './warn.js';
