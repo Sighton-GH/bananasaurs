@@ -177,7 +177,7 @@ describe('SkillItemsCard', () => {
       <SkillItemsCard items={JSON.parse(JSON.stringify(REMINDERS))} reload={reload} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(await screen.findByText('Cancel this reminder?')).toBeTruthy();
+    expect(await screen.findByText(/Cancel this reminder\?/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Yes, cancel' }));
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(
