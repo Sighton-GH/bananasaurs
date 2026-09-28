@@ -529,7 +529,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     const skill = CLUB_ASSISTANT_SKILLS[0]!;
     const line = skillInstructionLine(skill);
     expect(line).toBe(
-      `${skill.id}: ${skill.description} Effect=${skill.effect}. Confirmation=not required.`,
+      `${skill.id}: ${skill.description} Effect=${skill.effect}. Acts=no.`,
     );
     const compiled = compileAssistantContext({
       behaviour,
