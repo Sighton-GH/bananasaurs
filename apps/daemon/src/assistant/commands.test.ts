@@ -145,7 +145,7 @@ describe('assistant command subscriber', () => {
     expect(h.invoke).not.toHaveBeenCalled();
   });
 
-  it('always sets invocationId, and messageId plus reply references for mentions', async () => {
+  it('sets messageId and reply references for mentions', async () => {
     const h = harness();
     await h.subscriber.handle({
       kind: 'messageCreate',
