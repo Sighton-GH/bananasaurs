@@ -709,7 +709,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
         recordCaseEvent: (input) => modCaseRepo.recordCaseEvent(scope, input),
       },
-      responder: {},
+      responder: {
+        defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+        respond: async (ref, message) => {
+          await discord.respondToInteraction(guildId, ref, message);
+        },
+      },
       now,
       logger,
     } satisfies HistoryDeps,
