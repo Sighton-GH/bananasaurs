@@ -2529,7 +2529,7 @@ describe('B2b: acting tool ports are wired', () => {
   it('try-it never acts: set_reminder is undeclared and nothing is stored', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
     const declared: string[][] = [];
-    const seen: { messages: unknown[] }[] = [];
+    const seen: { messages: readonly unknown[] }[] = [];
     const queue: GenerateTextResponse[] = [
       {
         text: '',
@@ -2756,7 +2756,7 @@ describe('B2b: action summaries in answers', () => {
     }),
   });
 
-  const actionsOf = (result: { detail?: AssistantTraceDetail }): readonly string[] =>
+  const actionsOf = (result: { detail?: AssistantTraceDetail | undefined }): readonly string[] =>
     result.detail?.actions ?? [];
 
   it('the posted answer ends with the summary and the trace records it', async () => {
