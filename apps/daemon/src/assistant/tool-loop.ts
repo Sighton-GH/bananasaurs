@@ -17,7 +17,7 @@ import type { ChainEntry } from './model-chain.js';
 import type { QuotaLedger } from './quota-ledger.js';
 import type { AssistantToolResult, ToolSource } from './tools.js';
 import { attemptReasonFor } from './provider-failure.js';
-import { escapeUntrustedClose, neutraliseMarkers } from './untrusted.js';
+import { neutraliseMarkers } from './untrusted.js';
 
 /**
  * The id argument of every follow-up tool (ADR 0071). Round 2+ offers only
@@ -654,7 +654,7 @@ const runEntry = async (deps: {
         role: 'tool',
         toolName: call.name,
         ...(call.id === undefined ? {} : { toolCallId: call.id }),
-        text: `[UNTRUSTED TOOL RESULT tool=${result.name}]\n${escapeUntrustedClose(result.text)}${citationText}\n[/UNTRUSTED TOOL RESULT]`,
+        text: `[UNTRUSTED TOOL RESULT tool=${result.name}]\n${neutraliseMarkers(result.text)}${citationText}\n[/UNTRUSTED TOOL RESULT]`,
       });
     }
     return toolMessages;

@@ -214,11 +214,11 @@ function Wizard({
   const toast = useToast();
   const [, navigate] = useLocation();
   const [step, setStep] = useState(0);
+  const defaults =
+    behaviour.surface === 'it-services'
+      ? DEFAULT_WIZARD_ANSWERS['it-services']
+      : DEFAULT_WIZARD_ANSWERS.club;
   const [answers, setAnswers] = useState<PromptWizardAnswers>(() => {
-    const defaults =
-      behaviour.surface === 'it-services'
-        ? DEFAULT_WIZARD_ANSWERS['it-services']
-        : DEFAULT_WIZARD_ANSWERS.club;
     const stored = behaviour.promptWizard ?? defaults;
     const parsed = promptWizardAnswers.safeParse(stored);
     return parsed.success ? parsed.data : { ...defaults, ...stored };
@@ -245,12 +245,13 @@ function Wizard({
 
   /**
    * A group of friends reads as casual: picking that server type relaxes the
-   * tone, but only while the tone still has its default value — an explicit
-   * choice is never overridden. Club and team leave the tone as it is.
+   * tone, but only while the tone still has this behaviour's default value —
+   * an explicit choice is never overridden. Club and team leave the tone as
+   * it is.
    */
   const pickServerType = (serverType: PromptWizardAnswers['serverType']): void =>
     update(
-      serverType === 'friends' && answers.tone === DEFAULT_WIZARD_ANSWERS.club.tone
+      serverType === 'friends' && answers.tone === defaults.tone
         ? { ...answers, serverType, tone: 'casual' }
         : { ...answers, serverType },
     );
