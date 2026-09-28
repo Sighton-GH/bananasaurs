@@ -7,6 +7,7 @@ import {
   type Reminder,
 } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
+import { createCitationRegistry } from './citations.js';
 import type { assistantRepo } from '@bananasaurs/storage';
 
 type StoredReminder = assistantRepo.StoredReminder;
@@ -42,6 +43,7 @@ const storedReminder = (over: Partial<StoredReminder> = {}): StoredReminder => (
 
 const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   userId: MEMBER,
+  guildId: '234567890123456789',
   now: () => NOW,
   timeZone: 'America/Vancouver',
   isOwner: false,
@@ -69,14 +71,17 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   },
   proposeDraft: () => 'created' as const,
   recordSkillActivity: vi.fn(),
-  searchArchive: vi.fn(async () => [
-    {
-      channelId: '111111111111111111',
-      messageId: '222222222222222222',
-      createdAt: NOW - 60_000,
-      excerpt: 'The [battery] order ships Friday.',
-    },
-  ]),
+  searchArchive: vi.fn(async () => ({
+    ok: true as const,
+    hits: [
+      {
+        channelId: '111111111111111111',
+        messageId: '222222222222222222',
+        createdAt: NOW - 60_000,
+        excerpt: 'The [battery] order ships Friday.',
+      },
+    ],
+  })),
   resources: () => [resource(), resource({ id: 'off', title: 'Old', enabled: false })],
   fetchResource: vi.fn(async () => ({
     ok: true as const,
@@ -183,10 +188,82 @@ describe('runAssistantTool', () => {
       { name: 'search_archive', args: { query: 'battery' } },
       p,
     );
-    expect(p.searchArchive).toHaveBeenCalledWith('battery');
+    expect(p.searchArchive).toHaveBeenCalledWith('battery', undefined);
     expect(result.ok).toBe(true);
     expect(result.text).toContain('The [battery] order ships Friday.');
     expect(result.text).toContain('<#111111111111111111>');
+  });
+
+  it('refuses a from search whose query has no word of three or more letters', async () => {
+    const p = ports();
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'hi a', from: 'Ava' } },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Say what you want to check they said.',
+    });
+    expect(p.searchArchive).not.toHaveBeenCalled();
+  });
+
+  it('a from search caps at 3 hits, ends with the answer-only line and cites code-built links', async () => {
+    const hits = Array.from({ length: 5 }, (_, i) => ({
+      channelId: '111111111111111111',
+      messageId: `22222222222222222${String(i)}`,
+      createdAt: NOW - 60_000 * (i + 1),
+      excerpt: `sunflower note ${String(i)}`,
+    }));
+    const searchArchive = vi.fn(async () => ({ ok: true as const, hits }));
+    const p = ports({ searchArchive });
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'sunflower shipment', from: 'Ava' } },
+      p,
+    );
+    expect(searchArchive).toHaveBeenCalledWith('sunflower shipment', 'Ava');
+    expect(result.ok).toBe(true);
+    const lines = result.text.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines.slice(0, 3).every((line) => line.startsWith('<#111111111111111111>'))).toBe(true);
+    expect(lines[3]).toBe(
+      'Answer only whether they said it. Cite the message tag. Do not summarise or list this member\'s messages.',
+    );
+    expect(result.sources).toHaveLength(3);
+    expect(result.sources[0]).toEqual({
+      title: expect.stringMatching(/^#channel message, \d{4}-\d{2}-\d{2}$/),
+      url: 'https://discord.com/channels/234567890123456789/111111111111111111/222222222222222220',
+    });
+  });
+
+  it('a from search tags each hit from the citations registry when one is passed', async () => {
+    const p = ports();
+    const citations = createCitationRegistry();
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'sunflower shipment', from: 'Ava' } },
+      p,
+      citations,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.split('\n')[0]).toMatch(/^\[S1\] <#111111111111111111>/);
+    expect(citations.get('S1')).toEqual(result.sources[0]);
+  });
+
+  it('a from search refuses with the port problem text when resolution fails', async () => {
+    const p = ports({
+      searchArchive: vi.fn(async () => ({
+        ok: false as const,
+        problem: "I couldn't tell which member you meant.",
+      })),
+    });
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'sunflower shipment', from: 'Ava' } },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: "I couldn't tell which member you meant.",
+    });
+    expect(result.sources).toEqual([]);
   });
 
   it('opens only an enabled resource from the cache, redacted like other evidence', async () => {

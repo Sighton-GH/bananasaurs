@@ -377,6 +377,15 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
       "- When a sentence uses something from a club source, end it with that source's tag, such as [S2]. Tag only sources you actually used. Never write a Sources or Source line yourself; it is added for you.",
     );
   });
+
+  it('OUTPUT_RULES refuses bulk member summaries and explains sources in general terms (ADR 0090 D3)', () => {
+    expect(OUTPUT_RULES).toContain(
+      "- If someone asks you to summarise or list what a particular member has said, say you don't do that.",
+    );
+    expect(OUTPUT_RULES).toContain(
+      "- If asked how you know something, say where in general terms — the club's docs, earlier messages in the server, or this conversation. Never say you have no source when you used one.",
+    );
+  });
 });
 
 describe('compileAssistantContext output rules (ADR 0085)', () => {

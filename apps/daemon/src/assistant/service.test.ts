@@ -3244,3 +3244,298 @@ describe('Slice 4.1: archive search is limited to the answer channel audience', 
     expect(toolTurn?.text).toContain('vault');
   });
 });
+
+/**
+ * Slice 4.2 (ADR 0090 decision 3): "Did X say Y?" resolves `from` to one
+ * member in code, answers yes or no with a code-issued message link, and has
+ * no tool path for bulk member summaries. Written red first: `search_archive`
+ * takes no `from` argument yet, so every `from` call below is refused.
+ */
+describe('Slice 4.2: Did X say Y resolves from to one member with code-issued links', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const AVA = '777777777777777777';
+  const BOB = '888888888888888888';
+  const GENERAL = '567890123456789012';
+  const PRIVATE = '678901234567890123';
+  const CLUB_ROLE = '789012345678901234';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+  const AVA_MSG = '844444444444444441';
+  const BOB_MSG = '844444444444444442';
+  const AVA_PRIVATE_MSG = '844444444444444443';
+  const AVA_LINK = `https://discord.com/channels/${GUILD}/${GENERAL}/${AVA_MSG}`;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+    for (const channelId of [GENERAL, PRIVATE])
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: NOW });
+    archiveRepo.upsertMessage(scope, {
+      messageId: AVA_MSG,
+      channelId: GENERAL,
+      authorId: AVA,
+      content: 'sunflower shipment arrives friday',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: BOB_MSG,
+      channelId: GENERAL,
+      authorId: BOB,
+      content: 'sunflower sprouts are tasty',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: AVA_PRIVATE_MSG,
+      channelId: PRIVATE,
+      authorId: AVA,
+      content: 'sunflower vault combination is secret',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+  });
+  afterEach(() => t.close());
+
+  const discordBase = {
+    memberChannels: async () => [
+      { id: GENERAL, name: 'general' },
+      { id: PRIVATE, name: 'private' },
+    ],
+    audienceChannels: async () => new Set([GENERAL]),
+  };
+
+  /** A provider that makes one scripted tool call, then answers; every request is captured. */
+  const scripted = (
+    seen: { role: string; text: string }[][],
+    toolCall: { name: string; args: Record<string, unknown> },
+    answer: string,
+  ): TextProvider => {
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn(async (request: { messages: { role: string; text: string }[] }) => {
+        seen.push([...request.messages]);
+        round += 1;
+        if (round === 1)
+          return { text: '', model: 'model-a', toolCalls: [toolCall] };
+        return { text: answer, model: 'model-a' };
+      }),
+    };
+  };
+
+  const serviceWithPorts = (
+    discord: Parameters<typeof createAssistantService>[7],
+    provider: TextProvider,
+  ) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      discord,
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          provider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+    );
+
+  const ask = (
+    discord: Parameters<typeof createAssistantService>[7],
+    provider: TextProvider,
+    invocationId: string,
+  ) =>
+    serviceWithPorts(discord, provider).invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'did Ava mention the sunflower shipment?' },
+      source: 'slash-command',
+      invocationId,
+    });
+
+  const toolTurnOf = (seen: { role: string; text: string }[][]): string =>
+    seen[1]?.find((message) => message.role === 'tool')?.text ?? '';
+
+  const fromCall = (query: string, from: string): { name: string; args: Record<string, unknown> } => ({
+    name: 'search_archive',
+    args: { query, from },
+  });
+
+  it('an exact display-name match answers from that member, inside the audience, with a code link', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      {
+        ...discordBase,
+        findMember: async () => [
+          { id: AVA, displayName: 'Ava' },
+          { id: BOB, displayName: 'Ava Banana' },
+        ],
+      },
+      scripted(seen, fromCall('sunflower', 'Ava'), 'Yes, they did. [S1]'),
+      'int-from-exact',
+    );
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain(AVA_LINK);
+    expect(content).toContain('-# Sources:');
+    expect(content).not.toContain(BOB_MSG);
+    expect(content).not.toContain(AVA_PRIVATE_MSG);
+    expect(toolTurnOf(seen)).toContain('Answer only whether they said it.');
+  });
+
+  it('an ambiguous name refuses without searching', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      {
+        ...discordBase,
+        findMember: async () => [
+          { id: AVA, displayName: 'Ava' },
+          { id: BOB, displayName: 'Ava Banana' },
+        ],
+      },
+      scripted(seen, fromCall('sunflower', 'Av'), 'No answer either way.'),
+      'int-from-ambiguous',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).toContain("I couldn't tell which member you meant.");
+    expect(toolTurnOf(seen)).not.toContain('Answer only whether they said it.');
+  });
+
+  it('an unknown name refuses', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { ...discordBase, findMember: async () => [] },
+      scripted(seen, fromCall('sunflower', 'Zed'), 'No answer either way.'),
+      'int-from-unknown',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).toContain("I couldn't tell which member you meant.");
+  });
+
+  it('a missing findMember port refuses', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      discordBase,
+      scripted(seen, fromCall('sunflower', 'Ava'), 'No answer either way.'),
+      'int-from-no-port',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).toContain("I couldn't tell which member you meant.");
+  });
+
+  it('from without a query word refuses before any member lookup', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const findMember = vi.fn(async () => [{ id: AVA, displayName: 'Ava' }]);
+    const result = await ask(
+      { ...discordBase, findMember },
+      scripted(seen, fromCall('hi', 'Ava'), 'No answer either way.'),
+      'int-from-no-word',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).toContain('Say what you want to check they said.');
+    expect(findMember).not.toHaveBeenCalled();
+  });
+
+  it('an uncited hit adds no link', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      {
+        ...discordBase,
+        findMember: async () => [{ id: AVA, displayName: 'Ava' }],
+      },
+      scripted(seen, fromCall('sunflower', 'Ava'), 'Yes, they mentioned it.'),
+      'int-from-uncited',
+    );
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).not.toContain('-# Sources:');
+    expect(content).not.toContain('discord.com');
+  });
+
+  it('a model-written discord URL is never added to Sources', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      {
+        ...discordBase,
+        findMember: async () => [{ id: AVA, displayName: 'Ava' }],
+      },
+      scripted(
+        seen,
+        fromCall('sunflower', 'Ava'),
+        'Yes, see https://discord.com/channels/1/2/3 for proof.',
+      ),
+      'int-from-model-url',
+    );
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain('https://discord.com/channels/1/2/3');
+    expect(content).not.toContain('-# Sources:');
+  });
+});
