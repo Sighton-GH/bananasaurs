@@ -155,6 +155,28 @@ export interface RecentMessagesPage {
   nextBefore: Snowflake | undefined;
 }
 
+/**
+ * One channel message as `fetchChannelMessages` reports it (ADR 0089 channel
+ * context).
+ *
+ * Named `RecentMessage` (not `FetchedMessage`): the purge pager already owns
+ * that shape, and this one carries display names, the bot flag and the reply
+ * target instead of edit metadata.
+ */
+export interface RecentMessage {
+  readonly messageId: Snowflake;
+  readonly authorId: Snowflake;
+  /** Nick, then global name, then username — as `fetchMessageContent` reads it. */
+  readonly authorName: string;
+  readonly authorIsBot: boolean;
+  readonly content: string;
+  /** From the message's `timestamp`. */
+  readonly at: number;
+  /** From `referenced_message.author`, when the message is a reply. */
+  readonly referencedAuthorName?: string | undefined;
+  readonly hasAttachments: boolean;
+}
+
 export interface DiscordPort {
   // --- roles -------------------------------------------------------------
   addRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake, reason: string): Promise<void>;
@@ -206,6 +228,22 @@ export interface DiscordPort {
     channelId: Snowflake,
     messageId: Snowflake,
   ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
+  /**
+   * Channel context for the assistant (ADR 0089): up to `limit` messages sent
+   * before `before` in one channel, oldest first. `undefined` on 404 (gone)
+   * or 403 (no access) — both routine, reported the same way rather than
+   * thrown, so the caller answers without the block instead of failing.
+   *
+   * Named `fetchChannelMessages`, not ADR 0089's `fetchRecentMessages`: that
+   * name is taken by the purge pager above, whose newest-first page-plus-
+   * cursor contract is a different fetch. The job-level closure keeps the
+   * spec's `fetchRecentMessages` name; only the port method differs.
+   */
+  fetchChannelMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    opts: { before: Snowflake; limit: number },
+  ): Promise<readonly RecentMessage[] | undefined>;
   /** The "is typing…" indicator, shown for about ten seconds or until the next message. */
   sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void>;
 

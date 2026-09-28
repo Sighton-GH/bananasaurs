@@ -23,6 +23,7 @@ import {
   listTurns,
   LIST_TURNS_LIMIT,
   lookupMessage,
+  messageIdsForConversation,
   peopleForConversations,
   withBotReplySince,
   pruneOlderThan,
@@ -166,6 +167,37 @@ describe('linkMessages', () => {
       channelId: CHANNEL,
       behaviourId: 'club',
     });
+  });
+});
+
+describe('messageIdsForConversation', () => {
+  it('returns every message id linked to the conversation, and nothing else', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ conversationId: 'conv-1' }));
+    createConversation(scope, conversation({ conversationId: 'conv-2' }));
+    appendTurn(scope, turn({ conversationId: 'conv-1', turnId: 'turn-1' }));
+    appendTurn(scope, turn({ conversationId: 'conv-2', turnId: 'turn-9' }));
+    linkMessages(scope, 'conv-1', 'turn-1', 'user', ['600000000000000001']);
+    linkMessages(scope, 'conv-1', 'turn-1', 'assistant', ['600000000000000002']);
+    linkMessages(scope, 'conv-2', 'turn-9', 'user', ['600000000000000003']);
+
+    expect(messageIdsForConversation(scope, 'conv-1').sort()).toEqual([
+      '600000000000000001',
+      '600000000000000002',
+    ]);
+    expect(messageIdsForConversation(scope, 'conv-2')).toEqual(['600000000000000003']);
+    expect(messageIdsForConversation(scope, 'conv-missing')).toEqual([]);
+  });
+
+  it('is guild-scoped', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    createConversation(a, conversation());
+    appendTurn(a, turn());
+    linkMessages(a, 'conv-1', 'turn-1', 'user', ['600000000000000001']);
+
+    expect(messageIdsForConversation(b, 'conv-1')).toEqual([]);
+    expect(messageIdsForConversation(a, 'conv-1')).toEqual(['600000000000000001']);
   });
 });
 

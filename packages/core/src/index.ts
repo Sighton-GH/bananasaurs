@@ -33,6 +33,7 @@ export type {
   InteractionRef,
   OutgoingMessage,
   ReactionUserPage,
+  RecentMessage,
   RecentMessagesPage,
   Snowflake,
 } from './discord/port.js';

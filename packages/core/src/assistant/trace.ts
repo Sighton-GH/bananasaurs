@@ -9,6 +9,8 @@ export const assistantTraceIncludedSchema = z.object({
   snippetChunkIds: z.array(z.string()),
   quote: z.boolean(),
   historyTurns: z.number().int().nonnegative(),
+  /** ADR 0089: how many channel-context lines the reply saw. Absent means none. */
+  channelMessages: z.number().int().nonnegative().optional(),
 });
 export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
 

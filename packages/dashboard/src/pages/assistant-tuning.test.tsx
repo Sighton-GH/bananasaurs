@@ -40,6 +40,17 @@ const SETTINGS = [
     isDefault: true,
   },
   {
+    key: 'assistant.channelContextMessages',
+    group: 'Assistant context',
+    label: 'Channel messages sent with each question',
+    help: 'Recent messages from the channel the bot was tagged in, sent to the AI as background. 0 turns this off.',
+    display: 'count',
+    bounds: { min: 0, max: 50 },
+    value: 15,
+    defaultValue: 15,
+    isDefault: true,
+  },
+  {
     key: 'network.connectFallbackMs',
     group: 'Network',
     label: 'Connect fallback wait (IPv4/IPv6)',
@@ -102,10 +113,16 @@ afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AssistantTuningPage', () => {
-  it('renders the four group headings and every label', async () => {
+  it('renders the five group headings and every label', async () => {
     stubFetch([{ url: TUNING_URL, body: { settings: SETTINGS } }]);
     renderPage();
-    for (const group of ['Assistant retries', 'Assistant tool loop', 'Network', 'Resources']) {
+    for (const group of [
+      'Assistant retries',
+      'Assistant tool loop',
+      'Assistant context',
+      'Network',
+      'Resources',
+    ]) {
       expect(await screen.findByRole('heading', { name: group })).toBeTruthy();
     }
     for (const setting of SETTINGS) {

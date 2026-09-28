@@ -59,21 +59,11 @@ import {
 } from './tools.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
+import { sanitizeMentionsForProvider } from './mentions.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
 import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
-/**
- * Raw Discord mention snowflakes carry no meaning to a provider and trip the
- * conservative outbound scan's long-digit detectors, so they are flattened to
- * readable tokens before anything leaves the process. Only the mention shape
- * is rewritten; bare numbers stay untouched.
- */
-export const sanitizeMentionsForProvider = (text: string): string =>
-  text
-    .replace(/<@&\d{17,20}>/g, '@role')
-    .replace(/<@!?\d{17,20}>/g, '@user')
-    .replace(/<#\d{17,20}>/g, '#channel');
 
 /**
  * Task 14: the trace's `sections` are the compiled context sections as
@@ -894,6 +884,9 @@ export const createAssistantService = (
               (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
               input.quoteInHistory === true,
             historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+            ...(input.channelMessages === undefined
+              ? {}
+              : { channelMessages: input.channelMessages }),
           },
         });
         if (failed.actionSummaries.length > 0) {
@@ -998,6 +991,7 @@ export const createAssistantService = (
       const userText = buildUserMessage({
         question: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
         askerName: input.askerName,
+        channelContext: input.channelContext,
         evidenceEnvelope: context.evidenceEnvelope,
         quoteEnvelope: input.quoteEnvelope,
       });
@@ -1114,6 +1108,9 @@ export const createAssistantService = (
             (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
             input.quoteInHistory === true,
           historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+          ...(input.channelMessages === undefined
+            ? {}
+            : { channelMessages: input.channelMessages }),
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
@@ -1403,6 +1400,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
                 snippetChunkIds: [...detail.included.snippetChunkIds],
                 quote: detail.included.quote,
                 historyTurns: detail.included.historyTurns,
+                ...(detail.included.channelMessages === undefined
+                  ? {}
+                  : { channelMessages: detail.included.channelMessages }),
               },
             }),
         timeline: [

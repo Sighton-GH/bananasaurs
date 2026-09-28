@@ -12,6 +12,7 @@ import {
   type JobContext,
   type Logger,
   type OutgoingMessage,
+  type RecentMessage,
 } from '@bananasaurs/core';
 import { conversationRepo, guildRepo, traceRepo } from '@bananasaurs/storage';
 import {
@@ -388,6 +389,12 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       async (): Promise<{ authorId: string; authorName: string; content: string } | undefined> =>
         undefined,
     );
+    const fetchChannelMessages = vi.fn(
+      async (): Promise<readonly RecentMessage[] | undefined> => undefined,
+    );
+    // ADR 0089: the channel-context window. Off by default so the older
+    // tests above exercise the history-only path unchanged.
+    const channelContextMessages = vi.fn((): number => 0);
     const handler = assistantInvokeHandler({
       guildId: GUILD_ID,
       service: svc,
@@ -400,6 +407,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       conversations: { scope: scope(), botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
       sendTyping,
       fetchMessageContent,
+      fetchChannelMessages,
+      channelContextMessages,
     });
     const run = async (
       input: Record<string, unknown>,
@@ -420,7 +429,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       }
       return { cursor: saved };
     };
-    return { inputs, sent, send, respond, sendTyping, fetchMessageContent, run };
+    return { inputs, sent, send, respond, sendTyping, fetchMessageContent, fetchChannelMessages, channelContextMessages, run };
   };
 
   const mention = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -921,6 +930,194 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
 
     expect(h.sent).toHaveLength(1);
     expect(traceRepo.getTrace(scope(), 'trace_inv-qf')?.flags).toContain('quote-unavailable');
+  });
+
+  /** ADR 0089: the channel-context window around a mention. */
+  const channelMessage = (over: Partial<RecentMessage> = {}): RecentMessage => ({
+    messageId: '820000000000000001',
+    authorId: OTHER_ID,
+    authorName: 'Alex',
+    authorIsBot: false,
+    content: 'the hall opens at seven',
+    at: NOW - 60_000,
+    hasAttachments: false,
+    ...over,
+  });
+
+  it('a mention fetches the channel window and passes it to the service', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([
+      channelMessage(),
+      channelMessage({ messageId: '820000000000000002', content: 'and parking is free' }),
+    ]);
+    await h.run(mention({ invocationId: 'inv-cc1', messageId: '810000000000000051' }));
+
+    expect(h.fetchChannelMessages).toHaveBeenCalledWith(CHANNEL_ID, {
+      before: '810000000000000051',
+      limit: 15,
+    });
+    const input = h.inputs[0];
+    expect(input?.channelContext).toContain('[UNTRUSTED CHANNEL MESSAGES]');
+    expect(input?.channelContext).toContain('the hall opens at seven');
+    expect(input?.channelContext).toContain('and parking is free');
+    expect(input?.channelMessages).toBe(2);
+  });
+
+  it('channel context excludes the invoking message and already-linked messages', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    await h.run(mention({ invocationId: 'inv-cc2a', messageId: '810000000000000052' }));
+    h.fetchChannelMessages.mockResolvedValue([
+      // Already linked to this conversation by the first run: excluded.
+      channelMessage({ messageId: '810000000000000052', content: 'first question' }),
+      channelMessage({ messageId: '820000000000000003', content: 'something earlier' }),
+      // The invoking message itself: excluded.
+      channelMessage({ messageId: '810000000000000053', content: 'second question' }),
+    ]);
+    nowMs += 1_000;
+    await h.run(
+      mention({
+        invocationId: 'inv-cc2b',
+        messageId: '810000000000000053',
+        input: { question: 'second question' },
+      }),
+    );
+
+    const input = h.inputs[1];
+    expect(input?.channelContext).toContain('something earlier');
+    expect(input?.channelContext).not.toContain('first question');
+    expect(input?.channelContext).not.toContain('second question');
+    expect(input?.channelMessages).toBe(1);
+  });
+
+  it('a zero window turns channel context off without fetching', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(0);
+    await h.run(mention({ invocationId: 'inv-cc3', messageId: '810000000000000054' }));
+
+    expect(h.fetchChannelMessages).not.toHaveBeenCalled();
+    expect(h.inputs[0]?.channelContext).toBeUndefined();
+    expect(h.inputs[0]?.channelMessages).toBeUndefined();
+  });
+
+  it('a slash command never fetches channel context', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    await h.run(
+      mention({
+        invocationId: 'inv-cc4',
+        messageId: '810000000000000055',
+        source: 'slash-command',
+      }),
+    );
+
+    expect(h.fetchChannelMessages).not.toHaveBeenCalled();
+    expect(h.inputs[0]?.channelContext).toBeUndefined();
+  });
+
+  it('a channel fetch failure still posts the answer and flags the trace', async () => {
+    for (const failure of [undefined, new Error('discord 403')] as const) {
+      const h = harness(() => ({ ok: true, content: 'answered without context' }));
+      h.channelContextMessages.mockReturnValue(15);
+      if (failure === undefined) h.fetchChannelMessages.mockResolvedValue(undefined);
+      else h.fetchChannelMessages.mockRejectedValue(failure);
+      const invocationId = failure === undefined ? 'inv-cc5a' : 'inv-cc5b';
+      const messageId = failure === undefined ? '810000000000000056' : '810000000000000057';
+      await h.run(mention({ invocationId, messageId }));
+
+      expect(h.sent).toHaveLength(1);
+      expect(traceRepo.getTrace(scope(), `trace_${invocationId}`)?.flags).toContain(
+        'channel-context-unavailable',
+      );
+      expect(h.inputs[0]?.channelContext).toBeUndefined();
+    }
+  });
+
+  it('a retry past invoke-done does not fetch channel context again', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([channelMessage()]);
+    const input = mention({ invocationId: 'inv-cc6', messageId: '810000000000000058' });
+    const first = await h.run(input);
+    await h.run(input, first.cursor);
+
+    expect(h.fetchChannelMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('in a thread the starter comes first, labelled as the thread start', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([channelMessage()]);
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the opening post',
+    });
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'inv-cc7',
+        messageId: '810000000000000059',
+        threadParentId: CHANNEL_ID,
+      }),
+    );
+
+    expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, '888888888888888888');
+    const block = h.inputs[0]?.channelContext ?? '';
+    const starterAt = block.indexOf('the opening post');
+    const otherAt = block.indexOf('the hall opens at seven');
+    expect(starterAt).toBeGreaterThanOrEqual(0);
+    expect(otherAt).toBeGreaterThan(starterAt);
+    expect(block).toContain(', started this thread');
+    expect(h.inputs[0]?.channelMessages).toBe(2);
+  });
+
+  it('in a thread a missing starter falls back to the thread channel itself', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([]);
+    h.fetchMessageContent
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue({ authorId: OTHER_ID, authorName: 'Alex', content: 'forum opener' });
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'inv-cc8',
+        messageId: '810000000000000060',
+        threadParentId: CHANNEL_ID,
+      }),
+    );
+
+    expect(h.fetchMessageContent).toHaveBeenNthCalledWith(1, CHANNEL_ID, '888888888888888888');
+    expect(h.fetchMessageContent).toHaveBeenNthCalledWith(
+      2,
+      '888888888888888888',
+      '888888888888888888',
+    );
+    expect(h.inputs[0]?.channelContext).toContain('forum opener');
+  });
+
+  it('in a thread an unavailable starter still posts the answer with the flag', async () => {
+    const h = harness(() => ({ ok: true, content: 'answered without the starter' }));
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([channelMessage()]);
+    h.fetchMessageContent.mockResolvedValue(undefined);
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'inv-cc9',
+        messageId: '810000000000000061',
+        threadParentId: CHANNEL_ID,
+      }),
+    );
+
+    expect(h.sent).toHaveLength(1);
+    expect(traceRepo.getTrace(scope(), 'trace_inv-cc9')?.flags).toContain(
+      'channel-context-unavailable',
+    );
+    // The channel window itself still reaches the service.
+    expect(h.inputs[0]?.channelContext).toContain('the hall opens at seven');
   });
 
   it('/ask links the respond message id so a later reply continues the conversation', async () => {

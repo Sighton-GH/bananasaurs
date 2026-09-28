@@ -44,6 +44,7 @@ export interface TraceIncluded {
   readonly snippetChunkIds?: readonly string[];
   readonly quote?: boolean;
   readonly historyTurns?: number;
+  readonly channelMessages?: number;
 }
 
 /** Reads the trace's typed `included` blocks; absent on rows written before ADR 0088. */
@@ -55,6 +56,7 @@ export const includedOf = (trace: TraceDetailResponse['trace']): TraceIncluded |
     snippetChunkIds: included.snippetChunkIds,
     quote: included.quote,
     historyTurns: included.historyTurns,
+    channelMessages: included.channelMessages,
   };
 };
 
@@ -126,6 +128,14 @@ function WhatTheAiSawTrace({ trace }: { readonly trace: TraceDetailResponse['tra
               <dt className="inline text-ink-muted">History turns: </dt>
               <dd className="inline">
                 {included.historyTurns === undefined ? '—' : orDash(String(included.historyTurns))}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline text-ink-muted">Channel messages: </dt>
+              <dd className="inline">
+                {included.channelMessages === undefined
+                  ? '—'
+                  : orDash(String(included.channelMessages))}
               </dd>
             </div>
           </dl>

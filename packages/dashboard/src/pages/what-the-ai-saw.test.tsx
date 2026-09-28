@@ -47,6 +47,7 @@ const TRACE = {
     snippetChunkIds: ['chunk-1', 'chunk-2'],
     quote: true,
     historyTurns: 2,
+    channelMessages: 3,
   },
 };
 
@@ -97,6 +98,7 @@ describe('WhatTheAiSaw', () => {
     // The included blocks render when the trace carries them.
     expect(screen.getByText('What was included')).toBeTruthy();
     expect(screen.getByText('chunk-1, chunk-2')).toBeTruthy();
+    expect(screen.getByText('Channel messages:')).toBeTruthy();
   });
 
   it('renders a trace without included blocks', async () => {

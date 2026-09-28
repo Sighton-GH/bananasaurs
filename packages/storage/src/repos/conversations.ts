@@ -48,7 +48,7 @@ export interface NewTurn {
   readonly authorName: string;
   readonly text: string;
   readonly traceId?: string | undefined;
-  readonly joinRule?: JoinRule;
+  readonly joinRule?: JoinRule | undefined;
 }
 
 export interface ConversationTurn {
@@ -60,7 +60,7 @@ export interface ConversationTurn {
   readonly text: string;
   readonly traceId?: string | undefined;
   readonly feedback?: Feedback | undefined;
-  readonly joinRule?: JoinRule;
+  readonly joinRule?: JoinRule | undefined;
 }
 
 export interface ConversationLink {
@@ -228,6 +228,25 @@ export const lookupMessage = (scope: GuildScope, messageId: string): KnownMessag
       behaviourId: row.behaviourId,
     };
   });
+
+/** Every Discord message id linked to one conversation (ADR 0089 channel context exclusion). */
+export const messageIdsForConversation = (
+  scope: GuildScope,
+  conversationId: string,
+): string[] =>
+  read(scope, (db) =>
+    db
+      .select({ messageId: assistantConversationMessages.messageId })
+      .from(assistantConversationMessages)
+      .where(
+        scope.only(
+          assistantConversationMessages,
+          eq(assistantConversationMessages.conversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => row.messageId),
+  );
 
 /** The author's most recent `open` conversation in this channel, if any. */
 export const latestForAuthor = (

@@ -957,6 +957,15 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
         fetchMessageContent: (channelId, messageId) =>
           discord.fetchMessageContent(guildId, channelId, messageId),
+        // ADR 0089: channel context for mentions, beside the quote fetch.
+        fetchChannelMessages: (channelId, opts) =>
+          discord.fetchChannelMessages(guildId, channelId, opts),
+        ...(settings === undefined
+          ? {}
+          : {
+              channelContextMessages: () =>
+                settings.get('assistant.channelContextMessages'),
+            }),
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
