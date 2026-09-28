@@ -746,6 +746,10 @@ export const createAssistantService = (
        * eligibility-only skips are the terms refusal; other skips are "not
        * configured"; a guard failure answers the fixed text.
        *
+       * When the loop acted before it failed, the confirmation is kept: the
+       * reply carries the action summaries plus one short line that the rest
+       * of the answer failed, instead of the bare failure reply.
+       *
        * Every answered-or-refused mapping also carries the trace detail, so
        * the job persists what the model saw even when it refused.
        */
@@ -758,6 +762,14 @@ export const createAssistantService = (
           usage: failed.usage,
           guard: failed.guard,
         });
+        if (failed.actionSummaries.length > 0) {
+          const detail = loopDetail();
+          return {
+            ok: true,
+            content: `${failed.actionSummaries.join('\n\n')}\n\nI couldn't finish the rest of that answer — please try again.`,
+            detail: { ...detail, actions: [...failed.actionSummaries] },
+          };
+        }
         if (failed.localLimit !== undefined)
           throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code);
         if (failed.dailyQuota !== undefined) {
