@@ -318,7 +318,9 @@ export function AssistantHistoryDetailPage() {
                   {trace.included?.toolsOffered === undefined ? (
                     <span className="text-ink-muted">not recorded</span>
                   ) : trace.included.toolsOffered.length > 0 ? (
-                    <span className="font-mono text-xs">{trace.included.toolsOffered.join(', ')}</span>
+                    <span className="font-mono text-xs">
+                      {trace.included.toolsOffered.join(', ')}
+                    </span>
                   ) : (
                     <span className="text-ink-muted">none</span>
                   )}

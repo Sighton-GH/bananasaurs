@@ -603,9 +603,7 @@ describe('runToolLoop output guard', () => {
         ),
       }),
     );
-    expect(result.toolCalls[0]?.preview).toBe(
-      '[current-message]\nsecret\n[/current-message]',
-    );
+    expect(result.toolCalls[0]?.preview).toBe('[current-message]\nsecret\n[/current-message]');
   });
 
   it('the guard-retry response usage is recorded in the trace usage', async () => {
