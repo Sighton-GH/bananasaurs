@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import { renderWithSession, stubFetch } from '../test-support.js';
 import { AssistantSkillsPage } from './assistant-skills.js';
 import { scopeLabel } from './assistant-shared.js';
 
@@ -104,11 +104,7 @@ const FULL = {
 };
 
 function renderPage(body: unknown = FULL) {
-  const mock = stubFetch([
-    { url: '/api/assistant', body },
-    { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
-    { method: 'PUT', url: '/api/assistant/skill-grants/create-reminder', body: { ok: true } },
-  ]);
+  const mock = stubFetch([{ url: '/api/assistant', body }]);
   renderWithSession(<AssistantSkillsPage />);
   return mock;
 }
@@ -117,9 +113,7 @@ describe('AssistantSkillsPage', () => {
   it('states its purpose sentence (Task 9)', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
-    expect(
-      screen.getByText('What the assistant can do, where each skill is on, and who can use it.'),
-    ).toBeTruthy();
+    expect(screen.getByText('What the assistant can do and who can use it.')).toBeTruthy();
   });
 
   it('renders the catalogue with scope and live-count badges and no confirm-first text', async () => {
@@ -138,43 +132,13 @@ describe('AssistantSkillsPage', () => {
     expect(screen.getAllByRole('link', { name: 'Assistant history' }).length).toBeGreaterThan(0);
   });
 
-  it('labels allowlist effects in the same plain words as the create form', async () => {
+  it('does not edit per-behaviour skills: preferences live on the Behaviours tab', async () => {
     renderPage();
-    const region = await screen.findByRole('region', { name: 'Allowlist for Club assistant' });
-    expect(within(region).getByText('Reads')).toBeTruthy();
-    expect(within(region).getByText('Schedules')).toBeTruthy();
-  });
-
-  it('saves a per-behaviour allowlist as the whole behaviour object', async () => {
-    const mock = renderPage();
-    const region = await screen.findByRole('region', { name: 'Allowlist for Club assistant' });
-    fireEvent.click(within(region).getByRole('checkbox', { name: /Set a reminder/ }));
-    fireEvent.click(within(region).getByRole('button', { name: 'Save allowlist' }));
-    await screen.findByText('Club assistant allowlist saved');
-    const put = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/assistant/behaviours/club' && c[1]?.method === 'PUT',
-    )!;
-    expect(bodyOf(put)).toEqual({
-      id: 'club',
-      surface: 'bananasaurs',
-      mentionRoleId: 'role-club-assistant',
-      name: 'Club assistant',
-      systemPrompt: 'Answer with reviewed club knowledge only.',
-      promptVersion: 1,
-      preferredSkillIds: ['search-club'],
-      resourceIds: ['handbook'],
-      enabled: true,
-      callerRoleIds: ['role-club-member'],
-    });
-  });
-
-  it('warns when an allowlist is emptied to nothing', async () => {
-    renderPage();
-    const region = await screen.findByRole('region', { name: 'Allowlist for Club assistant' });
-    expect(within(region).queryByText(/Nothing is allowed/)).toBeNull();
-    fireEvent.click(within(region).getByRole('checkbox', { name: /Search club knowledge/ }));
-    fireEvent.click(within(region).getByRole('checkbox', { name: /Set a reminder/ }));
-    expect(within(region).getByText(/Nothing is allowed/)).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Allowlists per behaviour' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save allowlist' })).toBeNull();
+    expect(screen.queryByText(/Nothing is allowed/)).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Allowlist for Club assistant' })).toBeNull();
   });
 
   it('renders the error state when the load fails', async () => {
