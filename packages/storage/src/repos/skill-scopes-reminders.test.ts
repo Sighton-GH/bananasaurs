@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { reminderRecurrence, type Reminder } from '@bananasaurs/core';
+import { parseGuildId, reminderRecurrence, type Reminder } from '@bananasaurs/core';
 import { openMigratedTestDatabase } from '../test-support.js';
 import { upsertGuild } from './guilds.js';
 import {
@@ -22,8 +22,8 @@ import {
   updateReminder,
 } from './assistant.js';
 
-const A = '111111111111111111';
-const B = '222222222222222222';
+const A = parseGuildId('111111111111111111');
+const B = parseGuildId('222222222222222222');
 const U = '333333333333333333';
 const C = '444444444444444444';
 const reminder = (
