@@ -35,9 +35,7 @@ describe('citation registry', () => {
       text: 'Answer\nSource: unrelated',
       cited: [],
     });
-    expect(applyCitations('Answer\n-# Sources: unrelated', registry).text).toBe(
-      'Answer\n-# Sources: unrelated',
-    );
+    expect(applyCitations('Answer\n-# Sources: unrelated', registry).text).toBe('Answer');
     expect(applyCitations('Sources are useful\nAnswer', registry).text).toBe(
       'Sources are useful\nAnswer',
     );
@@ -90,6 +88,10 @@ describe('citation registry', () => {
       cited: [known],
     });
     expect(applyCitations('Answer\nSources: https://x.test', registry).text).toBe('Answer');
+    expect(applyCitations('Answer\n-# Sources: Handbook, Wikipedia', registry).text).toBe(
+      'Answer',
+    );
+    expect(applyCitations('Answer\nSources: Handbook', registry).text).toBe('Answer');
     expect(applyCitations('Answer\nSource: ask the treasurer', registry).text).toBe(
       'Answer\nSource: ask the treasurer',
     );
