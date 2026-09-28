@@ -39,6 +39,8 @@ import {
   setLogChannel,
   getConversationRetention,
   setConversationRetention,
+  getReminder,
+  updateReminder,
 } from './assistant.js';
 import { appendTurn, createConversation, getConversation, recentTurns } from './conversations.js';
 import { getTrace, insertTrace } from './traces.js';
@@ -763,6 +765,36 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
     expect(getTrace(s, 'trace-b1')).toBeUndefined();
     expect(getTrace(s, 'trace-b2')).toBeDefined();
     expect(getTrace(other, 'trace-other')).toBeDefined();
+  });
+});
+
+describe('updateReminder clears the context with null (Task E1 fix 1)', () => {
+  it('stores SQL NULL and reads back without a context', () => {
+    const s = t.scopes.forGuild(G);
+    insertReminder(s, {
+      id: 'r',
+      guildId: G,
+      creatorId: '333333333333333333',
+      destinationId: '444444444444444444',
+      text: 'Meet',
+      dueAt: 20,
+      createdAt: 10,
+      status: 'scheduled',
+      dedupeKey: 'reminder:g:r',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+      context: 'why',
+    });
+    expect(getReminder(s, 'r')?.context).toBe('why');
+    expect(updateReminder(s, 'r', { context: null }, 11)).toBe('updated');
+    expect(getReminder(s, 'r')?.context).toBeUndefined();
+    expect(
+      t.raw
+        .prepare(
+          'SELECT context AS c FROM assistant_reminders WHERE guild_id = ? AND reminder_id = ?',
+        )
+        .get(G, 'r'),
+    ).toEqual({ c: null });
   });
 });
 

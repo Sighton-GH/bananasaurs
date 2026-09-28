@@ -58,6 +58,10 @@ const ASSISTANT_DATA = {
     },
   ],
   activity: [],
+  roles: [
+    { id: 'role-club-member', name: 'Club Member', position: 10 },
+    { id: 'role-onboarding', name: 'Onboarding', position: 5 },
+  ],
 };
 
 const SKILL_DETAIL = {
@@ -68,6 +72,7 @@ const SKILL_DETAIL = {
     effect: 'read',
     requiredPermission: 'assistant.search',
     requiresConfirmation: false,
+    acts: false,
   },
   instructionLine:
     'search-club: Search enabled Discord archive and reviewed resources. Effect=read. Confirmation=not required.',
@@ -75,7 +80,9 @@ const SKILL_DETAIL = {
     { id: 'club', name: 'Club assistant', allowed: true },
     { id: 'help', name: 'IT help', allowed: false },
   ],
+  scope: { mode: 'everyone', roleIds: [], isDefault: true },
   whoCanUse: '@Club Member, and the server owner',
+  items: { kind: 'none' },
   tools: [
     {
       name: 'search_archive',
@@ -103,10 +110,6 @@ const SKILL_DETAIL = {
       outputLimit: 'Up to 6,000 characters of results.',
     },
   ],
-  command: {
-    name: 'find',
-    options: [{ name: 'query', required: true, description: 'What to find' }],
-  },
   recentRuns: [
     {
       id: 'a1',
@@ -118,12 +121,17 @@ const SKILL_DETAIL = {
   ],
 };
 
-function renderPage() {
+function renderPage(detail: unknown = SKILL_DETAIL, assistant: unknown = ASSISTANT_DATA) {
   const mock = stubFetch([
-    { url: '/api/assistant/skills/search-club', body: SKILL_DETAIL },
-    { url: '/api/assistant', body: ASSISTANT_DATA },
+    { url: '/api/assistant/skills/search-club', body: detail },
+    { url: '/api/assistant', body: assistant },
     { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
     { method: 'PUT', url: '/api/assistant/behaviours/help', body: { ok: true } },
+    {
+      method: 'PUT',
+      url: '/api/assistant/skills/search-club/scope',
+      body: { ok: true, scope: { mode: 'owner', roleIds: [], isDefault: false } },
+    },
   ]);
   const { hook } = memoryLocation({ path: '/assistant/skills/search-club' });
   renderWithSession(
@@ -135,7 +143,7 @@ function renderPage() {
 }
 
 describe('AssistantSkillPage', () => {
-  it('renders every section: overview, where it is on, who can use it, the instruction, tools, command and recent runs', async () => {
+  it('renders every section: overview, where it is on, who can use this, the instruction, tools and recent runs, with no slash command or confirm-first text', async () => {
     renderPage();
     await screen.findByRole('heading', { level: 1, name: 'Skill' });
 
@@ -150,7 +158,7 @@ describe('AssistantSkillPage', () => {
     expect(clubCheckbox.checked).toBe(true);
     expect(helpCheckbox.checked).toBe(false);
 
-    const who = screen.getByRole('heading', { name: 'Who can use it' }).closest('section')!;
+    const who = screen.getByRole('heading', { name: 'Who can use this' }).closest('section')!;
     expect(within(who).getByText('@Club Member, and the server owner')).toBeTruthy();
 
     const told = screen.getByRole('heading', { name: 'What the AI is told' }).closest('section')!;
@@ -164,15 +172,122 @@ describe('AssistantSkillPage', () => {
     expect(within(tools).getAllByText('First round only').length).toBeGreaterThan(0);
     expect(within(tools).getByText('No parameters.')).toBeTruthy();
 
-    const command = screen.getByRole('heading', { name: 'Slash command' }).closest('section')!;
-    expect(within(command).getByText('/find')).toBeTruthy();
-    expect(within(command).getByText('query', { selector: 'td' })).toBeTruthy();
-    expect(within(command).getByText('What to find')).toBeTruthy();
-
     const runs = screen.getByRole('heading', { name: 'Recent runs' }).closest('section')!;
     expect(within(runs).getByText(/completed/)).toBeTruthy();
     expect(within(runs).getByRole('link', { name: 'Assistant history' }).getAttribute('href')).toBe(
       '/assistant/history',
+    );
+
+    expect(screen.queryByText('Slash command')).toBeNull();
+    expect(screen.queryByText(/you confirm first/i)).toBeNull();
+    expect(screen.queryByText('You confirm first')).toBeNull();
+    expect(screen.queryByText('Runs without asking')).toBeNull();
+  });
+
+  it('renders the current scope mode selected, with the default note', async () => {
+    renderPage();
+    const who = (await screen.findByRole('heading', { name: 'Who can use this' })).closest(
+      'section',
+    )!;
+    const everyone = within(who).getByRole('radio', { name: /Everyone who can ask/ });
+    expect(inputOf(everyone).checked).toBe(true);
+    expect(within(who).getByText(/Default for this skill\./)).toBeTruthy();
+    expect(within(who).getByRole('button', { name: 'Save' })).toHaveProperty('disabled', true);
+  });
+
+  it('keeps Save disabled for Specific roles until at least one role is picked', async () => {
+    renderPage();
+    const who = (await screen.findByRole('heading', { name: 'Who can use this' })).closest(
+      'section',
+    )!;
+    fireEvent.click(within(who).getByRole('radio', { name: /Specific roles/ }));
+    const save = within(who).getByRole('button', { name: 'Save' });
+    expect(save).toHaveProperty('disabled', true);
+    fireEvent.click(within(who).getByRole('checkbox', { name: 'Club Member' }));
+    expect(within(who).getByRole('button', { name: 'Save' })).toHaveProperty('disabled', false);
+  });
+
+  it('saves the scope with the right body and toasts Saved', async () => {
+    const mock = renderPage();
+    const who = (await screen.findByRole('heading', { name: 'Who can use this' })).closest(
+      'section',
+    )!;
+    fireEvent.click(within(who).getByRole('radio', { name: /Owner only/ }));
+    fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved');
+    const put = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/assistant/skills/search-club/scope' &&
+        (c[1] as RequestInit)?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({ mode: 'owner', roleIds: [] });
+  });
+
+  it('saves specific roles with both picked role ids', async () => {
+    const mock = renderPage();
+    const who = (await screen.findByRole('heading', { name: 'Who can use this' })).closest(
+      'section',
+    )!;
+    fireEvent.click(within(who).getByRole('radio', { name: /Specific roles/ }));
+    fireEvent.click(within(who).getByRole('checkbox', { name: 'Club Member' }));
+    fireEvent.click(within(who).getByRole('checkbox', { name: 'Onboarding' }));
+    fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved');
+    const put = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/assistant/skills/search-club/scope' &&
+        (c[1] as RequestInit)?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({
+      mode: 'roles',
+      roleIds: ['role-club-member', 'role-onboarding'],
+    });
+  });
+
+  it('notes that an acting skill runs with no confirmation step, and stays silent otherwise', async () => {
+    renderPage({
+      ...SKILL_DETAIL,
+      skill: { ...SKILL_DETAIL.skill, acts: true },
+    });
+    expect(
+      await screen.findByText(
+        'This skill acts (it sets reminders or files proposals). It runs as soon as someone allowed asks, with no confirmation step.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows no acts note for a skill that does not act', async () => {
+    renderPage();
+    await screen.findByRole('heading', { level: 1, name: 'Skill' });
+    expect(screen.queryByText(/This skill acts/)).toBeNull();
+  });
+
+  it('renders the skill live items under the scope card', async () => {
+    renderPage({
+      ...SKILL_DETAIL,
+      items: {
+        kind: 'reminders',
+        reminders: [
+          {
+            id: 'rem-1',
+            creatorId: 'user-bryan',
+            creatorName: 'Bryan',
+            destinationId: 'chan-general',
+            destinationName: 'general',
+            text: 'Standup time',
+            dueAt: 1890000000000,
+            status: 'scheduled',
+            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+            deliveredCount: 0,
+          },
+        ],
+      },
+    });
+    const scope = await screen.findByRole('heading', { name: 'Who can use this' });
+    const items = await screen.findByRole('heading', { name: 'Reminders' });
+    expect(screen.getByText('Standup time')).toBeTruthy();
+    expect((scope.compareDocumentPosition(items) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(
+      true,
     );
   });
 
@@ -211,22 +326,5 @@ describe('AssistantSkillPage', () => {
     expect(screen.getByRole('link', { name: 'Back to Skills' }).getAttribute('href')).toBe(
       '/assistant/skills',
     );
-  });
-
-  it('says a skill has no slash command when none is mapped', async () => {
-    stubFetch([
-      {
-        url: '/api/assistant/skills/search-club',
-        body: { ...SKILL_DETAIL, command: undefined },
-      },
-      { url: '/api/assistant', body: ASSISTANT_DATA },
-    ]);
-    const { hook } = memoryLocation({ path: '/assistant/skills/search-club' });
-    renderWithSession(
-      <Router hook={hook}>
-        <Route path="/assistant/skills/:skillId" component={AssistantSkillPage} />
-      </Router>,
-    );
-    expect(await screen.findByText('No slash command triggers this skill directly.')).toBeTruthy();
   });
 });

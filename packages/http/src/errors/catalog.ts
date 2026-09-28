@@ -142,6 +142,16 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'That item is not in a state this action can change.',
     hint: 'Reload the page to see its current state.',
   },
+  'invalid-reminder': {
+    title: 'Reminder not saved',
+    explanation:
+      "The reminder's text, time or context isn't valid. The message says what to change.",
+  },
+  'recurrence-needs-time-zone': {
+    title: "Can't add a repeat here",
+    explanation:
+      "Repeating reminders are created from chat, where the club's time zone is known. You can change or stop an existing repeat here.",
+  },
   'guild-not-archive-enabled': {
     title: 'Archiving is off for this server',
     explanation: 'This server is not in the archive list.',

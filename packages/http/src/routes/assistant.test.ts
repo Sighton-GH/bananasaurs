@@ -6,6 +6,7 @@ import {
   JOB_KINDS,
   parseGuildId,
   ProviderError,
+  reminderRecurrence,
   resourceRefreshDedupeKey,
   SAFETY_SUFFIX,
   SAFETY_SUFFIX_VERSION,
@@ -1326,35 +1327,42 @@ describe('GET /api/assistant/skills/:skillId', () => {
     expect(parsed.recentRuns).toEqual([]);
   });
 
-  it('names the caller roles from the directory, falls back without one, and states owner-only skills plainly', async () => {
+  it('reads the scope and the scope-based who-can-use for each mode', async () => {
     grant('config.read');
     grant('config.write');
     const { cookie, csrf } = await signIn();
-    // No caller roles configured on the one allowed behaviour yet.
-    expect((await put(cookie, csrf, body({ allowedSkillIds: ['search-club'] }))).statusCode).toBe(
-      200,
+    const headers = { cookie, [CSRF_HEADER]: csrf };
+    const putScope = (skillId: string, payload: unknown) =>
+      app.inject({
+        method: 'PUT',
+        url: `/api/assistant/skills/${encodeURIComponent(skillId)}/scope`,
+        headers,
+        payload: payload as Record<string, unknown>,
+      });
+    // Default: search-club is everyone, reminders is owner-only.
+    expect((await get(cookie, 'search-club')).json<{ whoCanUse: string }>().whoCanUse).toBe(
+      'Everyone who can ask a behaviour that allows this skill, and the server owner.',
     );
-    const unconfigured = await get(cookie, 'search-club');
-    expect(unconfigured.json<{ whoCanUse: string }>().whoCanUse).toBe(
-      'Only the server owner, until a behaviour that allows it has Who can ask roles.',
-    );
+    const ownerDefault = await get(cookie, 'reminders');
+    expect(ownerDefault.json<{ whoCanUse: string }>().whoCanUse).toBe('Only the server owner.');
+    expect(ownerDefault.json<{ scope: unknown }>().scope).toEqual({
+      mode: 'owner',
+      roleIds: [],
+      isDefault: true,
+    });
+    // Roles mode names directory roles and marks the ones that left.
     expect(
-      (
-        await put(
-          cookie,
-          csrf,
-          body({
-            promptVersion: 1,
-            callerRoleIds: [ROLE_A, ROLE_B],
-            allowedSkillIds: ['search-club'],
-          }),
-        )
-      ).statusCode,
+      (await putScope('search-club', { mode: 'roles', roleIds: [ROLE_A, ROLE_B] })).statusCode,
     ).toBe(200);
     const withoutDirectory = await get(cookie, 'search-club');
     expect(withoutDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
-      '@a role that left the server, @a role that left the server, and the server owner',
+      '@a role that left the server, @a role that left the server (among those who can ask), and the server owner.',
     );
+    expect(withoutDirectory.json<{ scope: unknown }>().scope).toEqual({
+      mode: 'roles',
+      roleIds: [ROLE_A, ROLE_B],
+      isDefault: false,
+    });
     deps = {
       ...deps,
       assistantDirectories: () =>
@@ -1371,10 +1379,8 @@ describe('GET /api/assistant/skills/:skillId', () => {
     app = createServer({ deps, registerRoutes: registerAssistantRoutes });
     const withDirectory = await get(cookie, 'search-club');
     expect(withDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
-      '@Member, @Helper, and the server owner',
+      '@Member, @Helper (among those who can ask), and the server owner.',
     );
-    const ownerOnly = await get(cookie, 'send-reminder');
-    expect(ownerOnly.json<{ whoCanUse: string }>().whoCanUse).toBe('Only the server owner.');
   });
 
   it("lists up to 50 of this skill's own activity rows, newest first, never another skill's", async () => {
@@ -1394,7 +1400,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
       id: 'other',
       at: clock + 1000,
       behaviourId: 'club',
-      skillId: 'create-reminder',
+      skillId: 'reminders',
       actorId: ROLE_A,
       outcome: 'completed',
     });
@@ -1406,98 +1412,182 @@ describe('GET /api/assistant/skills/:skillId', () => {
     expect(parsed.recentRuns[0]?.id).toBe('a54');
   });
 
-  // The command shapes below are copied by hand from `RELEASE_3_COMMANDS`
-  // (`packages/discord/src/rest/commands.ts`), not imported: `packages/http`
-  // may not depend on `@bananasaurs/discord` (`no-restricted-imports`,
-  // ADR 0014 - that package is discord.js-only, reachable from the effect
-  // gateway and the daemon composition root). This test is the drift check
-  // a human re-reads when either file changes.
-  const LIVE_COMMANDS: Readonly<Record<string, { name: string; options: unknown[] }>> = {
-    'search-club': {
-      name: 'find',
-      options: [{ name: 'query', required: true, description: 'What to find' }],
-    },
-    'create-reminder': {
-      name: 'remind',
-      options: [
-        {
-          name: 'when',
-          required: true,
-          description: 'When to send it, including date or time zone',
-        },
-        { name: 'text', required: true, description: 'Reminder text' },
-      ],
-    },
-    'propose-memory': {
-      name: 'remember',
-      options: [
-        {
-          name: 'request',
-          required: true,
-          description: 'What the assistant should consider remembering',
-        },
-      ],
-    },
-    'record-decision': {
-      name: 'decision',
-      options: [
-        { name: 'topic', required: true, description: 'Decision topic' },
-        { name: 'context', required: false, description: 'Optional context or constraints' },
-      ],
-    },
-    'review-plan': {
-      name: 'review-plan',
-      options: [{ name: 'plan', required: true, description: 'Plan to review' }],
-    },
-    'onboarding-guide': {
-      name: 'onboard',
-      options: [{ name: 'request', required: true, description: 'What you need' }],
-    },
-    'draft-agenda': {
-      name: 'agenda',
-      options: [{ name: 'request', required: true, description: 'What you need' }],
-    },
-    'summarise-meeting': {
-      name: 'summarise',
-      options: [{ name: 'request', required: true, description: 'What you need' }],
-    },
-    'draft-announcement': {
-      name: 'announce',
-      options: [{ name: 'request', required: true, description: 'What you need' }],
-    },
-    'event-checklist': {
-      name: 'checklist',
-      options: [{ name: 'request', required: true, description: 'What you need' }],
-    },
-    'draft-handoff': {
-      name: 'handoff',
-      options: [{ name: 'request', required: true, description: 'What you need' }],
-    },
-  };
-
-  it('gives every skill named in RELEASE_3_COMMANDS its exact slash command and options', async () => {
+  // Task E1: slash commands are removed (ADR 0086 decision 8), so no skill
+  // detail response carries a command key.
+  it('carries no slash command key for any skill', async () => {
     grant('config.read');
     const { cookie } = await signIn();
     for (const skill of CLUB_ASSISTANT_SKILLS) {
       const response = await get(cookie, skill.id);
-      const parsed: { command?: { name: string; options: unknown[] } } = response.json();
-      expect(parsed.command, skill.id).toEqual(LIVE_COMMANDS[skill.id]);
+      expect(response.statusCode).toBe(200);
+      expect(response.json(), skill.id).not.toHaveProperty('command');
     }
-    // Every skill this route maps to a command is one the test above checked byte-for-byte.
-    expect(Object.keys(LIVE_COMMANDS).sort()).toEqual(
-      CLUB_ASSISTANT_SKILLS.filter((s) => LIVE_COMMANDS[s.id] !== undefined)
-        .map((s) => s.id)
-        .sort(),
-    );
   });
+});
 
-  it('leaves owner-only send-reminder and tool-only open-resource without a slash command', async () => {
+describe('GET /api/assistant/skills/:skillId items (Task E1)', () => {
+  const get = (cookie: string, skillId: string) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/assistant/skills/${encodeURIComponent(skillId)}`,
+      headers: { cookie },
+    });
+  const MEMBER = '555555555555555555';
+  const CHANNEL = '666666666666666666';
+  const seedReminder = (
+    id: string,
+    status: 'scheduled' | 'delivering' | 'delivered' | 'cancelled' | 'failed',
+    dueAt: number,
+    over: Record<string, unknown> = {},
+  ): void => {
+    assistantRepo.insertReminder(t.scopes.forGuild(GUILD), {
+      id,
+      guildId: GUILD,
+      creatorId: MEMBER,
+      destinationId: CHANNEL,
+      text: `text-${id}`,
+      dueAt,
+      createdAt: clock,
+      status,
+      dedupeKey: `${GUILD}:${id}`,
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: status === 'delivered' ? 1 : 0,
+      ...over,
+    });
+  };
+  const seedDecision = (
+    id: string,
+    kind: 'decision' | 'review-plan' | 'memory',
+    status: 'draft' | 'reviewed',
+  ): void => {
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.insertDecisionDraft(scope, {
+      id,
+      kind,
+      summary: `summary-${id}`,
+      requesterId: MEMBER,
+      provenance: 'test',
+      at: clock,
+    });
+    if (status === 'reviewed')
+      expect(assistantRepo.transitionDecision(scope, id, 'draft', 'reviewed')).toBe(true);
+  };
+  const withDirectories = async (): Promise<void> => {
+    deps = {
+      ...deps,
+      assistantDirectories: () =>
+        Promise.resolve({
+          roles: [],
+          members: [{ id: MEMBER, name: 'Remy' }],
+          channels: [{ id: CHANNEL, name: 'general' }],
+        }),
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+
+  it('lists every live reminder plus the newest finished ones, with directory names', async () => {
     grant('config.read');
     const { cookie } = await signIn();
-    const sendReminder = await get(cookie, 'send-reminder');
-    expect(sendReminder.json<{ command?: unknown }>().command).toBeUndefined();
-    const openResource = await get(cookie, 'open-resource');
-    expect(openResource.json<{ command?: unknown }>().command).toBeUndefined();
+    await withDirectories();
+    seedReminder('live-one', 'scheduled', clock + 1000, { context: 'why one' });
+    seedReminder('live-two', 'delivering', clock + 2000);
+    seedReminder('old-one', 'delivered', clock + 500);
+    seedReminder('old-two', 'cancelled', clock + 3000);
+    const response = await get(cookie, 'reminders');
+    expect(response.statusCode).toBe(200);
+    const parsed: {
+      items: {
+        kind: string;
+        reminders: {
+          id: string;
+          creatorId: string;
+          creatorName?: string;
+          destinationId: string;
+          destinationName?: string;
+          text: string;
+          context?: string;
+          dueAt: number;
+          status: string;
+          mentions: unknown;
+          deliveredCount: number;
+        }[];
+      };
+    } = response.json();
+    expect(parsed.items.kind).toBe('reminders');
+    expect(parsed.items.reminders.map((r) => r.id)).toEqual([
+      'live-one',
+      'live-two',
+      'old-two',
+      'old-one',
+    ]);
+    expect(parsed.items.reminders[0]).toMatchObject({
+      id: 'live-one',
+      creatorId: MEMBER,
+      creatorName: 'Remy',
+      destinationId: CHANNEL,
+      destinationName: 'general',
+      text: 'text-live-one',
+      context: 'why one',
+      dueAt: clock + 1000,
+      status: 'scheduled',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+    });
+  });
+
+  it('caps the finished reminders at the 50 most recent', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    for (let i = 0; i < 55; i += 1) {
+      seedReminder(`done-${i}`, 'delivered', clock + i);
+    }
+    const response = await get(cookie, 'reminders');
+    const parsed: { items: { kind: string; reminders: { id: string }[] } } = response.json();
+    expect(parsed.items.kind).toBe('reminders');
+    expect(parsed.items.reminders).toHaveLength(50);
+    expect(parsed.items.reminders[0]?.id).toBe('done-54');
+  });
+
+  it('omits directory names when no directory is available', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    seedReminder('live-one', 'scheduled', clock + 1000);
+    const response = await get(cookie, 'reminders');
+    const parsed: { items: { reminders: Record<string, unknown>[] } } = response.json();
+    expect(parsed.items.reminders[0]).not.toHaveProperty('creatorName');
+    expect(parsed.items.reminders[0]).not.toHaveProperty('destinationName');
+  });
+
+  it('lists draft and reviewed memory proposals for propose-memory', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    seedDecision('mem-draft', 'memory', 'draft');
+    seedDecision('mem-reviewed', 'memory', 'reviewed');
+    seedDecision('dec-draft', 'decision', 'draft');
+    const response = await get(cookie, 'propose-memory');
+    const parsed: { items: { kind: string; proposals: { id: string }[] } } = response.json();
+    expect(parsed.items.kind).toBe('memory-proposals');
+    expect(parsed.items.proposals.map((p) => p.id).sort()).toEqual(['mem-draft', 'mem-reviewed']);
+  });
+
+  it('lists draft and reviewed non-memory decisions for record-decision', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    seedDecision('dec-draft', 'decision', 'draft');
+    seedDecision('plan-reviewed', 'review-plan', 'reviewed');
+    seedDecision('mem-draft', 'memory', 'draft');
+    const response = await get(cookie, 'record-decision');
+    const parsed: { items: { kind: string; decisions: { id: string }[] } } = response.json();
+    expect(parsed.items.kind).toBe('decisions');
+    expect(parsed.items.decisions.map((d) => d.id).sort()).toEqual(['dec-draft', 'plan-reviewed']);
+  });
+
+  it('reports no items for every other skill', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'search-club');
+    expect(response.json<{ items: unknown }>().items).toEqual({ kind: 'none' });
   });
 });
 
@@ -1676,5 +1766,307 @@ describe('GET /api/assistant/safety-suffix (Task 18)', () => {
     const response = await get(cookie);
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ version: SAFETY_SUFFIX_VERSION, text: SAFETY_SUFFIX });
+  });
+});
+
+describe('PUT /api/assistant/skills/:skillId/scope (Task E1)', () => {
+  const putScope = (cookie: string, csrf: string, skillId: string, payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: `/api/assistant/skills/${encodeURIComponent(skillId)}/scope`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+
+  it('round-trips a roles scope and clears role ids when leaving roles mode', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const roles = await putScope(cookie, csrf, 'reminders', { mode: 'roles', roleIds: [ROLE_A] });
+    expect(roles.statusCode).toBe(200);
+    expect(roles.json()).toEqual({
+      ok: true,
+      scope: { mode: 'roles', roleIds: [ROLE_A], isDefault: false },
+    });
+    const read = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(read.json<{ skillScopes: Record<string, unknown> }>().skillScopes['reminders']).toEqual({
+      mode: 'roles',
+      roleIds: [ROLE_A],
+      isDefault: false,
+    });
+    // Extra role ids do not survive a non-roles mode.
+    const everyone = await putScope(cookie, csrf, 'reminders', {
+      mode: 'everyone',
+      roleIds: [ROLE_A],
+    });
+    expect(everyone.statusCode).toBe(200);
+    expect(everyone.json()).toEqual({
+      ok: true,
+      scope: { mode: 'everyone', roleIds: [], isDefault: false },
+    });
+    expect(assistantRepo.listSkillGrants(t.scopes.forGuild(GUILD))).toEqual([
+      expect.objectContaining({ skillId: 'reminders', mode: 'everyone', roleIds: [] }),
+    ]);
+  });
+
+  it('refuses roles mode with no roles', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const response = await putScope(cookie, csrf, 'reminders', { mode: 'roles', roleIds: [] });
+    expect(response.statusCode).toBe(400);
+    expect(assistantRepo.listSkillGrants(t.scopes.forGuild(GUILD))).toEqual([]);
+  });
+
+  it('404s an unknown skill', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const response = await putScope(cookie, csrf, 'no-such-skill', {
+      mode: 'owner',
+      roleIds: [],
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: 'not-found' });
+  });
+
+  it('requires config.write', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    const response = await putScope(cookie, csrf, 'reminders', { mode: 'owner', roleIds: [] });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('audits the scope change with the effective scope before and after', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    expect(
+      (await putScope(cookie, csrf, 'reminders', { mode: 'roles', roleIds: [ROLE_A] })).statusCode,
+    ).toBe(200);
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_skill_scope.saved');
+    expect(row).toMatchObject({ subjectType: 'assistant_skill', subjectId: 'reminders' });
+    expect(JSON.parse(row?.before as string)).toEqual({
+      mode: 'owner',
+      roleIds: [],
+      isDefault: true,
+    });
+    expect(JSON.parse(row?.after as string)).toEqual({
+      mode: 'roles',
+      roleIds: [ROLE_A],
+      isDefault: false,
+    });
+  });
+});
+
+describe('GET /api/assistant skill scopes and item counts (Task E1)', () => {
+  const seedReminder = (
+    id: string,
+    status: 'scheduled' | 'delivering' | 'delivered' | 'cancelled',
+    dueAt: number,
+  ): void => {
+    assistantRepo.insertReminder(t.scopes.forGuild(GUILD), {
+      id,
+      guildId: GUILD,
+      creatorId: ROLE_A,
+      destinationId: ROLE_B,
+      text: id,
+      dueAt,
+      createdAt: clock,
+      status,
+      dedupeKey: `${GUILD}:${id}`,
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+    });
+  };
+  const seedDecision = (
+    id: string,
+    kind: 'decision' | 'review-plan' | 'memory',
+    status: 'draft' | 'reviewed' | 'saved',
+  ): void => {
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.insertDecisionDraft(scope, {
+      id,
+      kind,
+      summary: id,
+      requesterId: ROLE_A,
+      provenance: 'test',
+      at: clock,
+    });
+    if (status !== 'draft')
+      expect(assistantRepo.transitionDecision(scope, id, 'draft', 'reviewed')).toBe(true);
+    if (status === 'saved')
+      expect(assistantRepo.transitionDecision(scope, id, 'reviewed', 'saved')).toBe(true);
+  };
+
+  it('reports default scopes and zero counts on a fresh guild', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const parsed: {
+      skillScopes: Record<string, { mode: string; roleIds: string[]; isDefault: boolean }>;
+      skillItemCounts: Record<string, number>;
+    } = response.json();
+    expect(parsed.skillScopes['reminders']).toEqual({
+      mode: 'owner',
+      roleIds: [],
+      isDefault: true,
+    });
+    expect(parsed.skillScopes['search-club']).toEqual({
+      mode: 'everyone',
+      roleIds: [],
+      isDefault: true,
+    });
+    expect(Object.keys(parsed.skillScopes).sort()).toEqual(
+      CLUB_ASSISTANT_SKILLS.map((s) => s.id).sort(),
+    );
+    expect(parsed.skillItemCounts['reminders']).toBe(0);
+    expect(parsed.skillItemCounts['propose-memory']).toBe(0);
+    expect(parsed.skillItemCounts['record-decision']).toBe(0);
+    expect(parsed.skillItemCounts['search-club']).toBe(0);
+  });
+
+  it('counts live reminders and draft proposals', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    seedReminder('live-one', 'scheduled', clock + 1000);
+    seedReminder('live-two', 'delivering', clock + 2000);
+    seedReminder('old-one', 'delivered', clock + 3000);
+    seedReminder('old-two', 'cancelled', clock + 4000);
+    seedDecision('mem-draft', 'memory', 'draft');
+    seedDecision('mem-reviewed', 'memory', 'reviewed');
+    seedDecision('dec-draft', 'decision', 'draft');
+    seedDecision('plan-reviewed', 'review-plan', 'reviewed');
+    seedDecision('dec-saved', 'decision', 'saved');
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant',
+      headers: { cookie },
+    });
+    const parsed: { skillItemCounts: Record<string, number> } = response.json();
+    expect(parsed.skillItemCounts['reminders']).toBe(2);
+    expect(parsed.skillItemCounts['propose-memory']).toBe(1);
+    expect(parsed.skillItemCounts['record-decision']).toBe(1);
+    expect(parsed.skillItemCounts['search-club']).toBe(0);
+  });
+});
+
+describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
+  const patch = (cookie: string, csrf: string, id: string, payload: unknown) =>
+    app.inject({
+      method: 'PATCH',
+      url: `/api/assistant/reminders/${encodeURIComponent(id)}`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+  const seed = (id: string, over: Record<string, unknown> = {}): void => {
+    assistantRepo.insertReminder(t.scopes.forGuild(GUILD), {
+      id,
+      guildId: GUILD,
+      creatorId: ROLE_A,
+      destinationId: ROLE_B,
+      text: `text-${id}`,
+      dueAt: clock + 3_600_000,
+      createdAt: clock,
+      status: 'scheduled',
+      dedupeKey: `${GUILD}:${id}`,
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+      ...over,
+    });
+  };
+  const repeating = () =>
+    reminderRecurrence.parse({ pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' });
+
+  it('edits the text and audits only the changed fields', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', { text: 'new text' });
+    expect(response.statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.text).toBe('new text');
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_reminder.edited');
+    expect(row).toMatchObject({ subjectType: 'assistant_reminder', subjectId: 'r1' });
+    expect(JSON.parse(row?.before as string)).toEqual({ text: 'text-r1' });
+    expect(JSON.parse(row?.after as string)).toEqual({ text: 'new text' });
+  });
+
+  it('refuses a past dueAt without touching the row', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', { dueAt: clock - 1000 });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid-reminder' });
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.dueAt).toBe(
+      clock + 3_600_000,
+    );
+  });
+
+  it('stops a repeat with null', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { recurrence: repeating() });
+    expect((await patch(cookie, csrf, 'r1', { recurrence: null })).statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toBeUndefined();
+  });
+
+  it('keeps the time zone when the pattern of a repeating reminder changes', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { recurrence: repeating() });
+    const response = await patch(cookie, csrf, 'r1', {
+      recurrence: { pattern: { kind: 'weekdays' } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toEqual(
+      reminderRecurrence.parse({ pattern: { kind: 'weekdays' }, timeZone: 'America/Vancouver' }),
+    );
+  });
+
+  it('refuses to add a repeat to a one-off reminder', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', {
+      recurrence: { pattern: { kind: 'daily' } },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: 'recurrence-needs-time-zone',
+      message: `Repeating reminders are created from chat, where the club's time zone is known.`,
+    });
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toBeUndefined();
+  });
+
+  it('answers 409 for a cancelled reminder', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    expect(assistantRepo.cancelReminder(t.scopes.forGuild(GUILD), 'r1')).toBe(true);
+    const response = await patch(cookie, csrf, 'r1', { text: 'too late' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: 'invalid-transition' });
+  });
+
+  it('answers 404 for a missing id', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const response = await patch(cookie, csrf, 'nope', { text: 'nothing' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: 'not-found' });
+  });
+
+  it('requires config.write', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    expect((await patch(cookie, csrf, 'r1', { text: 'new text' })).statusCode).toBe(403);
   });
 });

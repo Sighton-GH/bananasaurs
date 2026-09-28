@@ -654,7 +654,7 @@ export const updateReminder = (
   id: string,
   patch: {
     readonly text?: string;
-    readonly context?: string;
+    readonly context?: string | null;
     readonly dueAt?: number;
     readonly destinationId?: string;
     readonly mentions?: ReminderMentions;

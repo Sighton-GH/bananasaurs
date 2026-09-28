@@ -3,6 +3,7 @@ import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { AssistantSkillsPage } from './assistant-skills.js';
+import { scopeLabel } from './assistant-shared.js';
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -56,6 +57,12 @@ const FULL = {
   resources: [],
   reminders: [],
   skills: SKILLS,
+  skillScopes: {
+    'search-club': { mode: 'everyone', roleIds: [], isDefault: true },
+    'create-reminder': { mode: 'roles', roleIds: ['role-club-member'], isDefault: false },
+    'send-reminder': { mode: 'owner', roleIds: [], isDefault: true },
+  },
+  skillItemCounts: { 'create-reminder': 3 },
   activity: [
     {
       id: 'a1',
@@ -115,16 +122,19 @@ describe('AssistantSkillsPage', () => {
     ).toBeTruthy();
   });
 
-  it('renders the catalogue without Discord permission claims', async () => {
+  it('renders the catalogue with scope and live-count badges and no confirm-first text', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
     const catalogue = screen.getByRole('heading', { name: 'Skill catalogue' }).closest('section')!;
     expect(within(catalogue).getAllByText('Search club knowledge').length).toBeGreaterThan(0);
     expect(within(catalogue).queryByText(/Needs the Discord permission/)).toBeNull();
     expect(within(catalogue).queryByText('assistant.search')).toBeNull();
-    expect(within(catalogue).getByText('You confirm first')).toBeTruthy();
-    expect(within(catalogue).getAllByText('Runs without asking').length).toBeGreaterThan(0);
-    expect(within(catalogue).getByText('owner only')).toBeTruthy();
+    expect(within(catalogue).getByText('Everyone who can ask')).toBeTruthy();
+    expect(within(catalogue).getByText('Roles: @Club Member')).toBeTruthy();
+    expect(within(catalogue).getByText('Owner only')).toBeTruthy();
+    expect(within(catalogue).getByText('3 active')).toBeTruthy();
+    expect(screen.queryByText(/confirm first/i)).toBeNull();
+    expect(screen.queryByText('Runs without asking')).toBeNull();
     expect(screen.getAllByRole('link', { name: 'Assistant history' }).length).toBeGreaterThan(0);
   });
 
@@ -132,7 +142,7 @@ describe('AssistantSkillsPage', () => {
     renderPage();
     const region = await screen.findByRole('region', { name: 'Allowlist for Club assistant' });
     expect(within(region).getByText('Reads')).toBeTruthy();
-    expect(within(region).getByText('Schedules · you confirm first')).toBeTruthy();
+    expect(within(region).getByText('Schedules')).toBeTruthy();
   });
 
   it('saves a per-behaviour allowlist as the whole behaviour object', async () => {
@@ -174,14 +184,14 @@ describe('AssistantSkillsPage', () => {
     expect(screen.getByText(/Could not load assistant skills/)).toBeTruthy();
   });
 
-  it('states the one rule for who can use skills (ADR 0064)', async () => {
+  it('states that each skill scope decides who can use it (ADR 0086)', async () => {
     renderPage();
     const card = (await screen.findByRole('heading', { name: 'Who can use skills' })).closest(
       'section',
     )!;
     expect(
       within(card).getByText(
-        'Anyone a behaviour lets ask (its Who can ask roles on the Assistant page) can use every skill that behaviour allows. Owner-only skills stay with the server owner.',
+        "Each skill's scope decides who can use it; the owner can always use every skill.",
       ),
     ).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Skill grants' })).toBeNull();
@@ -214,6 +224,18 @@ describe('AssistantSkillsPage', () => {
     const web = within(tools).getByText('Search the web').closest('li')!;
     expect(within(web).getByText('Off')).toBeTruthy();
     expect(within(web).getByRole('link', { name: 'Set up web search' })).toBeTruthy();
+  });
+
+  it('labels each scope mode in plain words', () => {
+    expect(scopeLabel({ mode: 'everyone', roleIds: [] }, () => undefined)).toBe(
+      'Everyone who can ask',
+    );
+    expect(scopeLabel({ mode: 'owner', roleIds: [] }, () => undefined)).toBe('Owner only');
+    expect(
+      scopeLabel({ mode: 'roles', roleIds: ['r1', 'r2'] }, (id) =>
+        id === 'r1' ? 'Mods' : id === 'r2' ? 'Helpers' : undefined,
+      ),
+    ).toBe('Roles: @Mods, @Helpers');
   });
 
   it('shows web search on when AI setup turned it on', async () => {

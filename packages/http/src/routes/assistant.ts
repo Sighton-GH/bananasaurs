@@ -3,17 +3,22 @@ import { z } from 'zod';
 import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  effectiveSkillScope,
   isGithubWebHost,
   parseGitHubUrl,
   promptWizardAnswers,
   ProviderError,
+  reminderRecurrence,
   SAFETY_SUFFIX,
   SAFETY_SUFFIX_VERSION,
   skillInstructionLine,
   STARTER_SKILL_IDS,
   TOOL_CATALOGUE,
+  validateReminderDraft,
   validateResourceUrl,
+  type AssistantSkill,
   type ClubResource,
+  type SkillScopeMode,
 } from '@bananasaurs/core';
 import { assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
@@ -24,90 +29,6 @@ import { requireCapability } from './capability.js';
 import { computeAssistantSetup } from './assistant-setup.js';
 
 /**
- * A slash command shown on a skill's detail page, hand-kept in sync with
- * `RELEASE_3_COMMANDS` (`packages/discord/src/rest/commands.ts`) rather than
- * imported from `@bananasaurs/discord`: that package depends on `discord.js`,
- * and this HTTP package deliberately does not (`packages/http/package.json`
- * lists only `core`, `storage`, `fastify`, `zod` and `@node-rs/argon2`).
- * `assistant.test.ts` cross-checks every entry here against the live command
- * definitions so a renamed or removed command cannot go stale silently.
- */
-const SKILL_COMMANDS: Readonly<
-  Record<
-    string,
-    {
-      readonly name: string;
-      readonly options: readonly {
-        readonly name: string;
-        readonly required: boolean;
-        readonly description: string;
-      }[];
-    }
-  >
-> = {
-  'search-club': {
-    name: 'find',
-    options: [{ name: 'query', required: true, description: 'What to find' }],
-  },
-  'create-reminder': {
-    name: 'remind',
-    options: [
-      {
-        name: 'when',
-        required: true,
-        description: 'When to send it, including date or time zone',
-      },
-      { name: 'text', required: true, description: 'Reminder text' },
-    ],
-  },
-  'propose-memory': {
-    name: 'remember',
-    options: [
-      {
-        name: 'request',
-        required: true,
-        description: 'What the assistant should consider remembering',
-      },
-    ],
-  },
-  'record-decision': {
-    name: 'decision',
-    options: [
-      { name: 'topic', required: true, description: 'Decision topic' },
-      { name: 'context', required: false, description: 'Optional context or constraints' },
-    ],
-  },
-  'review-plan': {
-    name: 'review-plan',
-    options: [{ name: 'plan', required: true, description: 'Plan to review' }],
-  },
-  'onboarding-guide': {
-    name: 'onboard',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'draft-agenda': {
-    name: 'agenda',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'summarise-meeting': {
-    name: 'summarise',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'draft-announcement': {
-    name: 'announce',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'event-checklist': {
-    name: 'checklist',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'draft-handoff': {
-    name: 'handoff',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-};
-
-/**
  * Instance owner, read from the account row rather than any capability: the
  * provider's cost statement and terms record are facts about the whole
  * daemon (ADR 0061), and no per-guild grant can confer them.
@@ -116,6 +37,28 @@ const SKILL_COMMANDS: Readonly<
 export { isInstanceOwner };
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
+
+/**
+ * Task E1: the dashboard view of one skill's scope (ADR 0086 decision 1).
+ * `isDefault` is true when no stored mode exists; non-roles modes carry no
+ * role ids.
+ */
+const skillScopeView = (
+  skill: AssistantSkill,
+  stored:
+    { readonly mode?: SkillScopeMode | undefined; readonly roleIds: readonly string[] } | undefined,
+): {
+  readonly mode: SkillScopeMode;
+  readonly roleIds: readonly string[];
+  readonly isDefault: boolean;
+} => {
+  const effective = effectiveSkillScope(skill, stored);
+  return {
+    mode: effective.mode,
+    roleIds: effective.mode === 'roles' ? [...effective.roleIds] : [],
+    isDefault: stored?.mode === undefined,
+  };
+};
 const behaviour = z.object({
   id: z.string().min(1).max(64),
   surface: z.enum(['bananasaurs', 'it-services', 'help', 'direct-command']),
@@ -180,6 +123,45 @@ export const registerAssistantRoutes = (
         : await deps.assistantDirectories(session.guildId).catch(() => undefined);
     const behaviours = assistantRepo.listBehaviours(session.scope);
     const skillGrants = assistantRepo.listSkillGrants(session.scope);
+    const reminders = assistantRepo.listReminders(session.scope);
+    const decisions = assistantRepo.listDecisions(session.scope);
+    const grantsBySkillId = new Map(skillGrants.map((grant) => [grant.skillId, grant] as const));
+    const skillScopes: Record<
+      string,
+      { mode: SkillScopeMode; roleIds: string[]; isDefault: boolean }
+    > = Object.fromEntries(
+      CLUB_ASSISTANT_SKILLS.map((skill) => {
+        const grant = grantsBySkillId.get(skill.id);
+        return [
+          skill.id,
+          skillScopeView(
+            skill,
+            grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
+          ),
+        ];
+      }),
+    );
+    const liveReminders = reminders.filter(
+      (reminder) => reminder.status === 'scheduled' || reminder.status === 'delivering',
+    ).length;
+    const draftMemories = decisions.filter(
+      (decision) => decision.kind === 'memory' && decision.status === 'draft',
+    ).length;
+    const draftDecisions = decisions.filter(
+      (decision) => decision.kind !== 'memory' && decision.status === 'draft',
+    ).length;
+    const skillItemCounts: Record<string, number> = Object.fromEntries(
+      CLUB_ASSISTANT_SKILLS.map((skill) => [
+        skill.id,
+        skill.id === 'reminders'
+          ? liveReminders
+          : skill.id === 'propose-memory'
+            ? draftMemories
+            : skill.id === 'record-decision'
+              ? draftDecisions
+              : 0,
+      ]),
+    );
     const aiStatus = deps.assistantProviderConfig?.status() ??
       deps.assistantAiStatus ?? {
         provider: 'unknown',
@@ -205,12 +187,14 @@ export const registerAssistantRoutes = (
         },
       })),
       resources: assistantRepo.listResources(session.scope),
-      reminders: assistantRepo.listReminders(session.scope),
+      reminders,
       skills: CLUB_ASSISTANT_SKILLS,
+      skillScopes,
+      skillItemCounts,
       activity: assistantRepo.listSkillActivity(session.scope, 100),
       skillGrants,
       tickets: assistantRepo.listTickets(session.scope),
-      decisions: assistantRepo.listDecisions(session.scope),
+      decisions,
       serverCard: assistantRepo.getServerCard(session.scope),
       memories: assistantRepo.listMemories(session.scope),
       settings: assistantRepo.getAssistantSettings(session.scope),
@@ -576,32 +560,47 @@ export const registerAssistantRoutes = (
     });
     return reply.status(200).send({ skillIds: STARTER_SKILL_IDS });
   });
-  app.put('/api/assistant/skill-grants/:id', (request, reply) => {
+  // Task E1: one scope per skill, server-wide (ADR 0086 decision 1). The
+  // stored row keeps its role/user ids; only the mode and role ids move.
+  app.put('/api/assistant/skills/:skillId/scope', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
-    const id = (request.params as { id: string }).id;
+    const skillId = (request.params as { skillId: string }).skillId;
+    const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === skillId);
+    if (skill === undefined) return reply.status(404).send({ error: 'not-found' });
     const parsed = z
-      .object({ roleIds: z.array(snowflake).max(100), userIds: z.array(snowflake).max(100) })
+      .object({
+        mode: z.enum(['everyone', 'roles', 'owner']),
+        roleIds: z.array(snowflake).max(100),
+      })
+      .strict()
       .safeParse(request.body);
-    const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === id);
-    if (!parsed.success || skill === undefined || skill.ownerOnly === true)
-      return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    if (parsed.data.mode === 'roles' && parsed.data.roleIds.length === 0) return badRequest(reply);
+    const roleIds = parsed.data.mode === 'roles' ? parsed.data.roleIds : [];
+    const stored = assistantRepo
+      .listSkillGrants(session.scope)
+      .find((item) => item.skillId === skillId);
+    const before = skillScopeView(
+      skill,
+      stored === undefined ? undefined : { mode: stored.mode, roleIds: stored.roleIds },
+    );
+    assistantRepo.setSkillScope(
+      session.scope,
+      { skillId, mode: parsed.data.mode, roleIds },
+      deps.now(),
+    );
+    const after = { mode: parsed.data.mode, roleIds, isDefault: false };
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'assistant_skill_grant.saved',
-      subjectType: 'assistant_skill_grant',
-      subjectId: id,
-      before: (() => {
-        const grant = assistantRepo
-          .listSkillGrants(session.scope)
-          .find((item) => item.skillId === id);
-        return grant === undefined ? undefined : { roleIds: grant.roleIds, userIds: grant.userIds };
-      })(),
-      after: { roleIds: parsed.data.roleIds, userIds: parsed.data.userIds },
+      action: 'assistant_skill_scope.saved',
+      subjectType: 'assistant_skill',
+      subjectId: skillId,
+      before,
+      after,
     });
-    assistantRepo.putSkillGrant(session.scope, { skillId: id, ...parsed.data }, deps.now());
-    return reply.status(200).send({ ok: true });
+    return reply.status(200).send({ ok: true, scope: after });
   });
   app.post('/api/assistant/reminders/:id/cancel', (request, reply) => {
     const session = guard.require(request, reply);
@@ -621,6 +620,121 @@ export const registerAssistantRoutes = (
           ? undefined
           : { text: reminder.text, dueAt: reminder.dueAt, status: reminder.status },
       after: { status: 'cancelled' },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+  // Task E1: edit a reminder's text, context, due time or repeat from the
+  // skill page. The repeat keeps the time zone it was created with in chat;
+  // a one-off reminder cannot gain one here (ADR 0086 decision 5).
+  app.patch('/api/assistant/reminders/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const id = (request.params as { id: string }).id;
+    const parsed = z
+      .object({
+        text: z.string().optional(),
+        context: z.string().max(300).nullable().optional(),
+        dueAt: z.number().int().optional(),
+        recurrence: z
+          .union([
+            z.null(),
+            z
+              .object({
+                pattern: reminderRecurrence.shape.pattern,
+                endAt: z.number().int().positive().optional(),
+                maxCount: z.number().int().min(1).max(1000).optional(),
+              })
+              .strict(),
+          ])
+          .optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    const existing = assistantRepo.getReminder(session.scope, id);
+    if (existing === undefined) return reply.status(404).send({ error: 'not-found' });
+    const draft = validateReminderDraft(
+      { dueAt: parsed.data.dueAt ?? existing.dueAt, text: parsed.data.text ?? existing.text },
+      deps.now(),
+    );
+    if (!draft.ok)
+      return reply.status(400).send({ error: 'invalid-reminder', message: draft.error });
+    // The dashboard never learns the club's time zone: a non-null repeat is
+    // only an edit of an existing repeat, keeping its stored time zone.
+    const recurrence =
+      parsed.data.recurrence === undefined
+        ? undefined
+        : parsed.data.recurrence === null
+          ? null
+          : existing.recurrence === undefined
+            ? undefined
+            : {
+                pattern: parsed.data.recurrence.pattern,
+                timeZone: existing.recurrence.timeZone,
+                ...(parsed.data.recurrence.endAt === undefined
+                  ? {}
+                  : { endAt: parsed.data.recurrence.endAt }),
+                ...(parsed.data.recurrence.maxCount === undefined
+                  ? {}
+                  : { maxCount: parsed.data.recurrence.maxCount }),
+              };
+    if (
+      parsed.data.recurrence !== undefined &&
+      parsed.data.recurrence !== null &&
+      recurrence === undefined
+    )
+      return reply.status(400).send({
+        error: 'recurrence-needs-time-zone',
+        message: `Repeating reminders are created from chat, where the club's time zone is known.`,
+      });
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    if (parsed.data.text !== undefined && parsed.data.text !== existing.text) {
+      before['text'] = existing.text;
+      after['text'] = parsed.data.text;
+    }
+    if (
+      parsed.data.context !== undefined &&
+      (parsed.data.context ?? null) !== (existing.context ?? null)
+    ) {
+      before['context'] = existing.context ?? null;
+      after['context'] = parsed.data.context;
+    }
+    if (parsed.data.dueAt !== undefined && parsed.data.dueAt !== existing.dueAt) {
+      before['dueAt'] = existing.dueAt;
+      after['dueAt'] = parsed.data.dueAt;
+    }
+    if (
+      parsed.data.recurrence !== undefined &&
+      JSON.stringify(recurrence ?? null) !== JSON.stringify(existing.recurrence ?? null)
+    ) {
+      before['recurrence'] = existing.recurrence ?? null;
+      after['recurrence'] = recurrence;
+    }
+    const result = assistantRepo.updateReminder(
+      session.scope,
+      id,
+      {
+        ...(parsed.data.text === undefined ? {} : { text: parsed.data.text }),
+        ...(parsed.data.context === undefined
+          ? {}
+          : parsed.data.context === null
+            ? { context: null }
+            : { context: parsed.data.context }),
+        ...(parsed.data.dueAt === undefined ? {} : { dueAt: parsed.data.dueAt }),
+        ...(recurrence === undefined ? {} : { recurrence }),
+      },
+      deps.now(),
+    );
+    if (result === 'not-found') return reply.status(404).send({ error: 'not-found' });
+    if (result === 'not-editable') return reply.status(409).send({ error: 'invalid-transition' });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_reminder.edited',
+      subjectType: 'assistant_reminder',
+      subjectId: id,
+      before,
+      after,
     });
     return reply.status(200).send({ ok: true });
   });
@@ -781,7 +895,9 @@ export const registerAssistantRoutes = (
     return reply.status(200).send({ ok: true });
   });
   // Task 9: one skill in full - the exact instruction the model receives,
-  // its tools, who can use it, its slash command and its recent runs.
+  // its scope, who can use it, its tools, its live items and its recent runs.
+  // Task E1: the slash command is gone (ADR 0086 decision 8) and who-can-use
+  // reads the skill scope, not the behaviours' caller roles.
   app.get('/api/assistant/skills/:skillId', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
@@ -795,20 +911,104 @@ export const registerAssistantRoutes = (
         ? undefined
         : await deps.assistantDirectories(session.guildId).catch(() => undefined);
     const roleName = (id: string) => directories?.roles.find((r) => r.id === id)?.name;
-    const allowedOn = behaviours.filter((b) => b.allowedSkillIds.includes(skill.id));
-    const roleIds = [...new Set(allowedOn.flatMap((b) => b.callerRoleIds ?? []))];
-    const roleLabels = roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`);
+    const grant = assistantRepo
+      .listSkillGrants(session.scope)
+      .find((item) => item.skillId === skill.id);
+    const scope = skillScopeView(
+      skill,
+      grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
+    );
     const whoCanUse =
-      skill.ownerOnly === true
+      scope.mode === 'owner'
         ? 'Only the server owner.'
-        : roleLabels.length === 0
-          ? 'Only the server owner, until a behaviour that allows it has Who can ask roles.'
-          : `${roleLabels.join(', ')}, and the server owner`;
+        : scope.mode === 'everyone'
+          ? 'Everyone who can ask a behaviour that allows this skill, and the server owner.'
+          : `${scope.roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`).join(', ')} (among those who can ask), and the server owner.`;
     const recentRuns = assistantRepo
       .listSkillActivity(session.scope, 500)
       .filter((row) => row.skillId === skill.id)
       .slice(0, 50);
-    const command = SKILL_COMMANDS[skill.id];
+    // Task E1: each skill's live items. Active reminders keep their
+    // due-date order; the finished ones are the 50 most recently due first.
+    const items =
+      skill.id === 'reminders'
+        ? {
+            kind: 'reminders' as const,
+            reminders: ((): readonly {
+              readonly id: string;
+              readonly creatorId: string;
+              readonly creatorName?: string;
+              readonly destinationId: string;
+              readonly destinationName?: string;
+              readonly text: string;
+              readonly context?: string;
+              readonly dueAt: number;
+              readonly status: string;
+              readonly recurrence?: unknown;
+              readonly mentions: unknown;
+              readonly deliveredCount: number;
+              readonly failureReason?: string;
+            }[] => {
+              const all = assistantRepo.listReminders(session.scope);
+              const live = all.filter(
+                (reminder) => reminder.status === 'scheduled' || reminder.status === 'delivering',
+              );
+              const finished = all
+                .filter(
+                  (reminder) => reminder.status !== 'scheduled' && reminder.status !== 'delivering',
+                )
+                .sort((a, b) => b.dueAt - a.dueAt)
+                .slice(0, 50);
+              const memberName = (id: string) =>
+                directories?.members.find((m) => m.id === id)?.name;
+              const channelName = (id: string) =>
+                directories?.channels.find((c) => c.id === id)?.name;
+              return [...live, ...finished].map((reminder) => ({
+                id: reminder.id,
+                creatorId: reminder.creatorId,
+                ...(memberName(reminder.creatorId) === undefined
+                  ? {}
+                  : { creatorName: memberName(reminder.creatorId) as string }),
+                destinationId: reminder.destinationId,
+                ...(channelName(reminder.destinationId) === undefined
+                  ? {}
+                  : { destinationName: channelName(reminder.destinationId) as string }),
+                text: reminder.text,
+                ...(reminder.context === undefined ? {} : { context: reminder.context }),
+                dueAt: reminder.dueAt,
+                status: reminder.status,
+                ...(reminder.recurrence === undefined ? {} : { recurrence: reminder.recurrence }),
+                mentions: reminder.mentions,
+                deliveredCount: reminder.deliveredCount,
+                ...(reminder.failureReason === undefined
+                  ? {}
+                  : { failureReason: reminder.failureReason }),
+              }));
+            })(),
+          }
+        : skill.id === 'propose-memory'
+          ? {
+              kind: 'memory-proposals' as const,
+              proposals: assistantRepo
+                .listDecisions(session.scope)
+                .filter(
+                  (decision) =>
+                    decision.kind === 'memory' &&
+                    (decision.status === 'draft' || decision.status === 'reviewed'),
+                ),
+            }
+          : skill.id === 'record-decision'
+            ? {
+                kind: 'decisions' as const,
+                decisions: assistantRepo
+                  .listDecisions(session.scope)
+                  .filter(
+                    (decision) =>
+                      decision.kind !== 'memory' &&
+                      (decision.status === 'draft' || decision.status === 'reviewed'),
+                  ),
+              }
+            : { kind: 'none' as const };
     return reply.status(200).send({
       skill,
       instructionLine: skillInstructionLine(skill),
@@ -817,9 +1017,10 @@ export const registerAssistantRoutes = (
         name: b.name,
         allowed: b.allowedSkillIds.includes(skill.id),
       })),
+      scope,
       whoCanUse,
       tools: TOOL_CATALOGUE.filter((tool) => tool.skills.includes(skill.id)),
-      ...(command === undefined ? {} : { command }),
+      items,
       recentRuns,
     });
   });
