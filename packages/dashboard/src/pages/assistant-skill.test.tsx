@@ -238,7 +238,10 @@ describe('AssistantSkillPage', () => {
         (c[0] as string) === '/api/assistant/skills/search-club/scope' &&
         (c[1] as RequestInit)?.method === 'PUT',
     )!;
-    expect(bodyOf(put)).toEqual({ mode: 'roles', roleIds: ['role-club-member', 'role-onboarding'] });
+    expect(bodyOf(put)).toEqual({
+      mode: 'roles',
+      roleIds: ['role-club-member', 'role-onboarding'],
+    });
   });
 
   it('notes that an acting skill runs with no confirmation step, and stays silent otherwise', async () => {

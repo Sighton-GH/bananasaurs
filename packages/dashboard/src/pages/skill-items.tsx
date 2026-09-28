@@ -186,7 +186,8 @@ function ReminderEditForm({
     if (text !== reminder.text) patch['text'] = text;
     const nextContext = context === '' ? null : context;
     if (nextContext !== (reminder.context ?? null)) patch['context'] = nextContext;
-    const nextDue = dueInput === toLocalInput(reminder.dueAt) ? undefined : fromLocalInput(dueInput);
+    const nextDue =
+      dueInput === toLocalInput(reminder.dueAt) ? undefined : fromLocalInput(dueInput);
     if (nextDue !== undefined) patch['dueAt'] = nextDue;
     if (draft !== undefined && reminder.recurrence !== undefined) {
       const next = recurrenceBodyOf(draft, reminder.recurrence);
