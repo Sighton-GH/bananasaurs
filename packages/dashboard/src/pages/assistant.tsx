@@ -1283,7 +1283,7 @@ function AssistantReady({
         {data.behaviours.map((item) => {
           const mention =
             item.surface === 'direct-command'
-              ? 'Members use /ask'
+              ? 'Members tag @Bananasaurs'
               : (() => {
                   const name = roleName(item.mentionRoleId);
                   return name === undefined ? 'Mention role not set' : `Members mention @${name}`;
