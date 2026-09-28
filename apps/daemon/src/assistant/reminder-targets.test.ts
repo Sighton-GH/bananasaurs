@@ -385,7 +385,7 @@ describe('resolveReminderTargets', () => {
     const ids = Array.from({ length: 25 }, (_, index) => `20000000000000${100 + index}`);
     const members = ids.map((id) => member(id, `Member ${id}`));
     const guild = makeGuild({ members });
-    const result = ok(await resolveReminderTargets(guild, request({ members: [...ids, ids[0]] })));
+    const result = ok(await resolveReminderTargets(guild, request({ members: [...ids, ids[0]!] })));
     expect(result.mentions.userIds).toHaveLength(25);
   });
 
