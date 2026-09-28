@@ -21,16 +21,16 @@ import { attemptReasonFor } from './provider-failure.js';
 import { neutraliseMarkers } from './untrusted.js';
 
 /**
- * The id argument of every follow-up tool (ADR 0071). Round 2+ offers only
+ * The id arguments of every follow-up tool (ADR 0071). Round 2+ offers only
  * these tools, and only with an id an earlier result in the same request
- * returned (or in the catalogue the harness put in the prompt). All three —
- * `read_chunk`, `outline` and `open_resource` — are implemented; the
- * enforcement below still names them.
+ * returned (or in the catalogue the harness put in the prompt). Both —
+ * `read_chunk` and `open_resource` — are implemented; the enforcement below
+ * still names them. `open_resource` takes either id: the resource id opens
+ * the resource, the doc id lists its headings (ADR 0092 decision 3).
  */
-export const ID_TOOL_ARGS: Readonly<Record<string, string>> = {
-  read_chunk: 'chunkId',
-  outline: 'docId',
-  open_resource: 'resourceId',
+export const ID_TOOL_ARGS: Readonly<Record<string, readonly string[]>> = {
+  read_chunk: ['chunkId'],
+  open_resource: ['resourceId', 'docId'],
 };
 
 export interface LoopTools {
@@ -409,7 +409,7 @@ const declarationsFor = (
   if (tools === undefined) return [];
   if (!provider.capabilities.has('tools')) return [];
   const offered = round === 1 ? tools.firstRound : tools.idRound;
-  // Follow-up rounds offer only the ID tools (`read_chunk`, `outline`,
+  // Follow-up rounds offer only the ID tools (`read_chunk`,
   // `open_resource`), filtered against the round's declarations.
   return round === 1 ? [...offered] : offered.filter((d) => d.name in ID_TOOL_ARGS);
 };
@@ -634,8 +634,8 @@ const runEntry = async (deps: {
         continue;
       }
       if (round >= 2) {
-        const idArg = ID_TOOL_ARGS[call.name];
-        if (idArg === undefined) {
+        const idArgs = ID_TOOL_ARGS[call.name];
+        if (idArgs === undefined) {
           deps.toolCalls.push({
             ...traceBase,
             ok: false,
@@ -646,11 +646,17 @@ const runEntry = async (deps: {
           toolMessages.push(refusedMessage(call, 'not allowed after reading results'));
           continue;
         }
-        const idValue =
+        const argsRecord =
           typeof call.args === 'object' && call.args !== null
-            ? (call.args as Record<string, unknown>)[idArg]
+            ? (call.args as Record<string, unknown>)
             : undefined;
-        if (typeof idValue !== 'string' || !handles.has(idValue)) {
+        // A call passes when any of the tool's id arguments carries an id an
+        // earlier result returned; `open_resource` takes either id shape.
+        const known = idArgs.some((idArg) => {
+          const idValue = argsRecord?.[idArg];
+          return typeof idValue === 'string' && handles.has(idValue);
+        });
+        if (!known) {
           deps.toolCalls.push({
             ...traceBase,
             ok: false,

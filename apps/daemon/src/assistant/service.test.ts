@@ -868,7 +868,7 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
           return {
             text: '',
             model: 'model-a',
-            toolCalls: [{ name: 'list_sources', args: {} }],
+            toolCalls: [{ name: 'search_sources', args: {} }],
           };
         if (round === 2)
           return {
@@ -906,7 +906,7 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     expect(evidenceChunks).toBeLessThanOrEqual(4);
     expect(evidenceChunks).toBeGreaterThan(0);
     expect(result.trace?.tools).toMatchObject([
-      { name: 'list_sources', ok: true },
+      { name: 'search_sources', ok: true },
       { name: 'read_chunk', ok: true },
     ]);
   });
