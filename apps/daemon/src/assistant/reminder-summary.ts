@@ -122,10 +122,12 @@ export const reminderSummary = (
       : `${formatWhen(input.dueAt, input.timeZone)}, repeats ${describeRecurrence(input.recurrence)}`;
   if (action === 'cancelled')
     return `🗑️ Reminder cancelled: **${summaryField(input.text)}** (${when})`;
+  // Truncate the raw value before escaping: slicing after escaping can
+  // leave a trailing `\` that escapes the closing `**` and breaks the bold.
   const head =
     action === 'set'
-      ? `✅ Reminder set: **${summaryField(input.text).slice(0, 200)}**`
-      : `✏️ Reminder updated: **${summaryField(input.text).slice(0, 200)}**`;
+      ? `✅ Reminder set: **${summaryField(input.text.slice(0, 200))}**`
+      : `✏️ Reminder updated: **${summaryField(input.text.slice(0, 200))}**`;
   // An edit that left the targets alone omits Where and Pings: the caller
   // passes no channel name then, and raw ids must never print.
   const lines = [

@@ -87,6 +87,11 @@ describe('reminderSummary', () => {
     expect(text.split('\n')[0]).toBe(`✏️ Reminder updated: **${'x'.repeat(200)}**`);
   });
 
+  it('truncates before escaping so a trailing escape never breaks the bold', () => {
+    const text = reminderSummary('set', { ...base, text: `${'a'.repeat(199)}*` });
+    expect(text.split('\n')[0]).toBe(`✅ Reminder set: **${'a'.repeat(199)}\\***`);
+  });
+
   it('omits Where and Pings on an update that left the targets alone', () => {
     const { channelName: _channel, memberNames: _members, roleNames: _roles, ...rest } = base;
     const text = reminderSummary('updated', rest);
