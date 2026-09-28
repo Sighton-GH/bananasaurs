@@ -308,6 +308,28 @@ describe('AssistantPromptWizardPage', () => {
     ).toBe(true);
   });
 
+  it('switches an it-services default tone to casual when friends is picked', async () => {
+    renderWizard([IT], { body: { ok: true } }, '/assistant/behaviours/it/wizard');
+    fireEvent.click(await screen.findByRole('radio', { name: 'A group of friends' }));
+    await next();
+    await next();
+    expect(
+      inputOf(screen.getByRole('radio', { name: 'Casual, like chatting with friends' })).checked,
+    ).toBe(true);
+  });
+
+  it('keeps a club tone the owner changed when friends is picked', async () => {
+    const custom = { ...CLUB, promptWizard: { ...STORED, tone: 'playful' } };
+    renderWizard([custom]);
+    fireEvent.click(await screen.findByRole('radio', { name: 'A group of friends' }));
+    await next();
+    await next();
+    expect(
+      inputOf(screen.getByRole('radio', { name: 'Casual, like chatting with friends' })).checked,
+    ).toBe(false);
+    expect(inputOf(screen.getByRole('radio', { name: 'Playful and light' })).checked).toBe(true);
+  });
+
   it('picking friends keeps an explicitly chosen tone, and club/team leave the tone alone', async () => {
     renderWizard();
     await next();
