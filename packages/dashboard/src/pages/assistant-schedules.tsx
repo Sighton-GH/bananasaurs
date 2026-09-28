@@ -38,7 +38,7 @@ export function AssistantSchedulesPage() {
         empty={
           <Card title="Reminders">
             <p className="text-sm text-ink-muted">
-              No reminders scheduled. Members create them in Discord with the /remind command after
+              No reminders scheduled. Members set reminders by asking the bot after
               confirming the details; nothing here creates one.
             </p>
           </Card>
