@@ -5,6 +5,7 @@ import {
   type AssistantBehaviour,
   type AssistantInvokePayload,
   type AssistantTrace,
+  type AssistantTraceIncluded,
   type DomainEvent,
   type GenerationMessage,
   type KnownMessage,
@@ -114,8 +115,8 @@ export interface AssistantTraceDetail {
   readonly model?: string | undefined;
   readonly finishReason?: string | undefined;
   readonly web?: boolean | undefined;
-  /** Round-1 tool names the loop actually offered the provider (after `declarationsFor`). */
-  readonly toolsOffered?: readonly string[];
+  /** Which context blocks the reply saw (ADR 0088 decision 2); tools offered live inside it. */
+  readonly included?: AssistantTraceIncluded | undefined;
   /** B2b: the code-written action summaries appended to this answer. */
   readonly actions?: readonly string[];
 }

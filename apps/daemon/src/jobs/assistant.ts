@@ -166,7 +166,16 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
   ...(detail.model === undefined ? {} : { model: detail.model }),
   ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
   ...(detail.web === undefined ? {} : { web: detail.web }),
-  ...(detail.toolsOffered === undefined ? {} : { toolsOffered: [...detail.toolsOffered] }),
+  ...(detail.included === undefined
+    ? {}
+    : {
+        included: {
+          toolsOffered: [...detail.included.toolsOffered],
+          snippetChunkIds: [...detail.included.snippetChunkIds],
+          quote: detail.included.quote,
+          historyTurns: detail.included.historyTurns,
+        },
+      }),
 });
 
 /**
@@ -829,9 +838,16 @@ export const assistantInvokeHandler = (deps: {
             sections: detail?.sections ?? [],
             toolCalls: detail?.toolCalls ?? [],
             guard: detail?.guard ?? { removed: [] },
-            ...(detail?.toolsOffered === undefined
+            ...(detail?.included === undefined
               ? {}
-              : { toolsOffered: [...detail.toolsOffered] }),
+              : {
+                  included: {
+                    toolsOffered: [...detail.included.toolsOffered],
+                    snippetChunkIds: [...detail.included.snippetChunkIds],
+                    quote: detail.included.quote,
+                    historyTurns: detail.included.historyTurns,
+                  },
+                }),
             timeline: [
               { label: 'received', atMs: 0 },
               { label: 'invoke-done', atMs: Math.max(0, invokeDoneAt - startedAt) },

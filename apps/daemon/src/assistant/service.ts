@@ -789,7 +789,14 @@ export const createAssistantService = (
           toolCalls: failed.toolCalls,
           usage: failed.usage,
           guard: failed.guard,
-          toolsOffered: [...failed.toolsOffered],
+          included: {
+            toolsOffered: [...failed.toolsOffered],
+            snippetChunkIds: preRetrieved.map((hit) => hit.chunkId),
+            quote:
+              (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
+              input.quoteInHistory === true,
+            historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+          },
         });
         if (failed.actionSummaries.length > 0) {
           const detail = loopDetail();
@@ -992,7 +999,14 @@ export const createAssistantService = (
         toolCalls: loop.toolCalls,
         usage: loop.usage,
         guard: loop.guard,
-        toolsOffered: [...loop.toolsOffered],
+        included: {
+          toolsOffered: [...loop.toolsOffered],
+          snippetChunkIds: preRetrieved.map((hit) => hit.chunkId),
+          quote:
+            (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
+            input.quoteInHistory === true,
+          historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+        },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
@@ -1273,7 +1287,16 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         sections: detail?.sections ?? [],
         toolCalls: detail?.toolCalls ?? [],
         guard: detail?.guard ?? { removed: [] },
-        ...(detail?.toolsOffered === undefined ? {} : { toolsOffered: [...detail.toolsOffered] }),
+        ...(detail?.included === undefined
+          ? {}
+          : {
+              included: {
+                toolsOffered: [...detail.included.toolsOffered],
+                snippetChunkIds: [...detail.included.snippetChunkIds],
+                quote: detail.included.quote,
+                historyTurns: detail.included.historyTurns,
+              },
+            }),
         timeline: [
           { label: 'received', atMs: 0 },
           { label: 'answered', atMs: Math.max(0, now() - started) },
