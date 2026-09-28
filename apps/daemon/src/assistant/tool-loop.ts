@@ -11,6 +11,7 @@ import {
   type TextProvider,
   type ToolCall,
   type ToolDeclaration,
+  TRUNCATION_SUFFIX,
 } from '@bananasaurs/core';
 import type { CitationRegistry } from './citations.js';
 import type { ChainEntry } from './model-chain.js';
@@ -110,9 +111,19 @@ const DEFAULT_LIMITS: LoopLimits = {
 };
 
 const ANSWER_INSTRUCTION = 'Answer now using the results above. Do not call tools.';
-const TOOL_RESULT_PREVIEW_CHARS = 1_500;
+export const TOOL_RESULT_TRACE_CHARS = 6_000;
 const GUARD_FAILURE_TEXT = "I couldn't finish that answer — please try again.";
 const PROMPT_LEAK_TEXT = "I can't share that.";
+
+/**
+ * The model-visible tool result text as stored on the trace (ADR 0088
+ * decision 1): the neutralised text capped at `TOOL_RESULT_TRACE_CHARS`,
+ * with a `… [truncated]` suffix when cut. No wrapper or citation text.
+ */
+const truncateResultForTrace = (text: string): string => {
+  if (text.length <= TOOL_RESULT_TRACE_CHARS) return text;
+  return text.slice(0, TOOL_RESULT_TRACE_CHARS - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+};
 
 const nextUtcMidnight = (nowMs: number): number => {
   const d = new Date(nowMs);
@@ -682,7 +693,7 @@ const runEntry = async (deps: {
         ...traceBase,
         ok: result.ok,
         ms: callMs(),
-        preview: result.text.slice(0, TOOL_RESULT_PREVIEW_CHARS),
+        preview: truncateResultForTrace(neutraliseMarkers(result.text)),
       });
       const citationText =
         result.ok && citations !== undefined

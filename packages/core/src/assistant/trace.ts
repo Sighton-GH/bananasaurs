@@ -62,12 +62,27 @@ export const assistantTraceSchema = z.object({
       ok: z.boolean(),
       refused: z.string().optional(),
       ms: z.number().int().nonnegative(),
+      /**
+       * The full result text as the model saw it (neutralised, no wrapper
+       * or citation text), at most 6,000 characters. The field name stays
+       * `preview` for stored-row compatibility.
+       */
       preview: z.string(),
     }),
   ),
   guard: z.object({ removed: z.array(z.string()), blocked: z.string().optional() }),
-  /** Round-1 tool names the loop actually offered the provider; absent on rows written before Task G3. */
-  toolsOffered: z.array(z.string()).optional(),
+  /**
+   * Which context blocks the reply saw (ADR 0088 decision 2). Optional so
+   * rows written before it still parse; there is no migration.
+   */
+  included: z
+    .object({
+      toolsOffered: z.array(z.string()),
+      snippetChunkIds: z.array(z.string()),
+      quote: z.boolean(),
+      historyTurns: z.number().int().nonnegative(),
+    })
+    .optional(),
   timeline: z.array(z.object({ label: z.string(), atMs: z.number().int().nonnegative() })),
   error: z.object({ kind: z.string(), message: z.string() }).optional(),
   discordMessageIds: z.array(z.string()),
@@ -75,6 +90,7 @@ export const assistantTraceSchema = z.object({
   flags: z.array(z.string()),
 });
 export type AssistantTrace = z.infer<typeof assistantTraceSchema>;
+export type AssistantTraceIncluded = NonNullable<AssistantTrace['included']>;
 
 /** Rough token estimate for display: one token per four characters, rounded up. */
 export const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
