@@ -81,7 +81,7 @@ const dropLegacyLines = (text: string): string =>
  * drift from `compileAssistantContext`'s own `ALLOWED SKILLS` block.
  */
 export const skillInstructionLine = (skill: AssistantSkill): string =>
-  `${skill.id}: ${skill.description} Effect=${skill.effect}. Confirmation=${skill.requiresConfirmation ? 'required' : 'not required'}.`;
+  `${skill.id}: ${skill.description} Effect=${skill.effect}. Acts=${skill.acts ? 'yes' : 'no'}.`;
 
 export const compileAssistantContext = (input: {
   readonly behaviour: AssistantBehaviour;
