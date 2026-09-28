@@ -184,14 +184,14 @@ describe('AssistantSkillsPage', () => {
     expect(screen.getByText(/Could not load assistant skills/)).toBeTruthy();
   });
 
-  it('states the one rule for who can use skills (ADR 0064)', async () => {
+  it('states that each skill scope decides who can use it (ADR 0086)', async () => {
     renderPage();
     const card = (await screen.findByRole('heading', { name: 'Who can use skills' })).closest(
       'section',
     )!;
     expect(
       within(card).getByText(
-        'Anyone a behaviour lets ask (its Who can ask roles on the Assistant page) can use every skill that behaviour allows. Owner-only skills stay with the server owner.',
+        "Each skill's scope decides who can use it; the owner can always use every skill.",
       ),
     ).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Skill grants' })).toBeNull();
