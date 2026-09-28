@@ -709,9 +709,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
         recordCaseEvent: (input) => modCaseRepo.recordCaseEvent(scope, input),
       },
-      responder: {
-
-      },
+      responder: {},
       now,
       logger,
     } satisfies HistoryDeps,

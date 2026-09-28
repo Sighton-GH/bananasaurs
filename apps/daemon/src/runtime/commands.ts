@@ -25,8 +25,8 @@ import { registerGuildCommands } from '@bananasaurs/discord/rest';
  * `login()` is still the right barrier: a rejected login means Discord refused
  * the token, and there is no point spending a request to be told so again.
  *
-  * **Never throws.** A guild that refuses registration does not prevent the
-  * bot from connecting, moderating, logging and serving the dashboard (ADR 0032).
+ * **Never throws.** A guild that refuses registration does not prevent the
+ * bot from connecting, moderating, logging and serving the dashboard (ADR 0032).
  */
 export async function announceCommands(
   config: Config,

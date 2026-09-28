@@ -623,7 +623,6 @@ describe('the job worker', () => {
  * that has to acknowledge it.
  */
 
-
 describe('the backup timer (ADR 0034)', () => {
   let backupDir: string;
 

@@ -2,11 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { REST } from 'discord.js';
 import { DiscordApiError } from '@bananasaurs/core';
 import { REST_OPTIONS } from '../client.js';
-import {
-  MOD_COMMAND,
-  REGISTERED_COMMANDS,
-  registerGuildCommands,
-} from './commands.js';
+import { MOD_COMMAND, REGISTERED_COMMANDS, registerGuildCommands } from './commands.js';
 
 /**
  * Slash-command registration (ADR 0032), tested against the real
