@@ -49,7 +49,8 @@ export const reminderRecurrence = z
   .strict();
 export type ReminderRecurrence = z.infer<typeof reminderRecurrence>;
 
-const utcForLocal = (
+/** UTC instant for a wall-clock time in `timeZone`. */
+export const utcForLocal = (
   year: number,
   month: number,
   day: number,
