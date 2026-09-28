@@ -2,6 +2,7 @@ import { useState, type ReactElement } from 'react';
 import { Link } from 'wouter';
 import {
   behaviourUrl,
+  BOT_TAG_URL,
   STARTER_URL,
   type AssistantData,
   type SetupStepId,
