@@ -2150,43 +2150,65 @@ describe('Task 10 (b): busy chain throws ChainFailedError', () => {
 });
 
 /**
- * B2b step 1: each skill is gated by the behaviour allowlist and its
- * per-skill scope, checked in code against the asker's live roles. The owner
- * passes every scope; try-it counts as the owner.
+ * B2b fix 2: one shared harness for the three B2b describes below. Same
+ * guild ids, config, behaviour shape, provider keys and service wiring —
+ * only the behaviour's skill allowlist varies per block. Each describe keeps
+ * its own test-specific helpers (`ask`, `targetsOk`, `actionsOf`).
  */
-describe('B2b: per-skill scopes gate chat skills', () => {
-  const GUILD = parseGuildId('234567890123456789');
-  const MEMBER = '456789012345678901';
-  const CHANNEL = '567890123456789012';
-  const CLUB_ROLE = '678901234567890123';
-  const SPECIAL_ROLE = '789012345678901234';
-  const OWNER = '345678901234567890';
-  const NOW = 1_800_000_000_000;
+const B2B_GUILD = parseGuildId('234567890123456789');
+const B2B_MEMBER = '456789012345678901';
+const B2B_CHANNEL = '567890123456789012';
+const B2B_CLUB_ROLE = '678901234567890123';
+const B2B_SPECIAL_ROLE = '789012345678901234';
+const B2B_OWNER = '345678901234567890';
+const B2B_NOW = 1_800_000_000_000;
 
-  const config = parseConfig({
-    DISCORD_BOT_TOKEN: 'test-token',
-    DISCORD_APPLICATION_ID: '123456789012345678',
-    BANANASAURS_GUILD_ALLOWLIST: GUILD,
-    BANANASAURS_OWNER_USER_ID: OWNER,
-    AI_PROVIDER: 'off',
-    AI_MODEL: 'fixture-model',
-    AI_PROFILE_COST_CLASS: 'free',
+const B2B_CONFIG = parseConfig({
+  DISCORD_BOT_TOKEN: 'test-token',
+  DISCORD_APPLICATION_ID: '123456789012345678',
+  BANANASAURS_GUILD_ALLOWLIST: B2B_GUILD,
+  BANANASAURS_OWNER_USER_ID: B2B_OWNER,
+  AI_PROVIDER: 'off',
+  AI_MODEL: 'fixture-model',
+  AI_PROFILE_COST_CLASS: 'free',
+});
+
+const setupB2b = (allowedSkillIds: readonly string[]) => {
+  const t = openMigratedTestDatabase();
+  guildRepo.upsertGuild(t.scopes.forGuild(B2B_GUILD), { name: 'fixture', now: B2B_NOW });
+  assistantProvidersRepo.addKey(t.scopes.instance(), {
+    provider: 'gemini',
+    label: 'Key A',
+    apiKeyEnc: 'sealed-key-a',
+    now: B2B_NOW,
+    keyId: 'key_a',
   });
-
+  assistantProvidersRepo.addKey(t.scopes.instance(), {
+    provider: 'gemini',
+    label: 'Test provider',
+    apiKeyEnc: 'sealed-key-test',
+    now: B2B_NOW,
+    keyId: 'key_test',
+  });
   const direct = {
     id: 'direct',
-    guildId: GUILD,
+    guildId: B2B_GUILD,
     surface: 'direct-command' as const,
     name: 'Club',
     systemPrompt: 'Canadian English.',
     promptVersion: 1,
-    callerRoleIds: [CLUB_ROLE],
+    callerRoleIds: [B2B_CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'reminders'],
+    allowedSkillIds: [...allowedSkillIds],
     resourceIds: [],
     enabled: true,
   };
-
+  assistantRepo.putBehaviour(t.scopes.forGuild(B2B_GUILD), direct, B2B_NOW);
+  assistantRepo.putSkillGrant(
+    t.scopes.forGuild(B2B_GUILD),
+    { skillId: 'search-club', roleIds: [B2B_CLUB_ROLE], userIds: [] },
+    B2B_NOW,
+  );
   const usable = (provider: TextProvider): ChainEntry => ({
     providerId: 'gemini',
     model: 'model-a',
@@ -2198,61 +2220,73 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     rpmLimit: null,
     rpdLimit: null,
   });
-
-  let t: MigratedTestDatabase;
-  beforeEach(() => {
-    t = openMigratedTestDatabase();
-    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Key A',
-      apiKeyEnc: 'sealed-key-a',
-      now: NOW,
-      keyId: 'key_a',
-    });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Test provider',
-      apiKeyEnc: 'sealed-key-test',
-      now: NOW,
-      keyId: 'key_test',
-    });
-    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
-    assistantRepo.putSkillGrant(
-      t.scopes.forGuild(GUILD),
-      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
-      NOW,
-    );
-  });
-  afterEach(() => t.close());
-
-  const serviceWith = (
-    generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>,
-  ) => {
-    const provider: TextProvider = {
+  const scripted = (responses: GenerateTextResponse[]): TextProvider => {
+    const queue = [...responses];
+    return {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText,
+      generateText: async () => {
+        const next = queue.shift();
+        if (next === undefined) throw new Error('no scripted response');
+        return next;
+      },
     };
-    return createAssistantService(
-      t.scopes.forGuild(GUILD),
+  };
+  const serviceWith = (
+    provider: TextProvider,
+    discord: Parameters<typeof createAssistantService>[7] = {
+      memberChannels: async () => [],
+    },
+    ports: AssistantServiceTestPorts = {},
+  ) =>
+    createAssistantService(
+      t.scopes.forGuild(B2B_GUILD),
       t.scopes.instance(),
-      config,
-      () => NOW,
-      {},
+      B2B_CONFIG,
+      () => B2B_NOW,
+      ports,
       undefined,
       undefined,
-      { memberChannels: async () => [] },
+      discord,
       () => [usable(provider)],
     );
-  };
+  return { t, direct, usable, scripted, serviceWith };
+};
+
+/**
+ * B2b step 1: each skill is gated by the behaviour allowlist and its
+ * per-skill scope, checked in code against the asker's live roles. The owner
+ * passes every scope; try-it counts as the owner.
+ */
+describe('B2b: per-skill scopes gate chat skills', () => {
+  const GUILD = B2B_GUILD;
+  const MEMBER = B2B_MEMBER;
+  const CHANNEL = B2B_CHANNEL;
+  const CLUB_ROLE = B2B_CLUB_ROLE;
+  const SPECIAL_ROLE = B2B_SPECIAL_ROLE;
+  const OWNER = B2B_OWNER;
+  const NOW = B2B_NOW;
+
+  let h: ReturnType<typeof setupB2b>;
+  beforeEach(() => {
+    h = setupB2b(['search-club', 'reminders']);
+  });
+  afterEach(() => h.t.close());
+
+  const wrap = (
+    generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>,
+  ): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText,
+  });
 
   const ask = (over: Record<string, unknown> = {}) => ({
     guildId: GUILD,
     channelId: CHANNEL,
     userId: MEMBER,
     callerRoleIds: [CLUB_ROLE],
-    behaviour: direct,
+    behaviour: h.direct,
     command: 'ask' as const,
     input: { question: 'when is the meeting?' },
     source: 'slash-command' as const,
@@ -2262,19 +2296,19 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('a member without the scoped role is refused, one with it passes', async () => {
     assistantRepo.setSkillScope(
-      t.scopes.forGuild(GUILD),
+      h.t.scopes.forGuild(GUILD),
       { skillId: 'search-club', mode: 'roles', roleIds: [SPECIAL_ROLE] },
       NOW,
     );
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const refused = await service.invoke(ask());
     expect(refused.ok).toBe(false);
     expect(refused.ok === false && refused.content).toBe(
       "You don't have access to that assistant skill. No action was taken.",
     );
     expect(generateText).not.toHaveBeenCalled();
-    expect(assistantRepo.listSkillActivity(t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
+    expect(assistantRepo.listSkillActivity(h.t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
       skillId: 'search-club',
       outcome: 'denied',
     });
@@ -2287,12 +2321,12 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('an owner-scoped skill passes for the owner and is refused for a member', async () => {
     assistantRepo.setSkillScope(
-      t.scopes.forGuild(GUILD),
+      h.t.scopes.forGuild(GUILD),
       { skillId: 'search-club', mode: 'owner', roleIds: [] },
       NOW,
     );
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const refused = await service.invoke(ask({ invocationId: 'int-scope-owner-1' }));
     expect(refused.ok).toBe(false);
     expect(refused.ok === false && refused.content).toBe(
@@ -2307,7 +2341,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('the default scopes apply with no stored grant: reminders owner-only, search-club everyone', async () => {
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const search = await service.invoke(ask({ invocationId: 'int-scope-default-1' }));
     expect(search.ok).toBe(true);
     const remindInput = {
@@ -2336,10 +2370,10 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('a skill outside the behaviour allowlist is refused even for the owner', async () => {
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const result = await service.invoke(
       ask({
-        behaviour: { ...direct, id: 'narrow', allowedSkillIds: ['search-club'] },
+        behaviour: { ...h.direct, id: 'narrow', allowedSkillIds: ['search-club'] },
         command: 'remember',
         input: { request: 'remember this' },
         userId: OWNER,
