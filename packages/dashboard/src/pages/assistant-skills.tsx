@@ -15,7 +15,7 @@ import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
-import { behaviourBody, skillEffectLabel, toggleIn } from './assistant-shared.js';
+import { behaviourBody, scopeLabel, skillEffectLabel, toggleIn } from './assistant-shared.js';
 
 /**
  * One behaviour's skill allowlist - the ONLY place allowlists are edited
