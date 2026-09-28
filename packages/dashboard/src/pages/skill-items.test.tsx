@@ -152,6 +152,35 @@ describe('SkillItemsCard', () => {
     expect(bodyOf(patch)).toEqual({ text: 'Standup moved' });
   });
 
+  it('editing another repeat field keeps the stored repeat end with its seconds', async () => {
+    const mock = stubFetch([
+      { method: 'PATCH', url: '/api/assistant/reminders/rem-1', body: { ok: true } },
+    ]);
+    const items = JSON.parse(JSON.stringify(REMINDERS));
+    items.reminders[0].recurrence = {
+      pattern: { kind: 'daily' },
+      timeZone: 'America/Vancouver',
+      endAt: DUE_AT + 45000,
+      maxCount: 10,
+    };
+    renderWithSession(<SkillItemsCard items={items} reload={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const dialog = screen.getByRole('heading', { name: 'Edit reminder' }).closest('section')!;
+    fireEvent.change(within(dialog).getByLabelText('Max deliveries'), {
+      target: { value: '11' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const patch = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/assistant/reminders/rem-1' &&
+        (c[1] as RequestInit)?.method === 'PATCH',
+    )!;
+    expect(bodyOf(patch)).toEqual({
+      recurrence: { pattern: { kind: 'daily' }, endAt: DUE_AT + 45000, maxCount: 11 },
+    });
+  });
+
   it('Stop repeating PATCHes recurrence null', async () => {
     const mock = stubFetch([
       { method: 'PATCH', url: '/api/assistant/reminders/rem-1', body: { ok: true } },
