@@ -1,5 +1,6 @@
-import { and, asc, desc, eq, gte, gt, inArray, like, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, gt, inArray, like, lt, sql } from 'drizzle-orm';
 import type { JoinRule, KnownMessage } from '@bananasaurs/core';
+import { conversationSummarySchema, type ConversationSummary } from '@bananasaurs/core';
 import {
   assistantConversationLinks,
   assistantConversationMessages,
@@ -749,3 +750,128 @@ export const forgetAuthor = (scope: GuildScope, userId: string): number =>
 
     return deleted;
   });
+
+export interface ConversationSummaryRead {
+  readonly summary: ConversationSummary;
+  readonly throughAt: number;
+  readonly version: number;
+  readonly updatedAt: number;
+}
+
+/**
+ * The stored summary, if the row has one that still validates (ADR 0091).
+ *
+ * Model output is untrusted (hard rule 3): `summary_json` is parsed with
+ * `conversationSummarySchema` on the way back in, and a row that fails to
+ * parse reads as undefined rather than erroring.
+ */
+export const getSummary = (
+  scope: GuildScope,
+  conversationId: string,
+): ConversationSummaryRead | undefined =>
+  read(scope, (db) => {
+    const row = db
+      .select({
+        summaryJson: assistantConversations.summaryJson,
+        summaryThroughAt: assistantConversations.summaryThroughAt,
+        summaryVersion: assistantConversations.summaryVersion,
+        summaryUpdatedAt: assistantConversations.summaryUpdatedAt,
+      })
+      .from(assistantConversations)
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.conversationId, conversationId),
+        ),
+      )
+      .get();
+    if (row?.summaryJson == null || row.summaryThroughAt == null || row.summaryUpdatedAt == null) {
+      return undefined;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.summaryJson);
+    } catch {
+      return undefined;
+    }
+    const result = conversationSummarySchema.safeParse(parsed);
+    if (!result.success) return undefined;
+    return {
+      summary: result.data,
+      throughAt: row.summaryThroughAt,
+      version: row.summaryVersion,
+      updatedAt: row.summaryUpdatedAt,
+    };
+  });
+
+/**
+ * Compare-and-set summary write (ADR 0091 decision 3).
+ *
+ * A single `UPDATE … WHERE … (summary_through_at IS NULL OR
+ * summary_through_at < ?)` applies only when the stored summary is still
+ * older than `throughAt`, and bumps `summary_version`. `written` comes from
+ * the changed-row count; `version` is the row's version afterwards (or `0`
+ * when the row does not exist). The summary is validated before writing and
+ * an invalid one throws rather than writing.
+ */
+export const writeSummaryIfNewer = (
+  scope: GuildScope,
+  input: {
+    readonly conversationId: string;
+    readonly summary: ConversationSummary;
+    readonly throughAt: number;
+    readonly now: number;
+  },
+): { written: boolean; version: number } =>
+  write(scope, ({ db }) => {
+    const validated = conversationSummarySchema.parse(input.summary);
+    const changed = db
+      .update(assistantConversations)
+      .set({
+        summaryJson: JSON.stringify(validated),
+        summaryThroughAt: input.throughAt,
+        summaryVersion: sql`${assistantConversations.summaryVersion} + 1`,
+        summaryUpdatedAt: input.now,
+      })
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.conversationId, input.conversationId),
+          sql`(${assistantConversations.summaryThroughAt} IS NULL OR ${assistantConversations.summaryThroughAt} < ${input.throughAt})`,
+        ),
+      )
+      .run().changes;
+    const row = db
+      .select({ summaryVersion: assistantConversations.summaryVersion })
+      .from(assistantConversations)
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.conversationId, input.conversationId),
+        ),
+      )
+      .get();
+    return { written: changed > 0, version: row?.summaryVersion ?? 0 };
+  });
+
+/**
+ * The stored turns that are **not** in the window `recentTurns` would return,
+ * and whose `at` is greater than `afterAt` (`null` means no lower bound),
+ * oldest first (ADR 0091 decision 3: what the next summary run must cover).
+ *
+ * Reuses `recentTurns`' own selection — calling it and excluding its turn ids
+ * — so the two can never disagree about which turns the window holds.
+ */
+export const evictedTurnsSince = (
+  scope: GuildScope,
+  conversationId: string,
+  opts: { afterAt: number | null; window: { maxTurns: number; maxChars: number } },
+): ConversationTurn[] => {
+  const inWindow = new Set(
+    recentTurns(scope, conversationId, opts.window).map((turnEntry) => turnEntry.turnId),
+  );
+  return listTurns(scope, conversationId).filter(
+    (turnEntry) =>
+      !inWindow.has(turnEntry.turnId) && (opts.afterAt === null || turnEntry.at > opts.afterAt),
+  );
+};
