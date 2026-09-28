@@ -300,4 +300,38 @@ describe('SkillItemsCard', () => {
     expect(bodyOf(save)).toEqual({});
     expect(reload).toHaveBeenCalled();
   });
+
+  it('offers Cancel only for scheduled rows, never for delivering', () => {
+    stubFetch([]);
+    const items = {
+      kind: 'reminders',
+      reminders: [
+        {
+          id: 'rem-scheduled',
+          creatorId: 'user-bryan',
+          destinationId: 'chan-general',
+          text: 'Scheduled one',
+          dueAt: DUE_AT,
+          status: 'scheduled',
+          mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+          deliveredCount: 0,
+        },
+        {
+          id: 'rem-delivering',
+          creatorId: 'user-bryan',
+          destinationId: 'chan-general',
+          text: 'Delivering one',
+          dueAt: DUE_AT,
+          status: 'delivering',
+          mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+          deliveredCount: 0,
+        },
+      ],
+    };
+    renderWithSession(
+      <SkillItemsCard items={JSON.parse(JSON.stringify(items))} reload={() => undefined} />,
+    );
+    expect(screen.getAllByRole('button', { name: 'Cancel' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
+  });
 });
