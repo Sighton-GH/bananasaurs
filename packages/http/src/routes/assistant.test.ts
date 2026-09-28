@@ -1730,7 +1730,6 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
       totalEstTokens: number;
     } = response.json();
     expect(parsed.sections.map((s) => s.name)).toEqual([
-      'surface',
       'behaviour-prompt',
       'safety-suffix',
       'output-rules',

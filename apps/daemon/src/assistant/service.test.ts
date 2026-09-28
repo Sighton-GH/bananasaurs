@@ -2983,6 +2983,7 @@ describe('B2b: action summaries in answers', () => {
       invocationId: 'int-summary-1',
     });
     expect(result.ok).toBe(true);
+    expect(result.detail?.toolsOffered).toContain('set_reminder');
     const actions = actionsOf(result);
     expect(actions).toHaveLength(1);
     expect(actions[0]).toContain('✅ Reminder set: **Bring batteries**');

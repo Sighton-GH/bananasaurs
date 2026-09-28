@@ -29,7 +29,9 @@ const DETAIL = {
     finishReason: 'stop',
     usage: { promptTokens: 100, completionTokens: 20, thinkingTokens: 10 },
     sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
-    toolCalls: [
+     toolsOffered: ['search_sources', 'set_reminder'],
+     toolCalls: [
+
       {
         round: 1,
         name: 'search_sources',
@@ -96,6 +98,7 @@ describe('AssistantHistoryDetailPage', () => {
     expect(screen.getByText('system · 12 characters · about 3 tokens')).toBeTruthy();
     expect(screen.getByText('Be helpful.')).toBeTruthy();
     // Tool calls: round, tool, arguments, preview, ok/refused with reason.
+    expect(screen.getByText('search_sources, set_reminder')).toBeTruthy();
     expect(screen.getByText('search_sources')).toBeTruthy();
     expect(screen.getByText(/"query": "meeting"/)).toBeTruthy();
     expect(screen.getByText('unknown handle')).toBeTruthy();
