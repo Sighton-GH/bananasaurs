@@ -265,9 +265,9 @@ describe('AssistantSkillPage', () => {
     const scope = await screen.findByRole('heading', { name: 'Who can use this' });
     const items = await screen.findByRole('heading', { name: 'Reminders' });
     expect(screen.getByText('Standup time')).toBeTruthy();
-    expect(
-      (scope.compareDocumentPosition(items) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-    ).toBe(true);
+    expect((scope.compareDocumentPosition(items) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(
+      true,
+    );
   });
 
   it('toggles a behaviour off by writing the whole behaviour object with the skill removed', async () => {
@@ -306,5 +306,4 @@ describe('AssistantSkillPage', () => {
       '/assistant/skills',
     );
   });
-
 });

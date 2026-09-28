@@ -80,7 +80,9 @@ const DECISIONS = {
 
 describe('SkillItemsCard', () => {
   it('renders nothing for items of kind none', () => {
-    const { container } = renderWithSession(<SkillItemsCard items={{ kind: 'none' }} reload={() => undefined} />);
+    const { container } = renderWithSession(
+      <SkillItemsCard items={{ kind: 'none' }} reload={() => undefined} />,
+    );
     expect(container.textContent).toBe('');
   });
 

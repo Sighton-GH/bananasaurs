@@ -42,7 +42,9 @@ const recurrenceWords = (pattern: ReminderRecurrencePatternView): string => {
         .sort((a, b) => a - b)
         .map((day) => DAY_NAMES[day] ?? String(day))
         .join(', ');
-      return pattern.everyWeeks > 1 ? `weekly on ${days} every ${pattern.everyWeeks} weeks` : `weekly on ${days}`;
+      return pattern.everyWeeks > 1
+        ? `weekly on ${days} every ${pattern.everyWeeks} weeks`
+        : `weekly on ${days}`;
     }
     case 'monthly':
       return `monthly on day ${pattern.dayOfMonth}`;
@@ -55,9 +57,13 @@ const pingsText = (mentions: ReminderView['mentions']): string => {
   if (mentions.everyone) parts.push('@everyone');
   if (mentions.here) parts.push('@here');
   if (mentions.roleIds.length > 0)
-    parts.push(`${String(mentions.roleIds.length)} role${mentions.roleIds.length === 1 ? '' : 's'}`);
+    parts.push(
+      `${String(mentions.roleIds.length)} role${mentions.roleIds.length === 1 ? '' : 's'}`,
+    );
   if (mentions.userIds.length > 0)
-    parts.push(`${String(mentions.userIds.length)} user${mentions.userIds.length === 1 ? '' : 's'}`);
+    parts.push(
+      `${String(mentions.userIds.length)} user${mentions.userIds.length === 1 ? '' : 's'}`,
+    );
   return parts.length === 0 ? '—' : parts.join(' · ');
 };
 
@@ -143,7 +149,9 @@ function ReminderEditForm({
   const [dueInput, setDueInput] = useState(toLocalInput(reminder.dueAt));
   const [draft, setDraft] = useState<RecurrenceDraft | undefined>(() => draftOf(reminder));
   const [initialRecurrence] = useState(() =>
-    draftOf(reminder) === undefined ? undefined : JSON.stringify(recurrenceBodyOf(draftOf(reminder)!)),
+    draftOf(reminder) === undefined
+      ? undefined
+      : JSON.stringify(recurrenceBodyOf(draftOf(reminder)!)),
   );
   const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
@@ -205,9 +213,7 @@ function ReminderEditForm({
             <Field label="Repeat">
               <select
                 value={draft.kind}
-                onChange={(e) =>
-                  setDraft({ ...draft, kind: e.target.value as RecurrenceKind })
-                }
+                onChange={(e) => setDraft({ ...draft, kind: e.target.value as RecurrenceKind })}
                 className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
               >
                 <option value="daily">Daily</option>
@@ -251,7 +257,10 @@ function ReminderEditForm({
                     onChange={(e) =>
                       setDraft({
                         ...draft,
-                        everyWeeks: Math.min(12, Math.max(1, Number.parseInt(e.target.value, 10) || 1)),
+                        everyWeeks: Math.min(
+                          12,
+                          Math.max(1, Number.parseInt(e.target.value, 10) || 1),
+                        ),
                       })
                     }
                   />
@@ -268,7 +277,10 @@ function ReminderEditForm({
                   onChange={(e) =>
                     setDraft({
                       ...draft,
-                      dayOfMonth: Math.min(31, Math.max(1, Number.parseInt(e.target.value, 10) || 1)),
+                      dayOfMonth: Math.min(
+                        31,
+                        Math.max(1, Number.parseInt(e.target.value, 10) || 1),
+                      ),
                     })
                   }
                 />
@@ -451,7 +463,12 @@ function RemindersCard({
       <ConfirmDialog
         open={cancelling !== undefined}
         title="Cancel reminder"
-        scope={<p>Cancel this reminder? {cancelling !== undefined && `“${cancelling.text}”`} It will not be delivered.</p>}
+        scope={
+          <p>
+            Cancel this reminder? {cancelling !== undefined && `“${cancelling.text}”`} It will not
+            be delivered.
+          </p>
+        }
         confirmLabel="Yes, cancel"
         danger
         busy={cancelBusy}

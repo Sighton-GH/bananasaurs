@@ -21,12 +21,7 @@ import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
-import {
-  behaviourBody,
-  RoleChecklist,
-  skillEffectLabel,
-  toggleIn,
-} from './assistant-shared.js';
+import { behaviourBody, RoleChecklist, skillEffectLabel, toggleIn } from './assistant-shared.js';
 import { SkillItemsCard } from './skill-items.js';
 
 /** Loaded (found or not): a 404 renders the empty state through `DataState`, not a thrown error. */
@@ -172,8 +167,7 @@ function ScopeEditor({
   const [mode, setMode] = useState<SkillScopeView['mode']>(scope.mode);
   const [roleIds, setRoleIds] = useState<readonly string[]>(scope.roleIds);
   const [busy, setBusy] = useState(false);
-  const changed =
-    mode !== scope.mode || roleIds.join('|') !== [...scope.roleIds].join('|');
+  const changed = mode !== scope.mode || roleIds.join('|') !== [...scope.roleIds].join('|');
   const canSave = changed && (mode !== 'roles' || roleIds.length > 0) && !busy;
 
   const save = async () => {

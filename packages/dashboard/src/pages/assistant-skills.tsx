@@ -230,9 +230,7 @@ export function AssistantSkillsPage() {
                               {scope !== undefined ? (
                                 <Badge tone="neutral">{scopeLabel(scope, roleName)}</Badge>
                               ) : (
-                                skill.ownerOnly === true && (
-                                  <Badge tone="neutral">owner only</Badge>
-                                )
+                                skill.ownerOnly === true && <Badge tone="neutral">owner only</Badge>
                               )}
                               {activeCount > 0 && (
                                 <Badge tone="ok">{`${String(activeCount)} active`}</Badge>
