@@ -41,7 +41,12 @@ export interface ReminderStore {
    */
   claimDue(now: number, limit: number, staleMs: number): Promise<readonly Reminder[]>;
   complete(id: string): Promise<void>;
-  reschedule(id: string, nextDueAt: number): Promise<void>;
+  /**
+   * Moves a claimed reminder to its next occurrence. `reason` keeps the last
+   * delivery error visible on a series that continues past a terminal
+   * failure; omit it on the success path so a past error does not linger.
+   */
+  reschedule(id: string, nextDueAt: number, reason?: string): Promise<void>;
   fail(id: string, reason: string): Promise<void>;
   /**
    * Returns a claimed reminder to `scheduled` for a later pass, keeping the
@@ -161,7 +166,10 @@ export interface ReminderDeliveryResult {
  * Per-reminder failures never throw out of the pass: one bad destination
  * must not hold back every other due reminder behind it. Permanent failures
  * go straight to `failed`; transient ones go back to `scheduled` with their
- * next attempt persisted, until the terminal window marks them `failed`.
+ * next attempt persisted, until the terminal window marks them `failed`. A
+ * repeating series never dies on one bad delivery: a terminal failure moves
+ * it to its next occurrence with the reason kept, and only the end of the
+ * series itself marks it `failed`.
  */
 export const deliverDueReminders = async (
   store: ReminderStore,
@@ -191,8 +199,25 @@ export const deliverDueReminders = async (
       const reason = error instanceof Error ? error.message : 'delivery failed';
       const permanent = error instanceof ReminderDeliveryError ? error.permanent : false;
       if (permanent || now - reminder.dueAt > REMINDER_DELIVERY_TERMINAL_WINDOW_MS) {
-        await store.fail(reminder.id, reason);
-        failed += 1;
+        // One bad delivery must not end a repeating series: move it to its
+        // next occurrence with the reason kept. A one-off reminder, or a
+        // series with no occurrence left, still goes to `failed`.
+        const next =
+          reminder.recurrence === undefined
+            ? undefined
+            : nextOccurrence(
+                reminder.recurrence,
+                reminder.dueAt,
+                Math.max(now, reminder.dueAt),
+                reminder.deliveredCount + 1,
+              );
+        if (next === undefined) {
+          await store.fail(reminder.id, reason);
+          failed += 1;
+        } else {
+          await store.reschedule(reminder.id, next, reason);
+          retried += 1;
+        }
       } else {
         await store.retry(reminder.id, reason, now + REMINDER_RETRY_BACKOFF_MS);
         retried += 1;

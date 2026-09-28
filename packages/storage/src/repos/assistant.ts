@@ -591,7 +591,12 @@ export const completeReminder = (scope: GuildScope, id: string): void =>
       throw new Error(`reminder ${id} is not delivering; transition delivered refused`);
   });
 
-export const rescheduleReminder = (scope: GuildScope, id: string, nextDueAt: number): void =>
+export const rescheduleReminder = (
+  scope: GuildScope,
+  id: string,
+  nextDueAt: number,
+  reason?: string,
+): void =>
   write(scope, ({ db }) => {
     const result = db
       .update(assistantReminders)
@@ -601,7 +606,7 @@ export const rescheduleReminder = (scope: GuildScope, id: string, nextDueAt: num
         deliveredCount: sql`${assistantReminders.deliveredCount} + 1`,
         claimedAt: null,
         nextAttemptAt: null,
-        failureReason: null,
+        failureReason: reason ?? null,
       })
       .where(
         scope.only(
