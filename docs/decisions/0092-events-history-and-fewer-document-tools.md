@@ -1,6 +1,6 @@
 # 0092. Upcoming events, channel history, and fewer document tools
 
-Status: accepted. Implements docs/23 slice 6 (§5). Depends on ADR 0089 (the recent-messages port) and ADR 0090 (the audience set).
+Status: accepted. Implements docs/23 slice 6 (§5). Depends on ADR 0089 (the `fetchChannelMessages` port) and ADR 0090 (the audience set).
 
 ## Context
 
@@ -20,7 +20,7 @@ The most common question in the owner's sample is "when's the meeting?", and the
    - All text is untrusted evidence: redacted and neutralised.
    - Try it (no channel) lists external events only, plus reminders for channels the asker can read.
 2. **`channel_history`** `{ before?: string, limit?: 1–50 }` (skill `search-club`, read-only).
-   - It reads the **current channel only**, through the ADR 0089 `fetchRecentMessages` port. It uses the same line format and cleaning as channel context.
+   - It reads the **current channel only**, through the ADR 0089 `fetchChannelMessages` port. It uses the same line format and cleaning as channel context.
    - `before` must be a message id that an earlier result in the same request returned (ADR 0071). The result ends with `Older: before=<id>` and registers that id as a handle. An unknown `before` refuses.
    - Without `before`, it starts just above the channel-context window.
    - It is not available in Try it or when the window setting is 0.

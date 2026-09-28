@@ -14,7 +14,7 @@ The bot sees only the message that tagged it, its replied-to message, and its ow
 
 ### 1. Channel context, fetched by the bot
 
-- On a **mention** (never for Try it or for slash commands) with N > 0, the invoke job fetches up to N messages sent before the invoking message in the same channel. It uses `GET /channels/{id}/messages?before=&limit=` through a new Discord port method, `fetchRecentMessages`, placed beside `fetchMessageContent`.
+- On a **mention** (never for Try it or for slash commands) with N > 0, the invoke job fetches up to N messages sent before the invoking message in the same channel. It uses `GET /channels/{id}/messages?before=&limit=` through a new Discord port method, `fetchChannelMessages` (`fetchRecentMessages` already serves `/mod purge`), placed beside `fetchMessageContent`.
   - The fetch is a read, so there is no side effect and no idempotency key.
   - A resumed retry past `invoke-done` does not fetch again.
 - A pure core function, `buildChannelContext`, turns the fetched messages into one evidence block:
