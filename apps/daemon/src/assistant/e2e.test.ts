@@ -524,7 +524,7 @@ describe('Release 3 review fixes', () => {
     );
     assistantRepo.putSkillGrant(
       scope,
-      { skillId: 'reminders', roleIds: [CLUB_ROLE], userIds: [] },
+      { skillId: 'reminders', mode: 'roles', roleIds: [CLUB_ROLE], userIds: [] },
       NOW,
     );
   });
