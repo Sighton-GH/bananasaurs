@@ -33,7 +33,7 @@ export const decisionTone = (status: DecisionRow['status']) =>
 export const toggleIn = (list: readonly string[], id: string): readonly string[] =>
   list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
 
-/** Plain words for what a skill does, shared by the create form and the allowlist editor. */
+/** Plain words for what a skill does, shared by the create form and the behaviour editor. */
 export const skillEffectLabel = (skill: AssistantSkill): string =>
   skill.effect === 'read'
     ? 'Reads'
