@@ -2294,6 +2294,13 @@ export const assistantConversations = sqliteTable(
     createdAt: integer('created_at').notNull(),
     lastActivityAt: integer('last_activity_at').notNull(),
     turnCount: integer('turn_count').notNull().default(0),
+    // ADR 0091 decision 1: the conversation's summary, deleted with the row.
+    // `summaryThroughAt` is the `at` of the newest turn the summary covers;
+    // the write is compare-and-set on it and bumps `summaryVersion`.
+    summaryJson: text('summary_json'),
+    summaryThroughAt: integer('summary_through_at'),
+    summaryVersion: integer('summary_version').notNull().default(0),
+    summaryUpdatedAt: integer('summary_updated_at'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.conversationId] }),

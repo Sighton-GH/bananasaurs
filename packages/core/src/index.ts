@@ -620,3 +620,10 @@ export {
   type SpendPolicy,
 } from './providers/spend-policy.js';
 export * from './assistant/index.js';
+export {
+  cleanSummary,
+  conversationSummarySchema,
+  parseSummaryJson,
+  renderSummary,
+  type ConversationSummary,
+} from './assistant/conversation-summary.js';
