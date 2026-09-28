@@ -32,7 +32,7 @@ later change touches the event pipeline, panels, or reconciliation.
 - [x] Exercise 5 — the adoption allowance actually gates a mass grant
 - [x] Exercise 6 — the memory footprint is sane (`docs/15`)
 
-## Section B — operator CLI, dashboard, `/status` (run 2026-08-30)
+## Section B — operator CLI, dashboard (run 2026-08-30)
 
 Built (WP5 slices 13–15) and covered by 1,638+ unit and integration tests
 against the fake harness, but never exercised against the real test guild —
@@ -61,8 +61,8 @@ more: see `docs/reports/release1-smoke-tests-live-run.md`.
       found live and fixed; see the report)
 - [x] Dashboard: a second account cannot reach it (`docs/08`'s Release 1 gate,
       "verified by trying it from another club administrator's account")
-- [x] `/status` in the test guild, from a non-owner member, returns an
-      ephemeral reply with the real gateway/job state
+- [x] Bot status is available on the dashboard and through `npm run doctor`.
+      `/mod` and its subcommands are the only Discord slash commands.
 
 ## Section C — backup and restore (WP6, run 2026-08-30)
 

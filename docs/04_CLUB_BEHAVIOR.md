@@ -1,26 +1,8 @@
 # Engineering-club behavior and commands
 
-Commands are stable product affordances. Natural-language equivalents may call the same server-side workflows.
+Assistant skills are reached by mentioning the bot (for example, `@Bananasaurs remind me Thursday at 4 to bring the battery`). `/mod` and its subcommands are the only slash commands.
 
-## Release 1 commands
-
-- `/privacy` — render the published privacy policy with live settings substituted. Available to everyone, no AI, no permission required.
-- `/roles` — where role panels live, if a command surface is wanted alongside the panels themselves.
-
-## Assistant commands (Release 3)
-
-- `/ask question` — answer with scoped club context and linked evidence.
-- `/find query [where] [when]` — locate messages, decisions, and resources; never broaden permission scope.
-- `/remind when text [audience]` — create a confirmed reminder; owner controls who may target channels or other users.
-- `/review-plan` — review goals, assumptions, dependencies, owners, milestones, risks, validation, safety, and rollback.
-- `/design-review` — examine requirements, interfaces, constraints, tradeoffs, failure modes, testability, maintainability, and open questions.
-- `/decision record|find|supersede` — store a concise decision with rationale, alternatives, owner, date, status, and sources.
-- `/resources search|list` — search the curated resource registry.
-- `/memory show|forget` — inspect or request deletion of accessible memories; administrative purge remains in the dashboard.
-- `/mydata` — what Bananasaurs holds about the caller: counts and classes, not a dump.
-- `/forgetme` — queue an owner-reviewed purge of the caller's stored messages and derived memories. Moderation records are explicitly out of scope and the command says so.
-
-## Moderation command family (Release 2)
+## Moderation command family
 
 - `/mod warn|note|history|case` — maintain a structured, permission-scoped case record.
 - `/mod timeout|untimeout|kick|ban|unban` — explicit staff actions with target protection, reason, evidence, duration, and audit. Timeout durations are clamped to Discord's 28-day maximum; the parser rejects longer values rather than silently failing.

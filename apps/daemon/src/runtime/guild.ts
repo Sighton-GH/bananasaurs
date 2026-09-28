@@ -86,6 +86,7 @@ import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
+import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
@@ -857,10 +858,10 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
-     // Assistant skills route through @behaviour mentions. The service owns
-     // permission, safety and provider eligibility; the Discord layer never
-     // calls a provider itself. One service instance is shared by the subscriber
-     // (cheap inline routing) and job handler (expensive invoke, off-chain — B2).
+    // Assistant skills route through @behaviour mentions. The service owns
+    // permission, safety and provider eligibility; the Discord layer never
+    // calls a provider itself. One service instance is shared by the subscriber
+    // (cheap inline routing) and job handler (expensive invoke, off-chain — B2).
 
     createAssistantCommandSubscriber({
       guildId,
