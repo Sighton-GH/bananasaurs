@@ -49,6 +49,8 @@ export interface ConversationContext {
   readonly quoteEnvelope?: string;
   /** Distinct human speakers across the history and the quote. */
   readonly participants: number;
+  /** True when the replayed history includes a quote turn. */
+  readonly quoteInHistory: boolean;
 }
 
 /** A quoted message as untrusted evidence inside the user turn. */
@@ -120,5 +122,6 @@ export const buildConversationContext = (input: ConversationContextInput): Conve
     history,
     ...(input.quoted === undefined ? {} : { quoteEnvelope: quoteEnvelopeFor(input.quoted) }),
     participants,
+    quoteInHistory: turns.some((turn) => turn.role === 'quote'),
   };
 };

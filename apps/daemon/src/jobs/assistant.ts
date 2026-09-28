@@ -447,6 +447,7 @@ export const assistantInvokeHandler = (deps: {
         const strippedQuestion = stripNewTopic(rawQuestion);
         let history: readonly GenerationMessage[] = [];
         let quoteEnvelope: string | undefined;
+        let quoteInHistory = false;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -552,6 +553,7 @@ export const assistantInvokeHandler = (deps: {
           });
           history = built.history;
           quoteEnvelope = built.quoteEnvelope;
+          quoteInHistory = built.quoteInHistory;
         }
         try {
           result = await deps.service.invoke({
@@ -566,6 +568,7 @@ export const assistantInvokeHandler = (deps: {
             invocationId: payload.invocationId,
             history,
             ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
+            ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
             askerName: payload.authorName,
           });
         } finally {
