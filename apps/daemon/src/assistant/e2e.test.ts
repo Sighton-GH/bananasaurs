@@ -225,18 +225,79 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     expect(fetchResource).not.toHaveBeenCalled();
     expect(fixture.generateText.mock.calls[0]?.[0].systemInstruction).toContain('CLUB SOURCES');
 
-    const reminder = await service.invoke({
+    // Reminders arrive through the chat tools now that the slash `remind`
+    // path is gone: the model calls `set_reminder`, which stores one
+    // reminder keyed on this invocation.
+    const reminderWhen = new Date(NOW + 60_000).toISOString();
+    const reminderQueue = [
+      {
+        text: '',
+        model: 'fixture-model',
+        toolCalls: [
+          { name: 'set_reminder', args: { text: 'Bring batteries', when: reminderWhen } },
+        ],
+      },
+      { text: 'Reminder set.', model: 'fixture-model' },
+    ];
+    const reminderProvider: TextProvider = {
+      id: 'fixture-reminder',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        const next = reminderQueue.shift();
+        if (next === undefined) throw new Error('no scripted response');
+        return next;
+      },
+    };
+    const reminderService = createAssistantService(
+      scope,
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      {
+        memberChannels: async () => [],
+        resolveReminderTargets: async () => ({
+          ok: true as const,
+          targets: {
+            channelId: CHANNEL,
+            channelName: 'general',
+            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+            memberNames: [],
+            roleNames: [],
+          },
+        }),
+      },
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_test',
+          keyLabel: 'Key test',
+          provider: reminderProvider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+    );
+    const reminder = await reminderService.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [CLUB_ROLE],
-      behaviour: direct,
-      command: 'remind',
-      input: { when: new Date(NOW + 60_000).toISOString(), text: 'Bring batteries' },
+      behaviour: { ...direct, allowedSkillIds: ['search-club', 'reminders'] },
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
+      invocationId: 'int-reminder',
     });
     expect(reminder.ok).toBe(true);
-    expect(assistantRepo.listReminders(scope)).toHaveLength(1);
+    expect(assistantRepo.listReminders(scope)).toMatchObject([
+      { text: 'Bring batteries', dedupeKey: 'reminder:int-reminder:0' },
+    ]);
 
     const decision = await service.invoke({
       guildId: GUILD,
@@ -247,6 +308,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       command: 'decision',
       input: { topic: 'supplier' },
       source: 'slash-command',
+      invocationId: 'int-decision',
     });
     expect(decision.content).toContain('not club policy');
     const draft = assistantRepo.listDecisions(scope)[0]!;
