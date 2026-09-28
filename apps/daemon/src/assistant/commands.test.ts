@@ -70,7 +70,6 @@ const harness = (
     behavioursForGuild: vi.fn(async () => behaviours),
     invoke,
   };
-  const defer = vi.fn(async () => undefined);
   const respond = vi.fn(async () => undefined);
   const send = vi.fn(async () => undefined);
   const sendTyping = vi.fn(async () => undefined);
@@ -99,7 +98,6 @@ const harness = (
   };
   return {
     invoke,
-    defer,
     respond,
     send,
     sendTyping,
@@ -109,13 +107,10 @@ const harness = (
       botUserId: '901234567890123456',
       guildId,
       service,
-      defer,
-      respond,
       enqueue: (input) => {
         queued.push(input.payload);
         return { enqueued: reportEnqueued };
       },
-      sealToken: (ref: string) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
       sendTyping,
@@ -140,7 +135,6 @@ describe('assistant command subscriber', () => {
       userId,
     };
     await h.subscriber.handle(event);
-    expect(h.defer).not.toHaveBeenCalled();
     expect(h.queued).toHaveLength(0);
     expect(h.invoke).not.toHaveBeenCalled();
   });
@@ -549,12 +543,9 @@ describe('assistant command subscriber', () => {
       botUserId: '901234567890123456',
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [club]), invoke: vi.fn() },
-      defer: vi.fn(async () => undefined),
-      respond: vi.fn(async () => undefined),
       enqueue: () => {
         throw new Error('disk full');
       },
-      sealToken: (token: string) => token,
       now: () => 1,
       logger: pino({ level: 'silent' }),
       sendTyping,
@@ -943,10 +934,7 @@ describe('assistant answer feedback reactions (Task 20)', () => {
         behavioursForGuild: vi.fn(async () => [direct, club]),
         invoke: vi.fn(async () => ({ ok: true as const, content: 'unused' })),
       },
-      defer: vi.fn(async () => undefined),
-      respond: vi.fn(async () => undefined),
       enqueue: vi.fn(),
-      sealToken: (token: string) => token,
       now: () => 1,
       logger: pino({ level: 'silent' }),
       lookupMessage,
