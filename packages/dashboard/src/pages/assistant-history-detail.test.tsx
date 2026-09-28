@@ -110,6 +110,20 @@ describe('AssistantHistoryDetailPage', () => {
     );
   });
 
+  it('says tools were not recorded for a pre-G3 trace', async () => {
+    stubFetch([
+      {
+        url: '/api/assistant/traces/trace-1',
+        body: {
+          ...DETAIL,
+          trace: { ...DETAIL.trace, toolsOffered: undefined },
+        },
+      },
+    ]);
+    renderDetail();
+    expect(await screen.findByText('not recorded')).toBeTruthy();
+  });
+
   it('shows which key each attempt ran on when the label is present', async () => {
     stubFetch([
       {
