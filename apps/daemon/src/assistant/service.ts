@@ -60,10 +60,7 @@ import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
-import type {
-  ReminderTargetRequest,
-  ReminderTargetResult,
-} from './reminder-targets.js';
+import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the

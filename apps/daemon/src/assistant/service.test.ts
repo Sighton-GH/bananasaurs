@@ -2225,7 +2225,9 @@ describe('B2b: per-skill scopes gate chat skills', () => {
   });
   afterEach(() => t.close());
 
-  const serviceWith = (generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>) => {
+  const serviceWith = (
+    generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>,
+  ) => {
     const provider: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
