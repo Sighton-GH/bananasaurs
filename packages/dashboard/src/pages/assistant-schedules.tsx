@@ -19,7 +19,7 @@ import { reminderTone } from './assistant-shared.js';
 /**
  * `/assistant/schedules`: reminders with destination, run time, honest
  * status including failures, and cancellation (ADR 0060). Reminders are
- * created in Discord with /remind after the requester confirms; this page
+ * created in Discord by asking the bot after the requester confirms; this page
  * reports and cancels, it does not create.
  */
 export function AssistantSchedulesPage() {
