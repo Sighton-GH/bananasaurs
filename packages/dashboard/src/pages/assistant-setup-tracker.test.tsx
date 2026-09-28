@@ -694,7 +694,7 @@ describe('SetupTracker', () => {
       }),
     );
     expect(await screen.findByText('Answering')).toBeTruthy();
-    expect(screen.getByText('Members can ask in Discord with /ask.')).toBeTruthy();
+    expect(screen.getByText('Members ask by tagging @Bananasaurs in Discord.')).toBeTruthy();
     expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show setup steps' }));
     expect(screen.getByRole('list', { name: 'Setup steps' })).toBeTruthy();
