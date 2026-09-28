@@ -685,6 +685,8 @@ describe('/status, end to end', () => {
       createdAt: 0,
       status: 'scheduled',
       dedupeKey: 'rem-1',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
     });
     daemon = start();
 
