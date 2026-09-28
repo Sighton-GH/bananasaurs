@@ -165,7 +165,7 @@ function ScopeEditor({
   readonly onSaved: () => void;
 }) {
   const toast = useToast();
-  const [mode, setMode] = useState<SkillScopeView['mode']>(scope.mode);
+  const [mode, setMode] = useState<SkillScopeMode>(scope.mode);
   const [roleIds, setRoleIds] = useState<readonly string[]>(scope.roleIds);
   const [busy, setBusy] = useState(false);
   const changed = mode !== scope.mode || roleIds.join('|') !== [...scope.roleIds].join('|');
