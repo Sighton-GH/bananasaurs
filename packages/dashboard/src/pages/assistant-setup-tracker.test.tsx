@@ -260,9 +260,7 @@ describe('SetupTracker', () => {
         setup: { ...done, steps: [...done.steps] },
       }),
     );
-    expect(
-      screen.getByText('Members can ask in Discord with /ask, or by mentioning @Member.'),
-    ).toBeTruthy();
+    expect(screen.getByText('Members ask in Discord by mentioning @Member.')).toBeTruthy();
   });
 
   it('adds tagging @Bananasaurs to the answering line when a behaviour answers it', () => {
