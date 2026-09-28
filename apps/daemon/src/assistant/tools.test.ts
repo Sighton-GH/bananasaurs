@@ -469,6 +469,43 @@ describe('acting tools (B2a)', () => {
     expect(redacted.detectors).not.toContain('credit-card-number');
   });
 
+  it('refuses a repeat whose end is before the reminder starts', async () => {
+    const { p, rows } = reminderPorts();
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'hi',
+          when: '2026-09-24T12:30:00-07:00',
+          repeat: { kind: 'daily', until: '2026-09-20T00:00:00-07:00' },
+        },
+      },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: `The repeat can't end before the reminder starts.`,
+    });
+    expect(rows.size).toBe(0);
+  });
+
+  it('refuses an edit whose repeat end is before the reminder starts', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
+    const result = await runAssistantTool(
+      {
+        name: 'edit_reminder',
+        args: { reminderId: 'rem1', repeat: { kind: 'daily', until: '2026-09-20T00:00:00-07:00' } },
+      },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: `The repeat can't end before the reminder starts.`,
+    });
+    expect(rows.get('rem1')?.text).toBe('old');
+  });
+
   it('refuses a when without an offset, a past time and an overlong context', async () => {
     const { p } = reminderPorts();
     await expect(
