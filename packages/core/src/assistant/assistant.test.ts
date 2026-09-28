@@ -6,6 +6,7 @@ import {
   createReminder,
   deliverDueReminders,
   enabledResourcesForGuild,
+  LEGACY_BOUNDARIES_SENTENCE,
   LEGACY_TOOL_SENTENCE,
   OUTPUT_RULES,
   resolveAssistantBehaviour,
@@ -31,6 +32,29 @@ const behaviour = {
 };
 
 describe('assistant behaviour and permissions', () => {
+  it('omits the surface section for mentions and uses plain direct-command wording', () => {
+    const mention = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(mention.sections.map((section) => section.name)).not.toContain('surface');
+
+    const direct = compileAssistantContext({
+      behaviour: { ...behaviour, surface: 'direct-command' },
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(direct.systemInstruction).toContain(
+      "Answer the member's message; use what you can do when they ask for it.",
+    );
+    expect(direct.systemInstruction).not.toContain('Follow the explicit command');
+  });
+
   it('selects different reviewed behaviour by tag and refuses ambiguous tags', () => {
     const itBehaviour = {
       ...behaviour,
@@ -376,7 +400,6 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       evidence: [],
     });
     expect(compiled.sections.map((section) => section.name)).toEqual([
-      'surface',
       'behaviour-prompt',
       'safety-suffix',
       'output-rules',
@@ -440,6 +463,46 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.systemInstruction).not.toContain('search_sources');
   });
 
+  it('rewrites the old wizard boundaries sentence', () => {
+    const legacyBehaviour = {
+      ...behaviour,
+      systemPrompt: `WHAT YOU HELP WITH\n- Answer questions.${LEGACY_BOUNDARIES_SENTENCE}`,
+    };
+    const compiled = compileAssistantContext({
+      behaviour: legacyBehaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!],
+      evidence: [],
+    });
+    expect(compiled.systemInstruction).toContain(
+      'For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it\'s outside what you help with.',
+    );
+    expect(compiled.systemInstruction).not.toContain(LEGACY_BOUNDARIES_SENTENCE);
+  });
+
+  it('keeps acting abilities visible when the behaviour only describes questions', () => {
+    const reminders = CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!;
+    const compiled = compileAssistantContext({
+      behaviour: {
+        ...behaviour,
+        systemPrompt: 'WHAT YOU HELP WITH\n- Answer questions about the club.',
+      },
+      serverCard: 'card',
+      resources: [],
+      skills: [reminders],
+      evidence: [],
+    });
+    expect(compiled.systemInstruction).toContain(
+      `WHAT YOU CAN DO\nreminders: ${reminders.promptLine} You really can do this`,
+    );
+    expect(compiled.systemInstruction).toContain(
+      'These abilities are part of your job even if the description above does not list them.',
+    );
+    expect(compiled.systemInstruction).not.toContain('Effect=');
+    expect(compiled.systemInstruction).not.toContain('Acts=');
+  });
+
   it('strips the legacy sources lines from an old-wizard behaviour prompt', () => {
     const legacyBehaviour = {
       ...behaviour,
@@ -497,14 +560,11 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     expect(promptAt).toBeGreaterThanOrEqual(0);
     expect(suffixAt).toBeGreaterThan(promptAt + prompt.length);
     expect(cardAt).toBeGreaterThan(suffixAt + SAFETY_SUFFIX.length);
-    const skillsBlock = compiled.systemInstruction.slice(
-      compiled.systemInstruction.indexOf('ALLOWED SKILLS'),
-    );
+    const skillsBlock = compiled.sections.find((section) => section.name === 'skills')?.text ?? '';
     // protectedText is the quotable prompt core: behaviour prompt, suffix and
     // skills. The server card and resource list stay out so members may see them.
     expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}`);
     expect(compiled.sections.map((section) => section.name)).toEqual([
-      'surface',
       'behaviour-prompt',
       'safety-suffix',
       'output-rules',
@@ -528,7 +588,9 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
   it('skillInstructionLine is the exact per-skill line the compiler emits (factored, not duplicated)', () => {
     const skill = CLUB_ASSISTANT_SKILLS[0]!;
     const line = skillInstructionLine(skill);
-    expect(line).toBe(`${skill.id}: ${skill.description} Effect=${skill.effect}. Acts=no.`);
+    expect(line).toBe(`${skill.id}: ${skill.promptLine}`);
+    expect(line).not.toContain('Effect=');
+    expect(line).not.toContain('Acts=');
     const compiled = compileAssistantContext({
       behaviour,
       serverCard: 'card',
@@ -536,7 +598,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
       skills: [skill],
       evidence: [],
     });
-    expect(compiled.systemInstruction).toContain(`ALLOWED SKILLS\n${line}`);
+    expect(compiled.systemInstruction).toContain(`WHAT YOU CAN DO\n${line}`);
   });
   it('omits the empty resources section like the instruction join does', () => {
     const compiled = compileAssistantContext({
@@ -568,9 +630,7 @@ describe('compileAssistantContext preferred skills and unavailable skills (ADR 0
       behaviour: { ...behaviour, preferredSkillIds: ['reminders'] },
       skills: [search, reminders],
     });
-    const block = compiled.systemInstruction.slice(
-      compiled.systemInstruction.indexOf('ALLOWED SKILLS'),
-    );
+    const block = compiled.sections.find((section) => section.name === 'skills')?.text ?? '';
     const lines = block.split('\n').slice(1, 3);
     expect(lines[0]).toContain('reminders:');
     expect(lines[0]).toContain("(this assistant's focus)");
