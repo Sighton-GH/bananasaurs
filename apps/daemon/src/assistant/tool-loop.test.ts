@@ -604,7 +604,7 @@ describe('runToolLoop output guard', () => {
       }),
     );
     expect(result.toolCalls[0]?.preview).toBe(
-      '[untrusted-text CURRENT MESSAGE]\nsecret\n[/untrusted-text CURRENT MESSAGE]',
+      '[current-message]\nsecret\n[/current-message]',
     );
   });
 

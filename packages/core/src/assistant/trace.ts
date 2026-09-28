@@ -5,11 +5,24 @@ import { z } from 'zod';
  * saw, what it called, what it cost, and where it failed. Written by the
  * invoke job in Task 14; read by the History list and detail pages.
  *
- * Large free-text fields (`sections[].text`, `toolCalls[].preview`) are
+  * Large free-text fields (`sections[].text`, `toolCalls[].preview`) are
  * capped by `capTrace` before storage, so no single run can grow the table
  * without bound. No keys, tokens or sealed values ever belong in here
  * (hard rule 4) — the schema cannot enforce that, so the writer must.
  */
+
+/**
+ * Which context blocks a reply saw (ADR 0088 decision 2). A separate schema
+ * so the job cursor reuses the trace's own shape for it.
+ */
+export const assistantTraceIncludedSchema = z.object({
+  toolsOffered: z.array(z.string()),
+  snippetChunkIds: z.array(z.string()),
+  quote: z.boolean(),
+  historyTurns: z.number().int().nonnegative(),
+});
+export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
+
 export const assistantTraceSchema = z.object({
   traceId: z.string().min(1),
   at: z.number().int(),
@@ -75,14 +88,7 @@ export const assistantTraceSchema = z.object({
    * Which context blocks the reply saw (ADR 0088 decision 2). Optional so
    * rows written before it still parse; there is no migration.
    */
-  included: z
-    .object({
-      toolsOffered: z.array(z.string()),
-      snippetChunkIds: z.array(z.string()),
-      quote: z.boolean(),
-      historyTurns: z.number().int().nonnegative(),
-    })
-    .optional(),
+  included: assistantTraceIncludedSchema.optional(),
   timeline: z.array(z.object({ label: z.string(), atMs: z.number().int().nonnegative() })),
   error: z.object({ kind: z.string(), message: z.string() }).optional(),
   discordMessageIds: z.array(z.string()),
@@ -90,7 +96,6 @@ export const assistantTraceSchema = z.object({
   flags: z.array(z.string()),
 });
 export type AssistantTrace = z.infer<typeof assistantTraceSchema>;
-export type AssistantTraceIncluded = NonNullable<AssistantTrace['included']>;
 
 /** Rough token estimate for display: one token per four characters, rounded up. */
 export const estimateTokens = (text: string): number => Math.ceil(text.length / 4);

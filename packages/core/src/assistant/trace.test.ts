@@ -175,7 +175,7 @@ describe('capTrace', () => {
   it('caps six full tool results along with large prompt sections', () => {
     const big = 'z'.repeat(6_000);
     const trace = fixtureTrace({
-      sections: [{ name: 'system', chars: 150_000, estTokens: 37_500, text: 's'.repeat(150_000) }],
+      sections: [{ name: 'system', chars: 180_000, estTokens: 45_000, text: 's'.repeat(180_000) }],
       toolCalls: Array.from({ length: 6 }, (_, index) => ({
         round: index + 1,
         name: 'search_sources',
@@ -187,6 +187,8 @@ describe('capTrace', () => {
     });
     const capped = capTrace(trace);
     expect(new TextEncoder().encode(JSON.stringify(capped)).length).toBeLessThanOrEqual(200_000);
-    expect(capped.toolCalls.every((call) => call.preview.endsWith('… [truncated]'))).toBe(true);
+    // Sections shrink first, so the six full results survive whole.
+    expect(capped.sections[0]?.text.endsWith('… [truncated]')).toBe(true);
+    expect(capped.toolCalls.every((call) => call.preview === big)).toBe(true);
   });
 });
