@@ -553,9 +553,7 @@ export const runAssistantTool = async (
   if (!parsed.success) {
     // The open_resource exactly-one-of rule carries its own refusal so the
     // model learns the shape; every other bad argument stays generic.
-    if (
-      parsed.error.issues.some((issue) => issue.message === 'Give either resourceId or docId.')
-    )
+    if (parsed.error.issues.some((issue) => issue.message === 'Give either resourceId or docId.'))
       return refused(name, 'Give either resourceId or docId.');
     return refused(name, 'The tool arguments were not valid.');
   }
@@ -1048,7 +1046,11 @@ export const runAssistantTool = async (
         }
       }
       case 'search_sources': {
-        const { query: q, filter, sourceIds } = parsed.data as {
+        const {
+          query: q,
+          filter,
+          sourceIds,
+        } = parsed.data as {
           query?: string;
           filter?: string;
           sourceIds?: string[];

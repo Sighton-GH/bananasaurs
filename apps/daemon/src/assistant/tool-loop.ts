@@ -652,12 +652,10 @@ const runEntry = async (deps: {
             : undefined;
         // A call passes when any of the tool's id arguments carries an id an
         // earlier result returned; `open_resource` takes either id shape.
-        const known = idArgs.some(
-          (idArg) => {
-            const idValue = argsRecord?.[idArg];
-            return typeof idValue === 'string' && handles.has(idValue);
-          },
-        );
+        const known = idArgs.some((idArg) => {
+          const idValue = argsRecord?.[idArg];
+          return typeof idValue === 'string' && handles.has(idValue);
+        });
         if (!known) {
           deps.toolCalls.push({
             ...traceBase,

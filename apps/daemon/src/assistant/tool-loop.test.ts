@@ -112,8 +112,7 @@ describe('ID_TOOL_ARGS', () => {
       // takes exactly one of its two ids (ADR 0092 decision 3), so neither
       // is required on its own.
       if (name === 'open_resource') expect(found.parameters.required ?? []).toEqual([]);
-      else
-        for (const arg of args) expect(found.parameters.required ?? []).toContain(arg);
+      else for (const arg of args) expect(found.parameters.required ?? []).toContain(arg);
     }
   });
 });

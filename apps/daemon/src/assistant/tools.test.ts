@@ -179,7 +179,8 @@ describe('runAssistantTool', () => {
     await expect(runAssistantTool({ name: 'delete_channel', args: {} }, p)).resolves.toMatchObject({
       ok: false,
       text: 'Unknown tool.',
-    });    await expect(
+    });
+    await expect(
       runAssistantTool({ name: 'search_archive', args: { query: '' } }, p),
     ).resolves.toMatchObject({ ok: false });
     await expect(
@@ -1410,10 +1411,7 @@ describe('cache tools (Task 16)', () => {
       cacheOutline: () => rows,
       cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
     });
-    const result = await runAssistantTool(
-      { name: 'open_resource', args: { docId: 'd_abc' } },
-      p,
-    );
+    const result = await runAssistantTool({ name: 'open_resource', args: { docId: 'd_abc' } }, p);
     expect(result.ok).toBe(true);
     expect(result.text.length).toBeLessThanOrEqual(1_500);
     expect(result.text).toContain('c_d_0');
@@ -1435,19 +1433,17 @@ describe('cache tools (Task 16)', () => {
         url: 'https://example.com/handbook',
       }),
     });
-    const result = await runAssistantTool(
-      { name: 'open_resource', args: { docId: 'd_abc' } },
-      p,
-    );
+    const result = await runAssistantTool({ name: 'open_resource', args: { docId: 'd_abc' } }, p);
     expect(result.ok).toBe(true);
     expect(result.text).toBe('No headings cached.');
   });
 
   it('open_resource refuses both ids or neither with the ruled sentence', async () => {
     const p = cachePorts();
-    await expect(
-      runAssistantTool({ name: 'open_resource', args: {} }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'Give either resourceId or docId.' });
+    await expect(runAssistantTool({ name: 'open_resource', args: {} }, p)).resolves.toMatchObject({
+      ok: false,
+      text: 'Give either resourceId or docId.',
+    });
     await expect(
       runAssistantTool(
         { name: 'open_resource', args: { resourceId: 'handbook', docId: 'd_abc' } },
