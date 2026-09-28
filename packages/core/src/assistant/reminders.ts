@@ -110,8 +110,7 @@ export const REMINDER_DELIVERY_STALE_MS = 5 * 60_000;
 
 /**
  * The one validation every reminder write goes through, whatever path
- * created it - the store helper below and the daemon's `/remind` slash path
- * alike (review finding 8: the slash path used to carry its own half-copy).
+ * created it - the store helper below and reminders asked in chat alike.
  * Returns the error, or the trimmed text on success.
  */
 export const validateReminderDraft = (

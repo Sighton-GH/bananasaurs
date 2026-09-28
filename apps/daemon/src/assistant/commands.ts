@@ -131,7 +131,7 @@ export interface AssistantCommandDeps {
   /**
    * Hands the invocation to the job queue (B2). The provider call is far too
    * slow for the serial per-guild dispatch chain: awaiting it here would
-   * stall reaction roles, automod and /mod behind one /ask. Reports whether
+   * stall reaction roles, automod and /mod behind one question asked in chat. Reports whether
    * the queue took the job, so a duplicate mention skips its typing indicator.
    */
   readonly enqueue: (input: {
