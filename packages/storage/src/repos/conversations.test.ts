@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
@@ -397,6 +399,16 @@ describe('conversation links', () => {
         )
         .run(GUILD_A, 'conv-1', 'conv-2', 'not-a-kind', 1_000),
     ).toThrow();
+  });
+
+  it('records the 0050_conversation_links migration tag in the journal', () => {
+    const journal = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../../../../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as { entries: { tag: string }[] };
+    expect(journal.entries.some((e) => e.tag === '0050_conversation_links')).toBe(true);
   });
 });
 
