@@ -364,6 +364,7 @@ export function AssistantSkillPage() {
                   )}
                 </DataState>
               </Card>
+              <SkillItemsCard items={data.items} reload={detail.reload} />
               <Card title="What the AI is told">
                 <pre className="overflow-x-auto rounded-sm border border-line bg-panel p-3 font-mono text-xs whitespace-pre-wrap">
                   {data.instructionLine}
