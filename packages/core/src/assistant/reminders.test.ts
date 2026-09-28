@@ -175,7 +175,38 @@ describe('deliverDueReminders', () => {
       retried: 1,
     });
     expect(store.fail).not.toHaveBeenCalled();
-    expect(store.reschedule).toHaveBeenCalledWith('r1', due + 86_400_000, 'Missing Access');
+    expect(store.reschedule).toHaveBeenCalledWith('r1', due + 86_400_000, 'Missing Access', {
+      countDelivered: false,
+    });
+  });
+
+  it('does not count a failed occurrence toward a for-N-times series', async () => {
+    const due = Date.parse('2026-01-05T17:00:00Z');
+    const store = storeFor([
+      reminder({
+        dueAt: due,
+        deliveredCount: 2,
+        recurrence: reminderRecurrence.parse({
+          pattern: { kind: 'daily' },
+          timeZone: 'UTC',
+          maxCount: 3,
+        }),
+      }),
+    ]);
+    const delivery = {
+      send: vi.fn(async () => {
+        throw new ReminderDeliveryError('Missing Access', true);
+      }),
+    };
+    await expect(deliverDueReminders(store, delivery, due)).resolves.toEqual({
+      delivered: 0,
+      failed: 0,
+      retried: 1,
+    });
+    expect(store.fail).not.toHaveBeenCalled();
+    expect(store.reschedule).toHaveBeenCalledWith('r1', due + 86_400_000, 'Missing Access', {
+      countDelivered: false,
+    });
   });
 
   it('completes a repeating series at its end', async () => {

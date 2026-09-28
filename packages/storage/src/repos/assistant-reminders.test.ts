@@ -7,9 +7,11 @@ import {
   claimDueReminders,
   completeReminder,
   failReminder,
+  getReminder,
   hasDeliverableReminders,
   insertReminder,
   listReminders,
+  rescheduleReminder,
   retryReminder,
 } from './assistant.js';
 
@@ -190,5 +192,18 @@ describe('state-guarded transitions', () => {
     insertReminder(scope(), reminder('c', { dueAt: 9_999 }));
     expect(cancelReminder(scope(), 'c')).toBe(true);
     expect(statusOf('c')?.status).toBe('cancelled');
+  });
+
+  it('leaves delivered_count unchanged when a failed occurrence reschedules', () => {
+    insertReminder(scope(), reminder('a'));
+    claimDueReminders(scope(), 1_000, 25, STALE_MS);
+    rescheduleReminder(scope(), 'a', 2_000, 'Missing Access', { countDelivered: false });
+    expect(getReminder(scope(), 'a')?.dueAt).toBe(2_000);
+    expect(getReminder(scope(), 'a')?.deliveredCount).toBe(0);
+    expect(getReminder(scope(), 'a')?.failureReason).toBe('Missing Access');
+    insertReminder(scope(), reminder('b'));
+    claimDueReminders(scope(), 1_000, 25, STALE_MS);
+    rescheduleReminder(scope(), 'b', 3_000);
+    expect(getReminder(scope(), 'b')?.deliveredCount).toBe(1);
   });
 });
