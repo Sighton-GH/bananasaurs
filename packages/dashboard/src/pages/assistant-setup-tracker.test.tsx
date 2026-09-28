@@ -312,9 +312,7 @@ describe('SetupTracker', () => {
       }),
     );
     expect(
-      screen.getByText(
-        'Members ask by tagging @Bananasaurs in Discord, or by mentioning @Member.',
-      ),
+      screen.getByText('Members ask by tagging @Bananasaurs in Discord, or by mentioning @Member.'),
     ).toBeTruthy();
   });
 

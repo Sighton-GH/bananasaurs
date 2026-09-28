@@ -686,9 +686,7 @@ function applyConfiguredDryRun(
     // is reachable by tagging the bot. `setBotTagBehaviour` clears the flag
     // everywhere else first, so there is never two, and a re-save via
     // `putBehaviour` never touches the flag.
-    if (
-      !assistantRepo.listBehaviours(scope).some((item) => item.answersBotTag === true)
-    ) {
+    if (!assistantRepo.listBehaviours(scope).some((item) => item.answersBotTag === true)) {
       assistantRepo.setBotTagBehaviour(scope, 'default', nowMs);
     }
   }

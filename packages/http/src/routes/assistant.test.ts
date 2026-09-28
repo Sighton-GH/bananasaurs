@@ -2100,9 +2100,7 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
     expect((await patch(cookie, csrf, 'r1', { context: '  hello\n\n  world  ' })).statusCode).toBe(
       200,
     );
-    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context).toBe(
-      'hello world',
-    );
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context).toBe('hello world');
     expect((await patch(cookie, csrf, 'r1', { context: '   \n  ' })).statusCode).toBe(200);
     expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context ?? null).toBeNull();
   });
@@ -2119,8 +2117,8 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
       error: 'invalid-reminder',
       message: `The repeat can't end before the reminder starts.`,
     });
-    expect(
-      assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence,
-    ).toEqual(repeating());
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toEqual(
+      repeating(),
+    );
   });
 });
