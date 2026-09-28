@@ -89,7 +89,7 @@ describe('WhatTheAiSaw', () => {
     ).toBeTruthy();
     expect(screen.getByText('where is the handbook?')).toBeTruthy();
     expect(screen.getByText('Club sources · 14 characters · about 4 tokens')).toBeTruthy();
-    expect(screen.getByText('custom-block · 3 characters · about 1 token')).toBeTruthy();
+    expect(screen.getByText('custom-block · 3 characters · about 1 tokens')).toBeTruthy();
     // The tool call shows its name, arguments and result text.
     expect(screen.getAllByText('search_sources').length).toBeGreaterThan(0);
     expect(screen.getByText(/"query": "handbook"/)).toBeTruthy();
