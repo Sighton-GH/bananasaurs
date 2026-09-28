@@ -581,6 +581,123 @@ describe('messages and reactions', () => {
     );
   });
 
+  it('fetches channel messages oldest first with before and limit', async () => {
+    const { port, requests } = harness([
+      {
+        status: 200,
+        // Discord returns newest first; the port reports oldest first.
+        body: [
+          {
+            id: '444444444444444446',
+            channel_id: CHANNEL,
+            author: { id: USER, username: 'sam' },
+            content: 'second',
+            timestamp: '2026-09-20T12:01:00.000Z',
+            attachments: [{ id: '1', filename: 'notes.txt', size: 12 }],
+            referenced_message: {
+              id: '444444444444444444',
+              author: { id: '777777777777777777', username: 'ana' },
+            },
+          },
+          {
+            id: '444444444444444445',
+            channel_id: CHANNEL,
+            author: { id: BOT, username: 'bananasaurs', bot: true },
+            content: 'first',
+            timestamp: '2026-09-20T12:00:00.000Z',
+            attachments: [],
+          },
+        ],
+      },
+    ]);
+    const messages = await port.fetchChannelMessages(GUILD, CHANNEL, {
+      before: MESSAGE,
+      limit: 15,
+    });
+    expect(messages).toEqual([
+      {
+        messageId: '444444444444444445',
+        authorId: BOT,
+        authorName: 'bananasaurs',
+        authorIsBot: true,
+        content: 'first',
+        at: Date.parse('2026-09-20T12:00:00.000Z'),
+        hasAttachments: false,
+      },
+      {
+        messageId: '444444444444444446',
+        authorId: USER,
+        authorName: 'sam',
+        authorIsBot: false,
+        content: 'second',
+        at: Date.parse('2026-09-20T12:01:00.000Z'),
+        referencedAuthorName: 'ana',
+        hasAttachments: true,
+      },
+    ]);
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages`);
+    expect(last(requests).query).toContain(`before=${MESSAGE}`);
+    expect(last(requests).query).toContain('limit=15');
+  });
+
+  it('prefers the guild nickname for channel message authors', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: [
+          {
+            id: '444444444444444445',
+            channel_id: CHANNEL,
+            author: { id: USER, username: 'sam', global_name: 'Sam Global' },
+            member: { nick: 'Sam Nick' },
+            content: 'hi',
+            timestamp: '2026-09-20T12:00:00.000Z',
+            attachments: [],
+          },
+        ],
+      },
+    ]);
+    const messages = await port.fetchChannelMessages(GUILD, CHANNEL, {
+      before: MESSAGE,
+      limit: 15,
+    });
+    expect(messages?.[0]).toMatchObject({ authorName: 'Sam Nick' });
+  });
+
+  it('clamps the channel message limit to 1–50', async () => {
+    const high = harness([{ status: 200, body: [] }]);
+    await high.port.fetchChannelMessages(GUILD, CHANNEL, { before: MESSAGE, limit: 200 });
+    expect(last(high.requests).query).toContain('limit=50');
+
+    const low = harness([{ status: 200, body: [] }]);
+    await low.port.fetchChannelMessages(GUILD, CHANNEL, { before: MESSAGE, limit: 0 });
+    expect(last(low.requests).query).toContain('limit=1');
+  });
+
+  it('reports undefined rather than throwing on 404 or 403', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },
+    ]);
+    await expect(
+      gone.port.fetchChannelMessages(GUILD, CHANNEL, { before: MESSAGE, limit: 15 }),
+    ).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(
+      forbidden.port.fetchChannelMessages(GUILD, CHANNEL, { before: MESSAGE, limit: 15 }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else for channel messages (e.g. a server error)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(
+      port.fetchChannelMessages(GUILD, CHANNEL, { before: MESSAGE, limit: 15 }),
+    ).rejects.toBeInstanceOf(DiscordApiError);
+  });
+
   it('sends a typing indicator on the channel typing route', async () => {
     const { port, requests } = harness();
     await port.sendTyping(GUILD, CHANNEL);

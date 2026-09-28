@@ -26,6 +26,7 @@ import type {
   InteractionRef,
   OutgoingMessage,
   ReactionUserPage,
+  RecentMessage,
   Snowflake,
 } from '@bananasaurs/core';
 import { mapErrors } from './errors.js';
@@ -259,6 +260,57 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       } catch (err) {
         // Gone or no access is routine here — a member quoting an old or
         // now-hidden message — and is reported as "no quote available"
+        // rather than failing the whole turn.
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+    },
+
+    async fetchChannelMessages(
+      _guildId,
+      channelId,
+      opts,
+    ): Promise<readonly RecentMessage[] | undefined> {
+      // Discord caps a channel page at 100; the assistant's window setting
+      // caps lower still. Clamped, never defaulted: the caller names N.
+      const limit = Math.min(Math.max(opts.limit, 1), 50);
+      try {
+        const messages = (await mapErrors(() =>
+          rest.get(Routes.channelMessages(channelId), {
+            query: new URLSearchParams({ before: opts.before, limit: String(limit) }),
+          }),
+        )) as APIMessageWithMember[];
+        // Discord returns newest first; channel context reads oldest first.
+        return messages
+          .map((message) => {
+            const referenced = message.referenced_message as
+              APIMessageWithMember | null | undefined;
+            const referencedAuthor = referenced?.author;
+            return {
+              messageId: message.id,
+              authorId: message.author.id,
+              authorName:
+                message.member?.nick ?? message.author.global_name ?? message.author.username,
+              authorIsBot: message.author.bot ?? false,
+              content: message.content,
+              at: Date.parse(message.timestamp),
+              ...(referencedAuthor === undefined
+                ? {}
+                : {
+                    referencedAuthorName:
+                      (referenced as APIMessageWithMember).member?.nick ??
+                      referencedAuthor.global_name ??
+                      referencedAuthor.username,
+                  }),
+              hasAttachments: (message.attachments?.length ?? 0) > 0,
+            } satisfies RecentMessage;
+          })
+          .reverse();
+      } catch (err) {
+        // Gone or no access is routine here — a mention in a channel whose
+        // history the bot cannot read — and is reported as "no context"
         // rather than failing the whole turn.
         if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
           return undefined;

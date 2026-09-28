@@ -145,6 +145,9 @@ class MinimalModerationDiscord implements DiscordPort {
   async fetchMessageContent(): Promise<never> {
     this.notUsed('fetchMessageContent');
   }
+  async fetchChannelMessages(): Promise<never> {
+    this.notUsed('fetchChannelMessages');
+  }
   async sendTyping(): Promise<void> {
     this.notUsed('sendTyping');
   }
