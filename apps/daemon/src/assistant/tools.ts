@@ -7,6 +7,7 @@ import {
   reminderRecurrence,
   scanOutboundRequest,
   TOOL_CATALOGUE,
+  utcForLocal,
   validateReminderDraft,
   type ClubResource,
   type Reminder,
@@ -353,8 +354,7 @@ const wallMsSinceMidnight = (at: number, timeZone: string): number => {
 };
 
 /**
- * Next local midnight after `at` by local date, via the same iterative
- * `utcForLocal` technique as `packages/core/src/assistant/recurrence.ts`: the
+ * Next local midnight after `at` by local date, via core's `utcForLocal`: the
  * 24-hour arithmetic fails on a 25-hour fall-back day.
  */
 const endOfMidnightDay = (at: number, timeZone: string): number => {
@@ -366,38 +366,10 @@ const endOfMidnightDay = (at: number, timeZone: string): number => {
   }).formatToParts(at);
   const num = (type: string): number => Number(ymd.find((part) => part.type === type)?.value ?? 0);
   const next = new Date(Date.UTC(num('year'), num('month') - 1, num('day')) + 86_400_000);
-  const year = next.getUTCFullYear();
-  const month = next.getUTCMonth() + 1;
-  const day = next.getUTCDate();
-  const localParts = (guess: number): Record<string, string> =>
-    Object.fromEntries(
-      new Intl.DateTimeFormat('en-CA', {
-        timeZone,
-        hourCycle: 'h23',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-        .formatToParts(guess)
-        .filter((part) => part.type !== 'literal')
-        .map((part) => [part.type, part.value]),
-    ) as Record<string, string>;
-  let guess = Date.UTC(year, month - 1, day, 0, 0);
-  const target = guess;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const observed = localParts(guess);
-    const asUtc = Date.UTC(
-      Number(observed.year),
-      Number(observed.month) - 1,
-      Number(observed.day),
-      Number(observed.hour),
-      Number(observed.minute),
-    );
-    guess = target - (asUtc - guess);
-  }
-  return guess - 1;
+  return (
+    utcForLocal(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, timeZone) -
+    1
+  );
 };
 
 const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
