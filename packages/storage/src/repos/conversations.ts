@@ -47,7 +47,7 @@ export interface NewTurn {
   readonly authorName: string;
   readonly text: string;
   readonly traceId?: string | undefined;
-  readonly joinRule?: JoinRule;
+  readonly joinRule?: JoinRule | undefined;
 }
 
 export interface ConversationTurn {
@@ -59,7 +59,7 @@ export interface ConversationTurn {
   readonly text: string;
   readonly traceId?: string | undefined;
   readonly feedback?: Feedback | undefined;
-  readonly joinRule?: JoinRule;
+  readonly joinRule?: JoinRule | undefined;
 }
 
 export interface ConversationLink {
