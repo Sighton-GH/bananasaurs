@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import type { SkillItems } from '../api/assistant.js';
 import { SkillItemsCard } from './skill-items.js';
 
 afterEach(cleanup);
@@ -134,8 +135,13 @@ describe('SkillItemsCard', () => {
     const mock = stubFetch([
       { method: 'PATCH', url: '/api/assistant/reminders/rem-1', body: { ok: true } },
     ]);
-    const items = JSON.parse(JSON.stringify(REMINDERS));
-    items.reminders[0].dueAt = DUE_AT + 37000;
+    const items: SkillItems = {
+      kind: 'reminders',
+      reminders: [
+        { ...REMINDERS.reminders[0], dueAt: DUE_AT + 37000 },
+        { ...REMINDERS.reminders[1] },
+      ],
+    };
     renderWithSession(<SkillItemsCard items={items} reload={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const dialog = screen.getByRole('heading', { name: 'Edit reminder' }).closest('section')!;
@@ -156,12 +162,20 @@ describe('SkillItemsCard', () => {
     const mock = stubFetch([
       { method: 'PATCH', url: '/api/assistant/reminders/rem-1', body: { ok: true } },
     ]);
-    const items = JSON.parse(JSON.stringify(REMINDERS));
-    items.reminders[0].recurrence = {
-      pattern: { kind: 'daily' },
-      timeZone: 'America/Vancouver',
-      endAt: DUE_AT + 45000,
-      maxCount: 10,
+    const items: SkillItems = {
+      kind: 'reminders',
+      reminders: [
+        {
+          ...REMINDERS.reminders[0],
+          recurrence: {
+            pattern: { kind: 'daily' },
+            timeZone: 'America/Vancouver',
+            endAt: DUE_AT + 45000,
+            maxCount: 10,
+          },
+        },
+        { ...REMINDERS.reminders[1] },
+      ],
     };
     renderWithSession(<SkillItemsCard items={items} reload={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
