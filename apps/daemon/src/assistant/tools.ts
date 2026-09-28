@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   clipHeading,
@@ -292,13 +293,28 @@ const refused = (name: string, text: string): AssistantToolResult => ({
 const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 const OFFSET_REFUSAL = 'Give the time as ISO 8601 with its UTC offset.';
 
-/** Per-invocation idempotency counter shared by set_reminder and the proposals. */
-const invocationCounters = new WeakMap<AssistantToolPorts, number>();
-const nextInvocationIndex = (ports: AssistantToolPorts): number => {
-  const current = invocationCounters.get(ports) ?? 0;
-  invocationCounters.set(ports, current + 1);
-  return current;
+/**
+ * Content-derived idempotency keys: every acting write derives its id and
+ * dedupe key from the invocation key plus a sha256 of the canonical JSON of
+ * the validated, normalised args, so a provider failover replaying the same
+ * call reuses the same key instead of inserting a second row.
+ */
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) sorted[key] = canonicalize(obj[key]);
+    return sorted;
+  }
+  return value;
 };
+const contentHash = (content: unknown): string =>
+  createHash('sha256')
+    .update(JSON.stringify(canonicalize(content)))
+    .digest('hex');
+const contentKey = (prefix: string, invocationKey: string, content: unknown): string =>
+  `${prefix}:${invocationKey}:${contentHash(content)}`;
 
 interface RepeatArgs {
   readonly kind: 'daily' | 'weekdays' | 'weekly' | 'monthly';
@@ -574,16 +590,33 @@ export const runAssistantTool = async (
           });
           if (!resolved.ok) return { ...evidence(name, resolved.problem), ok: false };
           const targets: ResolvedReminderTargets = resolved.targets;
-          const n = nextInvocationIndex(ports);
+          const normalisedContext =
+            args.context === undefined || args.context.trim() === ''
+              ? undefined
+              : args.context.trim();
+          const keyContent = {
+            text: draft.text,
+            dueAt,
+            ...(normalisedContext === undefined ? {} : { context: normalisedContext }),
+            channelId: targets.channelId,
+            mentions: {
+              userIds: [...targets.mentions.userIds].sort(),
+              roleIds: [...targets.mentions.roleIds].sort(),
+              everyone: targets.mentions.everyone,
+              here: targets.mentions.here,
+            },
+            ...(recurrence === undefined ? {} : { recurrence }),
+            creatorId: ports.userId,
+          };
           const reminder: Omit<Reminder, 'guildId'> = {
-            id: `rem_${ports.invocationKey}_${n}`,
+            id: contentKey('rem', ports.invocationKey, keyContent),
             creatorId: ports.userId,
             destinationId: targets.channelId,
             text: draft.text,
             dueAt,
             createdAt: ports.now(),
             status: 'scheduled',
-            dedupeKey: `reminder:${ports.invocationKey}:${n}`,
+            dedupeKey: contentKey('reminder', ports.invocationKey, keyContent),
             mentions: {
               userIds: [...targets.mentions.userIds],
               roleIds: [...targets.mentions.roleIds],
@@ -595,20 +628,31 @@ export const runAssistantTool = async (
             deliveredCount: 0,
           };
           const inserted = ports.reminderStore.insert(reminder);
-          if (inserted === 'duplicate') return evidence(name, 'That reminder is already set.');
+          const buildSetSummary = (row: {
+            readonly text: string;
+            readonly dueAt: number;
+            readonly recurrence?: unknown;
+            readonly context?: string;
+          }): string =>
+            reminderSummary('set', {
+              text: row.text,
+              dueAt: row.dueAt,
+              timeZone: ports.timeZone,
+              recurrence: (row.recurrence ?? recurrence) as ReminderRecurrence | undefined,
+              context: row.context,
+              channelName: targets.channelName,
+              memberNames: targets.memberNames,
+              roleNames: targets.roleNames,
+              everyone: targets.mentions.everyone,
+              here: targets.mentions.here,
+            });
+          if (inserted === 'duplicate') {
+            const stored = ports.reminderStore.get(reminder.id);
+            const summary = buildSetSummary(stored ?? reminder);
+            return { ...evidence(name, summary), actionSummary: summary };
+          }
           ports.recordSkillActivity('reminders', 'completed');
-          const summary = reminderSummary('set', {
-            text: reminder.text,
-            dueAt,
-            timeZone: ports.timeZone,
-            recurrence,
-            context: reminder.context,
-            channelName: targets.channelName,
-            memberNames: targets.memberNames,
-            roleNames: targets.roleNames,
-            everyone: targets.mentions.everyone,
-            here: targets.mentions.here,
-          });
+          const summary = buildSetSummary(reminder);
           return { ...evidence(name, summary), actionSummary: summary };
         } catch (err) {
           return failed(ports, name, 'reminders', err);
@@ -746,9 +790,11 @@ export const runAssistantTool = async (
         if (gate !== undefined) return gate;
         try {
           const args = parsed.data as { content: string; section?: string };
-          const n = nextInvocationIndex(ports);
           ports.proposeDraft({
-            id: `memory-${ports.invocationKey}-${n}`,
+            id: contentKey('memory', ports.invocationKey, {
+              content: args.content,
+              ...(args.section === undefined ? {} : { section: args.section }),
+            }),
             kind: 'memory',
             summary: args.section === undefined ? args.content : `${args.section}: ${args.content}`,
           });
@@ -765,9 +811,11 @@ export const runAssistantTool = async (
         if (gate !== undefined) return gate;
         try {
           const args = parsed.data as { summary: string; kind: 'decision' | 'review-plan' };
-          const n = nextInvocationIndex(ports);
           ports.proposeDraft({
-            id: `${args.kind}-${ports.invocationKey}-${n}`,
+            id: contentKey(args.kind, ports.invocationKey, {
+              kind: args.kind,
+              summary: args.summary,
+            }),
             kind: args.kind,
             summary: args.summary,
           });

@@ -641,7 +641,13 @@ const runEntry = async (deps: {
         for (const source of result.sources) deps.sources.push(source);
         if (result.web === true) deps.recordWeb();
         // B2b: only ok results carry a summary — a refused tool adds none.
-        if (result.actionSummary !== undefined) deps.actionSummaries.push(result.actionSummary);
+        // A failover replay of the same content-derived write returns the same
+        // summary; list it once so the answer carries one confirmation.
+        if (
+          result.actionSummary !== undefined &&
+          !deps.actionSummaries.includes(result.actionSummary)
+        )
+          deps.actionSummaries.push(result.actionSummary);
       }
       deps.toolCalls.push({
         ...traceBase,

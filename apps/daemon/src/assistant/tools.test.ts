@@ -523,51 +523,46 @@ describe('acting tools (B2a)', () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it('is idempotent on the same invocation and unique across two calls', async () => {
+  it('is idempotent on identical content and unique across different calls', async () => {
     const inserted: Omit<Reminder, 'guildId'>[] = [];
-    const p = ports({
-      reminderStore: {
-        insert: (reminder: Omit<Reminder, 'guildId'>) => {
-          if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
-          inserted.push(reminder);
-          return 'created';
-        },
-        get: () => undefined,
-        update: () => 'not-found' as const,
-        cancel: () => false,
-        listForCreator: () => [],
-        listAll: () => [],
+    const storeFor = () => ({
+      insert: (reminder: Omit<Reminder, 'guildId'>) => {
+        if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate' as const;
+        inserted.push(reminder);
+        return 'created' as const;
       },
+      get: (id: string) => inserted.find((r) => r.id === id) as StoredReminder | undefined,
+      update: () => 'not-found' as const,
+      cancel: () => false,
+      listForCreator: () => [],
+      listAll: () => [],
     });
+    const p = ports({ reminderStore: storeFor() });
     const args = { text: 'hi', when: '2026-09-24T12:30:00-07:00' };
     const first = await runAssistantTool({ name: 'set_reminder', args }, p);
     expect(first.ok).toBe(true);
     expect(inserted).toHaveLength(1);
-    // A replay with a fresh ports object but the same key hits the dedupe key.
-    const replay = ports({
-      invocationKey: 'msg1',
-      reminderStore: {
-        insert: (reminder: Omit<Reminder, 'guildId'>) => {
-          if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
-          inserted.push(reminder);
-          return 'created';
-        },
-        get: () => undefined,
-        update: () => 'not-found' as const,
-        cancel: () => false,
-        listForCreator: () => [],
-        listAll: () => [],
-      },
-    });
+    // A replay with a fresh ports object but the same key hits the dedupe key
+    // and returns the same success summary built from the stored row.
+    const replay = ports({ invocationKey: 'msg1', reminderStore: storeFor() });
     const second = await runAssistantTool({ name: 'set_reminder', args }, replay);
-    expect(second.text).toBe('That reminder is already set.');
-    expect(second.actionSummary).toBeUndefined();
+    expect(second.ok).toBe(true);
+    expect(second.actionSummary).toBe(first.actionSummary);
+    expect(second.text).toBe(first.text);
     expect(inserted).toHaveLength(1);
-    // Two calls in one invocation get different ids.
-    const third = await runAssistantTool({ name: 'set_reminder', args }, p);
+    // Two identical calls on the same ports object also dedupe to one row.
+    const samePorts = await runAssistantTool({ name: 'set_reminder', args }, p);
+    expect(samePorts.actionSummary).toBe(first.actionSummary);
+    expect(inserted).toHaveLength(1);
+    // Different content gets a different key and a second row.
+    const third = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'bye', when: '2026-09-24T12:30:00-07:00' } },
+      p,
+    );
     expect(third.ok).toBe(true);
     expect(inserted).toHaveLength(2);
     expect(inserted[0]?.id).not.toBe(inserted[1]?.id);
+    expect(inserted[0]?.dedupeKey).not.toBe(inserted[1]?.dedupeKey);
   });
 
   it('builds a weekly recurrence from days', async () => {
@@ -721,7 +716,7 @@ describe('acting tools (B2a)', () => {
     expect(decision.actionSummary).toBe(
       '📝 Draft filed for owner review. It is not club policy until an owner saves it.',
     );
-    expect(proposed[1]?.id).toContain('decision-msg1-');
+    expect(proposed[1]?.id).toContain('decision:msg1:');
     const replay = await runAssistantTool(
       { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
       ports({
