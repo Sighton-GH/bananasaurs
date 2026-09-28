@@ -32,27 +32,27 @@ const behaviour = {
 };
 
 describe('assistant behaviour and permissions', () => {
-  it('omits the surface section for mentions and uses plain direct-command wording', () => {
-    const mention = compileAssistantContext({
-      behaviour,
-      serverCard: 'card',
-      resources: [],
-      skills: [],
-      evidence: [],
-    });
-    expect(mention.sections.map((section) => section.name)).not.toContain('surface');
+  it('emits the surface-specific guidance and replaces the slash-era fallback', () => {
+    const expected = {
+      'it-services':
+        'Act as the club IT service desk. Prefer exact diagnostics, access steps and escalation paths. Never invent credentials or claim an access change happened.',
+      help: 'Act as the club help desk. Give onboarding and club-process guidance from reviewed sources, cite them, and escalate when evidence is missing.',
+      bananasaurs:
+        'Act as the club assistant. Answer concisely in Canadian English, cite club sources and say when current evidence is missing.',
+      'direct-command': "Answer the member's message; use what you can do when they ask for it.",
+    } as const;
 
-    const direct = compileAssistantContext({
-      behaviour: { ...behaviour, surface: 'direct-command' },
-      serverCard: 'card',
-      resources: [],
-      skills: [],
-      evidence: [],
-    });
-    expect(direct.systemInstruction).toContain(
-      "Answer the member's message; use what you can do when they ask for it.",
-    );
-    expect(direct.systemInstruction).not.toContain('Follow the explicit command');
+    for (const [surface, instruction] of Object.entries(expected)) {
+      const compiled = compileAssistantContext({
+        behaviour: { ...behaviour, surface: surface as typeof behaviour.surface },
+        serverCard: 'card',
+        resources: [],
+        skills: [],
+        evidence: [],
+      });
+      expect(compiled.systemInstruction).toContain(instruction);
+      expect(compiled.systemInstruction).not.toContain('Follow the explicit command');
+    }
   });
 
   it('selects different reviewed behaviour by tag and refuses ambiguous tags', () => {
@@ -400,6 +400,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       evidence: [],
     });
     expect(compiled.sections.map((section) => section.name)).toEqual([
+      'surface',
       'behaviour-prompt',
       'safety-suffix',
       'output-rules',
@@ -565,6 +566,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     // skills. The server card and resource list stay out so members may see them.
     expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}`);
     expect(compiled.sections.map((section) => section.name)).toEqual([
+      'surface',
       'behaviour-prompt',
       'safety-suffix',
       'output-rules',
