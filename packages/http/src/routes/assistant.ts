@@ -729,18 +729,28 @@ export const registerAssistantRoutes = (
         error: 'recurrence-needs-time-zone',
         message: `Repeating reminders are created from chat, where the club's time zone is known.`,
       });
+    const effectiveRecurrence = recurrence === undefined ? existing.recurrence : recurrence;
+    const effectiveEndAt =
+      effectiveRecurrence === null || effectiveRecurrence === undefined
+        ? undefined
+        : effectiveRecurrence.endAt;
+    if (effectiveEndAt !== undefined && effectiveEndAt < effectiveDueAt)
+      return reply.status(400).send({
+        error: 'invalid-reminder',
+        message: `The repeat can't end before the reminder starts.`,
+      });
     const before: Record<string, JsonValue> = {};
     const after: Record<string, JsonValue> = {};
-    if (parsed.data.text !== undefined && parsed.data.text !== existing.text) {
+    if (draftText !== undefined && draftText !== existing.text) {
       before['text'] = existing.text;
-      after['text'] = parsed.data.text;
+      after['text'] = draftText;
     }
     if (
-      parsed.data.context !== undefined &&
-      (parsed.data.context ?? null) !== (existing.context ?? null)
+      normalizedContext !== undefined &&
+      (normalizedContext ?? null) !== (existing.context ?? null)
     ) {
       before['context'] = existing.context ?? null;
-      after['context'] = parsed.data.context;
+      after['context'] = normalizedContext;
     }
     if (parsed.data.dueAt !== undefined && parsed.data.dueAt !== existing.dueAt) {
       before['dueAt'] = existing.dueAt;
