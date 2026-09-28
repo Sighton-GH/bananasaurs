@@ -715,7 +715,7 @@ export function AssistantPage() {
             <div className="space-y-3">
               <EmptyState
                 title="No behaviours yet"
-                detail="Step 4 creates the club assistant, which members reach with /ask. To set up a tagged helper like @it-services instead, create a behaviour."
+                detail="Step 4 creates the club assistant, which members reach by tagging @Bananasaurs. To set up a tagged helper like @it-services instead, create a behaviour."
               />
               {creating && (
                 <CreateBehaviourForm
