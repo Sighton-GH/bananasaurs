@@ -13,9 +13,11 @@ import {
   listBehaviours,
   listDecisions,
   listRemindersForCreator,
+  listSkillActivity,
   listSkillGrants,
   putBehaviour,
   putSkillGrant,
+  recordSkillActivity,
   rescheduleReminder,
   claimDueReminders,
   setSkillScope,
@@ -109,6 +111,22 @@ describe('skill scopes and richer reminder storage', () => {
       2,
     );
     putSkillGrant(a, { skillId: 'send-reminder', roleIds: [], userIds: [] }, 2);
+    recordSkillActivity(a, {
+      id: 'act-old-create',
+      at: 2,
+      behaviourId: 'b1',
+      skillId: 'create-reminder',
+      actorId: U,
+      outcome: 'completed',
+    });
+    recordSkillActivity(a, {
+      id: 'act-old-send',
+      at: 3,
+      behaviourId: 'b2',
+      skillId: 'send-reminder',
+      actorId: U,
+      outcome: 'completed',
+    });
     const sql = readFileSync(
       fileURLToPath(
         new URL('../../../../drizzle/0049_skill_scopes_and_reminder_fields.sql', import.meta.url),
@@ -130,6 +148,10 @@ describe('skill scopes and richer reminder storage', () => {
     expect(byId.get('b3')).toEqual(['search-club']);
     expect(listSkillGrants(a)).toEqual([
       { skillId: 'reminders', roleIds: ['555555555555555555'], userIds: [] },
+    ]);
+    expect(listSkillActivity(a, 10).map((entry) => entry.skillId).sort()).toEqual([
+      'reminders',
+      'reminders',
     ]);
     t.close();
   });
