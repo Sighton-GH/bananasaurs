@@ -51,6 +51,11 @@ export interface AssistantInvocation {
    * text by the service — never to the system instruction.
    */
   readonly quoteEnvelope?: string | undefined;
+  /**
+   * True when the replayed conversation history includes a quote turn, so the
+   * self-only-with-a-quote rule holds for the whole conversation.
+   */
+  readonly quoteInHistory?: boolean | undefined;
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
 }

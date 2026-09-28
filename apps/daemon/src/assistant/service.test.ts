@@ -2473,7 +2473,7 @@ describe('B2b: acting tool ports are wired', () => {
         text: 'Bring batteries',
         creatorId: OWNER,
         destinationId: CHANNEL,
-        dedupeKey: expect.stringContaining('reminder:int-ports-1:'),
+        dedupeKey: expect.stringContaining('reminder_int-ports-1_'),
       },
     ]);
     expect(
@@ -2512,6 +2512,48 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(result.ok).toBe(true);
     // The quote guard refused before target resolution, so nothing resolved or stored.
+    expect(seen).toHaveLength(0);
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toHaveLength(0);
+    expect(
+      assistantRepo
+        .listSkillActivity(h.t.scopes.forGuild(GUILD), 10)
+        .find((a) => a.skillId === 'reminders'),
+    ).toMatchObject({ outcome: 'denied', actorId: OWNER });
+  });
+
+  it('a continued turn whose history holds a quote still refuses role pings', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const provider = h.scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [
+          { name: 'set_reminder', args: { text: 'Bring batteries', when, roles: ['everyone'] } },
+        ],
+      },
+      { text: 'Noted.', model: 'model-a' },
+    ]);
+    const seen: unknown[] = [];
+    const service = h.serviceWith(provider, targetsOk(seen));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'ok, go ahead' },
+      source: 'slash-command',
+      invocationId: 'int-ports-quote-followup-1',
+      history: [
+        {
+          role: 'user',
+          text: '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+        },
+      ],
+      quoteInHistory: true,
+    });
+    expect(result.ok).toBe(true);
     expect(seen).toHaveLength(0);
     expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toHaveLength(0);
     expect(
@@ -2734,7 +2776,7 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(stored.ok).toBe(true);
     const reminderId = assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))[0]?.id;
-    expect(reminderId).toMatch(/^rem:int-iso-a:[0-9a-f]{64}$/);
+    expect(reminderId).toMatch(/^rem_int-iso-a_[0-9a-f]{64}$/);
     // From guild B the same id is unknown: get (via edit), listForCreator
     // and listAll (via my_reminders) see nothing, and update and cancel fail.
     const toolTexts: (readonly string[])[] = [];

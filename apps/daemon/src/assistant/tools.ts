@@ -316,7 +316,7 @@ const contentHash = (content: unknown): string =>
     .update(JSON.stringify(canonicalize(content)))
     .digest('hex');
 const contentKey = (prefix: string, invocationKey: string, content: unknown): string =>
-  `${prefix}:${invocationKey}:${contentHash(content)}`;
+  `${prefix}_${invocationKey}_${contentHash(content)}`;
 /** Stored reminder context: trimmed, whitespace collapsed, absent when empty. */
 const normaliseContext = (context: string | undefined): string | undefined => {
   if (context === undefined) return undefined;
@@ -352,6 +352,54 @@ const wallMsSinceMidnight = (at: number, timeZone: string): number => {
   );
 };
 
+/**
+ * Next local midnight after `at` by local date, via the same iterative
+ * `utcForLocal` technique as `packages/core/src/assistant/recurrence.ts`: the
+ * 24-hour arithmetic fails on a 25-hour fall-back day.
+ */
+const endOfMidnightDay = (at: number, timeZone: string): number => {
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const num = (type: string): number => Number(ymd.find((part) => part.type === type)?.value ?? 0);
+  const next = new Date(Date.UTC(num('year'), num('month') - 1, num('day')) + 86_400_000);
+  const year = next.getUTCFullYear();
+  const month = next.getUTCMonth() + 1;
+  const day = next.getUTCDate();
+  const localParts = (guess: number): Record<string, string> =>
+    Object.fromEntries(
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+        .formatToParts(guess)
+        .filter((part) => part.type !== 'literal')
+        .map((part) => [part.type, part.value]),
+    ) as Record<string, string>;
+  let guess = Date.UTC(year, month - 1, day, 0, 0);
+  const target = guess;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const observed = localParts(guess);
+    const asUtc = Date.UTC(
+      Number(observed.year),
+      Number(observed.month) - 1,
+      Number(observed.day),
+      Number(observed.hour),
+      Number(observed.minute),
+    );
+    guess = target - (asUtc - guess);
+  }
+  return guess - 1;
+};
+
 const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
   let pattern: unknown;
   if (repeat.kind === 'daily') pattern = { kind: 'daily' };
@@ -376,9 +424,7 @@ const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
     // would drop the Dec 31 occurrence while the summary reads as inclusive:
     // treat exact local midnight as the end of that day (23:59:59.999 local).
     endAt =
-      wallMsSinceMidnight(parsed, timeZone) === 0
-        ? parsed + 86_400_000 - wallMsSinceMidnight(parsed + 86_400_000, timeZone) - 1
-        : parsed;
+      wallMsSinceMidnight(parsed, timeZone) === 0 ? endOfMidnightDay(parsed, timeZone) : parsed;
   }
   return {
     pattern,
@@ -635,6 +681,8 @@ export const runAssistantTool = async (
             if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
             recurrence = built.recurrence;
           }
+          if (recurrence?.endAt !== undefined && recurrence.endAt < dueAt)
+            return refused(name, `The repeat can't end before the reminder starts.`);
           const normalisedContext = normaliseContext(args.context);
           const draft = validateReminderDraft(
             {
@@ -750,6 +798,14 @@ export const runAssistantTool = async (
             if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
             recurrence = built.recurrence;
           }
+          const effectiveDueAt = dueAt ?? stored.dueAt;
+          const effectiveRecurrence =
+            recurrence === undefined ? stored.recurrence : (recurrence ?? undefined);
+          if (
+            effectiveRecurrence?.endAt !== undefined &&
+            effectiveRecurrence.endAt < effectiveDueAt
+          )
+            return refused(name, `The repeat can't end before the reminder starts.`);
           const normalisedEditContext =
             args.context === undefined ? undefined : normaliseContext(args.context);
           if (args.text !== undefined || dueAt !== undefined || args.context !== undefined) {

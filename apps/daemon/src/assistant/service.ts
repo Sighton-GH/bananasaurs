@@ -614,7 +614,9 @@ export const createAssistantService = (
         // there — this grants the owner view of scopes, never writes.
         isOwner: scopeOwner,
         skillAllowed,
-        quotePresent: input.quoteEnvelope !== undefined && input.quoteEnvelope !== '',
+        quotePresent:
+          (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
+          input.quoteInHistory === true,
         invocationKey,
         currentChannelId: input.channelId,
         resolveReminderTargets: (req) =>

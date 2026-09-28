@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { clipHeading, TOOL_CATALOGUE, type ClubResource, type Reminder } from '@bananasaurs/core';
+import {
+  clipHeading,
+  redactEvidenceText,
+  TOOL_CATALOGUE,
+  type ClubResource,
+  type Reminder,
+} from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 import type { assistantRepo } from '@bananasaurs/storage';
 
@@ -426,6 +432,80 @@ describe('acting tools (B2a)', () => {
     expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'completed');
   });
 
+  it('keeps a Luhn-valid invocation key readable after evidence redaction', async () => {
+    const luhnDigit = (prefix: string): string => {
+      for (let digit = 0; digit <= 9; digit += 1) {
+        const candidate = `${prefix}${String(digit)}`;
+        let sum = 0;
+        let double = false;
+        for (let index = candidate.length - 1; index >= 0; index -= 1) {
+          let value = candidate.charCodeAt(index) - 48;
+          if (double) {
+            value *= 2;
+            if (value > 9) value -= 9;
+          }
+          sum += value;
+          double = !double;
+        }
+        if (sum % 10 === 0) return String(digit);
+      }
+      throw new Error('no Luhn digit found');
+    };
+    const invocationKey = `411111111111111111${luhnDigit('411111111111111111')}`;
+    expect(invocationKey).toMatch(/^\d{19}$/);
+    const { p, rows } = reminderPorts({ invocationKey });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    const id = [...rows.values()][0]?.id ?? '';
+    expect(id).toContain(invocationKey);
+    const redacted = redactEvidenceText(id);
+    expect(redacted.text).toBe(id);
+    expect(redacted.detectors).not.toContain('credit-card-number');
+  });
+
+  it('refuses a repeat whose end is before the reminder starts', async () => {
+    const { p, rows } = reminderPorts();
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'hi',
+          when: '2026-09-24T12:30:00-07:00',
+          repeat: { kind: 'daily', until: '2026-09-20T00:00:00-07:00' },
+        },
+      },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: `The repeat can't end before the reminder starts.`,
+    });
+    expect(rows.size).toBe(0);
+  });
+
+  it('refuses an edit whose repeat end is before the reminder starts', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
+    const result = await runAssistantTool(
+      {
+        name: 'edit_reminder',
+        args: { reminderId: 'rem1', repeat: { kind: 'daily', until: '2026-09-20T00:00:00-07:00' } },
+      },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: `The repeat can't end before the reminder starts.`,
+    });
+    expect(rows.get('rem1')?.text).toBe('old');
+  });
+
   it('refuses a when without an offset, a past time and an overlong context', async () => {
     const { p } = reminderPorts();
     await expect(
@@ -635,6 +715,52 @@ describe('acting tools (B2a)', () => {
     expect(inserted[0]?.recurrence?.endAt).toBe(Date.parse('2026-12-31T23:59:59.999-07:00'));
   });
 
+  it('ends a midnight until at 23:59:59.999 local on a fall-back day', async () => {
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
+    const p = ports({
+      timeZone: 'America/Los_Angeles',
+      reminderStore: {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'Standup',
+          when: '2026-10-30T12:00:00-07:00',
+          repeat: { kind: 'daily', until: '2026-11-01T00:00:00-07:00' },
+        },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    const endAt = inserted[0]?.recurrence?.endAt;
+    expect(endAt).toBeDefined();
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(endAt!);
+    const value = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
+    expect(`${value('year')}-${value('month')}-${value('day')}`).toBe('2026-11-01');
+    expect(`${value('hour')}:${value('minute')}:${value('second')}`).toBe('23:59:59');
+    expect(endAt! % 1000).toBe(999);
+  });
+
   it('trims and collapses the stored context, omitting it when empty', async () => {
     const inserted: Omit<Reminder, 'guildId'>[] = [];
     const store = {
@@ -802,7 +928,7 @@ describe('acting tools (B2a)', () => {
     expect(decision.actionSummary).toBe(
       '📝 Draft filed for owner review. It is not club policy until an owner saves it.',
     );
-    expect(proposed[1]?.id).toContain('decision:msg1:');
+    expect(proposed[1]?.id).toContain('decision_msg1_');
     const replay = await runAssistantTool(
       { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
       ports({

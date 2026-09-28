@@ -2121,4 +2121,20 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
       repeating(),
     );
   });
+
+  it('allows a text-only edit even when the stored repeat ends before the due time', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', {
+      dueAt: clock + 3_600_000,
+      recurrence: reminderRecurrence.parse({
+        pattern: { kind: 'daily' },
+        timeZone: 'America/Vancouver',
+        endAt: clock + 1000,
+      }),
+    });
+    const response = await patch(cookie, csrf, 'r1', { text: 'fixed text' });
+    expect(response.statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.text).toBe('fixed text');
+  });
 });

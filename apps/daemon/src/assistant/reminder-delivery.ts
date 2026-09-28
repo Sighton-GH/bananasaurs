@@ -45,8 +45,8 @@ export const reminderStoreFor = (scope: GuildScope): ReminderStore => ({
     assistantRepo.retryReminder(scope, id, reason, retryAt);
     return Promise.resolve();
   },
-  reschedule: (id, nextDueAt, reason) => {
-    assistantRepo.rescheduleReminder(scope, id, nextDueAt, reason);
+  reschedule: (id, nextDueAt, reason, options) => {
+    assistantRepo.rescheduleReminder(scope, id, nextDueAt, reason, options);
     return Promise.resolve();
   },
 });

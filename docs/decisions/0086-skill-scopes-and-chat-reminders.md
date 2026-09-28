@@ -26,9 +26,11 @@ ping anyone, and cannot repeat, be listed, edited or cancelled from chat.
    model may call: set, list, edit and cancel reminders; propose a memory;
    propose a decision. The model only proposes the call. Code validates the
    arguments with Zod, checks the scope, runs the action with a durable
-   idempotency key (`skill:<invocationId>:<tool>:<n>`, unique), logs it in
-   skill activity, and answers. A tool is declared only when the asker's
-   scope allows it, and is re-checked when it runs.
+   content-derived idempotency key (`<prefix>_<invocationKey>_<sha256 of the
+   canonical validated args>`, unique, so a model failover repeating the same
+   call reuses the same key), logs it in skill activity, and answers. A tool
+   is declared only when the asker's scope allows it, and is re-checked when
+   it runs.
 3. **Injection guard (hard rule 3, ADR 0071).** Acting tools run only in
    round 1, on the asker's own authority; when the message quotes another
    message, reminders cannot ping roles, @everyone or @here (enforced in
