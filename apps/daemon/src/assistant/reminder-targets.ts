@@ -9,6 +9,8 @@ export interface ReminderTargetGuild {
         readonly id: string;
         readonly name: string;
         readonly type: ChannelType;
+        /** The parent channel of a thread or forum post; null otherwise. */
+        readonly parentId: string | null;
         isTextBased(): boolean;
         isThread(): boolean;
       }
@@ -101,7 +103,17 @@ export const resolveReminderTargets = async (
     if (guild === undefined || guild.members.me === null) return failure(UNAVAILABLE);
 
     const asker = await guild.members.fetch(request.askerId);
-    const requestedChannel = request.channel ?? request.currentChannelId;
+    // Asked from a thread with no channel named: post in the thread's
+    // parent channel instead of refusing.
+    const current =
+      request.channel === undefined
+        ? guild.channels.cache.get(request.currentChannelId)
+        : undefined;
+    const requestedChannel =
+      request.channel ??
+      (current !== undefined && current.isThread() && current.parentId !== null
+        ? current.parentId
+        : request.currentChannelId);
     const channelId =
       mentionId(requestedChannel, /^<#(\d{17,20})>$/) ??
       (ID_PATTERN.test(requestedChannel) ? requestedChannel : undefined);

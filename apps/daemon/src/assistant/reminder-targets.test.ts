@@ -12,11 +12,17 @@ const all = permission.ViewChannel | permission.SendMessages | permission.Mentio
 const channel = (
   id: string,
   name: string,
-  { text = true, thread = false, type = ChannelType.GuildText } = {},
+  {
+    text = true,
+    thread = false,
+    type = ChannelType.GuildText,
+    parentId = null as string | null,
+  } = {},
 ) => ({
   id,
   name,
   type,
+  parentId,
   isTextBased: () => text,
   isThread: () => thread,
 });
@@ -124,6 +130,24 @@ describe('resolveReminderTargets', () => {
   it('defaults to currentChannelId', async () => {
     const targets = ok(await resolveReminderTargets(makeGuild(), request()));
     expect(targets.channelId).toBe('10000000000000001');
+  });
+
+  it('falls back to the parent channel when asked from a thread', async () => {
+    const guild = makeGuild({
+      channels: [
+        channel('10000000000000001', 'general'),
+        channel('10000000000000003', 'thread', {
+          thread: true,
+          type: ChannelType.GuildPublicThread,
+          parentId: '10000000000000001',
+        }),
+      ],
+    });
+    const targets = ok(
+      await resolveReminderTargets(guild, request({ currentChannelId: '10000000000000003' })),
+    );
+    expect(targets.channelId).toBe('10000000000000001');
+    expect(targets.channelName).toBe('general');
   });
 
   it('resolves channel names case-insensitively and reports missing or ambiguous channels', async () => {
