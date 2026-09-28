@@ -93,7 +93,13 @@ describe('reminderSummary', () => {
   });
 
   it('omits Where and Pings on an update that left the targets alone', () => {
-    const { channelName: _channel, memberNames: _members, roleNames: _roles, ...rest } = base;
+    const rest = {
+      text: base.text,
+      dueAt: base.dueAt,
+      timeZone: base.timeZone,
+      everyone: base.everyone,
+      here: base.here,
+    };
     const text = reminderSummary('updated', rest);
     expect(text).not.toContain('• Where:');
     expect(text).not.toContain('• Pings:');
