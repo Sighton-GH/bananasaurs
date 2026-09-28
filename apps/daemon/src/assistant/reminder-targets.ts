@@ -1,11 +1,19 @@
-import { PermissionsBitField } from 'discord.js';
+import { ChannelType, PermissionsBitField } from 'discord.js';
 
 /** The slice of a discord.js Guild this module needs. */
 export interface ReminderTargetGuild {
   readonly channels: {
     readonly cache: ReadonlyMap<
       string,
-      { readonly id: string; readonly name: string; isTextBased(): boolean; isThread(): boolean }
+      {
+        readonly id: string;
+        readonly name: string;
+        readonly type: ChannelType;
+        /** The parent channel of a thread or forum post; null otherwise. */
+        readonly parentId: string | null;
+        isTextBased(): boolean;
+        isThread(): boolean;
+      }
     >;
   };
   readonly roles: {
@@ -62,6 +70,18 @@ export type ReminderTargetResult =
 
 const UNAVAILABLE = "I can't check permissions right now, so I didn't set the reminder.";
 const ID_PATTERN = /^\d{17,20}$/;
+/**
+ * Only text and announcement channels can host a reminder. discord.js
+ * `isTextBased()` is also true for voice and stage channels (they carry a
+ * `messages` manager), so the channel type decides.
+ */
+const isPostableChannel = (candidate: {
+  readonly type: ChannelType;
+  isTextBased(): boolean;
+  isThread(): boolean;
+}): boolean =>
+  (candidate.type === ChannelType.GuildText || candidate.type === ChannelType.GuildAnnouncement) &&
+  !candidate.isThread();
 const mentionId = (value: string, pattern: RegExp): string | undefined => pattern.exec(value)?.[1];
 const failure = (problem: string): ReminderTargetResult => ({ ok: false, problem });
 
@@ -83,7 +103,17 @@ export const resolveReminderTargets = async (
     if (guild === undefined || guild.members.me === null) return failure(UNAVAILABLE);
 
     const asker = await guild.members.fetch(request.askerId);
-    const requestedChannel = request.channel ?? request.currentChannelId;
+    // Asked from a thread with no channel named: post in the thread's
+    // parent channel instead of refusing.
+    const current =
+      request.channel === undefined
+        ? guild.channels.cache.get(request.currentChannelId)
+        : undefined;
+    const requestedChannel =
+      request.channel ??
+      (current !== undefined && current.isThread() && current.parentId !== null
+        ? current.parentId
+        : request.currentChannelId);
     const channelId =
       mentionId(requestedChannel, /^<#(\d{17,20})>$/) ??
       (ID_PATTERN.test(requestedChannel) ? requestedChannel : undefined);
@@ -95,13 +125,9 @@ export const resolveReminderTargets = async (
     const visibleChannels = matchingChannels.filter((candidate) =>
       asker.permissionsIn(candidate).has(PermissionsBitField.Flags.ViewChannel),
     );
-    const usableChannels = visibleChannels.filter(
-      (candidate) => candidate.isTextBased() && !candidate.isThread(),
-    );
+    const usableChannels = visibleChannels.filter((candidate) => isPostableChannel(candidate));
     if (usableChannels.length === 0) {
-      const visibleNonText = visibleChannels.find(
-        (candidate) => !candidate.isTextBased() || candidate.isThread(),
-      );
+      const visibleNonText = visibleChannels.find((candidate) => !isPostableChannel(candidate));
       if (visibleNonText !== undefined) {
         return failure(`I can't post reminders in #${visibleNonText.name}.`);
       }
@@ -228,6 +254,12 @@ export const resolveReminderTargets = async (
         return failure(
           `Pinging ${target} needs the Mention Everyone permission in #${channel.name}.`,
         );
+      }
+      // Discord silently drops the ping when the bot itself lacks Mention
+      // Everyone, so refuse rather than promise one. The bot's permission
+      // arrives through the same adapter as the asker's.
+      if (!bot.permissionsIn(channel).has(PermissionsBitField.Flags.MentionEveryone)) {
+        return failure(`I don't have permission to ping everyone in #${channel.name}.`);
       }
     }
 

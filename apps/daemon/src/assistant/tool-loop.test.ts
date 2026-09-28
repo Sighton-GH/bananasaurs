@@ -1054,4 +1054,38 @@ describe('B2b: runToolLoop action summaries', () => {
     expect(result.toolCalls).toMatchObject([{ name: 'set_reminder', ok: false }]);
     expect(result.actionSummaries).toEqual([]);
   });
+
+  it('a failover replay of the identical set_reminder stores one row and lists one summary', async () => {
+    const failing = scripted([
+      toolAnswer([{ name: 'set_reminder', args: { text: 'Standup' } }]),
+      new ProviderError('outage', 'HTTP 503', true),
+    ]);
+    const next = scripted([
+      toolAnswer([{ name: 'set_reminder', args: { text: 'Standup' } }]),
+      textAnswer('Done.'),
+    ]);
+    const seen = new Set<string>();
+    let inserts = 0;
+    const summary = '✅ Reminder set: **Standup**';
+    const run = async (call: ToolCall): Promise<AssistantToolResult> => {
+      const key = JSON.stringify(call.args ?? {});
+      if (seen.has(key))
+        return { name: call.name, ok: true, text: summary, sources: [], actionSummary: summary };
+      seen.add(key);
+      inserts += 1;
+      return { name: call.name, ok: true, text: summary, sources: [], actionSummary: summary };
+    };
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: failing.provider, model: 'model-a' }),
+          entry({ provider: next.provider, model: 'model-b' }),
+        ],
+        { tools: loopTools(run) },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(inserts).toBe(1);
+    expect(result.actionSummaries).toEqual([summary]);
+  });
 });

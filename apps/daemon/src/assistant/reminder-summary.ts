@@ -82,6 +82,15 @@ const formatPings = (input: {
 };
 
 /**
+ * Neutralises `@everyone`/`@here` (any case) by inserting U+200B after `@`,
+ * so the text can never ping even when `parse: ['everyone']` is set for a
+ * stored `@here`. Shared with reminder delivery: only the code-built pings
+ * line may carry live ping tokens.
+ */
+export const neutraliseMassMentions = (value: string): string =>
+  value.replace(/@(?=everyone|here)/gi, '@\u200b');
+
+/**
  * Makes free text safe to interpolate into a summary line, which the reply
  * posts verbatim: collapses every whitespace run (no smuggled newlines),
  * escapes Discord markdown, and neutralises mass mentions and mention
@@ -90,13 +99,13 @@ const formatPings = (input: {
  * come from boolean flags, never from interpolated text.
  */
 export const summaryField = (value: string): string =>
-  value
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\\/g, '\\\\')
-    .replace(/([*_~`|>])/g, '\\$1')
-    .replace(/@(?=everyone|here)/gi, '@\u200b')
-    .replace(/<(?=[@#/])/g, '<\u200b');
+  neutraliseMassMentions(
+    value
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\\/g, '\\\\')
+      .replace(/([*_~`|>])/g, '\\$1'),
+  ).replace(/<(?=[@#/])/g, '<\u200b');
 
 /**
  * The code-written confirmation after a reminder is set, changed or
@@ -113,20 +122,28 @@ export const reminderSummary = (
       : `${formatWhen(input.dueAt, input.timeZone)}, repeats ${describeRecurrence(input.recurrence)}`;
   if (action === 'cancelled')
     return `🗑️ Reminder cancelled: **${summaryField(input.text)}** (${when})`;
+  // Truncate the raw value before escaping: slicing after escaping can
+  // leave a trailing `\` that escapes the closing `**` and breaks the bold.
   const head =
     action === 'set'
-      ? `✅ Reminder set: **${summaryField(input.text).slice(0, 200)}**`
-      : `✏️ Reminder updated: **${summaryField(input.text).slice(0, 200)}**`;
+      ? `✅ Reminder set: **${summaryField(input.text.slice(0, 200))}**`
+      : `✏️ Reminder updated: **${summaryField(input.text.slice(0, 200))}**`;
+  // An edit that left the targets alone omits Where and Pings: the caller
+  // passes no channel name then, and raw ids must never print.
   const lines = [
     head,
     `• When: ${when}`,
-    `• Where: #${summaryField(input.channelName ?? '')}`,
-    `• Pings: ${formatPings({
-      memberNames: input.memberNames ?? [],
-      roleNames: input.roleNames ?? [],
-      everyone: input.everyone ?? false,
-      here: input.here ?? false,
-    })}`,
+    ...(action === 'updated' && input.channelName === undefined
+      ? []
+      : [
+          `• Where: #${summaryField(input.channelName ?? '')}`,
+          `• Pings: ${formatPings({
+            memberNames: input.memberNames ?? [],
+            roleNames: input.roleNames ?? [],
+            everyone: input.everyone ?? false,
+            here: input.here ?? false,
+          })}`,
+        ]),
   ];
   const why = input.context === undefined ? '' : summaryField(input.context);
   if (why.length > 0) lines.push(`• Why: ${why}`);

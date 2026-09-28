@@ -165,6 +165,12 @@ describe('skill scopes and richer reminder storage', () => {
     rescheduleReminder(a, 'moved', 2000);
     expect(getReminder(a, 'moved')?.dueAt).toBe(2000);
     expect(getReminder(a, 'moved')?.deliveredCount).toBe(1);
+    expect(getReminder(a, 'moved')?.failureReason).toBeUndefined();
+    insertReminder(a, reminder(A, 'failed-move'));
+    claimDueReminders(a, 1000, 25, 300);
+    rescheduleReminder(a, 'failed-move', 3000, 'Missing Access');
+    expect(getReminder(a, 'failed-move')?.dueAt).toBe(3000);
+    expect(getReminder(a, 'failed-move')?.failureReason).toBe('Missing Access');
     t.close();
   });
 

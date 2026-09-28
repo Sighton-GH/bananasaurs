@@ -1,4 +1,4 @@
-import { PermissionsBitField } from 'discord.js';
+import { ChannelType, PermissionsBitField } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   resolveReminderTargets,
@@ -9,9 +9,20 @@ import {
 
 const permission = PermissionsBitField.Flags;
 const all = permission.ViewChannel | permission.SendMessages | permission.MentionEveryone;
-const channel = (id: string, name: string, { text = true, thread = false } = {}) => ({
+const channel = (
+  id: string,
+  name: string,
+  {
+    text = true,
+    thread = false,
+    type = ChannelType.GuildText,
+    parentId = null as string | null,
+  } = {},
+) => ({
   id,
   name,
+  type,
+  parentId,
   isTextBased: () => text,
   isThread: () => thread,
 });
@@ -121,6 +132,24 @@ describe('resolveReminderTargets', () => {
     expect(targets.channelId).toBe('10000000000000001');
   });
 
+  it('falls back to the parent channel when asked from a thread', async () => {
+    const guild = makeGuild({
+      channels: [
+        channel('10000000000000001', 'general'),
+        channel('10000000000000003', 'thread', {
+          thread: true,
+          type: ChannelType.GuildPublicThread,
+          parentId: '10000000000000001',
+        }),
+      ],
+    });
+    const targets = ok(
+      await resolveReminderTargets(guild, request({ currentChannelId: '10000000000000003' })),
+    );
+    expect(targets.channelId).toBe('10000000000000001');
+    expect(targets.channelName).toBe('general');
+  });
+
   it('resolves channel names case-insensitively and reports missing or ambiguous channels', async () => {
     const guild = makeGuild({
       channels: [
@@ -169,18 +198,24 @@ describe('resolveReminderTargets', () => {
   });
 
   it('filters channel types before deciding name matches', async () => {
+    // A real discord.js voice channel reports `isTextBased() === true`
+    // (it carries a `messages` manager); only the type excludes it.
     const guild = makeGuild({
       channels: [
-        channel('10000000000000002', 'general', { text: false }),
+        channel('10000000000000002', 'General', { text: true, type: ChannelType.GuildVoice }),
         channel('10000000000000001', 'general'),
       ],
     });
-    expect(ok(await resolveReminderTargets(guild, request({ channel: 'general' }))).channelId).toBe(
-      '10000000000000001',
-    );
+    expect(
+      ok(await resolveReminderTargets(guild, request({ channel: '#general' }))).channelId,
+    ).toBe('10000000000000001');
     await expect(
       resolveReminderTargets(
-        makeGuild({ channels: [channel('10000000000000002', 'voice', { text: false })] }),
+        makeGuild({
+          channels: [
+            channel('10000000000000002', 'voice', { text: true, type: ChannelType.GuildVoice }),
+          ],
+        }),
         request({ channel: 'voice' }),
       ),
     ).resolves.toEqual({ ok: false, problem: "I can't post reminders in #voice." });
@@ -323,6 +358,24 @@ describe('resolveReminderTargets', () => {
       roles: [{ id: '40000000000000001', name: 'Execs', mentionable: false }],
     });
     expect((await resolveReminderTargets(permitted, request({ roles: ['Execs'] }))).ok).toBe(true);
+  });
+
+  it('refuses @everyone when the bot lacks Mention Everyone', async () => {
+    const guild = makeGuild({
+      me: member(
+        '50000000000000001',
+        'Bot',
+        'Bot',
+        permission.ViewChannel | permission.SendMessages,
+      ),
+    });
+    await expect(resolveReminderTargets(guild, request({ roles: ['everyone'] }))).resolves.toEqual({
+      ok: false,
+      problem: "I don't have permission to ping everyone in #general.",
+    });
+    expect((await resolveReminderTargets(makeGuild(), request({ roles: ['everyone'] }))).ok).toBe(
+      true,
+    );
   });
 
   it.each([

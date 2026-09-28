@@ -2467,13 +2467,13 @@ describe('B2b: acting tool ports are wired', () => {
         currentChannelId: CHANNEL,
       },
     ]);
-    // The store closure added the guild scope; the key derives from the invocation.
+    // The store closure added the guild scope; the key derives from the invocation and content.
     expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toMatchObject([
       {
         text: 'Bring batteries',
         creatorId: OWNER,
         destinationId: CHANNEL,
-        dedupeKey: 'reminder:int-ports-1:0',
+        dedupeKey: expect.stringContaining('reminder:int-ports-1:'),
       },
     ]);
     expect(
@@ -2481,6 +2481,43 @@ describe('B2b: acting tool ports are wired', () => {
         .listSkillActivity(h.t.scopes.forGuild(GUILD), 10)
         .find((a) => a.skillId === 'reminders'),
     ).toMatchObject({ outcome: 'completed', actorId: OWNER });
+  });
+
+  it('a loop failure after an action still posts the confirmation', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    let calls = 0;
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+          };
+        throw new ProviderError('outage', 'HTTP 503', true);
+      },
+    };
+    const seen: unknown[] = [];
+    const service = h.serviceWith(failing, targetsOk(seen));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-ports-fail-1',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.content).toContain('Reminder set');
+    expect(result.ok === true && result.content).toContain("couldn't finish the rest");
+    expect(result.detail?.actions).toHaveLength(1);
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toHaveLength(1);
   });
 
   it('propose_memory through chat files a draft via the wired port', async () => {
@@ -2659,7 +2696,7 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(stored.ok).toBe(true);
     const reminderId = assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))[0]?.id;
-    expect(reminderId).toMatch(/^rem_int-iso-a_0$/);
+    expect(reminderId).toMatch(/^rem:int-iso-a:[0-9a-f]{64}$/);
     // From guild B the same id is unknown: get (via edit), listForCreator
     // and listAll (via my_reminders) see nothing, and update and cancel fail.
     const toolTexts: (readonly string[])[] = [];

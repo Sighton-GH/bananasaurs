@@ -8,6 +8,7 @@ import {
   type ReminderStore,
 } from '@bananasaurs/core';
 import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
+import { neutraliseMassMentions } from './reminder-summary.js';
 
 /**
  * The composition half of reminder delivery (Release 3,
@@ -44,8 +45,8 @@ export const reminderStoreFor = (scope: GuildScope): ReminderStore => ({
     assistantRepo.retryReminder(scope, id, reason, retryAt);
     return Promise.resolve();
   },
-  reschedule: (id, nextDueAt) => {
-    assistantRepo.rescheduleReminder(scope, id, nextDueAt);
+  reschedule: (id, nextDueAt, reason) => {
+    assistantRepo.rescheduleReminder(scope, id, nextDueAt, reason);
     return Promise.resolve();
   },
 });
@@ -82,9 +83,9 @@ export const classifyReminderSendError = (error: unknown): ReminderDeliveryError
  * The pings line lists exactly the stored, permission-checked targets (ADR
  * 0086 decision 6): `@everyone`, `@here`, `<@&role>` per stored role and
  * `<@user>` per stored member, in that order — omitted when there are no
- * pings. `allowedMentions` lists exactly those stored ids, so text typed
- * into the reminder can never ping: `@everyone` in the text stays plain
- * text unless `everyone` (or `here`) was stored. The "Set by" line names
+ * pings. `allowedMentions` lists exactly those stored ids, and the rendered
+ * text and context neutralise `@everyone`/`@here`, so text typed into the
+ * reminder can never ping. The "Set by" line names
  * the creator without pinging them — their id reaches `users` only when it
  * is already in `mentions.userIds`.
  */
@@ -97,7 +98,18 @@ export const renderReminder = (
   for (const roleId of reminder.mentions.roleIds) pings.push(`<@&${roleId}>`);
   for (const userId of reminder.mentions.userIds) pings.push(`<@${userId}>`);
   const pingsLine = pings.join(' ');
-  const contextLine = reminder.context === undefined ? undefined : `-# ${reminder.context}`;
+  // Only the code-built pings line may carry live ping tokens: neutralise
+  // `@everyone`/`@here` (any case) in the member-written text and context,
+  // and collapse the context to one subtext line so it cannot break out of
+  // `-# `.
+  const safeText = neutraliseMassMentions(reminder.text);
+  const collapsedContext =
+    reminder.context === undefined ? undefined : reminder.context.replace(/\s+/g, ' ').trim();
+  const safeContext =
+    collapsedContext === undefined || collapsedContext === ''
+      ? undefined
+      : neutraliseMassMentions(collapsedContext);
+  const contextLine = safeContext === undefined ? undefined : `-# ${safeContext}`;
   const setByLine = `-# Set by <@${reminder.creatorId}>`;
   // Everything except the reminder text itself. The 2,000-character cap
   // truncates the text, never the pings.
@@ -107,7 +119,7 @@ export const renderReminder = (
     1 +
     (contextLine === undefined ? 0 : contextLine.length + 1) +
     setByLine.length;
-  const text = reminder.text.slice(0, Math.max(0, 2_000 - fixedLength));
+  const text = safeText.slice(0, Math.max(0, 2_000 - fixedLength));
   const lines = [
     ...(pingsLine === '' ? [] : [pingsLine]),
     `⏰ ${text}`,

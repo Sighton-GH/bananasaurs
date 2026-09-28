@@ -325,8 +325,15 @@ describe('runAssistantTool', () => {
       },
     });
     const result = await runAssistantTool({ name: 'my_reminders', args: {} }, p);
-    expect(result).toMatchObject({ ok: false, text: 'The tool failed: db down' });
-    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'db down');
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Something went wrong saving that. Nothing was changed.',
+    });
+    expect(p.recordSkillActivity).toHaveBeenCalledWith(
+      'reminders',
+      'failed',
+      'Something went wrong saving that. Nothing was changed.',
+    );
   });
 
   it('gives the server card and the channels the member can view', async () => {
@@ -523,51 +530,46 @@ describe('acting tools (B2a)', () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it('is idempotent on the same invocation and unique across two calls', async () => {
+  it('is idempotent on identical content and unique across different calls', async () => {
     const inserted: Omit<Reminder, 'guildId'>[] = [];
-    const p = ports({
-      reminderStore: {
-        insert: (reminder: Omit<Reminder, 'guildId'>) => {
-          if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
-          inserted.push(reminder);
-          return 'created';
-        },
-        get: () => undefined,
-        update: () => 'not-found' as const,
-        cancel: () => false,
-        listForCreator: () => [],
-        listAll: () => [],
+    const storeFor = () => ({
+      insert: (reminder: Omit<Reminder, 'guildId'>) => {
+        if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate' as const;
+        inserted.push(reminder);
+        return 'created' as const;
       },
+      get: (id: string) => inserted.find((r) => r.id === id) as StoredReminder | undefined,
+      update: () => 'not-found' as const,
+      cancel: () => false,
+      listForCreator: () => [],
+      listAll: () => [],
     });
+    const p = ports({ reminderStore: storeFor() });
     const args = { text: 'hi', when: '2026-09-24T12:30:00-07:00' };
     const first = await runAssistantTool({ name: 'set_reminder', args }, p);
     expect(first.ok).toBe(true);
     expect(inserted).toHaveLength(1);
-    // A replay with a fresh ports object but the same key hits the dedupe key.
-    const replay = ports({
-      invocationKey: 'msg1',
-      reminderStore: {
-        insert: (reminder: Omit<Reminder, 'guildId'>) => {
-          if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
-          inserted.push(reminder);
-          return 'created';
-        },
-        get: () => undefined,
-        update: () => 'not-found' as const,
-        cancel: () => false,
-        listForCreator: () => [],
-        listAll: () => [],
-      },
-    });
+    // A replay with a fresh ports object but the same key hits the dedupe key
+    // and returns the same success summary built from the stored row.
+    const replay = ports({ invocationKey: 'msg1', reminderStore: storeFor() });
     const second = await runAssistantTool({ name: 'set_reminder', args }, replay);
-    expect(second.text).toBe('That reminder is already set.');
-    expect(second.actionSummary).toBeUndefined();
+    expect(second.ok).toBe(true);
+    expect(second.actionSummary).toBe(first.actionSummary);
+    expect(second.text).toBe(first.text);
     expect(inserted).toHaveLength(1);
-    // Two calls in one invocation get different ids.
-    const third = await runAssistantTool({ name: 'set_reminder', args }, p);
+    // Two identical calls on the same ports object also dedupe to one row.
+    const samePorts = await runAssistantTool({ name: 'set_reminder', args }, p);
+    expect(samePorts.actionSummary).toBe(first.actionSummary);
+    expect(inserted).toHaveLength(1);
+    // Different content gets a different key and a second row.
+    const third = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'bye', when: '2026-09-24T12:30:00-07:00' } },
+      p,
+    );
     expect(third.ok).toBe(true);
     expect(inserted).toHaveLength(2);
     expect(inserted[0]?.id).not.toBe(inserted[1]?.id);
+    expect(inserted[0]?.dedupeKey).not.toBe(inserted[1]?.dedupeKey);
   });
 
   it('builds a weekly recurrence from days', async () => {
@@ -601,6 +603,70 @@ describe('acting tools (B2a)', () => {
     expect(result.actionSummary).toContain('every Tuesday and Thursday');
   });
 
+  it('treats a midnight until as the end of that day', async () => {
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
+    const p = ports({
+      reminderStore: {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'Standup',
+          when: '2026-09-24T12:30:00-07:00',
+          repeat: { kind: 'daily', until: '2026-12-31T00:00:00-07:00' },
+        },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    // Dec 31 itself is included: the end is 23:59:59.999 local, past its noon.
+    expect(inserted[0]?.recurrence?.endAt).toBe(Date.parse('2026-12-31T23:59:59.999-07:00'));
+  });
+
+  it('trims and collapses the stored context, omitting it when empty', async () => {
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
+    const store = {
+      insert: (reminder: Omit<Reminder, 'guildId'>) => {
+        inserted.push(reminder);
+        return 'created' as const;
+      },
+      get: () => undefined,
+      update: () => 'not-found' as const,
+      cancel: () => false,
+      listForCreator: () => [],
+      listAll: () => [],
+    };
+    const messy = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'hi', when: '2026-09-24T12:30:00-07:00', context: '  why\n\n it\tmatters  ' },
+      },
+      ports({ reminderStore: store }),
+    );
+    expect(messy.ok).toBe(true);
+    expect(inserted[0]?.context).toBe('why it matters');
+    const blank = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'hi', when: '2026-09-25T12:30:00-07:00', context: '   ' },
+      },
+      ports({ reminderStore: store }),
+    );
+    expect(blank.ok).toBe(true);
+    expect(inserted[1]?.context).toBeUndefined();
+  });
+
   it('refuses an edit by a non-creator and allows the owner', async () => {
     const { p, rows } = reminderPorts();
     rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
@@ -628,6 +694,20 @@ describe('acting tools (B2a)', () => {
     await expect(
       runAssistantTool({ name: 'edit_reminder', args: { reminderId: 'missing', text: 'x' } }, p),
     ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
+  });
+
+  it('omits Where and Pings from an edit summary when the targets did not change', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
+    const result = await runAssistantTool(
+      { name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.actionSummary).toContain('✏️ Reminder updated: **new**');
+    expect(result.actionSummary).not.toContain('• Where:');
+    expect(result.actionSummary).not.toContain('• Pings:');
+    expect(result.actionSummary).not.toContain('111111111111111111');
   });
 
   it('stops repeating and maps not-editable', async () => {
@@ -721,7 +801,7 @@ describe('acting tools (B2a)', () => {
     expect(decision.actionSummary).toBe(
       '📝 Draft filed for owner review. It is not club policy until an owner saves it.',
     );
-    expect(proposed[1]?.id).toContain('decision-msg1-');
+    expect(proposed[1]?.id).toContain('decision:msg1:');
     const replay = await runAssistantTool(
       { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
       ports({
@@ -751,7 +831,12 @@ describe('acting tools (B2a)', () => {
       p,
     );
     expect(result.ok).toBe(false);
-    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'discord down');
+    expect(result.text).toBe('Something went wrong saving that. Nothing was changed.');
+    expect(p.recordSkillActivity).toHaveBeenCalledWith(
+      'reminders',
+      'failed',
+      'Something went wrong saving that. Nothing was changed.',
+    );
   });
 });
 

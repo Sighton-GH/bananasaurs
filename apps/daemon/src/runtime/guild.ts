@@ -782,7 +782,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
                       {
                         id: channel.id,
                         name: channel.name,
-                        isTextBased: () => channel.isTextBased(),
+                        type: channel.type,
+                        parentId:
+                          'parentId' in channel
+                            ? ((channel.parentId ?? null) as string | null)
+                            : null,
+                        // discord.js `isTextBased()` is true for voice and
+                        // stage channels too; only text and announcement
+                        // channels can host a reminder.
+                        isTextBased: () =>
+                          channel.type === ChannelType.GuildText ||
+                          channel.type === ChannelType.GuildAnnouncement,
                         isThread: () => channel.isThread(),
                       },
                     ] as const,
