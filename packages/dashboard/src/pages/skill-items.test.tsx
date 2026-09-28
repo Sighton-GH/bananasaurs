@@ -130,6 +130,28 @@ describe('SkillItemsCard', () => {
     expect(reload).toHaveBeenCalled();
   });
 
+  it('a text-only edit never sends dueAt when the stored time has seconds', async () => {
+    const mock = stubFetch([
+      { method: 'PATCH', url: '/api/assistant/reminders/rem-1', body: { ok: true } },
+    ]);
+    const items = JSON.parse(JSON.stringify(REMINDERS));
+    items.reminders[0].dueAt = DUE_AT + 37000;
+    renderWithSession(<SkillItemsCard items={items} reload={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const dialog = screen.getByRole('heading', { name: 'Edit reminder' }).closest('section')!;
+    fireEvent.change(within(dialog).getByLabelText('Message'), {
+      target: { value: 'Standup moved' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const patch = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/assistant/reminders/rem-1' &&
+        (c[1] as RequestInit)?.method === 'PATCH',
+    )!;
+    expect(bodyOf(patch)).toEqual({ text: 'Standup moved' });
+  });
+
   it('Stop repeating PATCHes recurrence null', async () => {
     const mock = stubFetch([
       { method: 'PATCH', url: '/api/assistant/reminders/rem-1', body: { ok: true } },
