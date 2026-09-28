@@ -1,7 +1,6 @@
 import {
   assistantInvokeDedupeKey,
   JOB_KINDS,
-  resolveAssistantBehaviour,
   safeLogFields,
   type AssistantBehaviour,
   type AssistantInvokePayload,
