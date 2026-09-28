@@ -82,6 +82,15 @@ const formatPings = (input: {
 };
 
 /**
+ * Neutralises `@everyone`/`@here` (any case) by inserting U+200B after `@`,
+ * so the text can never ping even when `parse: ['everyone']` is set for a
+ * stored `@here`. Shared with reminder delivery: only the code-built pings
+ * line may carry live ping tokens.
+ */
+export const neutraliseMassMentions = (value: string): string =>
+  value.replace(/@(?=everyone|here)/gi, '@\u200b');
+
+/**
  * Makes free text safe to interpolate into a summary line, which the reply
  * posts verbatim: collapses every whitespace run (no smuggled newlines),
  * escapes Discord markdown, and neutralises mass mentions and mention
@@ -90,13 +99,13 @@ const formatPings = (input: {
  * come from boolean flags, never from interpolated text.
  */
 export const summaryField = (value: string): string =>
-  value
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\\/g, '\\\\')
-    .replace(/([*_~`|>])/g, '\\$1')
-    .replace(/@(?=everyone|here)/gi, '@\u200b')
-    .replace(/<(?=[@#/])/g, '<\u200b');
+  neutraliseMassMentions(
+    value
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\\/g, '\\\\')
+      .replace(/([*_~`|>])/g, '\\$1'),
+  ).replace(/<(?=[@#/])/g, '<\u200b');
 
 /**
  * The code-written confirmation after a reminder is set, changed or

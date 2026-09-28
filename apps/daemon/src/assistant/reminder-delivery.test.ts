@@ -86,8 +86,27 @@ describe('renderReminder', () => {
       }),
     );
     expect(rendered.allowedMentions).toEqual({ parse: [] });
-    // No pings line: the content starts with the text itself.
-    expect(rendered.content.startsWith('⏰ @everyone')).toBe(true);
+    // No pings line: the content starts with the neutralised text itself.
+    expect(rendered.content.startsWith('⏰ @\u200beveryone')).toBe(true);
+  });
+
+  it('neutralises @everyone in the text when only @here is stored', () => {
+    const rendered = renderReminder(
+      reminder({
+        text: '@everyone meeting moved',
+        mentions: { userIds: [], roleIds: [], everyone: false, here: true },
+      }),
+    );
+    expect(rendered.content.split('\n')[0]).toBe('@here');
+    expect(rendered.content).not.toContain('@everyone');
+    expect(rendered.content).toContain('@\u200beveryone');
+  });
+
+  it('collapses newlines in the context line', () => {
+    const rendered = renderReminder(reminder({ context: 'line one\nline two' }));
+    const lines = rendered.content.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toBe('-# line one line two');
   });
 
   it('adds the context line and the Set by line', () => {
