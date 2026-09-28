@@ -189,7 +189,7 @@ describe('AssistantPage', () => {
     renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
     const card = await screen.findByRole('button', { name: /Club Q and A/ });
     expect(within(card).getByText('Direct command')).toBeTruthy();
-    expect(within(card).getByText('Members use /ask')).toBeTruthy();
+    expect(within(card).getByText('Members tag @Bananasaurs')).toBeTruthy();
     expect(within(card).getByText('On')).toBeTruthy();
     const itCard = screen.getByRole('button', { name: /IT services/ });
     expect(within(itCard).getByText('Off')).toBeTruthy();
