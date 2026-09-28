@@ -24,6 +24,7 @@ import type {
 } from './reminder-targets.js';
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
+import type { CitationRegistry } from './citations.js';
 
 /**
  * The read-only tools the model may call (ADR 0067, Task 16).
@@ -40,6 +41,15 @@ export interface ArchiveHit {
   readonly createdAt: number;
   readonly excerpt: string;
 }
+
+/**
+ * What a `search_archive` read returns (ADR 0090 decision 3): either the
+ * hits, or a member-facing refusal when `from` could not be resolved to one
+ * member. The tool answers the problem text verbatim.
+ */
+export type ArchiveResult =
+  | { readonly ok: true; readonly hits: readonly ArchiveHit[] }
+  | { readonly ok: false; readonly problem: string };
 
 export interface WebResult {
   readonly title: string;
@@ -93,6 +103,8 @@ export interface ReminderPatch {
 /** Everything a tool can reach, already scoped to one guild and one asking member. */
 export interface AssistantToolPorts {
   readonly userId: string;
+  /** The guild the archive links point at (`search_archive` builds them). */
+  readonly guildId: string;
   readonly now: () => number;
   readonly timeZone: string;
   readonly isOwner: boolean;
@@ -126,7 +138,7 @@ export interface AssistantToolPorts {
     detail?: string,
   ) => void;
   /** Archive-enabled channels the member can view; the port enforces that. */
-  readonly searchArchive: (query: string) => Promise<readonly ArchiveHit[]>;
+  readonly searchArchive: (query: string, from?: string) => Promise<ArchiveResult>;
   readonly resources: () => readonly ClubResource[];
   readonly fetchResource: (url: string) => Promise<ResourceFetchResult>;
   /** Absent while web search is off (ADR 0066). */
@@ -194,7 +206,12 @@ const repeatPattern = z
   .strict()
   .optional();
 const schemas = {
-  search_archive: query,
+  search_archive: z
+    .object({
+      query: z.string().trim().min(1).max(200),
+      from: z.string().trim().min(1).max(100).optional(),
+    })
+    .strict(),
   open_resource: z.object({ resourceId: z.string().min(1).max(64) }).strict(),
   web_search: query,
   server_info: none,
@@ -480,6 +497,13 @@ const enabledById = (ports: AssistantToolPorts, resourceId: string): ClubResourc
 export const runAssistantTool = async (
   call: ToolCall,
   ports: AssistantToolPorts,
+  /**
+   * ADR 0090 decision 3: the request's citation registry, so a `from` search
+   * can tag each hit inline with the same tag the service's Sources line
+   * later resolves. Absent, the tagging is left to the service (which passes
+   * it on every production call); the hit lines then carry no tag.
+   */
+  citations?: CitationRegistry,
 ): Promise<AssistantToolResult> => {
   if (!(call.name in schemas)) return refused(call.name, 'Unknown tool.');
   const name = call.name as ToolName;
@@ -489,18 +513,43 @@ export const runAssistantTool = async (
   try {
     switch (name) {
       case 'search_archive': {
-        const { query: q } = parsed.data as z.infer<typeof query>;
-        const hits = await ports.searchArchive(q);
+        const { query: q, from } = parsed.data as { query: string; from?: string };
+        // "Did X say Y?" needs something checkable: a bare name with no
+        // query word has no tool path, like a bulk summary (ADR 0090 D3).
+        if (from !== undefined && !/[A-Za-z]{3,}/.test(q))
+          return refused(name, 'Say what you want to check they said.');
+        const result = await ports.searchArchive(q, from);
+        if (!result.ok) return refused(name, result.problem);
+        // Without `from` the lines stay as they were: no author names.
+        if (from === undefined) {
+          if (result.hits.length === 0) return evidence(name, 'No matching messages.');
+          return evidence(
+            name,
+            result.hits
+              .map(
+                (hit) =>
+                  `<#${hit.channelId}> ${new Date(hit.createdAt).toISOString().slice(0, 10)}: ${hit.excerpt}`,
+              )
+              .join('\n'),
+          );
+        }
+        const hits = result.hits.slice(0, 3);
         if (hits.length === 0) return evidence(name, 'No matching messages.');
-        return evidence(
-          name,
-          hits
-            .map(
-              (hit) =>
-                `<#${hit.channelId}> ${new Date(hit.createdAt).toISOString().slice(0, 10)}: ${hit.excerpt}`,
-            )
-            .join('\n'),
+        const sources: ToolSource[] = [];
+        const lines = hits.map((hit) => {
+          const day = new Date(hit.createdAt).toISOString().slice(0, 10);
+          const source = {
+            title: `#channel message, ${day}`,
+            url: `https://discord.com/channels/${ports.guildId}/${hit.channelId}/${hit.messageId}`,
+          };
+          sources.push(source);
+          const tag = citations?.tag(source);
+          return `${tag === undefined ? '' : `[${tag}] `}<#${hit.channelId}> ${day}: ${hit.excerpt}`;
+        });
+        lines.push(
+          "Answer only whether they said it. Cite the message tag. Do not summarise or list this member's messages.",
         );
+        return evidence(name, lines.join('\n'), sources);
       }
       case 'open_resource': {
         const { resourceId } = parsed.data as { resourceId: string };
