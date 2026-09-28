@@ -60,6 +60,10 @@ import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
+import type {
+  ReminderTargetRequest,
+  ReminderTargetResult,
+} from './reminder-targets.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -196,7 +200,21 @@ export interface AssistantDiscordPorts {
   readonly memberChannels: (
     userId: string,
   ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
+  /**
+   * B2b: resolves a reminder's channel and mentions against live Discord
+   * permissions. Optional so existing callers keep compiling; absent means
+   * the service fails closed with the permissions sentence (as does try-it,
+   * which has no channel).
+   */
+  readonly resolveReminderTargets?:
+    ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
 }
+/** B2b: the closed default — permissions cannot be checked, so no reminder. */
+const defaultResolveReminderTargets = (): Promise<ReminderTargetResult> =>
+  Promise.resolve({
+    ok: false,
+    problem: "I can't check permissions right now, so I didn't set the reminder.",
+  });
 export const createAssistantService = (
   scope: GuildScope,
   instance: InstanceScope,
@@ -205,7 +223,10 @@ export const createAssistantService = (
   testPorts: AssistantServiceTestPorts = {},
   liveConfig: () => Config = () => config,
   logger: Pick<Logger, 'warn'> = { warn: () => undefined },
-  discord: AssistantDiscordPorts = { memberChannels: () => Promise.resolve([]) },
+  discord: AssistantDiscordPorts = {
+    memberChannels: () => Promise.resolve([]),
+    resolveReminderTargets: () => defaultResolveReminderTargets(),
+  },
   /**
    * ADR 0075: the ordered, resolved model chain — built by
    * `ProviderConfigStore.chain()` at the composition root and handed down
@@ -373,6 +394,12 @@ export const createAssistantService = (
       const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) =>
         skillAllowed(candidate.id),
       );
+      // B2b: every acting tool's port, closed over this request's guild scope
+      // and asker. The invocation key is the Discord message or interaction
+      // that asked, so retried invocations reuse idempotency keys; without
+      // one (never on the Discord path) a fresh id anchors this run only.
+      const invocationKey = input.invocationId ?? randomUUID();
+      const resolveTargets = discord.resolveReminderTargets ?? defaultResolveReminderTargets;
       if (!skillAllowed(skill)) {
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),
@@ -572,6 +599,45 @@ export const createAssistantService = (
         userId: input.userId,
         now,
         timeZone: currentConfig.BANANASAURS_TIME_ZONE,
+        // Try-it counts as the owner for scopes (`config.write` authorised
+        // the caller), so it sees the owner view of the acting tools.
+        isOwner: scopeOwner,
+        skillAllowed,
+        invocationKey,
+        currentChannelId: input.channelId,
+        resolveReminderTargets: (req) =>
+          resolveTargets({
+            ...req,
+            askerId: input.userId,
+            currentChannelId: input.channelId ?? '',
+          }),
+        reminderStore: {
+          insert: (reminder) =>
+            assistantRepo.insertReminder(scope, { ...reminder, guildId: scope.guildId }),
+          get: (id) => assistantRepo.getReminder(scope, id),
+          update: (id, patch) => assistantRepo.updateReminder(scope, id, patch, now()),
+          cancel: (id) => assistantRepo.cancelReminder(scope, id),
+          listForCreator: (creatorId) =>
+            assistantRepo.listRemindersForCreator(scope, creatorId, { includeFinished: true }),
+          listAll: () => assistantRepo.listReminders(scope),
+        },
+        proposeDraft: (d) =>
+          assistantRepo.insertDecisionDraftOnce(scope, {
+            ...d,
+            requesterId: input.userId,
+            provenance: `Assistant ${d.kind} via chat; behaviour=${input.behaviour.id}`,
+            at: now(),
+          }),
+        recordSkillActivity: (skillId, outcome, detail) =>
+          assistantRepo.recordSkillActivity(scope, {
+            id: randomUUID(),
+            at: now(),
+            behaviourId: input.behaviour.id,
+            skillId,
+            actorId: input.userId,
+            outcome,
+            ...(detail === undefined ? {} : { detail }),
+          }),
         searchArchive: (query) => searchArchive(input.userId, query),
         resources: () => resources,
         fetchResource,
@@ -583,7 +649,6 @@ export const createAssistantService = (
                 braveWebSearch({ apiKey: currentConfig.BRAVE_SEARCH_API_KEY! }, query)),
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
-        reminders: () => assistantRepo.listReminders(scope),
         cacheSearch: (q) =>
           resourceCacheRepo.searchChunks(scope, {
             query: q.query,
