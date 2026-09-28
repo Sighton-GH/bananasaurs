@@ -241,6 +241,35 @@ describe('AssistantSkillPage', () => {
     expect(screen.queryByText(/This skill acts/)).toBeNull();
   });
 
+  it('renders the skill live items under the scope card', async () => {
+    renderPage({
+      ...SKILL_DETAIL,
+      items: {
+        kind: 'reminders',
+        reminders: [
+          {
+            id: 'rem-1',
+            creatorId: 'user-bryan',
+            creatorName: 'Bryan',
+            destinationId: 'chan-general',
+            destinationName: 'general',
+            text: 'Standup time',
+            dueAt: 1890000000000,
+            status: 'scheduled',
+            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+            deliveredCount: 0,
+          },
+        ],
+      },
+    });
+    const scope = await screen.findByRole('heading', { name: 'Who can use this' });
+    const items = await screen.findByRole('heading', { name: 'Reminders' });
+    expect(screen.getByText('Standup time')).toBeTruthy();
+    expect(
+      (scope.compareDocumentPosition(items) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    ).toBe(true);
+  });
+
   it('toggles a behaviour off by writing the whole behaviour object with the skill removed', async () => {
     const mock = renderPage();
     const whereOn = (await screen.findByRole('heading', { name: "Where it's on" })).closest(
