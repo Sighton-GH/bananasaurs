@@ -64,7 +64,7 @@ export const labelUserTurn = (
   // Turns stored before display names existed hold the bare user id: never
   // print it as a speaker name.
   const speaker = cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
-  return `[${speaker}, ${relativeAgo(turn.at, now)}] ${turn.text}`;
+  return `[${speaker}, ${relativeAgo(turn.at, now)}] ${neutraliseMarkers(turn.text)}`;
 };
 
 export const buildConversationContext = (input: ConversationContextInput): ConversationContext => {
@@ -103,7 +103,7 @@ export const buildConversationContext = (input: ConversationContextInput): Conve
   const participants = names.size;
 
   const history: GenerationMessage[] = turns.map((turn) => {
-    if (turn.role === 'assistant') return { role: 'assistant', text: turn.text };
+    if (turn.role === 'assistant') return { role: 'assistant', text: neutraliseMarkers(turn.text) };
     if (turn.role === 'quote') {
       return {
         role: 'user',
