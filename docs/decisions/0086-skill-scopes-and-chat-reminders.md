@@ -43,7 +43,9 @@ ping anyone, and cannot repeat, be listed, edited or cancelled from chat.
    chosen days, every N weeks, or monthly on a date, with an optional end
    date or count. After each delivery a repeating reminder moves to its next
    future occurrence; occurrences missed while the bot was down are skipped,
-   with at most one late post. Each occurrence has its own delivery key.
+   with at most one late post. Delivery is at-least-once per occurrence via
+   the status claim rather than a per-occurrence key: a crash between send
+   and reschedule re-posts that occurrence after the stale threshold.
 6. **Checks when set or edited, live from Discord.** The asker can view and
    send in the target channel, and the bot can send there. `@everyone`,
    `@here` and roles that are not mentionable need the asker to hold
