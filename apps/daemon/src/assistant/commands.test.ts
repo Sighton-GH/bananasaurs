@@ -168,7 +168,7 @@ describe('assistant command subscriber', () => {
       referencedMessageId: '890123456789012399',
       referencedAuthorId: '901234567890123456',
     });
-    expect(h.queued[1]).toMatchObject({
+    expect(h.queued[0]).toMatchObject({
       invocationId: '890123456789012345',
       messageId: '890123456789012345',
       referencedMessageId: '890123456789012399',
