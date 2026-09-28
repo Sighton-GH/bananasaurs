@@ -696,9 +696,7 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
     ).toEqual(['Nobody', 'Club assistant']);
     expect(again).toHaveProperty('value', '');
     expect(
-      screen.getByText(
-        'Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.',
-      ),
+      screen.getByText('Tagging the bot does nothing until you pick a behaviour.'),
     ).toBeTruthy();
   });
 
