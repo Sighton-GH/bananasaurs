@@ -128,7 +128,11 @@ export const registerAssistantRoutes = (
     const grantsBySkillId = new Map(skillGrants.map((grant) => [grant.skillId, grant] as const));
     const skillScopes: Record<
       string,
-      { mode: SkillScopeMode; roleIds: string[]; isDefault: boolean }
+      {
+        readonly mode: SkillScopeMode;
+        readonly roleIds: readonly string[];
+        readonly isDefault: boolean;
+      }
     > = Object.fromEntries(
       CLUB_ASSISTANT_SKILLS.map((skill) => {
         const grant = grantsBySkillId.get(skill.id);
