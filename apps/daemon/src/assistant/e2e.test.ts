@@ -1023,6 +1023,9 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       attachments: [],
     });
   const memberChannels = vi.fn(async () => [{ id: PUBLIC, name: 'general' }]);
+  // Slice 4.1 (ADR 0090): the answer channel sees every seeded channel, so
+  // the asker-only filter stays the operative constraint in these tests.
+  const audienceChannels = vi.fn(async () => new Set([PUBLIC, STAFF]));
   const service = (provider: TextProvider, fetchResource = vi.fn()) =>
     createAssistantService(
       t.scopes.forGuild(GUILD),
@@ -1032,7 +1035,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       { provider, fetchResource },
       undefined,
       undefined,
-      { memberChannels },
+      { memberChannels, audienceChannels },
     );
   const invocation = (command: 'ask' | 'find', input: Record<string, string>) => ({
     guildId: GUILD,

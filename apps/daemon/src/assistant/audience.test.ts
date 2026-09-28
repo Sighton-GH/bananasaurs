@@ -47,20 +47,14 @@ describe('audienceChannels (ADR 0090)', () => {
   });
 
   it('shares an audience between channels with identical overwrites', () => {
-    const synced = [
-      ow('everyone', 'role', 0n, VIEW),
-      ow('team', 'role', VIEW | HISTORY, 0n),
-    ];
+    const synced = [ow('everyone', 'role', 0n, VIEW), ow('team', 'role', VIEW | HISTORY, 0n)];
     const channels = new Map<string, AudienceChannel>([
       ['a', chan('a', { everyoneCanRead: false, overwrites: synced })],
       [
         'b',
         chan('b', {
           everyoneCanRead: false,
-          overwrites: [
-            ow('team', 'role', VIEW | HISTORY, 0n),
-            ow('everyone', 'role', 0n, VIEW),
-          ],
+          overwrites: [ow('team', 'role', VIEW | HISTORY, 0n), ow('everyone', 'role', 0n, VIEW)],
         }),
       ],
     ]);

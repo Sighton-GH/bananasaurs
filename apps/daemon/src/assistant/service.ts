@@ -199,6 +199,15 @@ export interface AssistantDiscordPorts {
     userId: string,
   ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
   /**
+   * Channels every viewer of the answer channel can read (ADR 0090). The
+   * archive tool searches only these intersected with `memberChannels`;
+   * empty fails closed. Optional so existing callers keep compiling —
+   * production (`runtime/guild.ts`) always provides it. Absent with a
+   * channel set, the service fails closed and searches nothing.
+   */
+  readonly audienceChannels?:
+    ((answerChannelId: string) => Promise<ReadonlySet<string>>) | undefined;
+  /**
    * B2b: resolves a reminder's channel and mentions against live Discord
    * permissions. Optional so existing callers keep compiling — production
    * (`runtime/guild.ts`) always provides it. Absent, the service fails
@@ -298,9 +307,21 @@ export const createAssistantService = (
    */
   const ledger = quotaLedger;
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
-  const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
+  const searchArchive = async (
+    userId: string,
+    query: string,
+    channelId: string | undefined,
+  ): Promise<readonly ArchiveHit[]> => {
     if (query.trim() === '') return [];
     const visible = new Set((await discord.memberChannels(userId)).map((channel) => channel.id));
+    // ADR 0090: an answer posted in a channel draws only on channels every
+    // viewer of that channel can read. Try it has no channel, so it keeps
+    // the asker-only filter; anything unknown fails closed to no channels.
+    if (channelId !== undefined) {
+      if (discord.audienceChannels === undefined) return [];
+      const audience = await discord.audienceChannels(channelId);
+      for (const id of visible) if (!audience.has(id)) visible.delete(id);
+    }
     const channelIds = archiveRepo
       .listChannels(scope)
       .map((channel) => channel.channelId)
@@ -449,7 +470,8 @@ export const createAssistantService = (
       }
       if (input.command === 'find') {
         // ADR 0067: the archive, limited to channels this member can view.
-        const hits = await searchArchive(input.userId, input.input.query ?? '');
+        // ADR 0090: and to the answer channel's audience.
+        const hits = await searchArchive(input.userId, input.input.query ?? '', input.channelId);
         return {
           ok: true,
           content:
@@ -677,7 +699,7 @@ export const createAssistantService = (
             outcome,
             ...(detail === undefined ? {} : { detail }),
           }),
-        searchArchive: (query) => searchArchive(input.userId, query),
+        searchArchive: (query) => searchArchive(input.userId, query, input.channelId),
         resources: () => resources,
         fetchResource,
         webSearch:

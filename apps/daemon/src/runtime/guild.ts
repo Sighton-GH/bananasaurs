@@ -92,6 +92,7 @@ import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
 import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
+import { guildAudienceChannels } from '../assistant/audience.js';
 import {
   resolveReminderTargets,
   type ReminderTargetMember,
@@ -755,6 +756,16 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
                 },
               },
           userId,
+        );
+      },
+      // ADR 0090: the channels every viewer of the answer channel can
+      // read, from the live overwrites — mirroring the `memberChannels`
+      // adapter above. An uncached guild fails closed to the empty set.
+      audienceChannels: (answerChannelId) => {
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return Promise.resolve(new Set<string>());
+        return Promise.resolve(
+          guildAudienceChannels({ channels: guild.channels, roles: guild.roles }, answerChannelId),
         );
       },
       // B2b: the acting reminder tools resolve their channel and mentions
