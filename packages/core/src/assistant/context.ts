@@ -201,12 +201,12 @@ export const compileAssistantContext = (input: {
       : `WHAT YOU CAN DO\n${orderedSkills.map(skillLine).join('\n')}\n${SKILLS_PRECEDENCE_LINE}`;
   const cleanReason = (reason: string): string =>
     neutraliseMarkers(reason)
-      .replace(/[\[\]\r\n]+/g, ' ')
+      .replace(/[[\]\r\n]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
   const unavailable = (input.unavailableSkills ?? []).map((entry) => ({
     name: neutraliseMarkers(entry.skill.name)
-      .replace(/[\[\]\r\n]+/g, ' ')
+      .replace(/[[\]\r\n]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim(),
     reason: cleanReason(entry.reason),
