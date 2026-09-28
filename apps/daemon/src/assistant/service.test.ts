@@ -2231,7 +2231,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     const provider: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText: generateText as TextProvider['generateText'],
+      generateText,
     };
     return createAssistantService(
       t.scopes.forGuild(GUILD),
@@ -2758,8 +2758,7 @@ describe('B2b: action summaries in answers', () => {
     );
 
   const actionsOf = (result: { detail?: unknown }): readonly string[] =>
-    (result.detail as unknown as { readonly actions?: readonly string[] } | undefined)?.actions ??
-    [];
+    (result.detail as { readonly actions?: readonly string[] } | undefined)?.actions ?? [];
 
   it('the posted answer ends with the summary and the trace records it', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
