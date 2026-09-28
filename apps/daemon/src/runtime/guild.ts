@@ -785,7 +785,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
                         type: channel.type,
                         parentId:
                           'parentId' in channel
-                            ? ((channel.parentId ?? null) as string | null)
+                            ? (channel.parentId ?? null)
                             : null,
                         // discord.js `isTextBased()` is true for voice and
                         // stage channels too; only text and announcement
