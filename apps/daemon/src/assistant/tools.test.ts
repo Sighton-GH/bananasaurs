@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { clipHeading, TOOL_CATALOGUE, type ClubResource, type Reminder } from '@bananasaurs/core';
+import {
+  clipHeading,
+  redactEvidenceText,
+  TOOL_CATALOGUE,
+  type ClubResource,
+  type Reminder,
+} from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 import type { assistantRepo } from '@bananasaurs/storage';
 
@@ -424,6 +430,43 @@ describe('acting tools (B2a)', () => {
     expect(result.actionSummary).toBe(result.text);
     expect(result.actionSummary).toContain('#general');
     expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'completed');
+  });
+
+  it('keeps a Luhn-valid invocation key readable after evidence redaction', async () => {
+    const luhnDigit = (prefix: string): string => {
+      for (let digit = 0; digit <= 9; digit += 1) {
+        const candidate = `${prefix}${String(digit)}`;
+        let sum = 0;
+        let double = false;
+        for (let index = candidate.length - 1; index >= 0; index -= 1) {
+          let value = candidate.charCodeAt(index) - 48;
+          if (double) {
+            value *= 2;
+            if (value > 9) value -= 9;
+          }
+          sum += value;
+          double = !double;
+        }
+        if (sum % 10 === 0) return String(digit);
+      }
+      throw new Error('no Luhn digit found');
+    };
+    const invocationKey = `411111111111111111${luhnDigit('411111111111111111')}`;
+    expect(invocationKey).toMatch(/^\d{19}$/);
+    const { p, rows } = reminderPorts({ invocationKey });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    const id = [...rows.values()][0]?.id ?? '';
+    expect(id).toContain(invocationKey);
+    const redacted = redactEvidenceText(id);
+    expect(redacted.text).toBe(id);
+    expect(redacted.detectors).not.toContain('credit-card-number');
   });
 
   it('refuses a when without an offset, a past time and an overlong context', async () => {
