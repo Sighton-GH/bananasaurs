@@ -243,6 +243,12 @@ export const resolveReminderTargets = async (
           `Pinging ${target} needs the Mention Everyone permission in #${channel.name}.`,
         );
       }
+      // Discord silently drops the ping when the bot itself lacks Mention
+      // Everyone, so refuse rather than promise one. The bot's permission
+      // arrives through the same adapter as the asker's.
+      if (!bot.permissionsIn(channel).has(PermissionsBitField.Flags.MentionEveryone)) {
+        return failure(`I don't have permission to ping everyone in #${channel.name}.`);
+      }
     }
 
     return {

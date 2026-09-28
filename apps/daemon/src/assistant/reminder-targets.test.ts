@@ -336,6 +336,24 @@ describe('resolveReminderTargets', () => {
     expect((await resolveReminderTargets(permitted, request({ roles: ['Execs'] }))).ok).toBe(true);
   });
 
+  it('refuses @everyone when the bot lacks Mention Everyone', async () => {
+    const guild = makeGuild({
+      me: member(
+        '50000000000000001',
+        'Bot',
+        'Bot',
+        permission.ViewChannel | permission.SendMessages,
+      ),
+    });
+    await expect(resolveReminderTargets(guild, request({ roles: ['everyone'] }))).resolves.toEqual({
+      ok: false,
+      problem: "I don't have permission to ping everyone in #general.",
+    });
+    expect((await resolveReminderTargets(makeGuild(), request({ roles: ['everyone'] }))).ok).toBe(
+      true,
+    );
+  });
+
   it.each([
     ['@everyone', true, false],
     ['here', false, true],
