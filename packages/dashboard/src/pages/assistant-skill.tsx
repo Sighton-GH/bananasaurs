@@ -188,7 +188,7 @@ function ScopeEditor({
     }
   };
 
-  const defaultNote = (forMode: SkillScopeView['mode']): string =>
+  const defaultNote = (forMode: SkillScopeMode): string =>
     scope.isDefault && scope.mode === forMode ? ' Default for this skill.' : '';
   return (
     <div className="mt-3">
