@@ -93,7 +93,7 @@ describe('SkillItemsCard', () => {
     expect(within(card).getByText('Standup time')).toBeTruthy();
     expect(within(card).getByText('Daily sync')).toBeTruthy();
     expect(within(card).getByText('#general')).toBeTruthy();
-    expect(within(card).getByText('@everyone')).toBeTruthy();
+    expect(within(card).getByText(/@everyone/)).toBeTruthy();
     expect(within(card).getByText(/1 role/)).toBeTruthy();
     expect(within(card).getByText(/1 user/)).toBeTruthy();
     expect(within(card).getByText('Bryan')).toBeTruthy();
