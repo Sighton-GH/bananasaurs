@@ -53,7 +53,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const asStringList = (value: unknown): readonly string[] | undefined => {
   if (!Array.isArray(value)) return undefined;
   const items: string[] = [];
-  for (const item: unknown of value) {
+  for (const item of value) {
     if (typeof item !== 'string') return undefined;
     items.push(item);
   }
