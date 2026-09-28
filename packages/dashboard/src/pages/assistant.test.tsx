@@ -365,7 +365,12 @@ describe('AssistantPage', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
       target: { value: 'Answer new member questions from reviewed sources only.' },
     });
-    fireEvent.click(screen.getByRole('checkbox', { name: /Search club knowledge/ }));
+    fireEvent.click(
+      within(screen.getByRole('region', { name: 'Skills the new behaviour may use' })).getByRole(
+        'checkbox',
+        { name: /Search club knowledge/ },
+      ),
+    );
     const callers = screen.getByRole('list', { name: 'Who may use the new behaviour' });
     fireEvent.click(within(callers).getByRole('checkbox', { name: 'Club Member' }));
     fireEvent.click(screen.getAllByRole('button', { name: 'Create behaviour' })[0]!);
