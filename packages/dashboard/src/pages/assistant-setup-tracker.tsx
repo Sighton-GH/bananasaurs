@@ -335,12 +335,10 @@ export function SetupTracker({
   const roleWays = mentions.map((name) => `by mentioning @${name}`).join(' or ');
   const askingLine =
     mentions.length === 0
-      ? botTag
-        ? 'Members can ask in Discord with /ask, or by tagging @Bananasaurs.'
-        : 'Members can ask in Discord with /ask.'
+      ? 'Members ask by tagging @Bananasaurs in Discord.'
       : botTag
-        ? `Members can ask in Discord with /ask, by tagging @Bananasaurs, or ${roleWays}.`
-        : `Members can ask in Discord with /ask, or ${roleWays}.`;
+        ? `Members ask by tagging @Bananasaurs in Discord, or ${roleWays}.`
+        : `Members ask in Discord ${roleWays}.`;
 
   if (setup.answering && !expanded) {
     return (
