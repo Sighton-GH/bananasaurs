@@ -352,6 +352,55 @@ const wallMsSinceMidnight = (at: number, timeZone: string): number => {
   );
 };
 
+/**
+ * Next local midnight after `at` by local date, via the same iterative
+ * `utcForLocal` technique as `packages/core/src/assistant/recurrence.ts`: the
+ * 24-hour arithmetic fails on a 25-hour fall-back day.
+ */
+const endOfMidnightDay = (at: number, timeZone: string): number => {
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const num = (type: string): number =>
+    Number(ymd.find((part) => part.type === type)?.value ?? 0);
+  const next = new Date(Date.UTC(num('year'), num('month') - 1, num('day')) + 86_400_000);
+  const year = next.getUTCFullYear();
+  const month = next.getUTCMonth() + 1;
+  const day = next.getUTCDate();
+  const localParts = (guess: number): Record<string, string> =>
+    Object.fromEntries(
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+        .formatToParts(guess)
+        .filter((part) => part.type !== 'literal')
+        .map((part) => [part.type, part.value]),
+    ) as Record<string, string>;
+  let guess = Date.UTC(year, month - 1, day, 0, 0);
+  const target = guess;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const observed = localParts(guess);
+    const asUtc = Date.UTC(
+      Number(observed.year),
+      Number(observed.month) - 1,
+      Number(observed.day),
+      Number(observed.hour),
+      Number(observed.minute),
+    );
+    guess = target - (asUtc - guess);
+  }
+  return guess - 1;
+};
+
 const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
   let pattern: unknown;
   if (repeat.kind === 'daily') pattern = { kind: 'daily' };
@@ -376,9 +425,7 @@ const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
     // would drop the Dec 31 occurrence while the summary reads as inclusive:
     // treat exact local midnight as the end of that day (23:59:59.999 local).
     endAt =
-      wallMsSinceMidnight(parsed, timeZone) === 0
-        ? parsed + 86_400_000 - wallMsSinceMidnight(parsed + 86_400_000, timeZone) - 1
-        : parsed;
+      wallMsSinceMidnight(parsed, timeZone) === 0 ? endOfMidnightDay(parsed, timeZone) : parsed;
   }
   return {
     pattern,
