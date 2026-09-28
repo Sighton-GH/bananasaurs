@@ -2447,13 +2447,14 @@ describe('B2b: acting tool ports are wired', () => {
   const serviceWith = (
     provider: TextProvider,
     discord: Parameters<typeof createAssistantService>[7],
+    ports: AssistantServiceTestPorts = {},
   ) =>
     createAssistantService(
       t.scopes.forGuild(GUILD),
       t.scopes.instance(),
       config,
       () => NOW,
-      {},
+      ports,
       undefined,
       undefined,
       discord,
@@ -2640,5 +2641,201 @@ describe('B2b: acting tool ports are wired', () => {
         .listSkillActivity(t.scopes.forGuild(GUILD), 10)
         .find((a) => a.skillId === 'reminders'),
     ).toMatchObject({ outcome: 'denied', actorId: MEMBER });
+  });
+});
+
+/**
+ * B2b step 3: code-written action summaries are appended to the posted
+ * answer — after the answer text, before the Brave attribution and the
+ * Sources line — and recorded on the trace detail as `actions`.
+ */
+describe('B2b: action summaries in answers', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club', 'reminders'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const usable = (provider: TextProvider): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'model-a',
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+  });
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+    assistantRepo.putSkillGrant(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const scripted = (responses: GenerateTextResponse[]): TextProvider => {
+    const queue = [...responses];
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        const next = queue.shift();
+        if (next === undefined) throw new Error('no scripted response');
+        return next;
+      },
+    };
+  };
+
+  const serviceWith = (provider: TextProvider, ports: AssistantServiceTestPorts = {}) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      ports,
+      undefined,
+      undefined,
+      {
+        memberChannels: async () => [],
+        resolveReminderTargets: async () => ({
+          ok: true as const,
+          targets: {
+            channelId: CHANNEL,
+            channelName: 'general',
+            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+            memberNames: [],
+            roleNames: [],
+          },
+        }),
+      },
+      () => [usable(provider)],
+    );
+
+  const actionsOf = (result: { detail?: unknown }): readonly string[] =>
+    (
+      result.detail as unknown as { readonly actions?: readonly string[] } | undefined
+    )?.actions ?? [];
+
+  it('the posted answer ends with the summary and the trace records it', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const provider = scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'All set.', model: 'model-a' },
+    ]);
+    const service = serviceWith(provider);
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-summary-1',
+    });
+    expect(result.ok).toBe(true);
+    const actions = actionsOf(result);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toContain('✅ Reminder set: **Bring batteries**');
+    expect(result.ok === true && result.content).toBe(`All set.\n\n${actions[0]}`);
+  });
+
+  it('the Sources line follows the summary when there is one', async () => {
+    assistantRepo.putResource(t.scopes.forGuild(GUILD), {
+      id: 'club-guide',
+      guildId: GUILD,
+      title: 'Club Guide',
+      url: 'https://example.com/guide',
+      kind: 'discord-channel',
+      enabled: true,
+      reviewedAt: new Date(NOW).toISOString(),
+    });
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const provider = scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'See the guide. [S1]', model: 'model-a' },
+    ]);
+    const service = serviceWith(provider, {
+      cacheSearch: () => [
+        {
+          resourceId: 'club-guide',
+          chunkId: 'c_guide_0',
+          docId: 'd_guide',
+          headingPath: '',
+          snippet: 'the guide says Friday',
+        },
+      ],
+    });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'what does the guide say; remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-summary-2',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    const actions = actionsOf(result);
+    expect(actions).toHaveLength(1);
+    expect(content).toBe(`See the guide.\n\n${actions[0]}\n\n-# Sources: Club Guide`);
   });
 });
