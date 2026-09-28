@@ -740,6 +740,42 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     ).toBe(true);
   });
 
+  it('a follow-up in a quoted conversation passes quoteInHistory to the service', async () => {
+    const h = harness((input) => ({
+      ok: true,
+      content: `answer to ${String((input.input as Record<string, string>).question)}`,
+    }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the hall opens at seven',
+    });
+    await h.run(
+      mention({
+        invocationId: 'inv-qh1',
+        messageId: '810000000000000031',
+        referencedMessageId: '840000000000000013',
+        referencedAuthorId: OTHER_ID,
+        input: { question: 'is that right?' },
+      }),
+    );
+    nowMs += 5 * 60_000;
+    await h.run(
+      mention({
+        invocationId: 'inv-qh2',
+        messageId: '810000000000000032',
+        input: { question: 'what about Friday?' },
+      }),
+    );
+
+    expect(h.inputs).toHaveLength(2);
+    expect(h.inputs[1]?.history?.[0]).toEqual({
+      role: 'user',
+      text: '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+    });
+    expect(h.inputs[1]?.quoteInHistory).toBe(true);
+  });
+
   it('a quote fetch failure still posts the answer and flags the trace quote-unavailable', async () => {
     const h = harness(() => ({ ok: true, content: 'answered without the quote' }));
     h.fetchMessageContent.mockRejectedValue(new Error('discord 403'));
