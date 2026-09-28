@@ -54,9 +54,8 @@ describe('assistantInvokeCursor resolution', () => {
 
   it('stays in lockstep with the conversation module: every join rule parses', () => {
     for (const rule of JOIN_RULES) {
-      const cursor =
-        (CONTINUE_RULES as readonly string[]).includes(rule) ?
-          continueCursor(rule as ContinueRule)
+      const cursor = (CONTINUE_RULES as readonly string[]).includes(rule)
+        ? continueCursor(rule as ContinueRule)
         : newCursor(rule as NewRule);
       expect(assistantInvokeCursor.safeParse(cursor).success, rule).toBe(true);
     }
