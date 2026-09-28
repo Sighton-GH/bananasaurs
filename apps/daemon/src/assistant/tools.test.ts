@@ -755,8 +755,7 @@ describe('acting tools (B2a)', () => {
       second: '2-digit',
       hourCycle: 'h23',
     }).formatToParts(endAt!);
-    const value = (type: string): string =>
-      parts.find((part) => part.type === type)?.value ?? '';
+    const value = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
     expect(`${value('year')}-${value('month')}-${value('day')}`).toBe('2026-11-01');
     expect(`${value('hour')}:${value('minute')}:${value('second')}`).toBe('23:59:59');
     expect(endAt! % 1000).toBe(999);

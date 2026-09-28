@@ -149,10 +149,11 @@ describe('skill scopes and richer reminder storage', () => {
     expect(listSkillGrants(a)).toEqual([
       { skillId: 'reminders', roleIds: ['555555555555555555'], userIds: [] },
     ]);
-    expect(listSkillActivity(a, 10).map((entry) => entry.skillId).sort()).toEqual([
-      'reminders',
-      'reminders',
-    ]);
+    expect(
+      listSkillActivity(a, 10)
+        .map((entry) => entry.skillId)
+        .sort(),
+    ).toEqual(['reminders', 'reminders']);
     t.close();
   });
 
