@@ -315,6 +315,12 @@ const contentHash = (content: unknown): string =>
     .digest('hex');
 const contentKey = (prefix: string, invocationKey: string, content: unknown): string =>
   `${prefix}:${invocationKey}:${contentHash(content)}`;
+/** Stored reminder context: trimmed, whitespace collapsed, absent when empty. */
+const normaliseContext = (context: string | undefined): string | undefined => {
+  if (context === undefined) return undefined;
+  const collapsed = context.trim().replace(/\s+/g, ' ');
+  return collapsed === '' ? undefined : collapsed;
+};
 
 interface RepeatArgs {
   readonly kind: 'daily' | 'weekdays' | 'weekly' | 'monthly';
@@ -574,11 +580,12 @@ export const runAssistantTool = async (
             if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
             recurrence = built.recurrence;
           }
+          const normalisedContext = normaliseContext(args.context);
           const draft = validateReminderDraft(
             {
               dueAt,
               text: args.text,
-              ...(args.context === undefined ? {} : { context: args.context }),
+              ...(normalisedContext === undefined ? {} : { context: normalisedContext }),
             },
             ports.now(),
           );
@@ -590,10 +597,6 @@ export const runAssistantTool = async (
           });
           if (!resolved.ok) return { ...evidence(name, resolved.problem), ok: false };
           const targets: ResolvedReminderTargets = resolved.targets;
-          const normalisedContext =
-            args.context === undefined || args.context.trim() === ''
-              ? undefined
-              : args.context.trim();
           const keyContent = {
             text: draft.text,
             dueAt,
@@ -624,7 +627,7 @@ export const runAssistantTool = async (
               here: targets.mentions.here,
             },
             ...(recurrence === undefined ? {} : { recurrence }),
-            ...(args.context === undefined ? {} : { context: args.context }),
+            ...(normalisedContext === undefined ? {} : { context: normalisedContext }),
             deliveredCount: 0,
           };
           const inserted = ports.reminderStore.insert(reminder);
@@ -690,8 +693,10 @@ export const runAssistantTool = async (
             if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
             recurrence = built.recurrence;
           }
+          const normalisedEditContext =
+            args.context === undefined ? undefined : normaliseContext(args.context);
           if (args.text !== undefined || dueAt !== undefined || args.context !== undefined) {
-            const context = args.context ?? stored.context;
+            const context = args.context === undefined ? stored.context : normalisedEditContext;
             const draft = validateReminderDraft(
               {
                 dueAt: dueAt ?? stored.dueAt,
@@ -723,7 +728,7 @@ export const runAssistantTool = async (
           }
           const patch: ReminderPatch = {
             ...(args.text === undefined ? {} : { text: args.text.trim() }),
-            ...(args.context === undefined ? {} : { context: args.context }),
+            ...(normalisedEditContext === undefined ? {} : { context: normalisedEditContext }),
             ...(dueAt === undefined ? {} : { dueAt }),
             ...(targets === undefined
               ? {}

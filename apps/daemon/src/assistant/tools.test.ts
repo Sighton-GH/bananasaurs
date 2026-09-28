@@ -596,6 +596,39 @@ describe('acting tools (B2a)', () => {
     expect(result.actionSummary).toContain('every Tuesday and Thursday');
   });
 
+  it('trims and collapses the stored context, omitting it when empty', async () => {
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
+    const store = {
+      insert: (reminder: Omit<Reminder, 'guildId'>) => {
+        inserted.push(reminder);
+        return 'created' as const;
+      },
+      get: () => undefined,
+      update: () => 'not-found' as const,
+      cancel: () => false,
+      listForCreator: () => [],
+      listAll: () => [],
+    };
+    const messy = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'hi', when: '2026-09-24T12:30:00-07:00', context: '  why\n\n it\tmatters  ' },
+      },
+      ports({ reminderStore: store }),
+    );
+    expect(messy.ok).toBe(true);
+    expect(inserted[0]?.context).toBe('why it matters');
+    const blank = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'hi', when: '2026-09-25T12:30:00-07:00', context: '   ' },
+      },
+      ports({ reminderStore: store }),
+    );
+    expect(blank.ok).toBe(true);
+    expect(inserted[1]?.context).toBeUndefined();
+  });
+
   it('refuses an edit by a non-creator and allows the owner', async () => {
     const { p, rows } = reminderPorts();
     rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
