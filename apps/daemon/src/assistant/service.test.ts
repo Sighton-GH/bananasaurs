@@ -2150,43 +2150,65 @@ describe('Task 10 (b): busy chain throws ChainFailedError', () => {
 });
 
 /**
- * B2b step 1: each skill is gated by the behaviour allowlist and its
- * per-skill scope, checked in code against the asker's live roles. The owner
- * passes every scope; try-it counts as the owner.
+ * B2b fix 2: one shared harness for the three B2b describes below. Same
+ * guild ids, config, behaviour shape, provider keys and service wiring —
+ * only the behaviour's skill allowlist varies per block. Each describe keeps
+ * its own test-specific helpers (`ask`, `targetsOk`, `actionsOf`).
  */
-describe('B2b: per-skill scopes gate chat skills', () => {
-  const GUILD = parseGuildId('234567890123456789');
-  const MEMBER = '456789012345678901';
-  const CHANNEL = '567890123456789012';
-  const CLUB_ROLE = '678901234567890123';
-  const SPECIAL_ROLE = '789012345678901234';
-  const OWNER = '345678901234567890';
-  const NOW = 1_800_000_000_000;
+const B2B_GUILD = parseGuildId('234567890123456789');
+const B2B_MEMBER = '456789012345678901';
+const B2B_CHANNEL = '567890123456789012';
+const B2B_CLUB_ROLE = '678901234567890123';
+const B2B_SPECIAL_ROLE = '789012345678901234';
+const B2B_OWNER = '345678901234567890';
+const B2B_NOW = 1_800_000_000_000;
 
-  const config = parseConfig({
-    DISCORD_BOT_TOKEN: 'test-token',
-    DISCORD_APPLICATION_ID: '123456789012345678',
-    BANANASAURS_GUILD_ALLOWLIST: GUILD,
-    BANANASAURS_OWNER_USER_ID: OWNER,
-    AI_PROVIDER: 'off',
-    AI_MODEL: 'fixture-model',
-    AI_PROFILE_COST_CLASS: 'free',
+const B2B_CONFIG = parseConfig({
+  DISCORD_BOT_TOKEN: 'test-token',
+  DISCORD_APPLICATION_ID: '123456789012345678',
+  BANANASAURS_GUILD_ALLOWLIST: B2B_GUILD,
+  BANANASAURS_OWNER_USER_ID: B2B_OWNER,
+  AI_PROVIDER: 'off',
+  AI_MODEL: 'fixture-model',
+  AI_PROFILE_COST_CLASS: 'free',
+});
+
+const setupB2b = (allowedSkillIds: readonly string[]) => {
+  const t = openMigratedTestDatabase();
+  guildRepo.upsertGuild(t.scopes.forGuild(B2B_GUILD), { name: 'fixture', now: B2B_NOW });
+  assistantProvidersRepo.addKey(t.scopes.instance(), {
+    provider: 'gemini',
+    label: 'Key A',
+    apiKeyEnc: 'sealed-key-a',
+    now: B2B_NOW,
+    keyId: 'key_a',
   });
-
+  assistantProvidersRepo.addKey(t.scopes.instance(), {
+    provider: 'gemini',
+    label: 'Test provider',
+    apiKeyEnc: 'sealed-key-test',
+    now: B2B_NOW,
+    keyId: 'key_test',
+  });
   const direct = {
     id: 'direct',
-    guildId: GUILD,
+    guildId: B2B_GUILD,
     surface: 'direct-command' as const,
     name: 'Club',
     systemPrompt: 'Canadian English.',
     promptVersion: 1,
-    callerRoleIds: [CLUB_ROLE],
+    callerRoleIds: [B2B_CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'reminders'],
+    allowedSkillIds: [...allowedSkillIds],
     resourceIds: [],
     enabled: true,
   };
-
+  assistantRepo.putBehaviour(t.scopes.forGuild(B2B_GUILD), direct, B2B_NOW);
+  assistantRepo.putSkillGrant(
+    t.scopes.forGuild(B2B_GUILD),
+    { skillId: 'search-club', roleIds: [B2B_CLUB_ROLE], userIds: [] },
+    B2B_NOW,
+  );
   const usable = (provider: TextProvider): ChainEntry => ({
     providerId: 'gemini',
     model: 'model-a',
@@ -2198,61 +2220,73 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     rpmLimit: null,
     rpdLimit: null,
   });
-
-  let t: MigratedTestDatabase;
-  beforeEach(() => {
-    t = openMigratedTestDatabase();
-    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Key A',
-      apiKeyEnc: 'sealed-key-a',
-      now: NOW,
-      keyId: 'key_a',
-    });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Test provider',
-      apiKeyEnc: 'sealed-key-test',
-      now: NOW,
-      keyId: 'key_test',
-    });
-    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
-    assistantRepo.putSkillGrant(
-      t.scopes.forGuild(GUILD),
-      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
-      NOW,
-    );
-  });
-  afterEach(() => t.close());
-
-  const serviceWith = (
-    generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>,
-  ) => {
-    const provider: TextProvider = {
+  const scripted = (responses: GenerateTextResponse[]): TextProvider => {
+    const queue = [...responses];
+    return {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText,
+      generateText: async () => {
+        const next = queue.shift();
+        if (next === undefined) throw new Error('no scripted response');
+        return next;
+      },
     };
-    return createAssistantService(
-      t.scopes.forGuild(GUILD),
+  };
+  const serviceWith = (
+    provider: TextProvider,
+    discord: Parameters<typeof createAssistantService>[7] = {
+      memberChannels: async () => [],
+    },
+    ports: AssistantServiceTestPorts = {},
+  ) =>
+    createAssistantService(
+      t.scopes.forGuild(B2B_GUILD),
       t.scopes.instance(),
-      config,
-      () => NOW,
-      {},
+      B2B_CONFIG,
+      () => B2B_NOW,
+      ports,
       undefined,
       undefined,
-      { memberChannels: async () => [] },
+      discord,
       () => [usable(provider)],
     );
-  };
+  return { t, direct, usable, scripted, serviceWith };
+};
+
+/**
+ * B2b step 1: each skill is gated by the behaviour allowlist and its
+ * per-skill scope, checked in code against the asker's live roles. The owner
+ * passes every scope; try-it counts as the owner.
+ */
+describe('B2b: per-skill scopes gate chat skills', () => {
+  const GUILD = B2B_GUILD;
+  const MEMBER = B2B_MEMBER;
+  const CHANNEL = B2B_CHANNEL;
+  const CLUB_ROLE = B2B_CLUB_ROLE;
+  const SPECIAL_ROLE = B2B_SPECIAL_ROLE;
+  const OWNER = B2B_OWNER;
+  const NOW = B2B_NOW;
+
+  let h: ReturnType<typeof setupB2b>;
+  beforeEach(() => {
+    h = setupB2b(['search-club', 'reminders']);
+  });
+  afterEach(() => h.t.close());
+
+  const wrap = (
+    generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>,
+  ): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText,
+  });
 
   const ask = (over: Record<string, unknown> = {}) => ({
     guildId: GUILD,
     channelId: CHANNEL,
     userId: MEMBER,
     callerRoleIds: [CLUB_ROLE],
-    behaviour: direct,
+    behaviour: h.direct,
     command: 'ask' as const,
     input: { question: 'when is the meeting?' },
     source: 'slash-command' as const,
@@ -2262,19 +2296,19 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('a member without the scoped role is refused, one with it passes', async () => {
     assistantRepo.setSkillScope(
-      t.scopes.forGuild(GUILD),
+      h.t.scopes.forGuild(GUILD),
       { skillId: 'search-club', mode: 'roles', roleIds: [SPECIAL_ROLE] },
       NOW,
     );
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const refused = await service.invoke(ask());
     expect(refused.ok).toBe(false);
     expect(refused.ok === false && refused.content).toBe(
       "You don't have access to that assistant skill. No action was taken.",
     );
     expect(generateText).not.toHaveBeenCalled();
-    expect(assistantRepo.listSkillActivity(t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
+    expect(assistantRepo.listSkillActivity(h.t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
       skillId: 'search-club',
       outcome: 'denied',
     });
@@ -2287,12 +2321,12 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('an owner-scoped skill passes for the owner and is refused for a member', async () => {
     assistantRepo.setSkillScope(
-      t.scopes.forGuild(GUILD),
+      h.t.scopes.forGuild(GUILD),
       { skillId: 'search-club', mode: 'owner', roleIds: [] },
       NOW,
     );
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const refused = await service.invoke(ask({ invocationId: 'int-scope-owner-1' }));
     expect(refused.ok).toBe(false);
     expect(refused.ok === false && refused.content).toBe(
@@ -2307,7 +2341,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('the default scopes apply with no stored grant: reminders owner-only, search-club everyone', async () => {
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const search = await service.invoke(ask({ invocationId: 'int-scope-default-1' }));
     expect(search.ok).toBe(true);
     const remindInput = {
@@ -2336,10 +2370,10 @@ describe('B2b: per-skill scopes gate chat skills', () => {
 
   it('a skill outside the behaviour allowlist is refused even for the owner', async () => {
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
-    const service = serviceWith(generateText);
+    const service = h.serviceWith(wrap(generateText));
     const result = await service.invoke(
       ask({
-        behaviour: { ...direct, id: 'narrow', allowedSkillIds: ['search-club'] },
+        behaviour: { ...h.direct, id: 'narrow', allowedSkillIds: ['search-club'] },
         command: 'remember',
         input: { request: 'remember this' },
         userId: OWNER,
@@ -2362,105 +2396,18 @@ describe('B2b: per-skill scopes gate chat skills', () => {
  * Try-it has no channel, so its reminder attempts fail in target resolution.
  */
 describe('B2b: acting tool ports are wired', () => {
-  const GUILD = parseGuildId('234567890123456789');
-  const MEMBER = '456789012345678901';
-  const CHANNEL = '567890123456789012';
-  const CLUB_ROLE = '678901234567890123';
-  const OWNER = '345678901234567890';
-  const NOW = 1_800_000_000_000;
+  const GUILD = B2B_GUILD;
+  const MEMBER = B2B_MEMBER;
+  const CHANNEL = B2B_CHANNEL;
+  const CLUB_ROLE = B2B_CLUB_ROLE;
+  const OWNER = B2B_OWNER;
+  const NOW = B2B_NOW;
 
-  const config = parseConfig({
-    DISCORD_BOT_TOKEN: 'test-token',
-    DISCORD_APPLICATION_ID: '123456789012345678',
-    BANANASAURS_GUILD_ALLOWLIST: GUILD,
-    BANANASAURS_OWNER_USER_ID: OWNER,
-    AI_PROVIDER: 'off',
-    AI_MODEL: 'fixture-model',
-    AI_PROFILE_COST_CLASS: 'free',
-  });
-
-  const direct = {
-    id: 'direct',
-    guildId: GUILD,
-    surface: 'direct-command' as const,
-    name: 'Club',
-    systemPrompt: 'Canadian English.',
-    promptVersion: 1,
-    callerRoleIds: [CLUB_ROLE],
-    reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'reminders', 'propose-memory'],
-    resourceIds: [],
-    enabled: true,
-  };
-
-  const usable = (provider: TextProvider): ChainEntry => ({
-    providerId: 'gemini',
-    model: 'model-a',
-    keyId: 'key_a',
-    keyLabel: 'Key A',
-    provider,
-    skip: undefined,
-    mayTrain: false,
-    rpmLimit: null,
-    rpdLimit: null,
-  });
-
-  let t: MigratedTestDatabase;
+  let h: ReturnType<typeof setupB2b>;
   beforeEach(() => {
-    t = openMigratedTestDatabase();
-    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Key A',
-      apiKeyEnc: 'sealed-key-a',
-      now: NOW,
-      keyId: 'key_a',
-    });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Test provider',
-      apiKeyEnc: 'sealed-key-test',
-      now: NOW,
-      keyId: 'key_test',
-    });
-    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
-    assistantRepo.putSkillGrant(
-      t.scopes.forGuild(GUILD),
-      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
-      NOW,
-    );
+    h = setupB2b(['search-club', 'reminders', 'propose-memory']);
   });
-  afterEach(() => t.close());
-
-  const scripted = (responses: GenerateTextResponse[]): TextProvider => {
-    const queue = [...responses];
-    return {
-      id: 'fake',
-      capabilities: new Set(['text', 'tools']),
-      generateText: async () => {
-        const next = queue.shift();
-        if (next === undefined) throw new Error('no scripted response');
-        return next;
-      },
-    };
-  };
-
-  const serviceWith = (
-    provider: TextProvider,
-    discord: Parameters<typeof createAssistantService>[7],
-    ports: AssistantServiceTestPorts = {},
-  ) =>
-    createAssistantService(
-      t.scopes.forGuild(GUILD),
-      t.scopes.instance(),
-      config,
-      () => NOW,
-      ports,
-      undefined,
-      undefined,
-      discord,
-      () => [usable(provider)],
-    );
+  afterEach(() => h.t.close());
 
   const targetsOk = (seen: unknown[]) => ({
     memberChannels: async () => [],
@@ -2487,7 +2434,7 @@ describe('B2b: acting tool ports are wired', () => {
 
   it('set_reminder through chat writes via the wired store and records the activity', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2496,13 +2443,13 @@ describe('B2b: acting tool ports are wired', () => {
       { text: 'Reminder noted.', model: 'model-a' },
     ]);
     const seen: unknown[] = [];
-    const service = serviceWith(provider, targetsOk(seen));
+    const service = h.serviceWith(provider, targetsOk(seen));
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
@@ -2521,7 +2468,7 @@ describe('B2b: acting tool ports are wired', () => {
       },
     ]);
     // The store closure added the guild scope; the key derives from the invocation.
-    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toMatchObject([
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toMatchObject([
       {
         text: 'Bring batteries',
         creatorId: OWNER,
@@ -2531,13 +2478,13 @@ describe('B2b: acting tool ports are wired', () => {
     ]);
     expect(
       assistantRepo
-        .listSkillActivity(t.scopes.forGuild(GUILD), 10)
+        .listSkillActivity(h.t.scopes.forGuild(GUILD), 10)
         .find((a) => a.skillId === 'reminders'),
     ).toMatchObject({ outcome: 'completed', actorId: OWNER });
   });
 
   it('propose_memory through chat files a draft via the wired port', async () => {
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2546,13 +2493,13 @@ describe('B2b: acting tool ports are wired', () => {
       { text: 'Filed.', model: 'model-a' },
     ]);
     const seen: unknown[] = [];
-    const service = serviceWith(provider, targetsOk(seen));
+    const service = h.serviceWith(provider, targetsOk(seen));
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'remember the build preference' },
       source: 'slash-command',
@@ -2560,7 +2507,7 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(result.ok).toBe(true);
     expect(result.ok === true && result.content).toContain('Filed.');
-    expect(assistantRepo.listDecisions(t.scopes.forGuild(GUILD))).toMatchObject([
+    expect(assistantRepo.listDecisions(h.t.scopes.forGuild(GUILD))).toMatchObject([
       {
         kind: 'memory',
         summary: 'Prefers morning builds',
@@ -2602,15 +2549,15 @@ describe('B2b: acting tool ports are wired', () => {
         return next;
       },
     };
-    const service = serviceWith(provider, { memberChannels: async () => [] });
+    const service = h.serviceWith(provider, { memberChannels: async () => [] });
     const result = await service.tryIt({
       behaviourId: 'direct',
       question: 'remind me to bring batteries',
       accountUsername: 'owner-name',
     });
     expect(result.answer).toBe('Here is what I would do.');
-    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toEqual([]);
-    expect(assistantRepo.listDecisions(t.scopes.forGuild(GUILD))).toEqual([]);
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toEqual([]);
+    expect(assistantRepo.listDecisions(h.t.scopes.forGuild(GUILD))).toEqual([]);
     // No acting tool is offered to the model...
     for (const names of declared)
       for (const name of ACTING_TOOLS) expect(names).not.toContain(name);
@@ -2631,13 +2578,13 @@ describe('B2b: acting tool ports are wired', () => {
         return { text: 'Hi.', model: 'model-a' };
       },
     };
-    const service = serviceWith(provider, { memberChannels: async () => [] });
+    const service = h.serviceWith(provider, { memberChannels: async () => [] });
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'hi' },
       source: 'slash-command',
@@ -2651,7 +2598,7 @@ describe('B2b: acting tool ports are wired', () => {
 
   it('a member refused by the scope cannot act even when the model tries', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2660,13 +2607,13 @@ describe('B2b: acting tool ports are wired', () => {
       { text: 'I could not set it.', model: 'model-a' },
     ]);
     const seen: unknown[] = [];
-    const service = serviceWith(provider, targetsOk(seen));
+    const service = h.serviceWith(provider, targetsOk(seen));
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: MEMBER,
       callerRoleIds: [CLUB_ROLE],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
@@ -2677,12 +2624,104 @@ describe('B2b: acting tool ports are wired', () => {
     expect(result.ok).toBe(true);
     expect(result.ok === true && result.content).toBe('I could not set it.');
     expect(seen).toEqual([]);
-    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toEqual([]);
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toEqual([]);
     expect(
       assistantRepo
-        .listSkillActivity(t.scopes.forGuild(GUILD), 10)
+        .listSkillActivity(h.t.scopes.forGuild(GUILD), 10)
         .find((a) => a.skillId === 'reminders'),
     ).toMatchObject({ outcome: 'denied', actorId: MEMBER });
+  });
+
+  it('a reminder stored in one guild is invisible to another (hard rule 2)', async () => {
+    const GUILD_B = parseGuildId('345678901234567891');
+    guildRepo.upsertGuild(h.t.scopes.forGuild(GUILD_B), { name: 'other', now: NOW });
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const writer = h.scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'Reminder noted.', model: 'model-a' },
+    ]);
+    const seen: unknown[] = [];
+    const serviceA = h.serviceWith(writer, targetsOk(seen));
+    const stored = await serviceA.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-iso-a',
+    });
+    expect(stored.ok).toBe(true);
+    const reminderId = assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))[0]?.id;
+    expect(reminderId).toMatch(/^rem_int-iso-a_0$/);
+    // From guild B the same id is unknown: get (via edit), listForCreator
+    // and listAll (via my_reminders) see nothing, and update and cancel fail.
+    const toolTexts: (readonly string[])[] = [];
+    const probing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: (() => {
+        let round = 0;
+        return async (req: Parameters<TextProvider['generateText']>[0]) => {
+          toolTexts.push(
+            (req.messages as readonly { role: string; text: string }[])
+              .filter((m) => m.role === 'tool')
+              .map((m) => m.text),
+          );
+          round += 1;
+          if (round === 1)
+            return {
+              text: '',
+              model: 'model-a',
+              toolCalls: [
+                { name: 'edit_reminder', args: { reminderId, text: 'Changed' } },
+                { name: 'cancel_reminder', args: { reminderId } },
+                { name: 'my_reminders', args: {} },
+                { name: 'my_reminders', args: { all: true } },
+              ],
+            };
+          return { text: 'Checked.', model: 'model-a' };
+        };
+      })(),
+    };
+    const probingService = createAssistantService(
+      h.t.scopes.forGuild(GUILD_B),
+      h.t.scopes.instance(),
+      B2B_CONFIG,
+      () => B2B_NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [h.usable(probing)],
+    );
+    const checked = await probingService.invoke({
+      guildId: GUILD_B,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: { ...h.direct, guildId: GUILD_B },
+      command: 'ask',
+      input: { question: 'edit, cancel and list that reminder' },
+      source: 'slash-command',
+      invocationId: 'int-iso-c',
+    });
+    expect(checked.ok).toBe(true);
+    const answers = toolTexts.at(-1) ?? [];
+    expect(answers[0]).toContain("couldn't find");
+    expect(answers[1]).toContain("couldn't find");
+    expect(answers[2]).toContain('No upcoming reminders.');
+    expect(answers[3]).toContain('No upcoming reminders.');
+    // Guild A's row is untouched: still scheduled, still exactly one.
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toMatchObject([
+      { text: 'Bring batteries', status: 'scheduled' },
+    ]);
   });
 });
 
@@ -2692,119 +2731,37 @@ describe('B2b: acting tool ports are wired', () => {
  * Sources line — and recorded on the trace detail as `actions`.
  */
 describe('B2b: action summaries in answers', () => {
-  const GUILD = parseGuildId('234567890123456789');
-  const CHANNEL = '567890123456789012';
-  const CLUB_ROLE = '678901234567890123';
-  const OWNER = '345678901234567890';
-  const NOW = 1_800_000_000_000;
+  const GUILD = B2B_GUILD;
+  const CHANNEL = B2B_CHANNEL;
+  const OWNER = B2B_OWNER;
+  const NOW = B2B_NOW;
 
-  const config = parseConfig({
-    DISCORD_BOT_TOKEN: 'test-token',
-    DISCORD_APPLICATION_ID: '123456789012345678',
-    BANANASAURS_GUILD_ALLOWLIST: GUILD,
-    BANANASAURS_OWNER_USER_ID: OWNER,
-    AI_PROVIDER: 'off',
-    AI_MODEL: 'fixture-model',
-    AI_PROFILE_COST_CLASS: 'free',
-  });
-
-  const direct = {
-    id: 'direct',
-    guildId: GUILD,
-    surface: 'direct-command' as const,
-    name: 'Club',
-    systemPrompt: 'Canadian English.',
-    promptVersion: 1,
-    callerRoleIds: [CLUB_ROLE],
-    reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'reminders'],
-    resourceIds: [],
-    enabled: true,
-  };
-
-  const usable = (provider: TextProvider): ChainEntry => ({
-    providerId: 'gemini',
-    model: 'model-a',
-    keyId: 'key_a',
-    keyLabel: 'Key A',
-    provider,
-    skip: undefined,
-    mayTrain: false,
-    rpmLimit: null,
-    rpdLimit: null,
-  });
-
-  let t: MigratedTestDatabase;
+  let h: ReturnType<typeof setupB2b>;
   beforeEach(() => {
-    t = openMigratedTestDatabase();
-    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Key A',
-      apiKeyEnc: 'sealed-key-a',
-      now: NOW,
-      keyId: 'key_a',
-    });
-    assistantProvidersRepo.addKey(t.scopes.instance(), {
-      provider: 'gemini',
-      label: 'Test provider',
-      apiKeyEnc: 'sealed-key-test',
-      now: NOW,
-      keyId: 'key_test',
-    });
-    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
-    assistantRepo.putSkillGrant(
-      t.scopes.forGuild(GUILD),
-      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
-      NOW,
-    );
+    h = setupB2b(['search-club', 'reminders']);
   });
-  afterEach(() => t.close());
+  afterEach(() => h.t.close());
 
-  const scripted = (responses: GenerateTextResponse[]): TextProvider => {
-    const queue = [...responses];
-    return {
-      id: 'fake',
-      capabilities: new Set(['text', 'tools']),
-      generateText: async () => {
-        const next = queue.shift();
-        if (next === undefined) throw new Error('no scripted response');
-        return next;
+  const targetsOk = () => ({
+    memberChannels: async () => [],
+    resolveReminderTargets: async () => ({
+      ok: true as const,
+      targets: {
+        channelId: CHANNEL,
+        channelName: 'general',
+        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+        memberNames: [],
+        roleNames: [],
       },
-    };
-  };
-
-  const serviceWith = (provider: TextProvider, ports: AssistantServiceTestPorts = {}) =>
-    createAssistantService(
-      t.scopes.forGuild(GUILD),
-      t.scopes.instance(),
-      config,
-      () => NOW,
-      ports,
-      undefined,
-      undefined,
-      {
-        memberChannels: async () => [],
-        resolveReminderTargets: async () => ({
-          ok: true as const,
-          targets: {
-            channelId: CHANNEL,
-            channelName: 'general',
-            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
-            memberNames: [],
-            roleNames: [],
-          },
-        }),
-      },
-      () => [usable(provider)],
-    );
+    }),
+  });
 
   const actionsOf = (result: { detail?: AssistantTraceDetail }): readonly string[] =>
     result.detail?.actions ?? [];
 
   it('the posted answer ends with the summary and the trace records it', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2812,13 +2769,13 @@ describe('B2b: action summaries in answers', () => {
       },
       { text: 'All set.', model: 'model-a' },
     ]);
-    const service = serviceWith(provider);
+    const service = h.serviceWith(provider, targetsOk());
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
@@ -2832,7 +2789,7 @@ describe('B2b: action summaries in answers', () => {
   });
 
   it('the Sources line follows the summary when there is one', async () => {
-    assistantRepo.putResource(t.scopes.forGuild(GUILD), {
+    assistantRepo.putResource(h.t.scopes.forGuild(GUILD), {
       id: 'club-guide',
       guildId: GUILD,
       title: 'Club Guide',
@@ -2842,7 +2799,7 @@ describe('B2b: action summaries in answers', () => {
       reviewedAt: new Date(NOW).toISOString(),
     });
     const when = new Date(NOW + 3_600_000).toISOString();
-    const provider = scripted([
+    const provider = h.scripted([
       {
         text: '',
         model: 'model-a',
@@ -2850,7 +2807,7 @@ describe('B2b: action summaries in answers', () => {
       },
       { text: 'See the guide. [S1]', model: 'model-a' },
     ]);
-    const service = serviceWith(provider, {
+    const service = h.serviceWith(provider, targetsOk(), {
       cacheSearch: () => [
         {
           resourceId: 'club-guide',
@@ -2866,7 +2823,7 @@ describe('B2b: action summaries in answers', () => {
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [],
-      behaviour: direct,
+      behaviour: h.direct,
       command: 'ask',
       input: { question: 'what does the guide say; remind me to bring batteries' },
       source: 'slash-command',

@@ -12,7 +12,7 @@ import type { InteractionRef, Snowflake } from '../discord/port.js';
 import type { GuildId, SnowflakeId } from '../ids.js';
 import { parseSnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
-import type { SlashResponder } from '../ops/commands/status-slash.js';
+import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import { MANUAL_RULE_ID } from './warn.js';
 
 /**

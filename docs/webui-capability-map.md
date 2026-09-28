@@ -2,8 +2,10 @@
 
 Owner acceptance standard (2026-09-20): every operator action and every piece
 of operator information available from the `bananasaurs` CLI is also available
-in the dashboard — no drop-to-terminal gaps. This file is the checklist that
-claim is held to; every row was verified against the code, not memory.
+in the dashboard — no drop-to-terminal gaps. In Discord, `/mod` and its
+subcommands are the only slash commands; assistant skills are reached by
+mentioning the bot. This file is the checklist that claim is held to; every row
+was verified against the code, not memory.
 
 Pages live under `packages/dashboard/src/pages`, routes under
 `packages/http/src/routes`, commands under `packages/core/src/ops/commands`.

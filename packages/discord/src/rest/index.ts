@@ -23,10 +23,7 @@ export { toDiscordApiError } from './errors.js';
  */
 export {
   MOD_COMMAND,
-  RELEASE_1_COMMANDS,
-  RELEASE_2_COMMANDS,
-  RELEASE_3_COMMANDS,
-  STATUS_COMMAND,
+  REGISTERED_COMMANDS,
   registerGuildCommands,
   type GuildCommandDefinition,
   type GuildCommandOption,

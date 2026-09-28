@@ -231,138 +231,8 @@ export const MOD_COMMAND: GuildCommandDefinition = {
   ],
 };
 
-/**
- * `/status` — the bot's own health, as `GET /api/health` reports it.
- *
- * Open to every guild member, with no capability check and no
- * `default_member_permissions` (ADR 0033): the data is "is the bot connected,
- * is a safety control silently refusing everything, is the queue moving", and
- * the member watching a panel do nothing is the person best placed to ask.
- */
-export const STATUS_COMMAND: GuildCommandDefinition = {
-  name: 'status',
-  description: 'Show whether the bot is connected, whether it is paused, and how busy it is',
-  type: ApplicationCommandType.ChatInput,
-};
-
-/**
- * Every command Release 1 registers.
- *
- * The registration endpoint **replaces** a guild's command set rather than
- * merging into it, so this array is the whole truth: removing an entry here and
- * restarting is how a command is deregistered, and there is no second cleanup
- * path that could be forgotten.
- */
-export const RELEASE_1_COMMANDS: readonly GuildCommandDefinition[] = [STATUS_COMMAND];
-
-/**
- * Every command Release 2 registers — Release 1's set plus `/mod`
- * (REVIEW.md §E: "Release 2 — Bananasaurs replaces the automod"). Kept as its
- * own named array, not a mutation of `RELEASE_1_COMMANDS`, for the same
- * reason that array is named for its release rather than called
- * `COMMANDS`: the next release's set gets its own name too, and nothing here
- * has to guess which array today's daemon should register.
- */
-export const RELEASE_2_COMMANDS: readonly GuildCommandDefinition[] = [
-  ...RELEASE_1_COMMANDS,
-  MOD_COMMAND,
-];
-
-const requiredText = (
-  name: string,
-  description: string,
-  maxLength = 2_000,
-): GuildCommandOption => ({
-  name,
-  description,
-  type: ApplicationCommandOptionType.String,
-  required: true,
-  max_length: maxLength,
-});
-
-export const ASK_COMMAND: GuildCommandDefinition = {
-  name: 'ask',
-  description: 'Ask the club assistant a grounded question',
-  type: ApplicationCommandType.ChatInput,
-  options: [requiredText('question', 'What you want to know')],
-};
-export const FIND_COMMAND: GuildCommandDefinition = {
-  name: 'find',
-  description: 'Find information in club sources you can access',
-  type: ApplicationCommandType.ChatInput,
-  options: [requiredText('query', 'What to find')],
-};
-export const REMIND_COMMAND: GuildCommandDefinition = {
-  name: 'remind',
-  description: 'Schedule a reminder after reviewing its destination',
-  type: ApplicationCommandType.ChatInput,
-  options: [
-    requiredText('when', 'When to send it, including date or time zone'),
-    requiredText('text', 'Reminder text'),
-  ],
-};
-export const REMEMBER_COMMAND: GuildCommandDefinition = {
-  name: 'remember',
-  description: 'Propose a memory entry for owner review',
-  type: ApplicationCommandType.ChatInput,
-  options: [requiredText('request', 'What the assistant should consider remembering', 2_000)],
-};
-export const DECISION_COMMAND: GuildCommandDefinition = {
-  name: 'decision',
-  description: 'Draft a club decision from the evidence you provide',
-  type: ApplicationCommandType.ChatInput,
-  options: [
-    requiredText('topic', 'Decision topic'),
-    {
-      name: 'context',
-      description: 'Optional context or constraints',
-      type: ApplicationCommandOptionType.String,
-      max_length: 2_000,
-    },
-  ],
-};
-export const REVIEW_PLAN_COMMAND: GuildCommandDefinition = {
-  name: 'review-plan',
-  description: 'Review a club plan without taking action',
-  type: ApplicationCommandType.ChatInput,
-  options: [requiredText('plan', 'Plan to review', 4_000)],
-};
-
-const assistantDraftCommand = (name: string, description: string): GuildCommandDefinition => ({
-  name,
-  description,
-  type: ApplicationCommandType.ChatInput,
-  options: [requiredText('request', 'What you need', 4_000)],
-});
-export const ONBOARD_COMMAND = assistantDraftCommand('onboard', 'Get sourced onboarding guidance');
-export const AGENDA_COMMAND = assistantDraftCommand('agenda', 'Draft a meeting agenda');
-export const SUMMARISE_COMMAND = assistantDraftCommand(
-  'summarise',
-  'Summarise supplied meeting notes',
-);
-export const ANNOUNCE_COMMAND = assistantDraftCommand('announce', 'Draft a club announcement');
-export const CHECKLIST_COMMAND = assistantDraftCommand(
-  'checklist',
-  'Draft an event or project checklist',
-);
-export const HANDOFF_COMMAND = assistantDraftCommand('handoff', 'Draft a team handoff');
-
-/** Release 3 keeps the privacy controls in the dashboard; it does not register /mydata or /forgetme. */
-export const RELEASE_3_COMMANDS: readonly GuildCommandDefinition[] = [
-  ...RELEASE_2_COMMANDS,
-  ASK_COMMAND,
-  FIND_COMMAND,
-  REMIND_COMMAND,
-  REMEMBER_COMMAND,
-  DECISION_COMMAND,
-  REVIEW_PLAN_COMMAND,
-  ONBOARD_COMMAND,
-  AGENDA_COMMAND,
-  SUMMARISE_COMMAND,
-  ANNOUNCE_COMMAND,
-  CHECKLIST_COMMAND,
-  HANDOFF_COMMAND,
-];
+// ADR 0086: only moderator commands are slash commands; everything else is asked of the bot.
+export const REGISTERED_COMMANDS: readonly GuildCommandDefinition[] = [MOD_COMMAND];
 
 /** What one guild's registration did, so the caller can log it per guild. */
 export type GuildRegistration =
@@ -404,7 +274,7 @@ export interface RegisterCommandsDeps {
 export async function registerGuildCommands(
   deps: RegisterCommandsDeps,
 ): Promise<readonly GuildRegistration[]> {
-  const commands = deps.commands ?? RELEASE_1_COMMANDS;
+  const commands = deps.commands ?? REGISTERED_COMMANDS;
   const results: GuildRegistration[] = [];
 
   // Sequential, not `Promise.all`: ADR 0018 configures the REST client to

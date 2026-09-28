@@ -609,8 +609,9 @@ export const createAssistantService = (
         userId: input.userId,
         now,
         timeZone: currentConfig.BANANASAURS_TIME_ZONE,
-        // Try-it counts as the owner for scopes (`config.write` authorised
-        // the caller), so it sees the owner view of the acting tools.
+        // Try-it counts as the owner for scope checks (`config.write`
+        // authorised the caller), but `skipActions` hides every acting tool
+        // there — this grants the owner view of scopes, never writes.
         isOwner: scopeOwner,
         skillAllowed,
         invocationKey,

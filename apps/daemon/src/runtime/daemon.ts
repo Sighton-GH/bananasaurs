@@ -2,7 +2,6 @@ import type Database from 'better-sqlite3';
 import { Events, type Client } from 'discord.js';
 import {
   createDispatcher,
-  createStatusCommandSubscriber,
   OPERATOR_COMMANDS,
   parseGuildId,
   Pipeline,
@@ -321,9 +320,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     logger,
   });
 
-  // Shared by the operator dispatcher, the dashboard API and the `/status`
-  // slash command: all three need "the process-level facts" and none should
-  // build its own second copy of them.
+  // Shared by the operator dispatcher and dashboard API so neither builds its
+  // own second copy of the process-level facts.
   const instance = opsInstanceFor({
     config,
     client,
@@ -338,7 +336,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
   /**
    * The dashboard's seam into per-guild ports (slice 14, `packages/http`
-   * `HttpDeps.portsFor`), and from slice 15 the `/status` command's too.
+   * `HttpDeps.portsFor`).
    *
    * The same expression `contextFor` below uses to build the operator
    * dispatcher's `OpsPorts`, keyed by `scope.guildId` instead of a bare guild
@@ -366,42 +364,6 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     );
   };
 
-  /**
-   * `/status`, one subscriber per allowlisted guild (ADR 0033).
-   *
-   * Built here rather than in `buildGuildRuntime` because it needs `OpsPorts`
-   * and `OpsInstance`, and `opsPortsFor` takes the runtime that `buildGuildRuntime`
-   * is in the middle of producing — this is the first point at which both exist.
-   *
-   * **The allowlist check is structural, not a line of code inside the handler.**
-   * `byGuild` is built from `BANANASAURS_GUILD_ALLOWLIST` and nothing else, so a
-   * guild id arriving from Discord cannot produce a scope by being looked up
-   * here — it either matches an entry that was already allowlisted or it reaches
-   * no subscriber at all, having been refused twice already (the translation
-   * layer's `isGuildAllowed`, then the pipeline's gate 1). `scopedTo` then pins
-   * each subscriber to the guild it was built for, exactly as it does for every
-   * other subscriber, which is what stops one guild's command being answered
-   * with another guild's numbers.
-   */
-  const statusSubscribers = [...byGuild.entries()].map(([guildId, { scope }]) =>
-    scopedTo(
-      guildId,
-      createStatusCommandSubscriber({
-        guildId: parseGuildId(guildId),
-        ports: () => portsFor(scope),
-        instance,
-        responder: {
-          defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-          respond: async (ref, message) => {
-            await discord.respondToInteraction(guildId, ref, message);
-          },
-        },
-        now,
-        logger,
-      }),
-    ),
-  );
-
   const pipeline = new Pipeline({
     allowlist,
     dedupe: {
@@ -411,7 +373,6 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       ...[...byGuild.values()].flatMap(({ runtime }) =>
         runtime.subscribers.map((s) => scopedTo(runtime.guildId, s)),
       ),
-      ...statusSubscribers,
     ],
     leaveGuild: (guildId) => discord.leaveGuild(guildId),
     logger,

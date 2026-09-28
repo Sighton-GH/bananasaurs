@@ -61,6 +61,7 @@ const OWNER = '345678901234567890';
 const MEMBER = '456789012345678901';
 const CHANNEL = '567890123456789012';
 const CLUB_ROLE = '678901234567890123';
+const OTHER_ROLE = '900123456789012345';
 const IT_CHANNEL = '789012345678901234';
 const REVIEWER_ROLE = '890123456789012345';
 const NOW = 1_800_000_000_000;
@@ -524,7 +525,7 @@ describe('Release 3 review fixes', () => {
     );
     assistantRepo.putSkillGrant(
       scope,
-      { skillId: 'reminders', roleIds: [CLUB_ROLE], userIds: [] },
+      { skillId: 'reminders', mode: 'roles', roleIds: [CLUB_ROLE], userIds: [] },
       NOW,
     );
   });
@@ -835,6 +836,104 @@ describe('Release 3 review fixes', () => {
     expect(
       assistantRepo.listSkillActivity(scope, 10).find((a) => a.skillId === 'reminders'),
     ).toMatchObject({ outcome: 'completed', actorId: OWNER });
+  });
+
+  it('roles-mode reminders: a member with the role acts, one without is refused', async () => {
+    const when = new Date(NOW + 60_000).toISOString();
+    const queue = [
+      {
+        text: '',
+        model: 'fixture-model',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'Reminder noted.', model: 'fixture-model' },
+    ];
+    const generateText = vi.fn(async () => {
+      const next = queue.shift();
+      if (next === undefined) throw new Error('no scripted response');
+      return next;
+    });
+    const provider: TextProvider = {
+      id: 'fixture',
+      capabilities: new Set(['text', 'tools']),
+      generateText,
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      {
+        memberChannels: async () => [],
+        resolveReminderTargets: async () => ({
+          ok: true as const,
+          targets: {
+            channelId: CHANNEL,
+            channelName: 'general',
+            mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+            memberNames: [],
+            roleNames: [],
+          },
+        }),
+      },
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_test',
+          keyLabel: 'Key test',
+          provider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+    );
+    const scope = t.scopes.forGuild(GUILD);
+    // The fixture grants `reminders` to CLUB_ROLE in roles mode: a member
+    // with it completes the acting tool through chat.
+    const acted = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-roles-1',
+    });
+    expect(acted.ok).toBe(true);
+    expect(assistantRepo.listReminders(scope)).toMatchObject([
+      { text: 'Bring batteries', creatorId: MEMBER },
+    ]);
+    // A member without the role is refused before the model ever runs, and
+    // nothing is stored. The invocation id is present, so the refusal proves
+    // the role check rather than the idempotency-key rule.
+    const refused = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [OTHER_ROLE],
+      behaviour: { ...direct, callerRoleIds: [CLUB_ROLE, OTHER_ROLE] },
+      command: 'remind',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-roles-2',
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.content).toBe(
+      "You don't have access to that assistant skill. No action was taken.",
+    );
+    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(assistantRepo.listReminders(scope)).toHaveLength(1);
+    expect(
+      assistantRepo.listSkillActivity(scope, 10).find((a) => a.skillId === 'reminders'),
+    ).toMatchObject({ outcome: 'denied', actorId: MEMBER });
   });
 });
 

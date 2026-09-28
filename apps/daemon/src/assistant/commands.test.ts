@@ -123,68 +123,29 @@ const harness = (
     }),
   };
 };
-const slash = (name: string, options: { name: string; value: string }[]): DomainEvent => ({
-  kind: 'slashCommand',
-  guildId,
-  receivedAtMs: 1,
-  interactionId: '678901234567890123',
-  token: 'secret',
-  commandName: name,
-  subcommandPath: [],
-  options,
-  channelId,
-  userId,
-});
 
 describe('assistant command subscriber', () => {
-  it.each([
-    ['ask', [{ name: 'question', value: 'When is the meeting?' }]],
-    ['find', [{ name: 'query', value: 'handbook' }]],
-    [
-      'remind',
-      [
-        { name: 'when', value: 'Monday 9 am' },
-        { name: 'text', value: 'Bring cones' },
-      ],
-    ],
-    ['decision', [{ name: 'topic', value: 'Battery supplier' }]],
-    ['review-plan', [{ name: 'plan', value: 'Test on Friday' }]],
-    ['onboard', [{ name: 'request', value: 'What should a new member do?' }]],
-    ['agenda', [{ name: 'request', value: 'Monday tech meeting' }]],
-    ['summarise', [{ name: 'request', value: 'Notes from the build session' }]],
-    ['announce', [{ name: 'request', value: 'Battery workshop moved' }]],
-    ['checklist', [{ name: 'request', value: 'Competition packing' }]],
-    ['handoff', [{ name: 'request', value: 'Electrical to software' }]],
-  ])('defers and routes /%s through the queue to the service', async (name, options) => {
+  it.each(['ask', 'remind'])('ignores the removed /%s command', async (name) => {
     const h = harness();
-    await h.subscriber.handle(slash(name, options));
-    expect(h.defer).toHaveBeenCalledTimes(1);
-    // The invoke must NOT happen inline (B2): the serial dispatch chain is
-    // already free, and the queued job carries the whole invocation.
+    const event: DomainEvent = {
+      kind: 'slashCommand',
+      guildId,
+      receivedAtMs: 1,
+      interactionId: '678901234567890123',
+      token: 'secret',
+      commandName: name,
+      subcommandPath: [],
+      options: [],
+      channelId,
+      userId,
+    };
+    await h.subscriber.handle(event);
+    expect(h.defer).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(0);
     expect(h.invoke).not.toHaveBeenCalled();
-    expect(h.queued).toHaveLength(1);
-    expect(h.queued[0]).toEqual(
-      expect.objectContaining({ command: name, source: 'slash-command' }),
-    );
-    await h.flush();
-    expect(h.invoke).toHaveBeenCalledWith(
-      expect.objectContaining({ command: name, source: 'slash-command' }),
-    );
-    expect(h.respond).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        content: 'Grounded answer.',
-        allowedMentions: { parse: [] },
-      }),
-    );
   });
-
-  it('always sets invocationId, and messageId plus reply references for mentions', async () => {
+  it('sets messageId and reply references for mentions', async () => {
     const h = harness();
-    await h.subscriber.handle(slash('ask', [{ name: 'question', value: 'When is the meeting?' }]));
-    expect(h.queued[0]?.invocationId).toBe('678901234567890123');
-    expect(h.queued[0]?.messageId).toBeUndefined();
-
     await h.subscriber.handle({
       kind: 'messageCreate',
       parentChannelId: undefined,
@@ -207,7 +168,7 @@ describe('assistant command subscriber', () => {
       referencedMessageId: '890123456789012399',
       referencedAuthorId: '901234567890123456',
     });
-    expect(h.queued[1]).toMatchObject({
+    expect(h.queued[0]).toMatchObject({
       invocationId: '890123456789012345',
       messageId: '890123456789012345',
       referencedMessageId: '890123456789012399',
@@ -524,15 +485,6 @@ describe('assistant command subscriber', () => {
         source: 'mention',
       }),
     ]);
-  });
-
-  it('does not expose removed privacy commands', async () => {
-    const h = harness();
-    await h.subscriber.handle(slash('mydata', []));
-    await h.subscriber.handle(slash('forgetme', []));
-    expect(h.defer).not.toHaveBeenCalled();
-    expect(h.invoke).not.toHaveBeenCalled();
-    expect(h.queued).toHaveLength(0);
   });
 
   it('fails closed on an ambiguous mention without calling the service', async () => {

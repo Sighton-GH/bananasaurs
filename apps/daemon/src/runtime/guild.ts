@@ -709,12 +709,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
         recordCaseEvent: (input) => modCaseRepo.recordCaseEvent(scope, input),
       },
-      responder: {
-        defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-        respond: async (ref, message) => {
-          await discord.respondToInteraction(guildId, ref, message);
-        },
-      },
+      responder: {},
       now,
       logger,
     } satisfies HistoryDeps,
@@ -861,11 +856,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
-    // Release 3 assistant: slash commands and @behaviour mentions. The
-    // service owns permission, safety and provider eligibility; the Discord
-    // layer never calls a provider itself. One service instance is shared by
-    // the subscriber (cheap inline routing) and the job handler (the
-    // expensive invoke, off the serial dispatch chain — B2).
+
+    // Assistant skills route only through mentions; one service handles routing and jobs (B2).
     createAssistantCommandSubscriber({
       guildId,
       botUserId,
@@ -881,7 +873,6 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         });
         return { enqueued: result.enqueued };
       },
-      sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
       logger,
       sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
