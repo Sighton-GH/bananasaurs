@@ -100,8 +100,8 @@ function WhatTheAiSawTrace({ trace }: { readonly trace: TraceDetailResponse['tra
         <div>
           <dt className="inline text-ink-muted">Tokens: </dt>
           <dd className="inline">
-            {trace.usage.promptTokens ?? '—'} prompt · {trace.usage.completionTokens ?? '—'}{' '}
-            answer · {trace.usage.thinkingTokens ?? '—'} thinking
+            {trace.usage.promptTokens ?? '—'} prompt · {trace.usage.completionTokens ?? '—'} answer
+            · {trace.usage.thinkingTokens ?? '—'} thinking
           </dd>
         </div>
       </dl>
@@ -146,9 +146,7 @@ function WhatTheAiSawTrace({ trace }: { readonly trace: TraceDetailResponse['tra
             <div>
               <dt className="inline text-ink-muted">History turns: </dt>
               <dd className="inline">
-                {included.historyTurns === undefined
-                  ? '—'
-                  : orDash(String(included.historyTurns))}
+                {included.historyTurns === undefined ? '—' : orDash(String(included.historyTurns))}
               </dd>
             </div>
           </dl>
