@@ -2758,9 +2758,8 @@ describe('B2b: action summaries in answers', () => {
     );
 
   const actionsOf = (result: { detail?: unknown }): readonly string[] =>
-    (
-      result.detail as unknown as { readonly actions?: readonly string[] } | undefined
-    )?.actions ?? [];
+    (result.detail as unknown as { readonly actions?: readonly string[] } | undefined)?.actions ??
+    [];
 
   it('the posted answer ends with the summary and the trace records it', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
