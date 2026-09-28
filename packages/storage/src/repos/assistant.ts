@@ -596,14 +596,18 @@ export const rescheduleReminder = (
   id: string,
   nextDueAt: number,
   reason?: string,
+  options?: { readonly countDelivered?: boolean },
 ): void =>
   write(scope, ({ db }) => {
+    const countDelivered = options?.countDelivered ?? true;
     const result = db
       .update(assistantReminders)
       .set({
         status: 'scheduled',
         dueAt: nextDueAt,
-        deliveredCount: sql`${assistantReminders.deliveredCount} + 1`,
+        ...(countDelivered
+          ? { deliveredCount: sql`${assistantReminders.deliveredCount} + 1` }
+          : {}),
         claimedAt: null,
         nextAttemptAt: null,
         failureReason: reason ?? null,

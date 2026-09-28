@@ -45,8 +45,15 @@ export interface ReminderStore {
    * Moves a claimed reminder to its next occurrence. `reason` keeps the last
    * delivery error visible on a series that continues past a terminal
    * failure; omit it on the success path so a past error does not linger.
+   * A failed occurrence must not count as delivered, so the failure path
+   * passes `{ countDelivered: false }`.
    */
-  reschedule(id: string, nextDueAt: number, reason?: string): Promise<void>;
+  reschedule(
+    id: string,
+    nextDueAt: number,
+    reason?: string,
+    options?: { readonly countDelivered?: boolean },
+  ): Promise<void>;
   fail(id: string, reason: string): Promise<void>;
   /**
    * Returns a claimed reminder to `scheduled` for a later pass, keeping the
@@ -208,13 +215,13 @@ export const deliverDueReminders = async (
                 reminder.recurrence,
                 reminder.dueAt,
                 Math.max(now, reminder.dueAt),
-                reminder.deliveredCount + 1,
+                reminder.deliveredCount,
               );
         if (next === undefined) {
           await store.fail(reminder.id, reason);
           failed += 1;
         } else {
-          await store.reschedule(reminder.id, next, reason);
+          await store.reschedule(reminder.id, next, reason, { countDelivered: false });
           retried += 1;
         }
       } else {
