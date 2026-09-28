@@ -565,6 +565,8 @@ describe('reminders', () => {
         text: '  Monday meeting  ',
         dueAt: 2_000,
         createdAt: 1_000,
+        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+        deliveredCount: 0,
       },
       {
         create,
@@ -573,6 +575,7 @@ describe('reminders', () => {
         complete: vi.fn(),
         fail: vi.fn(),
         retry: vi.fn(),
+        reschedule: vi.fn(),
       },
       1_000,
     );
@@ -588,6 +591,7 @@ describe('reminders', () => {
       complete: vi.fn(),
       fail: vi.fn(),
       retry: vi.fn(),
+      reschedule: vi.fn(),
     };
     const base = {
       id: 'y',
@@ -595,6 +599,8 @@ describe('reminders', () => {
       creatorId: 'u1',
       destinationId: 'c1',
       createdAt: 1_000,
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
     };
     await expect(
       createReminder({ ...base, text: 'ok', dueAt: Number.NaN }, rejectStore, 1_000),
@@ -613,6 +619,7 @@ describe('reminders', () => {
       complete: vi.fn(async () => undefined),
       fail: vi.fn(async () => undefined),
       retry: vi.fn(async () => undefined),
+      reschedule: vi.fn(async () => undefined),
     };
     const delivery = { send: vi.fn(async () => undefined) };
     await expect(deliverDueReminders(store, delivery, 2_000)).resolves.toEqual({
