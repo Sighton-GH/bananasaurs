@@ -17,6 +17,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
+import { WhatTheAiSaw } from './what-the-ai-saw.js';
 
 const feedbackBadge = (feedback: 'up' | 'down') => (
   <Badge>
@@ -70,6 +71,9 @@ function Turn({ turn }: { readonly turn: ConversationTurnRow }) {
           )}
           {turn.traceId !== undefined && <Link href={historyUrl(turn.traceId)}>View details</Link>}
         </div>
+      )}
+      {turn.role === 'assistant' && turn.traceId !== undefined && (
+        <WhatTheAiSaw traceId={turn.traceId} />
       )}
     </div>
   );

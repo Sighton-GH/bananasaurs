@@ -104,6 +104,48 @@ describe('AssistantConversationPage', () => {
     expect((link as HTMLAnchorElement).pathname).toBe('/assistant/history/trace-1');
   });
 
+  it('offers What the AI saw inline on the traced assistant turn', async () => {
+    stubFetch([
+      { url: '/api/assistant/conversations/conv-1', body: DETAIL },
+      {
+        url: '/api/assistant/traces/trace-1',
+        body: {
+          trace: {
+            traceId: 'trace-1',
+            attempts: [{ provider: 'openrouter', model: 'conv-model', outcome: 'ok', ms: 100 }],
+            usage: { promptTokens: 30, completionTokens: 8 },
+            sections: [
+              {
+                name: 'user-message',
+                chars: 21,
+                estTokens: 6,
+                text: 'where is the handbook?',
+              },
+            ],
+            toolCalls: [],
+          },
+        },
+      },
+    ]);
+    const { hook } = memoryLocation({ path: '/assistant/conversations/conv-1' });
+    renderWithSession(
+      <Router hook={hook}>
+        <Route path="/assistant/conversations/:id" component={AssistantConversationPage} />
+      </Router>,
+    );
+    await screen.findByText('In the resources.');
+    // One button: only the assistant turn with a trace gets it, and View details stays.
+    expect(screen.getAllByRole('button', { name: 'What the AI saw' })).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'View details' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'What the AI saw' }));
+    });
+    expect(await screen.findByText('conv-model')).toBeTruthy();
+    expect(
+      screen.getByText("The member's message and evidence · 21 characters · about 6 tokens"),
+    ).toBeTruthy();
+  });
+
   it('badges a dashboard-test conversation and an up-vote', async () => {
     renderDetail();
     expect(await screen.findByText('Dashboard test')).toBeTruthy();
