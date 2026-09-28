@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 11 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(11);
+  it('has 12 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(12);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
@@ -33,6 +33,18 @@ describe('instance settings registry', () => {
     const def = settingDefinition('resources.fetchHeaderHosts');
     expect(def?.schema.safeParse(['sfuracerbot.ca']).success).toBe(true);
     expect(def?.schema.safeParse(['https://x.ca']).success).toBe(false);
+  });
+
+  it('channel context defaults to 15 messages and accepts 0–50', () => {
+    const def = settingDefinition('assistant.channelContextMessages');
+    expect(def?.defaultValue).toBe(15);
+    expect(def?.group).toBe('Assistant context');
+    expect(def?.label).toBe('Channel messages sent with each question');
+    expect(def?.schema.safeParse(0).success).toBe(true);
+    expect(def?.schema.safeParse(50).success).toBe(true);
+    expect(def?.schema.safeParse(-1).success).toBe(false);
+    expect(def?.schema.safeParse(51).success).toBe(false);
+    expect(def?.schema.safeParse(7.5).success).toBe(false);
   });
 
   it('defaults equal today\u2019s constants', () => {
