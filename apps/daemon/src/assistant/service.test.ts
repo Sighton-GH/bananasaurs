@@ -7,6 +7,7 @@ import {
   type TextProvider,
 } from '@bananasaurs/core';
 import {
+  archiveRepo,
   assistantProvidersRepo,
   assistantRepo,
   computeDocId,
@@ -3036,5 +3037,210 @@ describe('B2b: action summaries in answers', () => {
     const actions = actionsOf(result);
     expect(actions).toHaveLength(1);
     expect(content).toBe(`See the guide.\n\n${actions[0]}\n\n-# Sources: Club Guide`);
+  });
+});
+
+/**
+ * Slice 4.1 (ADR 0090 decisions 1, 2 and 4): archive search for a channel
+ * answer draws only on `memberChannels(asker) ∩ audienceChannels(channel)`.
+ * Written red first: the audience port does not exist yet, so the audience
+ * limits below fail until the service intersects them.
+ */
+describe('Slice 4.1: archive search is limited to the answer channel audience', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const GENERAL = '567890123456789012';
+  const PRIVATE = '678901234567890123';
+  const CLUB_ROLE = '789012345678901234';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    for (const channelId of [GENERAL, PRIVATE])
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: NOW });
+    archiveRepo.upsertMessage(scope, {
+      messageId: '844444444444444441',
+      channelId: GENERAL,
+      authorId: MEMBER,
+      content: 'sunflower shipment arrives friday',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: '844444444444444442',
+      channelId: PRIVATE,
+      authorId: MEMBER,
+      content: 'sunflower vault combination is secret',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+  });
+  afterEach(() => t.close());
+
+  const memberChannelsBoth = async () => [
+    { id: GENERAL, name: 'general' },
+    { id: PRIVATE, name: 'private' },
+  ];
+
+  const serviceWithDiscord = (
+    discord: Parameters<typeof createAssistantService>[7],
+    chain: Parameters<typeof createAssistantService>[8] = () => [],
+  ) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      discord,
+      chain,
+    );
+
+  const findIn = (
+    channelId: string,
+    discord: Parameters<typeof createAssistantService>[7],
+    invocationId: string,
+  ) =>
+    serviceWithDiscord(discord).invoke({
+      guildId: GUILD,
+      channelId,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'find',
+      input: { query: 'sunflower' },
+      source: 'slash-command',
+      invocationId,
+    });
+
+  it('an asker who can read #private asks in #general: no #private hits', async () => {
+    const result = await findIn(
+      GENERAL,
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+      },
+      'int-aud-general',
+    );
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain('shipment');
+    expect(content).not.toContain('vault');
+  });
+
+  it('the same question asked inside #private reaches #private', async () => {
+    const result = await findIn(
+      PRIVATE,
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([PRIVATE]),
+      },
+      'int-aud-private',
+    );
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain('vault');
+    expect(content).not.toContain('shipment');
+  });
+
+  it('a missing audience port fails closed when a channel is set', async () => {
+    const result = await findIn(GENERAL, { memberChannels: memberChannelsBoth }, 'int-aud-closed');
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.content).toBe(
+      'No matching messages in the channels you can see.',
+    );
+  });
+
+  it('Try it (no channel) keeps the asker-only filter', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn(async (request: { messages: { role: string; text: string }[] }) => {
+        seen.push([...request.messages]);
+        return seen.length === 1
+          ? {
+              text: '',
+              model: 'model-a',
+              toolCalls: [{ name: 'search_archive', args: { query: 'sunflower' } }],
+            }
+          : { text: 'Both mention sunflowers.', model: 'model-a' };
+      }),
+    };
+    const service = serviceWithDiscord(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+      },
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          provider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+    );
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'any sunflower news?',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe('Both mention sunflowers.');
+    const toolTurn = seen[1]?.find((message) => message.role === 'tool');
+    expect(toolTurn?.text).toContain('shipment');
+    expect(toolTurn?.text).toContain('vault');
   });
 });
