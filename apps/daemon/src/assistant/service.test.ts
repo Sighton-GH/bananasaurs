@@ -2983,7 +2983,7 @@ describe('B2b: action summaries in answers', () => {
       invocationId: 'int-summary-1',
     });
     expect(result.ok).toBe(true);
-    expect(result.detail?.toolsOffered).toContain('set_reminder');
+    expect(result.detail?.included?.toolsOffered).toContain('set_reminder');
     const actions = actionsOf(result);
     expect(actions).toHaveLength(1);
     expect(actions[0]).toContain('✅ Reminder set: **Bring batteries**');
@@ -3036,5 +3036,84 @@ describe('B2b: action summaries in answers', () => {
     const actions = actionsOf(result);
     expect(actions).toHaveLength(1);
     expect(content).toBe(`See the guide.\n\n${actions[0]}\n\n-# Sources: Club Guide`);
+  });
+
+  it('records included with the pre-retrieved chunks, quote flag and history turns', async () => {
+    const provider = h.scripted([{ text: 'Done.', model: 'model-a' }]);
+    const service = h.serviceWith(provider, targetsOk(), {
+      cacheSearch: () => [
+        {
+          resourceId: 'club-guide',
+          chunkId: 'c_guide_0',
+          docId: 'd_guide',
+          headingPath: '',
+          snippet: 'the guide says Friday',
+        },
+        {
+          resourceId: 'club-guide',
+          chunkId: 'c_guide_1',
+          docId: 'd_guide',
+          headingPath: '',
+          snippet: 'the guide says Saturday',
+        },
+      ],
+    });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'what does the guide say' },
+      source: 'slash-command',
+      invocationId: 'int-included-1',
+      history: [
+        { role: 'user', text: 'when is the meeting?' },
+        { role: 'assistant', text: 'Thursday.' },
+        { role: 'user', text: 'and Friday?' },
+      ],
+      quoteInHistory: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail?.included?.snippetChunkIds).toEqual(['c_guide_0', 'c_guide_1']);
+    expect(result.detail?.included?.quote).toBe(true);
+    expect(result.detail?.included?.historyTurns).toBe(2);
+    expect(result.detail?.included?.toolsOffered).toContain('set_reminder');
+  });
+
+  it('a failed loop still records included', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    let calls = 0;
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+          };
+        throw new ProviderError('outage', 'HTTP 503', true);
+      },
+    };
+    const service = h.serviceWith(failing, targetsOk());
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-included-fail-1',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail?.included?.toolsOffered).toContain('set_reminder');
+    expect(result.detail?.included?.historyTurns).toBe(0);
+    expect(result.detail?.included?.quote).toBe(false);
   });
 });

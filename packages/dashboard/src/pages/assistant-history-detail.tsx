@@ -109,7 +109,7 @@ export function TraceToolCallsTable({
         },
         {
           key: 'preview',
-          header: 'Result preview',
+          header: 'Result text',
           cell: (r) => <pre className="text-xs whitespace-pre-wrap">{r.preview}</pre>,
         },
         {
@@ -315,10 +315,12 @@ export function AssistantHistoryDetailPage() {
               <Card title="Tool calls">
                 <p className="mb-2 text-sm">
                   <span className="text-ink-muted">Tools offered: </span>
-                  {trace.toolsOffered === undefined ? (
+                  {trace.included?.toolsOffered === undefined ? (
                     <span className="text-ink-muted">not recorded</span>
-                  ) : trace.toolsOffered.length > 0 ? (
-                    <span className="font-mono text-xs">{trace.toolsOffered.join(', ')}</span>
+                  ) : trace.included.toolsOffered.length > 0 ? (
+                    <span className="font-mono text-xs">
+                      {trace.included.toolsOffered.join(', ')}
+                    </span>
                   ) : (
                     <span className="text-ink-muted">none</span>
                   )}

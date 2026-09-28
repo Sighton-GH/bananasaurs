@@ -10,6 +10,19 @@ import { z } from 'zod';
  * without bound. No keys, tokens or sealed values ever belong in here
  * (hard rule 4) — the schema cannot enforce that, so the writer must.
  */
+
+/**
+ * Which context blocks a reply saw (ADR 0088 decision 2). A separate schema
+ * so the job cursor reuses the trace's own shape for it.
+ */
+export const assistantTraceIncludedSchema = z.object({
+  toolsOffered: z.array(z.string()),
+  snippetChunkIds: z.array(z.string()),
+  quote: z.boolean(),
+  historyTurns: z.number().int().nonnegative(),
+});
+export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
+
 export const assistantTraceSchema = z.object({
   traceId: z.string().min(1),
   at: z.number().int(),
@@ -62,12 +75,20 @@ export const assistantTraceSchema = z.object({
       ok: z.boolean(),
       refused: z.string().optional(),
       ms: z.number().int().nonnegative(),
+      /**
+       * The full result text as the model saw it (neutralised, no wrapper
+       * or citation text), at most 6,000 characters. The field name stays
+       * `preview` for stored-row compatibility.
+       */
       preview: z.string(),
     }),
   ),
   guard: z.object({ removed: z.array(z.string()), blocked: z.string().optional() }),
-  /** Round-1 tool names the loop actually offered the provider; absent on rows written before Task G3. */
-  toolsOffered: z.array(z.string()).optional(),
+  /**
+   * Which context blocks the reply saw (ADR 0088 decision 2). Optional so
+   * rows written before it still parse; there is no migration.
+   */
+  included: assistantTraceIncludedSchema.optional(),
   timeline: z.array(z.object({ label: z.string(), atMs: z.number().int().nonnegative() })),
   error: z.object({ kind: z.string(), message: z.string() }).optional(),
   discordMessageIds: z.array(z.string()),

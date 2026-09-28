@@ -58,6 +58,7 @@ function baseData(overrides: Partial<AssistantData> = {}): AssistantData {
         requiresConfirmation: false,
         acts: false,
         defaultScope: 'everyone',
+        promptLine: 'Search the club.',
       },
     ],
     activity: [],

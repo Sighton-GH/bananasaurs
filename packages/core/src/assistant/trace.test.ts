@@ -62,6 +62,18 @@ describe('assistantTraceSchema', () => {
     expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)))).toEqual(trace);
   });
 
+  it('still parses an old trace without included', () => {
+    const { included: _included, ...oldTrace } = fixtureTrace({
+      included: {
+        toolsOffered: ['search_sources'],
+        snippetChunkIds: ['chunk-1'],
+        quote: false,
+        historyTurns: 0,
+      },
+    });
+    expect(assistantTraceSchema.parse(oldTrace)).toEqual(oldTrace);
+  });
+
   it('rejects an unknown outcome and a zero tool round', () => {
     expect(() => assistantTraceSchema.parse(fixtureTrace({ outcome: 'maybe' as never }))).toThrow();
     expect(() =>
@@ -158,5 +170,25 @@ describe('capTrace', () => {
     expect(new TextEncoder().encode(JSON.stringify(capped)).length).toBeLessThanOrEqual(200_000);
     expect(capped.sections[0]?.text).toBe('Be helpful.');
     expect(capped.toolCalls[0]?.preview.endsWith('… [truncated]')).toBe(true);
+  });
+
+  it('caps six full tool results along with large prompt sections', () => {
+    const big = 'z'.repeat(6_000);
+    const trace = fixtureTrace({
+      sections: [{ name: 'system', chars: 180_000, estTokens: 45_000, text: 's'.repeat(180_000) }],
+      toolCalls: Array.from({ length: 6 }, (_, index) => ({
+        round: index + 1,
+        name: 'search_sources',
+        args: {},
+        ok: true,
+        ms: 1,
+        preview: big,
+      })),
+    });
+    const capped = capTrace(trace);
+    expect(new TextEncoder().encode(JSON.stringify(capped)).length).toBeLessThanOrEqual(200_000);
+    // Sections shrink first, so the six full results survive whole.
+    expect(capped.sections[0]?.text.endsWith('… [truncated]')).toBe(true);
+    expect(capped.toolCalls.every((call) => call.preview === big)).toBe(true);
   });
 });
