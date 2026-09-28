@@ -100,7 +100,7 @@ describe('SkillItemsCard', () => {
     expect(within(card).getByText('scheduled')).toBeTruthy();
     expect(within(card).getByText(/repeats daily/)).toBeTruthy();
     const history = within(card).getByText('History').closest('details')!;
-    expect((history as HTMLDetailsElement).open).toBe(false);
+    expect(history.open).toBe(false);
     expect(within(history).getByText('Old news')).toBeTruthy();
   });
 
