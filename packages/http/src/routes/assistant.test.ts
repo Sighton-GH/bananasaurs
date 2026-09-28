@@ -1324,9 +1324,8 @@ describe('GET /api/assistant/skills/:skillId', () => {
     );
     // Acting tools for other skills carry actsForSkill, so search-club lists the read tools.
     expect(parsed.tools.length).toBe(
-      TOOL_CATALOGUE.filter(
-        (t) => t.actsForSkill === undefined || t.skills.includes('search-club'),
-      ).length,
+      TOOL_CATALOGUE.filter((t) => t.actsForSkill === undefined || t.skills.includes('search-club'))
+        .length,
     );
     expect(parsed.recentRuns).toEqual([]);
   });
