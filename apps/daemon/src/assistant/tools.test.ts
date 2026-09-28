@@ -226,7 +226,7 @@ describe('runAssistantTool', () => {
     expect(lines).toHaveLength(4);
     expect(lines.slice(0, 3).every((line) => line.startsWith('<#111111111111111111>'))).toBe(true);
     expect(lines[3]).toBe(
-      'Answer only whether they said it. Cite the message tag. Do not summarise or list this member\'s messages.',
+      "Answer only whether they said it. Cite the message tag. Do not summarise or list this member's messages.",
     );
     expect(result.sources).toHaveLength(3);
     expect(result.sources[0]).toEqual({

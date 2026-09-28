@@ -173,9 +173,7 @@ const sourcesLine = (sources: readonly AnswerSource[]): string => {
     // Only registry-cited, known sources reach this line, so a model-written
     // URL can never appear here.
     entries.push(
-      source.url.startsWith('https://discord.com/channels/')
-        ? `[${label}](${source.url})`
-        : label,
+      source.url.startsWith('https://discord.com/channels/') ? `[${label}](${source.url})` : label,
     );
     if (entries.length >= 5) break;
   }
@@ -338,7 +336,8 @@ export const createAssistantService = (
   const resolveFromMember = async (
     from: string,
   ): Promise<
-    { readonly ok: true; readonly authorId: string } | { readonly ok: false; readonly problem: string }
+    | { readonly ok: true; readonly authorId: string }
+    | { readonly ok: false; readonly problem: string }
   > => {
     const problem = "I couldn't tell which member you meant.";
     if (discord.findMember === undefined) return { ok: false, problem };
@@ -776,8 +775,7 @@ export const createAssistantService = (
             outcome,
             ...(detail === undefined ? {} : { detail }),
           }),
-        searchArchive: (query, from) =>
-          searchArchive(input.userId, input.channelId, query, from),
+        searchArchive: (query, from) => searchArchive(input.userId, input.channelId, query, from),
         resources: () => resources,
         fetchResource,
         webSearch:

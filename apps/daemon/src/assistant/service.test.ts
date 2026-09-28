@@ -3368,8 +3368,7 @@ describe('Slice 4.2: Did X say Y resolves from to one member with code-issued li
       generateText: vi.fn(async (request: { messages: { role: string; text: string }[] }) => {
         seen.push([...request.messages]);
         round += 1;
-        if (round === 1)
-          return { text: '', model: 'model-a', toolCalls: [toolCall] };
+        if (round === 1) return { text: '', model: 'model-a', toolCalls: [toolCall] };
         return { text: answer, model: 'model-a' };
       }),
     };
@@ -3423,7 +3422,10 @@ describe('Slice 4.2: Did X say Y resolves from to one member with code-issued li
   const toolTurnOf = (seen: { role: string; text: string }[][]): string =>
     seen[1]?.find((message) => message.role === 'tool')?.text ?? '';
 
-  const fromCall = (query: string, from: string): { name: string; args: Record<string, unknown> } => ({
+  const fromCall = (
+    query: string,
+    from: string,
+  ): { name: string; args: Record<string, unknown> } => ({
     name: 'search_archive',
     args: { query, from },
   });
