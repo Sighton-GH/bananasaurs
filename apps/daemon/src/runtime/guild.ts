@@ -92,6 +92,7 @@ import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
 import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
+import { guildAudienceChannels } from '../assistant/audience.js';
 import {
   resolveReminderTargets,
   type ReminderTargetMember,
@@ -755,6 +756,43 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
                 },
               },
           userId,
+        );
+      },
+      // ADR 0090: the channels every viewer of the answer channel can
+      // read, from the live overwrites — mirroring the `memberChannels`
+      // adapter above. An uncached guild fails closed to the empty set.
+      audienceChannels: (answerChannelId) => {
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return Promise.resolve(new Set<string>());
+        return Promise.resolve(
+          guildAudienceChannels({ channels: guild.channels, roles: guild.roles }, answerChannelId),
+        );
+      },
+      // ADR 0090 D3: resolves a `search_archive` `from` value against the
+      // live member list. A bare 17–20 digit id or `<@id>` mention fetches
+      // that member; anything else searches by name. Lookups never throw:
+      // an unknown id or a failed search resolves to no candidates, and the
+      // service refuses with one sentence.
+      findMember: (nameOrId) => {
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return Promise.resolve([]);
+        const trimmed = nameOrId.trim();
+        const id = /^<@!?(\d{17,20})>$/.exec(trimmed)?.[1] ?? /^(\d{17,20})$/.exec(trimmed)?.[1];
+        const toEntry = (member: GuildMember) => ({
+          id: member.id,
+          displayName: member.displayName,
+          ...(member.user.globalName === null ? {} : { globalName: member.user.globalName }),
+          username: member.user.username,
+        });
+        if (id !== undefined) {
+          return guild.members.fetch(id).then(
+            (member) => [toEntry(member)],
+            () => [],
+          );
+        }
+        return guild.members.search({ query: nameOrId, limit: 5 }).then(
+          (members) => [...members.values()].map(toEntry),
+          () => [],
         );
       },
       // B2b: the acting reminder tools resolve their channel and mentions

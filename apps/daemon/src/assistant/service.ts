@@ -53,7 +53,7 @@ import {
   runAssistantTool,
   relativeUpdated,
   toolDeclarations,
-  type ArchiveHit,
+  type ArchiveResult,
   type AssistantToolPorts,
   type WebResult,
 } from './tools.js';
@@ -165,10 +165,15 @@ const sourcesLine = (sources: readonly AnswerSource[]): string => {
   for (const source of sources) {
     if (source.url === '' || seen.has(source.url)) continue;
     seen.add(source.url);
-    entries.push(
+    const label =
       source.heading === undefined || source.heading === ''
         ? source.title
-        : `${source.title} › ${clipHeading(source.heading, 120)}`,
+        : `${source.title} › ${clipHeading(source.heading, 120)}`;
+    // ADR 0090 D3: a cited `from` hit lists its code-issued message link.
+    // Only registry-cited, known sources reach this line, so a model-written
+    // URL can never appear here.
+    entries.push(
+      source.url.startsWith('https://discord.com/channels/') ? `[${label}](${source.url})` : label,
     );
     if (entries.length >= 5) break;
   }
@@ -189,6 +194,14 @@ export interface AssistantTryItResult {
   readonly conversationId: string;
 }
 
+/** One member the `from` lookup can see (ADR 0090 decision 3). */
+export interface FoundMember {
+  readonly id: string;
+  readonly displayName: string;
+  readonly globalName?: string | undefined;
+  readonly username?: string | undefined;
+}
+
 /** What the tools need from live Discord (ADR 0067). */
 export interface AssistantDiscordPorts {
   /**
@@ -198,6 +211,22 @@ export interface AssistantDiscordPorts {
   readonly memberChannels: (
     userId: string,
   ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
+  /**
+   * Channels every viewer of the answer channel can read (ADR 0090). The
+   * archive tool searches only these intersected with `memberChannels`;
+   * empty fails closed. Optional so existing callers keep compiling —
+   * production (`runtime/guild.ts`) always provides it. Absent with a
+   * channel set, the service fails closed and searches nothing.
+   */
+  readonly audienceChannels?:
+    ((answerChannelId: string) => Promise<ReadonlySet<string>>) | undefined;
+  /**
+   * ADR 0090 D3: resolves a `search_archive` `from` value (a member mention,
+   * id or name) to the members the job can see. Optional so existing callers
+   * keep compiling — production (`runtime/guild.ts`) always provides it.
+   * Absent, every `from` search refuses.
+   */
+  readonly findMember?: ((nameOrId: string) => Promise<readonly FoundMember[]>) | undefined;
   /**
    * B2b: resolves a reminder's channel and mentions against live Discord
    * permissions. Optional so existing callers keep compiling — production
@@ -297,28 +326,90 @@ export const createAssistantService = (
    * independent.
    */
   const ledger = quotaLedger;
+  /**
+   * ADR 0090 D3: `from` (a member mention, id or name — model output, so
+   * untrusted) resolves to exactly one member id in code. An exact
+   * case-insensitive match on display name, global name or username wins;
+   * otherwise a single lookup result is the match. Zero results, or several
+   * without an exact match, refuse — as does a missing lookup port.
+   */
+  const resolveFromMember = async (
+    from: string,
+  ): Promise<
+    | { readonly ok: true; readonly authorId: string }
+    | { readonly ok: false; readonly problem: string }
+  > => {
+    const problem = "I couldn't tell which member you meant.";
+    if (discord.findMember === undefined) return { ok: false, problem };
+    let candidates: readonly FoundMember[];
+    try {
+      candidates = await discord.findMember(from);
+    } catch {
+      return { ok: false, problem };
+    }
+    const needle = from.trim().toLowerCase();
+    const exact = candidates.filter((candidate) =>
+      [candidate.displayName, candidate.globalName, candidate.username].some(
+        (name) => name !== undefined && name.toLowerCase() === needle,
+      ),
+    );
+    if (exact.length === 1) return { ok: true, authorId: exact[0]!.id };
+    if (exact.length === 0 && candidates.length === 1)
+      return { ok: true, authorId: candidates[0]!.id };
+    return { ok: false, problem };
+  };
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
-  const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
-    if (query.trim() === '') return [];
+  const searchArchive = async (
+    userId: string,
+    answerChannelId: string | undefined,
+    query: string,
+    from?: string,
+  ): Promise<ArchiveResult> => {
+    if (query.trim() === '') return { ok: true, hits: [] };
+    // ADR 0090 D3: with `from`, the search is scoped to one resolved member.
+    let authorId: string | undefined;
+    if (from !== undefined) {
+      const resolved = await resolveFromMember(from);
+      if (!resolved.ok) return resolved;
+      authorId = resolved.authorId;
+    }
     const visible = new Set((await discord.memberChannels(userId)).map((channel) => channel.id));
+    // ADR 0090: an answer posted in a channel draws only on channels every
+    // viewer of that channel can read. Try it has no channel, so it keeps
+    // the asker-only filter; anything unknown fails closed to no channels.
+    if (answerChannelId !== undefined) {
+      if (discord.audienceChannels === undefined) return { ok: true, hits: [] };
+      const audience = await discord.audienceChannels(answerChannelId);
+      for (const id of visible) if (!audience.has(id)) visible.delete(id);
+    }
     const channelIds = archiveRepo
       .listChannels(scope)
       .map((channel) => channel.channelId)
       .filter((id) => visible.has(id));
-    if (channelIds.length === 0) return [];
+    if (channelIds.length === 0) return { ok: true, hits: [] };
     // A private thread inside a visible channel is not visible to every member
     // who can see the channel, and the archive does not record which threads
     // are private, so member-facing search leaves every thread out.
-    return archiveSearchRepo
-      .searchMessages(scope, { query, visibility: { channelIds }, limit: 16 })
-      .hits.filter((hit) => hit.threadId === undefined)
-      .slice(0, 8)
-      .map((hit) => ({
-        channelId: hit.channelId,
-        messageId: hit.messageId,
-        createdAt: hit.createdAt,
-        excerpt: hit.excerpt,
-      }));
+    const limit = from === undefined ? 16 : 3;
+    const cap = from === undefined ? 8 : 3;
+    return {
+      ok: true,
+      hits: archiveSearchRepo
+        .searchMessages(scope, {
+          query,
+          visibility: { channelIds },
+          ...(authorId === undefined ? {} : { authorId }),
+          limit,
+        })
+        .hits.filter((hit) => hit.threadId === undefined)
+        .slice(0, cap)
+        .map((hit) => ({
+          channelId: hit.channelId,
+          messageId: hit.messageId,
+          createdAt: hit.createdAt,
+          excerpt: hit.excerpt,
+        })),
+    };
   };
   const invokeOnce = async (
     input: AssistantInvocation,
@@ -449,7 +540,13 @@ export const createAssistantService = (
       }
       if (input.command === 'find') {
         // ADR 0067: the archive, limited to channels this member can view.
-        const hits = await searchArchive(input.userId, input.input.query ?? '');
+        // ADR 0090: and to the answer channel's audience.
+        const searched = await searchArchive(
+          input.userId,
+          input.channelId,
+          input.input.query ?? '',
+        );
+        const hits = searched.ok ? searched.hits : [];
         return {
           ok: true,
           content:
@@ -632,6 +729,7 @@ export const createAssistantService = (
       };
       const toolPorts: AssistantToolPorts = {
         userId: input.userId,
+        guildId: scope.guildId,
         now,
         timeZone: currentConfig.BANANASAURS_TIME_ZONE,
         // Try-it counts as the owner for scope checks (`config.write`
@@ -677,7 +775,7 @@ export const createAssistantService = (
             outcome,
             ...(detail === undefined ? {} : { detail }),
           }),
-        searchArchive: (query) => searchArchive(input.userId, query),
+        searchArchive: (query, from) => searchArchive(input.userId, input.channelId, query, from),
         resources: () => resources,
         fetchResource,
         webSearch:
@@ -938,7 +1036,17 @@ export const createAssistantService = (
         tools: {
           firstRound: declarations,
           idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
-          run: (call) => runAssistantTool(call, toolPorts),
+          // ADR 0090 D3: the tool result's own sources seed the known set,
+          // so `isKnownResource` accepts exactly the message links code
+          // issued in this request — nothing the model writes can add one.
+          run: async (call) => {
+            const result = await runAssistantTool(call, toolPorts, citations);
+            if (result.ok && call.name === 'search_archive') {
+              for (const source of result.sources)
+                knownResource.add(`${source.title}${source.url}`);
+            }
+            return result;
+          },
         },
         limits: loopLimits(),
         quotaLedger: ledger,
