@@ -41,6 +41,8 @@ import {
   setConversationRetention,
   getReminder,
   updateReminder,
+  claimDueReminders,
+  retryReminder,
 } from './assistant.js';
 import { appendTurn, createConversation, getConversation, recentTurns } from './conversations.js';
 import { getTrace, insertTrace } from './traces.js';
@@ -795,6 +797,34 @@ describe('updateReminder clears the context with null (Task E1 fix 1)', () => {
         )
         .get(G, 'r'),
     ).toEqual({ c: null });
+  });
+});
+
+describe('updateReminder clears retry state when dueAt changes', () => {
+  it('resets nextAttemptAt and failureReason', () => {
+    const s = t.scopes.forGuild(G);
+    insertReminder(s, {
+      id: 'r',
+      guildId: G,
+      creatorId: '333333333333333333',
+      destinationId: '444444444444444444',
+      text: 'Meet',
+      dueAt: 20,
+      createdAt: 10,
+      status: 'scheduled',
+      dedupeKey: 'reminder:g:r',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+    });
+    expect(claimDueReminders(s, 25, 25, 5 * 60_000)).toHaveLength(1);
+    retryReminder(s, 'r', 'boom', 99);
+    expect(getReminder(s, 'r')?.failureReason).toBe('boom');
+    expect(getReminder(s, 'r')?.nextAttemptAt).toBe(99);
+    expect(updateReminder(s, 'r', { dueAt: 200 }, 30)).toBe('updated');
+    const after = getReminder(s, 'r');
+    expect(after?.dueAt).toBe(200);
+    expect(after?.failureReason).toBeUndefined();
+    expect(after?.nextAttemptAt).toBeUndefined();
   });
 });
 

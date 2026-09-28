@@ -674,7 +674,12 @@ export const updateReminder = (
       .set({
         ...(patch.text === undefined ? {} : { text: patch.text }),
         ...(patch.context === undefined ? {} : { context: patch.context }),
-        ...(patch.dueAt === undefined ? {} : { dueAt: patch.dueAt }),
+        // A new due time leaves any transient-retry state behind: the claim
+        // predicate prefers `next_attempt_at`, so without this reset the
+        // reminder would still fire at the old retry time.
+        ...(patch.dueAt === undefined
+          ? {}
+          : { dueAt: patch.dueAt, nextAttemptAt: null, failureReason: null }),
         ...(patch.destinationId === undefined ? {} : { destinationId: patch.destinationId }),
         ...(patch.mentions === undefined ? {} : { mentionsJson: JSON.stringify(patch.mentions) }),
         ...(patch.recurrence === undefined
