@@ -30,6 +30,7 @@ const skill = (id: string): AssistantSkill => ({
   id,
   name: id,
   description: `${id} skill`,
+  promptLine: 'Search the club.',
   effect: 'read',
   acts: false,
   defaultScope: 'everyone',
