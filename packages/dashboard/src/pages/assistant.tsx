@@ -833,7 +833,7 @@ function BotTagCard({
       </div>
       {current === '' && (
         <p className="mt-2 text-xs text-hold">
-          Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.
+          Tagging the bot does nothing until you pick a behaviour.
         </p>
       )}
       {error !== undefined && (
