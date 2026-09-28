@@ -31,6 +31,8 @@ const skill = (id: string): AssistantSkill => ({
   name: id,
   description: `${id} skill`,
   effect: 'read',
+  acts: false,
+  defaultScope: 'everyone',
   requiredPermission: 'test',
   requiresConfirmation: false,
 });
