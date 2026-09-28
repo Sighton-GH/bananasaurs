@@ -212,30 +212,40 @@ export function AssistantSkillsPage() {
                   allowed, who can use it and its recent runs.
                 </p>
                 <ul className="grid gap-3 md:grid-cols-2">
-                  {data.skills.map((skill) => (
-                    <li key={skill.id}>
-                      <Link
-                        href={`/assistant/skills/${encodeURIComponent(skill.id)}`}
-                        aria-label={skill.name}
-                        className="block w-full rounded-md border border-line bg-canvas p-3 text-left"
-                      >
-                        <span className="flex items-start justify-between gap-3">
-                          <span className="text-sm font-medium">{skill.name}</span>
-                          <span className="flex shrink-0 gap-1">
-                            {skill.ownerOnly === true && <Badge tone="neutral">owner only</Badge>}
-                            <Badge tone={skill.requiresConfirmation ? 'hold' : 'ok'}>
-                              {skill.requiresConfirmation
-                                ? 'You confirm first'
-                                : 'Runs without asking'}
-                            </Badge>
+                  {data.skills.map((skill) => {
+                    const scope = data.skillScopes?.[skill.id];
+                    const activeCount = data.skillItemCounts?.[skill.id] ?? 0;
+                    const roleName = (id: string) =>
+                      data.roles?.find((role) => role.id === id)?.name;
+                    return (
+                      <li key={skill.id}>
+                        <Link
+                          href={`/assistant/skills/${encodeURIComponent(skill.id)}`}
+                          aria-label={skill.name}
+                          className="block w-full rounded-md border border-line bg-canvas p-3 text-left"
+                        >
+                          <span className="flex items-start justify-between gap-3">
+                            <span className="text-sm font-medium">{skill.name}</span>
+                            <span className="flex shrink-0 gap-1">
+                              {scope !== undefined ? (
+                                <Badge tone="neutral">{scopeLabel(scope, roleName)}</Badge>
+                              ) : (
+                                skill.ownerOnly === true && (
+                                  <Badge tone="neutral">owner only</Badge>
+                                )
+                              )}
+                              {activeCount > 0 && (
+                                <Badge tone="ok">{`${String(activeCount)} active`}</Badge>
+                              )}
+                            </span>
                           </span>
-                        </span>
-                        <span className="mt-1 block text-xs text-ink-muted">
-                          {skill.description}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
+                          <span className="mt-1 block text-xs text-ink-muted">
+                            {skill.description}
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
                 </ul>
               </Card>
               <ToolsCard data={data} />
