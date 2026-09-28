@@ -2684,6 +2684,98 @@ describe('B2b: acting tool ports are wired', () => {
         .find((a) => a.skillId === 'reminders'),
     ).toMatchObject({ outcome: 'denied', actorId: MEMBER });
   });
+
+  it('a reminder stored in one guild is invisible to another (hard rule 2)', async () => {
+    const GUILD_B = parseGuildId('345678901234567891');
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD_B), { name: 'other', now: NOW });
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const writer = scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+      },
+      { text: 'Reminder noted.', model: 'model-a' },
+    ]);
+    const seen: unknown[] = [];
+    const serviceA = serviceWith(writer, targetsOk(seen));
+    const stored = await serviceA.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-iso-a',
+    });
+    expect(stored.ok).toBe(true);
+    const reminderId = assistantRepo.listReminders(t.scopes.forGuild(GUILD))[0]?.id;
+    expect(reminderId).toMatch(/^rem_int-iso-a_0$/);
+    // From guild B the same id is unknown: get (via edit), listForCreator
+    // and listAll (via my_reminders) see nothing, and update and cancel fail.
+    const toolTexts: (readonly string[])[] = [];
+    const probing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: (() => {
+        let round = 0;
+        return async (req: Parameters<TextProvider['generateText']>[0]) => {
+          toolTexts.push(
+            (req.messages as readonly { role: string; text: string }[])
+              .filter((m) => m.role === 'tool')
+              .map((m) => m.text),
+          );
+          round += 1;
+          if (round === 1)
+            return {
+              text: '',
+              model: 'model-a',
+              toolCalls: [
+                { name: 'edit_reminder', args: { reminderId, text: 'Changed' } },
+                { name: 'cancel_reminder', args: { reminderId } },
+                { name: 'my_reminders', args: {} },
+                { name: 'my_reminders', args: { all: true } },
+              ],
+            };
+          return { text: 'Checked.', model: 'model-a' };
+        };
+      })(),
+    };
+    const probingService = createAssistantService(
+      t.scopes.forGuild(GUILD_B),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [usable(probing)],
+    );
+    const checked = await probingService.invoke({
+      guildId: GUILD_B,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: { ...direct, guildId: GUILD_B },
+      command: 'ask',
+      input: { question: 'edit, cancel and list that reminder' },
+      source: 'slash-command',
+      invocationId: 'int-iso-c',
+    });
+    expect(checked.ok).toBe(true);
+    const answers = toolTexts.at(-1) ?? [];
+    expect(answers[0]).toContain("couldn't find");
+    expect(answers[1]).toContain("couldn't find");
+    expect(answers[2]).toContain('No upcoming reminders.');
+    expect(answers[3]).toContain('No upcoming reminders.');
+    // Guild A's row is untouched: still scheduled, still exactly one.
+    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toMatchObject([
+      { text: 'Bring batteries', status: 'scheduled' },
+    ]);
+  });
 });
 
 /**
