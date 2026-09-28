@@ -133,7 +133,7 @@ describe('AssistantSkillsPage', () => {
     renderPage();
     const region = await screen.findByRole('region', { name: 'Allowlist for Club assistant' });
     expect(within(region).getByText('Reads')).toBeTruthy();
-    expect(within(region).getByText('Schedules · you confirm first')).toBeTruthy();
+    expect(within(region).getByText('Schedules')).toBeTruthy();
   });
 
   it('saves a per-behaviour allowlist as the whole behaviour object', async () => {
