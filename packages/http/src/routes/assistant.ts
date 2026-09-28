@@ -767,12 +767,12 @@ export const registerAssistantRoutes = (
       session.scope,
       id,
       {
-        ...(parsed.data.text === undefined ? {} : { text: parsed.data.text }),
-        ...(parsed.data.context === undefined
+        ...(draftText === undefined ? {} : { text: draftText }),
+        ...(normalizedContext === undefined
           ? {}
-          : parsed.data.context === null
+          : normalizedContext === null
             ? { context: null }
-            : { context: parsed.data.context }),
+            : { context: normalizedContext }),
         ...(parsed.data.dueAt === undefined ? {} : { dueAt: parsed.data.dueAt }),
         ...(recurrence === undefined ? {} : { recurrence }),
       },
