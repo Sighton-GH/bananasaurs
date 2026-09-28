@@ -116,8 +116,8 @@ export function AssistantSkillsPage() {
             <div className="space-y-5">
               <Card title="Skill catalogue">
                 <p className="mb-3 text-sm text-ink-muted">
-                  Every skill the assistant could use in this server. Open one to see who can use
-                  it and its recent runs.
+                  Every skill the assistant could use in this server. Open one to see who can use it
+                  and its recent runs.
                 </p>
                 <ul className="grid gap-3 md:grid-cols-2">
                   {data.skills.map((skill) => {

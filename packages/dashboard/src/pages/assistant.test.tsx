@@ -814,9 +814,7 @@ describe('AssistantPage: shared resources (ADR 0067)', () => {
     renderPage();
     const section = await screen.findByRole('region', { name: 'Preferred resources' });
     expect(within(section).getByText('Preferred resources')).toBeTruthy();
-    expect(
-      within(section).getByText('Resources this assistant should check first.'),
-    ).toBeTruthy();
+    expect(within(section).getByText('Resources this assistant should check first.')).toBeTruthy();
   });
 
   it('edits preferred skills beside preferred resources and saves them whole-object', async () => {
