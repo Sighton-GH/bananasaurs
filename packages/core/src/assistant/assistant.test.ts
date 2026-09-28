@@ -528,9 +528,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
   it('skillInstructionLine is the exact per-skill line the compiler emits (factored, not duplicated)', () => {
     const skill = CLUB_ASSISTANT_SKILLS[0]!;
     const line = skillInstructionLine(skill);
-    expect(line).toBe(
-      `${skill.id}: ${skill.description} Effect=${skill.effect}. Acts=no.`,
-    );
+    expect(line).toBe(`${skill.id}: ${skill.description} Effect=${skill.effect}. Acts=no.`);
     const compiled = compileAssistantContext({
       behaviour,
       serverCard: 'card',

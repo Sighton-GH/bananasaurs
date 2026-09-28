@@ -189,7 +189,8 @@ export const runToolLoop = async (input: {
   const toolCalls: TraceToolCall[] = [];
   const sources: ToolSource[] = [];
   const actionSummaries: string[] = [];
-  let web = false;  let promptTokens = 0;
+  let web = false;
+  let promptTokens = 0;
   let completionTokens = 0;
   let thinkingTokens = 0;
   let sawPrompt = false;
