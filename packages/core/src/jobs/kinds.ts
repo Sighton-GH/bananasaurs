@@ -392,6 +392,8 @@ export const assistantInvokePayload = z.object({
    * message apart from a quoted reply to someone else's.
    */
   referencedAuthorId: z.string().min(1).optional(),
+  /** The parent channel when the mention was posted in a thread. */
+  threadParentId: z.string().min(1).optional(),
   /**
    * Task 14: the member's display name for history labels, when the producer
    * knew one. The mention path carries the member's display name; other paths

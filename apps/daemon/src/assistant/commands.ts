@@ -264,6 +264,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         ...(event.referencedAuthorId === undefined
           ? {}
           : { referencedAuthorId: event.referencedAuthorId }),
+        ...(event.parentChannelId === undefined ? {} : { threadParentId: event.parentChannelId }),
         ...(event.authorDisplayName === undefined
           ? {}
           : { authorName: event.authorDisplayName.slice(0, 200) }),
