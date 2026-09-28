@@ -367,14 +367,8 @@ const endOfMidnightDay = (at: number, timeZone: string): number => {
   const num = (type: string): number => Number(ymd.find((part) => part.type === type)?.value ?? 0);
   const next = new Date(Date.UTC(num('year'), num('month') - 1, num('day')) + 86_400_000);
   return (
-    utcForLocal(
-      next.getUTCFullYear(),
-      next.getUTCMonth() + 1,
-      next.getUTCDate(),
-      0,
-      0,
-      timeZone,
-    ) - 1
+    utcForLocal(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, timeZone) -
+    1
   );
 };
 
