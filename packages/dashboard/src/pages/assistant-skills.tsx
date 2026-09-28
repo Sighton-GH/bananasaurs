@@ -276,8 +276,8 @@ export function AssistantSkillsPage() {
               </Card>
               <Card title="Who can use skills">
                 <p className="text-sm text-ink-muted">
-                  Anyone a behaviour lets ask (its Who can ask roles on the Assistant page) can use
-                  every skill that behaviour allows. Owner-only skills stay with the server owner.
+                  Each skill&apos;s scope decides who can use it; the owner can always use every
+                  skill.
                 </p>
               </Card>
               <p className="text-sm text-ink-muted">
