@@ -112,6 +112,8 @@ export interface AssistantTraceDetail {
   readonly model?: string | undefined;
   readonly finishReason?: string | undefined;
   readonly web?: boolean | undefined;
+  /** B2b: the code-written action summaries appended to this answer. */
+  readonly actions?: readonly string[];
 }
 
 /**

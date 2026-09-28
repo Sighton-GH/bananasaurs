@@ -954,8 +954,6 @@ export const createAssistantService = (
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
         // B2b: the summaries appended to the posted answer, in call order.
-        // Spread (not a declared field — `commands.ts` is owned by another
-        // task) so the runtime detail carries them without a type change.
         ...(loop.actionSummaries.length === 0 ? {} : { actions: [...loop.actionSummaries] }),
       };
       sink.trace = {

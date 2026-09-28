@@ -27,6 +27,7 @@ import { LocalLimitError } from './local-limit.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { createAssistantService, sanitizeMentionsForProvider } from './service.js';
 import type { AssistantServiceTestPorts } from './service.js';
+import type { AssistantTraceDetail } from './commands.js';
 
 describe('sanitizeMentionsForProvider', () => {
   it('flattens role, user and channel mentions to readable tokens', () => {
@@ -2797,8 +2798,8 @@ describe('B2b: action summaries in answers', () => {
       () => [usable(provider)],
     );
 
-  const actionsOf = (result: { detail?: unknown }): readonly string[] =>
-    (result.detail as { readonly actions?: readonly string[] } | undefined)?.actions ?? [];
+  const actionsOf = (result: { detail?: AssistantTraceDetail }): readonly string[] =>
+    result.detail?.actions ?? [];
 
   it('the posted answer ends with the summary and the trace records it', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
