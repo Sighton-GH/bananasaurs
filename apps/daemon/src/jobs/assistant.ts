@@ -33,15 +33,12 @@ import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-me
 import { startTyping } from '../assistant/typing.js';
 
 /**
- * Runs one assistant invocation off the serial per-guild dispatch chain (B2).
+ * The subscriber (`apps/daemon/src/assistant/commands.ts`) enqueues mention
+ * invocations for the conversation lookup, quote and resource fetches, and the
+ * provider call. Without this split, one slow invocation stalls the per-guild
+ * chain behind it.
  *
- * The subscriber (`apps/daemon/src/assistant/commands.ts`) does only the
- * cheap work inline - defer the interaction, route the mention - and
- * enqueues this job for everything expensive: the conversation lookup, the
- * quote fetch, resource fetches and the provider call. Without this split
- * one slow /ask stalls reaction roles, automod and /mod behind it in the
- * per-guild chain, and a provider hang exceeds Discord's interaction window
- * while the chain waits.
+ * ADR 0086 means no new slash jobs are produced; this path remains to drain queued jobs.
  *
  * Four invariants the independent audit pinned down, plus Task 14's:
  *

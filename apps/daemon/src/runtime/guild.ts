@@ -86,7 +86,6 @@ import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
-import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
@@ -710,10 +709,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         recordCaseEvent: (input) => modCaseRepo.recordCaseEvent(scope, input),
       },
       responder: {
-        defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-        respond: async (ref, message) => {
-          await discord.respondToInteraction(guildId, ref, message);
-        },
+
       },
       now,
       logger,
@@ -861,11 +857,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
-    // Release 3 assistant: slash commands and @behaviour mentions. The
-    // service owns permission, safety and provider eligibility; the Discord
-    // layer never calls a provider itself. One service instance is shared by
-    // the subscriber (cheap inline routing) and the job handler (the
-    // expensive invoke, off the serial dispatch chain — B2).
+     // Assistant skills route through @behaviour mentions. The service owns
+     // permission, safety and provider eligibility; the Discord layer never
+     // calls a provider itself. One service instance is shared by the subscriber
+     // (cheap inline routing) and job handler (expensive invoke, off-chain — B2).
+
     createAssistantCommandSubscriber({
       guildId,
       botUserId,
@@ -881,7 +877,6 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         });
         return { enqueued: result.enqueued };
       },
-      sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
       logger,
       sendTyping: (channelId) => discord.sendTyping(guildId, channelId),

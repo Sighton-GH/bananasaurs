@@ -11,8 +11,6 @@ import {
   type KnownMessage,
   type Logger,
   type MessageEvent,
-  type OutgoingMessage,
-  type SlashCommandEvent,
   type Subscriber,
 } from '@bananasaurs/core';
 import { routeAssistantMention } from '@bananasaurs/discord';
@@ -131,20 +129,6 @@ export interface AssistantCommandDeps {
   /** The bot's own user id: a tag of it routes to the behaviour flagged `answersBotTag` (ADR 0063). */
   readonly botUserId: string;
   readonly service: AssistantCommandService;
-  readonly defer: (
-    ref: { interactionId: string; token: string },
-    options: { ephemeral: boolean },
-  ) => Promise<void>;
-  readonly respond: (
-    ref: { interactionId: string; token: string },
-    message: OutgoingMessage,
-  ) => Promise<void>;
-  /**
-   * Seals an interaction token for the durable job payload (SECURITY: the
-   * raw token is a bearer credential and the payload is listed on the
-   * dashboard Jobs page).
-   */
-  readonly sealToken: (token: string) => string;
   /**
    * Hands the invocation to the job queue (B2). The provider call is far too
    * slow for the serial per-guild dispatch chain: awaiting it here would
@@ -190,88 +174,10 @@ export interface AssistantCommandDeps {
   readonly sendTyping?: ((channelId: string) => Promise<void>) | undefined;
 }
 
-const COMMANDS = new Set<AssistantCommand>([
-  'ask',
-  'find',
-  'remind',
-  'remember',
-  'decision',
-  'review-plan',
-  'onboard',
-  'agenda',
-  'summarise',
-  'announce',
-  'checklist',
-  'handoff',
-]);
-const value = (event: SlashCommandEvent, name: string): string | undefined => {
-  const found = event.options.find((option) => option.name === name)?.value;
-  return typeof found === 'string' ? found.trim() : undefined;
-};
-
-const commandInput = (event: SlashCommandEvent): Readonly<Record<string, string>> | undefined => {
-  if (event.commandName === 'ask') {
-    const question = value(event, 'question');
-    return question ? { question } : undefined;
-  }
-  if (event.commandName === 'find') {
-    const query = value(event, 'query');
-    return query ? { query } : undefined;
-  }
-  if (event.commandName === 'remind') {
-    const when = value(event, 'when');
-    const text = value(event, 'text');
-    return when && text ? { when, text } : undefined;
-  }
-  if (event.commandName === 'remember') {
-    const request = value(event, 'request');
-    return request ? { request } : undefined;
-  }
-  if (event.commandName === 'decision') {
-    const topic = value(event, 'topic');
-    const context = value(event, 'context');
-    return topic ? { topic, ...(context ? { context } : {}) } : undefined;
-  }
-  if (event.commandName === 'review-plan') {
-    const plan = value(event, 'plan');
-    return plan ? { plan } : undefined;
-  }
-  if (
-    ['onboard', 'agenda', 'summarise', 'announce', 'checklist', 'handoff'].includes(
-      event.commandName,
-    )
-  ) {
-    const request = value(event, 'request');
-    return request ? { request } : undefined;
-  }
-  return undefined;
-};
-
-const directBehaviour = (
-  behaviours: readonly AssistantBehaviour[],
-  guildId: string,
-): AssistantBehaviour =>
-  resolveAssistantBehaviour(behaviours, {
-    guildId,
-    mentionedRoleIds: new Set(),
-    directCommand: true,
-  });
-
-const reply = (content: string): OutgoingMessage => ({
-  content: content.slice(0, 2_000),
-  allowedMentions: { parse: [] },
-});
-
-const slashRef = (event: SlashCommandEvent) => ({
-  interactionId: event.interactionId,
-  token: event.token,
-});
-
 export const createAssistantCommandSubscriber = (deps: AssistantCommandDeps): Subscriber => ({
   name: 'assistant-commands',
   async handle(event: DomainEvent): Promise<void> {
     if (event.guildId !== deps.guildId) return;
-    if (event.kind === 'slashCommand') await handleSlash(deps, event);
     if (event.kind === 'messageCreate') await handleMention(deps, event);
     if (event.kind === 'reactionAdd' || event.kind === 'reactionRemove')
       handleFeedback(deps, event);
@@ -310,49 +216,6 @@ function handleFeedback(
     feedback.addTraceFlag(stored.traceId, `feedback:${vote}`);
 }
 
-async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent): Promise<void> {
-  if (!COMMANDS.has(event.commandName as AssistantCommand)) return;
-  const ref = slashRef(event);
-  await deps.defer(ref, { ephemeral: event.commandName === 'remind' });
-
-  const input = commandInput(event);
-  if (input === undefined) {
-    await deps.respond(ref, reply('That command is missing a required value.'));
-    return;
-  }
-
-  // Cheap local routing stays inline; the expensive invoke is a job (B2).
-  try {
-    const behaviours = await deps.service.behavioursForGuild(event.guildId);
-    const behaviour = directBehaviour(behaviours, event.guildId);
-    deps.enqueue({
-      kind: JOB_KINDS.assistantInvoke,
-      payload: {
-        channelId: event.channelId,
-        userId: event.userId,
-        callerRoleIds: [...(event.userRoleIds ?? [])],
-        behaviourId: behaviour.id,
-        command: event.commandName as AssistantCommand,
-        input,
-        source: 'slash-command',
-        interaction: {
-          interactionId: event.interactionId,
-          sealedToken: deps.sealToken(event.token),
-        },
-        invocationId: event.interactionId,
-      },
-      dedupeKey: assistantInvokeDedupeKey(event.interactionId),
-      now: deps.now(),
-    });
-  } catch (err) {
-    deps.logger.error(
-      safeLogFields({ component: 'assistant-command', guildId: event.guildId, err }),
-      'assistant command could not be queued',
-    );
-    await deps.respond(ref, reply('I could not complete that request. No action was taken.'));
-  }
-}
-
 async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): Promise<void> {
   const behaviours = await deps.service.behavioursForGuild(event.guildId);
   const route = routeAssistantMention(event, behaviours, deps.botUserId, deps.lookupMessage);
@@ -373,9 +236,9 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     return;
   }
 
-  // Same split as handleSlash: routing is cheap and inline, the invoke is a
-  // job (B2). The escalation delivery lives in the job handler with the
-  // invoke that produces it. Task 14: the payload also carries the message
+  // Routing is cheap and inline; the invoke is a job (B2). Escalation
+  // delivery lives in the job handler with the invoke that produces it. Task
+  // 14: the payload also carries the message
   // identity the job needs — the message id for the reply and the link, and
   // the reply reference for the conversation resolver.
   try {
