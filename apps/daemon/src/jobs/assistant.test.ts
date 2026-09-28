@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import {
+  assistantInvokeCursor,
   parseGuildId,
   ProviderError,
   RetryAfterError,
@@ -434,6 +435,136 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     messageId: '810000000000000001',
     authorName: 'Ama',
     ...over,
+  });
+
+  it('records thread and channel-follow-up join rules on user turns', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'thread-first',
+        messageId: '810000000000000071',
+        threadParentId: CHANNEL_ID,
+      }),
+    );
+    nowMs += 31 * 60_000;
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'thread-second',
+        messageId: '810000000000000072',
+        threadParentId: CHANNEL_ID,
+        userId: OTHER_ID,
+      }),
+    );
+    expect(
+      conversationRepo
+        .listTurns(scope(), 'conv_thread-first')
+        .find((turn) => turn.turnId === 'turn_thread-second_u')?.joinRule,
+    ).toBe('thread');
+    await h.run(mention({ invocationId: 'channel-first', messageId: '810000000000000073' }));
+    nowMs += 1_000;
+    await h.run(
+      mention({
+        invocationId: 'channel-second',
+        messageId: '810000000000000074',
+        userId: OTHER_ID,
+      }),
+    );
+    expect(
+      conversationRepo
+        .listTurns(scope(), 'conv_channel-first')
+        .find((turn) => turn.turnId === 'turn_channel-second_u')?.joinRule,
+    ).toBe('channel-follow-up');
+  });
+
+  it('writes same-channel and thread-parent links once on a retry', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    await h.run(
+      mention({
+        channelId: '777777777777777777',
+        invocationId: 'parent',
+        messageId: '888888888888888888',
+      }),
+    );
+    await h.run(
+      mention({
+        invocationId: 'another',
+        messageId: '810000000000000075',
+        input: { question: 'new topic: another' },
+      }),
+    );
+    const input = mention({
+      channelId: '888888888888888888',
+      threadParentId: '777777777777777777',
+      invocationId: 'child',
+      messageId: '810000000000000076',
+    });
+    const first = await h.run(input);
+    expect(first.error).toBeUndefined();
+    expect(conversationRepo.listLinks(scope(), 'conv_child')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ otherConversationId: 'conv_parent', kind: 'thread-parent' }),
+      ]),
+    );
+    const sameInput = mention({
+      invocationId: 'same',
+      messageId: '810000000000000077',
+      input: { question: 'new topic: separate' },
+    });
+    const sameFirst = await h.run(sameInput);
+    const before = conversationRepo.listLinks(scope(), 'conv_same');
+    expect(before.map((link) => link.otherConversationId).sort()).toEqual(['conv_another']);
+    const turnsBefore = conversationRepo.listTurns(scope(), 'conv_same').length;
+    await h.run(sameInput, sameFirst.cursor);
+    expect(conversationRepo.listLinks(scope(), 'conv_same')).toEqual(before);
+    expect(conversationRepo.listTurns(scope(), 'conv_same')).toHaveLength(turnsBefore);
+    await h.run(input, first.cursor);
+    expect(conversationRepo.listLinks(scope(), 'conv_child')).toHaveLength(1);
+  });
+
+  it('a thread-rule resolution resumes from the cursor after a post-invoke failure', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    // Seed the thread channel with a bot reply so the next message resolves by the thread rule.
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'thread-seed',
+        messageId: '810000000000000071',
+        threadParentId: CHANNEL_ID,
+      }),
+    );
+    const input = mention({
+      channelId: '888888888888888888',
+      invocationId: 'thread-retry',
+      messageId: '810000000000000072',
+      threadParentId: CHANNEL_ID,
+      userId: OTHER_ID,
+    });
+
+    // The first attempt invokes, saves invoke-done, then fails posting the answer.
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    const attempt1 = await h.run(input);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(attempt1.cursor).not.toBeNull();
+    const invokesAfterAttempt1 = h.inputs.length;
+
+    // The saved cursor carries the thread-rule resolution: with the old
+    // hard-coded enum this parse threw and the retry started over.
+    const saved = assistantInvokeCursor.parse(JSON.parse(attempt1.cursor as string));
+    expect(saved.resolution).toEqual({
+      kind: 'continue',
+      conversationId: expect.any(String),
+      rule: 'thread',
+    });
+
+    // The retry resumes from that cursor: no second invoke, the answer posts.
+    const sentBefore = h.sent.length;
+    const attempt2 = await h.run(input, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(h.inputs).toHaveLength(invokesAfterAttempt1);
+    expect(h.sent.length).toBeGreaterThan(sentBefore);
+    expect(h.sent.at(-1)?.message.content).toBe('answer');
   });
 
   it('posts a mention answer as a reply; a 4,500-character answer posts 3 parts, only the first with replyTo', async () => {

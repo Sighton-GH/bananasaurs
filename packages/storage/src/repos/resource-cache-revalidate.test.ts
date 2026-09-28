@@ -83,8 +83,8 @@ describe('migration 0048 resets resource cache validators', () => {
         'utf8',
       ),
     ) as { entries: { tag: string }[] };
-    expect(journal.entries[journal.entries.length - 1]?.tag).toBe(
-      '0049_skill_scopes_and_reminder_fields',
+    expect(journal.entries.some((e) => e.tag === '0048_reset_resource_cache_validators')).toBe(
+      true,
     );
   });
 });

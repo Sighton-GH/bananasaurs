@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, gt, inArray, like, lt } from 'drizzle-orm';
-import type { KnownMessage } from '@bananasaurs/core';
+import { and, asc, desc, eq, gte, gt, inArray, like, lt } from 'drizzle-orm';
+import type { JoinRule, KnownMessage } from '@bananasaurs/core';
 import {
+  assistantConversationLinks,
   assistantConversationMessages,
   assistantConversationTurns,
   assistantConversations,
@@ -46,6 +47,7 @@ export interface NewTurn {
   readonly authorName: string;
   readonly text: string;
   readonly traceId?: string | undefined;
+  readonly joinRule?: JoinRule;
 }
 
 export interface ConversationTurn {
@@ -57,6 +59,15 @@ export interface ConversationTurn {
   readonly text: string;
   readonly traceId?: string | undefined;
   readonly feedback?: Feedback | undefined;
+  readonly joinRule?: JoinRule;
+}
+
+export interface ConversationLink {
+  readonly otherConversationId: string;
+  readonly otherTitle: string;
+  readonly kind: 'same-channel' | 'thread-parent' | 'recalled';
+  readonly direction: 'outgoing' | 'incoming';
+  readonly at: number;
 }
 
 export interface ConversationListQuery {
@@ -92,6 +103,7 @@ const toTurn = (row: typeof assistantConversationTurns.$inferSelect): Conversati
   text: row.text,
   traceId: row.traceId ?? undefined,
   feedback: (row.feedback as Feedback | null) ?? undefined,
+  joinRule: (row.joinRule as JoinRule | null) ?? undefined,
 });
 
 /** Starts a conversation, `open`, with zero turns. */
@@ -129,6 +141,7 @@ export const appendTurn = (scope: GuildScope, t: NewTurn): void =>
         text: t.text,
         traceId: t.traceId ?? null,
         feedback: null,
+        joinRule: t.joinRule ?? null,
       })
       .run();
     const parent = db
@@ -247,6 +260,151 @@ export const latestForAuthor = (
       .limit(1)
       .get();
     return row;
+  });
+
+export const latestWithBotReply = (
+  scope: GuildScope,
+  channelId: string,
+): { conversationId: string } | undefined =>
+  read(scope, (db) =>
+    db
+      .select({ conversationId: assistantConversations.conversationId })
+      .from(assistantConversations)
+      .innerJoin(
+        assistantConversationTurns,
+        and(
+          eq(assistantConversationTurns.guildId, assistantConversations.guildId),
+          eq(assistantConversationTurns.conversationId, assistantConversations.conversationId),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.channelId, channelId),
+          eq(assistantConversations.status, 'open'),
+          eq(assistantConversations.source, 'discord'),
+          eq(assistantConversationTurns.role, 'assistant'),
+        ),
+      )
+      .orderBy(desc(assistantConversations.lastActivityAt))
+      .limit(1)
+      .get(),
+  );
+
+export const withBotReplySince = (
+  scope: GuildScope,
+  channelId: string,
+  sinceMs: number,
+): readonly string[] =>
+  read(scope, (db) => {
+    const rows = db
+      .select({ conversationId: assistantConversations.conversationId })
+      .from(assistantConversations)
+      .innerJoin(
+        assistantConversationTurns,
+        and(
+          eq(assistantConversationTurns.guildId, assistantConversations.guildId),
+          eq(assistantConversationTurns.conversationId, assistantConversations.conversationId),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.channelId, channelId),
+          eq(assistantConversations.status, 'open'),
+          eq(assistantConversations.source, 'discord'),
+          eq(assistantConversationTurns.role, 'assistant'),
+          gte(assistantConversationTurns.at, sinceMs),
+        ),
+      )
+      .all();
+    return [...new Set(rows.map((row) => row.conversationId))];
+  });
+
+export const linkConversations = (
+  scope: GuildScope,
+  link: {
+    readonly conversationId: string;
+    readonly linkedConversationId: string;
+    readonly kind: 'same-channel' | 'thread-parent' | 'recalled';
+    readonly at: number;
+  },
+): void => {
+  if (link.conversationId === link.linkedConversationId) return;
+  write(scope, ({ db }) => {
+    db.insert(assistantConversationLinks)
+      .values({
+        guildId: scope.guildId,
+        conversationId: link.conversationId,
+        linkedConversationId: link.linkedConversationId,
+        kind: link.kind,
+        createdAt: link.at,
+      })
+      .onConflictDoNothing()
+      .run();
+  });
+};
+
+export const listLinks = (scope: GuildScope, conversationId: string): ConversationLink[] =>
+  read(scope, (db) => {
+    const outgoing = db
+      .select({
+        otherConversationId: assistantConversations.conversationId,
+        otherTitle: assistantConversations.title,
+        kind: assistantConversationLinks.kind,
+        at: assistantConversationLinks.createdAt,
+      })
+      .from(assistantConversationLinks)
+      .innerJoin(
+        assistantConversations,
+        and(
+          eq(assistantConversationLinks.guildId, assistantConversations.guildId),
+          eq(
+            assistantConversationLinks.linkedConversationId,
+            assistantConversations.conversationId,
+          ),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversationLinks,
+          eq(assistantConversationLinks.conversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => ({
+        ...row,
+        kind: row.kind as ConversationLink['kind'],
+        direction: 'outgoing' as const,
+      }));
+    const incoming = db
+      .select({
+        otherConversationId: assistantConversations.conversationId,
+        otherTitle: assistantConversations.title,
+        kind: assistantConversationLinks.kind,
+        at: assistantConversationLinks.createdAt,
+      })
+      .from(assistantConversationLinks)
+      .innerJoin(
+        assistantConversations,
+        and(
+          eq(assistantConversationLinks.guildId, assistantConversations.guildId),
+          eq(assistantConversationLinks.conversationId, assistantConversations.conversationId),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversationLinks,
+          eq(assistantConversationLinks.linkedConversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => ({
+        ...row,
+        kind: row.kind as ConversationLink['kind'],
+        direction: 'incoming' as const,
+      }));
+    return [...outgoing, ...incoming].sort((a, b) => b.at - a.at);
   });
 
 /**

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../ids.js';
+import { CONTINUE_RULES, NEW_RULES } from '../assistant/conversation.js';
 import { assistantTraceSchema } from '../assistant/trace.js';
 
 /**
@@ -392,6 +393,8 @@ export const assistantInvokePayload = z.object({
    * message apart from a quoted reply to someone else's.
    */
   referencedAuthorId: z.string().min(1).optional(),
+  /** The parent channel when the mention was posted in a thread. */
+  threadParentId: z.string().min(1).optional(),
   /**
    * Task 14: the member's display name for history labels, when the producer
    * knew one. The mention path carries the member's display name; other paths
@@ -498,11 +501,11 @@ export const assistantInvokeCursor = z.object({
       z.object({
         kind: z.literal('continue'),
         conversationId: z.string().min(1),
-        rule: z.enum(['reply-to-bot', 'reply-to-turn', 'follow-up']),
+        rule: z.enum(CONTINUE_RULES),
       }),
       z.object({
         kind: z.literal('new'),
-        rule: z.enum(['quoted-reply', 'reply-to-unknown-bot-message', 'new-topic', 'fresh']),
+        rule: z.enum(NEW_RULES),
         quotedMessageId: z.string().min(1).optional(),
       }),
     ])

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
@@ -11,12 +13,16 @@ import {
   getConversation,
   hasConversations,
   latestForAuthor,
+  latestWithBotReply,
+  linkConversations,
   linkMessages,
+  listLinks,
   listConversations,
   listTurns,
   LIST_TURNS_LIMIT,
   lookupMessage,
   peopleForConversations,
+  withBotReplySince,
   pruneOlderThan,
   recentTurns,
   setFeedback,
@@ -121,7 +127,7 @@ describe('appendTurn', () => {
   it('bumps last_activity_at and turn_count', () => {
     const scope = t.scopes.forGuild(GUILD_A);
     createConversation(scope, conversation({ at: 1_000 }));
-    appendTurn(scope, turn({ turnId: 'turn-1', at: 2_000 }));
+    appendTurn(scope, turn({ turnId: 'turn-1', at: 2_000, joinRule: 'fresh' }));
     expect(getConversation(scope, 'conv-1')).toMatchObject({
       turnCount: 1,
       lastActivityAt: 2_000,
@@ -134,6 +140,10 @@ describe('appendTurn', () => {
       turnCount: 2,
       lastActivityAt: 3_000,
     });
+    expect(listTurns(scope, 'conv-1')[0]?.joinRule).toBe('fresh');
+    expect(recentTurns(scope, 'conv-1', { maxTurns: 12, maxChars: 6_000 })[0]?.joinRule).toBe(
+      'fresh',
+    );
   });
 });
 
@@ -201,6 +211,204 @@ describe('latestForAuthor', () => {
     appendTurn(scope, turn({ at: 1_000 }));
     expect(latestForAuthor(scope, USER, '999999999999999999')).toBeUndefined();
     expect(latestForAuthor(scope, OTHER_USER, CHANNEL)).toBeUndefined();
+  });
+});
+
+describe('bot reply joins', () => {
+  it('finds only open Discord conversations with assistant replies, scoped and newest first', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    createConversation(a, conversation({ conversationId: 'old', at: 1_000 }));
+    appendTurn(a, turn({ conversationId: 'old', turnId: 'old-u', at: 1_000 }));
+    appendTurn(
+      a,
+      turn({
+        conversationId: 'old',
+        turnId: 'old-a',
+        at: 2_000,
+        role: 'assistant',
+        authorId: undefined,
+      }),
+    );
+    createConversation(a, conversation({ conversationId: 'new', at: 3_000 }));
+    appendTurn(
+      a,
+      turn({
+        conversationId: 'new',
+        turnId: 'new-a',
+        at: 4_000,
+        role: 'assistant',
+        authorId: undefined,
+      }),
+    );
+    createConversation(a, conversation({ conversationId: 'ended', at: 5_000 }));
+    appendTurn(
+      a,
+      turn({
+        conversationId: 'ended',
+        turnId: 'ended-a',
+        at: 6_000,
+        role: 'assistant',
+        authorId: undefined,
+      }),
+    );
+    endConversation(a, 'ended');
+    createConversation(
+      a,
+      conversation({ conversationId: 'dashboard', source: 'dashboard-test', at: 7_000 }),
+    );
+    appendTurn(
+      a,
+      turn({
+        conversationId: 'dashboard',
+        turnId: 'dashboard-a',
+        at: 8_000,
+        role: 'assistant',
+        authorId: undefined,
+      }),
+    );
+    createConversation(b, conversation({ conversationId: 'other-guild', at: 9_000 }));
+    appendTurn(
+      b,
+      turn({
+        conversationId: 'other-guild',
+        turnId: 'other-a',
+        at: 10_000,
+        role: 'assistant',
+        authorId: undefined,
+      }),
+    );
+
+    expect(latestWithBotReply(a, CHANNEL)).toEqual({ conversationId: 'new' });
+    expect(withBotReplySince(a, CHANNEL, 1_500)).toEqual(expect.arrayContaining(['old', 'new']));
+    expect(latestWithBotReply(b, CHANNEL)).toEqual({ conversationId: 'other-guild' });
+  });
+
+  it('uses the guild scope and inclusive timestamp for candidates', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    createConversation(a, conversation({ conversationId: 'boundary' }));
+    appendTurn(
+      a,
+      turn({
+        conversationId: 'boundary',
+        turnId: 'boundary-a',
+        role: 'assistant',
+        authorId: undefined,
+        at: 1_500,
+      }),
+    );
+    expect(withBotReplySince(a, CHANNEL, 1_500)).toEqual(['boundary']);
+    expect(withBotReplySince(t.scopes.forGuild(GUILD_B), CHANNEL, 0)).toEqual([]);
+  });
+});
+
+describe('conversation links', () => {
+  it('stores links once, lists both directions, and cascades on delete', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ conversationId: 'conv-1', title: 'one' }));
+    createConversation(scope, conversation({ conversationId: 'conv-2', title: 'two' }));
+    linkConversations(scope, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-2',
+      kind: 'same-channel',
+      at: 3_000,
+    });
+    linkConversations(scope, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-2',
+      kind: 'same-channel',
+      at: 4_000,
+    });
+    expect(listLinks(scope, 'conv-1')).toEqual([
+      {
+        otherConversationId: 'conv-2',
+        otherTitle: 'two',
+        kind: 'same-channel',
+        direction: 'outgoing',
+        at: 3_000,
+      },
+    ]);
+    expect(listLinks(scope, 'conv-2')).toEqual([
+      {
+        otherConversationId: 'conv-1',
+        otherTitle: 'one',
+        kind: 'same-channel',
+        direction: 'incoming',
+        at: 3_000,
+      },
+    ]);
+    deleteConversation(scope, 'conv-1');
+    expect(listLinks(scope, 'conv-2')).toEqual([]);
+  });
+
+  it('isolates links in both directions and ignores self-links', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    for (const scope of [a, b]) {
+      createConversation(scope, conversation({ conversationId: 'conv-1' }));
+      createConversation(scope, conversation({ conversationId: 'conv-2' }));
+    }
+    linkConversations(a, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-2',
+      kind: 'thread-parent',
+      at: 1_000,
+    });
+    linkConversations(a, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-1',
+      kind: 'same-channel',
+      at: 1_000,
+    });
+    expect(listLinks(a, 'conv-1')).toHaveLength(1);
+    expect(listLinks(a, 'conv-2')).toHaveLength(1);
+    expect(listLinks(b, 'conv-1')).toEqual([]);
+    expect(listLinks(b, 'conv-2')).toEqual([]);
+  });
+
+  it('removes links when forgetting the last user of a conversation', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ conversationId: 'conv-1' }));
+    createConversation(scope, conversation({ conversationId: 'conv-2' }));
+    appendTurn(scope, turn({ conversationId: 'conv-1' }));
+    linkConversations(scope, {
+      conversationId: 'conv-2',
+      linkedConversationId: 'conv-1',
+      kind: 'recalled',
+      at: 1_000,
+    });
+    expect(forgetAuthor(scope, USER)).toBe(1);
+    expect(listLinks(scope, 'conv-2')).toEqual([]);
+  });
+
+  it('rejects invalid join rules and link kinds at the database boundary', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    createConversation(scope, conversation({ conversationId: 'conv-2' }));
+    expect(() =>
+      t.raw
+        .prepare(
+          `INSERT INTO assistant_conversation_turns (guild_id, conversation_id, turn_id, at, role, author_name, text, join_rule) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(GUILD_A, 'conv-1', 'invalid', 1_000, 'user', 'someone', 'text', 'not-a-rule'),
+    ).toThrow();
+    expect(() =>
+      t.raw
+        .prepare(
+          `INSERT INTO assistant_conversation_links (guild_id, conversation_id, linked_conversation_id, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(GUILD_A, 'conv-1', 'conv-2', 'not-a-kind', 1_000),
+    ).toThrow();
+  });
+
+  it('records the 0050_conversation_links migration tag in the journal', () => {
+    const journal = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../../../../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as { entries: { tag: string }[] };
+    expect(journal.entries.some((e) => e.tag === '0050_conversation_links')).toBe(true);
   });
 });
 

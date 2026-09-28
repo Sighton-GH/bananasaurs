@@ -2,6 +2,7 @@ import {
   assistantInvokeCursor,
   assistantInvokePayload,
   JOB_KINDS,
+  SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
   resolveConversation,
   RetryAfterError,
@@ -473,9 +474,14 @@ export const assistantInvokeHandler = (deps: {
             ...(payload.referencedAuthorId === undefined
               ? {}
               : { referencedAuthorId: payload.referencedAuthorId }),
+            inThread: payload.threadParentId !== undefined,
             lookupMessage: (messageId) => conversationRepo.lookupMessage(conv.scope, messageId),
             latestForAuthor: (authorId, scopeChannelId) =>
               conversationRepo.latestForAuthor(conv.scope, authorId, scopeChannelId),
+            latestWithBotReply: (scopeChannelId) =>
+              conversationRepo.latestWithBotReply(conv.scope, scopeChannelId),
+            withBotReplySince: (scopeChannelId, sinceMs) =>
+              conversationRepo.withBotReplySince(conv.scope, scopeChannelId, sinceMs),
           });
           resolution = resolved;
           // Quoted rules name a message we do not know: fetch it in the same
@@ -507,8 +513,11 @@ export const assistantInvokeHandler = (deps: {
           const key = payload.invocationId;
           conversationId = resolved.kind === 'continue' ? resolved.conversationId : `conv_${key}`;
           const userTurnId = `turn_${key}_u`;
-          if (conversationRepo.getConversation(conv.scope, conversationId) === undefined) {
+          const isNewConversation =
+            conversationRepo.getConversation(conv.scope, conversationId) === undefined;
+          if (isNewConversation) {
             const title = strippedQuestion.slice(0, 120);
+            const createdAt = deps.now();
             conversationRepo.createConversation(conv.scope, {
               conversationId,
               channelId,
@@ -516,9 +525,35 @@ export const assistantInvokeHandler = (deps: {
               startedBy: payload.userId,
               title: title === '' ? 'Assistant conversation' : title,
               source: 'discord',
-              at: deps.now(),
+              at: createdAt,
             });
+            for (const linkedConversationId of conversationRepo.withBotReplySince(
+              conv.scope,
+              channelId,
+              createdAt - SAME_CHANNEL_LINK_WINDOW_MS,
+            )) {
+              if (linkedConversationId !== conversationId) {
+                conversationRepo.linkConversations(conv.scope, {
+                  conversationId,
+                  linkedConversationId,
+                  kind: 'same-channel',
+                  at: createdAt,
+                });
+              }
+            }
+            if (payload.threadParentId !== undefined) {
+              const known = conversationRepo.lookupMessage(conv.scope, channelId);
+              if (known !== undefined && known.channelId === payload.threadParentId) {
+                conversationRepo.linkConversations(conv.scope, {
+                  conversationId,
+                  linkedConversationId: known.conversationId,
+                  kind: 'thread-parent',
+                  at: createdAt,
+                });
+              }
+            }
           }
+
           // A new conversation that starts from a quoted message stores the
           // quote as the opening `quote` turn, before the user turn: the
           // pinned-quote window and the transcript both read it from there.
@@ -549,6 +584,7 @@ export const assistantInvokeHandler = (deps: {
               authorId: payload.userId,
               authorName: payload.authorName ?? 'a member',
               text: strippedQuestion,
+              joinRule: resolved.rule,
             });
           }
           const built = buildConversationContext({
