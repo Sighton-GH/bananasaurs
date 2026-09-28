@@ -77,6 +77,43 @@ describe('assistantTraceSchema', () => {
     expect(assistantTraceSchema.parse(oldTrace)).toEqual(oldTrace);
   });
 
+  it('round-trips included channelMessages and still parses included without it', () => {
+    const withCount = fixtureTrace({
+      included: {
+        toolsOffered: ['search_sources'],
+        snippetChunkIds: ['chunk-1'],
+        quote: false,
+        historyTurns: 0,
+        channelMessages: 3,
+      },
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withCount)))).toEqual(withCount);
+    const withoutCount = fixtureTrace({
+      included: {
+        toolsOffered: ['search_sources'],
+        snippetChunkIds: ['chunk-1'],
+        quote: false,
+        historyTurns: 0,
+      },
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withoutCount)))).toEqual(
+      withoutCount,
+    );
+    expect(() =>
+      assistantTraceSchema.parse(
+        fixtureTrace({
+          included: {
+            toolsOffered: [],
+            snippetChunkIds: [],
+            quote: false,
+            historyTurns: 0,
+            channelMessages: -1,
+          },
+        }),
+      ),
+    ).toThrow();
+  });
+
   it('rejects an unknown outcome and a zero tool round', () => {
     expect(() => assistantTraceSchema.parse(fixtureTrace({ outcome: 'maybe' as never }))).toThrow();
     expect(() =>

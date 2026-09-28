@@ -786,6 +786,9 @@ export const createAssistantService = (
               (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
               input.quoteInHistory === true,
             historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+            ...(input.channelMessages === undefined
+              ? {}
+              : { channelMessages: input.channelMessages }),
           },
         });
         if (failed.actionSummaries.length > 0) {
@@ -890,6 +893,7 @@ export const createAssistantService = (
       const userText = buildUserMessage({
         question: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
         askerName: input.askerName,
+        channelContext: input.channelContext,
         evidenceEnvelope: context.evidenceEnvelope,
         quoteEnvelope: input.quoteEnvelope,
       });
@@ -996,6 +1000,9 @@ export const createAssistantService = (
             (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
             input.quoteInHistory === true,
           historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+          ...(input.channelMessages === undefined
+            ? {}
+            : { channelMessages: input.channelMessages }),
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
@@ -1285,6 +1292,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
                 snippetChunkIds: [...detail.included.snippetChunkIds],
                 quote: detail.included.quote,
                 historyTurns: detail.included.historyTurns,
+                ...(detail.included.channelMessages === undefined
+                  ? {}
+                  : { channelMessages: detail.included.channelMessages }),
               },
             }),
         timeline: [
