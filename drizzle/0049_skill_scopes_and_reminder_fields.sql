@@ -30,4 +30,5 @@ UPDATE `assistant_behaviours` SET `skill_ids_json` = (
 --> statement-breakpoint
 UPDATE `assistant_skill_grants` SET `skill_id` = 'reminders' WHERE `skill_id` = 'create-reminder';
 --> statement-breakpoint
-DELETE FROM `assistant_skill_grants` WHERE `skill_id` = 'send-reminder';
+DELETE FROM `assistant_skill_grants` WHERE `skill_id` = 'send-reminder';--> statement-breakpoint
+UPDATE `assistant_skill_activity` SET `skill_id` = 'reminders' WHERE `skill_id` IN ('create-reminder', 'send-reminder');
