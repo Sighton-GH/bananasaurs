@@ -7,6 +7,7 @@ import {
   effectiveSkillScope,
   estimateTokens,
   JOB_KINDS,
+  neutraliseMarkers,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
@@ -373,20 +374,15 @@ export const createAssistantService = (
           ok: false,
           content: 'This behaviour is not available to your server roles. No action was taken.',
         };
-      if (!input.behaviour.preferredSkillIds.includes(skill))
-        return {
-          ok: false,
-          content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
-        };
-      // B2b: the behaviour allowlist and the skill's own scope both gate the
-      // request, checked in code against the asker's live roles. Try-it
-      // counts as the owner for scopes (`config.write` authorised the caller).
+      // ADR 0087: the skill's scope is the only gate, checked in code
+      // against the asker's live roles. The behaviour's preferred list never
+      // grants or denies. Try-it counts as the owner for scopes
+      // (`config.write` authorised the caller).
       const scopeOwner = owner || opts.skipCallerGate === true;
       const grants = new Map(
         assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant]),
       );
       const skillAllowed = (id: string): boolean => {
-        if (!input.behaviour.preferredSkillIds.includes(id)) return false;
         const catalogueSkill = CLUB_ASSISTANT_SKILLS.find((candidate) => candidate.id === id);
         if (catalogueSkill === undefined) return false;
         // Fix 1 (hard rule 6): acting tools need a durable idempotency key.
@@ -403,6 +399,33 @@ export const createAssistantService = (
       const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) =>
         skillAllowed(candidate.id),
       );
+      // ADR 0087: catalogue skills the asker's scope denies, named plainly.
+      // Not computed for skills hidden only by skipActions/missing invocation
+      // id — the scope check alone decides. No directory port is in scope
+      // here, so role reasons fall back to "only for certain roles".
+      const cleanRoleToken = (name: string): string =>
+        neutraliseMarkers(name)
+          .replace(/[\[\]\r\n]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const unavailableSkills: readonly {
+        readonly skill: (typeof CLUB_ASSISTANT_SKILLS)[number];
+        readonly reason: string;
+      }[] = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
+        const scope = effectiveSkillScope(candidate, grants.get(candidate.id));
+        return !skillScopeAllows(scope, { owner: scopeOwner, roleIds: input.callerRoleIds });
+      }).map((candidate) => {
+        const scope = effectiveSkillScope(candidate, grants.get(candidate.id));
+        if (scope.mode === 'owner') return { skill: candidate, reason: 'owner only' };
+        if (scope.mode === 'roles') {
+          // No directory port in scope: names unavailable, reason stays plain.
+          const names: readonly string[] = [];
+          const cleaned = names.map(cleanRoleToken).filter((name) => name !== '');
+          if (cleaned.length === 0) return { skill: candidate, reason: 'only for certain roles' };
+          return { skill: candidate, reason: `only for ${cleaned.join(', ')}` };
+        }
+        return { skill: candidate, reason: 'only for certain roles' };
+      });
       // B2b: every acting tool's port, closed over this request's guild scope
       // and asker. The invocation key is the Discord message or interaction
       // that asked — the durable idempotency anchor, so a retried job reuses
@@ -587,6 +610,8 @@ export const createAssistantService = (
         resources,
         evidence,
         skills: permittedSkills,
+        preferredSkillIds: input.behaviour.preferredSkillIds,
+        unavailableSkills,
         toolsAvailable,
         catalogueLines,
       });

@@ -77,8 +77,8 @@ const SKILL_DETAIL = {
   instructionLine:
     'search-club: Search enabled Discord archive and reviewed resources. Effect=read. Confirmation=not required.',
   behaviours: [
-    { id: 'club', name: 'Club assistant', allowed: true },
-    { id: 'help', name: 'IT help', allowed: false },
+    { id: 'club', name: 'Club assistant', preferred: true },
+    { id: 'help', name: 'IT help', preferred: false },
   ],
   scope: { mode: 'everyone', roleIds: [], isDefault: true },
   whoCanUse: '@Club Member, and the server owner',

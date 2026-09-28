@@ -188,13 +188,12 @@ const whoStep = (
   };
 };
 
-/** ADR 0064: a skill is ready once a behaviour allows it; "Who can ask" decides who. */
+/** ADR 0087: the skill's scope is the only gate — every catalogue skill is ready; "Who can ask" decides who. */
 const skillsStep = (
-  behaviours: readonly AssistantBehaviour[],
+  _behaviours: readonly AssistantBehaviour[],
   skills: readonly AssistantSkill[],
 ): SetupStep => {
-  const allowed = new Set(behaviours.flatMap((item) => item.preferredSkillIds));
-  const ready = skills.filter((item) => allowed.has(item.id)).length;
+  const ready = skills.length;
   if (ready > 0) {
     return {
       id: 'skills',

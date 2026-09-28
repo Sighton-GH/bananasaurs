@@ -2368,7 +2368,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(generateText).toHaveBeenCalledTimes(2);
   });
 
-  it('a skill outside the behaviour allowlist is refused even for the owner', async () => {
+  it('a skill outside the behaviour preference still runs when the scope allows (ADR 0087)', async () => {
     const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
     const service = h.serviceWith(wrap(generateText));
     const result = await service.invoke(
@@ -2381,11 +2381,95 @@ describe('B2b: per-skill scopes gate chat skills', () => {
         invocationId: 'int-scope-allowlist',
       }),
     );
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.content).toBe(
-      'This behaviour is not allowed to use propose-memory. No action was taken.',
+    expect(result.ok).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('a behaviour whose preference lacks reminders still offers set_reminder to an owner (ADR 0087 regression)', async () => {
+    const declared: string[][] = [];
+    const systems: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
+        systems.push(req.systemInstruction ?? '');
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = h.serviceWith(provider);
+    const result = await service.invoke(
+      ask({
+        behaviour: { ...h.direct, id: 'narrow', preferredSkillIds: ['search-club'] },
+        command: 'ask',
+        input: { question: 'remind me later?' },
+        userId: OWNER,
+        callerRoleIds: [],
+        invocationId: 'int-preference-regression',
+      }),
     );
-    expect(generateText).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(declared[0]).toContain('set_reminder');
+    expect(systems[0]).toContain('reminders:');
+  });
+
+  it('a non-owner denied by owner scope gets a plain NOT AVAILABLE line and no reminder tools', async () => {
+    const declared: string[][] = [];
+    const systems: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
+        systems.push(req.systemInstruction ?? '');
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = h.serviceWith(provider);
+    const result = await service.invoke(
+      ask({
+        behaviour: { ...h.direct, preferredSkillIds: [] },
+        command: 'ask',
+        input: { question: 'remind me later?' },
+        invocationId: 'int-unavailable-owner',
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(systems[0]).toContain('Reminders: owner only');
+    for (const names of declared) expect(names).not.toContain('set_reminder');
+  });
+
+  it('a roles-scope denial names the fallback plainly without a directory port', async () => {
+    assistantRepo.setSkillScope(
+      h.t.scopes.forGuild(GUILD),
+      { skillId: 'reminders', mode: 'roles', roleIds: [SPECIAL_ROLE] },
+      NOW,
+    );
+    const declared: string[][] = [];
+    const systems: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
+        systems.push(req.systemInstruction ?? '');
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = h.serviceWith(provider);
+    const result = await service.invoke(
+      ask({
+        behaviour: { ...h.direct, preferredSkillIds: [] },
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        invocationId: 'int-roles-scope',
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(systems[0]).toContain('Reminders: only for certain roles');
+    for (const names of declared) expect(names).not.toContain('set_reminder');
   });
 });
 

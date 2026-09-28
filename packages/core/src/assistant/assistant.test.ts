@@ -553,6 +553,70 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
   });
 });
 
+describe('compileAssistantContext preferred skills and unavailable skills (ADR 0087)', () => {
+  const search = CLUB_ASSISTANT_SKILLS.find((s) => s.id === 'search-club')!;
+  const reminders = CLUB_ASSISTANT_SKILLS.find((s) => s.id === 'reminders')!;
+  const base = {
+    serverCard: 'card',
+    resources: [],
+    evidence: [],
+  } as const;
+
+  it('orders preferred skills first and suffixes them as this assistant\u2019s focus', () => {
+    const compiled = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: ['reminders'] },
+      skills: [search, reminders],
+    });
+    const block = compiled.systemInstruction.slice(
+      compiled.systemInstruction.indexOf('ALLOWED SKILLS'),
+    );
+    const lines = block.split('\n').slice(1, 3);
+    expect(lines[0]).toContain('reminders:');
+    expect(lines[0]).toContain("(this assistant's focus)");
+    expect(lines[1]).toContain('search-club:');
+    expect(lines[1]).not.toContain('focus');
+  });
+
+  it('adds no suffix for an empty preference or one listing every allowed skill', () => {
+    const empty = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: [] },
+      skills: [search, reminders],
+    });
+    expect(empty.systemInstruction).not.toContain("(this assistant's focus)");
+    const all = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: ['search-club', 'reminders'] },
+      skills: [search, reminders],
+    });
+    expect(all.systemInstruction).not.toContain("(this assistant's focus)");
+  });
+
+  it('lists scope-denied skills plainly with their reasons', () => {
+    const compiled = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: [] },
+      skills: [search],
+      unavailableSkills: [{ skill: reminders, reason: 'owner only' }],
+    });
+    expect(compiled.systemInstruction).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(compiled.systemInstruction).toContain('- Reminders: owner only');
+    expect(compiled.systemInstruction).toContain('Do not suggest asking someone else to do it.');
+    expect(compiled.protectedText).toContain('NOT AVAILABLE TO THIS MEMBER');
+  });
+
+  it('renders a roles-scope reason with the role names', () => {
+    const compiled = compileAssistantContext({
+      ...base,
+      behaviour: { ...behaviour, preferredSkillIds: [] },
+      skills: [search],
+      unavailableSkills: [{ skill: reminders, reason: 'only for Mods, Helpers' }],
+    });
+    expect(compiled.systemInstruction).toContain('- Reminders: only for Mods, Helpers');
+  });
+});
+
 describe('reminders', () => {
   it('validates, persists and delivers due reminders with stable dedupe keys', async () => {
     const create = vi.fn(async () => undefined);

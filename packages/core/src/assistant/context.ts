@@ -98,6 +98,23 @@ export const compileAssistantContext = (input: {
    * it and keeps today's behaviour).
    */
   readonly catalogueLines?: readonly string[];
+  /**
+   * ADR 0087: the behaviour's preferred skill ids. When absent, the
+   * behaviour's own `preferredSkillIds` is used. Preferred allowed skills
+   * come first and are suffixed as this assistant's focus; an empty
+   * preference, or one covering every allowed skill, adds no suffix.
+   */
+  readonly preferredSkillIds?: readonly string[] | undefined;
+  /**
+   * ADR 0087: catalogue skills the asker's scope denies, with plain reasons.
+   * Rendered after ALLOWED SKILLS as NOT AVAILABLE TO THIS MEMBER.
+   */
+  readonly unavailableSkills?:
+    | readonly {
+        readonly skill: AssistantSkill;
+        readonly reason: string;
+      }[]
+    | undefined;
 }): CompiledAssistantContext => {
   const max = input.maxEvidenceChars ?? 12_000;
   const evidence = input.evidence.filter((item) => item.accessible);
@@ -143,10 +160,40 @@ export const compileAssistantContext = (input: {
     dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
     4_000,
   );
+  // ADR 0087: preferred skills first, suffixed as this assistant's focus.
+  // An empty preference, or one covering every allowed skill (which includes
+  // the seeded "every catalogue skill" case), adds no suffix.
+  const preferredIds = new Set(input.preferredSkillIds ?? input.behaviour.preferredSkillIds);
+  const preferredAllowed = input.skills.filter((skill) => preferredIds.has(skill.id));
+  const otherAllowed = input.skills.filter((skill) => !preferredIds.has(skill.id));
+  const showPreference =
+    preferredAllowed.length > 0 && preferredAllowed.length < input.skills.length;
+  const orderedSkills = showPreference ? [...preferredAllowed, ...otherAllowed] : [...input.skills];
+  const skillLine = (skill: AssistantSkill): string => {
+    const base = skillInstructionLine(skill);
+    if (showPreference && preferredIds.has(skill.id)) return `${base} (this assistant's focus)`;
+    return base;
+  };
   const skillsBlock =
-    input.skills.length === 0
+    orderedSkills.length === 0
       ? 'ALLOWED SKILLS\nNone. Answer only; do not claim an action.'
-      : `ALLOWED SKILLS\n${input.skills.map(skillInstructionLine).join('\n')}`;
+      : `ALLOWED SKILLS\n${orderedSkills.map(skillLine).join('\n')}`;
+  const cleanReason = (reason: string): string =>
+    neutraliseMarkers(reason)
+      .replace(/[\[\]\r\n]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const unavailable = (input.unavailableSkills ?? []).map((entry) => ({
+    name: neutraliseMarkers(entry.skill.name)
+      .replace(/[\[\]\r\n]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    reason: cleanReason(entry.reason),
+  }));
+  const unavailableBlock =
+    unavailable.length === 0
+      ? ''
+      : `NOT AVAILABLE TO THIS MEMBER\n${unavailable.map((entry) => `- ${entry.name}: ${entry.reason}`).join('\n')}\nIf asked for one of these, say plainly that it isn't available to them and why. Do not suggest asking someone else to do it.`;
   // ADR 0074: the locked safety suffix sits right after the behaviour prompt,
   // before the evidence rule, so model output guards and reviewers see it in
   // a fixed position.
@@ -162,8 +209,12 @@ export const compileAssistantContext = (input: {
     { name: 'server-card', text: `SERVER CARD\n${clean(input.serverCard, 3_000)}` },
     { name: 'resources', text: resources },
     { name: 'skills', text: skillsBlock },
+    { name: 'unavailable-skills', text: unavailableBlock },
   ].filter((section) => section.text !== '');
-  const protectedText = `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}`;
+  const protectedText =
+    unavailableBlock === ''
+      ? `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}`
+      : `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}\n\n${unavailableBlock}`;
   return {
     systemInstruction: sections.map((section) => section.text).join('\n\n'),
     evidenceEnvelope: blocks.join('\n\n'),

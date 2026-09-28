@@ -415,7 +415,7 @@ describe('computeAssistantSetup', () => {
   });
 
   describe('skills', () => {
-    it('counts the skills behaviours allow; grants play no part (ADR 0064)', () => {
+    it('counts every catalogue skill; behaviour preferences play no part (ADR 0087)', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
         behaviours: [
@@ -427,14 +427,15 @@ describe('computeAssistantSetup', () => {
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',
         state: 'done',
-        detail: '2 skills are ready to use.',
+        detail: '3 skills are ready to use.',
       });
     });
 
-    it('is todo when no behaviour allows a skill', () => {
+    it('is todo when the catalogue is empty', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
         behaviours: [behaviour({ preferredSkillIds: [] })],
+        skills: [],
       });
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',

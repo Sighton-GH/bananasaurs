@@ -108,7 +108,7 @@ function BehaviourToggle({
   session,
   onSaved,
 }: {
-  readonly row: { readonly id: string; readonly name: string; readonly allowed: boolean };
+  readonly row: { readonly id: string; readonly name: string; readonly preferred: boolean };
   readonly skillId: string;
   readonly behaviours: AssistantData['behaviours'];
   readonly session: Session;
@@ -140,7 +140,7 @@ function BehaviourToggle({
       <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
         <input
           type="checkbox"
-          checked={row.allowed}
+          checked={row.preferred}
           disabled={busy || full === undefined}
           onChange={() => void toggle()}
         />
