@@ -1,11 +1,17 @@
-import { PermissionsBitField } from 'discord.js';
+import { ChannelType, PermissionsBitField } from 'discord.js';
 
 /** The slice of a discord.js Guild this module needs. */
 export interface ReminderTargetGuild {
   readonly channels: {
     readonly cache: ReadonlyMap<
       string,
-      { readonly id: string; readonly name: string; isTextBased(): boolean; isThread(): boolean }
+      {
+        readonly id: string;
+        readonly name: string;
+        readonly type: ChannelType;
+        isTextBased(): boolean;
+        isThread(): boolean;
+      }
     >;
   };
   readonly roles: {
@@ -62,6 +68,18 @@ export type ReminderTargetResult =
 
 const UNAVAILABLE = "I can't check permissions right now, so I didn't set the reminder.";
 const ID_PATTERN = /^\d{17,20}$/;
+/**
+ * Only text and announcement channels can host a reminder. discord.js
+ * `isTextBased()` is also true for voice and stage channels (they carry a
+ * `messages` manager), so the channel type decides.
+ */
+const isPostableChannel = (candidate: {
+  readonly type: ChannelType;
+  isTextBased(): boolean;
+  isThread(): boolean;
+}): boolean =>
+  (candidate.type === ChannelType.GuildText || candidate.type === ChannelType.GuildAnnouncement) &&
+  !candidate.isThread();
 const mentionId = (value: string, pattern: RegExp): string | undefined => pattern.exec(value)?.[1];
 const failure = (problem: string): ReminderTargetResult => ({ ok: false, problem });
 
@@ -95,13 +113,9 @@ export const resolveReminderTargets = async (
     const visibleChannels = matchingChannels.filter((candidate) =>
       asker.permissionsIn(candidate).has(PermissionsBitField.Flags.ViewChannel),
     );
-    const usableChannels = visibleChannels.filter(
-      (candidate) => candidate.isTextBased() && !candidate.isThread(),
-    );
+    const usableChannels = visibleChannels.filter((candidate) => isPostableChannel(candidate));
     if (usableChannels.length === 0) {
-      const visibleNonText = visibleChannels.find(
-        (candidate) => !candidate.isTextBased() || candidate.isThread(),
-      );
+      const visibleNonText = visibleChannels.find((candidate) => !isPostableChannel(candidate));
       if (visibleNonText !== undefined) {
         return failure(`I can't post reminders in #${visibleNonText.name}.`);
       }

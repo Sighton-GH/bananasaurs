@@ -1,4 +1,4 @@
-import { PermissionsBitField } from 'discord.js';
+import { ChannelType, PermissionsBitField } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   resolveReminderTargets,
@@ -9,9 +9,14 @@ import {
 
 const permission = PermissionsBitField.Flags;
 const all = permission.ViewChannel | permission.SendMessages | permission.MentionEveryone;
-const channel = (id: string, name: string, { text = true, thread = false } = {}) => ({
+const channel = (
+  id: string,
+  name: string,
+  { text = true, thread = false, type = ChannelType.GuildText } = {},
+) => ({
   id,
   name,
+  type,
   isTextBased: () => text,
   isThread: () => thread,
 });
@@ -169,18 +174,24 @@ describe('resolveReminderTargets', () => {
   });
 
   it('filters channel types before deciding name matches', async () => {
+    // A real discord.js voice channel reports `isTextBased() === true`
+    // (it carries a `messages` manager); only the type excludes it.
     const guild = makeGuild({
       channels: [
-        channel('10000000000000002', 'general', { text: false }),
+        channel('10000000000000002', 'General', { text: true, type: ChannelType.GuildVoice }),
         channel('10000000000000001', 'general'),
       ],
     });
-    expect(ok(await resolveReminderTargets(guild, request({ channel: 'general' }))).channelId).toBe(
-      '10000000000000001',
-    );
+    expect(
+      ok(await resolveReminderTargets(guild, request({ channel: '#general' }))).channelId,
+    ).toBe('10000000000000001');
     await expect(
       resolveReminderTargets(
-        makeGuild({ channels: [channel('10000000000000002', 'voice', { text: false })] }),
+        makeGuild({
+          channels: [
+            channel('10000000000000002', 'voice', { text: true, type: ChannelType.GuildVoice }),
+          ],
+        }),
         request({ channel: 'voice' }),
       ),
     ).resolves.toEqual({ ok: false, problem: "I can't post reminders in #voice." });
