@@ -734,7 +734,13 @@ export const registerAssistantRoutes = (
       effectiveRecurrence === null || effectiveRecurrence === undefined
         ? undefined
         : effectiveRecurrence.endAt;
-    if (effectiveEndAt !== undefined && effectiveEndAt < effectiveDueAt)
+    const recurrenceInPatch = parsed.data.recurrence !== undefined;
+    const dueAtInPatch = parsed.data.dueAt !== undefined;
+    if (
+      (recurrenceInPatch || dueAtInPatch) &&
+      effectiveEndAt !== undefined &&
+      effectiveEndAt < effectiveDueAt
+    )
       return reply.status(400).send({
         error: 'invalid-reminder',
         message: `The repeat can't end before the reminder starts.`,

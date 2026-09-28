@@ -635,6 +635,8 @@ export const runAssistantTool = async (
             if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
             recurrence = built.recurrence;
           }
+          if (recurrence?.endAt !== undefined && recurrence.endAt < dueAt)
+            return refused(name, `The repeat can't end before the reminder starts.`);
           const normalisedContext = normaliseContext(args.context);
           const draft = validateReminderDraft(
             {
@@ -750,6 +752,14 @@ export const runAssistantTool = async (
             if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
             recurrence = built.recurrence;
           }
+          const effectiveDueAt = dueAt ?? stored.dueAt;
+          const effectiveRecurrence =
+            recurrence === undefined ? stored.recurrence : (recurrence ?? undefined);
+          if (
+            effectiveRecurrence?.endAt !== undefined &&
+            effectiveRecurrence.endAt < effectiveDueAt
+          )
+            return refused(name, `The repeat can't end before the reminder starts.`);
           const normalisedEditContext =
             args.context === undefined ? undefined : normaliseContext(args.context);
           if (args.text !== undefined || dueAt !== undefined || args.context !== undefined) {
