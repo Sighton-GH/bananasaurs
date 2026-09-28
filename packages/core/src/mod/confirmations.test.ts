@@ -15,7 +15,7 @@ import { PURGE_MAX_MESSAGES } from '../effects/budget.js';
 import { BULK_DELETE_CEILING_MS } from './purge.js';
 import { parseGuildId } from '../ids.js';
 import { modPurgePayload, purgeDedupeKey, type ModPurgePayload } from '../jobs/kinds.js';
-import type { SlashResponder } from '../ops/commands/status-slash.js';
+import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import {
   buildConfirmCancelComponents,
   buildModCancelCustomId,
