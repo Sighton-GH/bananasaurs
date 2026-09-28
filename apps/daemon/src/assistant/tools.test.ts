@@ -40,6 +40,7 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   timeZone: 'America/Vancouver',
   isOwner: false,
   skillAllowed: () => true,
+  quotePresent: false,
   invocationKey: 'msg1',
   currentChannelId: '111111111111111111',
   resolveReminderTargets: vi.fn(async () => ({

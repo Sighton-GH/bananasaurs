@@ -97,6 +97,8 @@ export interface AssistantToolPorts {
   readonly isOwner: boolean;
   /** True when the behaviour allows the skill and the asker passes its scope (B2b computes it). */
   readonly skillAllowed: (skillId: string) => boolean;
+  /** The request quotes another message (ADR 0086 decision 3). */
+  readonly quotePresent: boolean;
   /** Stable per invocation (the Discord message id); idempotency keys derive from it. */
   readonly invocationKey: string;
   readonly currentChannelId: string | undefined;
