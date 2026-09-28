@@ -35,28 +35,33 @@ export interface KnownMessage {
   readonly behaviourId: string;
 }
 
-export const JOIN_RULES = [
+export const CONTINUE_RULES = [
   'reply-to-bot',
   'reply-to-turn',
   'follow-up',
   'thread',
   'channel-follow-up',
+] as const;
+export const NEW_RULES = [
   'quoted-reply',
   'reply-to-unknown-bot-message',
   'new-topic',
   'fresh',
 ] as const;
-export type JoinRule = (typeof JOIN_RULES)[number];
+export const JOIN_RULES = [...CONTINUE_RULES, ...NEW_RULES] as const;
+export type ContinueRule = (typeof CONTINUE_RULES)[number];
+export type NewRule = (typeof NEW_RULES)[number];
+export type JoinRule = ContinueRule | NewRule;
 
 export type ConversationResolution =
   | {
       readonly kind: 'continue';
       readonly conversationId: string;
-      readonly rule: JoinRule;
+      readonly rule: ContinueRule;
     }
   | {
       readonly kind: 'new';
-      readonly rule: JoinRule;
+      readonly rule: NewRule;
       readonly quotedMessageId?: string;
     };
 
