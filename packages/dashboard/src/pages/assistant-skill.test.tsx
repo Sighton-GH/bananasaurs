@@ -223,6 +223,24 @@ describe('AssistantSkillPage', () => {
     expect(bodyOf(put)).toEqual({ mode: 'owner', roleIds: [] });
   });
 
+  it('saves specific roles with both picked role ids', async () => {
+    const mock = renderPage();
+    const who = (await screen.findByRole('heading', { name: 'Who can use this' })).closest(
+      'section',
+    )!;
+    fireEvent.click(within(who).getByRole('radio', { name: /Specific roles/ }));
+    fireEvent.click(within(who).getByRole('checkbox', { name: 'Club Member' }));
+    fireEvent.click(within(who).getByRole('checkbox', { name: 'Onboarding' }));
+    fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved');
+    const put = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/assistant/skills/search-club/scope' &&
+        (c[1] as RequestInit)?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({ mode: 'roles', roleIds: ['role-club-member', 'role-onboarding'] });
+  });
+
   it('notes that an acting skill runs with no confirmation step, and stays silent otherwise', async () => {
     renderPage({
       ...SKILL_DETAIL,
