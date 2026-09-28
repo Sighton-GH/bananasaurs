@@ -123,28 +123,27 @@ const harness = (
     }),
   };
 };
-const slash = (name: string, options: { name: string; value: string }[]): DomainEvent => ({
-  kind: 'slashCommand',
-  guildId,
-  receivedAtMs: 1,
-  interactionId: '678901234567890123',
-  token: 'secret',
-  commandName: name,
-  subcommandPath: [],
-  options,
-  channelId,
-  userId,
-});
 
 describe('assistant command subscriber', () => {
   it.each(['ask', 'remind'])('ignores the removed /%s command', async (name) => {
     const h = harness();
-    await h.subscriber.handle(slash(name, []));
+    const event: DomainEvent = {
+      kind: 'slashCommand',
+      guildId,
+      receivedAtMs: 1,
+      interactionId: '678901234567890123',
+      token: 'secret',
+      commandName: name,
+      subcommandPath: [],
+      options: [],
+      channelId,
+      userId,
+    };
+    await h.subscriber.handle(event);
     expect(h.defer).not.toHaveBeenCalled();
     expect(h.queued).toHaveLength(0);
     expect(h.invoke).not.toHaveBeenCalled();
   });
-
   it('sets messageId and reply references for mentions', async () => {
     const h = harness();
     await h.subscriber.handle({
