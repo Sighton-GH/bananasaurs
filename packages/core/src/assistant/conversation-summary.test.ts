@@ -24,12 +24,12 @@ describe('conversationSummarySchema caps', () => {
 
   it('refuses one-over on every cap', () => {
     const s = (ch: string, n: number): string => ch.repeat(n);
-    expect(
-      conversationSummarySchema.safeParse(valid({ topic: s('t', 201) })).success,
-    ).toBe(false);
+    expect(conversationSummarySchema.safeParse(valid({ topic: s('t', 201) })).success).toBe(false);
     expect(
       conversationSummarySchema.safeParse(
-        valid({ facts: Array.from({ length: 11 }, () => ({ text: 'ok', from: 'member' as const })) }),
+        valid({
+          facts: Array.from({ length: 11 }, () => ({ text: 'ok', from: 'member' as const })),
+        }),
       ).success,
     ).toBe(false);
     expect(
@@ -38,12 +38,13 @@ describe('conversationSummarySchema caps', () => {
       ).success,
     ).toBe(false);
     expect(
-      conversationSummarySchema.safeParse(valid({ botClaims: Array.from({ length: 6 }, () => 'ok') }))
-        .success,
+      conversationSummarySchema.safeParse(
+        valid({ botClaims: Array.from({ length: 6 }, () => 'ok') }),
+      ).success,
     ).toBe(false);
-    expect(
-      conversationSummarySchema.safeParse(valid({ botClaims: [s('b', 301)] })).success,
-    ).toBe(false);
+    expect(conversationSummarySchema.safeParse(valid({ botClaims: [s('b', 301)] })).success).toBe(
+      false,
+    );
     expect(
       conversationSummarySchema.safeParse(
         valid({ openQuestions: Array.from({ length: 6 }, () => 'ok') }),
@@ -79,9 +80,9 @@ describe('conversationSummarySchema caps', () => {
         valid({ participants: Array.from({ length: 11 }, () => 'Ada') }),
       ).success,
     ).toBe(false);
-    expect(
-      conversationSummarySchema.safeParse(valid({ participants: [s('p', 81)] })).success,
-    ).toBe(false);
+    expect(conversationSummarySchema.safeParse(valid({ participants: [s('p', 81)] })).success).toBe(
+      false,
+    );
   });
 
   it('refuses blank strings', () => {
@@ -89,9 +90,7 @@ describe('conversationSummarySchema caps', () => {
   });
 
   it('refuses unknown keys', () => {
-    expect(
-      conversationSummarySchema.safeParse({ ...valid(), extra: 'nope' }).success,
-    ).toBe(false);
+    expect(conversationSummarySchema.safeParse({ ...valid(), extra: 'nope' }).success).toBe(false);
   });
 });
 
@@ -134,9 +133,7 @@ describe('renderSummary', () => {
     expect(lines[1]).toBe(
       'Facts: hall opens at six (member); see the handbook (club doc); last year it rained (archive)',
     );
-    expect(lines[2]).toBe(
-      'The bot said earlier (not confirmed): The hall might open at six',
-    );
+    expect(lines[2]).toBe('The bot said earlier (not confirmed): The hall might open at six');
     expect(lines[3]).toBe('Open questions: Who brings snacks?');
     expect(lines[4]).toBe('Commitments: Ada — bring snacks (Friday); Bo — bring drinks');
     expect(lines[5]).toBe('People: Ada, Bo');

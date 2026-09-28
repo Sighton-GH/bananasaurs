@@ -15,4 +15,5 @@ export * from './prompt-wizard.js';
 export * from './relative-time.js';
 export * from './trace.js';
 export * from './conversation.js';
+export * from './conversation-summary.js';
 export * from './untrusted.js';
