@@ -2733,7 +2733,6 @@ describe('B2b: acting tool ports are wired', () => {
 describe('B2b: action summaries in answers', () => {
   const GUILD = B2B_GUILD;
   const CHANNEL = B2B_CHANNEL;
-  const CLUB_ROLE = B2B_CLUB_ROLE;
   const OWNER = B2B_OWNER;
   const NOW = B2B_NOW;
 
