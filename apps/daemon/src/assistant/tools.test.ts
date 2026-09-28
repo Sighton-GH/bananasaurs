@@ -715,6 +715,53 @@ describe('acting tools (B2a)', () => {
     expect(inserted[0]?.recurrence?.endAt).toBe(Date.parse('2026-12-31T23:59:59.999-07:00'));
   });
 
+  it('ends a midnight until at 23:59:59.999 local on a fall-back day', async () => {
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
+    const p = ports({
+      timeZone: 'America/Los_Angeles',
+      reminderStore: {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'Standup',
+          when: '2026-10-30T12:00:00-07:00',
+          repeat: { kind: 'daily', until: '2026-11-01T00:00:00-07:00' },
+        },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    const endAt = inserted[0]?.recurrence?.endAt;
+    expect(endAt).toBeDefined();
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(endAt!);
+    const value = (type: string): string =>
+      parts.find((part) => part.type === type)?.value ?? '';
+    expect(`${value('year')}-${value('month')}-${value('day')}`).toBe('2026-11-01');
+    expect(`${value('hour')}:${value('minute')}:${value('second')}`).toBe('23:59:59');
+    expect(endAt! % 1000).toBe(999);
+  });
+
   it('trims and collapses the stored context, omitting it when empty', async () => {
     const inserted: Omit<Reminder, 'guildId'>[] = [];
     const store = {
