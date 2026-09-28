@@ -856,11 +856,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
-    // Assistant skills route through @behaviour mentions. The service owns
-    // permission, safety and provider eligibility; the Discord layer never
-    // calls a provider itself. One service instance is shared by the subscriber
-    // (cheap inline routing) and job handler (expensive invoke, off-chain — B2).
 
+    // Assistant skills route only through mentions; one service handles routing and jobs (B2).
     createAssistantCommandSubscriber({
       guildId,
       botUserId,
