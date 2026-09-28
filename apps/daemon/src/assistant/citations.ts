@@ -36,6 +36,7 @@ export const createCitationRegistry = (): CitationRegistry => {
 
 const CITATION_GROUP = /[ \t]*(\[S\d{1,3}(?:,[ \t]*S\d{1,3})*\])/g;
 const SOURCE_LINE = /^\s*(?:-#\s*)?\**\s*sources?\s*\**\s*:/i;
+const PLURAL_SOURCES_LINE = /^\s*(?:-#\s*)?\**\s*sources\s*\**\s*:/i;
 const FENCE_LINE = /^\s*(```|~~~)/;
 const LIST_ITEM = /^\s*([-*•]|\d+\.)\s+/;
 
@@ -80,11 +81,16 @@ export const applyCitations = (
   if (cleaned.length > 0) {
     const last = cleaned[cleaned.length - 1] ?? '';
     if (SOURCE_LINE.test(last)) {
-      // One trailing line: removed only when it names something link- or
-      // tag-shaped (or nothing) — `Source: ask the treasurer` is a prose
-      // sentence and stays.
-      const afterColon = last.slice(last.indexOf(':') + 1);
-      if (afterColon.trim() === '' || /http|\[|S\d/.test(afterColon)) cleaned.pop();
+      // A `-#` line is the service's own line shape, and a plural
+      // `Sources:` line always lists sources: both go unconditionally. Only
+      // a bare singular `Source:` may be a prose sentence — `Source: ask the
+      // treasurer` stays, while link- or tag-shaped rests go.
+      if (last.trimStart().startsWith('-#') || PLURAL_SOURCES_LINE.test(last)) {
+        cleaned.pop();
+      } else {
+        const afterColon = last.slice(last.indexOf(':') + 1);
+        if (afterColon.trim() === '' || /http|\[|S\d/.test(afterColon)) cleaned.pop();
+      }
     } else {
       // Otherwise the trailing block is a source section only when walking
       // back over list items and blanks reaches a SOURCE_LINE head.
