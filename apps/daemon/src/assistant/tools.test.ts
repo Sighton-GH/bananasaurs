@@ -126,10 +126,8 @@ describe('toolDeclarations', () => {
       'cancel_reminder',
       'propose_memory',
       'propose_decision',
-      'list_sources',
       'search_sources',
       'read_chunk',
-      'outline',
       'refresh_source',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
@@ -181,8 +179,7 @@ describe('runAssistantTool', () => {
     await expect(runAssistantTool({ name: 'delete_channel', args: {} }, p)).resolves.toMatchObject({
       ok: false,
       text: 'Unknown tool.',
-    });
-    await expect(
+    });    await expect(
       runAssistantTool({ name: 'search_archive', args: { query: '' } }, p),
     ).resolves.toMatchObject({ ok: false });
     await expect(
@@ -190,6 +187,17 @@ describe('runAssistantTool', () => {
     ).resolves.toMatchObject({ ok: false });
     expect(p.searchArchive).not.toHaveBeenCalled();
     expect(p.webSearch).not.toHaveBeenCalled();
+  });
+
+  it('answers calls to the removed list_sources and outline names with the unknown-tool refusal', async () => {
+    const p = ports();
+    await expect(runAssistantTool({ name: 'list_sources', args: {} }, p)).resolves.toMatchObject({
+      ok: false,
+      text: 'Unknown tool.',
+    });
+    await expect(
+      runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'Unknown tool.' });
   });
 
   it('searches the archive as the asking member and links each hit', async () => {
@@ -1167,7 +1175,7 @@ const cachePorts = (over: Record<string, unknown> = {}) => {
 };
 
 describe('cache tools (Task 16)', () => {
-  it('list_sources lists enabled resources with relative updated times, at most 30 lines', async () => {
+  it('search_sources without a query lists enabled resources with relative updated times, at most 30 lines', async () => {
     const many = Array.from({ length: 40 }, (_, i) => ({
       id: `r${String(i)}`,
       guildId: '234567890123456789',
@@ -1181,7 +1189,7 @@ describe('cache tools (Task 16)', () => {
       resources: () => many,
       cacheFreshness: () => many.map((r) => ({ resourceId: r.id, fetchedAt: NOW - 3_600_000 })),
     });
-    const result = await runAssistantTool({ name: 'list_sources', args: {} }, p);
+    const result = await runAssistantTool({ name: 'search_sources', args: {} }, p);
     expect(result.ok).toBe(true);
     const lines = result.text.split('\n').filter(Boolean);
     expect(lines.length).toBeLessThanOrEqual(30);
@@ -1189,16 +1197,19 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).toHaveLength(lines.length);
   });
 
-  it('list_sources honours a filter and refuses an overlong one', async () => {
+  it('search_sources without a query honours a filter and refuses an overlong one', async () => {
     const p = cachePorts({
       cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
     });
-    const filtered = await runAssistantTool({ name: 'list_sources', args: { filter: 'hand' } }, p);
+    const filtered = await runAssistantTool(
+      { name: 'search_sources', args: { filter: 'hand' } },
+      p,
+    );
     expect(filtered.ok).toBe(true);
     expect(filtered.text).toContain('handbook');
     expect(filtered.text).not.toContain('rules');
     await expect(
-      runAssistantTool({ name: 'list_sources', args: { filter: 'x'.repeat(81) } }, p),
+      runAssistantTool({ name: 'search_sources', args: { filter: 'x'.repeat(81) } }, p),
     ).resolves.toMatchObject({ ok: false });
   });
 
@@ -1269,7 +1280,7 @@ describe('cache tools (Task 16)', () => {
     ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
   });
 
-  it('outline on a disabled resource answers unknown id', async () => {
+  it('open_resource with a docId on a disabled resource answers unknown id', async () => {
     const p = ports({
       cacheOutline: () => [{ chunkId: 'c_off_0', headingPath: 'Old › Notes' }],
       cacheDocument: () => ({
@@ -1280,16 +1291,16 @@ describe('cache tools (Task 16)', () => {
       }),
     });
     await expect(
-      runAssistantTool({ name: 'outline', args: { docId: 'd_off' } }, p),
+      runAssistantTool({ name: 'open_resource', args: { docId: 'd_off' } }, p),
     ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
   });
 
-  it('list_sources answers no match with the ruled sentence', async () => {
+  it('search_sources without a query answers no match with the ruled sentence', async () => {
     const p = cachePorts({
       cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
     });
     const result = await runAssistantTool(
-      { name: 'list_sources', args: { filter: 'zzz-no-such-source' } },
+      { name: 'search_sources', args: { filter: 'zzz-no-such-source' } },
       p,
     );
     expect(result.ok).toBe(true);
@@ -1297,9 +1308,9 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).toBeUndefined();
   });
 
-  it('list_sources shows never-fetched sources as not fetched yet', async () => {
+  it('search_sources without a query shows never-fetched sources as not fetched yet', async () => {
     const p = cachePorts({ cacheFreshness: () => [] });
-    const result = await runAssistantTool({ name: 'list_sources', args: {} }, p);
+    const result = await runAssistantTool({ name: 'search_sources', args: {} }, p);
     expect(result.ok).toBe(true);
     expect(result.text).toContain('not fetched yet');
   });
@@ -1335,7 +1346,9 @@ describe('cache tools (Task 16)', () => {
       p,
     );
     expect(empty.ok).toBe(true);
-    expect(empty.text).toBe('No matching passages. Try different words, or list_sources.');
+    expect(empty.text).toBe(
+      'No matching passages. Try different words, or call search_sources without a query.',
+    );
     await expect(
       runAssistantTool({ name: 'search_sources', args: { query: 'x' } }, p),
     ).resolves.toMatchObject({ ok: false });
@@ -1388,7 +1401,7 @@ describe('cache tools (Task 16)', () => {
     expect(unknown.text).toContain('unknown id');
   });
 
-  it('outline lists headings with chunk ids inside 1500 chars', async () => {
+  it('open_resource with a docId lists headings with chunk ids inside 1500 chars', async () => {
     const rows = Array.from({ length: 50 }, (_, i) => ({
       chunkId: `c_d_${String(i)}`,
       headingPath: `Guide › Section ${String(i)} with a long heading ${'z'.repeat(60)}`,
@@ -1397,19 +1410,22 @@ describe('cache tools (Task 16)', () => {
       cacheOutline: () => rows,
       cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
     });
-    const result = await runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p);
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { docId: 'd_abc' } },
+      p,
+    );
     expect(result.ok).toBe(true);
     expect(result.text.length).toBeLessThanOrEqual(1_500);
     expect(result.text).toContain('c_d_0');
     expect(result.handles).toContain('c_d_0');
     const unknown = await runAssistantTool(
-      { name: 'outline', args: { docId: 'd_nope' } },
+      { name: 'open_resource', args: { docId: 'd_nope' } },
       cachePorts(),
     );
     expect(unknown.text).toContain('unknown id');
   });
 
-  it('outline on a known doc with no chunks answers No headings cached.', async () => {
+  it('open_resource with a docId on a known doc with no chunks answers No headings cached.', async () => {
     const p = cachePorts({
       cacheOutline: () => [],
       cacheDocument: () => ({
@@ -1419,9 +1435,25 @@ describe('cache tools (Task 16)', () => {
         url: 'https://example.com/handbook',
       }),
     });
-    const result = await runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p);
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { docId: 'd_abc' } },
+      p,
+    );
     expect(result.ok).toBe(true);
     expect(result.text).toBe('No headings cached.');
+  });
+
+  it('open_resource refuses both ids or neither with the ruled sentence', async () => {
+    const p = cachePorts();
+    await expect(
+      runAssistantTool({ name: 'open_resource', args: {} }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'Give either resourceId or docId.' });
+    await expect(
+      runAssistantTool(
+        { name: 'open_resource', args: { resourceId: 'handbook', docId: 'd_abc' } },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false, text: 'Give either resourceId or docId.' });
   });
 
   it('open_resource returns the first cached chunks inside 4000 chars', async () => {
@@ -1545,7 +1577,9 @@ describe('cache tools (Task 16)', () => {
       cachePorts({ resources: () => [big, resource()], cacheSearch }),
     );
     expect(result.ok).toBe(true);
-    expect(result.text).not.toBe('No matching passages. Try different words, or list_sources.');
+    expect(result.text).not.toBe(
+      'No matching passages. Try different words, or call search_sources without a query.',
+    );
     expect(result.text).toContain('second snippet here');
     expect(result.text).toContain('c_small');
     expect(result.text).not.toContain('c_big');
@@ -1553,10 +1587,10 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).not.toContain('c_big');
   });
 
-  it('outline and read_chunk clip a long heading path with an ellipsis', async () => {
+  it('open_resource with a docId and read_chunk clip a long heading path with an ellipsis', async () => {
     const longPath = 'H'.repeat(9_000);
     const outlineResult = await runAssistantTool(
-      { name: 'outline', args: { docId: 'd_abc' } },
+      { name: 'open_resource', args: { docId: 'd_abc' } },
       cachePorts({
         cacheOutline: () => [{ chunkId: 'c_long_0', headingPath: longPath }],
         cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
@@ -1615,5 +1649,47 @@ describe('cache tools (Task 16)', () => {
     expect(expected.endsWith('…')).toBe(true);
     expect(result.text).toContain(expected);
     expect(result.text).not.toContain(longPath);
+  });
+
+  it('open_resource with a resourceId appends the first doc outline, up to 40 headings', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      chunkId: `c_h_${String(i)}`,
+      headingPath: `Guide › Section ${String(i)}`,
+    }));
+    const p = cachePorts({
+      cacheResourceDocs: () => [
+        {
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          title: 'Club handbook',
+          url: 'https://example.com/handbook',
+        },
+      ],
+      cacheResourceChunks: () => [
+        {
+          chunkId: 'c_d_abc_0',
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          headingPath: 'Guide › Intro',
+          text: 'short text',
+        },
+      ],
+      cacheOutline: () => rows,
+    });
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { resourceId: 'handbook' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(4_000);
+    expect(result.text).toContain('short text');
+    expect(result.text).toContain('Headings:');
+    expect(result.text).toContain('[c_h_0] Guide › Section 0');
+    expect(result.text).toContain('[c_h_39]');
+    expect(result.text).not.toContain('[c_h_40]');
+    expect(result.handles).toContain('c_d_abc_0');
+    expect(result.handles).toContain('d_abc');
+    expect(result.handles).toContain('c_h_0');
+    expect(result.handles).not.toContain('c_h_40');
   });
 });
