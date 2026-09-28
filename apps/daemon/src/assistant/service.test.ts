@@ -2521,6 +2521,48 @@ describe('B2b: acting tool ports are wired', () => {
     ).toMatchObject({ outcome: 'denied', actorId: OWNER });
   });
 
+  it('a continued turn whose history holds a quote still refuses role pings', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const provider = h.scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [
+          { name: 'set_reminder', args: { text: 'Bring batteries', when, roles: ['everyone'] } },
+        ],
+      },
+      { text: 'Noted.', model: 'model-a' },
+    ]);
+    const seen: unknown[] = [];
+    const service = h.serviceWith(provider, targetsOk(seen));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'ok, go ahead' },
+      source: 'slash-command',
+      invocationId: 'int-ports-quote-followup-1',
+      history: [
+        {
+          role: 'user',
+          text: '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+        },
+      ],
+      quoteInHistory: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(seen).toHaveLength(0);
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toHaveLength(0);
+    expect(
+      assistantRepo
+        .listSkillActivity(h.t.scopes.forGuild(GUILD), 10)
+        .find((a) => a.skillId === 'reminders'),
+    ).toMatchObject({ outcome: 'denied', actorId: OWNER });
+  });
+
   it('a loop failure after an action still posts the confirmation', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
     let calls = 0;

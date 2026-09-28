@@ -297,7 +297,35 @@ describe('buildConversationContext', () => {
       botDisplayName: 'bananasaurs',
       now: NOW,
     });
-    expect(ctx).toEqual({ history: [], participants: 0 });
+    expect(ctx).toEqual({ history: [], participants: 0, quoteInHistory: false });
+  });
+
+  it('reports quoteInHistory when replayed history includes a quote turn', () => {
+    seedConversation('conv-1', [
+      { role: 'quote', authorName: 'Alex', text: 'the hall opens at seven' },
+      { role: 'user', authorId: AMA, authorName: 'Ama', text: 'is that right?' },
+    ]);
+    const ctx = buildConversationContext({
+      scope: t.scopes.forGuild(GUILD),
+      resolution: followUp,
+      botDisplayName: 'bananasaurs',
+      now: NOW,
+    });
+    expect(ctx.quoteInHistory).toBe(true);
+  });
+
+  it('reports no quoteInHistory without a quote turn', () => {
+    seedConversation('conv-1', [
+      { role: 'user', authorId: AMA, authorName: 'Ama', text: 'first question' },
+      { role: 'assistant', authorName: 'bananasaurs', text: 'first answer' },
+    ]);
+    const ctx = buildConversationContext({
+      scope: t.scopes.forGuild(GUILD),
+      resolution: followUp,
+      botDisplayName: 'bananasaurs',
+      now: NOW,
+    });
+    expect(ctx.quoteInHistory).toBe(false);
   });
 
   it('stays inside the 12 turn window', () => {
