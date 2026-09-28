@@ -407,6 +407,27 @@ const requireSkill = (
 };
 
 /**
+ * A quoted reply must not become a mass ping (ADR 0086 decision 3): when the
+ * member's message quotes another message, reminders may still be set and
+ * edited, but they may not ping roles, `@everyone` or `@here`. The `roles`
+ * request field carries all three, so any non-empty value refuses before
+ * target resolution. Member pings still work.
+ */
+const QUOTE_PING_REFUSAL =
+  "I can't ping roles or everyone from a reply to someone else's message. Ask again without replying to it.";
+const quotePingRefused = (
+  ports: AssistantToolPorts,
+  name: string,
+  roles: readonly string[] | undefined,
+): AssistantToolResult | undefined => {
+  if (ports.quotePresent && roles !== undefined && roles.length > 0) {
+    ports.recordSkillActivity('reminders', 'denied');
+    return refused(name, QUOTE_PING_REFUSAL);
+  }
+  return undefined;
+};
+
+/**
  * An acting write threw: answer a fixed sentence, never the raw exception
  * text (driver and SQLite messages are internal detail). There is no logger
  * on the tool ports, so the error is dropped after the activity record.
@@ -603,6 +624,8 @@ export const runAssistantTool = async (
             roles?: string[];
             repeat?: RepeatArgs;
           };
+          const quoteGate = quotePingRefused(ports, name, args.roles);
+          if (quoteGate !== undefined) return quoteGate;
           if (!ISO_WITH_OFFSET.test(args.when)) return refused(name, OFFSET_REFUSAL);
           const dueAt = Date.parse(args.when);
           if (!Number.isFinite(dueAt)) return refused(name, OFFSET_REFUSAL);
@@ -708,6 +731,8 @@ export const runAssistantTool = async (
             repeat?: RepeatArgs;
             stopRepeating?: boolean;
           };
+          const quoteGate = quotePingRefused(ports, name, args.roles);
+          if (quoteGate !== undefined) return quoteGate;
           const stored = ports.reminderStore.get(args.reminderId);
           if (stored === undefined) return refused(name, "I couldn't find that reminder.");
           if (stored.creatorId !== ports.userId && !ports.isOwner)
