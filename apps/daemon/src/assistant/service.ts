@@ -199,9 +199,9 @@ export interface AssistantDiscordPorts {
   ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
   /**
    * B2b: resolves a reminder's channel and mentions against live Discord
-   * permissions. Optional so existing callers keep compiling; absent means
-   * the service fails closed with the permissions sentence (as does try-it,
-   * which has no channel).
+   * permissions. Optional so existing callers keep compiling — production
+   * (`runtime/guild.ts`) always provides it. Absent, the service fails
+   * closed with the permissions sentence.
    */
   readonly resolveReminderTargets?:
     ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
@@ -333,6 +333,12 @@ export const createAssistantService = (
       skipMemberMemories?: boolean;
       /** Task 20: Try-it answers an escalation as text, never opening a ticket. */
       skipTicketWrite?: boolean;
+      /**
+       * Fix 1: Try-it (and any path without a durable invocation id) must
+       * never act — acting skills gate off, so their tools stay undeclared
+       * and refused.
+       */
+      skipActions?: boolean;
     } = {},
   ): Promise<AssistantInvocationResult> => {
     {
@@ -383,6 +389,12 @@ export const createAssistantService = (
         if (!input.behaviour.allowedSkillIds.includes(id)) return false;
         const catalogueSkill = CLUB_ASSISTANT_SKILLS.find((candidate) => candidate.id === id);
         if (catalogueSkill === undefined) return false;
+        // Fix 1 (hard rule 6): acting tools need a durable idempotency key.
+        // Try-it must never act, and neither can a path without an
+        // invocation id — acting skills gate off, hiding their tools from
+        // the declarations and refusing them if the model calls them anyway.
+        if (catalogueSkill.acts && (opts.skipActions === true || input.invocationId === undefined))
+          return false;
         return skillScopeAllows(effectiveSkillScope(catalogueSkill, grants.get(id)), {
           owner: scopeOwner,
           roleIds: input.callerRoleIds,
@@ -393,9 +405,10 @@ export const createAssistantService = (
       );
       // B2b: every acting tool's port, closed over this request's guild scope
       // and asker. The invocation key is the Discord message or interaction
-      // that asked, so retried invocations reuse idempotency keys; without
-      // one (never on the Discord path) a fresh id anchors this run only.
-      const invocationKey = input.invocationId ?? randomUUID();
+      // that asked — the durable idempotency anchor, so a retried job reuses
+      // its keys. Empty on the no-actions path, where no acting tool can
+      // run, so the empty key is never used.
+      const invocationKey: string = input.invocationId ?? '';
       const resolveTargets = discord.resolveReminderTargets ?? defaultResolveReminderTargets;
       if (!skillAllowed(skill)) {
         assistantRepo.recordSkillActivity(scope, {
@@ -1157,7 +1170,14 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             askerName: input.accountUsername,
           },
           sink,
-          { skipCallerGate: true, skipMemberMemories: true, skipTicketWrite: true },
+          {
+            skipCallerGate: true,
+            skipMemberMemories: true,
+            skipTicketWrite: true,
+            // Fix 1: the dashboard sandbox never posts to Discord, so it
+            // never acts either — no reminders, drafts, or tickets.
+            skipActions: true,
+          },
         );
         if (!result.ok) outcome = 'refused';
       } catch (err) {
