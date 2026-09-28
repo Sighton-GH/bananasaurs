@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parseGuildId } from '@bananasaurs/core';
+import { parseGuildId, type ConversationSummary } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { upsertGuild } from './guilds.js';
 import {
@@ -9,8 +9,10 @@ import {
   createConversation,
   deleteConversation,
   endConversation,
+  evictedTurnsSince,
   forgetAuthor,
   getConversation,
+  getSummary,
   hasConversations,
   latestForAuthor,
   latestWithBotReply,
@@ -26,6 +28,7 @@ import {
   pruneOlderThan,
   recentTurns,
   setFeedback,
+  writeSummaryIfNewer,
   type NewConversation,
   type NewTurn,
 } from './conversations.js';
@@ -850,5 +853,139 @@ describe('hasConversations', () => {
     expect(hasConversations(scope)).toBe(true);
     deleteConversation(scope, 'conv-1');
     expect(hasConversations(scope)).toBe(false);
+  });
+});
+
+describe('conversation summaries (ADR 0091)', () => {
+  const summary = (over: Partial<ConversationSummary> = {}): ConversationSummary => ({
+    topic: 'Friday social planning',
+    facts: [{ text: 'The hall opens at six', from: 'member' }],
+    botClaims: ['The hall might open at six'],
+    openQuestions: ['Who brings snacks?'],
+    commitments: [{ who: 'Ada', what: 'bring snacks', when: 'Friday' }],
+    participants: ['Ada'],
+    ...over,
+  });
+
+  it('compare-and-set: an older throughAt is not written, a newer one bumps the version', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+
+    expect(writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: summary(), throughAt: 2_000, now: 9_000 })).toEqual({
+      written: true,
+      version: 1,
+    });
+    expect(getSummary(scope, 'conv-1')).toMatchObject({
+      throughAt: 2_000,
+      version: 1,
+      updatedAt: 9_000,
+    });
+    expect(getSummary(scope, 'conv-1')?.summary).toEqual(summary());
+
+    expect(
+      writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: summary({ topic: 'stale' }), throughAt: 1_000, now: 9_001 }),
+    ).toEqual({ written: false, version: 1 });
+    expect(getSummary(scope, 'conv-1')?.summary.topic).toBe('Friday social planning');
+
+    expect(
+      writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: summary({ topic: 'newer' }), throughAt: 3_000, now: 9_002 }),
+    ).toEqual({ written: true, version: 2 });
+    expect(getSummary(scope, 'conv-1')).toMatchObject({
+      throughAt: 3_000,
+      version: 2,
+      updatedAt: 9_002,
+    });
+  });
+
+  it('keeps summaries guild-scoped: another guild neither reads nor writes the row', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    createConversation(a, conversation());
+    expect(writeSummaryIfNewer(a, { conversationId: 'conv-1', summary: summary(), throughAt: 2_000, now: 9_000 })).toEqual({
+      written: true,
+      version: 1,
+    });
+
+    expect(getSummary(b, 'conv-1')).toBeUndefined();
+    expect(writeSummaryIfNewer(b, { conversationId: 'conv-1', summary: summary({ topic: 'other guild' }), throughAt: 5_000, now: 9_001 })).toEqual({
+      written: false,
+      version: 0,
+    });
+    expect(getSummary(a, 'conv-1')).toMatchObject({ throughAt: 2_000, version: 1 });
+  });
+
+  it('reads an invalid stored JSON as undefined', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    expect(writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: summary(), throughAt: 2_000, now: 9_000 }).written).toBe(true);
+    t.raw
+      .prepare(`UPDATE assistant_conversations SET summary_json = ? WHERE guild_id = ? AND conversation_id = ?`)
+      .run('not json at all', GUILD_A, 'conv-1');
+    expect(getSummary(scope, 'conv-1')).toBeUndefined();
+  });
+
+  it('throws on an invalid summary instead of writing', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    expect(() =>
+      writeSummaryIfNewer(scope, {
+        conversationId: 'conv-1',
+        summary: summary({ topic: 'x'.repeat(201) }),
+        throughAt: 2_000,
+        now: 9_000,
+      }),
+    ).toThrow();
+    expect(getSummary(scope, 'conv-1')).toBeUndefined();
+  });
+
+  it('evictedTurnsSince returns what recentTurns left out, oldest first', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ at: 0 }));
+    for (let i = 1; i <= 15; i += 1) {
+      appendTurn(scope, turn({ turnId: `turn-${String(i)}`, at: i * 1_000, text: `message ${String(i)}` }));
+    }
+    const window = { maxTurns: 12, maxChars: 6_000 };
+    const recent = recentTurns(scope, 'conv-1', window);
+    expect(recent).toHaveLength(12);
+
+    const evicted = evictedTurnsSince(scope, 'conv-1', { afterAt: null, window });
+    expect(evicted.map((turnEntry) => turnEntry.turnId)).toEqual(['turn-1', 'turn-2', 'turn-3']);
+
+    // The two agree: disjoint, and together they are every stored turn.
+    const recentIds = new Set(recent.map((turnEntry) => turnEntry.turnId));
+    expect(evicted.some((turnEntry) => recentIds.has(turnEntry.turnId))).toBe(false);
+    expect([...evicted, ...recent]).toHaveLength(15);
+  });
+
+  it('evictedTurnsSince only returns turns newer than afterAt', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ at: 0 }));
+    for (let i = 1; i <= 15; i += 1) {
+      appendTurn(scope, turn({ turnId: `turn-${String(i)}`, at: i * 1_000, text: `message ${String(i)}` }));
+    }
+    const window = { maxTurns: 12, maxChars: 6_000 };
+    expect(
+      evictedTurnsSince(scope, 'conv-1', { afterAt: 2_000, window }).map((turnEntry) => turnEntry.turnId),
+    ).toEqual(['turn-3']);
+    expect(evictedTurnsSince(scope, 'conv-1', { afterAt: 3_000, window })).toEqual([]);
+  });
+
+  it('deleting the conversation removes the summary with the row', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    expect(writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: summary(), throughAt: 2_000, now: 9_000 }).written).toBe(true);
+    deleteConversation(scope, 'conv-1');
+    expect(getConversation(scope, 'conv-1')).toBeUndefined();
+    expect(getSummary(scope, 'conv-1')).toBeUndefined();
+  });
+
+  it('records the 0051_conversation_summaries migration tag in the journal', () => {
+    const journal = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../../../../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as { entries: { tag: string }[] };
+    expect(journal.entries.some((e) => e.tag === '0051_conversation_summaries')).toBe(true);
   });
 });
