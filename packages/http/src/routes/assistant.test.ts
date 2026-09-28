@@ -2072,4 +2072,55 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
     seed('r1');
     expect((await patch(cookie, csrf, 'r1', { text: 'new text' })).statusCode).toBe(403);
   });
+
+  it('fixes the text of a past-due row without moving its due time', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { dueAt: clock - 1000 });
+    const response = await patch(cookie, csrf, 'r1', { text: 'fixed text' });
+    expect(response.statusCode).toBe(200);
+    const row = assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1');
+    expect(row?.text).toBe('fixed text');
+    expect(row?.dueAt).toBe(clock - 1000);
+  });
+
+  it('stores the trimmed text, not the raw text', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', { text: '   padded text   ' });
+    expect(response.statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.text).toBe('padded text');
+  });
+
+  it('trims context, collapses whitespace runs, and stores null when empty', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { context: 'old' });
+    expect((await patch(cookie, csrf, 'r1', { context: '  hello\n\n  world  ' })).statusCode).toBe(
+      200,
+    );
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context).toBe(
+      'hello world',
+    );
+    expect((await patch(cookie, csrf, 'r1', { context: '   \n  ' })).statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.context).toBeNull();
+  });
+
+  it('rejects a repeat end before the effective due time', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { recurrence: repeating() });
+    const response = await patch(cookie, csrf, 'r1', {
+      recurrence: { pattern: { kind: 'daily' }, endAt: clock + 1000 },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'invalid-reminder',
+      message: `The repeat can't end before the reminder starts.`,
+    });
+    expect(
+      assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence,
+    ).toEqual(repeating());
+  });
 });
