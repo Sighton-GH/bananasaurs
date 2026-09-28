@@ -325,8 +325,15 @@ describe('runAssistantTool', () => {
       },
     });
     const result = await runAssistantTool({ name: 'my_reminders', args: {} }, p);
-    expect(result).toMatchObject({ ok: false, text: 'The tool failed: db down' });
-    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'db down');
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Something went wrong saving that. Nothing was changed.',
+    });
+    expect(p.recordSkillActivity).toHaveBeenCalledWith(
+      'reminders',
+      'failed',
+      'Something went wrong saving that. Nothing was changed.',
+    );
   });
 
   it('gives the server card and the channels the member can view', async () => {
@@ -824,7 +831,12 @@ describe('acting tools (B2a)', () => {
       p,
     );
     expect(result.ok).toBe(false);
-    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'discord down');
+    expect(result.text).toBe('Something went wrong saving that. Nothing was changed.');
+    expect(p.recordSkillActivity).toHaveBeenCalledWith(
+      'reminders',
+      'failed',
+      'Something went wrong saving that. Nothing was changed.',
+    );
   });
 });
 

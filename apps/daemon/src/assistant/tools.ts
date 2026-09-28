@@ -404,10 +404,15 @@ const requireSkill = (
   return refused(name, "You're not allowed to use that here.");
 };
 
-const failed = (ports: AssistantToolPorts, name: string, skill: string, err: unknown) => {
-  const message = err instanceof Error ? err.message : 'unknown error';
-  ports.recordSkillActivity(skill, 'failed', message);
-  return refused(name, `The tool failed: ${message}`);
+/**
+ * An acting write threw: answer a fixed sentence, never the raw exception
+ * text (driver and SQLite messages are internal detail). There is no logger
+ * on the tool ports, so the error is dropped after the activity record.
+ */
+const FAILED_TEXT = 'Something went wrong saving that. Nothing was changed.';
+const failed = (ports: AssistantToolPorts, name: string, skill: string, _err: unknown) => {
+  ports.recordSkillActivity(skill, 'failed', FAILED_TEXT);
+  return refused(name, FAILED_TEXT);
 };
 
 const clock = (ports: AssistantToolPorts, at: number): string =>
