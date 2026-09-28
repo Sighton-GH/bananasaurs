@@ -6,7 +6,7 @@ import {
   STARTER_SKILL_IDS,
 } from './skills.js';
 
-const skill = CLUB_ASSISTANT_SKILLS[0];
+const skill = CLUB_ASSISTANT_SKILLS[0]!;
 
 describe('assistant skill scopes', () => {
   it('has one reminders skill and no legacy reminder ids', () => {
