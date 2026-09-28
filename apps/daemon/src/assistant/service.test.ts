@@ -2612,7 +2612,8 @@ describe('B2b: acting tool ports are wired', () => {
     expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toEqual([]);
     expect(assistantRepo.listDecisions(t.scopes.forGuild(GUILD))).toEqual([]);
     // No acting tool is offered to the model...
-    for (const names of declared) for (const name of ACTING_TOOLS) expect(names).not.toContain(name);
+    for (const names of declared)
+      for (const name of ACTING_TOOLS) expect(names).not.toContain(name);
     // ...and the call the model makes anyway is refused in code.
     const toolTexts = (seen[1]?.messages as readonly { role: string; text: string }[])
       .filter((m) => m.role === 'tool')
