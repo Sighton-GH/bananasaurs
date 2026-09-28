@@ -2483,6 +2483,44 @@ describe('B2b: acting tool ports are wired', () => {
     ).toMatchObject({ outcome: 'completed', actorId: OWNER });
   });
 
+  it('a quoted request wires quotePresent: role pings refuse before resolution', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    const provider = h.scripted([
+      {
+        text: '',
+        model: 'model-a',
+        toolCalls: [
+          { name: 'set_reminder', args: { text: 'Bring batteries', when, roles: ['Execs'] } },
+        ],
+      },
+      { text: 'Noted.', model: 'model-a' },
+    ]);
+    const seen: unknown[] = [];
+    const service = h.serviceWith(provider, targetsOk(seen));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'remind the execs' },
+      quoteEnvelope:
+        '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+      source: 'slash-command',
+      invocationId: 'int-ports-quote-1',
+    });
+    expect(result.ok).toBe(true);
+    // The quote guard refused before target resolution, so nothing resolved or stored.
+    expect(seen).toHaveLength(0);
+    expect(assistantRepo.listReminders(h.t.scopes.forGuild(GUILD))).toHaveLength(0);
+    expect(
+      assistantRepo
+        .listSkillActivity(h.t.scopes.forGuild(GUILD), 10)
+        .find((a) => a.skillId === 'reminders'),
+    ).toMatchObject({ outcome: 'denied', actorId: OWNER });
+  });
+
   it('a loop failure after an action still posts the confirmation', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
     let calls = 0;
