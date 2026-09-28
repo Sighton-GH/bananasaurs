@@ -405,7 +405,7 @@ export const createAssistantService = (
       // here, so role reasons fall back to "only for certain roles".
       const cleanRoleToken = (name: string): string =>
         neutraliseMarkers(name)
-          .replace(/[\[\]\r\n]+/g, ' ')
+          .replace(/[[\]\r\n]+/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
       const unavailableSkills: readonly {
