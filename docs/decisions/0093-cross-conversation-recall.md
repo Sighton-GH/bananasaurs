@@ -10,10 +10,10 @@ REVIEW §E puts "memory extraction automation" after Release 3. The owner decide
 
 ## Decision
 
-1. **Index.** An FTS5 table, `assistant_conversation_summaries_fts` (migration 0052), holds `guild_id`, `conversation_id` and the rendered summary text.
-   - It is maintained by the repo function that writes a summary, and deleted by the same paths that delete a conversation (retention, the dashboard delete, forgetting a member).
-   - The migration backfills existing summaries.
-   - Every query is guild-scoped (hard rule 2).
+1. **Index** (migration 0052).
+   - `assistant_conversations` gains `summary_text` (nullable): the rendered summary, set in the same UPDATE that writes `summary_json`.
+   - A hand-written external-content FTS5 table, `assistant_conversation_summaries_fts` over `summary_text`, follows the ADR 0073 pattern of `drizzle/0044_resource_chunks_fts.sql`: insert, delete and update triggers, then `rebuild`. Deleting a conversation row (retention, the dashboard delete, forgetting a member) removes its index entry through the delete trigger.
+   - Guild isolation comes from joining back to `assistant_conversations` on rowid with the guild filter. Every query is guild-scoped (hard rule 2).
 2. **Tool `search_conversations`** `{ query: string (2–200) }` (skill `search-club`, read-only).
    - It matches summaries of other conversations, never the current one.
    - It is limited to conversations whose channel is in the audience of the answer channel (ADR 0090), intersected with the channels the asker can read. Try it uses the asker's channels only.
