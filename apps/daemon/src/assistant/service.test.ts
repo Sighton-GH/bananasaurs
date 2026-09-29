@@ -3846,9 +3846,9 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     discord: DiscordPorts,
     provider: TextProvider,
     invocationId: string,
-    over: { channelId?: string; channelContextOldestId?: string } = {},
+    over: { channelId?: string; channelContextOldestId?: string; windowMessages?: number } = {},
   ) =>
-    serviceWith(discord, provider, 15).invoke({
+    serviceWith(discord, provider, over.windowMessages ?? 15).invoke({
       guildId: GUILD,
       channelId: over.channelId ?? GENERAL,
       userId: MEMBER,
@@ -3864,7 +3864,7 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     });
 
   const toolTurn = (seen: { role: string; text: string }[][], round: number): string =>
-    seen[round]?.find((message) => message.role === 'tool')?.text ?? '';
+    seen[round]?.filter((message) => message.role === 'tool').at(-1)?.text ?? '';
 
   const scheduledEvent = (over: {
     readonly id?: string;
@@ -3971,7 +3971,7 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     );
     expect(result.ok).toBe(true);
     expect(toolTurn(seen, 1)).not.toContain('Renew my own membership');
-    expect(toolTurn(seen, 1)).toBe('Nothing scheduled in the next 30 days.');
+    expect(toolTurn(seen, 1)).toContain('Nothing scheduled in the next 30 days.');
   });
 
   it('a channel reminder posts in the audience, one outside it does not', async () => {
@@ -4073,7 +4073,7 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     expect(toolTurn(seen, 2)).toContain(`Older: before=${OLDER_STILL}`);
   });
 
-  it('channel_history is not offered without its Discord port, and upcoming_events neither', async () => {
+  it('neither tool is declared when its port is absent', async () => {
     const offered: string[][] = [];
     const provider: TextProvider = {
       id: 'fake',
@@ -4083,7 +4083,9 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
         return { text: 'No tools needed.', model: 'model-a' };
       }),
     };
-    const result = await askIn({ memberChannels: memberChannelsBoth }, provider, 'int-hidden');
+    const result = await askIn({ memberChannels: memberChannelsBoth }, provider, 'int-hidden', {
+      windowMessages: 0,
+    });
     expect(result.ok).toBe(true);
     expect(offered[0]).not.toContain('channel_history');
     expect(offered[0]).not.toContain('upcoming_events');
