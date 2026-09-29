@@ -20,6 +20,8 @@ describe('TOOL_CATALOGUE', () => {
       'search_sources',
       'read_chunk',
       'refresh_source',
+      'upcoming_events',
+      'channel_history',
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const tool of TOOL_CATALOGUE) {
@@ -29,9 +31,9 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  it('opens every round except read_chunk and open_resource, which stay reachable in a follow-up round (ADR 0071)', () => {
+  it('opens every round except read_chunk, open_resource and channel_history, which stay reachable in a follow-up round (ADR 0071)', () => {
     for (const tool of TOOL_CATALOGUE) {
-      if (tool.name === 'read_chunk' || tool.name === 'open_resource')
+      if (tool.name === 'read_chunk' || tool.name === 'open_resource' || tool.name === 'channel_history')
         expect(tool.rounds).toBe('all');
       else expect(tool.rounds).toBe('first');
     }
@@ -209,5 +211,24 @@ describe('TOOL_CATALOGUE', () => {
       items: { type: 'string' },
       maxItems: 10,
     });
+  });
+
+  it('gives upcoming_events no parameters and channel_history a bounded before and limit', () => {
+    const upcoming = TOOL_CATALOGUE.find((tool) => tool.name === 'upcoming_events')!;
+    expect(upcoming.rounds).toBe('first');
+    expect(upcoming.skills).toEqual(['search-club']);
+    expect(upcoming.actsForSkill).toBeUndefined();
+    expect(Object.keys(upcoming.parameters.properties)).toEqual([]);
+    const history = TOOL_CATALOGUE.find((tool) => tool.name === 'channel_history')!;
+    expect(history.rounds).toBe('all');
+    expect(history.skills).toEqual(['search-club']);
+    expect(history.actsForSkill).toBeUndefined();
+    expect(history.parameters.properties.before).toMatchObject({ type: 'string' });
+    expect(history.parameters.properties.limit).toMatchObject({
+      type: 'integer',
+      minimum: 1,
+      maximum: 50,
+    });
+    expect(history.parameters.required ?? []).toEqual([]);
   });
 });
