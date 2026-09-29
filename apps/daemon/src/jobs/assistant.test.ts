@@ -429,7 +429,17 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       }
       return { cursor: saved };
     };
-    return { inputs, sent, send, respond, sendTyping, fetchMessageContent, fetchChannelMessages, channelContextMessages, run };
+    return {
+      inputs,
+      sent,
+      send,
+      respond,
+      sendTyping,
+      fetchMessageContent,
+      fetchChannelMessages,
+      channelContextMessages,
+      run,
+    };
   };
 
   const mention = (over: Record<string, unknown> = {}): Record<string, unknown> => ({

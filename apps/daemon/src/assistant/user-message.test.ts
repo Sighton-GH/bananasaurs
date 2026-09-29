@@ -60,9 +60,7 @@ describe('buildUserMessage', () => {
   });
 
   it('omits channel context when empty or undefined', () => {
-    expect(
-      buildUserMessage({ question: 'hi', askerName: 'Ama', channelContext: '' }),
-    ).toBe(
+    expect(buildUserMessage({ question: 'hi', askerName: 'Ama', channelContext: '' })).toBe(
       '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.',
     );
     expect(buildUserMessage({ question: 'hi', askerName: 'Ama' })).toBe(
