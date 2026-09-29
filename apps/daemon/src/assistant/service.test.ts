@@ -3781,3 +3781,457 @@ describe('Slice 4.2: Did X say Y resolves from to one member with code-issued li
     expect(content).not.toContain('-# Sources:');
   });
 });
+
+/**
+ * Slice 6.1 (ADR 0092 decisions 1–2): `upcoming_events` lists Discord
+ * scheduled events and channel reminders in the answer channel's audience;
+ * `channel_history` pages back through the Discord port. Written red first:
+ * the tool ports, the service wiring and the Discord port do not exist yet.
+ */
+describe('Slice 6.1: upcoming_events and channel_history', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const GENERAL = '567890123456789012';
+  const PRIVATE = '678901234567890123';
+  const CLUB_ROLE = '789012345678901234';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+  const OLDEST = '820000000000000001';
+  const OLDER = '810000000000000001';
+  const OLDER_STILL = '800000000000000001';
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  type DiscordPorts = Parameters<typeof createAssistantService>[7];
+  const memberChannelsBoth = async () => [
+    { id: GENERAL, name: 'general' },
+    { id: PRIVATE, name: 'private' },
+  ];
+
+  const chainOf = (provider: TextProvider) => () => [
+    {
+      providerId: 'gemini' as const,
+      model: 'model-a',
+      keyId: 'key_a',
+      keyLabel: 'Key A',
+      provider,
+      skip: undefined,
+      mayTrain: false,
+      rpmLimit: null,
+      rpdLimit: null,
+    },
+  ];
+
+  const serviceWith = (
+    discord: DiscordPorts,
+    provider: TextProvider,
+    windowMessages = 0,
+    configOver = config,
+  ) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      configOver,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      discord,
+      chainOf(provider),
+      undefined,
+      undefined,
+      () => windowMessages,
+    );
+
+  /** A provider that makes the scripted tool calls in order, then answers. */
+  const scriptedCalls = (
+    seen: { role: string; text: string }[][],
+    calls: { name: string; args: Record<string, unknown> }[],
+    answer: string,
+  ): TextProvider => {
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
+        seen.push([...request.messages]);
+        round += 1;
+        const call = calls[round - 1];
+        if (call !== undefined) return { text: '', model: 'model-a', toolCalls: [call] };
+        return { text: answer, model: 'model-a' };
+      }),
+    };
+  };
+
+  const askIn = (
+    discord: DiscordPorts,
+    provider: TextProvider,
+    invocationId: string,
+    over: { channelId?: string; channelContextOldestId?: string; windowMessages?: number } = {},
+  ) =>
+    serviceWith(discord, provider, over.windowMessages ?? 15).invoke({
+      guildId: GUILD,
+      channelId: over.channelId ?? GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: "when's the meeting?" },
+      source: 'slash-command',
+      invocationId,
+      ...(over.channelContextOldestId === undefined
+        ? {}
+        : { channelContextOldestId: over.channelContextOldestId }),
+    });
+
+  const toolTurn = (seen: { role: string; text: string }[][], round: number): string =>
+    seen[round]?.filter((message) => message.role === 'tool').at(-1)?.text ?? '';
+
+  const scheduledEvent = (
+    over: {
+      readonly id?: string;
+      readonly name?: string;
+      readonly description?: string;
+      readonly scheduledStartAt?: number;
+      readonly channelId?: string;
+      readonly location?: string;
+    } = {},
+  ): {
+    readonly id: string;
+    readonly name: string;
+    readonly description?: string | undefined;
+    readonly scheduledStartAt: number;
+    readonly channelId?: string | undefined;
+    readonly location?: string | undefined;
+  } => ({
+    id: over.id ?? '777777777777777771',
+    name: over.name ?? 'Build night',
+    ...(over.description === undefined ? {} : { description: over.description }),
+    scheduledStartAt: over.scheduledStartAt ?? NOW + 3_600_000,
+    ...(over.channelId === undefined ? {} : { channelId: over.channelId }),
+    ...(over.location === undefined ? {} : { location: over.location }),
+  });
+
+  const channelReminder = (over: {
+    id: string;
+    destinationId: string;
+    text: string;
+    dueAt?: number;
+    creatorId?: string;
+  }) =>
+    assistantRepo.insertReminder(t.scopes.forGuild(GUILD), {
+      id: over.id,
+      guildId: GUILD,
+      creatorId: over.creatorId ?? MEMBER,
+      destinationId: over.destinationId,
+      text: over.text,
+      dueAt: over.dueAt ?? NOW + 7_200_000,
+      createdAt: NOW,
+      status: 'scheduled',
+      dedupeKey: `dedupe:${over.id}`,
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+    });
+
+  it('an event in a private channel is not listed for an answer in a public channel', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await askIn(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        listScheduledEvents: async () => [
+          scheduledEvent({ id: '777777777777777771', name: 'Build night', channelId: GENERAL }),
+          scheduledEvent({
+            id: '777777777777777772',
+            name: 'Secret build',
+            channelId: PRIVATE,
+            scheduledStartAt: NOW + 7_200_000,
+          }),
+        ],
+      },
+      scriptedCalls(seen, [{ name: 'upcoming_events', args: {} }], 'Build night is on.'),
+      'int-ev-private',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurn(seen, 1)).toContain('Build night');
+    expect(toolTurn(seen, 1)).not.toContain('Secret build');
+  });
+
+  it('an external event is listed', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await askIn(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        listScheduledEvents: async () => [
+          scheduledEvent({
+            id: '777777777777777773',
+            name: 'Track day',
+            location: 'Mission Raceway',
+            scheduledStartAt: NOW + 7_200_000,
+          }),
+        ],
+      },
+      scriptedCalls(seen, [{ name: 'upcoming_events', args: {} }], 'Track day is on.'),
+      'int-ev-external',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurn(seen, 1)).toContain('Track day');
+    expect(toolTurn(seen, 1)).toContain('Mission Raceway');
+  });
+
+  it('a personal reminder is never listed', async () => {
+    channelReminder({ id: 'personal', destinationId: MEMBER, text: 'Renew my own membership' });
+    const seen: { role: string; text: string }[][] = [];
+    const result = await askIn(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL, PRIVATE]),
+        listScheduledEvents: async () => [],
+      },
+      scriptedCalls(seen, [{ name: 'upcoming_events', args: {} }], 'Nothing on.'),
+      'int-ev-personal',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurn(seen, 1)).not.toContain('Renew my own membership');
+    expect(toolTurn(seen, 1)).toContain('Nothing scheduled in the next 30 days.');
+  });
+
+  it('a channel reminder posts in the audience, one outside it does not', async () => {
+    channelReminder({ id: 'open', destinationId: GENERAL, text: 'Bring cones to general' });
+    channelReminder({ id: 'closed', destinationId: PRIVATE, text: 'Vault rota' });
+    const seen: { role: string; text: string }[][] = [];
+    const result = await askIn(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        listScheduledEvents: async () => [],
+      },
+      scriptedCalls(seen, [{ name: 'upcoming_events', args: {} }], 'Cones it is.'),
+      'int-ev-audience',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurn(seen, 1)).toContain('Bring cones to general');
+    expect(toolTurn(seen, 1)).not.toContain('Vault rota');
+  });
+
+  it('the club time zone reaches the upcoming_events lines', async () => {
+    const auckland = parseConfig({
+      DISCORD_BOT_TOKEN: 'test-token',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      BANANASAURS_GUILD_ALLOWLIST: GUILD,
+      BANANASAURS_OWNER_USER_ID: OWNER,
+      BANANASAURS_TIME_ZONE: 'Pacific/Auckland',
+      AI_PROVIDER: 'off',
+      AI_MODEL: 'fixture-model',
+      AI_PROFILE_COST_CLASS: 'free',
+    });
+    const seen: { role: string; text: string }[][] = [];
+    const provider = scriptedCalls(seen, [{ name: 'upcoming_events', args: {} }], 'Soon.');
+    const service = serviceWith(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        listScheduledEvents: async () => [scheduledEvent({ channelId: GENERAL })],
+      },
+      provider,
+      0,
+      auckland,
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: "when's the meeting?" },
+      source: 'slash-command',
+      invocationId: 'int-ev-tz',
+    });
+    expect(result.ok).toBe(true);
+    // 09:00 UTC is 22:00 the same day in Auckland (NZDT, UTC+13) — and 01:00
+    // in Vancouver, so the time itself proves which zone formatted the line.
+    expect(toolTurn(seen, 1)).toContain('22:00');
+  });
+
+  it('channel_history pages from the channel-context oldest id, then with a returned handle', async () => {
+    const page = (id: string, content: string) => ({
+      messageId: id,
+      authorId: MEMBER,
+      authorName: 'Ana',
+      authorIsBot: false,
+      content,
+      at: NOW - 60_000,
+      hasAttachments: false,
+    });
+    const fetchChannelMessages = vi.fn(
+      async (_channelId: string, opts: { before: string; limit: number }) => {
+        if (opts.before === OLDEST)
+          return [page(OLDER, 'older line'), page('830000000000000001', 'newer line')];
+        if (opts.before === OLDER) return [page(OLDER_STILL, 'older still')];
+        return [];
+      },
+    );
+    const seen: { role: string; text: string }[][] = [];
+    const result = await askIn(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        fetchChannelMessages,
+      },
+      scriptedCalls(
+        seen,
+        [
+          { name: 'channel_history', args: {} },
+          { name: 'channel_history', args: { before: OLDER } },
+        ],
+        'Here is the history.',
+      ),
+      'int-ch-pages',
+      { channelContextOldestId: OLDEST },
+    );
+    expect(result.ok).toBe(true);
+    expect(fetchChannelMessages).toHaveBeenNthCalledWith(1, GENERAL, { before: OLDEST, limit: 20 });
+    expect(fetchChannelMessages).toHaveBeenNthCalledWith(2, GENERAL, { before: OLDER, limit: 20 });
+    expect(toolTurn(seen, 1)).toContain('older line');
+    expect(toolTurn(seen, 1)).toContain(`Older: before=${OLDER}`);
+    expect(toolTurn(seen, 2)).toContain('older still');
+    expect(toolTurn(seen, 2)).toContain(`Older: before=${OLDER_STILL}`);
+  });
+
+  it('neither tool is declared when its port is absent', async () => {
+    const offered: string[][] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
+        offered.push((request.tools ?? []).map((tool) => tool.name));
+        return { text: 'No tools needed.', model: 'model-a' };
+      }),
+    };
+    const result = await askIn({ memberChannels: memberChannelsBoth }, provider, 'int-hidden', {
+      windowMessages: 0,
+    });
+    expect(result.ok).toBe(true);
+    expect(offered[0]).not.toContain('channel_history');
+    expect(offered[0]).not.toContain('upcoming_events');
+    expect(offered[0]).toContain('search_archive');
+  });
+
+  it('channel_history is not offered without a channel, but upcoming_events is', async () => {
+    const offered: string[][] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
+        offered.push((request.tools ?? []).map((tool) => tool.name));
+        return { text: 'No tools needed.', model: 'model-a' };
+      }),
+    };
+    const service = serviceWith(
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        listScheduledEvents: async () => [],
+        fetchChannelMessages: async () => [],
+      },
+      provider,
+      15,
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: undefined,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: "when's the meeting?" },
+      source: 'slash-command',
+      invocationId: 'int-no-channel',
+    });
+    expect(result.ok).toBe(true);
+    expect(offered[0]).not.toContain('channel_history');
+    expect(offered[0]).toContain('upcoming_events');
+  });
+
+  it('Try it lists external events and member-readable reminders, but no channel events', async () => {
+    channelReminder({ id: 'try-open', destinationId: GENERAL, text: 'Bring cones' });
+    const seen: { role: string; text: string }[][] = [];
+    const service = serviceWith(
+      {
+        memberChannels: async () => [{ id: GENERAL, name: 'general' }],
+        listScheduledEvents: async () => [
+          scheduledEvent({ id: '777777777777777771', name: 'Build night', channelId: GENERAL }),
+          scheduledEvent({
+            id: '777777777777777773',
+            name: 'Track day',
+            location: 'Mission Raceway',
+            scheduledStartAt: NOW + 7_200_000,
+          }),
+        ],
+      },
+      scriptedCalls(seen, [{ name: 'upcoming_events', args: {} }], 'Track day and cones.'),
+      0,
+    );
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: "when's the meeting?",
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe('Track day and cones.');
+    expect(toolTurn(seen, 1)).toContain('Track day');
+    expect(toolTurn(seen, 1)).toContain('Bring cones');
+    expect(toolTurn(seen, 1)).not.toContain('Build night');
+  });
+});

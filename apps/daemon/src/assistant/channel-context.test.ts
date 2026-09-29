@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RecentMessage } from '@bananasaurs/core';
-import { buildChannelContext } from './channel-context.js';
+import { buildChannelContext, formatChannelLines } from './channel-context.js';
 
 const NOW = Date.parse('2026-09-20T12:10:00.000Z');
 const BOT_ID = '999999999999999999';
@@ -162,5 +162,65 @@ describe('buildChannelContext', () => {
         }),
       ),
     ).toEqual({ block: '', count: 0 });
+  });
+});
+
+describe('formatChannelLines', () => {
+  it('formats one cleaned line per message, oldest first', () => {
+    const lines = formatChannelLines(
+      [
+        message({ messageId: '1', authorName: 'Ana', content: 'first', at: NOW - 3 * 60_000 }),
+        message({
+          messageId: '2',
+          authorId: '222222222222222222',
+          authorName: 'Sam',
+          content: 'second <@456789012345678901>',
+          at: NOW - 5_000,
+        }),
+      ],
+      { botUserId: BOT_ID, botDisplayName: BOT_NAME, now: NOW },
+    );
+    expect(lines).toEqual(['[Ana, 3 min ago] first', '[Sam, just now] second @user']);
+  });
+
+  it('matches buildChannelContext line for line on the same messages', () => {
+    const messages = [
+      message({ messageId: '1', content: 'first' }),
+      message({ messageId: '2', authorId: BOT_ID, authorIsBot: true, authorName: 'other' }),
+      message({ messageId: '3', referencedAuthorName: 'Sam' }),
+      message({ messageId: '4', content: '', hasAttachments: true }),
+      message({ messageId: '5', content: 'my key is sk-abcdefghijklmnopqrstuvwx ok' }),
+    ];
+    const opts = { botUserId: BOT_ID, botDisplayName: BOT_NAME, now: NOW };
+    const lines = formatChannelLines(messages, opts);
+    const { block } = buildChannelContext({
+      messages,
+      excludeMessageIds: new Set(),
+      ...opts,
+    });
+    const blockLines = block.split('\n').slice(1, -2);
+    expect(lines).toEqual(blockLines);
+    expect(lines).toContain(`[${BOT_NAME}, 3 min ago] hello`);
+    expect(lines.some((line) => line.includes('sk-abcdefghijklmnopqrstuvwx'))).toBe(false);
+  });
+
+  it('skips messages with no text and no attachment', () => {
+    const lines = formatChannelLines(
+      [
+        message({ messageId: '1', content: 'kept' }),
+        message({ messageId: '2', content: '   ' }),
+        message({ messageId: '3', content: '' }),
+      ],
+      { now: NOW },
+    );
+    expect(lines).toEqual(['[Ana, 3 min ago] kept']);
+  });
+
+  it('labels the bot by its username when no display name is given', () => {
+    const lines = formatChannelLines(
+      [message({ messageId: '1', authorId: BOT_ID, authorIsBot: true, authorName: BOT_NAME })],
+      { botUserId: BOT_ID, now: NOW },
+    );
+    expect(lines).toEqual([`[${BOT_NAME}, 3 min ago] hello`]);
   });
 });

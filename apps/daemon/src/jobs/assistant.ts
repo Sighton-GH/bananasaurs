@@ -503,6 +503,11 @@ export const assistantInvokeHandler = (deps: {
         // re-injects, with its version travelling to the trace. Assigned in
         // the conversation branch below; the invoke after it reads it.
         let storedSummary: ReturnType<typeof conversationRepo.getSummary> = undefined;
+        // ADR 0092 decision 2: the oldest id of the channel-context window —
+        // the `channel_history` tool's default `before`, so the first page
+        // starts just above what the model already saw. The fetch reports
+        // oldest first.
+        let channelContextOldestId: string | undefined;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -718,6 +723,10 @@ export const assistantInvokeHandler = (deps: {
                 );
                 flagUnavailable();
               } else {
+                // The fetch reports oldest first: the window's oldest id is
+                // the history tool's default cursor, even when every line was
+                // excluded from the block itself.
+                channelContextOldestId = fetched[0]?.messageId;
                 // Already-linked messages are in the transcript; the invoking
                 // message becomes the current question. Neither is repeated.
                 const exclude = new Set<string>([invokingMessageId]);
@@ -766,6 +775,7 @@ export const assistantInvokeHandler = (deps: {
             ...(channelContext === undefined ? {} : { channelContext }),
             ...(channelMessages === 0 ? {} : { channelMessages }),
             ...(storedSummary === undefined ? {} : { summaryVersion: storedSummary.version }),
+            ...(channelContextOldestId === undefined ? {} : { channelContextOldestId }),
             askerName: payload.authorName,
           });
         } finally {

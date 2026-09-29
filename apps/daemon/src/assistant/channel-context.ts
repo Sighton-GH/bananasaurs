@@ -55,6 +55,39 @@ const speakerOf = (name: string): string => {
 const lineFor = (name: string, at: number, text: string, suffix: string, now: number): string =>
   `[${name}, ${relativeAgo(at, now)}${suffix}] ${text}`;
 
+export interface ChannelLineOptions {
+  readonly botUserId?: string | undefined;
+  readonly botDisplayName?: string | undefined;
+  readonly now: number;
+}
+
+/**
+ * One evidence line per message, with the same per-line cleaning as
+ * `buildChannelContext` (ADR 0092 decision 2): redact, sanitise mentions,
+ * neutralise, cap. No starter, no exclusions, no block cap — the
+ * `channel_history` tool pages raw lines and the tool loop caps the result.
+ * Messages with no text and no attachment still carry nothing and are left
+ * out. Without a bot display name the bot's own messages keep their Discord
+ * username rather than a guessed label.
+ */
+export const formatChannelLines = (
+  messages: readonly RecentMessage[],
+  opts: ChannelLineOptions,
+): string[] =>
+  messages.flatMap((message) => {
+    if (message.content.trim() === '' && !message.hasAttachments) return [];
+    const name =
+      message.authorId === opts.botUserId && opts.botDisplayName !== undefined
+        ? opts.botDisplayName
+        : speakerOf(message.authorName);
+    const text = message.content.trim() === '' ? '[attachment]' : cleanText(message.content);
+    const suffix =
+      message.referencedAuthorName === undefined
+        ? ''
+        : `, replying to ${speakerOf(message.referencedAuthorName)}`;
+    return [lineFor(name, message.at, text, suffix, opts.now)];
+  });
+
 export const buildChannelContext = (
   input: ChannelContextInput,
 ): { block: string; count: number } => {

@@ -477,4 +477,39 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     outputLimit: 'One line confirming the refresh.',
     skills: ['search-club'],
   },
+  {
+    name: 'upcoming_events',
+    description:
+      'Upcoming Discord scheduled events and channel reminders in the next 30 days, soonest first, for channels every viewer of the answer channel can read.',
+    parameters: NO_PARAMETERS,
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club'],
+  },
+  {
+    name: 'channel_history',
+    description:
+      'Read older messages in the current channel, paging back with the before id from an earlier result.',
+    parameters: {
+      type: 'object',
+      properties: {
+        before: {
+          type: 'string',
+          description: 'A message id from an earlier channel_history result in this request.',
+          minLength: 17,
+          maxLength: 20,
+        },
+        limit: {
+          type: 'integer',
+          description: 'How many older messages to read (1-50).',
+          minimum: 1,
+          maximum: 50,
+        },
+      },
+      required: [],
+    },
+    rounds: 'all',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club'],
+  },
 ] as const;

@@ -1013,6 +1013,26 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.inputs[0]?.channelMessages).toBeUndefined();
   });
 
+  it('a mention passes the oldest window id as the channel-history default', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([
+      channelMessage({ messageId: '820000000000000001' }),
+      channelMessage({ messageId: '820000000000000002', content: 'and parking is free' }),
+    ]);
+    await h.run(mention({ invocationId: 'inv-cc6', messageId: '810000000000000058' }));
+
+    expect(h.inputs[0]?.channelContextOldestId).toBe('820000000000000001');
+  });
+
+  it('no window means no channel-history default', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.channelContextMessages.mockReturnValue(0);
+    await h.run(mention({ invocationId: 'inv-cc7', messageId: '810000000000000059' }));
+
+    expect(h.inputs[0]?.channelContextOldestId).toBeUndefined();
+  });
+
   it('a slash command never fetches channel context', async () => {
     const h = harness(() => ({ ok: true, content: 'answer' }));
     h.channelContextMessages.mockReturnValue(15);

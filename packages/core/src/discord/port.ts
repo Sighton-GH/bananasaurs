@@ -149,6 +149,21 @@ export interface DiscordThread {
   readonly archived: boolean;
 }
 
+/**
+ * One guild scheduled event as `listScheduledEvents` reports it (ADR 0092).
+ * `channelId` is absent for external events; `location` comes from the
+ * event's entity metadata when Discord carries one.
+ */
+export interface ScheduledEvent {
+  readonly id: Snowflake;
+  readonly name: string;
+  readonly description?: string | undefined;
+  /** From `scheduled_start_time`. */
+  readonly scheduledStartAt: number;
+  readonly channelId?: Snowflake | undefined;
+  readonly location?: string | undefined;
+}
+
 export interface RecentMessagesPage {
   messages: readonly FetchedMessage[];
   /** Pass back as `before` to continue. Undefined when the page is the last. */
@@ -300,6 +315,13 @@ export interface DiscordPort {
    * an empty list, which read as "no threads" rather than "not wired".
    */
   listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
+  /**
+   * Guild scheduled events for the assistant's `upcoming_events` tool
+   * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway
+   * intent needed. An empty list when there are none — or when the bot may
+   * not see them (403).
+   */
+  listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]>;
 
   // --- interactions ------------------------------------------------------
   /**
