@@ -111,8 +111,10 @@ export const registerAssistantConversationRoutes = (
     ];
     const traces = traceIds.length === 0 ? [] : traceRepo.getTracesByIds(session.scope, traceIds);
     const sourcesByTrace = new Map(traces.map((trace) => [trace.traceId, trace.sources]));
+    const links = conversationRepo.listLinks(session.scope, request.params.id);
     return reply.status(200).send({
       conversation,
+      links,
       turns: turns.map((turn) => {
         if (turn.role !== 'assistant' || turn.traceId === undefined) return turn;
         // The sources line only: title and URL, never the trace body — the

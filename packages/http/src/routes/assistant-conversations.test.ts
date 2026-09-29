@@ -437,6 +437,107 @@ describe('assistant conversation routes', () => {
     ]);
   });
 
+  it('returns links in both directions with joinRule and keeps guild scope', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_000);
+    seedConversation('conv-2', 2_000);
+    const scope = t.scopes.forGuild(GUILD);
+    conversationRepo.appendTurn(scope, {
+      conversationId: 'conv-1',
+      turnId: 'conv-1-turn-followup',
+      at: 1_001,
+      role: 'user',
+      authorId: MEMBER,
+      authorName: 'Bryan',
+      text: 'a follow-up question',
+      joinRule: 'follow-up',
+    });
+    conversationRepo.linkConversations(scope, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-2',
+      kind: 'same-channel',
+      at: 3_000,
+    });
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    conversationRepo.createConversation(other, {
+      conversationId: 'conv-1',
+      channelId: CHANNEL,
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'other-title-conv-1',
+      source: 'discord',
+      at: 1_000,
+    });
+    conversationRepo.createConversation(other, {
+      conversationId: 'conv-other',
+      channelId: CHANNEL,
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'other-title-conv-other',
+      source: 'discord',
+      at: 2_000,
+    });
+    conversationRepo.linkConversations(other, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-other',
+      kind: 'same-channel',
+      at: 3_000,
+    });
+    const { cookie } = await signIn();
+    const first = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-1',
+      headers: { cookie },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json<{
+      turns: { turnId: string; joinRule?: string }[];
+      links: {
+        otherConversationId: string;
+        otherTitle: string;
+        kind: string;
+        direction: string;
+        at: number;
+      }[];
+    }>();
+    expect(firstBody.turns.find((turn) => turn.turnId === 'conv-1-turn-followup')?.joinRule).toBe(
+      'follow-up',
+    );
+    expect(firstBody.links).toEqual([
+      {
+        otherConversationId: 'conv-2',
+        otherTitle: 'title-conv-2',
+        kind: 'same-channel',
+        direction: 'outgoing',
+        at: 3_000,
+      },
+    ]);
+    const second = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-2',
+      headers: { cookie },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json<{
+      links: {
+        otherConversationId: string;
+        otherTitle: string;
+        kind: string;
+        direction: string;
+        at: number;
+      }[];
+    }>();
+    expect(secondBody.links).toEqual([
+      {
+        otherConversationId: 'conv-1',
+        otherTitle: 'title-conv-1',
+        kind: 'same-channel',
+        direction: 'incoming',
+        at: 3_000,
+      },
+    ]);
+  });
+
   it('batches the people lookup into one call per list page', async () => {
     grant('audit.read');
     seedConversation('conv-1', 1_000);

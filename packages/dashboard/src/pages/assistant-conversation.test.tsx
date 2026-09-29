@@ -48,6 +48,7 @@ const DETAIL = {
       sources: [{ title: 'Handbook', url: 'https://example.com/handbook' }],
     },
   ],
+  links: [],
 };
 
 function renderDetail(detail: unknown = DETAIL) {
@@ -212,5 +213,107 @@ describe('AssistantConversationPage', () => {
     );
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('no conversation with this id is stored for this server');
+  });
+
+  it('notes how a user turn joined on continue rules only', async () => {
+    const userTurn = (turnId: string, text: string, extra: Record<string, string> = {}) => ({
+      turnId,
+      at: 1_790_000_001_000,
+      role: 'user',
+      authorId: '100000000000000001',
+      authorName: 'Bryan',
+      text,
+      ...extra,
+    });
+    renderDetail({
+      ...DETAIL,
+      links: [],
+      turns: [
+        userTurn('t-fresh', 'a fresh question', { joinRule: 'fresh' }),
+        userTurn('t-bot', 'replying to the bot', { joinRule: 'reply-to-bot' }),
+        userTurn('t-turn', 'replying to an earlier message', { joinRule: 'reply-to-turn' }),
+        userTurn('t-follow', 'following up myself', { joinRule: 'follow-up' }),
+        userTurn('t-thread', 'asking in the same thread', { joinRule: 'thread' }),
+        userTurn('t-channel', 'following up another member', {
+          joinRule: 'channel-follow-up',
+        }),
+        userTurn('t-plain', 'no rule was recorded'),
+      ],
+    });
+    const notes = [
+      'Replied to the bot',
+      'Replied to an earlier message',
+      'Follow-up from the same member',
+      'Asked in the same thread',
+      'Joined as a follow-up from another member in the channel',
+    ];
+    for (const note of notes) {
+      expect(await screen.findByText(note)).toBeTruthy();
+    }
+    for (const text of ['a fresh question', 'no rule was recorded']) {
+      const item = screen.getByText(text).closest('li');
+      for (const note of notes) {
+        expect(item?.textContent).not.toContain(note);
+      }
+    }
+  });
+
+  it('lists linked conversations in both directions with the kind in words', async () => {
+    renderDetail({
+      ...DETAIL,
+      links: [
+        {
+          otherConversationId: 'conv-2',
+          otherTitle: 'Same channel chat',
+          kind: 'same-channel',
+          direction: 'outgoing',
+          at: 3_000,
+        },
+        {
+          otherConversationId: 'conv-3',
+          otherTitle: 'Thread follow-on',
+          kind: 'thread-parent',
+          direction: 'outgoing',
+          at: 2_000,
+        },
+        {
+          otherConversationId: 'conv-0',
+          otherTitle: 'Parent topic',
+          kind: 'thread-parent',
+          direction: 'incoming',
+          at: 1_000,
+        },
+        {
+          otherConversationId: 'conv-4',
+          otherTitle: 'Earlier research',
+          kind: 'recalled',
+          direction: 'outgoing',
+          at: 4_000,
+        },
+        {
+          otherConversationId: 'conv-5',
+          otherTitle: 'Later reference',
+          kind: 'recalled',
+          direction: 'incoming',
+          at: 5_000,
+        },
+      ],
+    });
+    expect(await screen.findByText('Linked conversations')).toBeTruthy();
+    const same = screen.getByRole('link', { name: 'Same channel chat' });
+    expect((same as HTMLAnchorElement).pathname).toBe('/assistant/conversations/conv-2');
+    const parent = screen.getByRole('link', { name: 'Parent topic' });
+    expect((parent as HTMLAnchorElement).pathname).toBe('/assistant/conversations/conv-0');
+    expect(screen.getByText('In the same channel at the same time')).toBeTruthy();
+    expect(screen.getByText('Continues in a thread started from')).toBeTruthy();
+    expect(screen.getByText('Has a thread conversation')).toBeTruthy();
+    expect(screen.getByText('Looked back at')).toBeTruthy();
+    expect(screen.getByText('Looked back at by')).toBeTruthy();
+  });
+
+  it('says plainly when no conversations are linked', async () => {
+    renderDetail({ ...DETAIL, links: [] });
+    expect(await screen.findByText('Linked conversations')).toBeTruthy();
+    expect(screen.getByText('No linked conversations.')).toBeTruthy();
   });
 });
