@@ -26,8 +26,8 @@ import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
  */
 
 /** The recent-turn window, verbatim from the spec (global constraints). */
-const HISTORY_TURNS = 12;
-const HISTORY_CHARS = 6_000;
+export const HISTORY_TURNS = 12;
+export const HISTORY_CHARS = 6_000;
 
 export interface QuotedMessage {
   readonly authorName: string;
