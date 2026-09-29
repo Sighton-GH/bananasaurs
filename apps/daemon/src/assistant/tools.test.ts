@@ -1711,7 +1711,7 @@ describe('search_conversations (ADR 0093)', () => {
       hit({
         conversationId: 'conv-3',
         channelId: '222222222222222222',
-        lastActivityAt: NOW - 60_000,
+        lastActivityAt: NOW - 30_000,
         topic: 'Potluck desserts',
         facts: ['Ada brings pie'],
       }),
