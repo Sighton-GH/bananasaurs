@@ -40,13 +40,25 @@ export interface ConversationTurnRow {
   readonly text: string;
   readonly traceId?: string;
   readonly feedback?: 'up' | 'down';
+  /** How this turn joined its conversation; only continue rules render a note. */
+  readonly joinRule?: string;
   /** Title and URL only, for the assistant turn's sources line. */
   readonly sources?: readonly { readonly title: string; readonly url: string }[];
+}
+
+/** One conversation linked to the detail conversation, in either direction. */
+export interface ConversationLinkRow {
+  readonly otherConversationId: string;
+  readonly otherTitle: string;
+  readonly kind: 'same-channel' | 'thread-parent' | 'recalled';
+  readonly direction: 'outgoing' | 'incoming';
+  readonly at: number;
 }
 
 export interface ConversationDetailResponse {
   readonly conversation: Omit<ConversationRow, 'people' | 'member'>;
   readonly turns: readonly ConversationTurnRow[];
+  readonly links: readonly ConversationLinkRow[];
 }
 
 /** The auto-delete window in days; null keeps conversations forever. */
