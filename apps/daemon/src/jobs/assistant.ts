@@ -3,6 +3,7 @@ import {
   assistantInvokePayload,
   assistantSummariseDedupeKey,
   JOB_KINDS,
+  renderSummary,
   SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
   resolveConversation,
@@ -194,6 +195,9 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
           ...(detail.included.channelMessages === undefined
             ? {}
             : { channelMessages: detail.included.channelMessages }),
+          ...(detail.included.summaryVersion === undefined
+            ? {}
+            : { summaryVersion: detail.included.summaryVersion }),
         },
       }),
 });
@@ -495,6 +499,10 @@ export const assistantInvokeHandler = (deps: {
         let quoteInHistory = false;
         let channelContext: string | undefined;
         let channelMessages = 0;
+        // ADR 0091 decision 5: the stored summary a continuing conversation
+        // re-injects, with its version travelling to the trace. Assigned in
+        // the conversation branch below; the invoke after it reads it.
+        let storedSummary: ReturnType<typeof conversationRepo.getSummary> = undefined;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -623,6 +631,13 @@ export const assistantInvokeHandler = (deps: {
               joinRule: resolved.rule,
             });
           }
+          // ADR 0091 decision 5: a continuing conversation re-injects its
+          // stored summary ahead of the recent turns, and its version travels
+          // with the invoke to the stored trace.
+          storedSummary =
+            resolved.kind === 'continue'
+              ? conversationRepo.getSummary(conv.scope, conversationId)
+              : undefined;
           const built = buildConversationContext({
             scope: conv.scope,
             resolution: resolved,
@@ -631,6 +646,11 @@ export const assistantInvokeHandler = (deps: {
             // The turn just written above is stored, never history: the
             // question reaches the model once, as the request's user text.
             excludeTurnId: userTurnId,
+            // ADR 0091 decision 5: a continuing conversation re-injects its
+            // stored summary ahead of the recent turns.
+            ...(storedSummary === undefined
+              ? {}
+              : { summaryText: renderSummary(storedSummary.summary) }),
             now: deps.now(),
           });
           history = built.history;
@@ -745,6 +765,9 @@ export const assistantInvokeHandler = (deps: {
             ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
             ...(channelContext === undefined ? {} : { channelContext }),
             ...(channelMessages === 0 ? {} : { channelMessages }),
+            ...(storedSummary === undefined
+              ? {}
+              : { summaryVersion: storedSummary.version }),
             askerName: payload.authorName,
           });
         } finally {
@@ -1015,6 +1038,9 @@ export const assistantInvokeHandler = (deps: {
                     ...(detail.included.channelMessages === undefined
                       ? {}
                       : { channelMessages: detail.included.channelMessages }),
+                    ...(detail.included.summaryVersion === undefined
+                      ? {}
+                      : { summaryVersion: detail.included.summaryVersion }),
                   },
                 }),
             timeline: [

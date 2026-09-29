@@ -114,6 +114,34 @@ describe('assistantTraceSchema', () => {
     ).toThrow();
   });
 
+  it('round-trips included summaryVersion and still parses included without it', () => {
+    const withVersion = fixtureTrace({
+      included: {
+        toolsOffered: [],
+        snippetChunkIds: [],
+        quote: false,
+        historyTurns: 0,
+        summaryVersion: 2,
+      },
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withVersion)))).toEqual(
+      withVersion,
+    );
+    expect(() =>
+      assistantTraceSchema.parse(
+        fixtureTrace({
+          included: {
+            toolsOffered: [],
+            snippetChunkIds: [],
+            quote: false,
+            historyTurns: 0,
+            summaryVersion: -1,
+          },
+        }),
+      ),
+    ).toThrow();
+  });
+
   it('rejects an unknown outcome and a zero tool round', () => {
     expect(() => assistantTraceSchema.parse(fixtureTrace({ outcome: 'maybe' as never }))).toThrow();
     expect(() =>

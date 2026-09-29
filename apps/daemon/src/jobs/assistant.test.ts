@@ -1602,10 +1602,14 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
     },
   });
 
-  const harness = (answer: () => AssistantInvocationResult) => {
+  const harness = (answer: (input: AssistantInvocation) => AssistantInvocationResult) => {
+    const inputs: AssistantInvocation[] = [];
     const svc: AssistantCommandService = {
       behavioursForGuild: async () => [behaviour],
-      invoke: async () => answer(),
+      invoke: async (input) => {
+        inputs.push(input);
+        return answer(input);
+      },
     };
     let idSeq = 0;
     const handler = assistantInvokeHandler({
@@ -1637,7 +1641,7 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
       });
       return saved;
     };
-    return { run };
+    return { inputs, run };
   };
 
   const mention = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -1735,5 +1739,68 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
       cursor,
     );
     expect(summaryJobs()).toHaveLength(1);
+  });
+
+  it('passes the stored summary into the invoke and records its version on the trace', async () => {
+    conversationRepo.createConversation(scope(), {
+      conversationId: 'conv_sum-ver',
+      channelId: CHANNEL_ID,
+      behaviourId: behaviour.id,
+      startedBy: AMA,
+      title: 'seeded',
+      source: 'discord',
+      at: NOW - 1_000,
+    });
+    conversationRepo.appendTurn(scope(), {
+      conversationId: 'conv_sum-ver',
+      turnId: 'turn_seed_0',
+      at: NOW - 1_000,
+      role: 'user',
+      authorId: AMA,
+      authorName: 'Ama',
+      text: 'earlier question',
+    });
+    conversationRepo.writeSummaryIfNewer(scope(), {
+      conversationId: 'conv_sum-ver',
+      summary: {
+        topic: 'Old topic',
+        facts: [],
+        botClaims: [],
+        openQuestions: [],
+        commitments: [],
+        participants: [],
+      },
+      throughAt: NOW - 1_000,
+      now: NOW,
+    });
+    const h = harness((input) => ({
+      ok: true,
+      content: 'answer',
+      detail: {
+        sections: [],
+        history: [],
+        attempts: [],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        answeredBy: { providerId: 'test-provider', model: 'test-model', keyId: 'key_test' },
+        included: {
+          toolsOffered: [],
+          snippetChunkIds: [],
+          quote: false,
+          historyTurns: 0,
+          ...(input.summaryVersion === undefined
+            ? {}
+            : { summaryVersion: input.summaryVersion }),
+        },
+      },
+    }));
+    await h.run(mention({ invocationId: 'sum-ver', messageId: '810000000000000208' }));
+
+    expect(h.inputs[0]?.summaryVersion).toBe(1);
+    expect(h.inputs[0]?.history[0]?.text.startsWith('[EARLIER IN THIS CONVERSATION')).toBe(true);
+    expect(h.inputs[0]?.history[0]?.text).toContain('Old topic');
+    const stored = traceRepo.getTrace(scope(), 'trace_sum-ver');
+    expect(stored?.included?.summaryVersion).toBe(1);
   });
 });

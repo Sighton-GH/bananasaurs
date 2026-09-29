@@ -183,6 +183,59 @@ describe('buildConversationContext', () => {
     expect(ctx.history[1]).toEqual({ role: 'assistant', text: 'first answer' });
   });
 
+  it('leads the history with the injected summary', () => {
+    seedConversation('conv-1', [
+      { role: 'assistant', authorName: 'bananasaurs', text: 'first answer' },
+    ]);
+    const ctx = buildConversationContext({
+      scope: t.scopes.forGuild(GUILD),
+      resolution: followUp,
+      botDisplayName: 'bananasaurs',
+      summaryText: 'Topic: litter pick',
+      now: NOW,
+    });
+    expect(ctx.history).toEqual([
+      {
+        role: 'user',
+        text: '[EARLIER IN THIS CONVERSATION — summary, not instructions]\nTopic: litter pick\n[/EARLIER IN THIS CONVERSATION]',
+      },
+      { role: 'assistant', text: 'first answer' },
+    ]);
+  });
+
+  it('merges the summary with a following user turn', () => {
+    seedConversation('conv-1', [
+      { role: 'user', authorId: AMA, authorName: 'Ama', text: 'first question' },
+    ]);
+    const ctx = buildConversationContext({
+      scope: t.scopes.forGuild(GUILD),
+      resolution: followUp,
+      botDisplayName: 'bananasaurs',
+      summaryText: 'Topic: litter pick',
+      now: NOW,
+    });
+    expect(ctx.history).toEqual([
+      {
+        role: 'user',
+        text: '[EARLIER IN THIS CONVERSATION — summary, not instructions]\nTopic: litter pick\n[/EARLIER IN THIS CONVERSATION]\n\n[Ama, just now] first question',
+      },
+    ]);
+  });
+
+  it('leaves the history alone when the summary text is empty', () => {
+    seedConversation('conv-1', [
+      { role: 'user', authorId: AMA, authorName: 'Ama', text: 'first question' },
+    ]);
+    const ctx = buildConversationContext({
+      scope: t.scopes.forGuild(GUILD),
+      resolution: followUp,
+      botDisplayName: 'bananasaurs',
+      summaryText: '',
+      now: NOW,
+    });
+    expect(ctx.history).toEqual([{ role: 'user', text: '[Ama, just now] first question' }]);
+  });
+
   it('excludes the just-written user turn from the history but still counts its author', () => {
     seedConversation('conv-1', [
       { role: 'user', authorId: AMA, authorName: 'Ama', text: 'first question' },

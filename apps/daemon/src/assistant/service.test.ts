@@ -3095,6 +3095,43 @@ describe('B2b: action summaries in answers', () => {
     expect(result.detail?.included?.toolsOffered).toContain('set_reminder');
   });
 
+  it('records included.summaryVersion when the job injected a summary', async () => {
+    const provider = h.scripted([{ text: 'Done.', model: 'model-a' }]);
+    const service = h.serviceWith(provider, targetsOk());
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'what was decided' },
+      source: 'mention',
+      invocationId: 'int-summary-version-1',
+      summaryVersion: 3,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail?.included?.summaryVersion).toBe(3);
+  });
+
+  it('omits summaryVersion from included when no summary was injected', async () => {
+    const provider = h.scripted([{ text: 'Done.', model: 'model-a' }]);
+    const service = h.serviceWith(provider, targetsOk());
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'what was decided' },
+      source: 'mention',
+      invocationId: 'int-summary-version-2',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail?.included).not.toHaveProperty('summaryVersion');
+  });
+
   it('a failed loop still records included', async () => {
     const when = new Date(NOW + 3_600_000).toISOString();
     let calls = 0;
@@ -3128,6 +3165,40 @@ describe('B2b: action summaries in answers', () => {
     expect(result.detail?.included?.toolsOffered).toContain('set_reminder');
     expect(result.detail?.included?.historyTurns).toBe(0);
     expect(result.detail?.included?.quote).toBe(false);
+  });
+
+  it('a failed loop still records included.summaryVersion', async () => {
+    const when = new Date(NOW + 3_600_000).toISOString();
+    let calls = 0;
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: [{ name: 'set_reminder', args: { text: 'Bring batteries', when } }],
+          };
+        throw new ProviderError('outage', 'HTTP 503', true);
+      },
+    };
+    const service = h.serviceWith(failing, targetsOk());
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question: 'remind me to bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-included-fail-version-1',
+      summaryVersion: 2,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail?.included?.summaryVersion).toBe(2);
   });
 
   it('places channel context first in the user message and records its line count', async () => {

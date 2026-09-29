@@ -887,6 +887,9 @@ export const createAssistantService = (
             ...(input.channelMessages === undefined
               ? {}
               : { channelMessages: input.channelMessages }),
+            ...(input.summaryVersion === undefined
+              ? {}
+              : { summaryVersion: input.summaryVersion }),
           },
         });
         if (failed.actionSummaries.length > 0) {
@@ -1111,6 +1114,9 @@ export const createAssistantService = (
           ...(input.channelMessages === undefined
             ? {}
             : { channelMessages: input.channelMessages }),
+          ...(input.summaryVersion === undefined
+            ? {}
+            : { summaryVersion: input.summaryVersion }),
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
@@ -1404,6 +1410,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
                 ...(detail.included.channelMessages === undefined
                   ? {}
                   : { channelMessages: detail.included.channelMessages }),
+                ...(detail.included.summaryVersion === undefined
+                  ? {}
+                  : { summaryVersion: detail.included.summaryVersion }),
               },
             }),
         timeline: [

@@ -71,6 +71,11 @@ export interface AssistantInvocation {
   readonly channelMessages?: number | undefined;
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
+  /**
+   * ADR 0091: the stored summary's version the history leads with, for the
+   * trace's `included.summaryVersion`. Absent means no summary was injected.
+   */
+  readonly summaryVersion?: number | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
