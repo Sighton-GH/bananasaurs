@@ -48,7 +48,7 @@ const TRACE = {
     quote: true,
     historyTurns: 2,
     channelMessages: 3,
-    summaryVersion: 2,
+    summaryVersion: 4,
   },
 };
 
@@ -102,12 +102,12 @@ describe('WhatTheAiSaw', () => {
     expect(screen.getByText('Channel messages:')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
     expect(screen.getByText('Summary version:')).toBeTruthy();
-    expect(screen.getByText('2')).toBeTruthy();
+    expect(screen.getByText('4')).toBeTruthy();
   });
 
   it('omits the summary version when none was included', async () => {
     const { summaryVersion: _dropped, ...included } = TRACE.included;
-    expect(_dropped).toBe(2);
+    expect(_dropped).toBe(4);
     renderPanel({ ...TRACE, included });
     await screen.findByRole('button', { name: 'What the AI saw' });
     await act(async () => {
