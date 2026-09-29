@@ -493,6 +493,12 @@ const assistantInvokeDetail = z.object({
       keyId: z.string().min(1),
     })
     .optional(),
+  /**
+   * ADR 0093: the conversations whose summaries this run looked back at
+   * (`search_conversations` hits). Carried so the invoke job can link them
+   * with kind `recalled`; never written to the stored trace.
+   */
+  recalled: z.array(z.string().min(1)).optional(),
 });
 
 export const assistantInvokeCursor = z.object({
