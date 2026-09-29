@@ -78,12 +78,20 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
 
   it('summarises evicted turns and writes the validated summary', async () => {
     seedTurns('conv_sum', 13);
-    const summariseModel = vi.fn(async (): Promise<
-      { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
-    > => ({ ok: true, text: SUMMARY_JSON }));
+    const summariseModel = vi.fn(
+      async (): Promise<
+        | { readonly ok: true; readonly text: string }
+        | { readonly ok: false; readonly reason: string }
+      > => ({ ok: true, text: SUMMARY_JSON }),
+    );
     const handler = handlerWith(summariseModel);
 
-    await handler.run(payload(), { jobId: 1, attempts: 1, cursor: null, saveCursor: () => undefined });
+    await handler.run(payload(), {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
 
     expect(summariseModel).toHaveBeenCalledTimes(1);
     const req = summariseModel.mock.calls[0]![0]!;
@@ -114,9 +122,12 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
       throughAt: 1_000,
       now: NOW,
     });
-    const summariseModel = vi.fn(async (): Promise<
-      { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
-    > => ({ ok: true, text: SUMMARY_JSON }));
+    const summariseModel = vi.fn(
+      async (): Promise<
+        | { readonly ok: true; readonly text: string }
+        | { readonly ok: false; readonly reason: string }
+      > => ({ ok: true, text: SUMMARY_JSON }),
+    );
     const handler = handlerWith(summariseModel);
 
     await handler.run(payload({ throughAt: 1_001 }), {
@@ -170,15 +181,20 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
       throughAt: 1_010,
       now: NOW,
     });
-    const summariseModel = vi.fn(async (): Promise<
-      { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
-    > => ({ ok: true, text: SUMMARY_JSON }));
+    const summariseModel = vi.fn(
+      async (): Promise<
+        | { readonly ok: true; readonly text: string }
+        | { readonly ok: false; readonly reason: string }
+      > => ({ ok: true, text: SUMMARY_JSON }),
+    );
     const handler = handlerWith(summariseModel);
 
-    await handler.run(
-      payload({ throughAt: 1_003 }),
-      { jobId: 1, attempts: 1, cursor: null, saveCursor: () => undefined },
-    );
+    await handler.run(payload({ throughAt: 1_003 }), {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
 
     const stored = conversationRepo.getSummary(scope(), 'conv_sum');
     expect(stored?.summary.topic).toBe('Newer topic');

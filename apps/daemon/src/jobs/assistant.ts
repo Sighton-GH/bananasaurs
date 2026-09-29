@@ -30,7 +30,11 @@ import type {
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
-import { buildConversationContext, HISTORY_CHARS, HISTORY_TURNS } from '../assistant/conversation-context.js';
+import {
+  buildConversationContext,
+  HISTORY_CHARS,
+  HISTORY_TURNS,
+} from '../assistant/conversation-context.js';
 import { buildChannelContext } from '../assistant/channel-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
@@ -1034,8 +1038,7 @@ export const assistantInvokeHandler = (deps: {
           if (answeredBy !== undefined) {
             const convScope = deps.conversations.scope;
             const evicted = conversationRepo.evictedTurnsSince(convScope, conversationId, {
-              afterAt:
-                conversationRepo.getSummary(convScope, conversationId)?.throughAt ?? null,
+              afterAt: conversationRepo.getSummary(convScope, conversationId)?.throughAt ?? null,
               window: { maxTurns: HISTORY_TURNS, maxChars: HISTORY_CHARS },
             });
             const newest = evicted.at(-1);

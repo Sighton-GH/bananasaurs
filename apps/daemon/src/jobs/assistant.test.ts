@@ -1682,9 +1682,7 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
       expect(parsed.data.providerId).toBe('test-provider');
       expect(parsed.data.model).toBe('test-model');
       expect(parsed.data.keyId).toBe('key_test');
-      expect(jobs[0]!.dedupeKey).toBe(
-        `summary_conv_sum-first_${parsed.data.throughAt}`,
-      );
+      expect(jobs[0]!.dedupeKey).toBe(`summary_conv_sum-first_${parsed.data.throughAt}`);
     }
   });
 

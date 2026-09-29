@@ -25,8 +25,7 @@ export type SummariseModelPort = (req: {
   readonly systemInstruction: string;
   readonly text: string;
 }) => Promise<
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly reason: string }
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
 >;
 
 /** The whole model input is capped, keeping the newest turns. */
@@ -55,7 +54,10 @@ const buildSummaryInput = (previousJson: string, lines: readonly string[]): stri
 /** Drops the oldest turn lines until the whole input fits, keeping the newest. */
 const capInputLines = (previousJson: string, lines: readonly string[]): readonly string[] => {
   let kept = [...lines];
-  while (kept.length > 1 && buildSummaryInput(previousJson, kept).length > MAX_SUMMARY_INPUT_CHARS) {
+  while (
+    kept.length > 1 &&
+    buildSummaryInput(previousJson, kept).length > MAX_SUMMARY_INPUT_CHARS
+  ) {
     kept = kept.slice(1);
   }
   return kept;

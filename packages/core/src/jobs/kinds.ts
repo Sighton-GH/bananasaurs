@@ -352,10 +352,8 @@ export type AssistantSummarisePayload = z.infer<typeof assistantSummarisePayload
  * (hard rule 6). A retry of the same answer re-enqueues the identical key
  * and collapses into the row already queued.
  */
-export const assistantSummariseDedupeKey = (
-  conversationId: string,
-  throughAt: number,
-): string => `summary_${conversationId}_${throughAt}`;
+export const assistantSummariseDedupeKey = (conversationId: string, throughAt: number): string =>
+  `summary_${conversationId}_${throughAt}`;
 
 /**
  * One assistant invocation, enqueued by the slash/mention subscriber the
