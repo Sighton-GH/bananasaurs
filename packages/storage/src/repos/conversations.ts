@@ -1,14 +1,21 @@
 import { and, asc, desc, eq, gte, gt, inArray, like, lt, sql } from 'drizzle-orm';
+import type Database from 'better-sqlite3';
 import type { JoinRule, KnownMessage } from '@bananasaurs/core';
-import { conversationSummarySchema, type ConversationSummary } from '@bananasaurs/core';
+import {
+  conversationSummarySchema,
+  renderSummary,
+  type ConversationSummary,
+} from '@bananasaurs/core';
 import {
   assistantConversationLinks,
   assistantConversationMessages,
   assistantConversationTurns,
   assistantConversations,
 } from '../schema.js';
+import type { Db } from '../db.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
+import { sanitiseFtsQuery } from './resource-cache.js';
 
 export type ConversationSource = 'discord' | 'dashboard-test';
 export type ConversationStatus = 'open' | 'ended';
@@ -845,6 +852,9 @@ export const writeSummaryIfNewer = (
       .update(assistantConversations)
       .set({
         summaryJson: JSON.stringify(validated),
+        // ADR 0093 decision 1: the rendered text lands in the same UPDATE,
+        // so the FTS trigger indexes exactly what `summary_json` holds.
+        summaryText: renderSummary(validated),
         summaryThroughAt: input.throughAt,
         summaryVersion: sql`${assistantConversations.summaryVersion} + 1`,
         summaryUpdatedAt: input.now,
@@ -891,3 +901,101 @@ export const evictedTurnsSince = (
       !inWindow.has(turnEntry.turnId) && (opts.afterAt === null || turnEntry.at > opts.afterAt),
   );
 };
+
+/**
+ * The raw better-sqlite3 handle behind a Drizzle `Db` (mirrors
+ * `archive-search.ts`'s `rawOf`: `MATCH` against the FTS5 index is not
+ * expressible through the query builder).
+ */
+const rawOf = (db: Db): Database.Database =>
+  (db as unknown as { readonly $client: Database.Database }).$client;
+
+export interface SummarySearchHit {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly lastActivityAt: number;
+  readonly summary: ConversationSummary;
+}
+
+interface SummarySearchRow {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly lastActivityAt: number;
+  readonly summaryJson: string | null;
+}
+
+/**
+ * Full-text search over this guild's conversation summaries (ADR 0093).
+ *
+ * The FTS table (`assistant_conversations_summaries_fts`, migration 0052)
+ * carries no `guild_id` of its own, so the query joins back to
+ * `assistant_conversations` on rowid with the guild filter — the same
+ * arrangement `resource-cache.ts` uses — plus the channel filter and the
+ * current-conversation exclusion. Newest first. An empty channel list
+ * returns `[]` without running a query (`IN ()` is a syntax error, and
+ * "nothing visible" is a real state).
+ *
+ * Stored summaries are untrusted (hard rule 3): each hit's `summary_json`
+ * is parsed with `conversationSummarySchema` and a row that fails to parse
+ * is skipped rather than erroring.
+ */
+export const searchSummaries = (
+  scope: GuildScope,
+  input: {
+    readonly query: string;
+    readonly channelIds: readonly string[];
+    readonly excludeConversationId?: string | undefined;
+    readonly limit?: number | undefined;
+  },
+): SummarySearchHit[] =>
+  read(scope, (db) => {
+    const channels = [...new Set(input.channelIds)];
+    if (channels.length === 0) return [];
+    const match = sanitiseFtsQuery(input.query);
+    if (match === '') return [];
+    const limit =
+      input.limit === undefined || !Number.isFinite(input.limit)
+        ? 5
+        : Math.min(Math.max(Math.floor(input.limit), 1), 20);
+
+    const where = [
+      'assistant_conversations_summaries_fts MATCH ?',
+      'c.guild_id = ?',
+      `c.channel_id IN (${channels.map(() => '?').join(', ')})`,
+      'c.summary_json IS NOT NULL',
+    ];
+    const params: unknown[] = [match, scope.guildId, ...channels];
+    if (input.excludeConversationId !== undefined) {
+      where.push('c.conversation_id != ?');
+      params.push(input.excludeConversationId);
+    }
+    const querySql =
+      'SELECT c.conversation_id AS conversationId, c.channel_id AS channelId, ' +
+      'c.last_activity_at AS lastActivityAt, c.summary_json AS summaryJson ' +
+      'FROM assistant_conversations_summaries_fts ' +
+      'JOIN assistant_conversations c ON c.rowid = assistant_conversations_summaries_fts.rowid ' +
+      `WHERE ${where.join(' AND ')} ` +
+      'ORDER BY c.last_activity_at DESC LIMIT ?';
+    const rows = rawOf(db)
+      .prepare<unknown[], SummarySearchRow>(querySql)
+      .all(...params, limit);
+    const hits: SummarySearchHit[] = [];
+    for (const row of rows) {
+      if (row.summaryJson == null) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.summaryJson);
+      } catch {
+        continue;
+      }
+      const result = conversationSummarySchema.safeParse(parsed);
+      if (!result.success) continue;
+      hits.push({
+        conversationId: row.conversationId,
+        channelId: row.channelId,
+        lastActivityAt: row.lastActivityAt,
+        summary: result.data,
+      });
+    }
+    return hits;
+  });
