@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, renderSummary, type AssistantTrace, type Capability } from '@bananasaurs/core';
+import {
+  parseGuildId,
+  renderSummary,
+  type AssistantTrace,
+  type Capability,
+} from '@bananasaurs/core';
 import type * as Storage from '@bananasaurs/storage';
 import {
   accountRepo,
