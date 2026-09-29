@@ -255,7 +255,7 @@ describe('buildAudienceMap (discord.js mapping)', () => {
     },
   });
 
-  const guildWith = (channels: readonly ReturnType<typeof guildChannel>): AudienceGuild => ({
+  const guildWith = (channels: readonly ReturnType<typeof guildChannel>[]): AudienceGuild => ({
     channels: { cache: new Map(channels.map((channel) => [channel.id, channel])) },
     roles: { everyone },
   });
