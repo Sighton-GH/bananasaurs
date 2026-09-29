@@ -184,6 +184,9 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
           keyId: detail.answeredBy.keyId,
         },
       }),
+  // ADR 0093: the recalled conversation ids ride the cursor to the link
+  // write below, like every other detail field.
+  ...(detail.recalled === undefined ? {} : { recalled: [...detail.recalled] }),
   ...(detail.included === undefined
     ? {}
     : {
@@ -766,6 +769,9 @@ export const assistantInvokeHandler = (deps: {
             ...(channelContext === undefined ? {} : { channelContext }),
             ...(channelMessages === 0 ? {} : { channelMessages }),
             ...(storedSummary === undefined ? {} : { summaryVersion: storedSummary.version }),
+            // ADR 0093: the conversation being answered in, so recall
+            // never returns the conversation to itself.
+            ...(conversationId === undefined ? {} : { conversationId }),
             askerName: payload.authorName,
           });
         } finally {
@@ -1053,6 +1059,21 @@ export const assistantInvokeHandler = (deps: {
         }
       }
       saveStaged('answered', result);
+      // ADR 0093 decision 3: every conversation whose summary this run
+      // looked back at is linked with kind `recalled`. The insert is
+      // idempotent (insert-or-ignore) and this stage is skipped on a retry,
+      // so a retry never duplicates a link.
+      if (conversationId !== undefined && deps.conversations !== undefined) {
+        const convScope = deps.conversations.scope;
+        for (const recalledId of result.detail?.recalled ?? []) {
+          conversationRepo.linkConversations(convScope, {
+            conversationId,
+            linkedConversationId: recalledId,
+            kind: 'recalled',
+            at: deps.now(),
+          });
+        }
+      }
       // ADR 0091 decision 3: turns that fell out of the history window get
       // one summary job on the entry that answered. An enqueue failure is
       // logged and never fails the answer.

@@ -427,6 +427,10 @@ export const createAssistantService = (
       const currentConfig = liveConfig();
       const chainEntries = currentChain();
       const citations = createCitationRegistry();
+      // ADR 0093: the conversations whose summaries this run looked back
+      // at — collected from the `search_conversations` tool results below
+      // and carried on the trace detail so the invoke job can link them.
+      const recalled: string[] = [];
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -766,6 +770,45 @@ export const createAssistantService = (
             ...(detail === undefined ? {} : { detail }),
           }),
         searchArchive: (query, from) => searchArchive(input.userId, input.channelId, query, from),
+        /**
+         * ADR 0093: summaries of earlier conversations the asker may be
+         * shown — the answer channel's audience intersected with the
+         * asker's channels (the asker's channels only when there is no
+         * answer channel, i.e. Try it), never the current conversation.
+         * Only the aggregated display fields travel on: the topic and the
+         * fact texts, never participants, bot claims or commitment owners.
+         * Every string is redacted like other evidence, then neutralised
+         * (hard rule 3).
+         */
+        searchConversations: async (query: string) => {
+          const visible = new Set(
+            (await discord.memberChannels(input.userId)).map((channel) => channel.id),
+          );
+          if (input.channelId !== undefined) {
+            if (discord.audienceChannels === undefined) return [];
+            const audience = await discord.audienceChannels(input.channelId);
+            for (const id of visible) if (!audience.has(id)) visible.delete(id);
+          }
+          if (visible.size === 0) return [];
+          const clean = (text: string): string =>
+            neutraliseMarkers(redactEvidenceText(text).text);
+          return conversationRepo
+            .searchSummaries(scope, {
+              query,
+              channelIds: [...visible],
+              ...(input.conversationId === undefined
+                ? {}
+                : { excludeConversationId: input.conversationId }),
+              limit: 5,
+            })
+            .map((hit) => ({
+              conversationId: hit.conversationId,
+              channelId: hit.channelId,
+              lastActivityAt: hit.lastActivityAt,
+              topic: clean(hit.summary.topic),
+              facts: hit.summary.facts.map((fact) => clean(fact.text)),
+            }));
+        },
         resources: () => resources,
         fetchResource,
         webSearch:
@@ -889,6 +932,8 @@ export const createAssistantService = (
               : { channelMessages: input.channelMessages }),
             ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
           },
+          // ADR 0093: hits gathered before the failure still link.
+          ...(recalled.length === 0 ? {} : { recalled: [...new Set(recalled)] }),
         });
         if (failed.actionSummaries.length > 0) {
           const detail = loopDetail();
@@ -1040,6 +1085,11 @@ export const createAssistantService = (
               for (const source of result.sources)
                 knownResource.add(`${source.title}${source.url}`);
             }
+            // ADR 0093: the hit ids travel to the trace detail (and from
+            // there to the `recalled` links), not just into the answer text.
+            if (result.ok && call.name === 'search_conversations') {
+              for (const id of result.recalledConversationIds ?? []) recalled.push(id);
+            }
             return result;
           },
         },
@@ -1118,6 +1168,9 @@ export const createAssistantService = (
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
         ...(loop.answeredBy === undefined ? {} : { answeredBy: { ...loop.answeredBy } }),
+        // ADR 0093: the conversations this run looked back at, for the
+        // invoke job's `recalled` links.
+        ...(recalled.length === 0 ? {} : { recalled: [...new Set(recalled)] }),
         // B2b: the summaries appended to the posted answer, in call order.
         ...(loop.actionSummaries.length === 0 ? {} : { actions: [...loop.actionSummaries] }),
       };
@@ -1331,6 +1384,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             invocationId: userTurnId,
             history,
             askerName: input.accountUsername,
+            // ADR 0093: Try it recalls with the asker-only filter, still
+            // excluding the conversation being answered in.
+            conversationId,
           },
           sink,
           {
