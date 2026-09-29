@@ -48,6 +48,7 @@ const TRACE = {
     quote: true,
     historyTurns: 2,
     channelMessages: 3,
+    summaryVersion: 2,
   },
 };
 
@@ -99,6 +100,22 @@ describe('WhatTheAiSaw', () => {
     expect(screen.getByText('What was included')).toBeTruthy();
     expect(screen.getByText('chunk-1, chunk-2')).toBeTruthy();
     expect(screen.getByText('Channel messages:')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getByText('Summary version:')).toBeTruthy();
+    expect(screen.getByText('2')).toBeTruthy();
+  });
+
+  it('omits the summary version when none was included', async () => {
+    const { summaryVersion: _dropped, ...included } = TRACE.included;
+    expect(_dropped).toBe(2);
+    renderPanel({ ...TRACE, included });
+    await screen.findByRole('button', { name: 'What the AI saw' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'What the AI saw' }));
+    });
+    expect(await screen.findByText('What was included')).toBeTruthy();
+    expect(screen.getByText('Channel messages:')).toBeTruthy();
+    expect(screen.queryByText('Summary version:')).toBeNull();
   });
 
   it('renders a trace without included blocks', async () => {
