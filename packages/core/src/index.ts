@@ -35,6 +35,7 @@ export type {
   ReactionUserPage,
   RecentMessage,
   RecentMessagesPage,
+  ScheduledEvent,
   Snowflake,
 } from './discord/port.js';
 export type {

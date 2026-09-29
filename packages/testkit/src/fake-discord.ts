@@ -17,6 +17,7 @@ import {
   type ReactionUserPage,
   type RecentMessage,
   type RecentMessagesPage,
+  type ScheduledEvent,
   type Snowflake,
 } from '@bananasaurs/core';
 
@@ -1229,6 +1230,16 @@ export class FakeDiscord implements DiscordPort {
   ): Promise<readonly DiscordThread[]> {
     this.record('listPublicThreads', [guildId, channelId]);
     this.check('listPublicThreads', guildId);
+    return [];
+  }
+
+  /**
+   * Guild scheduled events (ADR 0092): nothing is seeded, so the fake
+   * answers no events — the same `[]` the REST adapter reports on a 403.
+   */
+  async listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]> {
+    this.record('listScheduledEvents', [guildId]);
+    this.check('listScheduledEvents', guildId);
     return [];
   }
 

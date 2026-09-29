@@ -9,6 +9,7 @@ import {
   type APIAuditLogEntry,
   type APIGuild,
   type APIGuildMember,
+  type APIGuildScheduledEvent,
   type APIMessage,
   type APIThreadList,
   type APIRole,
@@ -465,6 +466,33 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         before = metadata.archive_timestamp;
       }
       return [...found.values()];
+    },
+
+    /**
+     * Guild scheduled events for the assistant (ADR 0092 decision 1): no
+     * gateway intent is needed for the REST read. A 403 (the bot may not
+     * see them) answers `[]` rather than failing the turn; anything else
+     * still throws.
+     */
+    async listScheduledEvents(guildId) {
+      try {
+        const events = (await mapErrors(() =>
+          rest.get(Routes.guildScheduledEvents(guildId)),
+        )) as APIGuildScheduledEvent[];
+        return events.map((event) => ({
+          id: event.id,
+          name: event.name,
+          ...(event.description == null ? {} : { description: event.description }),
+          scheduledStartAt: Date.parse(event.scheduled_start_time),
+          ...(event.channel_id == null ? {} : { channelId: event.channel_id }),
+          ...(event.entity_metadata?.location == null
+            ? {}
+            : { location: event.entity_metadata.location }),
+        }));
+      } catch (err) {
+        if (err instanceof DiscordApiError && err.status === 403) return [];
+        throw err;
+      }
     },
 
     // --- interactions ----------------------------------------------------
