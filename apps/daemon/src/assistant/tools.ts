@@ -183,7 +183,8 @@ export interface AssistantToolPorts {
    * the asker's channels and excludes the current conversation. Absent, the
    * tool is not declared.
    */
-  readonly searchConversations?: ((query: string) => Promise<readonly ConversationRecallHit[]>) | undefined;
+  readonly searchConversations?:
+    ((query: string) => Promise<readonly ConversationRecallHit[]>) | undefined;
 }
 
 export interface ToolSource {

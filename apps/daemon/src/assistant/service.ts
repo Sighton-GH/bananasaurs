@@ -790,8 +790,7 @@ export const createAssistantService = (
             for (const id of visible) if (!audience.has(id)) visible.delete(id);
           }
           if (visible.size === 0) return [];
-          const clean = (text: string): string =>
-            neutraliseMarkers(redactEvidenceText(text).text);
+          const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
           return conversationRepo
             .searchSummaries(scope, {
               query,

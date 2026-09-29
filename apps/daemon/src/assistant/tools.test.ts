@@ -133,9 +133,7 @@ describe('toolDeclarations', () => {
       'search_conversations',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
-    expect(names(ports({ searchConversations: undefined }))).not.toContain(
-      'search_conversations',
-    );
+    expect(names(ports({ searchConversations: undefined }))).not.toContain('search_conversations');
   });
 
   it('hides acting tools when their skill is not allowed', () => {

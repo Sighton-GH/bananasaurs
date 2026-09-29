@@ -1177,9 +1177,9 @@ describe('searchSummaries (ADR 0093)', () => {
       searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }),
     ).toHaveLength(1);
     deleteConversation(scope, 'conv-1');
-    expect(
-      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }),
-    ).toEqual([]);
+    expect(searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 })).toEqual(
+      [],
+    );
   });
 
   it('re-indexes an updated summary', () => {
@@ -1193,9 +1193,9 @@ describe('searchSummaries (ADR 0093)', () => {
         now: 2_001,
       }).written,
     ).toBe(true);
-    expect(
-      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }),
-    ).toEqual([]);
+    expect(searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 })).toEqual(
+      [],
+    );
     expect(
       searchSummaries(scope, { query: 'potluck dessert', channelIds: [CHANNEL], limit: 5 }).map(
         (hit) => hit.conversationId,
@@ -1218,8 +1218,12 @@ describe('searchSummaries (ADR 0093)', () => {
     createConversation(scope, conversation());
     const value = summary();
     expect(
-      writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: value, throughAt: 2_000, now: 9_000 })
-        .written,
+      writeSummaryIfNewer(scope, {
+        conversationId: 'conv-1',
+        summary: value,
+        throughAt: 2_000,
+        now: 9_000,
+      }).written,
     ).toBe(true);
     const row = t.raw
       .prepare(
