@@ -1233,8 +1233,7 @@ export const runAssistantTool = async (
           .sort((a, b) => a.startsAt - b.startsAt)
           .slice(0, 10);
         if (items.length === 0) return evidence(name, 'Nothing scheduled in the next 30 days.');
-        const clean = (text: string): string =>
-          neutraliseMarkers(redactEvidenceText(text).text);
+        const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
         const lines = items.map((item) => {
           const line = `${clean(item.title)} — ${clock(ports, item.startsAt)} — ${clean(item.where)}`;
           if (item.kind !== 'event' || item.description === undefined || item.description === '')

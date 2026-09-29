@@ -3866,14 +3866,16 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
   const toolTurn = (seen: { role: string; text: string }[][], round: number): string =>
     seen[round]?.filter((message) => message.role === 'tool').at(-1)?.text ?? '';
 
-  const scheduledEvent = (over: {
-    readonly id?: string;
-    readonly name?: string;
-    readonly description?: string;
-    readonly scheduledStartAt?: number;
-    readonly channelId?: string;
-    readonly location?: string;
-  } = {}): {
+  const scheduledEvent = (
+    over: {
+      readonly id?: string;
+      readonly name?: string;
+      readonly description?: string;
+      readonly scheduledStartAt?: number;
+      readonly channelId?: string;
+      readonly location?: string;
+    } = {},
+  ): {
     readonly id: string;
     readonly name: string;
     readonly description?: string | undefined;
@@ -4044,7 +4046,8 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     });
     const fetchChannelMessages = vi.fn(
       async (_channelId: string, opts: { before: string; limit: number }) => {
-        if (opts.before === OLDEST) return [page(OLDER, 'older line'), page('830000000000000001', 'newer line')];
+        if (opts.before === OLDEST)
+          return [page(OLDER, 'older line'), page('830000000000000001', 'newer line')];
         if (opts.before === OLDER) return [page(OLDER_STILL, 'older still')];
         return [];
       },
@@ -4058,7 +4061,10 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
       },
       scriptedCalls(
         seen,
-        [{ name: 'channel_history', args: {} }, { name: 'channel_history', args: { before: OLDER } }],
+        [
+          { name: 'channel_history', args: {} },
+          { name: 'channel_history', args: { before: OLDER } },
+        ],
         'Here is the history.',
       ),
       'int-ch-pages',

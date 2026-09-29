@@ -886,9 +886,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         }),
     // ADR 0092 decision 2: the live channel-context window from the AI tuning
     // settings. Absent means off, and the `channel_history` tool stays hidden.
-    settings === undefined
-      ? undefined
-      : () => settings.get('assistant.channelContextMessages'),
+    settings === undefined ? undefined : () => settings.get('assistant.channelContextMessages'),
   );
   const { interactionTokenSealer } = deps;
 

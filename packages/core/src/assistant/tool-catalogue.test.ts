@@ -33,7 +33,11 @@ describe('TOOL_CATALOGUE', () => {
 
   it('opens every round except read_chunk, open_resource and channel_history, which stay reachable in a follow-up round (ADR 0071)', () => {
     for (const tool of TOOL_CATALOGUE) {
-      if (tool.name === 'read_chunk' || tool.name === 'open_resource' || tool.name === 'channel_history')
+      if (
+        tool.name === 'read_chunk' ||
+        tool.name === 'open_resource' ||
+        tool.name === 'channel_history'
+      )
         expect(tool.rounds).toBe('all');
       else expect(tool.rounds).toBe('first');
     }
