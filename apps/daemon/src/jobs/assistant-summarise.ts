@@ -47,7 +47,8 @@ export const SUMMARY_SYSTEM_INSTRUCTION =
   '"commitments": at most 5 entries of {"who": at most 80 characters, "what": at most 200 characters, "when": at most 80 characters and optional}, ' +
   '"participants": at most 10 display names}. ' +
   'Keep what the bot itself said in botClaims, never in facts. ' +
-  "Use members' display names only in participants and commitments.";
+  "Use members' display names only in participants and commitments." +
+  ' Keep the whole summary short: about 150 words.';
 
 const buildSummaryInput = (previousJson: string, lines: readonly string[]): string =>
   `[PREVIOUS SUMMARY]\n${previousJson}\n[/PREVIOUS SUMMARY]\n[TURNS]\n${lines.join('\n')}\n[/TURNS]`;

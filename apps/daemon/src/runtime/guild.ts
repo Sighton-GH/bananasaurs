@@ -971,7 +971,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         model,
         systemInstruction,
         messages: [{ role: 'user', text }],
-        maxOutputTokens: 600,
+        maxOutputTokens: 2_000,
         temperature: 0,
       });
       return { ok: true, text: response.text };
