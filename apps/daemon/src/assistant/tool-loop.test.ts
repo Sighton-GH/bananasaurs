@@ -118,6 +118,19 @@ describe('ID_TOOL_ARGS', () => {
 });
 
 describe('runToolLoop direct answers', () => {
+  it('carries the answering entry in answeredBy', async () => {
+    const { provider } = scripted([textAnswer('Hello.')]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider, providerId: 'openrouter', model: 'model-b', keyId: 'key_b' })]),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.answeredBy).toEqual({
+      providerId: 'openrouter',
+      model: 'model-b',
+      keyId: 'key_b',
+    });
+  });
+
   it('answers directly with no tools: one call, no tool declarations sent when tools undefined', async () => {
     const { provider, calls } = scripted([textAnswer('Hello.')]);
     const result = await runToolLoop(baseInput([entry({ provider })]));

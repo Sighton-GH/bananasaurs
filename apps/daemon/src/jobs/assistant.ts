@@ -1,7 +1,9 @@
 import {
   assistantInvokeCursor,
   assistantInvokePayload,
+  assistantSummariseDedupeKey,
   JOB_KINDS,
+  renderSummary,
   SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
   resolveConversation,
@@ -19,7 +21,7 @@ import {
   type OutgoingMessage,
   type RecentMessage,
 } from '@bananasaurs/core';
-import { conversationRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
+import { conversationRepo, jobRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
 import type {
   AssistantCommandService,
   AssistantInvocationResult,
@@ -29,7 +31,11 @@ import type {
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
-import { buildConversationContext } from '../assistant/conversation-context.js';
+import {
+  buildConversationContext,
+  HISTORY_CHARS,
+  HISTORY_TURNS,
+} from '../assistant/conversation-context.js';
 import { buildChannelContext } from '../assistant/channel-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
@@ -169,6 +175,15 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
   ...(detail.model === undefined ? {} : { model: detail.model }),
   ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
   ...(detail.web === undefined ? {} : { web: detail.web }),
+  ...(detail.answeredBy === undefined
+    ? {}
+    : {
+        answeredBy: {
+          providerId: detail.answeredBy.providerId,
+          model: detail.answeredBy.model,
+          keyId: detail.answeredBy.keyId,
+        },
+      }),
   ...(detail.included === undefined
     ? {}
     : {
@@ -180,6 +195,9 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
           ...(detail.included.channelMessages === undefined
             ? {}
             : { channelMessages: detail.included.channelMessages }),
+          ...(detail.included.summaryVersion === undefined
+            ? {}
+            : { summaryVersion: detail.included.summaryVersion }),
         },
       }),
 });
@@ -481,6 +499,10 @@ export const assistantInvokeHandler = (deps: {
         let quoteInHistory = false;
         let channelContext: string | undefined;
         let channelMessages = 0;
+        // ADR 0091 decision 5: the stored summary a continuing conversation
+        // re-injects, with its version travelling to the trace. Assigned in
+        // the conversation branch below; the invoke after it reads it.
+        let storedSummary: ReturnType<typeof conversationRepo.getSummary> = undefined;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -609,6 +631,13 @@ export const assistantInvokeHandler = (deps: {
               joinRule: resolved.rule,
             });
           }
+          // ADR 0091 decision 5: a continuing conversation re-injects its
+          // stored summary ahead of the recent turns, and its version travels
+          // with the invoke to the stored trace.
+          storedSummary =
+            resolved.kind === 'continue'
+              ? conversationRepo.getSummary(conv.scope, conversationId)
+              : undefined;
           const built = buildConversationContext({
             scope: conv.scope,
             resolution: resolved,
@@ -617,6 +646,11 @@ export const assistantInvokeHandler = (deps: {
             // The turn just written above is stored, never history: the
             // question reaches the model once, as the request's user text.
             excludeTurnId: userTurnId,
+            // ADR 0091 decision 5: a continuing conversation re-injects its
+            // stored summary ahead of the recent turns.
+            ...(storedSummary === undefined
+              ? {}
+              : { summaryText: renderSummary(storedSummary.summary) }),
             now: deps.now(),
           });
           history = built.history;
@@ -731,6 +765,7 @@ export const assistantInvokeHandler = (deps: {
             ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
             ...(channelContext === undefined ? {} : { channelContext }),
             ...(channelMessages === 0 ? {} : { channelMessages }),
+            ...(storedSummary === undefined ? {} : { summaryVersion: storedSummary.version }),
             askerName: payload.authorName,
           });
         } finally {
@@ -1001,6 +1036,9 @@ export const assistantInvokeHandler = (deps: {
                     ...(detail.included.channelMessages === undefined
                       ? {}
                       : { channelMessages: detail.included.channelMessages }),
+                    ...(detail.included.summaryVersion === undefined
+                      ? {}
+                      : { summaryVersion: detail.included.summaryVersion }),
                   },
                 }),
             timeline: [
@@ -1015,6 +1053,41 @@ export const assistantInvokeHandler = (deps: {
         }
       }
       saveStaged('answered', result);
+      // ADR 0091 decision 3: turns that fell out of the history window get
+      // one summary job on the entry that answered. An enqueue failure is
+      // logged and never fails the answer.
+      if (conversationId !== undefined && deps.conversations !== undefined) {
+        try {
+          const answeredBy = result.detail?.answeredBy;
+          if (answeredBy !== undefined) {
+            const convScope = deps.conversations.scope;
+            const evicted = conversationRepo.evictedTurnsSince(convScope, conversationId, {
+              afterAt: conversationRepo.getSummary(convScope, conversationId)?.throughAt ?? null,
+              window: { maxTurns: HISTORY_TURNS, maxChars: HISTORY_CHARS },
+            });
+            const newest = evicted.at(-1);
+            if (newest !== undefined) {
+              jobRepo.enqueue(convScope, {
+                kind: JOB_KINDS.assistantSummarise,
+                payload: JSON.stringify({
+                  conversationId,
+                  throughAt: newest.at,
+                  providerId: answeredBy.providerId,
+                  model: answeredBy.model,
+                  keyId: answeredBy.keyId,
+                }),
+                dedupeKey: assistantSummariseDedupeKey(conversationId, newest.at),
+                now: deps.now(),
+              });
+            }
+          }
+        } catch (err) {
+          deps.logger.warn(
+            safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+            'assistant summary enqueue failed; continuing without a summary',
+          );
+        }
+      }
     }
 
     // Stage 3: the escalation post, with its own sent marker for the same

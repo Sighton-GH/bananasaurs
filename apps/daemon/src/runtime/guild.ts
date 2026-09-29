@@ -43,6 +43,7 @@ import {
   type NativeAutomodSubscriberDeps,
   type OpsPublishResult,
   type PanelDefinition,
+  ProviderError,
   type PurgePorts,
   type ReconcilePorts,
   type Subscriber,
@@ -86,6 +87,8 @@ import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
+import { assistantSummariseHandler, type SummariseModelPort } from '../jobs/assistant-summarise.js';
+import { reserveEntryCall } from '../assistant/local-limit.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
@@ -932,9 +935,46 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }),
   ];
 
+  // ADR 0091 decision 4: the summary job re-resolves the chain entry that
+  // answered and reserves one call against its local limits. A missing or
+  // skipped entry, a refused reservation and a failed call are all skips,
+  // never retries — the raw turns are kept for the next run.
+  const summariseModel: SummariseModelPort = async ({
+    providerId,
+    model,
+    keyId,
+    systemInstruction,
+    text,
+  }) => {
+    const entry = (deps.assistantChain ?? (() => []))().find(
+      (candidate) =>
+        candidate.providerId === providerId &&
+        candidate.model === model &&
+        candidate.keyId === keyId,
+    );
+    if (entry === undefined || entry.provider === undefined || entry.skip !== undefined) {
+      return { ok: false, reason: 'entry-unavailable' };
+    }
+    const reserved = reserveEntryCall(instance, entry, guildId, now());
+    if (!reserved.ok) return { ok: false, reason: 'rate-limited' };
+    try {
+      const response = await entry.provider.generateText({
+        model,
+        systemInstruction,
+        messages: [{ role: 'user', text }],
+        maxOutputTokens: 600,
+        temperature: 0,
+      });
+      return { ok: true, text: response.text };
+    } catch (err) {
+      return { ok: false, reason: err instanceof ProviderError ? err.kind : 'error' };
+    }
+  };
+
   const worker = new JobWorker({
     store: jobStoreFor(scope),
     handlers: [
+      assistantSummariseHandler(scope, { summariseModel, now, logger }),
       assistantInvokeHandler({
         guildId,
         service: assistantService,

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import {
   assistantInvokeCursor,
+  assistantSummarisePayload,
+  JOB_KINDS,
   parseGuildId,
   ProviderError,
   RetryAfterError,
@@ -14,7 +16,7 @@ import {
   type OutgoingMessage,
   type RecentMessage,
 } from '@bananasaurs/core';
-import { conversationRepo, guildRepo, traceRepo } from '@bananasaurs/storage';
+import { conversationRepo, guildRepo, jobRepo, traceRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -1567,5 +1569,236 @@ describe('Task 10 (c): ChainFailedError writes a trace per job attempt', () => {
     } finally {
       t.close();
     }
+  });
+});
+
+describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
+  const BOT_ID = '901234567890123456';
+  const AMA = '444444444444444444';
+
+  let t: MigratedTestDatabase;
+  let nowMs: number;
+
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+    nowMs = NOW;
+  });
+  afterEach(() => t.close());
+
+  const scope = () => t.scopes.forGuild(GUILD_ID);
+
+  const answeredResult = (): AssistantInvocationResult => ({
+    ok: true,
+    content: 'answer',
+    detail: {
+      sections: [],
+      history: [],
+      attempts: [],
+      toolCalls: [],
+      usage: {},
+      guard: { removed: [] },
+      answeredBy: { providerId: 'test-provider', model: 'test-model', keyId: 'key_test' },
+    },
+  });
+
+  const harness = (answer: (input: AssistantInvocation) => AssistantInvocationResult) => {
+    const inputs: AssistantInvocation[] = [];
+    const svc: AssistantCommandService = {
+      behavioursForGuild: async () => [behaviour],
+      invoke: async (input) => {
+        inputs.push(input);
+        return answer(input);
+      },
+    };
+    let idSeq = 0;
+    const handler = assistantInvokeHandler({
+      guildId: GUILD_ID,
+      service: svc,
+      openToken: () => undefined,
+      respond: async () => undefined,
+      send: async (channelId: string) => {
+        idSeq += 1;
+        return { channelId, messageId: `8290000000000001${String(idSeq).padStart(2, '0')}` };
+      },
+      logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => nowMs,
+      conversations: { scope: scope(), botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+    });
+    const run = async (
+      input: Record<string, unknown>,
+      cursor: string | null = null,
+    ): Promise<string | null> => {
+      let saved: string | null = cursor;
+      await handler.run(handler.payload.parse(input), {
+        jobId: 1,
+        attempts: cursor === null ? 1 : 2,
+        cursor,
+        saveCursor: (c) => {
+          saved = c;
+        },
+      });
+      return saved;
+    };
+    return { inputs, run };
+  };
+
+  const mention = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    channelId: CHANNEL_ID,
+    userId: AMA,
+    callerRoleIds: [],
+    behaviourId: behaviour.id,
+    command: 'ask',
+    input: { question: 'another question' },
+    source: 'mention',
+    authorName: 'Ama',
+    ...over,
+  });
+
+  const summaryJobs = () =>
+    jobRepo.listJobs(scope(), {}).filter((job) => job.kind === JOB_KINDS.assistantSummarise);
+
+  it('enqueues one summary job when turns were evicted', async () => {
+    const h = harness(answeredResult);
+    await h.run(mention({ invocationId: 'sum-first', messageId: '810000000000000201' }));
+    // Twelve seeded turns plus the run's own two push the oldest out of the window.
+    for (let i = 0; i < 12; i += 1) {
+      conversationRepo.appendTurn(scope(), {
+        conversationId: 'conv_sum-first',
+        turnId: `turn_seed_${i}`,
+        at: NOW - 60_000 + i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        authorId: AMA,
+        authorName: i % 2 === 0 ? 'Ama' : 'bananasaurs',
+        text: `seeded turn ${i}`,
+      });
+    }
+    nowMs += 1_000;
+    await h.run(mention({ invocationId: 'sum-second', messageId: '810000000000000202' }));
+
+    const jobs = summaryJobs();
+    expect(jobs).toHaveLength(1);
+    const parsed = assistantSummarisePayload.safeParse(JSON.parse(jobs[0]!.payload));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.conversationId).toBe('conv_sum-first');
+      expect(parsed.data.providerId).toBe('test-provider');
+      expect(parsed.data.model).toBe('test-model');
+      expect(parsed.data.keyId).toBe('key_test');
+      expect(jobs[0]!.dedupeKey).toBe(`summary_conv_sum-first_${parsed.data.throughAt}`);
+    }
+  });
+
+  it('enqueues nothing when no turn was evicted', async () => {
+    const h = harness(answeredResult);
+    await h.run(mention({ invocationId: 'sum-fresh', messageId: '810000000000000203' }));
+    expect(summaryJobs()).toHaveLength(0);
+  });
+
+  it('enqueues nothing without an answering entry', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    await h.run(mention({ invocationId: 'sum-noentry', messageId: '810000000000000204' }));
+    for (let i = 0; i < 13; i += 1) {
+      conversationRepo.appendTurn(scope(), {
+        conversationId: 'conv_sum-noentry',
+        turnId: `turn_seed_${i}`,
+        at: NOW - 60_000 + i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        authorId: AMA,
+        authorName: i % 2 === 0 ? 'Ama' : 'bananasaurs',
+        text: `seeded turn ${i}`,
+      });
+    }
+    nowMs += 1_000;
+    await h.run(mention({ invocationId: 'sum-noentry-next', messageId: '810000000000000205' }));
+    expect(summaryJobs()).toHaveLength(0);
+  });
+
+  it('a retry of the same job does not enqueue twice', async () => {
+    const h = harness(answeredResult);
+    await h.run(mention({ invocationId: 'sum-retry', messageId: '810000000000000206' }));
+    for (let i = 0; i < 12; i += 1) {
+      conversationRepo.appendTurn(scope(), {
+        conversationId: 'conv_sum-retry',
+        turnId: `turn_seed_${i}`,
+        at: NOW - 60_000 + i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        authorId: AMA,
+        authorName: i % 2 === 0 ? 'Ama' : 'bananasaurs',
+        text: `seeded turn ${i}`,
+      });
+    }
+    nowMs += 1_000;
+    const cursor = await h.run(
+      mention({ invocationId: 'sum-retry-next', messageId: '810000000000000207' }),
+    );
+    expect(summaryJobs()).toHaveLength(1);
+    await h.run(
+      mention({ invocationId: 'sum-retry-next', messageId: '810000000000000207' }),
+      cursor,
+    );
+    expect(summaryJobs()).toHaveLength(1);
+  });
+
+  it('passes the stored summary into the invoke and records its version on the trace', async () => {
+    conversationRepo.createConversation(scope(), {
+      conversationId: 'conv_sum-ver',
+      channelId: CHANNEL_ID,
+      behaviourId: behaviour.id,
+      startedBy: AMA,
+      title: 'seeded',
+      source: 'discord',
+      at: NOW - 1_000,
+    });
+    conversationRepo.appendTurn(scope(), {
+      conversationId: 'conv_sum-ver',
+      turnId: 'turn_seed_0',
+      at: NOW - 1_000,
+      role: 'user',
+      authorId: AMA,
+      authorName: 'Ama',
+      text: 'earlier question',
+    });
+    conversationRepo.writeSummaryIfNewer(scope(), {
+      conversationId: 'conv_sum-ver',
+      summary: {
+        topic: 'Old topic',
+        facts: [],
+        botClaims: [],
+        openQuestions: [],
+        commitments: [],
+        participants: [],
+      },
+      throughAt: NOW - 1_000,
+      now: NOW,
+    });
+    const h = harness((input) => ({
+      ok: true,
+      content: 'answer',
+      detail: {
+        sections: [],
+        history: [],
+        attempts: [],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        answeredBy: { providerId: 'test-provider', model: 'test-model', keyId: 'key_test' },
+        included: {
+          toolsOffered: [],
+          snippetChunkIds: [],
+          quote: false,
+          historyTurns: 0,
+          ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+        },
+      },
+    }));
+    await h.run(mention({ invocationId: 'sum-ver', messageId: '810000000000000208' }));
+
+    expect(h.inputs[0]?.summaryVersion).toBe(1);
+    expect(h.inputs[0]?.history[0]?.text.startsWith('[EARLIER IN THIS CONVERSATION')).toBe(true);
+    expect(h.inputs[0]?.history[0]?.text).toContain('Old topic');
+    const stored = traceRepo.getTrace(scope(), 'trace_sum-ver');
+    expect(stored?.included?.summaryVersion).toBe(1);
   });
 });

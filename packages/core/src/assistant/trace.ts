@@ -11,6 +11,8 @@ export const assistantTraceIncludedSchema = z.object({
   historyTurns: z.number().int().nonnegative(),
   /** ADR 0089: how many channel-context lines the reply saw. Absent means none. */
   channelMessages: z.number().int().nonnegative().optional(),
+  /** ADR 0091: the stored summary version the history led with. Absent means none. */
+  summaryVersion: z.number().int().nonnegative().optional(),
 });
 export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
 

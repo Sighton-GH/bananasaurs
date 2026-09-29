@@ -34,6 +34,12 @@ export const JOB_KINDS = {
   /** The daily conversation auto-delete past the guild's retention (Task 19). */
   conversationPrune: 'conversation_prune',
   /**
+   * One conversation summary over evicted turns (ADR 0091). Enqueued after an
+   * answer when stored turns fell out of the history window; the payload
+   * names the answering entry so the job re-resolves the same model.
+   */
+  assistantSummarise: 'assistant_summarise',
+  /**
    * One assistant invocation (Release 3, B2): resource fetches and the
    * provider call are far too slow for the serial per-guild dispatch chain —
    * run them here so /ask cannot stall reaction roles, automod or /mod.
@@ -326,6 +332,30 @@ export const conversationPruneDedupeKey = (day: string): string =>
   `${JOB_KINDS.conversationPrune}:${day}`;
 
 /**
+ * One conversation summary over evicted turns (ADR 0091 decision 3).
+ *
+ * `throughAt` is the `at` of the newest evicted turn the run must cover;
+ * `providerId`, `model` and `keyId` name the chain entry that answered, so
+ * the job re-resolves the same model (ADR 0091 decision 4).
+ */
+export const assistantSummarisePayload = z.object({
+  conversationId: z.string().min(1),
+  throughAt: z.number().int(),
+  providerId: z.string().min(1),
+  model: z.string().min(1),
+  keyId: z.string().min(1),
+});
+export type AssistantSummarisePayload = z.infer<typeof assistantSummarisePayload>;
+
+/**
+ * Idempotency: one pending summary per conversation and coverage point
+ * (hard rule 6). A retry of the same answer re-enqueues the identical key
+ * and collapses into the row already queued.
+ */
+export const assistantSummariseDedupeKey = (conversationId: string, throughAt: number): string =>
+  `summary_${conversationId}_${throughAt}`;
+
+/**
  * One assistant invocation, enqueued by the slash/mention subscriber the
  * moment cheap local routing is done (B2). The behaviour is re-resolved from
  * storage at run time rather than serialised into the payload: a prompt edit
@@ -451,6 +481,18 @@ const assistantInvokeDetail = z.object({
   finishReason: assistantTraceSchema.shape.finishReason,
   web: z.boolean().optional(),
   included: assistantTraceSchema.shape.included,
+  /**
+   * ADR 0091: the chain entry whose response was accepted. Carried so the
+   * summary job can re-resolve it; never written to the stored trace, since
+   * the key id is not for display.
+   */
+  answeredBy: z
+    .object({
+      providerId: z.string().min(1),
+      model: z.string().min(1),
+      keyId: z.string().min(1),
+    })
+    .optional(),
 });
 
 export const assistantInvokeCursor = z.object({
