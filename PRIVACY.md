@@ -87,6 +87,7 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 - Test chats typed into the dashboard ("Try it") are sent to the AI provider
   like any other question. They are saved as conversations marked Dashboard
   test and are never posted to Discord.
+- Long conversations keep a short AI-written summary of their earlier part, made by the same AI provider that answered. It is deleted with the conversation.
 
 ## Who can see it
 
