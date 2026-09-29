@@ -52,13 +52,8 @@ const speakerOf = (name: string): string => {
   return cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
 };
 
-const lineFor = (
-  name: string,
-  at: number,
-  text: string,
-  suffix: '' | ', started this thread' | `, replying to ${string}`,
-  now: number,
-): string => `[${name}, ${relativeAgo(at, now)}${suffix}] ${text}`;
+const lineFor = (name: string, at: number, text: string, suffix: string, now: number): string =>
+  `[${name}, ${relativeAgo(at, now)}${suffix}] ${text}`;
 
 export const buildChannelContext = (
   input: ChannelContextInput,
