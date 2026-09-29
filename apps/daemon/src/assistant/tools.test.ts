@@ -108,6 +108,7 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   cacheResourceChunks: () => [],
   cacheFreshness: () => [],
   enqueueRefresh: () => true,
+  searchConversations: vi.fn(async () => []),
   ...over,
 });
 
@@ -129,8 +130,12 @@ describe('toolDeclarations', () => {
       'search_sources',
       'read_chunk',
       'refresh_source',
+      'search_conversations',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
+    expect(names(ports({ searchConversations: undefined }))).not.toContain(
+      'search_conversations',
+    );
   });
 
   it('hides acting tools when their skill is not allowed', () => {
@@ -1687,5 +1692,91 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).toContain('d_abc');
     expect(result.handles).toContain('c_h_0');
     expect(result.handles).not.toContain('c_h_40');
+  });
+});
+
+describe('search_conversations (ADR 0093)', () => {
+  const hit = (over: Record<string, unknown> = {}) => ({
+    conversationId: 'conv-2',
+    channelId: '111111111111111111',
+    lastActivityAt: NOW - 3 * 86_400_000,
+    topic: 'Robot arm gearbox',
+    facts: ['The hall opens at six', 'Snacks are potluck', 'Doors lock at nine', 'Extra fact'],
+    ...over,
+  });
+
+  it('formats one line per hit with the recalled conversation ids', async () => {
+    const searchConversations = vi.fn(async () => [
+      hit(),
+      hit({
+        conversationId: 'conv-3',
+        channelId: '222222222222222222',
+        lastActivityAt: NOW - 60_000,
+        topic: 'Potluck desserts',
+        facts: ['Ada brings pie'],
+      }),
+    ]);
+    const p = ports({ searchConversations });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'robot arm' } },
+      p,
+    );
+    expect(searchConversations).toHaveBeenCalledWith('robot arm');
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe(
+      '<#111111111111111111>, 3 days ago: Robot arm gearbox — The hall opens at six; Snacks are potluck; Doors lock at nine\n' +
+        '<#222222222222222222>, just now: Potluck desserts — Ada brings pie',
+    );
+    expect(result.recalledConversationIds).toEqual(['conv-2', 'conv-3']);
+  });
+
+  it('caps at five lines with three facts each', async () => {
+    const searchConversations = vi.fn(async () =>
+      Array.from({ length: 7 }, (_, i) => hit({ conversationId: `conv-${String(i)}` })),
+    );
+    const p = ports({ searchConversations });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'robot arm' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.split('\n')).toHaveLength(5);
+    expect(result.text).not.toContain('Extra fact');
+    expect(result.recalledConversationIds).toHaveLength(5);
+  });
+
+  it('answers no match with one sentence', async () => {
+    const p = ports({ searchConversations: vi.fn(async () => []) });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'robot arm' } },
+      p,
+    );
+    expect(result).toMatchObject({ ok: true, text: 'No earlier conversations matched.' });
+    expect(result.recalledConversationIds).toEqual([]);
+  });
+
+  it('refuses a query shorter than two characters', async () => {
+    const searchConversations = vi.fn(async () => []);
+    const p = ports({ searchConversations });
+    await expect(
+      runAssistantTool({ name: 'search_conversations', args: { query: 'x' } }, p),
+    ).resolves.toMatchObject({ ok: false });
+    expect(searchConversations).not.toHaveBeenCalled();
+  });
+
+  it('shows no participants, bot claims or commitment owners', async () => {
+    const p = ports({
+      searchConversations: vi.fn(async () => [
+        hit({ topic: 'Ada and bot chatter', facts: ['The hall opens at six'] }),
+      ]),
+    });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'chatter' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe(
+      '<#111111111111111111>, 3 days ago: Ada and bot chatter — The hall opens at six',
+    );
   });
 });
