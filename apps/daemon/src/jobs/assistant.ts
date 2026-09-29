@@ -765,9 +765,7 @@ export const assistantInvokeHandler = (deps: {
             ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
             ...(channelContext === undefined ? {} : { channelContext }),
             ...(channelMessages === 0 ? {} : { channelMessages }),
-            ...(storedSummary === undefined
-              ? {}
-              : { summaryVersion: storedSummary.version }),
+            ...(storedSummary === undefined ? {} : { summaryVersion: storedSummary.version }),
             askerName: payload.authorName,
           });
         } finally {

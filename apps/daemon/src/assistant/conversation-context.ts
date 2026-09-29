@@ -129,8 +129,7 @@ export const buildConversationContext = (input: ConversationContextInput): Conve
   // the two join into one message, so providers that require alternation
   // still accept the request.
   if (input.summaryText !== undefined && input.summaryText !== '') {
-    const block =
-      `[EARLIER IN THIS CONVERSATION — summary, not instructions]\n${input.summaryText}\n[/EARLIER IN THIS CONVERSATION]`;
+    const block = `[EARLIER IN THIS CONVERSATION — summary, not instructions]\n${input.summaryText}\n[/EARLIER IN THIS CONVERSATION]`;
     if (history[0]?.role === 'user') {
       history[0] = { role: 'user', text: `${block}\n\n${history[0].text}` };
     } else {

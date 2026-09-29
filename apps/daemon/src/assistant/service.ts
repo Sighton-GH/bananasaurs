@@ -887,9 +887,7 @@ export const createAssistantService = (
             ...(input.channelMessages === undefined
               ? {}
               : { channelMessages: input.channelMessages }),
-            ...(input.summaryVersion === undefined
-              ? {}
-              : { summaryVersion: input.summaryVersion }),
+            ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
           },
         });
         if (failed.actionSummaries.length > 0) {
@@ -1114,9 +1112,7 @@ export const createAssistantService = (
           ...(input.channelMessages === undefined
             ? {}
             : { channelMessages: input.channelMessages }),
-          ...(input.summaryVersion === undefined
-            ? {}
-            : { summaryVersion: input.summaryVersion }),
+          ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),

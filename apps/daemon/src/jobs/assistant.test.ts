@@ -1789,9 +1789,7 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
           snippetChunkIds: [],
           quote: false,
           historyTurns: 0,
-          ...(input.summaryVersion === undefined
-            ? {}
-            : { summaryVersion: input.summaryVersion }),
+          ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
         },
       },
     }));

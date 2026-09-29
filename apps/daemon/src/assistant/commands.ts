@@ -138,8 +138,7 @@ export interface AssistantTraceDetail {
    * stored trace, since the key id is not for display.
    */
   readonly answeredBy?:
-    | { readonly providerId: string; readonly model: string; readonly keyId: string }
-    | undefined;
+    { readonly providerId: string; readonly model: string; readonly keyId: string } | undefined;
   /** Which context blocks the reply saw (ADR 0088 decision 2); tools offered live inside it. */
   readonly included?: AssistantTraceIncluded | undefined;
   /** B2b: the code-written action summaries appended to this answer. */

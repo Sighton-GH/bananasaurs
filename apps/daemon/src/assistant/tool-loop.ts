@@ -52,7 +52,11 @@ export interface LoopResult {
    * summary job can re-resolve the same entry. Never written to the trace:
    * the key id is not for display.
    */
-  readonly answeredBy?: { readonly providerId: string; readonly model: string; readonly keyId: string };
+  readonly answeredBy?: {
+    readonly providerId: string;
+    readonly model: string;
+    readonly keyId: string;
+  };
   readonly attempts: AssistantTrace['attempts'];
   readonly toolCalls: AssistantTrace['toolCalls'];
   readonly usage: AssistantTrace['usage'];
@@ -425,7 +429,11 @@ interface EntrySuccess {
   readonly text: string;
   readonly model: string;
   readonly provider: string;
-  readonly answeredBy: { readonly providerId: string; readonly model: string; readonly keyId: string };
+  readonly answeredBy: {
+    readonly providerId: string;
+    readonly model: string;
+    readonly keyId: string;
+  };
   readonly finishReason?: string;
   readonly guard: AssistantTrace['guard'];
 }
