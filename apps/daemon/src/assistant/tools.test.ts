@@ -131,8 +131,18 @@ describe('toolDeclarations', () => {
       'search_sources',
       'read_chunk',
       'refresh_source',
+      'upcoming_events',
+      'channel_history',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
+  });
+
+  it('hides upcoming_events and channel_history when their port is absent', () => {
+    const names = (p: AssistantToolPorts) => toolDeclarations(p).map((tool) => tool.name);
+    expect(names(ports({ upcomingEvents: undefined }))).not.toContain('upcoming_events');
+    expect(names(ports({ channelHistory: undefined }))).not.toContain('channel_history');
+    expect(names(ports())).toContain('upcoming_events');
+    expect(names(ports())).toContain('channel_history');
   });
 
   it('hides acting tools when their skill is not allowed', () => {
@@ -1689,5 +1699,160 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).toContain('d_abc');
     expect(result.handles).toContain('c_h_0');
     expect(result.handles).not.toContain('c_h_40');
+  });
+});
+
+describe('upcoming_events and channel_history', () => {
+  const eventItem = (
+    over: Partial<{
+      kind: 'event' | 'reminder';
+      title: string;
+      startsAt: number;
+      where: string;
+      description: string;
+    }> = {},
+  ) => ({
+    kind: 'event' as const,
+    title: 'Build night',
+    startsAt: NOW + 3_600_000,
+    where: 'Room 101',
+    ...over,
+  });
+
+  it('upcoming_events answers the empty schedule in one sentence', async () => {
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, ports());
+    expect(result).toMatchObject({ ok: true, text: 'Nothing scheduled in the next 30 days.' });
+  });
+
+  it('upcoming_events formats one line per item with the club time zone', async () => {
+    const p = ports({
+      upcomingEvents: vi.fn(async () => [
+        eventItem({ description: 'Bring tools and parts.' }),
+        {
+          kind: 'reminder' as const,
+          title: 'Order batteries',
+          startsAt: NOW + 7_200_000,
+          where: '<#111111111111111111>',
+        },
+      ]),
+    });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    // NOW is 12:30 PDT: +1h is 13:30, +2h is 14:30.
+    expect(result.text).toContain('Build night — ');
+    expect(result.text).toContain('13:30');
+    expect(result.text).toContain('America/Vancouver');
+    expect(result.text).toContain('Room 101 — Bring tools and parts.');
+    expect(result.text).toContain('Order batteries — ');
+    expect(result.text).toContain('14:30');
+  });
+
+  it('upcoming_events applies the ports time zone, not a fixed one', async () => {
+    const p = ports({
+      timeZone: 'Pacific/Auckland',
+      upcomingEvents: vi.fn(async () => [eventItem()]),
+    });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    // 20:30 UTC is 08:30 the next day in Auckland (UTC+12).
+    expect(result.text).toContain('08:30');
+    expect(result.text).toContain('Pacific/Auckland');
+  });
+
+  it('upcoming_events lists at most 10 items, soonest first', async () => {
+    const items = Array.from({ length: 11 }, (_, i) =>
+      eventItem({ title: `Event ${String(i)}`, startsAt: NOW + (11 - i) * 3_600_000 }),
+    );
+    const p = ports({ upcomingEvents: vi.fn(async () => items) });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    const lines = result.text.split('\n');
+    expect(lines).toHaveLength(10);
+    expect(lines[0]).toContain('Event 10');
+    expect(lines[9]).toContain('Event 1');
+    expect(result.text).not.toContain('Event 0');
+  });
+
+  it('upcoming_events caps an event description at 200 characters', async () => {
+    const description = `x${'y'.repeat(300)}`;
+    const p = ports({ upcomingEvents: vi.fn(async () => [eventItem({ description })]) });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain(description.slice(0, 200));
+    expect(result.text).not.toContain(description);
+  });
+
+  it('upcoming_events redacts a secret-looking string in an event description', async () => {
+    const p = ports({
+      upcomingEvents: vi.fn(async () => [
+        eventItem({ description: 'Check in with token: abcdefgh1234567890 at the door.' }),
+      ]),
+    });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text).not.toContain('abcdefgh1234567890');
+    expect(result.text).toContain('[redacted');
+  });
+
+  it('upcoming_events without its port refuses instead of running', async () => {
+    const result = await runAssistantTool(
+      { name: 'upcoming_events', args: {} },
+      ports({ upcomingEvents: undefined }),
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it('channel_history returns the lines with an Older cursor and its handle', async () => {
+    const history = vi.fn(async () => ({
+      lines: ['[Alex, 5 minutes ago] the hall opens at seven'],
+      oldestId: '820000000000000001' as const,
+    }));
+    const result = await runAssistantTool(
+      { name: 'channel_history', args: {} },
+      ports({ channelHistory: history }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('the hall opens at seven');
+    expect(result.text).toContain('Older: before=820000000000000001');
+    expect(result.handles).toEqual(['820000000000000001']);
+    expect(history).toHaveBeenCalledWith({ limit: 20 });
+  });
+
+  it('channel_history passes before and limit through to the port', async () => {
+    const history = vi.fn(async () => ({ lines: ['[Alex, 5 minutes ago] older still'] as const }));
+    const result = await runAssistantTool(
+      { name: 'channel_history', args: { before: '820000000000000001', limit: 5 } },
+      ports({ channelHistory: history }),
+    );
+    expect(result.ok).toBe(true);
+    expect(history).toHaveBeenCalledWith({ before: '820000000000000001', limit: 5 });
+    expect(result.text).toContain('older still');
+    expect(result.text).not.toContain('Older:');
+    expect(result.handles).toEqual([]);
+  });
+
+  it('channel_history refuses malformed arguments', async () => {
+    const p = ports();
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: { limit: 0 } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: { limit: 51 } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: { before: 'short' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+  });
+
+  it("channel_history refuses when the port is absent or couldn't read", async () => {
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: {} }, ports({ channelHistory: undefined })),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't read the channel history." });
+    await expect(
+      runAssistantTool(
+        { name: 'channel_history', args: {} },
+        ports({ channelHistory: vi.fn(async () => undefined) }),
+      ),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't read the channel history." });
   });
 });

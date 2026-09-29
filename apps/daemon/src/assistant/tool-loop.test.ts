@@ -94,6 +94,7 @@ describe('ID_TOOL_ARGS', () => {
     expect(ID_TOOL_ARGS).toEqual({
       read_chunk: ['chunkId'],
       open_resource: ['resourceId', 'docId'],
+      channel_history: ['before'],
     });
   });
 
@@ -110,8 +111,10 @@ describe('ID_TOOL_ARGS', () => {
       }
       // read_chunk takes its id alone, so it stays required; open_resource
       // takes exactly one of its two ids (ADR 0092 decision 3), so neither
-      // is required on its own.
-      if (name === 'open_resource') expect(found.parameters.required ?? []).toEqual([]);
+      // is required on its own; channel_history pages without `before` in
+      // round 1, so its id argument is optional too.
+      if (name === 'open_resource' || name === 'channel_history')
+        expect(found.parameters.required ?? []).toEqual([]);
       else for (const arg of args) expect(found.parameters.required ?? []).toContain(arg);
     }
   });
@@ -411,6 +414,60 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
       { round: 1, name: 'search_sources', ok: true },
       { round: 2, name: 'open_resource', ok: false, refused: 'unknown id' },
       { round: 2, name: 'open_resource', ok: false, refused: 'unknown id' },
+    ]);
+  });
+
+  it('round 1 channel_history without before runs; round 2 pages with its returned handle', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'channel_history', args: {} }]),
+      toolAnswer([{ name: 'channel_history', args: { before: '820000000000000001' } }]),
+      textAnswer('Answered anyway.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> => {
+      const before = (call.args as { before?: string } | undefined)?.before;
+      if (call.name === 'channel_history' && before === undefined)
+        return { ...okResult(call.name, 'recent older lines'), handles: ['820000000000000001'] };
+      return okResult(call.name, 'older lines');
+    });
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        tools: {
+          firstRound: [decl('channel_history')],
+          idRound: [decl('channel_history')],
+          run,
+        },
+      }),
+    );
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.toolCalls).toMatchObject([
+      { round: 1, name: 'channel_history', ok: true },
+      { round: 2, name: 'channel_history', ok: true },
+    ]);
+  });
+
+  it('round 2 channel_history with a before no result returned is refused as unknown id', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'channel_history', args: {} }]),
+      toolAnswer([{ name: 'channel_history', args: { before: '999999999999999999' } }]),
+      textAnswer('Answered anyway.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> => ({
+      ...okResult(call.name),
+      handles: ['820000000000000001'],
+    }));
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        tools: {
+          firstRound: [decl('channel_history')],
+          idRound: [decl('channel_history')],
+          run,
+        },
+      }),
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.toolCalls).toMatchObject([
+      { round: 1, name: 'channel_history', ok: true },
+      { round: 2, name: 'channel_history', ok: false, refused: 'unknown id' },
     ]);
   });
 

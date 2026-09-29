@@ -1131,6 +1131,67 @@ describe('guild lifecycle', () => {
   });
 });
 
+describe('scheduled events', () => {
+  it('lists guild scheduled events with start, channel and location', async () => {
+    const { port, requests } = harness([
+      {
+        status: 200,
+        body: [
+          {
+            id: '777777777777777771',
+            guild_id: GUILD,
+            channel_id: CHANNEL,
+            name: 'Build night',
+            description: 'Bring tools.',
+            scheduled_start_time: '2026-09-25T19:00:00.000Z',
+            scheduled_end_time: null,
+            entity_type: 2,
+            entity_id: null,
+            entity_metadata: null,
+          },
+          {
+            id: '777777777777777772',
+            guild_id: GUILD,
+            channel_id: null,
+            name: 'Track day',
+            description: null,
+            scheduled_start_time: '2026-09-26T19:00:00.000Z',
+            scheduled_end_time: null,
+            entity_type: 3,
+            entity_id: null,
+            entity_metadata: { location: 'Mission Raceway' },
+          },
+        ],
+      },
+    ]);
+    const events = await port.listScheduledEvents(GUILD);
+    expect(events).toEqual([
+      {
+        id: '777777777777777771',
+        name: 'Build night',
+        description: 'Bring tools.',
+        scheduledStartAt: Date.parse('2026-09-25T19:00:00.000Z'),
+        channelId: CHANNEL,
+      },
+      {
+        id: '777777777777777772',
+        name: 'Track day',
+        scheduledStartAt: Date.parse('2026-09-26T19:00:00.000Z'),
+        location: 'Mission Raceway',
+      },
+    ]);
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/scheduled-events`);
+  });
+
+  it('answers [] rather than throwing on 403', async () => {
+    const { port } = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(port.listScheduledEvents(GUILD)).resolves.toEqual([]);
+  });
+});
+
 describe('errors are mapped onto the vocabulary core already has', () => {
   it('maps 404 Unknown Message onto isGone', async () => {
     const { port } = harness([
