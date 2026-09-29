@@ -52,6 +52,30 @@ describe('assistantInvokeCursor resolution', () => {
     }
   });
 
+  it('carries recalled conversation ids through the cursor detail', () => {
+    const parsed = assistantInvokeCursor.safeParse({
+      ...base,
+      result: {
+        ok: true,
+        content: 'answer',
+        detail: {
+          sections: [],
+          history: [],
+          attempts: [],
+          toolCalls: [],
+          usage: {},
+          guard: { removed: [] },
+          recalled: ['conv-2', 'conv-3'],
+        },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      const detail = parsed.data.result;
+      expect(detail.ok && detail.detail?.recalled).toEqual(['conv-2', 'conv-3']);
+    }
+  });
+
   it('parses a cursor for every continue rule', () => {
     for (const rule of CONTINUE_RULES) {
       const parsed = assistantInvokeCursor.safeParse(continueCursor(rule));

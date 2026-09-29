@@ -20,6 +20,7 @@ describe('TOOL_CATALOGUE', () => {
       'search_sources',
       'read_chunk',
       'refresh_source',
+      'search_conversations',
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const tool of TOOL_CATALOGUE) {
@@ -209,5 +210,20 @@ describe('TOOL_CATALOGUE', () => {
       items: { type: 'string' },
       maxItems: 10,
     });
+  });
+
+  it('gives search_conversations a bounded query string on the search skill (ADR 0093)', () => {
+    const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_conversations')!;
+    expect(search.description).toBe(
+      'Look back at summaries of earlier conversations in channels everyone here can read.',
+    );
+    expect(search.parameters.properties.query).toMatchObject({
+      type: 'string',
+      minLength: 2,
+      maxLength: 200,
+    });
+    expect(search.parameters.required).toEqual(['query']);
+    expect(search.rounds).toBe('first');
+    expect(search.skills).toEqual(['search-club']);
   });
 });
