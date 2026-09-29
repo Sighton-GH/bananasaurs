@@ -565,11 +565,9 @@ export const assistantInvokeHandler = (deps: {
           const key = payload.invocationId;
           conversationId = resolved.kind === 'continue' ? resolved.conversationId : `conv_${key}`;
           const userTurnId = `turn_${key}_u`;
-          const isNewConversation =
-            conversationRepo.getConversation(conv.scope, conversationId) === undefined;
-          if (isNewConversation) {
+          const createdAt = deps.now();
+          if (conversationRepo.getConversation(conv.scope, conversationId) === undefined) {
             const title = strippedQuestion.slice(0, 120);
-            const createdAt = deps.now();
             conversationRepo.createConversation(conv.scope, {
               conversationId,
               channelId,
@@ -579,6 +577,12 @@ export const assistantInvokeHandler = (deps: {
               source: 'discord',
               at: createdAt,
             });
+          }
+          // A crash between the row write and the links must not lose them:
+          // the link writes are insert-or-ignore, so a `new` resolution
+          // rewrites them on every run and a retry backfills them exactly
+          // once.
+          if (resolved.kind === 'new') {
             for (const linkedConversationId of conversationRepo.withBotReplySince(
               conv.scope,
               channelId,

@@ -544,6 +544,44 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(conversationRepo.listLinks(scope(), 'conv_child')).toHaveLength(1);
   });
 
+  it('a re-run after the conversation row exists still writes the new-conversation links exactly once', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    await h.run(
+      mention({
+        channelId: '777777777777777777',
+        invocationId: 'crash-parent',
+        messageId: '888888888888888888',
+      }),
+    );
+    // Simulate a crash after the row write but before the links: the row
+    // exists, the links do not.
+    conversationRepo.createConversation(scope(), {
+      conversationId: 'conv_crash-child',
+      channelId: '888888888888888888',
+      behaviourId: behaviour.id,
+      startedBy: AMA,
+      title: 'crashed run',
+      source: 'discord',
+      at: NOW,
+    });
+    const input = mention({
+      channelId: '888888888888888888',
+      threadParentId: '777777777777777777',
+      invocationId: 'crash-child',
+      messageId: '810000000000000078',
+    });
+    const first = await h.run(input);
+    expect(first.error).toBeUndefined();
+    expect(conversationRepo.listLinks(scope(), 'conv_crash-child')).toEqual([
+      expect.objectContaining({
+        otherConversationId: 'conv_crash-parent',
+        kind: 'thread-parent',
+      }),
+    ]);
+    await h.run(input, first.cursor);
+    expect(conversationRepo.listLinks(scope(), 'conv_crash-child')).toHaveLength(1);
+  });
+
   it('writes recalled links for the run detail once, and a retry adds none', async () => {
     conversationRepo.createConversation(scope(), {
       conversationId: 'conv_hit',
