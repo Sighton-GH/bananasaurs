@@ -5,6 +5,7 @@ import {
   type AssistantBehaviour,
   type AssistantInvokePayload,
   type AssistantTrace,
+  type AssistantTraceIncluded,
   type DomainEvent,
   type GenerationMessage,
   type KnownMessage,
@@ -56,8 +57,37 @@ export interface AssistantInvocation {
    * self-only-with-a-quote rule holds for the whole conversation.
    */
   readonly quoteInHistory?: boolean | undefined;
+  /**
+   * ADR 0089: the channel-context evidence block the invoke job built from
+   * the channel's recent messages (and the thread starter), placed first in
+   * the user message by the service. Absent means no channel context — the
+   * window is off, the fetch failed, or the source is not a mention.
+   */
+  readonly channelContext?: string | undefined;
+  /**
+   * ADR 0089: how many channel-context lines `channelContext` holds, for the
+   * trace's `included.channelMessages`. Absent means none were sent.
+   */
+  readonly channelMessages?: number | undefined;
+  /**
+   * ADR 0092: the oldest message id of the channel-context window — the
+   * default `before` for the `channel_history` tool. Absent means the tool
+   * falls back to the invoking message id.
+   */
+  readonly channelContextOldestId?: string | undefined;
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
+  /**
+   * ADR 0093: the conversation this invocation is answering in, so
+   * `search_conversations` can exclude it from its own hits. Absent means
+   * no exclusion — invocations with no channel never set it.
+   */
+  readonly conversationId?: string | undefined;
+  /**
+   * ADR 0091: the stored summary's version the history leads with, for the
+   * trace's `included.summaryVersion`. Absent means no summary was injected.
+   */
+  readonly summaryVersion?: number | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
@@ -114,6 +144,22 @@ export interface AssistantTraceDetail {
   readonly model?: string | undefined;
   readonly finishReason?: string | undefined;
   readonly web?: boolean | undefined;
+  /**
+   * The chain entry whose response was accepted (ADR 0091). Carried in the
+   * job cursor so the summary job can re-resolve it; never written to the
+   * stored trace, since the key id is not for display.
+   */
+  readonly answeredBy?:
+    { readonly providerId: string; readonly model: string; readonly keyId: string } | undefined;
+  /** Which context blocks the reply saw (ADR 0088 decision 2); tools offered live inside it. */
+  readonly included?: AssistantTraceIncluded | undefined;
+  /**
+   * ADR 0093: the conversations whose summaries this run looked back at
+   * (`search_conversations` hits). Carried in the job cursor so the invoke
+   * job can link them with kind `recalled`; never written to the stored
+   * trace.
+   */
+  readonly recalled?: readonly string[] | undefined;
   /** B2b: the code-written action summaries appended to this answer. */
   readonly actions?: readonly string[];
 }
@@ -264,6 +310,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         ...(event.referencedAuthorId === undefined
           ? {}
           : { referencedAuthorId: event.referencedAuthorId }),
+        ...(event.parentChannelId === undefined ? {} : { threadParentId: event.parentChannelId }),
         ...(event.authorDisplayName === undefined
           ? {}
           : { authorName: event.authorDisplayName.slice(0, 200) }),

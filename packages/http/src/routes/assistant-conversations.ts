@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { renderSummary } from '@bananasaurs/core';
 import { assistantRepo, conversationRepo, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
@@ -111,8 +112,19 @@ export const registerAssistantConversationRoutes = (
     ];
     const traces = traceIds.length === 0 ? [] : traceRepo.getTracesByIds(session.scope, traceIds);
     const sourcesByTrace = new Map(traces.map((trace) => [trace.traceId, trace.sources]));
+    const links = conversationRepo.listLinks(session.scope, request.params.id);
+    const storedSummary = conversationRepo.getSummary(session.scope, request.params.id);
     return reply.status(200).send({
       conversation,
+      summary:
+        storedSummary === undefined
+          ? null
+          : {
+              text: renderSummary(storedSummary.summary),
+              version: storedSummary.version,
+              updatedAt: storedSummary.updatedAt,
+            },
+      links,
       turns: turns.map((turn) => {
         if (turn.role !== 'assistant' || turn.traceId === undefined) return turn;
         // The sources line only: title and URL, never the trace body — the

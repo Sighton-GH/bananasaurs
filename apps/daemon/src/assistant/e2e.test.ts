@@ -144,7 +144,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       promptVersion: 1,
       callerRoleIds: [CLUB_ROLE],
       reviewerRoleIds: [],
-      allowedSkillIds: ['draft-agenda', 'create-reminder', 'record-decision'],
+      preferredSkillIds: ['draft-agenda', 'create-reminder', 'record-decision'],
       resourceIds: ['site'],
       enabled: true,
     };
@@ -155,7 +155,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       name: 'IT services',
       ticketChannelId: IT_CHANNEL,
       reviewerRoleIds: [REVIEWER_ROLE],
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       resourceIds: [],
     };
     assistantRepo.putBehaviour(scope, direct, NOW);
@@ -289,7 +289,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       channelId: CHANNEL,
       userId: OWNER,
       callerRoleIds: [CLUB_ROLE],
-      behaviour: { ...direct, allowedSkillIds: ['search-club', 'reminders'] },
+      behaviour: { ...direct, preferredSkillIds: ['search-club', 'reminders'] },
       command: 'ask',
       input: { question: 'remind me to bring batteries' },
       source: 'slash-command',
@@ -374,7 +374,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       promptVersion: 1,
       callerRoleIds: [CLUB_ROLE],
       reviewerRoleIds: [],
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       resourceIds: ['site'],
       enabled: true,
     };
@@ -439,7 +439,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       promptVersion: 1,
       callerRoleIds: [CLUB_ROLE],
       reviewerRoleIds: [],
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       resourceIds: [],
       enabled: true,
     };
@@ -508,7 +508,7 @@ describe('Release 3 review fixes', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'reminders'],
+    preferredSkillIds: ['search-club', 'reminders'],
     resourceIds: [],
     enabled: true,
   };
@@ -957,7 +957,7 @@ describe('first-run owner access', () => {
       promptVersion: 1,
       callerRoleIds: [] as readonly string[],
       reviewerRoleIds: [] as readonly string[],
-      allowedSkillIds: ['draft-agenda'] as readonly string[],
+      preferredSkillIds: ['draft-agenda'] as readonly string[],
       resourceIds: [] as readonly string[],
       enabled: true,
     };
@@ -1007,7 +1007,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     promptVersion: 1,
     callerRoleIds: [CLUB_ROLE],
     reviewerRoleIds: [],
-    allowedSkillIds: ['search-club', 'open-resource'],
+    preferredSkillIds: ['search-club', 'open-resource'],
     resourceIds: ['handbook'],
     enabled: true,
   };
@@ -1023,6 +1023,9 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       attachments: [],
     });
   const memberChannels = vi.fn(async () => [{ id: PUBLIC, name: 'general' }]);
+  // Slice 4.1 (ADR 0090): the answer channel sees every seeded channel, so
+  // the asker-only filter stays the operative constraint in these tests.
+  const audienceChannels = vi.fn(async () => new Set([PUBLIC, STAFF]));
   const service = (provider: TextProvider, fetchResource = vi.fn()) =>
     createAssistantService(
       t.scopes.forGuild(GUILD),
@@ -1032,7 +1035,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       { provider, fetchResource },
       undefined,
       undefined,
-      { memberChannels },
+      { memberChannels, audienceChannels },
     );
   const invocation = (command: 'ask' | 'find', input: Record<string, string>) => ({
     guildId: GUILD,
@@ -1130,7 +1133,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     // search the model may open a cached id, never search again.
     const round2 = (requests[1]?.tools ?? []).map((d) => d.name);
     expect(round2).toContain('open_resource');
-    expect(round2.every((n) => ['read_chunk', 'outline', 'open_resource'].includes(n))).toBe(true);
+    expect(round2.every((n) => ['read_chunk', 'open_resource'].includes(n))).toBe(true);
     // No per-request live fetching; the prompt carries the cache catalogue.
     expect(fetchResource).not.toHaveBeenCalled();
     expect(requests[0]?.systemInstruction).toContain('CLUB SOURCES');

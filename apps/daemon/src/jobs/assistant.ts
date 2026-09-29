@@ -1,7 +1,10 @@
 import {
   assistantInvokeCursor,
   assistantInvokePayload,
+  assistantSummariseDedupeKey,
   JOB_KINDS,
+  renderSummary,
+  SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
   resolveConversation,
   RetryAfterError,
@@ -16,8 +19,9 @@ import {
   type JobHandler,
   type Logger,
   type OutgoingMessage,
+  type RecentMessage,
 } from '@bananasaurs/core';
-import { conversationRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
+import { conversationRepo, jobRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
 import type {
   AssistantCommandService,
   AssistantInvocationResult,
@@ -27,7 +31,12 @@ import type {
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
-import { buildConversationContext } from '../assistant/conversation-context.js';
+import {
+  buildConversationContext,
+  HISTORY_CHARS,
+  HISTORY_TURNS,
+} from '../assistant/conversation-context.js';
+import { buildChannelContext } from '../assistant/channel-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 import { startTyping } from '../assistant/typing.js';
@@ -166,6 +175,34 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
   ...(detail.model === undefined ? {} : { model: detail.model }),
   ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
   ...(detail.web === undefined ? {} : { web: detail.web }),
+  ...(detail.answeredBy === undefined
+    ? {}
+    : {
+        answeredBy: {
+          providerId: detail.answeredBy.providerId,
+          model: detail.answeredBy.model,
+          keyId: detail.answeredBy.keyId,
+        },
+      }),
+  // ADR 0093: the recalled conversation ids ride the cursor to the link
+  // write below, like every other detail field.
+  ...(detail.recalled === undefined ? {} : { recalled: [...detail.recalled] }),
+  ...(detail.included === undefined
+    ? {}
+    : {
+        included: {
+          toolsOffered: [...detail.included.toolsOffered],
+          snippetChunkIds: [...detail.included.snippetChunkIds],
+          quote: detail.included.quote,
+          historyTurns: detail.included.historyTurns,
+          ...(detail.included.channelMessages === undefined
+            ? {}
+            : { channelMessages: detail.included.channelMessages }),
+          ...(detail.included.summaryVersion === undefined
+            ? {}
+            : { summaryVersion: detail.included.summaryVersion }),
+        },
+      }),
 });
 
 /**
@@ -292,6 +329,21 @@ export const assistantInvokeHandler = (deps: {
         messageId: string,
       ) => Promise<{ authorId: string; authorName: string; content: string } | undefined>)
     | undefined;
+  /**
+   * ADR 0089: channel context for mentions — a guild-scoped closure over the
+   * Discord port's `fetchChannelMessages`. Absent means no channel context.
+   */
+  fetchChannelMessages?:
+    | ((
+        channelId: string,
+        opts: { before: string; limit: number },
+      ) => Promise<readonly RecentMessage[] | undefined>)
+    | undefined;
+  /**
+   * ADR 0089: the live channel-context window from the AI tuning settings
+   * (`assistant.channelContextMessages`). Absent means the window is off.
+   */
+  readonly channelContextMessages?: (() => number) | undefined;
   /**
    * Task 7: the live retry delays from the AI tuning settings
    * (`assistant.retryDelaysMs`). Absent means today's 10 s / 30 s / 90 s
@@ -448,6 +500,17 @@ export const assistantInvokeHandler = (deps: {
         let history: readonly GenerationMessage[] = [];
         let quoteEnvelope: string | undefined;
         let quoteInHistory = false;
+        let channelContext: string | undefined;
+        let channelMessages = 0;
+        // ADR 0091 decision 5: the stored summary a continuing conversation
+        // re-injects, with its version travelling to the trace. Assigned in
+        // the conversation branch below; the invoke after it reads it.
+        let storedSummary: ReturnType<typeof conversationRepo.getSummary> = undefined;
+        // ADR 0092 decision 2: the oldest id of the channel-context window —
+        // the `channel_history` tool's default `before`, so the first page
+        // starts just above what the model already saw. The fetch reports
+        // oldest first.
+        let channelContextOldestId: string | undefined;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -463,9 +526,14 @@ export const assistantInvokeHandler = (deps: {
             ...(payload.referencedAuthorId === undefined
               ? {}
               : { referencedAuthorId: payload.referencedAuthorId }),
+            inThread: payload.threadParentId !== undefined,
             lookupMessage: (messageId) => conversationRepo.lookupMessage(conv.scope, messageId),
             latestForAuthor: (authorId, scopeChannelId) =>
               conversationRepo.latestForAuthor(conv.scope, authorId, scopeChannelId),
+            latestWithBotReply: (scopeChannelId) =>
+              conversationRepo.latestWithBotReply(conv.scope, scopeChannelId),
+            withBotReplySince: (scopeChannelId, sinceMs) =>
+              conversationRepo.withBotReplySince(conv.scope, scopeChannelId, sinceMs),
           });
           resolution = resolved;
           // Quoted rules name a message we do not know: fetch it in the same
@@ -497,6 +565,7 @@ export const assistantInvokeHandler = (deps: {
           const key = payload.invocationId;
           conversationId = resolved.kind === 'continue' ? resolved.conversationId : `conv_${key}`;
           const userTurnId = `turn_${key}_u`;
+          const createdAt = deps.now();
           if (conversationRepo.getConversation(conv.scope, conversationId) === undefined) {
             const title = strippedQuestion.slice(0, 120);
             conversationRepo.createConversation(conv.scope, {
@@ -506,9 +575,41 @@ export const assistantInvokeHandler = (deps: {
               startedBy: payload.userId,
               title: title === '' ? 'Assistant conversation' : title,
               source: 'discord',
-              at: deps.now(),
+              at: createdAt,
             });
           }
+          // A crash between the row write and the links must not lose them:
+          // the link writes are insert-or-ignore, so a `new` resolution
+          // rewrites them on every run and a retry backfills them exactly
+          // once.
+          if (resolved.kind === 'new') {
+            for (const linkedConversationId of conversationRepo.withBotReplySince(
+              conv.scope,
+              channelId,
+              createdAt - SAME_CHANNEL_LINK_WINDOW_MS,
+            )) {
+              if (linkedConversationId !== conversationId) {
+                conversationRepo.linkConversations(conv.scope, {
+                  conversationId,
+                  linkedConversationId,
+                  kind: 'same-channel',
+                  at: createdAt,
+                });
+              }
+            }
+            if (payload.threadParentId !== undefined) {
+              const known = conversationRepo.lookupMessage(conv.scope, channelId);
+              if (known !== undefined && known.channelId === payload.threadParentId) {
+                conversationRepo.linkConversations(conv.scope, {
+                  conversationId,
+                  linkedConversationId: known.conversationId,
+                  kind: 'thread-parent',
+                  at: createdAt,
+                });
+              }
+            }
+          }
+
           // A new conversation that starts from a quoted message stores the
           // quote as the opening `quote` turn, before the user turn: the
           // pinned-quote window and the transcript both read it from there.
@@ -539,8 +640,16 @@ export const assistantInvokeHandler = (deps: {
               authorId: payload.userId,
               authorName: payload.authorName ?? 'a member',
               text: strippedQuestion,
+              joinRule: resolved.rule,
             });
           }
+          // ADR 0091 decision 5: a continuing conversation re-injects its
+          // stored summary ahead of the recent turns, and its version travels
+          // with the invoke to the stored trace.
+          storedSummary =
+            resolved.kind === 'continue'
+              ? conversationRepo.getSummary(conv.scope, conversationId)
+              : undefined;
           const built = buildConversationContext({
             scope: conv.scope,
             resolution: resolved,
@@ -549,11 +658,112 @@ export const assistantInvokeHandler = (deps: {
             // The turn just written above is stored, never history: the
             // question reaches the model once, as the request's user text.
             excludeTurnId: userTurnId,
+            // ADR 0091 decision 5: a continuing conversation re-injects its
+            // stored summary ahead of the recent turns.
+            ...(storedSummary === undefined
+              ? {}
+              : { summaryText: renderSummary(storedSummary.summary) }),
             now: deps.now(),
           });
           history = built.history;
           quoteEnvelope = built.quoteEnvelope;
           quoteInHistory = built.quoteInHistory;
+          // ADR 0089: channel context for mentions. The channel's recent
+          // messages (and, in a thread, the thread's starter) travel as
+          // untrusted background ahead of the question. A failed fetch flags
+          // the trace `channel-context-unavailable` and continues without
+          // the block — it never fails the answer. This sits inside the
+          // fresh-invoke branch, so a retry past `invoke-done` never fetches
+          // again.
+          const channelWindow = deps.channelContextMessages?.() ?? 0;
+          if (
+            payload.source === 'mention' &&
+            payload.messageId !== undefined &&
+            conversationId !== undefined &&
+            channelWindow > 0 &&
+            deps.fetchChannelMessages !== undefined
+          ) {
+            const flagUnavailable = (): void => {
+              if (!flags.includes('channel-context-unavailable'))
+                flags.push('channel-context-unavailable');
+            };
+            const invokingMessageId = payload.messageId;
+            // In a thread the starter comes first: message `threadId` in the
+            // parent channel, falling back to the thread itself (forum
+            // posts). Its `at` is the thread id's snowflake time — the fetch
+            // reports no timestamp of its own.
+            let starter: { authorName: string; content: string; at: number } | undefined;
+            if (payload.threadParentId !== undefined && deps.fetchMessageContent !== undefined) {
+              try {
+                const first = await deps.fetchMessageContent(payload.threadParentId, channelId);
+                const fetched = first ?? (await deps.fetchMessageContent(channelId, channelId));
+                if (fetched === undefined) {
+                  deps.logger.warn(
+                    safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+                    'assistant thread starter fetch failed; continuing without the starter',
+                  );
+                  flagUnavailable();
+                } else {
+                  starter = {
+                    authorName: fetched.authorName,
+                    content: fetched.content,
+                    at: Number(BigInt(channelId) >> 22n) + 1420070400000,
+                  };
+                }
+              } catch (err) {
+                deps.logger.warn(
+                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                  'assistant thread starter fetch failed; continuing without the starter',
+                );
+                flagUnavailable();
+              }
+            }
+            try {
+              const fetched = await deps.fetchChannelMessages(channelId, {
+                before: invokingMessageId,
+                limit: channelWindow,
+              });
+              if (fetched === undefined) {
+                deps.logger.warn(
+                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+                  'assistant channel context fetch failed; continuing without the block',
+                );
+                flagUnavailable();
+              } else {
+                // The fetch reports oldest first: the window's oldest id is
+                // the history tool's default cursor, even when every line was
+                // excluded from the block itself.
+                channelContextOldestId = fetched[0]?.messageId;
+                // Already-linked messages are in the transcript; the invoking
+                // message becomes the current question. Neither is repeated.
+                const exclude = new Set<string>([invokingMessageId]);
+                for (const id of conversationRepo.messageIdsForConversation(
+                  conv.scope,
+                  conversationId,
+                )) {
+                  exclude.add(id);
+                }
+                const context = buildChannelContext({
+                  messages: fetched,
+                  excludeMessageIds: exclude,
+                  ...(starter === undefined ? {} : { starter }),
+                  botUserId: conv.botUserId,
+                  botDisplayName: conv.botDisplayName,
+                  now: deps.now(),
+                });
+                if (context.block !== '') {
+                  channelContext = context.block;
+                  channelMessages = context.count;
+                }
+              }
+            } catch (err) {
+              deps.logger.warn(
+                safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                'assistant channel context fetch failed; continuing without the block',
+              );
+              flagUnavailable();
+            }
+          }
         }
         try {
           result = await deps.service.invoke({
@@ -569,6 +779,13 @@ export const assistantInvokeHandler = (deps: {
             history,
             ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
             ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
+            ...(channelContext === undefined ? {} : { channelContext }),
+            ...(channelMessages === 0 ? {} : { channelMessages }),
+            ...(storedSummary === undefined ? {} : { summaryVersion: storedSummary.version }),
+            ...(channelContextOldestId === undefined ? {} : { channelContextOldestId }),
+            // ADR 0093: the conversation being answered in, so recall
+            // never returns the conversation to itself.
+            ...(conversationId === undefined ? {} : { conversationId }),
             askerName: payload.authorName,
           });
         } finally {
@@ -828,6 +1045,22 @@ export const assistantInvokeHandler = (deps: {
             sections: detail?.sections ?? [],
             toolCalls: detail?.toolCalls ?? [],
             guard: detail?.guard ?? { removed: [] },
+            ...(detail?.included === undefined
+              ? {}
+              : {
+                  included: {
+                    toolsOffered: [...detail.included.toolsOffered],
+                    snippetChunkIds: [...detail.included.snippetChunkIds],
+                    quote: detail.included.quote,
+                    historyTurns: detail.included.historyTurns,
+                    ...(detail.included.channelMessages === undefined
+                      ? {}
+                      : { channelMessages: detail.included.channelMessages }),
+                    ...(detail.included.summaryVersion === undefined
+                      ? {}
+                      : { summaryVersion: detail.included.summaryVersion }),
+                  },
+                }),
             timeline: [
               { label: 'received', atMs: 0 },
               { label: 'invoke-done', atMs: Math.max(0, invokeDoneAt - startedAt) },
@@ -840,6 +1073,63 @@ export const assistantInvokeHandler = (deps: {
         }
       }
       saveStaged('answered', result);
+      // ADR 0093 decision 3: every conversation whose summary this run
+      // looked back at is linked with kind `recalled`. The insert is
+      // idempotent (insert-or-ignore) and this stage is skipped on a retry,
+      // so a retry never duplicates a link.
+      if (conversationId !== undefined && deps.conversations !== undefined) {
+        const convScope = deps.conversations.scope;
+        for (const recalledId of result.detail?.recalled ?? []) {
+          try {
+            conversationRepo.linkConversations(convScope, {
+              conversationId,
+              linkedConversationId: recalledId,
+              kind: 'recalled',
+              at: deps.now(),
+            });
+          } catch (err) {
+            deps.logger.warn(
+              safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+              'assistant recalled link write failed; continuing',
+            );
+          }
+        }
+      }
+      // ADR 0091 decision 3: turns that fell out of the history window get
+      // one summary job on the entry that answered. An enqueue failure is
+      // logged and never fails the answer.
+      if (conversationId !== undefined && deps.conversations !== undefined) {
+        try {
+          const answeredBy = result.detail?.answeredBy;
+          if (answeredBy !== undefined) {
+            const convScope = deps.conversations.scope;
+            const evicted = conversationRepo.evictedTurnsSince(convScope, conversationId, {
+              afterAt: conversationRepo.getSummary(convScope, conversationId)?.throughAt ?? null,
+              window: { maxTurns: HISTORY_TURNS, maxChars: HISTORY_CHARS },
+            });
+            const newest = evicted.at(-1);
+            if (newest !== undefined) {
+              jobRepo.enqueue(convScope, {
+                kind: JOB_KINDS.assistantSummarise,
+                payload: JSON.stringify({
+                  conversationId,
+                  throughAt: newest.at,
+                  providerId: answeredBy.providerId,
+                  model: answeredBy.model,
+                  keyId: answeredBy.keyId,
+                }),
+                dedupeKey: assistantSummariseDedupeKey(conversationId, newest.at),
+                now: deps.now(),
+              });
+            }
+          }
+        } catch (err) {
+          deps.logger.warn(
+            safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+            'assistant summary enqueue failed; continuing without a summary',
+          );
+        }
+      }
     }
 
     // Stage 3: the escalation post, with its own sent marker for the same

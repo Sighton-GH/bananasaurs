@@ -3,7 +3,9 @@ import { z } from 'zod';
 import {
   clipHeading,
   humaniseDuration,
+  neutraliseMarkers,
   redactEvidenceText,
+  relativeAgo,
   reminderRecurrence,
   scanOutboundRequest,
   TOOL_CATALOGUE,
@@ -24,6 +26,7 @@ import type {
 } from './reminder-targets.js';
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
+import type { CitationRegistry } from './citations.js';
 
 /**
  * The read-only tools the model may call (ADR 0067, Task 16).
@@ -40,6 +43,15 @@ export interface ArchiveHit {
   readonly createdAt: number;
   readonly excerpt: string;
 }
+
+/**
+ * What a `search_archive` read returns (ADR 0090 decision 3): either the
+ * hits, or a member-facing refusal when `from` could not be resolved to one
+ * member. The tool answers the problem text verbatim.
+ */
+export type ArchiveResult =
+  | { readonly ok: true; readonly hits: readonly ArchiveHit[] }
+  | { readonly ok: false; readonly problem: string };
 
 export interface WebResult {
   readonly title: string;
@@ -75,6 +87,19 @@ export interface CacheStoredDoc {
   readonly url: string;
 }
 
+/**
+ * One recalled conversation summary (ADR 0093): the display fields the tool
+ * formats, plus the conversation id the invoke job links with kind
+ * `recalled`. The service cleans every string before returning (hard rule 3).
+ */
+export interface ConversationRecallHit {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly lastActivityAt: number;
+  readonly topic: string;
+  readonly facts: readonly string[];
+}
+
 type StoredReminder = assistantRepo.StoredReminder;
 /**
  * The patch `updateReminder` takes. Re-declared structurally here:
@@ -93,6 +118,8 @@ export interface ReminderPatch {
 /** Everything a tool can reach, already scoped to one guild and one asking member. */
 export interface AssistantToolPorts {
   readonly userId: string;
+  /** The guild the archive links point at (`search_archive` builds them). */
+  readonly guildId: string;
   readonly now: () => number;
   readonly timeZone: string;
   readonly isOwner: boolean;
@@ -126,13 +153,27 @@ export interface AssistantToolPorts {
     detail?: string,
   ) => void;
   /** Archive-enabled channels the member can view; the port enforces that. */
-  readonly searchArchive: (query: string) => Promise<readonly ArchiveHit[]>;
+  readonly searchArchive: (query: string, from?: string) => Promise<ArchiveResult>;
   readonly resources: () => readonly ClubResource[];
   readonly fetchResource: (url: string) => Promise<ResourceFetchResult>;
   /** Absent while web search is off (ADR 0066). */
   readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
   readonly serverCard: () => string;
   readonly visibleChannels: () => Promise<readonly { id: string; name: string }[]>;
+  /**
+   * ADR 0092 decision 1: the next schedule rows, already audience-filtered
+   * and cleaned by the service. Absent when the schedule cannot be read —
+   * then `upcoming_events` stays undeclared, like `web_search` while off.
+   */
+  readonly upcomingEvents?: (() => Promise<readonly UpcomingEventItem[]>) | undefined;
+  /**
+   * ADR 0092 decision 2: one page further back in the current channel.
+   * Absent outside a channel or when the context window is off — then
+   * `channel_history` stays undeclared.
+   */
+  readonly channelHistory?:
+    | ((opts: { before?: string; limit: number }) => Promise<ChannelHistoryPage | undefined>)
+    | undefined;
   /** Guild-scoped cache reads (hard rule 2: the closures capture the request scope). */
   readonly cacheSearch: (input: {
     readonly query: string;
@@ -151,11 +192,37 @@ export interface AssistantToolPorts {
   }[];
   /** Enqueues a resource_refresh (reason assistant); false when the 10-minute dedupe already holds one. */
   readonly enqueueRefresh: (resourceId: string) => boolean;
+  /**
+   * Summaries of earlier conversations the asker may be shown (ADR 0093).
+   * The service scopes it to the answer channel's audience intersected with
+   * the asker's channels and excludes the current conversation. Absent, the
+   * tool is not declared.
+   */
+  readonly searchConversations?:
+    ((query: string) => Promise<readonly ConversationRecallHit[]>) | undefined;
 }
 
 export interface ToolSource {
   readonly title: string;
   readonly url: string;
+}
+
+/**
+ * One `upcoming_events` row (ADR 0092 decision 1): a Discord scheduled event
+ * or a channel reminder. `description` is set for events only.
+ */
+export interface UpcomingEventItem {
+  readonly kind: 'event' | 'reminder';
+  readonly title: string;
+  readonly startsAt: number;
+  readonly where: string;
+  readonly description?: string | undefined;
+}
+
+/** One `channel_history` page (ADR 0092 decision 2). */
+export interface ChannelHistoryPage {
+  readonly lines: readonly string[];
+  readonly oldestId?: string | undefined;
 }
 
 export interface AssistantToolResult {
@@ -171,6 +238,12 @@ export interface AssistantToolResult {
    * they actually showed; every other tool returns none.
    */
   readonly handles?: readonly string[];
+  /**
+   * ADR 0093: the conversations whose summaries this result looked back at.
+   * The service collects these into the trace detail so the invoke job can
+   * link them with kind `recalled`.
+   */
+  readonly recalledConversationIds?: readonly string[];
   /** Code-written confirmation the reply ends with (B2b appends it verbatim). */
   readonly actionSummary?: string;
 }
@@ -194,8 +267,21 @@ const repeatPattern = z
   .strict()
   .optional();
 const schemas = {
-  search_archive: query,
-  open_resource: z.object({ resourceId: z.string().min(1).max(64) }).strict(),
+  search_archive: z
+    .object({
+      query: z.string().trim().min(1).max(200),
+      from: z.string().trim().min(1).max(100).optional(),
+    })
+    .strict(),
+  open_resource: z
+    .object({
+      resourceId: z.string().min(1).max(64).optional(),
+      docId: z.string().min(1).max(128).optional(),
+    })
+    .strict()
+    .refine((v) => (v.resourceId === undefined) !== (v.docId === undefined), {
+      message: 'Give either resourceId or docId.',
+    }),
   web_search: query,
   server_info: none,
   current_time: none,
@@ -237,10 +323,10 @@ const schemas = {
       kind: z.enum(['decision', 'review-plan']),
     })
     .strict(),
-  list_sources: z.object({ filter: z.string().trim().min(1).max(80).optional() }).strict(),
   search_sources: z
     .object({
-      query: z.string().trim().min(2).max(200),
+      query: z.string().trim().min(2).max(200).optional(),
+      filter: z.string().trim().min(1).max(80).optional(),
       sourceIds: z.array(z.string().min(1).max(64)).max(10).optional(),
     })
     .strict(),
@@ -250,8 +336,18 @@ const schemas = {
       neighbours: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
     })
     .strict(),
-  outline: z.object({ docId: z.string().min(1).max(128) }).strict(),
   refresh_source: z.object({ resourceId: z.string().min(1).max(64) }).strict(),
+  upcoming_events: z.object({}).strict(),
+  channel_history: z
+    .object({
+      before: z
+        .string()
+        .regex(/^\d{17,20}$/)
+        .optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    })
+    .strict(),
+  search_conversations: z.object({ query: z.string().trim().min(2).max(200) }).strict(),
 } as const;
 type ToolName = keyof typeof schemas;
 
@@ -261,12 +357,17 @@ type ToolName = keyof typeof schemas;
  * can never drift from what the skill detail page shows (a test asserts
  * every entry here equals its catalogue entry). `web_search` is the one
  * conditional entry: it drops out entirely while search is off (ADR 0066).
- * Acting entries drop out while their skill is not allowed (B2a).
+ * `upcoming_events` and `channel_history` drop out the same way while their
+ * port is absent (ADR 0092). Acting entries drop out while their skill is
+ * not allowed (B2a).
  */
 export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =>
   TOOL_CATALOGUE.filter(
     (entry) =>
       (entry.name !== 'web_search' || ports.webSearch !== undefined) &&
+      (entry.name !== 'upcoming_events' || ports.upcomingEvents !== undefined) &&
+      (entry.name !== 'channel_history' || ports.channelHistory !== undefined) &&
+      (entry.name !== 'search_conversations' || ports.searchConversations !== undefined) &&
       (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)),
   ).map((entry) => ({
     name: entry.name,
@@ -465,7 +566,7 @@ const clock = (ports: AssistantToolPorts, at: number): string =>
   }).format(at);
 
 /**
- * "3 hours ago" / "not fetched yet" for catalogue and list_sources lines.
+ * "3 hours ago" / "not fetched yet" for catalogue and search_sources lines.
  * One shared helper (Task 16 fix round 1): service.ts's catalogue uses this
  * too instead of its own copy.
  */
@@ -477,34 +578,111 @@ export const relativeUpdated = (fetchedAt: number | undefined, now: number): str
 const enabledById = (ports: AssistantToolPorts, resourceId: string): ClubResource | undefined =>
   ports.resources().find((r) => r.id === resourceId && r.enabled);
 
+/**
+ * The old `outline` body (ADR 0092 decision 3): the headings of one cached
+ * doc. Shared by the `open_resource` docId path. `name` is the calling tool
+ * so the result carries the name the model actually called.
+ */
+const outlineForDoc = (
+  name: string,
+  ports: AssistantToolPorts,
+  docId: string,
+): AssistantToolResult => {
+  const rows = ports.cacheOutline(docId);
+  // The outline rows carry no resource id, so the doc (or the first
+  // row's chunk) names the resource whose enabled flag decides: a
+  // disabled resource's outline is unknown, like its chunks.
+  const outlineResourceId =
+    ports.cacheDocument(docId)?.resourceId ??
+    (rows[0] === undefined ? undefined : ports.cacheChunk(rows[0].chunkId)?.resourceId);
+  if (outlineResourceId === undefined || enabledById(ports, outlineResourceId) === undefined)
+    return refused(name, 'unknown id');
+  if (rows.length === 0) {
+    return { ...evidence(name, 'No headings cached.'), handles: [] };
+  }
+  const lines: string[] = [];
+  const handles: string[] = [];
+  let used = 0;
+  for (const row of rows) {
+    const line = `[${row.chunkId}] ${clipHeading(row.headingPath, 200)}`;
+    if (used + line.length + 1 > 1_500) break;
+    lines.push(line);
+    handles.push(row.chunkId);
+    used += line.length + 1;
+  }
+  return { ...evidence(name, lines.join('\n')), handles };
+};
+
 export const runAssistantTool = async (
   call: ToolCall,
   ports: AssistantToolPorts,
+  /**
+   * ADR 0090 decision 3: the request's citation registry, so a `from` search
+   * can tag each hit inline with the same tag the service's Sources line
+   * later resolves. Absent, the tagging is left to the service (which passes
+   * it on every production call); the hit lines then carry no tag.
+   */
+  citations?: CitationRegistry,
 ): Promise<AssistantToolResult> => {
   if (!(call.name in schemas)) return refused(call.name, 'Unknown tool.');
   const name = call.name as ToolName;
   const parsed = schemas[name].safeParse(call.args ?? {});
-  if (!parsed.success) return refused(name, 'The tool arguments were not valid.');
+  if (!parsed.success) {
+    // The open_resource exactly-one-of rule carries its own refusal so the
+    // model learns the shape; every other bad argument stays generic.
+    if (parsed.error.issues.some((issue) => issue.message === 'Give either resourceId or docId.'))
+      return refused(name, 'Give either resourceId or docId.');
+    return refused(name, 'The tool arguments were not valid.');
+  }
 
   try {
     switch (name) {
       case 'search_archive': {
-        const { query: q } = parsed.data as z.infer<typeof query>;
-        const hits = await ports.searchArchive(q);
+        const { query: q, from } = parsed.data as { query: string; from?: string };
+        // "Did X say Y?" needs something checkable: a bare name with no
+        // query word has no tool path, like a bulk summary (ADR 0090 D3).
+        if (from !== undefined && !/[A-Za-z]{3,}/.test(q))
+          return refused(name, 'Say what you want to check they said.');
+        const result = await ports.searchArchive(q, from);
+        if (!result.ok) return refused(name, result.problem);
+        // Without `from` the lines stay as they were: no author names.
+        if (from === undefined) {
+          if (result.hits.length === 0) return evidence(name, 'No matching messages.');
+          return evidence(
+            name,
+            result.hits
+              .map(
+                (hit) =>
+                  `<#${hit.channelId}> ${new Date(hit.createdAt).toISOString().slice(0, 10)}: ${hit.excerpt}`,
+              )
+              .join('\n'),
+          );
+        }
+        const hits = result.hits.slice(0, 3);
         if (hits.length === 0) return evidence(name, 'No matching messages.');
-        return evidence(
-          name,
-          hits
-            .map(
-              (hit) =>
-                `<#${hit.channelId}> ${new Date(hit.createdAt).toISOString().slice(0, 10)}: ${hit.excerpt}`,
-            )
-            .join('\n'),
+        const sources: ToolSource[] = [];
+        const lines = hits.map((hit) => {
+          const day = new Date(hit.createdAt).toISOString().slice(0, 10);
+          const source = {
+            title: `#channel message, ${day}`,
+            url: `https://discord.com/channels/${ports.guildId}/${hit.channelId}/${hit.messageId}`,
+          };
+          sources.push(source);
+          const tag = citations?.tag(source);
+          return `${tag === undefined ? '' : `[${tag}] `}<#${hit.channelId}> ${day}: ${hit.excerpt}`;
+        });
+        lines.push(
+          "Answer only whether they said it. Cite the message tag. Do not summarise or list this member's messages.",
         );
+        return evidence(name, lines.join('\n'), sources);
       }
       case 'open_resource': {
-        const { resourceId } = parsed.data as { resourceId: string };
-        const found = enabledById(ports, resourceId);
+        const { resourceId, docId } = parsed.data as {
+          resourceId?: string;
+          docId?: string;
+        };
+        if (docId !== undefined) return outlineForDoc(name, ports, docId);
+        const found = enabledById(ports, resourceId!);
         if (found === undefined) return refused(name, 'unknown id');
         const source = { title: found.title, url: found.url };
         if (!['website', 'document', 'repository', 'note'].includes(found.kind))
@@ -561,6 +739,29 @@ export const runAssistantTool = async (
             `[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: ${first.text.slice(0, room)}`,
           );
           shown.push(first.chunkId);
+          // The single clipped chunk fills the budget on its own, so no
+          // outline section below can fit.
+          used = 4_000;
+        }
+        // Document-like resources also carry the first doc's outline (up to
+        // 40 headings), straight from the same cache ports, while it fits in
+        // the 4,000-character budget.
+        const outlineRows = ports.cacheOutline(doc.docId);
+        if (outlineRows.length > 0 && used + 'Headings:'.length + 1 <= 4_000) {
+          const headingLines = ['Headings:'];
+          const headingShown: string[] = [];
+          used += 'Headings:'.length + 1;
+          for (const row of outlineRows.slice(0, 40)) {
+            const line = `[${row.chunkId}] ${clipHeading(row.headingPath, 200)}`;
+            if (used + line.length + 1 > 4_000) break;
+            headingLines.push(line);
+            headingShown.push(row.chunkId);
+            used += line.length + 1;
+          }
+          if (headingLines.length > 1) {
+            lines.push(...headingLines);
+            shown.push(...headingShown);
+          }
         }
         return {
           ...evidence(name, `${head}${lines.join('\n')}`.slice(0, 4_000), [source]),
@@ -921,35 +1122,41 @@ export const runAssistantTool = async (
           return failed(ports, name, 'record-decision', err);
         }
       }
-      case 'list_sources': {
-        const { filter } = parsed.data as { filter?: string };
-        const freshness = new Map(ports.cacheFreshness().map((f) => [f.resourceId, f.fetchedAt]));
-        const needle = filter?.toLowerCase();
-        const all = ports.resources().filter((r) => r.enabled);
-        const matching =
-          needle === undefined
-            ? all
-            : all.filter(
-                (r) =>
-                  r.id.toLowerCase().includes(needle) || r.title.toLowerCase().includes(needle),
-              );
-        const lines = matching
-          .slice(0, 30)
-          .map(
-            (r) =>
-              `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(freshness.get(r.id), ports.now())}`,
-          );
-        if (lines.length === 0) return evidence(name, 'No sources match that filter.');
-        return {
-          ...evidence(name, lines.join('\n')),
-          handles: matching.slice(0, 30).map((r) => r.id),
-        };
-      }
       case 'search_sources': {
-        const { query: q, sourceIds } = parsed.data as {
-          query: string;
+        const {
+          query: q,
+          filter,
+          sourceIds,
+        } = parsed.data as {
+          query?: string;
+          filter?: string;
           sourceIds?: string[];
         };
+        // Without a query this is the old `list_sources` (ADR 0092 decision
+        // 3): the cached sources, filtered, 30 lines with handles.
+        if (q === undefined) {
+          const freshness = new Map(ports.cacheFreshness().map((f) => [f.resourceId, f.fetchedAt]));
+          const needle = filter?.toLowerCase();
+          const all = ports.resources().filter((r) => r.enabled);
+          const matching =
+            needle === undefined
+              ? all
+              : all.filter(
+                  (r) =>
+                    r.id.toLowerCase().includes(needle) || r.title.toLowerCase().includes(needle),
+                );
+          const lines = matching
+            .slice(0, 30)
+            .map(
+              (r) =>
+                `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(freshness.get(r.id), ports.now())}`,
+            );
+          if (lines.length === 0) return evidence(name, 'No sources match that filter.');
+          return {
+            ...evidence(name, lines.join('\n')),
+            handles: matching.slice(0, 30).map((r) => r.id),
+          };
+        }
         // A search with no sourceIds stays inside the guild's enabled
         // resources: a disabled resource (e.g. a repo that went private) is
         // never searchable, even though its chunks are still cached.
@@ -969,7 +1176,10 @@ export const runAssistantTool = async (
           limit: 6,
         });
         if (hits.length === 0)
-          return evidence(name, 'No matching passages. Try different words, or list_sources.');
+          return evidence(
+            name,
+            'No matching passages. Try different words, or call search_sources without a query.',
+          );
         const byId = new Map(ports.resources().map((r) => [r.id, r]));
         const enabled = new Set(enabledIds);
         const lines: string[] = [];
@@ -986,7 +1196,10 @@ export const runAssistantTool = async (
           used += line.length + (lines.length > 1 ? 1 : 0);
         }
         if (lines.length === 0)
-          return evidence(name, 'No matching passages. Try different words, or list_sources.');
+          return evidence(
+            name,
+            'No matching passages. Try different words, or call search_sources without a query.',
+          );
         return { ...evidence(name, lines.join('\n')), handles };
       }
       case 'read_chunk': {
@@ -1029,32 +1242,6 @@ export const runAssistantTool = async (
           handles,
         };
       }
-      case 'outline': {
-        const { docId } = parsed.data as { docId: string };
-        const rows = ports.cacheOutline(docId);
-        // The outline rows carry no resource id, so the doc (or the first
-        // row's chunk) names the resource whose enabled flag decides: a
-        // disabled resource's outline is unknown, like its chunks.
-        const outlineResourceId =
-          ports.cacheDocument(docId)?.resourceId ??
-          (rows[0] === undefined ? undefined : ports.cacheChunk(rows[0].chunkId)?.resourceId);
-        if (outlineResourceId === undefined || enabledById(ports, outlineResourceId) === undefined)
-          return refused(name, 'unknown id');
-        if (rows.length === 0) {
-          return { ...evidence(name, 'No headings cached.'), handles: [] };
-        }
-        const lines: string[] = [];
-        const handles: string[] = [];
-        let used = 0;
-        for (const row of rows) {
-          const line = `[${row.chunkId}] ${clipHeading(row.headingPath, 200)}`;
-          if (used + line.length + 1 > 1_500) break;
-          lines.push(line);
-          handles.push(row.chunkId);
-          used += line.length + 1;
-        }
-        return { ...evidence(name, lines.join('\n')), handles };
-      }
       case 'refresh_source': {
         const { resourceId } = parsed.data as { resourceId: string };
         const found = enabledById(ports, resourceId);
@@ -1066,6 +1253,71 @@ export const runAssistantTool = async (
             ? 'Refresh started; updated content will be available in about a minute.'
             : 'Already refreshed in the last 10 minutes.',
         );
+      }
+      case 'upcoming_events': {
+        if (ports.upcomingEvents === undefined)
+          return refused(name, "I couldn't check the schedule right now.");
+        // The service already filters, sorts and caps; the slice and sort
+        // here only bound a hand-built port in tests.
+        const items = [...(await ports.upcomingEvents())]
+          .sort((a, b) => a.startsAt - b.startsAt)
+          .slice(0, 10);
+        if (items.length === 0) return evidence(name, 'Nothing scheduled in the next 30 days.');
+        const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+        const lines = items.map((item) => {
+          const line = `${clean(item.title)} — ${clock(ports, item.startsAt)} — ${clean(item.where)}`;
+          if (item.kind !== 'event' || item.description === undefined || item.description === '')
+            return line;
+          return `${line} — ${clean(item.description).slice(0, 200)}`;
+        });
+        return evidence(name, lines.join('\n'));
+      }
+      case 'channel_history': {
+        if (ports.channelHistory === undefined)
+          return refused(name, "I couldn't read the channel history.");
+        const { before, limit } = parsed.data as { before?: string; limit?: number };
+        const page = await ports.channelHistory({
+          ...(before === undefined ? {} : { before }),
+          // No limit named means a middle page, not the whole channel.
+          limit: limit ?? 20,
+        });
+        if (page === undefined) return refused(name, "I couldn't read the channel history.");
+        const body = evidence(name, page.lines.join('\n'));
+        if (page.oldestId === undefined) return { ...body, handles: [] };
+        // The cursor is code-issued (the port's own handle), not untrusted
+        // message text, so it joins after the evidence filter: a snowflake
+        // that happens to be Luhn-valid would otherwise redact into
+        // `[redacted …]` and the model could never page with it.
+        const cursor = `Older: before=${page.oldestId}`;
+        return {
+          ...body,
+          text: body.text === '' ? cursor : `${body.text}\n${cursor}`,
+          handles: [page.oldestId],
+        };
+      }
+      case 'search_conversations': {
+        const { query: q } = parsed.data as { query: string };
+        if (ports.searchConversations === undefined)
+          return refused(name, 'Looking back at earlier conversations is not available here.');
+        // At most 5 lines, each `<#channel>, <relative date>: topic — up to
+        // three facts` (ADR 0093 decision 2). The port carries only the
+        // aggregated display fields — no participants, no bot claims, no
+        // commitment owners — so none can leak through the formatting.
+        const shown = (await ports.searchConversations(q)).slice(0, 5);
+        if (shown.length === 0)
+          return {
+            ...evidence(name, 'No earlier conversations matched.'),
+            recalledConversationIds: [],
+          };
+        const lines = shown.map((hit) => {
+          const facts = hit.facts.slice(0, 3).join('; ');
+          const head = `<#${hit.channelId}>, ${relativeAgo(hit.lastActivityAt, ports.now())}: ${hit.topic}`;
+          return facts === '' ? head : `${head} — ${facts}`;
+        });
+        return {
+          ...evidence(name, lines.join('\n')),
+          recalledConversationIds: shown.map((hit) => hit.conversationId),
+        };
       }
     }
   } catch (err) {

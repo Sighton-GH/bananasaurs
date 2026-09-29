@@ -1,6 +1,22 @@
 import { z } from 'zod';
 
 /**
+ * Which context blocks a reply saw (ADR 0088 decision 2). A separate schema
+ * so the job cursor reuses the trace's own shape for it.
+ */
+export const assistantTraceIncludedSchema = z.object({
+  toolsOffered: z.array(z.string()),
+  snippetChunkIds: z.array(z.string()),
+  quote: z.boolean(),
+  historyTurns: z.number().int().nonnegative(),
+  /** ADR 0089: how many channel-context lines the reply saw. Absent means none. */
+  channelMessages: z.number().int().nonnegative().optional(),
+  /** ADR 0091: the stored summary version the history led with. Absent means none. */
+  summaryVersion: z.number().int().nonnegative().optional(),
+});
+export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
+
+/**
  * One stored assistant run (ADR 0076): what the member asked, what the model
  * saw, what it called, what it cost, and where it failed. Written by the
  * invoke job in Task 14; read by the History list and detail pages.
@@ -62,10 +78,20 @@ export const assistantTraceSchema = z.object({
       ok: z.boolean(),
       refused: z.string().optional(),
       ms: z.number().int().nonnegative(),
+      /**
+       * The full result text as the model saw it (neutralised, no wrapper
+       * or citation text), at most 6,000 characters. The field name stays
+       * `preview` for stored-row compatibility.
+       */
       preview: z.string(),
     }),
   ),
   guard: z.object({ removed: z.array(z.string()), blocked: z.string().optional() }),
+  /**
+   * Which context blocks the reply saw (ADR 0088 decision 2). Optional so
+   * rows written before it still parse; there is no migration.
+   */
+  included: assistantTraceIncludedSchema.optional(),
   timeline: z.array(z.object({ label: z.string(), atMs: z.number().int().nonnegative() })),
   error: z.object({ kind: z.string(), message: z.string() }).optional(),
   discordMessageIds: z.array(z.string()),

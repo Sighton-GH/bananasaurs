@@ -15,7 +15,9 @@ import {
   type NativeAutoModTrigger,
   type OutgoingMessage,
   type ReactionUserPage,
+  type RecentMessage,
   type RecentMessagesPage,
+  type ScheduledEvent,
   type Snowflake,
 } from '@bananasaurs/core';
 
@@ -62,6 +64,8 @@ interface FakeMessage {
   editedTimestampMs: number | undefined;
   /** Metadata only, for `fetchRecentMessages` (PR-68). */
   attachments: FakeAttachment[];
+  /** Reply target's display name, for `fetchChannelMessages` (ADR 0089). */
+  referencedAuthorName: string | undefined;
 }
 
 /**
@@ -255,6 +259,8 @@ export class FakeDiscord implements DiscordPort {
       contentType?: string | undefined;
       sizeBytes: number;
     }>;
+    /** Reply target's display name, for `fetchChannelMessages` (ADR 0089). */
+    referencedAuthorName?: string | undefined;
   }): void {
     const authorId = msg.authorId ?? '111111111111111111';
     this.messages.set(key(msg.channelId, msg.messageId), {
@@ -273,6 +279,7 @@ export class FakeDiscord implements DiscordPort {
         contentType: a.contentType,
         sizeBytes: a.sizeBytes,
       })),
+      referencedAuthorName: msg.referencedAuthorName,
     });
   }
   /** A message outside the client cache. Its events arrive partial. */
@@ -1224,6 +1231,52 @@ export class FakeDiscord implements DiscordPort {
     this.record('listPublicThreads', [guildId, channelId]);
     this.check('listPublicThreads', guildId);
     return [];
+  }
+
+  /**
+   * Guild scheduled events (ADR 0092): nothing is seeded, so the fake
+   * answers no events — the same `[]` the REST adapter reports on a 403.
+   */
+  async listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]> {
+    this.record('listScheduledEvents', [guildId]);
+    this.check('listScheduledEvents', guildId);
+    return [];
+  }
+
+  /**
+   * Channel context for the assistant (ADR 0089): messages before `before`,
+   * oldest first, excluding deleted ones. Unlike `fetchRecentMessages` this
+   * carries display names, the bot flag and the reply target instead of edit
+   * metadata. A 403/404 has no model here — the REST adapter folds those to
+   * `undefined`; callers that need the failure path inject it with
+   * `failNext`/`failAlways`, and the invoke job flags (never fails on) both
+   * `undefined` and a throw.
+   */
+  async fetchChannelMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    opts: { before: Snowflake; limit: number },
+  ): Promise<readonly RecentMessage[] | undefined> {
+    this.record('fetchChannelMessages', [guildId, channelId, opts]);
+    this.check('fetchChannelMessages', guildId);
+    const limit = Math.min(Math.max(opts.limit, 1), 50);
+    return [...this.messages.values()]
+      .filter((m) => m.channelId === channelId && !m.deleted)
+      .filter((m) => BigInt(m.messageId) < BigInt(opts.before))
+      .sort((a, b) => (BigInt(a.messageId) > BigInt(b.messageId) ? 1 : -1))
+      .slice(-limit)
+      .map((m) => ({
+        messageId: m.messageId,
+        authorId: m.authorId,
+        authorName: m.authorName,
+        authorIsBot: m.authorId === BOT_USER_ID,
+        content: m.content ?? '',
+        at: Number((BigInt(m.messageId) >> 22n) + BigInt(DISCORD_EPOCH_MS)),
+        ...(m.referencedAuthorName === undefined
+          ? {}
+          : { referencedAuthorName: m.referencedAuthorName }),
+        hasAttachments: m.attachments.length > 0,
+      }));
   }
 
   /**

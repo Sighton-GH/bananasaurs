@@ -7,6 +7,8 @@ import {
   effectiveSkillScope,
   estimateTokens,
   JOB_KINDS,
+  neutraliseMarkers,
+  nextOccurrence,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
@@ -20,6 +22,8 @@ import {
   type Config,
   type GenerationMessage,
   type Logger,
+  type RecentMessage,
+  type ScheduledEvent,
   type TextProvider,
 } from '@bananasaurs/core';
 import {
@@ -52,27 +56,19 @@ import {
   runAssistantTool,
   relativeUpdated,
   toolDeclarations,
-  type ArchiveHit,
+  type ArchiveResult,
   type AssistantToolPorts,
+  type UpcomingEventItem,
   type WebResult,
 } from './tools.js';
+import { formatChannelLines } from './channel-context.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
+import { sanitizeMentionsForProvider } from './mentions.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
 import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
-/**
- * Raw Discord mention snowflakes carry no meaning to a provider and trip the
- * conservative outbound scan's long-digit detectors, so they are flattened to
- * readable tokens before anything leaves the process. Only the mention shape
- * is rewritten; bare numbers stay untouched.
- */
-export const sanitizeMentionsForProvider = (text: string): string =>
-  text
-    .replace(/<@&\d{17,20}>/g, '@role')
-    .replace(/<@!?\d{17,20}>/g, '@user')
-    .replace(/<#\d{17,20}>/g, '#channel');
 
 /**
  * Task 14: the trace's `sections` are the compiled context sections as
@@ -164,10 +160,15 @@ const sourcesLine = (sources: readonly AnswerSource[]): string => {
   for (const source of sources) {
     if (source.url === '' || seen.has(source.url)) continue;
     seen.add(source.url);
-    entries.push(
+    const label =
       source.heading === undefined || source.heading === ''
         ? source.title
-        : `${source.title} › ${clipHeading(source.heading, 120)}`,
+        : `${source.title} › ${clipHeading(source.heading, 120)}`;
+    // ADR 0090 D3: a cited `from` hit lists its code-issued message link.
+    // Only registry-cited, known sources reach this line, so a model-written
+    // URL can never appear here.
+    entries.push(
+      source.url.startsWith('https://discord.com/channels/') ? `[${label}](${source.url})` : label,
     );
     if (entries.length >= 5) break;
   }
@@ -188,6 +189,14 @@ export interface AssistantTryItResult {
   readonly conversationId: string;
 }
 
+/** One member the `from` lookup can see (ADR 0090 decision 3). */
+export interface FoundMember {
+  readonly id: string;
+  readonly displayName: string;
+  readonly globalName?: string | undefined;
+  readonly username?: string | undefined;
+}
+
 /** What the tools need from live Discord (ADR 0067). */
 export interface AssistantDiscordPorts {
   /**
@@ -198,6 +207,22 @@ export interface AssistantDiscordPorts {
     userId: string,
   ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
   /**
+   * Channels every viewer of the answer channel can read (ADR 0090). The
+   * archive tool searches only these intersected with `memberChannels`;
+   * empty fails closed. Optional so existing callers keep compiling —
+   * production (`runtime/guild.ts`) always provides it. Absent with a
+   * channel set, the service fails closed and searches nothing.
+   */
+  readonly audienceChannels?:
+    ((answerChannelId: string) => Promise<ReadonlySet<string>>) | undefined;
+  /**
+   * ADR 0090 D3: resolves a `search_archive` `from` value (a member mention,
+   * id or name) to the members the job can see. Optional so existing callers
+   * keep compiling — production (`runtime/guild.ts`) always provides it.
+   * Absent, every `from` search refuses.
+   */
+  readonly findMember?: ((nameOrId: string) => Promise<readonly FoundMember[]>) | undefined;
+  /**
    * B2b: resolves a reminder's channel and mentions against live Discord
    * permissions. Optional so existing callers keep compiling — production
    * (`runtime/guild.ts`) always provides it. Absent, the service fails
@@ -205,6 +230,31 @@ export interface AssistantDiscordPorts {
    */
   readonly resolveReminderTargets?:
     ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
+  /**
+   * ADR 0092 decision 1: guild scheduled events behind `upcoming_events`.
+   * Optional so existing callers keep compiling — production always
+   * provides it. Absent, the tool stays undeclared.
+   */
+  readonly listScheduledEvents?: (() => Promise<readonly ScheduledEvent[]>) | undefined;
+  /**
+   * ADR 0092 decision 2: one channel page behind `channel_history`, the same
+   * shape as the invoke job's closure. Optional so existing callers keep
+   * compiling — production always provides it. Absent, the tool refuses.
+   */
+  readonly fetchChannelMessages?:
+    | ((
+        channelId: string,
+        opts: { before: string; limit: number },
+      ) => Promise<readonly RecentMessage[] | undefined>)
+    | undefined;
+  /**
+   * ADR 0087: role display names for the scope-denial reasons, by role id.
+   * Optional so existing callers keep compiling — production
+   * (`runtime/guild.ts`) always provides it. Absent, or with none of the
+   * scope's ids known, the reason stays the plain "only for certain roles"
+   * fallback.
+   */
+  readonly roleNames?: ((roleIds: readonly string[]) => ReadonlyMap<string, string>) | undefined;
 }
 /** B2b: the closed default — permissions cannot be checked, so no reminder. */
 const defaultResolveReminderTargets = (): Promise<ReminderTargetResult> =>
@@ -249,6 +299,13 @@ export const createAssistantService = (
     readonly totalCalls?: number;
     readonly maxOutputTokens?: number;
   } = () => ({}),
+  /**
+   * ADR 0092 decision 2: the live channel-context window from the AI tuning
+   * settings (`assistant.channelContextMessages`). The `channel_history`
+   * tool is declared only in a channel while this is above zero; absent
+   * means off.
+   */
+  channelContextMessages: () => number = () => 0,
 ): AssistantCommandService & {
   tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
 } => {
@@ -296,28 +353,90 @@ export const createAssistantService = (
    * independent.
    */
   const ledger = quotaLedger;
+  /**
+   * ADR 0090 D3: `from` (a member mention, id or name — model output, so
+   * untrusted) resolves to exactly one member id in code. An exact
+   * case-insensitive match on display name, global name or username wins;
+   * otherwise a single lookup result is the match. Zero results, or several
+   * without an exact match, refuse — as does a missing lookup port.
+   */
+  const resolveFromMember = async (
+    from: string,
+  ): Promise<
+    | { readonly ok: true; readonly authorId: string }
+    | { readonly ok: false; readonly problem: string }
+  > => {
+    const problem = "I couldn't tell which member you meant.";
+    if (discord.findMember === undefined) return { ok: false, problem };
+    let candidates: readonly FoundMember[];
+    try {
+      candidates = await discord.findMember(from);
+    } catch {
+      return { ok: false, problem };
+    }
+    const needle = from.trim().toLowerCase();
+    const exact = candidates.filter((candidate) =>
+      [candidate.displayName, candidate.globalName, candidate.username].some(
+        (name) => name !== undefined && name.toLowerCase() === needle,
+      ),
+    );
+    if (exact.length === 1) return { ok: true, authorId: exact[0]!.id };
+    if (exact.length === 0 && candidates.length === 1)
+      return { ok: true, authorId: candidates[0]!.id };
+    return { ok: false, problem };
+  };
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
-  const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
-    if (query.trim() === '') return [];
+  const searchArchive = async (
+    userId: string,
+    answerChannelId: string | undefined,
+    query: string,
+    from?: string,
+  ): Promise<ArchiveResult> => {
+    if (query.trim() === '') return { ok: true, hits: [] };
+    // ADR 0090 D3: with `from`, the search is scoped to one resolved member.
+    let authorId: string | undefined;
+    if (from !== undefined) {
+      const resolved = await resolveFromMember(from);
+      if (!resolved.ok) return resolved;
+      authorId = resolved.authorId;
+    }
     const visible = new Set((await discord.memberChannels(userId)).map((channel) => channel.id));
+    // ADR 0090: an answer posted in a channel draws only on channels every
+    // viewer of that channel can read. Try it has no channel, so it keeps
+    // the asker-only filter; anything unknown fails closed to no channels.
+    if (answerChannelId !== undefined) {
+      if (discord.audienceChannels === undefined) return { ok: true, hits: [] };
+      const audience = await discord.audienceChannels(answerChannelId);
+      for (const id of visible) if (!audience.has(id)) visible.delete(id);
+    }
     const channelIds = archiveRepo
       .listChannels(scope)
       .map((channel) => channel.channelId)
       .filter((id) => visible.has(id));
-    if (channelIds.length === 0) return [];
+    if (channelIds.length === 0) return { ok: true, hits: [] };
     // A private thread inside a visible channel is not visible to every member
     // who can see the channel, and the archive does not record which threads
     // are private, so member-facing search leaves every thread out.
-    return archiveSearchRepo
-      .searchMessages(scope, { query, visibility: { channelIds }, limit: 16 })
-      .hits.filter((hit) => hit.threadId === undefined)
-      .slice(0, 8)
-      .map((hit) => ({
-        channelId: hit.channelId,
-        messageId: hit.messageId,
-        createdAt: hit.createdAt,
-        excerpt: hit.excerpt,
-      }));
+    const limit = from === undefined ? 16 : 3;
+    const cap = from === undefined ? 8 : 3;
+    return {
+      ok: true,
+      hits: archiveSearchRepo
+        .searchMessages(scope, {
+          query,
+          visibility: { channelIds },
+          ...(authorId === undefined ? {} : { authorId }),
+          limit,
+        })
+        .hits.filter((hit) => hit.threadId === undefined)
+        .slice(0, cap)
+        .map((hit) => ({
+          channelId: hit.channelId,
+          messageId: hit.messageId,
+          createdAt: hit.createdAt,
+          excerpt: hit.excerpt,
+        })),
+    };
   };
   const invokeOnce = async (
     input: AssistantInvocation,
@@ -345,6 +464,10 @@ export const createAssistantService = (
       const currentConfig = liveConfig();
       const chainEntries = currentChain();
       const citations = createCitationRegistry();
+      // ADR 0093: the conversations whose summaries this run looked back
+      // at — collected from the `search_conversations` tool results below
+      // and carried on the trace detail so the invoke job can link them.
+      const recalled: string[] = [];
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -373,20 +496,15 @@ export const createAssistantService = (
           ok: false,
           content: 'This behaviour is not available to your server roles. No action was taken.',
         };
-      if (!input.behaviour.allowedSkillIds.includes(skill))
-        return {
-          ok: false,
-          content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
-        };
-      // B2b: the behaviour allowlist and the skill's own scope both gate the
-      // request, checked in code against the asker's live roles. Try-it
-      // counts as the owner for scopes (`config.write` authorised the caller).
+      // ADR 0087: the skill's scope is the only gate, checked in code
+      // against the asker's live roles. The behaviour's preferred list never
+      // grants or denies. Try-it counts as the owner for scopes
+      // (`config.write` authorised the caller).
       const scopeOwner = owner || opts.skipCallerGate === true;
       const grants = new Map(
         assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant]),
       );
       const skillAllowed = (id: string): boolean => {
-        if (!input.behaviour.allowedSkillIds.includes(id)) return false;
         const catalogueSkill = CLUB_ASSISTANT_SKILLS.find((candidate) => candidate.id === id);
         if (catalogueSkill === undefined) return false;
         // Fix 1 (hard rule 6): acting tools need a durable idempotency key.
@@ -403,6 +521,36 @@ export const createAssistantService = (
       const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) =>
         skillAllowed(candidate.id),
       );
+      // ADR 0087: catalogue skills the asker's scope denies, named plainly.
+      // Not computed for skills hidden only by skipActions/missing invocation
+      // id — the scope check alone decides. Role reasons name the allowed
+      // roles the `roleNames` port knows, else fall back to
+      // "only for certain roles".
+      const cleanRoleToken = (name: string): string =>
+        neutraliseMarkers(name)
+          .replace(/[[\]\r\n]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const unavailableSkills: readonly {
+        readonly skill: (typeof CLUB_ASSISTANT_SKILLS)[number];
+        readonly reason: string;
+      }[] = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
+        const scope = effectiveSkillScope(candidate, grants.get(candidate.id));
+        return !skillScopeAllows(scope, { owner: scopeOwner, roleIds: input.callerRoleIds });
+      }).map((candidate) => {
+        const scope = effectiveSkillScope(candidate, grants.get(candidate.id));
+        if (scope.mode === 'owner') return { skill: candidate, reason: 'owner only' };
+        if (scope.mode === 'roles') {
+          const known = discord.roleNames?.(scope.roleIds) ?? new Map<string, string>();
+          const names = scope.roleIds
+            .map((roleId) => known.get(roleId))
+            .filter((name): name is string => name !== undefined);
+          const cleaned = names.map(cleanRoleToken).filter((name) => name !== '');
+          if (cleaned.length === 0) return { skill: candidate, reason: 'only for certain roles' };
+          return { skill: candidate, reason: `only for ${cleaned.join(', ')}` };
+        }
+        return { skill: candidate, reason: 'only for certain roles' };
+      });
       // B2b: every acting tool's port, closed over this request's guild scope
       // and asker. The invocation key is the Discord message or interaction
       // that asked — the durable idempotency anchor, so a retried job reuses
@@ -426,7 +574,13 @@ export const createAssistantService = (
       }
       if (input.command === 'find') {
         // ADR 0067: the archive, limited to channels this member can view.
-        const hits = await searchArchive(input.userId, input.input.query ?? '');
+        // ADR 0090: and to the answer channel's audience.
+        const searched = await searchArchive(
+          input.userId,
+          input.channelId,
+          input.input.query ?? '',
+        );
+        const hits = searched.ok ? searched.hits : [];
         return {
           ok: true,
           content:
@@ -587,6 +741,8 @@ export const createAssistantService = (
         resources,
         evidence,
         skills: permittedSkills,
+        preferredSkillIds: input.behaviour.preferredSkillIds,
+        unavailableSkills,
         toolsAvailable,
         catalogueLines,
       });
@@ -605,8 +761,115 @@ export const createAssistantService = (
         });
         return result.enqueued;
       };
+      // ADR 0092: the two read-only tools' ports, closed over this request.
+      const listScheduledEvents = discord.listScheduledEvents;
+      const fetchChannelHistory = discord.fetchChannelMessages;
+      const answerChannelId = input.channelId;
+      /**
+       * ADR 0092 decision 1: up to 10 schedule rows in the next 30 days,
+       * soonest first — Discord scheduled events plus channel reminders in
+       * the answer channel's audience. Guild scope, the audience rule
+       * (ADR 0090) and untrusted evidence (hard rule 3) apply: a
+       * channel-bound row lists only inside the audience; Try it (no
+       * channel) lists external events only, plus reminders for channels
+       * the asker can read. A personal reminder (destination at the
+       * creator, not a channel — the DM-style row delivery also treats as
+       * not-a-channel) is never listed.
+       */
+      const upcomingEvents: AssistantToolPorts['upcomingEvents'] =
+        listScheduledEvents === undefined
+          ? undefined
+          : async () => {
+              const nowMs = now();
+              const horizonMs = nowMs + 30 * 86_400_000;
+              const inWindow = (at: number): boolean => at >= nowMs && at <= horizonMs;
+              const clean = (text: string): string =>
+                neutraliseMarkers(redactEvidenceText(text).text);
+              const audience =
+                answerChannelId === undefined
+                  ? undefined
+                  : await (discord.audienceChannels?.(answerChannelId) ?? new Set<string>());
+              const memberChannels =
+                answerChannelId === undefined
+                  ? new Set((await discord.memberChannels(input.userId)).map((c) => c.id))
+                  : undefined;
+              const items: UpcomingEventItem[] = [];
+              for (const event of await listScheduledEvents()) {
+                if (!inWindow(event.scheduledStartAt)) continue;
+                if (
+                  event.channelId !== undefined &&
+                  (audience === undefined || !audience.has(event.channelId))
+                )
+                  continue;
+                items.push({
+                  kind: 'event',
+                  title: clean(event.name),
+                  startsAt: event.scheduledStartAt,
+                  where: clean(
+                    event.location ??
+                      (event.channelId === undefined ? 'Online' : `<#${event.channelId}>`),
+                  ),
+                  ...(event.description === undefined
+                    ? {}
+                    : { description: clean(event.description) }),
+                });
+              }
+              for (const reminder of assistantRepo.listReminders(scope)) {
+                if (reminder.status !== 'scheduled' && reminder.status !== 'delivering') continue;
+                if (reminder.destinationId === reminder.creatorId) continue;
+                const allowed = audience ?? memberChannels;
+                if (allowed === undefined || !allowed.has(reminder.destinationId)) continue;
+                let fireAt = reminder.dueAt;
+                if (reminder.recurrence !== undefined) {
+                  const next = nextOccurrence(
+                    reminder.recurrence,
+                    reminder.dueAt,
+                    nowMs,
+                    reminder.deliveredCount,
+                  );
+                  if (next === undefined) continue;
+                  fireAt = next;
+                }
+                if (!inWindow(fireAt)) continue;
+                items.push({
+                  kind: 'reminder',
+                  title: clean(reminder.text),
+                  startsAt: fireAt,
+                  where: `<#${reminder.destinationId}>`,
+                });
+              }
+              return items.sort((a, b) => a.startsAt - b.startsAt).slice(0, 10);
+            };
+      /**
+       * ADR 0092 decision 2: one page further back in the current channel,
+       * formatted like channel context. Only in a channel while the window
+       * setting is above zero; without `before` it starts just above the
+       * channel-context window (`channelContextOldestId`), falling back to
+       * the invoking message id.
+       */
+      const channelHistory: AssistantToolPorts['channelHistory'] =
+        answerChannelId === undefined || channelContextMessages() <= 0
+          ? undefined
+          : async (opts) => {
+              if (fetchChannelHistory === undefined) return undefined;
+              const before = opts.before ?? input.channelContextOldestId ?? input.invocationId;
+              if (before === undefined) return undefined;
+              const messages = await fetchChannelHistory(answerChannelId, {
+                before,
+                limit: Math.min(Math.max(opts.limit, 1), 50),
+              });
+              if (messages === undefined) return undefined;
+              return {
+                lines: formatChannelLines(messages, {
+                  botUserId: config.DISCORD_APPLICATION_ID,
+                  now: now(),
+                }),
+                ...(messages.length === 0 ? {} : { oldestId: messages[0]!.messageId }),
+              };
+            };
       const toolPorts: AssistantToolPorts = {
         userId: input.userId,
+        guildId: scope.guildId,
         now,
         timeZone: currentConfig.BANANASAURS_TIME_ZONE,
         // Try-it counts as the owner for scope checks (`config.write`
@@ -652,7 +915,45 @@ export const createAssistantService = (
             outcome,
             ...(detail === undefined ? {} : { detail }),
           }),
-        searchArchive: (query) => searchArchive(input.userId, query),
+        searchArchive: (query, from) => searchArchive(input.userId, input.channelId, query, from),
+        /**
+         * ADR 0093: summaries of earlier conversations the asker may be
+         * shown — the answer channel's audience intersected with the
+         * asker's channels (the asker's channels only when there is no
+         * answer channel, i.e. Try it), never the current conversation.
+         * Only the aggregated display fields travel on: the topic and the
+         * fact texts, never participants, bot claims or commitment owners.
+         * Every string is redacted like other evidence, then neutralised
+         * (hard rule 3).
+         */
+        searchConversations: async (query: string) => {
+          const visible = new Set(
+            (await discord.memberChannels(input.userId)).map((channel) => channel.id),
+          );
+          if (input.channelId !== undefined) {
+            if (discord.audienceChannels === undefined) return [];
+            const audience = await discord.audienceChannels(input.channelId);
+            for (const id of visible) if (!audience.has(id)) visible.delete(id);
+          }
+          if (visible.size === 0) return [];
+          const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+          return conversationRepo
+            .searchSummaries(scope, {
+              query,
+              channelIds: [...visible],
+              ...(input.conversationId === undefined
+                ? {}
+                : { excludeConversationId: input.conversationId }),
+              limit: 5,
+            })
+            .map((hit) => ({
+              conversationId: hit.conversationId,
+              channelId: hit.channelId,
+              lastActivityAt: hit.lastActivityAt,
+              topic: clean(hit.summary.topic),
+              facts: hit.summary.facts.map((fact) => clean(fact.text)),
+            }));
+        },
         resources: () => resources,
         fetchResource,
         webSearch:
@@ -663,6 +964,8 @@ export const createAssistantService = (
                 braveWebSearch({ apiKey: currentConfig.BRAVE_SEARCH_API_KEY! }, query)),
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
+        upcomingEvents,
+        channelHistory,
         cacheSearch: (q) =>
           resourceCacheRepo.searchChunks(scope, {
             query: q.query,
@@ -764,6 +1067,20 @@ export const createAssistantService = (
           toolCalls: failed.toolCalls,
           usage: failed.usage,
           guard: failed.guard,
+          included: {
+            toolsOffered: [...failed.toolsOffered],
+            snippetChunkIds: preRetrieved.map((hit) => hit.chunkId),
+            quote:
+              (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
+              input.quoteInHistory === true,
+            historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+            ...(input.channelMessages === undefined
+              ? {}
+              : { channelMessages: input.channelMessages }),
+            ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+          },
+          // ADR 0093: hits gathered before the failure still link.
+          ...(recalled.length === 0 ? {} : { recalled: [...new Set(recalled)] }),
         });
         if (failed.actionSummaries.length > 0) {
           const detail = loopDetail();
@@ -867,6 +1184,7 @@ export const createAssistantService = (
       const userText = buildUserMessage({
         question: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
         askerName: input.askerName,
+        channelContext: input.channelContext,
         evidenceEnvelope: context.evidenceEnvelope,
         quoteEnvelope: input.quoteEnvelope,
       });
@@ -905,7 +1223,22 @@ export const createAssistantService = (
         tools: {
           firstRound: declarations,
           idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
-          run: (call) => runAssistantTool(call, toolPorts),
+          // ADR 0090 D3: the tool result's own sources seed the known set,
+          // so `isKnownResource` accepts exactly the message links code
+          // issued in this request — nothing the model writes can add one.
+          run: async (call) => {
+            const result = await runAssistantTool(call, toolPorts, citations);
+            if (result.ok && call.name === 'search_archive') {
+              for (const source of result.sources)
+                knownResource.add(`${source.title}${source.url}`);
+            }
+            // ADR 0093: the hit ids travel to the trace detail (and from
+            // there to the `recalled` links), not just into the answer text.
+            if (result.ok && call.name === 'search_conversations') {
+              for (const id of result.recalledConversationIds ?? []) recalled.push(id);
+            }
+            return result;
+          },
         },
         limits: loopLimits(),
         quotaLedger: ledger,
@@ -966,9 +1299,25 @@ export const createAssistantService = (
         toolCalls: loop.toolCalls,
         usage: loop.usage,
         guard: loop.guard,
+        included: {
+          toolsOffered: [...loop.toolsOffered],
+          snippetChunkIds: preRetrieved.map((hit) => hit.chunkId),
+          quote:
+            (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
+            input.quoteInHistory === true,
+          historyTurns: historyForLoop.filter((message) => message.role === 'user').length,
+          ...(input.channelMessages === undefined
+            ? {}
+            : { channelMessages: input.channelMessages }),
+          ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+        },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
+        ...(loop.answeredBy === undefined ? {} : { answeredBy: { ...loop.answeredBy } }),
+        // ADR 0093: the conversations this run looked back at, for the
+        // invoke job's `recalled` links.
+        ...(recalled.length === 0 ? {} : { recalled: [...new Set(recalled)] }),
         // B2b: the summaries appended to the posted answer, in call order.
         ...(loop.actionSummaries.length === 0 ? {} : { actions: [...loop.actionSummaries] }),
       };
@@ -1182,6 +1531,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             invocationId: userTurnId,
             history,
             askerName: input.accountUsername,
+            // ADR 0093: Try it recalls with the asker-only filter, still
+            // excluding the conversation being answered in.
+            conversationId,
           },
           sink,
           {
@@ -1246,6 +1598,22 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         sections: detail?.sections ?? [],
         toolCalls: detail?.toolCalls ?? [],
         guard: detail?.guard ?? { removed: [] },
+        ...(detail?.included === undefined
+          ? {}
+          : {
+              included: {
+                toolsOffered: [...detail.included.toolsOffered],
+                snippetChunkIds: [...detail.included.snippetChunkIds],
+                quote: detail.included.quote,
+                historyTurns: detail.included.historyTurns,
+                ...(detail.included.channelMessages === undefined
+                  ? {}
+                  : { channelMessages: detail.included.channelMessages }),
+                ...(detail.included.summaryVersion === undefined
+                  ? {}
+                  : { summaryVersion: detail.included.summaryVersion }),
+              },
+            }),
         timeline: [
           { label: 'received', atMs: 0 },
           { label: 'answered', atMs: Math.max(0, now() - started) },

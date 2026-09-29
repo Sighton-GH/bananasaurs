@@ -456,7 +456,7 @@ export const skillUrl = (skillId: string) => `/api/assistant/skills/${encodeURIC
 export interface SkillBehaviourRow {
   readonly id: string;
   readonly name: string;
-  readonly allowed: boolean;
+  readonly preferred: boolean;
 }
 export interface SkillCommandOption {
   readonly name: string;

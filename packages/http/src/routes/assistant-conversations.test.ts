@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, type AssistantTrace, type Capability } from '@bananasaurs/core';
+import {
+  parseGuildId,
+  renderSummary,
+  type AssistantTrace,
+  type Capability,
+} from '@bananasaurs/core';
 import type * as Storage from '@bananasaurs/storage';
 import {
   accountRepo,
@@ -437,6 +442,107 @@ describe('assistant conversation routes', () => {
     ]);
   });
 
+  it('returns links in both directions with joinRule and keeps guild scope', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_000);
+    seedConversation('conv-2', 2_000);
+    const scope = t.scopes.forGuild(GUILD);
+    conversationRepo.appendTurn(scope, {
+      conversationId: 'conv-1',
+      turnId: 'conv-1-turn-followup',
+      at: 1_001,
+      role: 'user',
+      authorId: MEMBER,
+      authorName: 'Bryan',
+      text: 'a follow-up question',
+      joinRule: 'follow-up',
+    });
+    conversationRepo.linkConversations(scope, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-2',
+      kind: 'same-channel',
+      at: 3_000,
+    });
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    conversationRepo.createConversation(other, {
+      conversationId: 'conv-1',
+      channelId: CHANNEL,
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'other-title-conv-1',
+      source: 'discord',
+      at: 1_000,
+    });
+    conversationRepo.createConversation(other, {
+      conversationId: 'conv-other',
+      channelId: CHANNEL,
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'other-title-conv-other',
+      source: 'discord',
+      at: 2_000,
+    });
+    conversationRepo.linkConversations(other, {
+      conversationId: 'conv-1',
+      linkedConversationId: 'conv-other',
+      kind: 'same-channel',
+      at: 3_000,
+    });
+    const { cookie } = await signIn();
+    const first = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-1',
+      headers: { cookie },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json<{
+      turns: { turnId: string; joinRule?: string }[];
+      links: {
+        otherConversationId: string;
+        otherTitle: string;
+        kind: string;
+        direction: string;
+        at: number;
+      }[];
+    }>();
+    expect(firstBody.turns.find((turn) => turn.turnId === 'conv-1-turn-followup')?.joinRule).toBe(
+      'follow-up',
+    );
+    expect(firstBody.links).toEqual([
+      {
+        otherConversationId: 'conv-2',
+        otherTitle: 'title-conv-2',
+        kind: 'same-channel',
+        direction: 'outgoing',
+        at: 3_000,
+      },
+    ]);
+    const second = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-2',
+      headers: { cookie },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json<{
+      links: {
+        otherConversationId: string;
+        otherTitle: string;
+        kind: string;
+        direction: string;
+        at: number;
+      }[];
+    }>();
+    expect(secondBody.links).toEqual([
+      {
+        otherConversationId: 'conv-1',
+        otherTitle: 'title-conv-1',
+        kind: 'same-channel',
+        direction: 'incoming',
+        at: 3_000,
+      },
+    ]);
+  });
+
   it('batches the people lookup into one call per list page', async () => {
     grant('audit.read');
     seedConversation('conv-1', 1_000);
@@ -489,5 +595,103 @@ describe('assistant conversation routes', () => {
         { title: 'Meetings page', url: 'https://example.com/meetings' },
       ]);
     }
+  });
+
+  it('returns a null summary when none is stored', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_790_000_000_000);
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-1',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ summary: unknown }>().summary).toBeNull();
+  });
+
+  it('returns the rendered summary with its version and update time', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_790_000_000_000);
+    const summary = {
+      topic: 'Friday social planning',
+      facts: [{ text: 'The hall opens at six', from: 'member' as const }],
+      botClaims: [] as string[],
+      openQuestions: [] as string[],
+      commitments: [] as { who: string; what: string }[],
+      participants: [] as string[],
+    };
+    conversationRepo.writeSummaryIfNewer(t.scopes.forGuild(GUILD), {
+      conversationId: 'conv-1',
+      summary,
+      throughAt: 2_000,
+      now: 9_000,
+    });
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-1',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ summary: unknown }>().summary).toEqual({
+      text: renderSummary(summary),
+      version: 1,
+      updatedAt: 9_000,
+    });
+  });
+
+  it('keeps the detail summary guild-scoped', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_790_000_000_000);
+    const here = {
+      topic: 'Here topic',
+      facts: [],
+      botClaims: [] as string[],
+      openQuestions: [] as string[],
+      commitments: [] as { who: string; what: string }[],
+      participants: [] as string[],
+    };
+    conversationRepo.writeSummaryIfNewer(t.scopes.forGuild(GUILD), {
+      conversationId: 'conv-1',
+      summary: here,
+      throughAt: 2_000,
+      now: 9_000,
+    });
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    conversationRepo.createConversation(other, {
+      conversationId: 'conv-1',
+      channelId: CHANNEL,
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'other-title-conv-1',
+      source: 'discord',
+      at: 1_000,
+    });
+    conversationRepo.writeSummaryIfNewer(other, {
+      conversationId: 'conv-1',
+      summary: {
+        topic: 'There topic',
+        facts: [],
+        botClaims: [] as string[],
+        openQuestions: [] as string[],
+        commitments: [] as { who: string; what: string }[],
+        participants: [] as string[],
+      },
+      throughAt: 5_000,
+      now: 9_001,
+    });
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-1',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ summary: unknown }>().summary).toEqual({
+      text: renderSummary(here),
+      version: 1,
+      updatedAt: 9_000,
+    });
   });
 });

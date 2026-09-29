@@ -142,6 +142,9 @@ class MinimalSendDiscord implements DiscordPort {
   async listPublicThreads(): Promise<never> {
     this.notUsed('listPublicThreads');
   }
+  async listScheduledEvents(): Promise<never> {
+    this.notUsed('listScheduledEvents');
+  }
   async deferInteraction(): Promise<void> {
     this.notUsed('deferInteraction');
   }
@@ -150,6 +153,9 @@ class MinimalSendDiscord implements DiscordPort {
   }
   async fetchMessageContent(): Promise<never> {
     this.notUsed('fetchMessageContent');
+  }
+  async fetchChannelMessages(): Promise<never> {
+    this.notUsed('fetchChannelMessages');
   }
   async sendTyping(): Promise<void> {
     this.notUsed('sendTyping');

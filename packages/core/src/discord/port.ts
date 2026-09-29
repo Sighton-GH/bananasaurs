@@ -149,10 +149,47 @@ export interface DiscordThread {
   readonly archived: boolean;
 }
 
+/**
+ * One guild scheduled event as `listScheduledEvents` reports it (ADR 0092).
+ * `channelId` is absent for external events; `location` comes from the
+ * event's entity metadata when Discord carries one.
+ */
+export interface ScheduledEvent {
+  readonly id: Snowflake;
+  readonly name: string;
+  readonly description?: string | undefined;
+  /** From `scheduled_start_time`. */
+  readonly scheduledStartAt: number;
+  readonly channelId?: Snowflake | undefined;
+  readonly location?: string | undefined;
+}
+
 export interface RecentMessagesPage {
   messages: readonly FetchedMessage[];
   /** Pass back as `before` to continue. Undefined when the page is the last. */
   nextBefore: Snowflake | undefined;
+}
+
+/**
+ * One channel message as `fetchChannelMessages` reports it (ADR 0089 channel
+ * context).
+ *
+ * Named `RecentMessage` (not `FetchedMessage`): the purge pager already owns
+ * that shape, and this one carries display names, the bot flag and the reply
+ * target instead of edit metadata.
+ */
+export interface RecentMessage {
+  readonly messageId: Snowflake;
+  readonly authorId: Snowflake;
+  /** Nick, then global name, then username — as `fetchMessageContent` reads it. */
+  readonly authorName: string;
+  readonly authorIsBot: boolean;
+  readonly content: string;
+  /** From the message's `timestamp`. */
+  readonly at: number;
+  /** From `referenced_message.author`, when the message is a reply. */
+  readonly referencedAuthorName?: string | undefined;
+  readonly hasAttachments: boolean;
 }
 
 export interface DiscordPort {
@@ -206,6 +243,22 @@ export interface DiscordPort {
     channelId: Snowflake,
     messageId: Snowflake,
   ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
+  /**
+   * Channel context for the assistant (ADR 0089): up to `limit` messages sent
+   * before `before` in one channel, oldest first. `undefined` on 404 (gone)
+   * or 403 (no access) — both routine, reported the same way rather than
+   * thrown, so the caller answers without the block instead of failing.
+   *
+   * Named `fetchChannelMessages`, not ADR 0089's `fetchRecentMessages`: that
+   * name is taken by the purge pager above, whose newest-first page-plus-
+   * cursor contract is a different fetch. The job-level closure keeps the
+   * spec's `fetchRecentMessages` name; only the port method differs.
+   */
+  fetchChannelMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    opts: { before: Snowflake; limit: number },
+  ): Promise<readonly RecentMessage[] | undefined>;
   /** The "is typing…" indicator, shown for about ten seconds or until the next message. */
   sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void>;
 
@@ -262,6 +315,13 @@ export interface DiscordPort {
    * an empty list, which read as "no threads" rather than "not wired".
    */
   listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
+  /**
+   * Guild scheduled events for the assistant's `upcoming_events` tool
+   * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway
+   * intent needed. An empty list when there are none — or when the bot may
+   * not see them (403).
+   */
+  listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]>;
 
   // --- interactions ------------------------------------------------------
   /**

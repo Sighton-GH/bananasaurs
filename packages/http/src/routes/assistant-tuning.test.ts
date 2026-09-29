@@ -194,7 +194,7 @@ describe('AI tuning without a store', () => {
 });
 
 describe('GET /api/assistant/tuning', () => {
-  it('lists the 11 settings for the owner', async () => {
+  it('lists the 12 settings for the owner', async () => {
     const owner = await signInAs('owner');
     const response = await app.inject({
       method: 'GET',
@@ -203,8 +203,9 @@ describe('GET /api/assistant/tuning', () => {
     });
     expect(response.statusCode).toBe(200);
     const body = response.json<{ settings: { key: string }[] }>();
-    expect(body.settings).toHaveLength(11);
+    expect(body.settings).toHaveLength(12);
     expect(body.settings.map((s) => s.key)).toContain('assistant.retryDelaysMs');
+    expect(body.settings.map((s) => s.key)).toContain('assistant.channelContextMessages');
   });
 });
 

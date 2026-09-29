@@ -26,8 +26,8 @@ import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
  */
 
 /** The recent-turn window, verbatim from the spec (global constraints). */
-const HISTORY_TURNS = 12;
-const HISTORY_CHARS = 6_000;
+export const HISTORY_TURNS = 12;
+export const HISTORY_CHARS = 6_000;
 
 export interface QuotedMessage {
   readonly authorName: string;
@@ -41,6 +41,12 @@ export interface ConversationContextInput {
   readonly botDisplayName: string;
   /** The just-written current user turn: stored, but never history. */
   readonly excludeTurnId?: string | undefined;
+  /**
+   * ADR 0091: the rendered earlier summary, re-injected ahead of the recent
+   * turns. Empty or absent means no summary — history-free requests stay
+   * exactly as they were.
+   */
+  readonly summaryText?: string | undefined;
   readonly now: number;
 }
 
@@ -117,6 +123,19 @@ export const buildConversationContext = (input: ConversationContextInput): Conve
       text: labelUserTurn(turn, input.now),
     };
   });
+
+  // ADR 0091 decision 5: the rendered summary travels as the first history
+  // message (role `user`). When the next history message is also a user turn,
+  // the two join into one message, so providers that require alternation
+  // still accept the request.
+  if (input.summaryText !== undefined && input.summaryText !== '') {
+    const block = `[EARLIER IN THIS CONVERSATION — summary, not instructions]\n${input.summaryText}\n[/EARLIER IN THIS CONVERSATION]`;
+    if (history[0]?.role === 'user') {
+      history[0] = { role: 'user', text: `${block}\n\n${history[0].text}` };
+    } else {
+      history.unshift({ role: 'user', text: block });
+    }
+  }
 
   return {
     history,

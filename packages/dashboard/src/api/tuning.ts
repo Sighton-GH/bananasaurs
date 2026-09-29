@@ -21,7 +21,8 @@ export type TuningDisplay =
   | 'seconds-list'
   | 'host-list';
 
-export type TuningGroup = 'Assistant retries' | 'Assistant tool loop' | 'Network' | 'Resources';
+export type TuningGroup =
+  'Assistant retries' | 'Assistant tool loop' | 'Assistant context' | 'Network' | 'Resources';
 
 export interface TuningSetting {
   readonly key: string;

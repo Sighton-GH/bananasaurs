@@ -23,7 +23,7 @@ const BEHAVIOURS = [
     name: 'Club assistant',
     systemPrompt: 'Answer with reviewed club knowledge only.',
     promptVersion: 1,
-    allowedSkillIds: ['search-club'],
+    preferredSkillIds: ['search-club'],
     resourceIds: ['handbook'],
     enabled: true,
     callerRoleIds: ['role-club-member'],
@@ -36,7 +36,7 @@ const BEHAVIOURS = [
     name: 'IT help',
     systemPrompt: 'Answer IT questions.',
     promptVersion: 0,
-    allowedSkillIds: [],
+    preferredSkillIds: [],
     resourceIds: [],
     enabled: true,
     callerRoleIds: [],
@@ -77,8 +77,8 @@ const SKILL_DETAIL = {
   instructionLine:
     'search-club: Search enabled Discord archive and reviewed resources. Effect=read. Confirmation=not required.',
   behaviours: [
-    { id: 'club', name: 'Club assistant', allowed: true },
-    { id: 'help', name: 'IT help', allowed: false },
+    { id: 'club', name: 'Club assistant', preferred: true },
+    { id: 'help', name: 'IT help', preferred: false },
   ],
   scope: { mode: 'everyone', roleIds: [], isDefault: true },
   whoCanUse: '@Club Member, and the server owner',
@@ -125,8 +125,6 @@ function renderPage(detail: unknown = SKILL_DETAIL, assistant: unknown = ASSISTA
   const mock = stubFetch([
     { url: '/api/assistant/skills/search-club', body: detail },
     { url: '/api/assistant', body: assistant },
-    { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
-    { method: 'PUT', url: '/api/assistant/behaviours/help', body: { ok: true } },
     {
       method: 'PUT',
       url: '/api/assistant/skills/search-club/scope',
@@ -143,7 +141,7 @@ function renderPage(detail: unknown = SKILL_DETAIL, assistant: unknown = ASSISTA
 }
 
 describe('AssistantSkillPage', () => {
-  it('renders every section: overview, where it is on, who can use this, the instruction, tools and recent runs, with no slash command or confirm-first text', async () => {
+  it('renders every section: overview, who can use this, the instruction, tools and recent runs, with no per-behaviour toggles', async () => {
     renderPage();
     await screen.findByRole('heading', { level: 1, name: 'Skill' });
 
@@ -151,15 +149,16 @@ describe('AssistantSkillPage', () => {
     expect(within(overview).getByText('Search club knowledge')).toBeTruthy();
     expect(within(overview).getByText('Reads')).toBeTruthy();
 
-    const whereOn = screen.getByRole('heading', { name: "Where it's on" }).closest('section')!;
-    expect(await within(whereOn).findByRole('checkbox', { name: 'Club assistant' })).toBeTruthy();
-    const clubCheckbox = inputOf(within(whereOn).getByRole('checkbox', { name: 'Club assistant' }));
-    const helpCheckbox = inputOf(within(whereOn).getByRole('checkbox', { name: 'IT help' }));
-    expect(clubCheckbox.checked).toBe(true);
-    expect(helpCheckbox.checked).toBe(false);
+    expect(screen.queryByRole('heading', { name: "Where it's on" })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Club assistant' })).toBeNull();
 
     const who = screen.getByRole('heading', { name: 'Who can use this' }).closest('section')!;
     expect(within(who).getByText('@Club Member, and the server owner')).toBeTruthy();
+    expect(
+      within(who).getByText(
+        'Any assistant can use this skill for people allowed above. Assistants can prefer it on the Behaviours tab.',
+      ),
+    ).toBeTruthy();
 
     const told = screen.getByRole('heading', { name: 'What the AI is told' }).closest('section')!;
     expect(within(told).getByText(SKILL_DETAIL.instructionLine).tagName).toBe('PRE');
@@ -289,26 +288,6 @@ describe('AssistantSkillPage', () => {
     expect((scope.compareDocumentPosition(items) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(
       true,
     );
-  });
-
-  it('toggles a behaviour off by writing the whole behaviour object with the skill removed', async () => {
-    const mock = renderPage();
-    const whereOn = (await screen.findByRole('heading', { name: "Where it's on" })).closest(
-      'section',
-    )!;
-    fireEvent.click(within(whereOn).getByRole('checkbox', { name: 'Club assistant' }));
-    const put = await new Promise<[string, RequestInit]>((resolve) => {
-      const check = () => {
-        const call = mock.mock.calls.find(
-          (c) =>
-            c[0] === '/api/assistant/behaviours/club' && (c[1] as RequestInit)?.method === 'PUT',
-        );
-        if (call !== undefined) resolve(call as [string, RequestInit]);
-        else setTimeout(check, 5);
-      };
-      check();
-    });
-    expect(bodyOf(put)).toMatchObject({ id: 'club', allowedSkillIds: [] });
   });
 
   it("shows a 404 empty state with a link back for a skill that doesn't exist", async () => {

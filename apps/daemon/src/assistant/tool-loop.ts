@@ -11,6 +11,7 @@ import {
   type TextProvider,
   type ToolCall,
   type ToolDeclaration,
+  TRUNCATION_SUFFIX,
 } from '@bananasaurs/core';
 import type { CitationRegistry } from './citations.js';
 import type { ChainEntry } from './model-chain.js';
@@ -20,16 +21,19 @@ import { attemptReasonFor } from './provider-failure.js';
 import { neutraliseMarkers } from './untrusted.js';
 
 /**
- * The id argument of every follow-up tool (ADR 0071). Round 2+ offers only
+ * The id arguments of every follow-up tool (ADR 0071). Round 2+ offers only
  * these tools, and only with an id an earlier result in the same request
- * returned (or in the catalogue the harness put in the prompt). All three —
- * `read_chunk`, `outline` and `open_resource` — are implemented; the
- * enforcement below still names them.
+ * returned (or in the catalogue the harness put in the prompt). Both —
+ * `read_chunk` and `open_resource` — are implemented; the enforcement below
+ * still names them. `open_resource` takes either id: the resource id opens
+ * the resource, the doc id lists its headings (ADR 0092 decision 3).
+ * `channel_history` pages with the `before` id an earlier page returned; in
+ * round 1 a call without `before` is allowed (ADR 0092 decision 2).
  */
-export const ID_TOOL_ARGS: Readonly<Record<string, string>> = {
-  read_chunk: 'chunkId',
-  outline: 'docId',
-  open_resource: 'resourceId',
+export const ID_TOOL_ARGS: Readonly<Record<string, readonly string[]>> = {
+  read_chunk: ['chunkId'],
+  open_resource: ['resourceId', 'docId'],
+  channel_history: ['before'],
 };
 
 export interface LoopTools {
@@ -46,6 +50,16 @@ export interface LoopResult {
   readonly outcome: 'answered' | 'failed';
   readonly model?: string;
   readonly provider?: string;
+  /**
+   * The chain entry whose response was accepted (ADR 0091). Carried so the
+   * summary job can re-resolve the same entry. Never written to the trace:
+   * the key id is not for display.
+   */
+  readonly answeredBy?: {
+    readonly providerId: string;
+    readonly model: string;
+    readonly keyId: string;
+  };
   readonly attempts: AssistantTrace['attempts'];
   readonly toolCalls: AssistantTrace['toolCalls'];
   readonly usage: AssistantTrace['usage'];
@@ -80,6 +94,13 @@ export interface LoopResult {
    * (e.g. a non-daily `quota` error) instead of becoming `invalid-request`.
    */
   readonly lastError?: ProviderError;
+  /**
+   * Task G3: the round-1 declaration names the loop actually sent to the
+   * provider (after `declarationsFor`), in first-sent order. The service
+   * records these on the trace detail so the History page can show what the
+   * model could have called, even when it called nothing.
+   */
+  readonly toolsOffered: readonly string[];
 }
 
 export interface LoopLimits {
@@ -103,9 +124,19 @@ const DEFAULT_LIMITS: LoopLimits = {
 };
 
 const ANSWER_INSTRUCTION = 'Answer now using the results above. Do not call tools.';
-const TOOL_RESULT_PREVIEW_CHARS = 1_500;
+export const TOOL_RESULT_TRACE_CHARS = 6_000;
 const GUARD_FAILURE_TEXT = "I couldn't finish that answer — please try again.";
 const PROMPT_LEAK_TEXT = "I can't share that.";
+
+/**
+ * The model-visible tool result text as stored on the trace (ADR 0088
+ * decision 1): the neutralised text capped at `TOOL_RESULT_TRACE_CHARS`,
+ * with a `… [truncated]` suffix when cut. No wrapper or citation text.
+ */
+const truncateResultForTrace = (text: string): string => {
+  if (text.length <= TOOL_RESULT_TRACE_CHARS) return text;
+  return text.slice(0, TOOL_RESULT_TRACE_CHARS - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+};
 
 const nextUtcMidnight = (nowMs: number): number => {
   const d = new Date(nowMs);
@@ -206,6 +237,10 @@ export const runToolLoop = async (input: {
   const budgets = { callsUsed: 0, resultChars: 0 };
   // The last attempt's original provider error, for the caller to re-throw.
   let lastError: ProviderError | undefined;
+  // Task G3: round-1 declaration names actually sent, across chain entries,
+  // in first-sent order.
+  const toolsOffered: string[] = [];
+  const offeredSeen = new Set<string>();
 
   const recordUsage = (usage: GenerateTextResponse['usage']): void => {
     if (usage?.promptTokens !== undefined) {
@@ -322,6 +357,14 @@ export const runToolLoop = async (input: {
       recordWeb: () => {
         web = true;
       },
+      recordOffered: (names) => {
+        for (const name of names) {
+          if (!offeredSeen.has(name)) {
+            offeredSeen.add(name);
+            toolsOffered.push(name);
+          }
+        }
+      },
       onDailyCap: (resetAt) => {
         sawDailyCap = true;
         dailyResets.push(resetAt);
@@ -345,6 +388,7 @@ export const runToolLoop = async (input: {
         sources,
         actionSummaries,
         web,
+        toolsOffered: [...toolsOffered],
         ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
         ...(answered.outcome === 'failed' && sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
@@ -363,6 +407,7 @@ export const runToolLoop = async (input: {
     sources,
     actionSummaries,
     web,
+    toolsOffered: [...toolsOffered],
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
     ...(localLimit === undefined ? {} : { localLimit }),
@@ -377,7 +422,7 @@ const declarationsFor = (
   if (tools === undefined) return [];
   if (!provider.capabilities.has('tools')) return [];
   const offered = round === 1 ? tools.firstRound : tools.idRound;
-  // Follow-up rounds offer only the ID tools (`read_chunk`, `outline`,
+  // Follow-up rounds offer only the ID tools (`read_chunk`,
   // `open_resource`), filtered against the round's declarations.
   return round === 1 ? [...offered] : offered.filter((d) => d.name in ID_TOOL_ARGS);
 };
@@ -387,6 +432,11 @@ interface EntrySuccess {
   readonly text: string;
   readonly model: string;
   readonly provider: string;
+  readonly answeredBy: {
+    readonly providerId: string;
+    readonly model: string;
+    readonly keyId: string;
+  };
   readonly finishReason?: string;
   readonly guard: AssistantTrace['guard'];
 }
@@ -428,6 +478,8 @@ const runEntry = async (deps: {
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
   readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: () => void;
+  /** Task G3: round-1 declaration names actually sent, in first-sent order. */
+  readonly recordOffered: (names: readonly string[]) => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
   readonly reserveCall?: ReserveCall | undefined;
   readonly logger?: Pick<Logger, 'warn'> | undefined;
@@ -527,6 +579,12 @@ const runEntry = async (deps: {
       return undefined;
     }
     const declarations = offerTools ? declarationsFor(deps.tools, provider, round) : [];
+    // Task G3: record what round 1 actually offered, after `declarationsFor`
+    // filtering (capability, ID-tool narrowing). Later entries may re-offer
+    // on failover; first-sent order is kept, duplicates dropped.
+    if (round === 1) {
+      deps.recordOffered(declarations.map((declaration) => declaration.name));
+    }
     const request: GenerateTextRequest = {
       model: entry.model,
       systemInstruction: deps.systemInstruction,
@@ -594,8 +652,8 @@ const runEntry = async (deps: {
         continue;
       }
       if (round >= 2) {
-        const idArg = ID_TOOL_ARGS[call.name];
-        if (idArg === undefined) {
+        const idArgs = ID_TOOL_ARGS[call.name];
+        if (idArgs === undefined) {
           deps.toolCalls.push({
             ...traceBase,
             ok: false,
@@ -606,11 +664,17 @@ const runEntry = async (deps: {
           toolMessages.push(refusedMessage(call, 'not allowed after reading results'));
           continue;
         }
-        const idValue =
+        const argsRecord =
           typeof call.args === 'object' && call.args !== null
-            ? (call.args as Record<string, unknown>)[idArg]
+            ? (call.args as Record<string, unknown>)
             : undefined;
-        if (typeof idValue !== 'string' || !handles.has(idValue)) {
+        // A call passes when any of the tool's id arguments carries an id an
+        // earlier result returned; `open_resource` takes either id shape.
+        const known = idArgs.some((idArg) => {
+          const idValue = argsRecord?.[idArg];
+          return typeof idValue === 'string' && handles.has(idValue);
+        });
+        if (!known) {
           deps.toolCalls.push({
             ...traceBase,
             ok: false,
@@ -653,7 +717,7 @@ const runEntry = async (deps: {
         ...traceBase,
         ok: result.ok,
         ms: callMs(),
-        preview: result.text.slice(0, TOOL_RESULT_PREVIEW_CHARS),
+        preview: truncateResultForTrace(neutraliseMarkers(result.text)),
       });
       const citationText =
         result.ok && citations !== undefined
@@ -745,6 +809,11 @@ const finishEntry = async (deps: {
       text: guarded.text,
       model: deps.response.model,
       provider: deps.entry.providerId,
+      answeredBy: {
+        providerId: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+      },
       ...(deps.response.finishReason === undefined
         ? {}
         : { finishReason: deps.response.finishReason }),
@@ -758,6 +827,11 @@ const finishEntry = async (deps: {
       text: PROMPT_LEAK_TEXT,
       model: deps.response.model,
       provider: deps.entry.providerId,
+      answeredBy: {
+        providerId: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+      },
       ...(deps.response.finishReason === undefined
         ? {}
         : { finishReason: deps.response.finishReason }),
@@ -793,6 +867,11 @@ const finishEntry = async (deps: {
           text: second.text,
           model: retry.model,
           provider: deps.entry.providerId,
+          answeredBy: {
+            providerId: deps.entry.providerId,
+            model: deps.entry.model,
+            keyId: deps.entry.keyId,
+          },
           ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
           guard: { removed: [...guarded.removed, ...second.removed] },
         };
@@ -804,6 +883,11 @@ const finishEntry = async (deps: {
           text: PROMPT_LEAK_TEXT,
           model: retry.model,
           provider: deps.entry.providerId,
+          answeredBy: {
+            providerId: deps.entry.providerId,
+            model: deps.entry.model,
+            keyId: deps.entry.keyId,
+          },
           ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
           guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
         };
@@ -827,6 +911,11 @@ const finishEntry = async (deps: {
     text: GUARD_FAILURE_TEXT,
     model: deps.response.model,
     provider: deps.entry.providerId,
+    answeredBy: {
+      providerId: deps.entry.providerId,
+      model: deps.entry.model,
+      keyId: deps.entry.keyId,
+    },
     guard: { removed: [...guarded.removed] },
   };
 };

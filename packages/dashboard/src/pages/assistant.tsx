@@ -120,7 +120,7 @@ function CreateBehaviourForm({
           name: name.trim(),
           systemPrompt: prompt.trim(),
           promptVersion: 0,
-          allowedSkillIds: skillIds,
+          preferredSkillIds: skillIds,
           resourceIds: [],
           callerRoleIds,
           enabled: false,
@@ -299,10 +299,10 @@ function CreateBehaviourForm({
 }
 
 /**
- * Access and routing for one behaviour: caller-role allowlist, attached
- * resources, and ticket escalation where the server exposes it. Skill
- * allowlists moved to the Skills page (ADR 0060); saving here preserves the
- * behaviour's current allowlist because the write is the whole object.
+ * Access and routing for one behaviour: caller-role allowlist, preferred
+ * skills and resources, and ticket escalation where the server exposes it.
+ * Skill scope is the only gate (ADR 0087); saving here preserves the
+ * behaviour's current preferences because the write is the whole object.
  */
 function BehaviourAccessEditor({
   behaviour,
@@ -316,6 +316,9 @@ function BehaviourAccessEditor({
   const session = useSession();
   const toast = useToast();
   const [roleIds, setRoleIds] = useState<readonly string[]>(behaviour.callerRoleIds ?? []);
+  const [preferredSkillIds, setPreferredSkillIds] = useState<readonly string[]>(
+    behaviour.preferredSkillIds,
+  );
   const [resourceIds, setResourceIds] = useState<readonly string[]>(behaviour.resourceIds);
   const [channelId, setChannelId] = useState(behaviour.ticket?.channelId ?? '');
   const [reviewerRoleIds, setReviewerRoleIds] = useState<readonly string[]>(
@@ -330,6 +333,7 @@ function BehaviourAccessEditor({
         behaviourUrl(behaviour.id),
         behaviourBody(behaviour, {
           callerRoleIds: roleIds,
+          preferredSkillIds,
           resourceIds,
           ticket: {
             ...(channelId === '' ? {} : { channelId }),
@@ -368,12 +372,40 @@ function BehaviourAccessEditor({
           </>
         )}
       </section>
-      <section aria-label="Emphasised resources" className="mt-4">
-        <h3 className="text-sm font-medium">Resources to emphasise</h3>
+      <section aria-label="Preferred skills" className="mt-4">
+        <h3 className="text-sm font-medium">Preferred skills</h3>
         <p className="mt-1 text-xs text-ink-muted">
-          Every enabled resource is available to every behaviour. Tick the ones this behaviour
-          should prefer.
+          Skills this assistant should lean on first. This doesn&apos;t grant or block anything: who
+          can use a skill is set on the Skills page.
         </p>
+        {data.skills.length === 0 ? (
+          <p className="mt-2 text-xs text-ink-muted">
+            No skills reported yet. Nothing here is editable and the assistant&apos;s current policy
+            keeps applying.
+          </p>
+        ) : (
+          <ul aria-label="Preferred skills" className="mt-2 grid gap-1 sm:grid-cols-2">
+            {data.skills.map((skill) => (
+              <li key={skill.id}>
+                <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={preferredSkillIds.includes(skill.id)}
+                    onChange={() => setPreferredSkillIds((ids) => toggleIn(ids, skill.id))}
+                  />
+                  <span>
+                    <span className="block">{skill.name}</span>
+                    <span className="text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section aria-label="Preferred resources" className="mt-4">
+        <h3 className="text-sm font-medium">Preferred resources</h3>
+        <p className="mt-1 text-xs text-ink-muted">Resources this assistant should check first.</p>
         {data.resources.length === 0 ? (
           <p className="mt-2 text-xs text-ink-muted">
             No resources configured yet. Add them on the{' '}
@@ -383,7 +415,7 @@ function BehaviourAccessEditor({
             .
           </p>
         ) : (
-          <ul aria-label="Resources to emphasise" className="mt-2 grid gap-1 sm:grid-cols-2">
+          <ul aria-label="Preferred resources" className="mt-2 grid gap-1 sm:grid-cols-2">
             {data.resources.map((resource) => (
               <li key={resource.id}>
                 <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">

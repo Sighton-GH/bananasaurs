@@ -7,6 +7,7 @@ import {
   type Reminder,
 } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
+import { createCitationRegistry } from './citations.js';
 import type { assistantRepo } from '@bananasaurs/storage';
 
 type StoredReminder = assistantRepo.StoredReminder;
@@ -42,6 +43,7 @@ const storedReminder = (over: Partial<StoredReminder> = {}): StoredReminder => (
 
 const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   userId: MEMBER,
+  guildId: '234567890123456789',
   now: () => NOW,
   timeZone: 'America/Vancouver',
   isOwner: false,
@@ -69,14 +71,17 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   },
   proposeDraft: () => 'created' as const,
   recordSkillActivity: vi.fn(),
-  searchArchive: vi.fn(async () => [
-    {
-      channelId: '111111111111111111',
-      messageId: '222222222222222222',
-      createdAt: NOW - 60_000,
-      excerpt: 'The [battery] order ships Friday.',
-    },
-  ]),
+  searchArchive: vi.fn(async () => ({
+    ok: true as const,
+    hits: [
+      {
+        channelId: '111111111111111111',
+        messageId: '222222222222222222',
+        createdAt: NOW - 60_000,
+        excerpt: 'The [battery] order ships Friday.',
+      },
+    ],
+  })),
   resources: () => [resource(), resource({ id: 'off', title: 'Old', enabled: false })],
   fetchResource: vi.fn(async () => ({
     ok: true as const,
@@ -94,6 +99,8 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   ]),
   serverCard: () => 'SFU Racerbot builds autonomous cars.',
   visibleChannels: vi.fn(async () => [{ id: '111111111111111111', name: 'general' }]),
+  upcomingEvents: vi.fn(async () => []),
+  channelHistory: vi.fn(async () => ({ lines: [], oldestId: undefined })),
   cacheSearch: () => [],
   cacheChunk: () => undefined,
   cacheNeighbours: () => [],
@@ -103,6 +110,7 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   cacheResourceChunks: () => [],
   cacheFreshness: () => [],
   enqueueRefresh: () => true,
+  searchConversations: vi.fn(async () => []),
   ...over,
 });
 
@@ -121,13 +129,23 @@ describe('toolDeclarations', () => {
       'cancel_reminder',
       'propose_memory',
       'propose_decision',
-      'list_sources',
       'search_sources',
       'read_chunk',
-      'outline',
       'refresh_source',
+      'upcoming_events',
+      'search_conversations',
+      'channel_history',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
+    expect(names(ports({ searchConversations: undefined }))).not.toContain('search_conversations');
+  });
+
+  it('hides upcoming_events and channel_history when their port is absent', () => {
+    const names = (p: AssistantToolPorts) => toolDeclarations(p).map((tool) => tool.name);
+    expect(names(ports({ upcomingEvents: undefined }))).not.toContain('upcoming_events');
+    expect(names(ports({ channelHistory: undefined }))).not.toContain('channel_history');
+    expect(names(ports())).toContain('upcoming_events');
+    expect(names(ports())).toContain('channel_history');
   });
 
   it('hides acting tools when their skill is not allowed', () => {
@@ -143,6 +161,16 @@ describe('toolDeclarations', () => {
     expect(hidden).not.toContain('propose_memory');
     expect(hidden).not.toContain('propose_decision');
     expect(hidden).toContain('search_archive');
+  });
+
+  it('declares search_archive with an optional from for checking one member', () => {
+    const search = toolDeclarations(ports()).find((tool) => tool.name === 'search_archive')!;
+    const params = search.parameters as unknown as {
+      readonly properties: Readonly<Record<string, unknown>>;
+      readonly required?: readonly string[];
+    };
+    expect(Object.keys(params.properties)).toEqual(expect.arrayContaining(['query', 'from']));
+    expect(params.required).toEqual(['query']);
   });
 
   it('never drifts from TOOL_CATALOGUE: every declaration equals its catalogue entry', () => {
@@ -177,16 +205,99 @@ describe('runAssistantTool', () => {
     expect(p.webSearch).not.toHaveBeenCalled();
   });
 
+  it('answers calls to the removed list_sources and outline names with the unknown-tool refusal', async () => {
+    const p = ports();
+    await expect(runAssistantTool({ name: 'list_sources', args: {} }, p)).resolves.toMatchObject({
+      ok: false,
+      text: 'Unknown tool.',
+    });
+    await expect(
+      runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'Unknown tool.' });
+  });
+
   it('searches the archive as the asking member and links each hit', async () => {
     const p = ports();
     const result = await runAssistantTool(
       { name: 'search_archive', args: { query: 'battery' } },
       p,
     );
-    expect(p.searchArchive).toHaveBeenCalledWith('battery');
+    expect(p.searchArchive).toHaveBeenCalledWith('battery', undefined);
     expect(result.ok).toBe(true);
     expect(result.text).toContain('The [battery] order ships Friday.');
     expect(result.text).toContain('<#111111111111111111>');
+  });
+
+  it('refuses a from search whose query has no word of three or more letters', async () => {
+    const p = ports();
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'hi a', from: 'Ava' } },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Say what you want to check they said.',
+    });
+    expect(p.searchArchive).not.toHaveBeenCalled();
+  });
+
+  it('a from search caps at 3 hits, ends with the answer-only line and cites code-built links', async () => {
+    const hits = Array.from({ length: 5 }, (_, i) => ({
+      channelId: '111111111111111111',
+      messageId: `22222222222222222${String(i)}`,
+      createdAt: NOW - 60_000 * (i + 1),
+      excerpt: `sunflower note ${String(i)}`,
+    }));
+    const searchArchive = vi.fn(async () => ({ ok: true as const, hits }));
+    const p = ports({ searchArchive });
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'sunflower shipment', from: 'Ava' } },
+      p,
+    );
+    expect(searchArchive).toHaveBeenCalledWith('sunflower shipment', 'Ava');
+    expect(result.ok).toBe(true);
+    const lines = result.text.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines.slice(0, 3).every((line) => line.startsWith('<#111111111111111111>'))).toBe(true);
+    expect(lines[3]).toBe(
+      "Answer only whether they said it. Cite the message tag. Do not summarise or list this member's messages.",
+    );
+    expect(result.sources).toHaveLength(3);
+    expect(result.sources[0]).toEqual({
+      title: expect.stringMatching(/^#channel message, \d{4}-\d{2}-\d{2}$/),
+      url: 'https://discord.com/channels/234567890123456789/111111111111111111/222222222222222220',
+    });
+  });
+
+  it('a from search tags each hit from the citations registry when one is passed', async () => {
+    const p = ports();
+    const citations = createCitationRegistry();
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'sunflower shipment', from: 'Ava' } },
+      p,
+      citations,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.split('\n')[0]).toMatch(/^\[S1\] <#111111111111111111>/);
+    expect(citations.get('S1')).toEqual(result.sources[0]);
+  });
+
+  it('a from search refuses with the port problem text when resolution fails', async () => {
+    const p = ports({
+      searchArchive: vi.fn(async () => ({
+        ok: false as const,
+        problem: "I couldn't tell which member you meant.",
+      })),
+    });
+    const result = await runAssistantTool(
+      { name: 'search_archive', args: { query: 'sunflower shipment', from: 'Ava' } },
+      p,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: "I couldn't tell which member you meant.",
+    });
+    expect(result.sources).toEqual([]);
   });
 
   it('opens only an enabled resource from the cache, redacted like other evidence', async () => {
@@ -1080,7 +1191,7 @@ const cachePorts = (over: Record<string, unknown> = {}) => {
 };
 
 describe('cache tools (Task 16)', () => {
-  it('list_sources lists enabled resources with relative updated times, at most 30 lines', async () => {
+  it('search_sources without a query lists enabled resources with relative updated times, at most 30 lines', async () => {
     const many = Array.from({ length: 40 }, (_, i) => ({
       id: `r${String(i)}`,
       guildId: '234567890123456789',
@@ -1094,7 +1205,7 @@ describe('cache tools (Task 16)', () => {
       resources: () => many,
       cacheFreshness: () => many.map((r) => ({ resourceId: r.id, fetchedAt: NOW - 3_600_000 })),
     });
-    const result = await runAssistantTool({ name: 'list_sources', args: {} }, p);
+    const result = await runAssistantTool({ name: 'search_sources', args: {} }, p);
     expect(result.ok).toBe(true);
     const lines = result.text.split('\n').filter(Boolean);
     expect(lines.length).toBeLessThanOrEqual(30);
@@ -1102,16 +1213,19 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).toHaveLength(lines.length);
   });
 
-  it('list_sources honours a filter and refuses an overlong one', async () => {
+  it('search_sources without a query honours a filter and refuses an overlong one', async () => {
     const p = cachePorts({
       cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
     });
-    const filtered = await runAssistantTool({ name: 'list_sources', args: { filter: 'hand' } }, p);
+    const filtered = await runAssistantTool(
+      { name: 'search_sources', args: { filter: 'hand' } },
+      p,
+    );
     expect(filtered.ok).toBe(true);
     expect(filtered.text).toContain('handbook');
     expect(filtered.text).not.toContain('rules');
     await expect(
-      runAssistantTool({ name: 'list_sources', args: { filter: 'x'.repeat(81) } }, p),
+      runAssistantTool({ name: 'search_sources', args: { filter: 'x'.repeat(81) } }, p),
     ).resolves.toMatchObject({ ok: false });
   });
 
@@ -1182,7 +1296,7 @@ describe('cache tools (Task 16)', () => {
     ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
   });
 
-  it('outline on a disabled resource answers unknown id', async () => {
+  it('open_resource with a docId on a disabled resource answers unknown id', async () => {
     const p = ports({
       cacheOutline: () => [{ chunkId: 'c_off_0', headingPath: 'Old › Notes' }],
       cacheDocument: () => ({
@@ -1193,16 +1307,16 @@ describe('cache tools (Task 16)', () => {
       }),
     });
     await expect(
-      runAssistantTool({ name: 'outline', args: { docId: 'd_off' } }, p),
+      runAssistantTool({ name: 'open_resource', args: { docId: 'd_off' } }, p),
     ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
   });
 
-  it('list_sources answers no match with the ruled sentence', async () => {
+  it('search_sources without a query answers no match with the ruled sentence', async () => {
     const p = cachePorts({
       cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
     });
     const result = await runAssistantTool(
-      { name: 'list_sources', args: { filter: 'zzz-no-such-source' } },
+      { name: 'search_sources', args: { filter: 'zzz-no-such-source' } },
       p,
     );
     expect(result.ok).toBe(true);
@@ -1210,9 +1324,9 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).toBeUndefined();
   });
 
-  it('list_sources shows never-fetched sources as not fetched yet', async () => {
+  it('search_sources without a query shows never-fetched sources as not fetched yet', async () => {
     const p = cachePorts({ cacheFreshness: () => [] });
-    const result = await runAssistantTool({ name: 'list_sources', args: {} }, p);
+    const result = await runAssistantTool({ name: 'search_sources', args: {} }, p);
     expect(result.ok).toBe(true);
     expect(result.text).toContain('not fetched yet');
   });
@@ -1248,7 +1362,9 @@ describe('cache tools (Task 16)', () => {
       p,
     );
     expect(empty.ok).toBe(true);
-    expect(empty.text).toBe('No matching passages. Try different words, or list_sources.');
+    expect(empty.text).toBe(
+      'No matching passages. Try different words, or call search_sources without a query.',
+    );
     await expect(
       runAssistantTool({ name: 'search_sources', args: { query: 'x' } }, p),
     ).resolves.toMatchObject({ ok: false });
@@ -1301,7 +1417,7 @@ describe('cache tools (Task 16)', () => {
     expect(unknown.text).toContain('unknown id');
   });
 
-  it('outline lists headings with chunk ids inside 1500 chars', async () => {
+  it('open_resource with a docId lists headings with chunk ids inside 1500 chars', async () => {
     const rows = Array.from({ length: 50 }, (_, i) => ({
       chunkId: `c_d_${String(i)}`,
       headingPath: `Guide › Section ${String(i)} with a long heading ${'z'.repeat(60)}`,
@@ -1310,19 +1426,19 @@ describe('cache tools (Task 16)', () => {
       cacheOutline: () => rows,
       cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
     });
-    const result = await runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p);
+    const result = await runAssistantTool({ name: 'open_resource', args: { docId: 'd_abc' } }, p);
     expect(result.ok).toBe(true);
     expect(result.text.length).toBeLessThanOrEqual(1_500);
     expect(result.text).toContain('c_d_0');
     expect(result.handles).toContain('c_d_0');
     const unknown = await runAssistantTool(
-      { name: 'outline', args: { docId: 'd_nope' } },
+      { name: 'open_resource', args: { docId: 'd_nope' } },
       cachePorts(),
     );
     expect(unknown.text).toContain('unknown id');
   });
 
-  it('outline on a known doc with no chunks answers No headings cached.', async () => {
+  it('open_resource with a docId on a known doc with no chunks answers No headings cached.', async () => {
     const p = cachePorts({
       cacheOutline: () => [],
       cacheDocument: () => ({
@@ -1332,9 +1448,23 @@ describe('cache tools (Task 16)', () => {
         url: 'https://example.com/handbook',
       }),
     });
-    const result = await runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p);
+    const result = await runAssistantTool({ name: 'open_resource', args: { docId: 'd_abc' } }, p);
     expect(result.ok).toBe(true);
     expect(result.text).toBe('No headings cached.');
+  });
+
+  it('open_resource refuses both ids or neither with the ruled sentence', async () => {
+    const p = cachePorts();
+    await expect(runAssistantTool({ name: 'open_resource', args: {} }, p)).resolves.toMatchObject({
+      ok: false,
+      text: 'Give either resourceId or docId.',
+    });
+    await expect(
+      runAssistantTool(
+        { name: 'open_resource', args: { resourceId: 'handbook', docId: 'd_abc' } },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false, text: 'Give either resourceId or docId.' });
   });
 
   it('open_resource returns the first cached chunks inside 4000 chars', async () => {
@@ -1458,7 +1588,9 @@ describe('cache tools (Task 16)', () => {
       cachePorts({ resources: () => [big, resource()], cacheSearch }),
     );
     expect(result.ok).toBe(true);
-    expect(result.text).not.toBe('No matching passages. Try different words, or list_sources.');
+    expect(result.text).not.toBe(
+      'No matching passages. Try different words, or call search_sources without a query.',
+    );
     expect(result.text).toContain('second snippet here');
     expect(result.text).toContain('c_small');
     expect(result.text).not.toContain('c_big');
@@ -1466,10 +1598,10 @@ describe('cache tools (Task 16)', () => {
     expect(result.handles).not.toContain('c_big');
   });
 
-  it('outline and read_chunk clip a long heading path with an ellipsis', async () => {
+  it('open_resource with a docId and read_chunk clip a long heading path with an ellipsis', async () => {
     const longPath = 'H'.repeat(9_000);
     const outlineResult = await runAssistantTool(
-      { name: 'outline', args: { docId: 'd_abc' } },
+      { name: 'open_resource', args: { docId: 'd_abc' } },
       cachePorts({
         cacheOutline: () => [{ chunkId: 'c_long_0', headingPath: longPath }],
         cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
@@ -1528,5 +1660,289 @@ describe('cache tools (Task 16)', () => {
     expect(expected.endsWith('…')).toBe(true);
     expect(result.text).toContain(expected);
     expect(result.text).not.toContain(longPath);
+  });
+
+  it('open_resource with a resourceId appends the first doc outline, up to 40 headings', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      chunkId: `c_h_${String(i)}`,
+      headingPath: `Guide › Section ${String(i)}`,
+    }));
+    const p = cachePorts({
+      cacheResourceDocs: () => [
+        {
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          title: 'Club handbook',
+          url: 'https://example.com/handbook',
+        },
+      ],
+      cacheResourceChunks: () => [
+        {
+          chunkId: 'c_d_abc_0',
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          headingPath: 'Guide › Intro',
+          text: 'short text',
+        },
+      ],
+      cacheOutline: () => rows,
+    });
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { resourceId: 'handbook' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(4_000);
+    expect(result.text).toContain('short text');
+    expect(result.text).toContain('Headings:');
+    expect(result.text).toContain('[c_h_0] Guide › Section 0');
+    expect(result.text).toContain('[c_h_39]');
+    expect(result.text).not.toContain('[c_h_40]');
+    expect(result.handles).toContain('c_d_abc_0');
+    expect(result.handles).toContain('d_abc');
+    expect(result.handles).toContain('c_h_0');
+    expect(result.handles).not.toContain('c_h_40');
+  });
+});
+
+describe('upcoming_events and channel_history', () => {
+  const eventItem = (
+    over: Partial<{
+      kind: 'event' | 'reminder';
+      title: string;
+      startsAt: number;
+      where: string;
+      description: string;
+    }> = {},
+  ) => ({
+    kind: 'event' as const,
+    title: 'Build night',
+    startsAt: NOW + 3_600_000,
+    where: 'Room 101',
+    ...over,
+  });
+
+  it('upcoming_events answers the empty schedule in one sentence', async () => {
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, ports());
+    expect(result).toMatchObject({ ok: true, text: 'Nothing scheduled in the next 30 days.' });
+  });
+
+  it('upcoming_events formats one line per item with the club time zone', async () => {
+    const p = ports({
+      upcomingEvents: vi.fn(async () => [
+        eventItem({ description: 'Bring tools and parts.' }),
+        {
+          kind: 'reminder' as const,
+          title: 'Order batteries',
+          startsAt: NOW + 7_200_000,
+          where: '<#111111111111111111>',
+        },
+      ]),
+    });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    // NOW is 12:30 PDT: +1h is 13:30, +2h is 14:30, both September 23.
+    expect(result.text).toContain('Build night — ');
+    expect(result.text).toContain('13:30');
+    expect(result.text).toContain('September 23');
+    expect(result.text).toContain('Room 101 — Bring tools and parts.');
+    expect(result.text).toContain('Order batteries — ');
+    expect(result.text).toContain('14:30');
+  });
+
+  it('upcoming_events applies the ports time zone, not a fixed one', async () => {
+    const p = ports({
+      timeZone: 'Pacific/Auckland',
+      upcomingEvents: vi.fn(async () => [eventItem()]),
+    });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    // 20:30 UTC September 23 is 08:30 September 24 in Auckland (UTC+12).
+    expect(result.text).toContain('08:30');
+    expect(result.text).toContain('September 24');
+    expect(result.text).not.toContain('13:30');
+  });
+
+  it('upcoming_events lists at most 10 items, soonest first', async () => {
+    const items = Array.from({ length: 11 }, (_, i) =>
+      eventItem({ title: `Event ${String(i)}`, startsAt: NOW + (11 - i) * 3_600_000 }),
+    );
+    const p = ports({ upcomingEvents: vi.fn(async () => items) });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    const lines = result.text.split('\n');
+    expect(lines).toHaveLength(10);
+    expect(lines[0]).toContain('Event 10');
+    expect(lines[9]).toContain('Event 1');
+    expect(result.text).not.toContain('Event 0');
+  });
+
+  it('upcoming_events caps an event description at 200 characters', async () => {
+    const description = `x${'y'.repeat(300)}`;
+    const p = ports({ upcomingEvents: vi.fn(async () => [eventItem({ description })]) });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain(description.slice(0, 200));
+    expect(result.text).not.toContain(description);
+  });
+
+  it('upcoming_events redacts a secret-looking string in an event description', async () => {
+    const p = ports({
+      upcomingEvents: vi.fn(async () => [
+        eventItem({ description: 'Check in with token: abcdefgh1234567890 at the door.' }),
+      ]),
+    });
+    const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text).not.toContain('abcdefgh1234567890');
+    expect(result.text).toContain('[redacted');
+  });
+
+  it('upcoming_events without its port refuses instead of running', async () => {
+    const result = await runAssistantTool(
+      { name: 'upcoming_events', args: {} },
+      ports({ upcomingEvents: undefined }),
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it('channel_history returns the lines with an Older cursor and its handle', async () => {
+    const history = vi.fn(async () => ({
+      lines: ['[Alex, 5 minutes ago] the hall opens at seven'],
+      oldestId: '820000000000000001' as const,
+    }));
+    const result = await runAssistantTool(
+      { name: 'channel_history', args: {} },
+      ports({ channelHistory: history }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('the hall opens at seven');
+    expect(result.text).toContain('Older: before=820000000000000001');
+    expect(result.handles).toEqual(['820000000000000001']);
+    expect(history).toHaveBeenCalledWith({ limit: 20 });
+  });
+
+  it('channel_history passes before and limit through to the port', async () => {
+    const history = vi.fn(async () => ({ lines: ['[Alex, 5 minutes ago] older still'] as const }));
+    const result = await runAssistantTool(
+      { name: 'channel_history', args: { before: '820000000000000001', limit: 5 } },
+      ports({ channelHistory: history }),
+    );
+    expect(result.ok).toBe(true);
+    expect(history).toHaveBeenCalledWith({ before: '820000000000000001', limit: 5 });
+    expect(result.text).toContain('older still');
+    expect(result.text).not.toContain('Older:');
+    expect(result.handles).toEqual([]);
+  });
+
+  it('channel_history refuses malformed arguments', async () => {
+    const p = ports();
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: { limit: 0 } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: { limit: 51 } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: { before: 'short' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+  });
+
+  it("channel_history refuses when the port is absent or couldn't read", async () => {
+    await expect(
+      runAssistantTool({ name: 'channel_history', args: {} }, ports({ channelHistory: undefined })),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't read the channel history." });
+    await expect(
+      runAssistantTool(
+        { name: 'channel_history', args: {} },
+        ports({ channelHistory: vi.fn(async () => undefined) }),
+      ),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't read the channel history." });
+  });
+});
+
+describe('search_conversations (ADR 0093)', () => {
+  const hit = (over: Record<string, unknown> = {}) => ({
+    conversationId: 'conv-2',
+    channelId: '111111111111111111',
+    lastActivityAt: NOW - 3 * 86_400_000,
+    topic: 'Robot arm gearbox',
+    facts: ['The hall opens at six', 'Snacks are potluck', 'Doors lock at nine', 'Extra fact'],
+    ...over,
+  });
+
+  it('formats one line per hit with the recalled conversation ids', async () => {
+    const searchConversations = vi.fn(async () => [
+      hit(),
+      hit({
+        conversationId: 'conv-3',
+        channelId: '222222222222222222',
+        lastActivityAt: NOW - 30_000,
+        topic: 'Potluck desserts',
+        facts: ['Ada brings pie'],
+      }),
+    ]);
+    const p = ports({ searchConversations });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'robot arm' } },
+      p,
+    );
+    expect(searchConversations).toHaveBeenCalledWith('robot arm');
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe(
+      '<#111111111111111111>, 3 days ago: Robot arm gearbox — The hall opens at six; Snacks are potluck; Doors lock at nine\n' +
+        '<#222222222222222222>, just now: Potluck desserts — Ada brings pie',
+    );
+    expect(result.recalledConversationIds).toEqual(['conv-2', 'conv-3']);
+  });
+
+  it('caps at five lines with three facts each', async () => {
+    const searchConversations = vi.fn(async () =>
+      Array.from({ length: 7 }, (_, i) => hit({ conversationId: `conv-${String(i)}` })),
+    );
+    const p = ports({ searchConversations });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'robot arm' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.split('\n')).toHaveLength(5);
+    expect(result.text).not.toContain('Extra fact');
+    expect(result.recalledConversationIds).toHaveLength(5);
+  });
+
+  it('answers no match with one sentence', async () => {
+    const p = ports({ searchConversations: vi.fn(async () => []) });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'robot arm' } },
+      p,
+    );
+    expect(result).toMatchObject({ ok: true, text: 'No earlier conversations matched.' });
+    expect(result.recalledConversationIds).toEqual([]);
+  });
+
+  it('refuses a query shorter than two characters', async () => {
+    const searchConversations = vi.fn(async () => []);
+    const p = ports({ searchConversations });
+    await expect(
+      runAssistantTool({ name: 'search_conversations', args: { query: 'x' } }, p),
+    ).resolves.toMatchObject({ ok: false });
+    expect(searchConversations).not.toHaveBeenCalled();
+  });
+
+  it('shows no participants, bot claims or commitment owners', async () => {
+    const p = ports({
+      searchConversations: vi.fn(async () => [
+        hit({ topic: 'Ada and bot chatter', facts: ['The hall opens at six'] }),
+      ]),
+    });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'chatter' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe(
+      '<#111111111111111111>, 3 days ago: Ada and bot chatter — The hall opens at six',
+    );
   });
 });

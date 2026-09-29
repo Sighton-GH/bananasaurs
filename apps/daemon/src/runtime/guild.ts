@@ -43,6 +43,7 @@ import {
   type NativeAutomodSubscriberDeps,
   type OpsPublishResult,
   type PanelDefinition,
+  ProviderError,
   type PurgePorts,
   type ReconcilePorts,
   type Subscriber,
@@ -86,12 +87,15 @@ import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
+import { assistantSummariseHandler, type SummariseModelPort } from '../jobs/assistant-summarise.js';
+import { reserveEntryCall } from '../assistant/local-limit.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
 import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
+import { guildAudienceChannels } from '../assistant/audience.js';
 import {
   resolveReminderTargets,
   type ReminderTargetMember,
@@ -757,6 +761,61 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           userId,
         );
       },
+      // ADR 0087: role display names for the skill scope-denial reasons,
+      // from the live roles cache. An uncached guild gives an empty map.
+      roleNames: (roleIds) => {
+        const names = new Map<string, string>();
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return names;
+        for (const roleId of roleIds) {
+          const name = guild.roles.cache.get(roleId)?.name;
+          if (name !== undefined) names.set(roleId, name);
+        }
+        return names;
+      },
+      // ADR 0090: the channels every viewer of the answer channel can
+      // read, from the live overwrites — mirroring the `memberChannels`
+      // adapter above. An uncached guild fails closed to the empty set.
+      audienceChannels: (answerChannelId) => {
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return Promise.resolve(new Set<string>());
+        return Promise.resolve(
+          guildAudienceChannels({ channels: guild.channels, roles: guild.roles }, answerChannelId),
+        );
+      },
+      // ADR 0092 decision 1: guild scheduled events behind `upcoming_events`.
+      listScheduledEvents: () => discord.listScheduledEvents(guildId),
+      // ADR 0092 decision 2: one channel page behind `channel_history`, the
+      // same shape as the invoke job's closure below.
+      fetchChannelMessages: (channelId, opts) =>
+        discord.fetchChannelMessages(guildId, channelId, opts),
+      // ADR 0090 D3: resolves a `search_archive` `from` value against the
+      // live member list. A bare 17–20 digit id or `<@id>` mention fetches
+      // that member; anything else searches by name. Lookups never throw:
+      // an unknown id or a failed search resolves to no candidates, and the
+      // service refuses with one sentence.
+      findMember: (nameOrId) => {
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return Promise.resolve([]);
+        const trimmed = nameOrId.trim();
+        const id = /^<@!?(\d{17,20})>$/.exec(trimmed)?.[1] ?? /^(\d{17,20})$/.exec(trimmed)?.[1];
+        const toEntry = (member: GuildMember) => ({
+          id: member.id,
+          displayName: member.displayName,
+          ...(member.user.globalName === null ? {} : { globalName: member.user.globalName }),
+          username: member.user.username,
+        });
+        if (id !== undefined) {
+          return guild.members.fetch(id).then(
+            (member) => [toEntry(member)],
+            () => [],
+          );
+        }
+        return guild.members.search({ query: nameOrId, limit: 5 }).then(
+          (members) => [...members.values()].map(toEntry),
+          () => [],
+        );
+      },
       // B2b: the acting reminder tools resolve their channel and mentions
       // against the live guild, mirroring the `memberChannels` adapter above:
       // an uncached guild fails closed inside `resolveReminderTargets`.
@@ -840,6 +899,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           totalCalls: settings.get('assistant.maxToolCalls'),
           maxOutputTokens: settings.get('assistant.maxOutputTokens'),
         }),
+    // ADR 0092 decision 2: the live channel-context window from the AI tuning
+    // settings. Absent means off, and the `channel_history` tool stays hidden.
+    settings === undefined ? undefined : () => settings.get('assistant.channelContextMessages'),
   );
   const { interactionTokenSealer } = deps;
 
@@ -894,9 +956,46 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }),
   ];
 
+  // ADR 0091 decision 4: the summary job re-resolves the chain entry that
+  // answered and reserves one call against its local limits. A missing or
+  // skipped entry, a refused reservation and a failed call are all skips,
+  // never retries — the raw turns are kept for the next run.
+  const summariseModel: SummariseModelPort = async ({
+    providerId,
+    model,
+    keyId,
+    systemInstruction,
+    text,
+  }) => {
+    const entry = (deps.assistantChain ?? (() => []))().find(
+      (candidate) =>
+        candidate.providerId === providerId &&
+        candidate.model === model &&
+        candidate.keyId === keyId,
+    );
+    if (entry === undefined || entry.provider === undefined || entry.skip !== undefined) {
+      return { ok: false, reason: 'entry-unavailable' };
+    }
+    const reserved = reserveEntryCall(instance, entry, guildId, now());
+    if (!reserved.ok) return { ok: false, reason: 'rate-limited' };
+    try {
+      const response = await entry.provider.generateText({
+        model,
+        systemInstruction,
+        messages: [{ role: 'user', text }],
+        maxOutputTokens: 2_000,
+        temperature: 0,
+      });
+      return { ok: true, text: response.text };
+    } catch (err) {
+      return { ok: false, reason: err instanceof ProviderError ? err.kind : 'error' };
+    }
+  };
+
   const worker = new JobWorker({
     store: jobStoreFor(scope),
     handlers: [
+      assistantSummariseHandler(scope, { summariseModel, now, logger }),
       assistantInvokeHandler({
         guildId,
         service: assistantService,
@@ -919,6 +1018,14 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
         fetchMessageContent: (channelId, messageId) =>
           discord.fetchMessageContent(guildId, channelId, messageId),
+        // ADR 0089: channel context for mentions, beside the quote fetch.
+        fetchChannelMessages: (channelId, opts) =>
+          discord.fetchChannelMessages(guildId, channelId, opts),
+        ...(settings === undefined
+          ? {}
+          : {
+              channelContextMessages: () => settings.get('assistant.channelContextMessages'),
+            }),
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),

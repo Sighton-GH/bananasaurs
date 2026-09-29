@@ -46,6 +46,28 @@ describe('buildUserMessage', () => {
     expect(questionAt).toBeGreaterThan(quoteAt);
   });
 
+  it('places channel context first, before evidence and quote', () => {
+    const text = buildUserMessage({
+      question: 'the question',
+      askerName: 'Ama',
+      channelContext: 'channel-body',
+      evidenceEnvelope: 'chunk=evidence',
+      quoteEnvelope: 'quote-body',
+    });
+    expect(text).toBe(
+      'channel-body\n\nchunk=evidence\n\nquote-body\n\n[CURRENT MESSAGE from="Ama"]\nthe question\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.',
+    );
+  });
+
+  it('omits channel context when empty or undefined', () => {
+    expect(buildUserMessage({ question: 'hi', askerName: 'Ama', channelContext: '' })).toBe(
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.',
+    );
+    expect(buildUserMessage({ question: 'hi', askerName: 'Ama' })).toBe(
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.',
+    );
+  });
+
   it('falls back to the member when the name is missing', () => {
     expect(buildUserMessage({ question: 'hi' })).toBe(
       '[CURRENT MESSAGE from="the member"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer the member\'s current message.',

@@ -74,8 +74,8 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   12 months, or keep forever; the default is 6 months).
 - When someone tags Bananasaurs in a reply to another person's message, that
   replied-to message is sent to the AI provider as context for the answer.
-- Forgetting a member also deletes the diagnostic traces of every conversation
-  they took part in, and traces never store quoted messages.
+- When someone tags Bananasaurs, the last messages in that channel (15 by default; the owner can set 0–50) are sent to the AI provider with the question, so it can follow the conversation. These can be from any member, including members who never used the bot. There is no opt-out. If the provider may train on what it receives, that includes these messages.
+- Each assistant reply keeps a diagnostic snapshot of what the AI was given: the instructions, the club-source excerpts, earlier turns, and the full text of what its tools returned, which can include Discord message excerpts. Snapshots can keep a copy of a message after it is deleted from Discord. They are deleted with their conversation (the retention period above), and forgetting a member deletes the snapshots of every conversation they took part in. The replied-to message itself is never kept in a snapshot.
 - Content from GitHub repositories and organisations the owner adds is fetched
   from GitHub and cached on the club's server so the assistant can answer
   from it. This includes private repositories that the owner's GitHub token
@@ -87,6 +87,8 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 - Test chats typed into the dashboard ("Try it") are sent to the AI provider
   like any other question. They are saved as conversations marked Dashboard
   test and are never posted to Discord.
+- Long conversations keep a short AI-written summary of their earlier part, made by the same AI provider that answered. It is deleted with the conversation.
+- The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Names are left out of what it sees. There is no opt-out.
 
 ## Who can see it
 

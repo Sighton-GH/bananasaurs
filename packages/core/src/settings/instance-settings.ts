@@ -9,7 +9,8 @@ export type SettingDisplay =
   | 'secret'
   | 'seconds-list'
   | 'host-list';
-export type SettingGroup = 'Assistant retries' | 'Assistant tool loop' | 'Network' | 'Resources';
+export type SettingGroup =
+  'Assistant retries' | 'Assistant tool loop' | 'Assistant context' | 'Network' | 'Resources';
 
 export interface SettingDefinition<T> {
   readonly key: string;
@@ -98,6 +99,17 @@ const maxOutputTokens: SettingDefinition<number> = {
   bounds: { min: 256, max: 8192 },
 };
 
+const channelContextMessages: SettingDefinition<number> = {
+  key: 'assistant.channelContextMessages',
+  group: 'Assistant context',
+  label: 'Channel messages sent with each question',
+  help: 'Recent messages from the channel the bot was tagged in, sent to the AI as background. 0 turns this off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(50),
+  defaultValue: 15,
+  bounds: { min: 0, max: 50 },
+};
+
 const connectFallback: SettingDefinition<number> = {
   key: 'network.connectFallbackMs',
   group: 'Network',
@@ -177,6 +189,7 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   maxToolRounds,
   maxToolCalls,
   maxOutputTokens,
+  channelContextMessages,
   connectFallback,
   fetchTimeout,
   refreshInterval,
@@ -191,6 +204,7 @@ export interface InstanceSettingValues {
   readonly 'assistant.maxToolRounds': number;
   readonly 'assistant.maxToolCalls': number;
   readonly 'assistant.maxOutputTokens': number;
+  readonly 'assistant.channelContextMessages': number;
   readonly 'network.connectFallbackMs': number;
   readonly 'resources.fetchTimeoutMs': number;
   readonly 'resources.refreshIntervalMin': number;

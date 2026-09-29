@@ -9,6 +9,7 @@ import {
   type APIAuditLogEntry,
   type APIGuild,
   type APIGuildMember,
+  type APIGuildScheduledEvent,
   type APIMessage,
   type APIThreadList,
   type APIRole,
@@ -26,6 +27,7 @@ import type {
   InteractionRef,
   OutgoingMessage,
   ReactionUserPage,
+  RecentMessage,
   Snowflake,
 } from '@bananasaurs/core';
 import { mapErrors } from './errors.js';
@@ -267,6 +269,57 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       }
     },
 
+    async fetchChannelMessages(
+      _guildId,
+      channelId,
+      opts,
+    ): Promise<readonly RecentMessage[] | undefined> {
+      // Discord caps a channel page at 100; the assistant's window setting
+      // caps lower still. Clamped, never defaulted: the caller names N.
+      const limit = Math.min(Math.max(opts.limit, 1), 50);
+      try {
+        const messages = (await mapErrors(() =>
+          rest.get(Routes.channelMessages(channelId), {
+            query: new URLSearchParams({ before: opts.before, limit: String(limit) }),
+          }),
+        )) as APIMessageWithMember[];
+        // Discord returns newest first; channel context reads oldest first.
+        return messages
+          .map((message) => {
+            const referenced = message.referenced_message as
+              APIMessageWithMember | null | undefined;
+            const referencedAuthor = referenced?.author;
+            return {
+              messageId: message.id,
+              authorId: message.author.id,
+              authorName:
+                message.member?.nick ?? message.author.global_name ?? message.author.username,
+              authorIsBot: message.author.bot ?? false,
+              content: message.content,
+              at: Date.parse(message.timestamp),
+              ...(referencedAuthor === undefined
+                ? {}
+                : {
+                    referencedAuthorName:
+                      (referenced as APIMessageWithMember).member?.nick ??
+                      referencedAuthor.global_name ??
+                      referencedAuthor.username,
+                  }),
+              hasAttachments: (message.attachments?.length ?? 0) > 0,
+            } satisfies RecentMessage;
+          })
+          .reverse();
+      } catch (err) {
+        // Gone or no access is routine here — a mention in a channel whose
+        // history the bot cannot read — and is reported as "no context"
+        // rather than failing the whole turn.
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+    },
+
     async sendTyping(_guildId, channelId) {
       await mapErrors(() => rest.post(Routes.channelTyping(channelId)));
     },
@@ -413,6 +466,33 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         before = metadata.archive_timestamp;
       }
       return [...found.values()];
+    },
+
+    /**
+     * Guild scheduled events for the assistant (ADR 0092 decision 1): no
+     * gateway intent is needed for the REST read. A 403 (the bot may not
+     * see them) answers `[]` rather than failing the turn; anything else
+     * still throws.
+     */
+    async listScheduledEvents(guildId) {
+      try {
+        const events = (await mapErrors(() =>
+          rest.get(Routes.guildScheduledEvents(guildId)),
+        )) as APIGuildScheduledEvent[];
+        return events.map((event) => ({
+          id: event.id,
+          name: event.name,
+          ...(event.description == null ? {} : { description: event.description }),
+          scheduledStartAt: Date.parse(event.scheduled_start_time),
+          ...(event.channel_id == null ? {} : { channelId: event.channel_id }),
+          ...(event.entity_metadata?.location == null
+            ? {}
+            : { location: event.entity_metadata.location }),
+        }));
+      } catch (err) {
+        if (err instanceof DiscordApiError && err.status === 403) return [];
+        throw err;
+      }
     },
 
     // --- interactions ----------------------------------------------------

@@ -1,12 +1,21 @@
-import { and, asc, desc, eq, gt, inArray, like, lt } from 'drizzle-orm';
-import type { KnownMessage } from '@bananasaurs/core';
+import { and, asc, desc, eq, gte, gt, inArray, like, lt, sql } from 'drizzle-orm';
+import type Database from 'better-sqlite3';
+import type { JoinRule, KnownMessage } from '@bananasaurs/core';
 import {
+  conversationSummarySchema,
+  renderSummary,
+  type ConversationSummary,
+} from '@bananasaurs/core';
+import {
+  assistantConversationLinks,
   assistantConversationMessages,
   assistantConversationTurns,
   assistantConversations,
 } from '../schema.js';
+import type { Db } from '../db.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
+import { sanitiseFtsQuery } from './resource-cache.js';
 
 export type ConversationSource = 'discord' | 'dashboard-test';
 export type ConversationStatus = 'open' | 'ended';
@@ -46,6 +55,7 @@ export interface NewTurn {
   readonly authorName: string;
   readonly text: string;
   readonly traceId?: string | undefined;
+  readonly joinRule?: JoinRule | undefined;
 }
 
 export interface ConversationTurn {
@@ -57,6 +67,15 @@ export interface ConversationTurn {
   readonly text: string;
   readonly traceId?: string | undefined;
   readonly feedback?: Feedback | undefined;
+  readonly joinRule?: JoinRule | undefined;
+}
+
+export interface ConversationLink {
+  readonly otherConversationId: string;
+  readonly otherTitle: string;
+  readonly kind: 'same-channel' | 'thread-parent' | 'recalled';
+  readonly direction: 'outgoing' | 'incoming';
+  readonly at: number;
 }
 
 export interface ConversationListQuery {
@@ -92,6 +111,7 @@ const toTurn = (row: typeof assistantConversationTurns.$inferSelect): Conversati
   text: row.text,
   traceId: row.traceId ?? undefined,
   feedback: (row.feedback as Feedback | null) ?? undefined,
+  joinRule: (row.joinRule as JoinRule | null) ?? undefined,
 });
 
 /** Starts a conversation, `open`, with zero turns. */
@@ -129,6 +149,7 @@ export const appendTurn = (scope: GuildScope, t: NewTurn): void =>
         text: t.text,
         traceId: t.traceId ?? null,
         feedback: null,
+        joinRule: t.joinRule ?? null,
       })
       .run();
     const parent = db
@@ -215,6 +236,22 @@ export const lookupMessage = (scope: GuildScope, messageId: string): KnownMessag
     };
   });
 
+/** Every Discord message id linked to one conversation (ADR 0089 channel context exclusion). */
+export const messageIdsForConversation = (scope: GuildScope, conversationId: string): string[] =>
+  read(scope, (db) =>
+    db
+      .select({ messageId: assistantConversationMessages.messageId })
+      .from(assistantConversationMessages)
+      .where(
+        scope.only(
+          assistantConversationMessages,
+          eq(assistantConversationMessages.conversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => row.messageId),
+  );
+
 /** The author's most recent `open` conversation in this channel, if any. */
 export const latestForAuthor = (
   scope: GuildScope,
@@ -247,6 +284,151 @@ export const latestForAuthor = (
       .limit(1)
       .get();
     return row;
+  });
+
+export const latestWithBotReply = (
+  scope: GuildScope,
+  channelId: string,
+): { conversationId: string } | undefined =>
+  read(scope, (db) =>
+    db
+      .select({ conversationId: assistantConversations.conversationId })
+      .from(assistantConversations)
+      .innerJoin(
+        assistantConversationTurns,
+        and(
+          eq(assistantConversationTurns.guildId, assistantConversations.guildId),
+          eq(assistantConversationTurns.conversationId, assistantConversations.conversationId),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.channelId, channelId),
+          eq(assistantConversations.status, 'open'),
+          eq(assistantConversations.source, 'discord'),
+          eq(assistantConversationTurns.role, 'assistant'),
+        ),
+      )
+      .orderBy(desc(assistantConversations.lastActivityAt))
+      .limit(1)
+      .get(),
+  );
+
+export const withBotReplySince = (
+  scope: GuildScope,
+  channelId: string,
+  sinceMs: number,
+): readonly string[] =>
+  read(scope, (db) => {
+    const rows = db
+      .select({ conversationId: assistantConversations.conversationId })
+      .from(assistantConversations)
+      .innerJoin(
+        assistantConversationTurns,
+        and(
+          eq(assistantConversationTurns.guildId, assistantConversations.guildId),
+          eq(assistantConversationTurns.conversationId, assistantConversations.conversationId),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.channelId, channelId),
+          eq(assistantConversations.status, 'open'),
+          eq(assistantConversations.source, 'discord'),
+          eq(assistantConversationTurns.role, 'assistant'),
+          gte(assistantConversationTurns.at, sinceMs),
+        ),
+      )
+      .all();
+    return [...new Set(rows.map((row) => row.conversationId))];
+  });
+
+export const linkConversations = (
+  scope: GuildScope,
+  link: {
+    readonly conversationId: string;
+    readonly linkedConversationId: string;
+    readonly kind: 'same-channel' | 'thread-parent' | 'recalled';
+    readonly at: number;
+  },
+): void => {
+  if (link.conversationId === link.linkedConversationId) return;
+  write(scope, ({ db }) => {
+    db.insert(assistantConversationLinks)
+      .values({
+        guildId: scope.guildId,
+        conversationId: link.conversationId,
+        linkedConversationId: link.linkedConversationId,
+        kind: link.kind,
+        createdAt: link.at,
+      })
+      .onConflictDoNothing()
+      .run();
+  });
+};
+
+export const listLinks = (scope: GuildScope, conversationId: string): ConversationLink[] =>
+  read(scope, (db) => {
+    const outgoing = db
+      .select({
+        otherConversationId: assistantConversations.conversationId,
+        otherTitle: assistantConversations.title,
+        kind: assistantConversationLinks.kind,
+        at: assistantConversationLinks.createdAt,
+      })
+      .from(assistantConversationLinks)
+      .innerJoin(
+        assistantConversations,
+        and(
+          eq(assistantConversationLinks.guildId, assistantConversations.guildId),
+          eq(
+            assistantConversationLinks.linkedConversationId,
+            assistantConversations.conversationId,
+          ),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversationLinks,
+          eq(assistantConversationLinks.conversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => ({
+        ...row,
+        kind: row.kind as ConversationLink['kind'],
+        direction: 'outgoing' as const,
+      }));
+    const incoming = db
+      .select({
+        otherConversationId: assistantConversations.conversationId,
+        otherTitle: assistantConversations.title,
+        kind: assistantConversationLinks.kind,
+        at: assistantConversationLinks.createdAt,
+      })
+      .from(assistantConversationLinks)
+      .innerJoin(
+        assistantConversations,
+        and(
+          eq(assistantConversationLinks.guildId, assistantConversations.guildId),
+          eq(assistantConversationLinks.conversationId, assistantConversations.conversationId),
+        ),
+      )
+      .where(
+        scope.only(
+          assistantConversationLinks,
+          eq(assistantConversationLinks.linkedConversationId, conversationId),
+        ),
+      )
+      .all()
+      .map((row) => ({
+        ...row,
+        kind: row.kind as ConversationLink['kind'],
+        direction: 'incoming' as const,
+      }));
+    return [...outgoing, ...incoming].sort((a, b) => b.at - a.at);
   });
 
 /**
@@ -587,7 +769,253 @@ export const forgetAuthor = (scope: GuildScope, userId: string): number =>
           )
           .run();
       }
+      // A surviving conversation's summary may describe the forgotten
+      // member's turns, so clear it: the FTS `_au` trigger drops the index
+      // entry when the text goes to null.
+      const survived = touchedIds.filter((id) => stillHasUserTurn.has(id));
+      if (survived.length > 0) {
+        db.update(assistantConversations)
+          .set({
+            summaryJson: null,
+            summaryText: null,
+            summaryThroughAt: null,
+            summaryUpdatedAt: null,
+          })
+          .where(
+            scope.only(
+              assistantConversations,
+              inArray(assistantConversations.conversationId, survived),
+            ),
+          )
+          .run();
+      }
     }
 
     return deleted;
+  });
+
+export interface ConversationSummaryRead {
+  readonly summary: ConversationSummary;
+  readonly throughAt: number;
+  readonly version: number;
+  readonly updatedAt: number;
+}
+
+/**
+ * The stored summary, if the row has one that still validates (ADR 0091).
+ *
+ * Model output is untrusted (hard rule 3): `summary_json` is parsed with
+ * `conversationSummarySchema` on the way back in, and a row that fails to
+ * parse reads as undefined rather than erroring.
+ */
+export const getSummary = (
+  scope: GuildScope,
+  conversationId: string,
+): ConversationSummaryRead | undefined =>
+  read(scope, (db) => {
+    const row = db
+      .select({
+        summaryJson: assistantConversations.summaryJson,
+        summaryThroughAt: assistantConversations.summaryThroughAt,
+        summaryVersion: assistantConversations.summaryVersion,
+        summaryUpdatedAt: assistantConversations.summaryUpdatedAt,
+      })
+      .from(assistantConversations)
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.conversationId, conversationId),
+        ),
+      )
+      .get();
+    if (row?.summaryJson == null || row.summaryThroughAt == null || row.summaryUpdatedAt == null) {
+      return undefined;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.summaryJson);
+    } catch {
+      return undefined;
+    }
+    const result = conversationSummarySchema.safeParse(parsed);
+    if (!result.success) return undefined;
+    return {
+      summary: result.data,
+      throughAt: row.summaryThroughAt,
+      version: row.summaryVersion,
+      updatedAt: row.summaryUpdatedAt,
+    };
+  });
+
+/**
+ * Compare-and-set summary write (ADR 0091 decision 3).
+ *
+ * A single `UPDATE … WHERE … (summary_through_at IS NULL OR
+ * summary_through_at < ?)` applies only when the stored summary is still
+ * older than `throughAt`, and bumps `summary_version`. `written` comes from
+ * the changed-row count; `version` is the row's version afterwards (or `0`
+ * when the row does not exist). The summary is validated before writing and
+ * an invalid one throws rather than writing.
+ */
+export const writeSummaryIfNewer = (
+  scope: GuildScope,
+  input: {
+    readonly conversationId: string;
+    readonly summary: ConversationSummary;
+    readonly throughAt: number;
+    readonly now: number;
+  },
+): { written: boolean; version: number } =>
+  write(scope, ({ db }) => {
+    const validated = conversationSummarySchema.parse(input.summary);
+    const changed = db
+      .update(assistantConversations)
+      .set({
+        summaryJson: JSON.stringify(validated),
+        // ADR 0093 decision 1: the rendered text lands in the same UPDATE,
+        // so the FTS trigger indexes exactly what `summary_json` holds.
+        summaryText: renderSummary(validated),
+        summaryThroughAt: input.throughAt,
+        summaryVersion: sql`${assistantConversations.summaryVersion} + 1`,
+        summaryUpdatedAt: input.now,
+      })
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.conversationId, input.conversationId),
+          sql`(${assistantConversations.summaryThroughAt} IS NULL OR ${assistantConversations.summaryThroughAt} < ${input.throughAt})`,
+        ),
+      )
+      .run().changes;
+    const row = db
+      .select({ summaryVersion: assistantConversations.summaryVersion })
+      .from(assistantConversations)
+      .where(
+        scope.only(
+          assistantConversations,
+          eq(assistantConversations.conversationId, input.conversationId),
+        ),
+      )
+      .get();
+    return { written: changed > 0, version: row?.summaryVersion ?? 0 };
+  });
+
+/**
+ * The stored turns that are **not** in the window `recentTurns` would return,
+ * and whose `at` is greater than `afterAt` (`null` means no lower bound),
+ * oldest first (ADR 0091 decision 3: what the next summary run must cover).
+ *
+ * Reuses `recentTurns`' own selection — calling it and excluding its turn ids
+ * — so the two can never disagree about which turns the window holds.
+ */
+export const evictedTurnsSince = (
+  scope: GuildScope,
+  conversationId: string,
+  opts: { afterAt: number | null; window: { maxTurns: number; maxChars: number } },
+): ConversationTurn[] => {
+  const inWindow = new Set(
+    recentTurns(scope, conversationId, opts.window).map((turnEntry) => turnEntry.turnId),
+  );
+  return listTurns(scope, conversationId).filter(
+    (turnEntry) =>
+      !inWindow.has(turnEntry.turnId) && (opts.afterAt === null || turnEntry.at > opts.afterAt),
+  );
+};
+
+/**
+ * The raw better-sqlite3 handle behind a Drizzle `Db` (mirrors
+ * `archive-search.ts`'s `rawOf`: `MATCH` against the FTS5 index is not
+ * expressible through the query builder).
+ */
+const rawOf = (db: Db): Database.Database =>
+  (db as unknown as { readonly $client: Database.Database }).$client;
+
+export interface SummarySearchHit {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly lastActivityAt: number;
+  readonly summary: ConversationSummary;
+}
+
+interface SummarySearchRow {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly lastActivityAt: number;
+  readonly summaryJson: string | null;
+}
+
+/**
+ * Full-text search over this guild's conversation summaries (ADR 0093).
+ *
+ * The FTS table (`assistant_conversations_summaries_fts`, migration 0052)
+ * carries no `guild_id` of its own, so the query joins back to
+ * `assistant_conversations` on rowid with the guild filter — the same
+ * arrangement `resource-cache.ts` uses — plus the channel filter and the
+ * current-conversation exclusion. Newest first. An empty channel list
+ * returns `[]` without running a query (`IN ()` is a syntax error, and
+ * "nothing visible" is a real state).
+ *
+ * Stored summaries are untrusted (hard rule 3): each hit's `summary_json`
+ * is parsed with `conversationSummarySchema` and a row that fails to parse
+ * is skipped rather than erroring.
+ */
+export const searchSummaries = (
+  scope: GuildScope,
+  input: {
+    readonly query: string;
+    readonly channelIds: readonly string[];
+    readonly excludeConversationId?: string | undefined;
+    readonly limit?: number | undefined;
+  },
+): SummarySearchHit[] =>
+  read(scope, (db) => {
+    const channels = [...new Set(input.channelIds)];
+    if (channels.length === 0) return [];
+    const match = sanitiseFtsQuery(input.query);
+    if (match === '') return [];
+    const limit =
+      input.limit === undefined || !Number.isFinite(input.limit)
+        ? 5
+        : Math.min(Math.max(Math.floor(input.limit), 1), 20);
+
+    const where = [
+      'assistant_conversations_summaries_fts MATCH ?',
+      'c.guild_id = ?',
+      `c.channel_id IN (${channels.map(() => '?').join(', ')})`,
+      'c.summary_json IS NOT NULL',
+    ];
+    const params: unknown[] = [match, scope.guildId, ...channels];
+    if (input.excludeConversationId !== undefined) {
+      where.push('c.conversation_id != ?');
+      params.push(input.excludeConversationId);
+    }
+    const querySql =
+      'SELECT c.conversation_id AS conversationId, c.channel_id AS channelId, ' +
+      'c.last_activity_at AS lastActivityAt, c.summary_json AS summaryJson ' +
+      'FROM assistant_conversations_summaries_fts ' +
+      'JOIN assistant_conversations c ON c.rowid = assistant_conversations_summaries_fts.rowid ' +
+      `WHERE ${where.join(' AND ')} ` +
+      'ORDER BY c.last_activity_at DESC LIMIT ?';
+    const rows = rawOf(db)
+      .prepare<unknown[], SummarySearchRow>(querySql)
+      .all(...params, limit);
+    const hits: SummarySearchHit[] = [];
+    for (const row of rows) {
+      if (row.summaryJson == null) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.summaryJson);
+      } catch {
+        continue;
+      }
+      const result = conversationSummarySchema.safeParse(parsed);
+      if (!result.success) continue;
+      hits.push({
+        conversationId: row.conversationId,
+        channelId: row.channelId,
+        lastActivityAt: row.lastActivityAt,
+        summary: result.data,
+      });
+    }
+    return hits;
   });

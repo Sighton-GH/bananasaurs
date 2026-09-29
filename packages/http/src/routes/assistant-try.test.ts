@@ -99,7 +99,7 @@ beforeEach(async () => {
       name: 'Club',
       systemPrompt: 'Be helpful.',
       promptVersion: 1,
-      allowedSkillIds: ['search-club'],
+      preferredSkillIds: ['search-club'],
       callerRoleIds: [],
       reviewerRoleIds: [],
       resourceIds: [],

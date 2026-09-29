@@ -127,9 +127,11 @@ const EMOJI_LABELS: Record<PromptWizardAnswers['emoji'], string> = {
   'a-little': 'Use emoji sparingly, only where it fits naturally.',
 };
 
+export const BOUNDARIES_ANSWER_BRIEFLY =
+  "For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it's outside what you help with.";
+
 const OFF_TOPIC_LABELS: Record<PromptWizardAnswers['offTopic'], string> = {
-  'answer-briefly':
-    "For questions outside what you help with, answer briefly if you can; otherwise say it's outside what you help with.",
+  'answer-briefly': BOUNDARIES_ANSWER_BRIEFLY,
   redirect:
     'For questions outside what you help with, say so and redirect the person to a more appropriate channel or person.',
 };

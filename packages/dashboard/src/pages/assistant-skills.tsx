@@ -1,12 +1,7 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { Link } from 'wouter';
-import {
-  ASSISTANT_URL,
-  behaviourUrl,
-  type AssistantBehaviourView,
-  type AssistantData,
-} from '../api/assistant.js';
-import { useSession, type Session } from '../app/session.js';
+import { ASSISTANT_URL, type AssistantData } from '../api/assistant.js';
+import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
@@ -14,94 +9,7 @@ import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
-import { useToast } from '../ui/Toast.js';
-import { behaviourBody, scopeLabel, skillEffectLabel, toggleIn } from './assistant-shared.js';
-
-/**
- * One behaviour's skill allowlist - the ONLY place allowlists are edited
- * (ADR 0060). Writes the whole behaviour object with everything else
- * preserved, so an allowlist save can never clobber a prompt edit.
- */
-function BehaviourAllowlistEditor({
-  behaviour,
-  data,
-  session,
-  onSaved,
-}: {
-  readonly behaviour: AssistantBehaviourView;
-  readonly data: AssistantData;
-  readonly session: Session;
-  readonly onSaved: () => void;
-}) {
-  const toast = useToast();
-  const [allowedSkillIds, setAllowedSkillIds] = useState<readonly string[]>(
-    behaviour.allowedSkillIds,
-  );
-  const [busy, setBusy] = useState(false);
-
-  const save = async () => {
-    setBusy(true);
-    try {
-      const result = await session.write(
-        behaviourUrl(behaviour.id),
-        behaviourBody(behaviour, { allowedSkillIds }),
-        'PUT',
-      );
-      if (result !== undefined) {
-        toast({ tone: 'ok', title: `${behaviour.name} allowlist saved` });
-        onSaved();
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section
-      aria-label={`Allowlist for ${behaviour.name}`}
-      className="border-t border-line py-3 first:border-t-0 first:pt-0 last:pb-0"
-    >
-      <h3 className="text-sm font-medium">
-        {behaviour.name}{' '}
-        <span className="font-normal text-ink-muted">
-          ({behaviour.surface === 'direct-command' ? 'direct command' : `@${behaviour.surface}`})
-        </span>
-      </h3>
-      <ul className="mt-2 grid gap-1 sm:grid-cols-2">
-        {data.skills.map((skill) => (
-          <li key={skill.id}>
-            <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-              <input
-                type="checkbox"
-                checked={allowedSkillIds.includes(skill.id)}
-                onChange={() => setAllowedSkillIds((ids) => toggleIn(ids, skill.id))}
-              />
-              <span>
-                <span className="block">{skill.name}</span>
-                <span className="text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
-              </span>
-            </label>
-          </li>
-        ))}
-      </ul>
-      {allowedSkillIds.length === 0 && (
-        <p role="status" className="mt-2 text-xs text-hold">
-          Nothing is allowed: this behaviour can answer from its instructions and reviewed sources,
-          but cannot do anything.
-        </p>
-      )}
-      <div className="mt-2">
-        <Button
-          busy={busy}
-          disabled={allowedSkillIds.join('|') === behaviour.allowedSkillIds.join('|')}
-          onClick={() => void save()}
-        >
-          Save allowlist
-        </Button>
-      </div>
-    </section>
-  );
-}
+import { scopeLabel } from './assistant-shared.js';
 
 const TOOLS = [
   {
@@ -174,9 +82,9 @@ function ToolsCard({ data }: { readonly data: AssistantData }) {
 
 /**
  * `/assistant/skills`: the skill catalogue (each skill links to its own
- * detail page, `/assistant/skills/:skillId`), the look-up tools, the
- * per-behaviour allowlists and the one rule for who can use them (ADR 0060,
- * 0064, 0067).
+ * detail page, `/assistant/skills/:skillId`), the look-up tools, and the one
+ * rule for who can use them. A skill's scope is its only gate (ADR 0087);
+ * behaviours prefer skills on the Behaviours tab.
  */
 export function AssistantSkillsPage() {
   const session = useSession();
@@ -186,7 +94,7 @@ export function AssistantSkillsPage() {
     <>
       <PageHeader
         title="Skills"
-        purpose="What the assistant can do, where each skill is on, and who can use it."
+        purpose="What the assistant can do and who can use it."
         actions={
           <Link href="/assistant/history">
             <Button>Assistant history</Button>
@@ -208,8 +116,8 @@ export function AssistantSkillsPage() {
             <div className="space-y-5">
               <Card title="Skill catalogue">
                 <p className="mb-3 text-sm text-ink-muted">
-                  Every skill the assistant could use in this server. Open one to see where it is
-                  allowed, who can use it and its recent runs.
+                  Every skill the assistant could use in this server. Open one to see who can use it
+                  and its recent runs.
                 </p>
                 <ul className="grid gap-3 md:grid-cols-2">
                   {data.skills.map((skill) => {
@@ -247,31 +155,6 @@ export function AssistantSkillsPage() {
                 </ul>
               </Card>
               <ToolsCard data={data} />
-              <Card title="Allowlists per behaviour">
-                <p className="mb-1 text-sm text-ink-muted">
-                  For each behaviour, choose the skills it may use. The model only sees the skills
-                  allowed here.
-                </p>
-                {data.behaviours.length === 0 ? (
-                  <p className="text-sm text-ink-muted">
-                    No behaviours configured yet. Create one on the{' '}
-                    <Link className="underline" href="/assistant">
-                      Assistant page
-                    </Link>
-                    .
-                  </p>
-                ) : (
-                  data.behaviours.map((behaviour) => (
-                    <BehaviourAllowlistEditor
-                      key={behaviour.id}
-                      behaviour={behaviour}
-                      data={data}
-                      session={session}
-                      onSaved={assistant.reload}
-                    />
-                  ))
-                )}
-              </Card>
               <Card title="Who can use skills">
                 <p className="text-sm text-ink-muted">
                   Each skill&apos;s scope decides who can use it; the owner can always use every

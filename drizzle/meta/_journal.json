@@ -351,6 +351,27 @@
       "when": 1790534716386,
       "tag": "0049_skill_scopes_and_reminder_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790609682852,
+      "tag": "0050_conversation_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1790619870401,
+      "tag": "0051_conversation_summaries",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1790713503214,
+      "tag": "0052_conversation_summary_search",
+      "breakpoints": true
     }
   ]
 }

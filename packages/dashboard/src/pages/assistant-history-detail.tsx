@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, type ReactElement } from 'react';
 import { Link, useParams } from 'wouter';
 import { ApiError } from '../api.js';
 import { traceUrl, type TraceDetailResponse } from '../api/traces.js';
@@ -33,6 +33,105 @@ const argsText = (args: unknown): string => {
     return '—';
   }
 };
+
+export type TraceSection = TraceDetailResponse['trace']['sections'][number];
+export type TraceToolCall = TraceDetailResponse['trace']['toolCalls'][number];
+
+/**
+ * Every prompt section as its own collapsible, with its size. `labelFor`
+ * renames the summary — the Conversations panel passes its plain labels —
+ * while History keeps the raw section name. Prompt text arrives empty when
+ * the viewer lacks the configuration view grant; the section says so
+ * instead of looking empty.
+ */
+export function TraceSectionsList({
+  sections,
+  labelFor = (name: string): string => name,
+}: {
+  readonly sections: readonly TraceSection[];
+  readonly labelFor?: (name: string) => string;
+}): ReactElement {
+  if (sections.length === 0) {
+    return <p className="text-sm text-ink-muted">No prompt sections were recorded.</p>;
+  }
+  return (
+    <div className="grid gap-2">
+      {sections.map((s) => (
+        <details key={s.name} className="rounded-sm border border-line px-3 py-2">
+          <summary className="cursor-pointer text-sm">
+            {labelFor(s.name)} · {s.chars} characters · about {s.estTokens} tokens
+          </summary>
+          {s.text === '' && s.chars > 0 ? (
+            <p className="mt-1 text-sm text-ink-muted">
+              Prompt text is withheld: your account does not hold the configuration view grant
+              (config.read).
+            </p>
+          ) : (
+            <pre className="mt-1 overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+              {s.text}
+            </pre>
+          )}
+        </details>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Every tool call in order: its round, name, arguments, the result text the
+ * model received, and whether the call was allowed. Shared by History and
+ * the Conversations panel's inline view.
+ */
+export function TraceToolCallsTable({
+  toolCalls,
+}: {
+  readonly toolCalls: readonly TraceToolCall[];
+}): ReactElement {
+  if (toolCalls.length === 0) {
+    return <p className="text-sm text-ink-muted">No tool calls were made.</p>;
+  }
+  return (
+    <DataTable
+      caption="Tool calls"
+      rows={toolCalls}
+      rowKey={(r) => `${r.round}-${r.name}-${r.ms}`}
+      columns={[
+        { key: 'round', header: 'Round', numeric: true, cell: (r) => r.round },
+        {
+          key: 'tool',
+          header: 'Tool',
+          cell: (r) => <span className="font-mono text-xs">{r.name}</span>,
+        },
+        {
+          key: 'args',
+          header: 'Arguments',
+          cell: (r) => <pre className="text-xs whitespace-pre-wrap">{argsText(r.args)}</pre>,
+        },
+        {
+          key: 'preview',
+          header: 'Result text',
+          cell: (r) => <pre className="text-xs whitespace-pre-wrap">{r.preview}</pre>,
+        },
+        {
+          key: 'result',
+          header: 'Result',
+          cell: (r) =>
+            r.ok ? (
+              <Badge tone="ok">ok</Badge>
+            ) : (
+              <>
+                <Badge tone="danger">refused</Badge>
+                {r.refused !== undefined && (
+                  <span className="ml-2 text-xs text-ink-muted">{r.refused}</span>
+                )}
+              </>
+            ),
+        },
+        { key: 'ms', header: 'Duration', numeric: true, cell: (r) => `${r.ms} ms` },
+      ]}
+    />
+  );
+}
 
 /**
  * `/assistant/history/:traceId`: one stored run — the question and the answer
@@ -211,76 +310,22 @@ export function AssistantHistoryDetailPage() {
                 </dl>
               </Card>
               <Card title="Prompt">
-                {trace.sections.length === 0 ? (
-                  <p className="text-sm text-ink-muted">No prompt sections were recorded.</p>
-                ) : (
-                  <div className="grid gap-2">
-                    {trace.sections.map((s) => (
-                      <details key={s.name} className="rounded-sm border border-line px-3 py-2">
-                        <summary className="cursor-pointer text-sm">
-                          {s.name} · {s.chars} characters · about {s.estTokens} tokens
-                        </summary>
-                        {s.text === '' && s.chars > 0 ? (
-                          <p className="mt-1 text-sm text-ink-muted">
-                            Prompt text is withheld: your account does not hold the configuration
-                            view grant (config.read).
-                          </p>
-                        ) : (
-                          <pre className="mt-1 overflow-x-auto text-xs whitespace-pre-wrap">
-                            {s.text}
-                          </pre>
-                        )}
-                      </details>
-                    ))}
-                  </div>
-                )}
+                <TraceSectionsList sections={trace.sections} />
               </Card>
               <Card title="Tool calls">
-                {trace.toolCalls.length === 0 ? (
-                  <p className="text-sm text-ink-muted">No tool calls were made.</p>
-                ) : (
-                  <DataTable
-                    caption="Tool calls"
-                    rows={trace.toolCalls}
-                    rowKey={(r) => `${r.round}-${r.name}-${r.ms}`}
-                    columns={[
-                      { key: 'round', header: 'Round', numeric: true, cell: (r) => r.round },
-                      {
-                        key: 'tool',
-                        header: 'Tool',
-                        cell: (r) => <span className="font-mono text-xs">{r.name}</span>,
-                      },
-                      {
-                        key: 'args',
-                        header: 'Arguments',
-                        cell: (r) => (
-                          <pre className="text-xs whitespace-pre-wrap">{argsText(r.args)}</pre>
-                        ),
-                      },
-                      {
-                        key: 'preview',
-                        header: 'Result preview',
-                        cell: (r) => <pre className="text-xs whitespace-pre-wrap">{r.preview}</pre>,
-                      },
-                      {
-                        key: 'result',
-                        header: 'Result',
-                        cell: (r) =>
-                          r.ok ? (
-                            <Badge tone="ok">ok</Badge>
-                          ) : (
-                            <>
-                              <Badge tone="danger">refused</Badge>
-                              {r.refused !== undefined && (
-                                <span className="ml-2 text-xs text-ink-muted">{r.refused}</span>
-                              )}
-                            </>
-                          ),
-                      },
-                      { key: 'ms', header: 'Duration', numeric: true, cell: (r) => `${r.ms} ms` },
-                    ]}
-                  />
-                )}
+                <p className="mb-2 text-sm">
+                  <span className="text-ink-muted">Tools offered: </span>
+                  {trace.included?.toolsOffered === undefined ? (
+                    <span className="text-ink-muted">not recorded</span>
+                  ) : trace.included.toolsOffered.length > 0 ? (
+                    <span className="font-mono text-xs">
+                      {trace.included.toolsOffered.join(', ')}
+                    </span>
+                  ) : (
+                    <span className="text-ink-muted">none</span>
+                  )}
+                </p>
+                <TraceToolCallsTable toolCalls={trace.toolCalls} />
               </Card>
               <Card title="Timeline">
                 {trace.timeline.length === 0 ? (

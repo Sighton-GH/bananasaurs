@@ -30,7 +30,7 @@ const direct: AssistantBehaviour = {
   callerRoleIds: [],
   systemPrompt: 'direct',
   promptVersion: 1,
-  allowedSkillIds: ['club-search', 'reminder-create'],
+  preferredSkillIds: ['club-search', 'reminder-create'],
   resourceIds: [],
   enabled: true,
 };
@@ -44,7 +44,7 @@ const club: AssistantBehaviour = {
   callerRoleIds: [],
   systemPrompt: 'club',
   promptVersion: 1,
-  allowedSkillIds: ['club-search'],
+  preferredSkillIds: ['club-search'],
   resourceIds: [],
   enabled: true,
 };
@@ -168,6 +168,31 @@ describe('assistant command subscriber', () => {
       referencedMessageId: '890123456789012399',
       referencedAuthorId: '901234567890123456',
     });
+  });
+
+  it('carries the thread parent only for a thread mention', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: '678901234567890123',
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012346',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> thread question`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued[0]?.threadParentId).toBe('678901234567890123');
   });
 
   it('posts one safe IT escalation to the configured channel and reviewer roles', async () => {

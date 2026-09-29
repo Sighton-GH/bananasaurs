@@ -3,7 +3,6 @@ import { Link, useParams } from 'wouter';
 import { ApiError } from '../api.js';
 import {
   ASSISTANT_URL,
-  behaviourUrl,
   skillScopeUrl,
   skillUrl,
   type AssistantData,
@@ -22,7 +21,7 @@ import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
-import { behaviourBody, RoleChecklist, skillEffectLabel, toggleIn } from './assistant-shared.js';
+import { RoleChecklist, skillEffectLabel, toggleIn } from './assistant-shared.js';
 import { SkillItemsCard } from './skill-items.js';
 
 /** Loaded (found or not): a 404 renders the empty state through `DataState`, not a thrown error. */
@@ -96,56 +95,6 @@ function ToolCard({ tool }: { readonly tool: SkillTool }) {
           </tbody>
         </table>
       )}
-    </li>
-  );
-}
-
-/** One behaviour's checkbox: writes the whole behaviour object, like every other allowlist edit (ADR 0060). */
-function BehaviourToggle({
-  row,
-  skillId,
-  behaviours,
-  session,
-  onSaved,
-}: {
-  readonly row: { readonly id: string; readonly name: string; readonly allowed: boolean };
-  readonly skillId: string;
-  readonly behaviours: AssistantData['behaviours'];
-  readonly session: Session;
-  readonly onSaved: () => void;
-}) {
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  const full = behaviours.find((b) => b.id === row.id);
-  const toggle = async () => {
-    if (full === undefined) return;
-    setBusy(true);
-    try {
-      const allowedSkillIds = toggleIn(full.allowedSkillIds, skillId);
-      const result = await session.write(
-        behaviourUrl(full.id),
-        behaviourBody(full, { allowedSkillIds }),
-        'PUT',
-      );
-      if (result !== undefined) {
-        toast({ tone: 'ok', title: `${full.name} updated` });
-        onSaved();
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <li>
-      <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-        <input
-          type="checkbox"
-          checked={row.allowed}
-          disabled={busy || full === undefined}
-          onChange={() => void toggle()}
-        />
-        <span>{row.name}</span>
-      </label>
     </li>
   );
 }
@@ -240,8 +189,9 @@ function ScopeEditor({
 
 /**
  * `/assistant/skills/:skillId`: one skill in full - its exact instruction,
- * where it is on, who can use it, its live items and its recent runs
- * (Task 9, Task E2).
+ * who can use it, its live items and its recent runs (Task 9, Task E2). A
+ * skill's scope is its only gate (ADR 0087); behaviours prefer it on the
+ * Behaviours tab.
  */
 export function AssistantSkillPage() {
   const { skillId } = useParams<{ skillId: string }>();
@@ -266,7 +216,7 @@ export function AssistantSkillPage() {
     <>
       <PageHeader
         title="Skill"
-        purpose="One skill: what it does, where it's on, who can use it, and its recent runs."
+        purpose="One skill: what it does, who can use it, and its recent runs."
         actions={
           <Link href="/assistant/skills">
             <Button>Skills</Button>
@@ -310,33 +260,12 @@ export function AssistantSkillPage() {
                   <dd>{skillEffectLabel(data.skill)}</dd>
                 </dl>
               </Card>
-              <Card title="Where it's on">
-                <p className="mb-2 text-sm text-ink-muted">
-                  Turn this skill on or off per behaviour. The model only sees the skills allowed
-                  here.
-                </p>
-                <DataState resource={assistant.resource}>
-                  {(assistantData) => (
-                    <ul className="grid gap-1 sm:grid-cols-2">
-                      {data.behaviours.map((row) => (
-                        <BehaviourToggle
-                          key={row.id}
-                          row={row}
-                          skillId={data.skill.id}
-                          behaviours={assistantData.behaviours}
-                          session={session}
-                          onSaved={() => {
-                            detail.reload();
-                            assistant.reload();
-                          }}
-                        />
-                      ))}
-                    </ul>
-                  )}
-                </DataState>
-              </Card>
               <Card title="Who can use this">
                 <p className="text-sm">{data.whoCanUse}</p>
+                <p className="mt-2 text-sm text-ink-muted">
+                  Any assistant can use this skill for people allowed above. Assistants can prefer
+                  it on the Behaviours tab.
+                </p>
                 {data.skill.acts === true && (
                   <p className="mt-2 text-sm text-ink-muted">
                     This skill acts (it sets reminders or files proposals). It runs as soon as

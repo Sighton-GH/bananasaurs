@@ -33,7 +33,7 @@ export const decisionTone = (status: DecisionRow['status']) =>
 export const toggleIn = (list: readonly string[], id: string): readonly string[] =>
   list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
 
-/** Plain words for what a skill does, shared by the create form and the allowlist editor. */
+/** Plain words for what a skill does, shared by the create form and the behaviour editor. */
 export const skillEffectLabel = (skill: AssistantSkill): string =>
   skill.effect === 'read'
     ? 'Reads'
@@ -61,7 +61,7 @@ export const behaviourBody = (
     systemPrompt: string;
     callerRoleIds: readonly string[];
     resourceIds: readonly string[];
-    allowedSkillIds: readonly string[];
+    preferredSkillIds: readonly string[];
     ticket: { readonly channelId?: string; readonly reviewerRoleIds?: readonly string[] };
   }>,
 ) => ({
@@ -71,7 +71,7 @@ export const behaviourBody = (
   name: behaviour.name,
   systemPrompt: patch.systemPrompt ?? behaviour.systemPrompt,
   promptVersion: behaviour.promptVersion,
-  allowedSkillIds: patch.allowedSkillIds ?? behaviour.allowedSkillIds,
+  preferredSkillIds: patch.preferredSkillIds ?? behaviour.preferredSkillIds,
   resourceIds: patch.resourceIds ?? behaviour.resourceIds,
   enabled: patch.enabled ?? behaviour.enabled,
   ...(behaviour.callerRoleIds === undefined
