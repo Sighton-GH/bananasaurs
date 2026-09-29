@@ -56,7 +56,7 @@ const lineFor = (
   name: string,
   at: number,
   text: string,
-  suffix: '' | ', started this thread' | `, replying to ${string}`,
+  suffix: string,
   now: number,
 ): string => `[${name}, ${relativeAgo(at, now)}${suffix}] ${text}`;
 
