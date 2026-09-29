@@ -4235,3 +4235,253 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     expect(toolTurn(seen, 1)).not.toContain('Build night');
   });
 });
+
+/**
+ * Slice 7: cross-conversation recall (ADR 0093). Written red first: the
+ * `searchConversations` port, the invocation `conversationId` and the
+ * detail `recalled` field do not exist yet.
+ */
+describe('Slice 7: search_conversations recall is audience-filtered and aggregated', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const GENERAL = '567890123456789012';
+  const PRIVATE = '678901234567890123';
+  const CLUB_ROLE = '789012345678901234';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    const seed = (
+      conversationId: string,
+      channelId: string,
+      at: number,
+      topic: string,
+      fact: string,
+    ): void => {
+      conversationRepo.createConversation(scope, {
+        conversationId,
+        channelId,
+        behaviourId: 'direct',
+        startedBy: MEMBER,
+        title: topic,
+        source: 'discord',
+        at,
+      });
+      conversationRepo.writeSummaryIfNewer(scope, {
+        conversationId,
+        summary: {
+          topic,
+          facts: [{ text: fact, from: 'member' }],
+          botClaims: ['The bot guessed the gearbox size'],
+          openQuestions: [],
+          commitments: [{ who: 'Ama', what: 'bring grease' }],
+          participants: ['Ama'],
+        },
+        throughAt: at,
+        now: at + 1,
+      });
+    };
+    seed('conv-general', GENERAL, NOW - 3_600_000, 'robot arm gearbox', 'The gearbox needs grease');
+    seed('conv-private', PRIVATE, NOW - 1_800_000, 'robot arm gripper', 'The gripper needs oil');
+    seed('conv-current', GENERAL, NOW - 900_000, 'robot arm wiring', 'The wiring needs tape');
+  });
+  afterEach(() => t.close());
+
+  const memberChannelsBoth = async () => [
+    { id: GENERAL, name: 'general' },
+    { id: PRIVATE, name: 'private' },
+  ];
+
+  const serviceWithPorts = (
+    discord: Parameters<typeof createAssistantService>[7],
+    provider: TextProvider,
+  ) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      discord,
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          provider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+    );
+
+  const scriptedRecall = (
+    seen: { role: string; text: string }[][],
+    answer: string,
+  ): TextProvider => {
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
+        seen.push([...request.messages]);
+        round += 1;
+        if (round === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: [{ name: 'search_conversations', args: { query: 'robot arm' } }],
+          };
+        return { text: answer, model: 'model-a' };
+      }),
+    };
+  };
+
+  const ask = (
+    discord: Parameters<typeof createAssistantService>[7],
+    provider: TextProvider,
+    invocationId: string,
+    conversationId: string,
+  ) =>
+    serviceWithPorts(discord, provider).invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'what did we decide about the robot arm?' },
+      source: 'slash-command',
+      invocationId,
+      conversationId,
+    });
+
+  const toolTurnOf = (seen: { role: string; text: string }[][]): string =>
+    seen[1]?.find((message) => message.role === 'tool')?.text ?? '';
+
+  it('recalls only the audience intersected with the asker channels', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
+      scriptedRecall(seen, 'The gearbox needs grease.'),
+      'int-recall-audience',
+      'conv-current',
+    );
+    expect(result.ok).toBe(true);
+    const toolText = toolTurnOf(seen);
+    expect(toolText).toContain('robot arm gearbox');
+    expect(toolText).not.toContain('robot arm gripper');
+    expect(result.detail?.recalled).toEqual(['conv-general']);
+  });
+
+  it('excludes the current conversation', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
+      scriptedRecall(seen, 'Done.'),
+      'int-recall-exclude',
+      'conv-current',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).not.toContain('robot arm wiring');
+    expect(result.detail?.recalled).toEqual(['conv-general']);
+  });
+
+  it('leaves names, bot claims and commitment owners out of what the model sees', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
+      scriptedRecall(seen, 'Done.'),
+      'int-recall-names',
+      'conv-current',
+    );
+    expect(result.ok).toBe(true);
+    const toolText = toolTurnOf(seen);
+    expect(toolText).not.toContain('Ama');
+    expect(toolText).not.toContain('The bot guessed the gearbox size');
+    expect(toolText).not.toContain('bring grease');
+  });
+
+  it('redacts evidence text in recalled strings', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    conversationRepo.createConversation(scope, {
+      conversationId: 'conv-mail',
+      channelId: GENERAL,
+      behaviourId: 'direct',
+      startedBy: MEMBER,
+      title: 'mail',
+      source: 'discord',
+      at: NOW - 100_000,
+    });
+    conversationRepo.writeSummaryIfNewer(scope, {
+      conversationId: 'conv-mail',
+      summary: {
+        topic: 'robot arm contact',
+        facts: [{ text: 'Write to lead@example.com for parts', from: 'member' }],
+        botClaims: [],
+        openQuestions: [],
+        commitments: [],
+        participants: [],
+      },
+      throughAt: NOW - 100_000,
+      now: NOW - 99_000,
+    });
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
+      scriptedRecall(seen, 'Done.'),
+      'int-recall-redact',
+      'conv-current',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).not.toContain('lead@example.com');
+  });
+});

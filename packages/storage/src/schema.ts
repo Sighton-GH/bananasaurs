@@ -2301,6 +2301,10 @@ export const assistantConversations = sqliteTable(
     summaryThroughAt: integer('summary_through_at'),
     summaryVersion: integer('summary_version').notNull().default(0),
     summaryUpdatedAt: integer('summary_updated_at'),
+    // ADR 0093 decision 1: the rendered summary text, indexed by FTS5
+    // (`drizzle/0052_conversation_summary_search.sql`). Set in the same
+    // UPDATE that writes `summary_json`.
+    summaryText: text('summary_text'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.conversationId] }),

@@ -487,6 +487,26 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     skills: ['search-club'],
   },
   {
+    name: 'search_conversations',
+    description:
+      'Look back at summaries of earlier conversations in channels everyone here can read.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to search for.',
+          minLength: 2,
+          maxLength: 200,
+        },
+      },
+      required: ['query'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club'],
+  },
+  {
     name: 'channel_history',
     description:
       'Read older messages in the current channel, paging back with the before id from an earlier result.',

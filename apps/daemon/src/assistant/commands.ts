@@ -78,6 +78,12 @@ export interface AssistantInvocation {
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
   /**
+   * ADR 0093: the conversation this invocation is answering in, so
+   * `search_conversations` can exclude it from its own hits. Absent means
+   * no exclusion — invocations with no channel never set it.
+   */
+  readonly conversationId?: string | undefined;
+  /**
    * ADR 0091: the stored summary's version the history leads with, for the
    * trace's `included.summaryVersion`. Absent means no summary was injected.
    */
@@ -147,6 +153,13 @@ export interface AssistantTraceDetail {
     { readonly providerId: string; readonly model: string; readonly keyId: string } | undefined;
   /** Which context blocks the reply saw (ADR 0088 decision 2); tools offered live inside it. */
   readonly included?: AssistantTraceIncluded | undefined;
+  /**
+   * ADR 0093: the conversations whose summaries this run looked back at
+   * (`search_conversations` hits). Carried in the job cursor so the invoke
+   * job can link them with kind `recalled`; never written to the stored
+   * trace.
+   */
+  readonly recalled?: readonly string[] | undefined;
   /** B2b: the code-written action summaries appended to this answer. */
   readonly actions?: readonly string[];
 }

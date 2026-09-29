@@ -5,6 +5,7 @@ import {
   humaniseDuration,
   neutraliseMarkers,
   redactEvidenceText,
+  relativeAgo,
   reminderRecurrence,
   scanOutboundRequest,
   TOOL_CATALOGUE,
@@ -84,6 +85,19 @@ export interface CacheStoredDoc {
   readonly resourceId: string;
   readonly title: string;
   readonly url: string;
+}
+
+/**
+ * One recalled conversation summary (ADR 0093): the display fields the tool
+ * formats, plus the conversation id the invoke job links with kind
+ * `recalled`. The service cleans every string before returning (hard rule 3).
+ */
+export interface ConversationRecallHit {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly lastActivityAt: number;
+  readonly topic: string;
+  readonly facts: readonly string[];
 }
 
 type StoredReminder = assistantRepo.StoredReminder;
@@ -178,6 +192,14 @@ export interface AssistantToolPorts {
   }[];
   /** Enqueues a resource_refresh (reason assistant); false when the 10-minute dedupe already holds one. */
   readonly enqueueRefresh: (resourceId: string) => boolean;
+  /**
+   * Summaries of earlier conversations the asker may be shown (ADR 0093).
+   * The service scopes it to the answer channel's audience intersected with
+   * the asker's channels and excludes the current conversation. Absent, the
+   * tool is not declared.
+   */
+  readonly searchConversations?:
+    ((query: string) => Promise<readonly ConversationRecallHit[]>) | undefined;
 }
 
 export interface ToolSource {
@@ -216,6 +238,12 @@ export interface AssistantToolResult {
    * they actually showed; every other tool returns none.
    */
   readonly handles?: readonly string[];
+  /**
+   * ADR 0093: the conversations whose summaries this result looked back at.
+   * The service collects these into the trace detail so the invoke job can
+   * link them with kind `recalled`.
+   */
+  readonly recalledConversationIds?: readonly string[];
   /** Code-written confirmation the reply ends with (B2b appends it verbatim). */
   readonly actionSummary?: string;
 }
@@ -319,6 +347,7 @@ const schemas = {
       limit: z.number().int().min(1).max(50).optional(),
     })
     .strict(),
+  search_conversations: z.object({ query: z.string().trim().min(2).max(200) }).strict(),
 } as const;
 type ToolName = keyof typeof schemas;
 
@@ -338,6 +367,7 @@ export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =
       (entry.name !== 'web_search' || ports.webSearch !== undefined) &&
       (entry.name !== 'upcoming_events' || ports.upcomingEvents !== undefined) &&
       (entry.name !== 'channel_history' || ports.channelHistory !== undefined) &&
+      (entry.name !== 'search_conversations' || ports.searchConversations !== undefined) &&
       (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)),
   ).map((entry) => ({
     name: entry.name,
@@ -1263,6 +1293,30 @@ export const runAssistantTool = async (
           ...body,
           text: body.text === '' ? cursor : `${body.text}\n${cursor}`,
           handles: [page.oldestId],
+        };
+      }
+      case 'search_conversations': {
+        const { query: q } = parsed.data as { query: string };
+        if (ports.searchConversations === undefined)
+          return refused(name, 'Looking back at earlier conversations is not available here.');
+        // At most 5 lines, each `<#channel>, <relative date>: topic — up to
+        // three facts` (ADR 0093 decision 2). The port carries only the
+        // aggregated display fields — no participants, no bot claims, no
+        // commitment owners — so none can leak through the formatting.
+        const shown = (await ports.searchConversations(q)).slice(0, 5);
+        if (shown.length === 0)
+          return {
+            ...evidence(name, 'No earlier conversations matched.'),
+            recalledConversationIds: [],
+          };
+        const lines = shown.map((hit) => {
+          const facts = hit.facts.slice(0, 3).join('; ');
+          const head = `<#${hit.channelId}>, ${relativeAgo(hit.lastActivityAt, ports.now())}: ${hit.topic}`;
+          return facts === '' ? head : `${head} — ${facts}`;
+        });
+        return {
+          ...evidence(name, lines.join('\n')),
+          recalledConversationIds: shown.map((hit) => hit.conversationId),
         };
       }
     }

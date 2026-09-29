@@ -544,6 +544,46 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(conversationRepo.listLinks(scope(), 'conv_child')).toHaveLength(1);
   });
 
+  it('writes recalled links for the run detail once, and a retry adds none', async () => {
+    conversationRepo.createConversation(scope(), {
+      conversationId: 'conv_hit',
+      channelId: CHANNEL_ID,
+      behaviourId: behaviour.id,
+      startedBy: AMA,
+      title: 'an earlier conversation',
+      source: 'discord',
+      at: NOW,
+    });
+    const h = harness(() => ({
+      ok: true as const,
+      content: 'answer',
+      detail: {
+        sections: [],
+        history: [],
+        attempts: [],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        recalled: ['conv_hit'],
+      },
+    }));
+    const input = mention({ invocationId: 'recall', messageId: '810000000000000080' });
+    const first = await h.run(input);
+    expect(first.error).toBeUndefined();
+    // The job tells the service which conversation is being answered, so
+    // recall can exclude it.
+    expect(h.inputs.at(-1)?.conversationId).toBe('conv_recall');
+    expect(conversationRepo.listLinks(scope(), 'conv_recall')).toEqual([
+      expect.objectContaining({
+        otherConversationId: 'conv_hit',
+        kind: 'recalled',
+        direction: 'outgoing',
+      }),
+    ]);
+    await h.run(input, first.cursor);
+    expect(conversationRepo.listLinks(scope(), 'conv_recall')).toHaveLength(1);
+  });
+
   it('a thread-rule resolution resumes from the cursor after a post-invoke failure', async () => {
     const h = harness(() => ({ ok: true, content: 'answer' }));
     // Seed the thread channel with a bot reply so the next message resolves by the thread rule.
