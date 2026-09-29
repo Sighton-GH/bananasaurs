@@ -28,6 +28,7 @@ import {
   withBotReplySince,
   pruneOlderThan,
   recentTurns,
+  searchSummaries,
   setFeedback,
   writeSummaryIfNewer,
   type NewConversation,
@@ -1074,5 +1075,168 @@ describe('conversation summaries (ADR 0091)', () => {
       ),
     ) as { entries: { tag: string }[] };
     expect(journal.entries.some((e) => e.tag === '0051_conversation_summaries')).toBe(true);
+  });
+});
+
+describe('searchSummaries (ADR 0093)', () => {
+  const CHANNEL_B = '666666666666666666';
+  const summary = (over: Partial<ConversationSummary> = {}): ConversationSummary => ({
+    topic: 'Friday social planning',
+    facts: [{ text: 'The hall opens at six', from: 'member' }],
+    botClaims: [],
+    openQuestions: [],
+    commitments: [],
+    participants: [],
+    ...over,
+  });
+
+  const seed = (
+    conversationId: string,
+    channelId: string,
+    at: number,
+    summaryValue: ConversationSummary,
+  ): void => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ conversationId, channelId, at }));
+    appendTurn(scope, turn({ conversationId, turnId: `turn-${conversationId}`, at, text: 'hi' }));
+    expect(
+      writeSummaryIfNewer(scope, {
+        conversationId,
+        summary: summaryValue,
+        throughAt: at,
+        now: at + 1,
+      }).written,
+    ).toBe(true);
+  };
+
+  it('finds a matching summary and returns it newest first', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-old', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    seed('conv-new', CHANNEL, 2_000, summary({ topic: 'robot arm gripper' }));
+    const hits = searchSummaries(scope, {
+      query: 'robot arm',
+      channelIds: [CHANNEL],
+      limit: 5,
+    });
+    expect(hits.map((hit) => hit.conversationId)).toEqual(['conv-new', 'conv-old']);
+    expect(hits[0]?.summary.topic).toBe('robot arm gripper');
+    expect(hits[0]?.channelId).toBe(CHANNEL);
+    expect(hits[0]?.lastActivityAt).toBe(2_000);
+  });
+
+  it('keeps guild B from reading guild A summaries', () => {
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    const hits = searchSummaries(t.scopes.forGuild(GUILD_B), {
+      query: 'robot arm',
+      channelIds: [CHANNEL],
+      limit: 5,
+    });
+    expect(hits).toEqual([]);
+  });
+
+  it('searches only the given channels', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    seed('conv-2', CHANNEL_B, 2_000, summary({ topic: 'robot arm gripper' }));
+    expect(
+      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }).map(
+        (hit) => hit.conversationId,
+      ),
+    ).toEqual(['conv-1']);
+    expect(
+      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL_B], limit: 5 }).map(
+        (hit) => hit.conversationId,
+      ),
+    ).toEqual(['conv-2']);
+  });
+
+  it('returns [] for an empty channel list', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    expect(searchSummaries(scope, { query: 'robot arm', channelIds: [], limit: 5 })).toEqual([]);
+  });
+
+  it('excludes the current conversation', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    seed('conv-2', CHANNEL, 2_000, summary({ topic: 'robot arm gripper' }));
+    expect(
+      searchSummaries(scope, {
+        query: 'robot arm',
+        channelIds: [CHANNEL],
+        excludeConversationId: 'conv-2',
+        limit: 5,
+      }).map((hit) => hit.conversationId),
+    ).toEqual(['conv-1']);
+  });
+
+  it('drops a deleted conversation from the index', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    expect(
+      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }),
+    ).toHaveLength(1);
+    deleteConversation(scope, 'conv-1');
+    expect(
+      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }),
+    ).toEqual([]);
+  });
+
+  it('re-indexes an updated summary', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    expect(
+      writeSummaryIfNewer(scope, {
+        conversationId: 'conv-1',
+        summary: summary({ topic: 'potluck dessert table' }),
+        throughAt: 2_000,
+        now: 2_001,
+      }).written,
+    ).toBe(true);
+    expect(
+      searchSummaries(scope, { query: 'robot arm', channelIds: [CHANNEL], limit: 5 }),
+    ).toEqual([]);
+    expect(
+      searchSummaries(scope, { query: 'potluck dessert', channelIds: [CHANNEL], limit: 5 }).map(
+        (hit) => hit.conversationId,
+      ),
+    ).toEqual(['conv-1']);
+  });
+
+  it('does not throw on FTS syntax characters in the query', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed('conv-1', CHANNEL, 1_000, summary({ topic: 'robot arm gearbox' }));
+    for (const query of ['"unbalanced', 'foo* AND', '(bar', 'column:', 'NEAR(foo, bar)']) {
+      expect(() =>
+        searchSummaries(scope, { query, channelIds: [CHANNEL], limit: 5 }),
+      ).not.toThrow();
+    }
+  });
+
+  it('stores the rendered summary text alongside the JSON', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    const value = summary();
+    expect(
+      writeSummaryIfNewer(scope, { conversationId: 'conv-1', summary: value, throughAt: 2_000, now: 9_000 })
+        .written,
+    ).toBe(true);
+    const row = t.raw
+      .prepare(
+        `SELECT summary_text AS text FROM assistant_conversations WHERE guild_id = ? AND conversation_id = ?`,
+      )
+      .get(GUILD_A, 'conv-1') as { text: string | null };
+    expect(row.text).toContain('Friday social planning');
+    expect(row.text).toContain('The hall opens at six');
+  });
+
+  it('records the 0052_conversation_summary_search migration tag in the journal', () => {
+    const journal = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../../../../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as { entries: { tag: string }[] };
+    expect(journal.entries.some((e) => e.tag === '0052_conversation_summary_search')).toBe(true);
   });
 });
