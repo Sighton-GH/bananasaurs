@@ -8,6 +8,7 @@ import {
   estimateTokens,
   JOB_KINDS,
   neutraliseMarkers,
+  nextOccurrence,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
@@ -21,6 +22,8 @@ import {
   type Config,
   type GenerationMessage,
   type Logger,
+  type RecentMessage,
+  type ScheduledEvent,
   type TextProvider,
 } from '@bananasaurs/core';
 import {
@@ -55,8 +58,10 @@ import {
   toolDeclarations,
   type ArchiveResult,
   type AssistantToolPorts,
+  type UpcomingEventItem,
   type WebResult,
 } from './tools.js';
+import { formatChannelLines } from './channel-context.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
@@ -225,6 +230,23 @@ export interface AssistantDiscordPorts {
    */
   readonly resolveReminderTargets?:
     ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
+  /**
+   * ADR 0092 decision 1: guild scheduled events behind `upcoming_events`.
+   * Optional so existing callers keep compiling — production always
+   * provides it. Absent, the tool stays undeclared.
+   */
+  readonly listScheduledEvents?: (() => Promise<readonly ScheduledEvent[]>) | undefined;
+  /**
+   * ADR 0092 decision 2: one channel page behind `channel_history`, the same
+   * shape as the invoke job's closure. Optional so existing callers keep
+   * compiling — production always provides it. Absent, the tool refuses.
+   */
+  readonly fetchChannelMessages?:
+    | ((
+        channelId: string,
+        opts: { before: string; limit: number },
+      ) => Promise<readonly RecentMessage[] | undefined>)
+    | undefined;
 }
 /** B2b: the closed default — permissions cannot be checked, so no reminder. */
 const defaultResolveReminderTargets = (): Promise<ReminderTargetResult> =>
@@ -269,6 +291,13 @@ export const createAssistantService = (
     readonly totalCalls?: number;
     readonly maxOutputTokens?: number;
   } = () => ({}),
+  /**
+   * ADR 0092 decision 2: the live channel-context window from the AI tuning
+   * settings (`assistant.channelContextMessages`). The `channel_history`
+   * tool is declared only in a channel while this is above zero; absent
+   * means off.
+   */
+  channelContextMessages: () => number = () => 0,
 ): AssistantCommandService & {
   tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
 } => {
@@ -717,6 +746,112 @@ export const createAssistantService = (
         });
         return result.enqueued;
       };
+      // ADR 0092: the two read-only tools' ports, closed over this request.
+      const listScheduledEvents = discord.listScheduledEvents;
+      const fetchChannelHistory = discord.fetchChannelMessages;
+      const answerChannelId = input.channelId;
+      /**
+       * ADR 0092 decision 1: up to 10 schedule rows in the next 30 days,
+       * soonest first — Discord scheduled events plus channel reminders in
+       * the answer channel's audience. Guild scope, the audience rule
+       * (ADR 0090) and untrusted evidence (hard rule 3) apply: a
+       * channel-bound row lists only inside the audience; Try it (no
+       * channel) lists external events only, plus reminders for channels
+       * the asker can read. A personal reminder (destination at the
+       * creator, not a channel — the DM-style row delivery also treats as
+       * not-a-channel) is never listed.
+       */
+      const upcomingEvents: AssistantToolPorts['upcomingEvents'] =
+        listScheduledEvents === undefined
+          ? undefined
+          : async () => {
+              const nowMs = now();
+              const horizonMs = nowMs + 30 * 86_400_000;
+              const inWindow = (at: number): boolean => at >= nowMs && at <= horizonMs;
+              const clean = (text: string): string =>
+                neutraliseMarkers(redactEvidenceText(text).text);
+              const audience =
+                answerChannelId === undefined
+                  ? undefined
+                  : await (discord.audienceChannels?.(answerChannelId) ?? new Set<string>());
+              const memberChannels =
+                answerChannelId === undefined
+                  ? new Set((await discord.memberChannels(input.userId)).map((c) => c.id))
+                  : undefined;
+              const items: UpcomingEventItem[] = [];
+              for (const event of await listScheduledEvents()) {
+                if (!inWindow(event.scheduledStartAt)) continue;
+                if (
+                  event.channelId !== undefined &&
+                  (audience === undefined || !audience.has(event.channelId))
+                )
+                  continue;
+                items.push({
+                  kind: 'event',
+                  title: clean(event.name),
+                  startsAt: event.scheduledStartAt,
+                  where: clean(
+                    event.location ??
+                      (event.channelId === undefined ? 'Online' : `<#${event.channelId}>`),
+                  ),
+                  ...(event.description === undefined
+                    ? {}
+                    : { description: clean(event.description) }),
+                });
+              }
+              for (const reminder of assistantRepo.listReminders(scope)) {
+                if (reminder.status !== 'scheduled' && reminder.status !== 'delivering') continue;
+                if (reminder.destinationId === reminder.creatorId) continue;
+                const allowed = audience ?? memberChannels;
+                if (allowed === undefined || !allowed.has(reminder.destinationId)) continue;
+                let fireAt = reminder.dueAt;
+                if (reminder.recurrence !== undefined) {
+                  const next = nextOccurrence(
+                    reminder.recurrence,
+                    reminder.dueAt,
+                    nowMs,
+                    reminder.deliveredCount,
+                  );
+                  if (next === undefined) continue;
+                  fireAt = next;
+                }
+                if (!inWindow(fireAt)) continue;
+                items.push({
+                  kind: 'reminder',
+                  title: clean(reminder.text),
+                  startsAt: fireAt,
+                  where: `<#${reminder.destinationId}>`,
+                });
+              }
+              return items.sort((a, b) => a.startsAt - b.startsAt).slice(0, 10);
+            };
+      /**
+       * ADR 0092 decision 2: one page further back in the current channel,
+       * formatted like channel context. Only in a channel while the window
+       * setting is above zero; without `before` it starts just above the
+       * channel-context window (`channelContextOldestId`), falling back to
+       * the invoking message id.
+       */
+      const channelHistory: AssistantToolPorts['channelHistory'] =
+        answerChannelId === undefined || channelContextMessages() <= 0
+          ? undefined
+          : async (opts) => {
+              if (fetchChannelHistory === undefined) return undefined;
+              const before = opts.before ?? input.channelContextOldestId ?? input.invocationId;
+              if (before === undefined) return undefined;
+              const messages = await fetchChannelHistory(answerChannelId, {
+                before,
+                limit: Math.min(Math.max(opts.limit, 1), 50),
+              });
+              if (messages === undefined) return undefined;
+              return {
+                lines: formatChannelLines(messages, {
+                  botUserId: config.DISCORD_APPLICATION_ID,
+                  now: now(),
+                }),
+                ...(messages.length === 0 ? {} : { oldestId: messages[0]!.messageId }),
+              };
+            };
       const toolPorts: AssistantToolPorts = {
         userId: input.userId,
         guildId: scope.guildId,
@@ -776,6 +911,8 @@ export const createAssistantService = (
                 braveWebSearch({ apiKey: currentConfig.BRAVE_SEARCH_API_KEY! }, query)),
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
+        upcomingEvents,
+        channelHistory,
         cacheSearch: (q) =>
           resourceCacheRepo.searchChunks(scope, {
             query: q.query,
