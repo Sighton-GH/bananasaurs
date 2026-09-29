@@ -801,13 +801,13 @@ describe('forgetAuthor', () => {
     expect(forgetAuthor(scope, USER)).toBe(1);
 
     // The surviving conversation keeps B's turn but loses its summary.
-    expect(recentTurns(scope, 'conv-shared', { maxTurns: 12, maxChars: 6_000 }).map((r) => r.turnId)).toEqual([
-      't-b',
-    ]);
-    expect(getSummary(scope, 'conv-shared')).toBeUndefined();
     expect(
-      searchSummaries(scope, { query: 'gearbox', channelIds: [CHANNEL], limit: 5 }),
-    ).toEqual([]);
+      recentTurns(scope, 'conv-shared', { maxTurns: 12, maxChars: 6_000 }).map((r) => r.turnId),
+    ).toEqual(['t-b']);
+    expect(getSummary(scope, 'conv-shared')).toBeUndefined();
+    expect(searchSummaries(scope, { query: 'gearbox', channelIds: [CHANNEL], limit: 5 })).toEqual(
+      [],
+    );
     // Another guild's summaries are untouched.
     expect(getSummary(other, 'conv-other')?.summary.topic).toBe('gearbox rebuild notes');
     expect(
