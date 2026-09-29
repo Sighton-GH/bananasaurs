@@ -3373,7 +3373,7 @@ describe('Slice 4.1: archive search is limited to the answer channel audience', 
     const provider: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText: vi.fn(async (request: { messages: { role: string; text: string }[] }) => {
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
         seen.push([...request.messages]);
         return seen.length === 1
           ? {
@@ -3535,7 +3535,7 @@ describe('Slice 4.2: Did X say Y resolves from to one member with code-issued li
     return {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText: vi.fn(async (request: { messages: { role: string; text: string }[] }) => {
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
         seen.push([...request.messages]);
         round += 1;
         if (round === 1) return { text: '', model: 'model-a', toolCalls: [toolCall] };
