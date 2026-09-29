@@ -44,7 +44,7 @@ export interface TraceIncluded {
   readonly snippetChunkIds?: readonly string[];
   readonly quote?: boolean;
   readonly historyTurns?: number;
-  readonly channelMessages?: number;
+  readonly channelMessages?: number | undefined;
 }
 
 /** Reads the trace's typed `included` blocks; absent on rows written before ADR 0088. */
