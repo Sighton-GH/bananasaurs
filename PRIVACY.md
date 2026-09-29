@@ -88,6 +88,7 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   like any other question. They are saved as conversations marked Dashboard
   test and are never posted to Discord.
 - Long conversations keep a short AI-written summary of their earlier part, made by the same AI provider that answered. It is deleted with the conversation.
+- The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Names are left out of what it sees. There is no opt-out.
 
 ## Who can see it
 
