@@ -5,6 +5,7 @@ import {
   neutraliseMarkers,
   parseSummaryJson,
   redactEvidenceText,
+  safeDisplayName,
   safeLogFields,
   type AssistantSummarisePayload,
   type JobHandler,
@@ -51,6 +52,12 @@ export const SUMMARY_SYSTEM_INSTRUCTION =
 const buildSummaryInput = (previousJson: string, lines: readonly string[]): string =>
   `[PREVIOUS SUMMARY]\n${previousJson}\n[/PREVIOUS SUMMARY]\n[TURNS]\n${lines.join('\n')}\n[/TURNS]`;
 
+/** Member-controlled display name made safe for the turn label, like `labelUserTurn`. */
+const summarySpeaker = (authorName: string): string => {
+  const cleaned = safeDisplayName(authorName);
+  return cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
+};
+
 /** Drops the oldest turn lines until the whole input fits, keeping the newest. */
 const capInputLines = (previousJson: string, lines: readonly string[]): readonly string[] => {
   let kept = [...lines];
@@ -92,7 +99,7 @@ export const assistantSummariseHandler = (
       previousJson,
       evicted.map(
         (turn) =>
-          `[${turn.authorName}, ${turn.role === 'assistant' ? 'bot' : 'member'}] ${neutraliseMarkers(turn.text)}`,
+          `[${summarySpeaker(turn.authorName)}, ${turn.role === 'assistant' ? 'bot' : 'member'}] ${neutraliseMarkers(turn.text)}`,
       ),
     );
     const result = await deps.summariseModel({
