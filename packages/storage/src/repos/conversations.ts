@@ -769,6 +769,26 @@ export const forgetAuthor = (scope: GuildScope, userId: string): number =>
           )
           .run();
       }
+      // A surviving conversation's summary may describe the forgotten
+      // member's turns, so clear it: the FTS `_au` trigger drops the index
+      // entry when the text goes to null.
+      const survived = touchedIds.filter((id) => stillHasUserTurn.has(id));
+      if (survived.length > 0) {
+        db.update(assistantConversations)
+          .set({
+            summaryJson: null,
+            summaryText: null,
+            summaryThroughAt: null,
+            summaryUpdatedAt: null,
+          })
+          .where(
+            scope.only(
+              assistantConversations,
+              inArray(assistantConversations.conversationId, survived),
+            ),
+          )
+          .run();
+      }
     }
 
     return deleted;
