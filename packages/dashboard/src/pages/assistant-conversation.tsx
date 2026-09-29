@@ -248,9 +248,7 @@ export function AssistantConversationPage() {
                         </Link>{' '}
                         <span className="text-ink-muted">
                           <span>{linkWords(link)}</span> ·{' '}
-                          <time dateTime={at.toISOString()}>
-                            {at.toLocaleString('en-CA')}
-                          </time>
+                          <time dateTime={at.toISOString()}>{at.toLocaleString('en-CA')}</time>
                         </span>
                       </li>
                     );
