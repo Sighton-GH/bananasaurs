@@ -1738,10 +1738,10 @@ describe('upcoming_events and channel_history', () => {
     });
     const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
     expect(result.ok).toBe(true);
-    // NOW is 12:30 PDT: +1h is 13:30, +2h is 14:30.
+    // NOW is 12:30 PDT: +1h is 13:30, +2h is 14:30, both September 23.
     expect(result.text).toContain('Build night — ');
     expect(result.text).toContain('13:30');
-    expect(result.text).toContain('America/Vancouver');
+    expect(result.text).toContain('September 23');
     expect(result.text).toContain('Room 101 — Bring tools and parts.');
     expect(result.text).toContain('Order batteries — ');
     expect(result.text).toContain('14:30');
@@ -1754,9 +1754,10 @@ describe('upcoming_events and channel_history', () => {
     });
     const result = await runAssistantTool({ name: 'upcoming_events', args: {} }, p);
     expect(result.ok).toBe(true);
-    // 20:30 UTC is 08:30 the next day in Auckland (UTC+12).
+    // 20:30 UTC September 23 is 08:30 September 24 in Auckland (UTC+12).
     expect(result.text).toContain('08:30');
-    expect(result.text).toContain('Pacific/Auckland');
+    expect(result.text).toContain('September 24');
+    expect(result.text).not.toContain('13:30');
   });
 
   it('upcoming_events lists at most 10 items, soonest first', async () => {

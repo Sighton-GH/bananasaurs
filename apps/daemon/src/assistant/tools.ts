@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   clipHeading,
   humaniseDuration,
+  neutraliseMarkers,
   redactEvidenceText,
   reminderRecurrence,
   scanOutboundRequest,
@@ -145,6 +146,20 @@ export interface AssistantToolPorts {
   readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
   readonly serverCard: () => string;
   readonly visibleChannels: () => Promise<readonly { id: string; name: string }[]>;
+  /**
+   * ADR 0092 decision 1: the next schedule rows, already audience-filtered
+   * and cleaned by the service. Absent when the schedule cannot be read —
+   * then `upcoming_events` stays undeclared, like `web_search` while off.
+   */
+  readonly upcomingEvents?: (() => Promise<readonly UpcomingEventItem[]>) | undefined;
+  /**
+   * ADR 0092 decision 2: one page further back in the current channel.
+   * Absent outside a channel or when the context window is off — then
+   * `channel_history` stays undeclared.
+   */
+  readonly channelHistory?:
+    | ((opts: { before?: string; limit: number }) => Promise<ChannelHistoryPage | undefined>)
+    | undefined;
   /** Guild-scoped cache reads (hard rule 2: the closures capture the request scope). */
   readonly cacheSearch: (input: {
     readonly query: string;
@@ -168,6 +183,24 @@ export interface AssistantToolPorts {
 export interface ToolSource {
   readonly title: string;
   readonly url: string;
+}
+
+/**
+ * One `upcoming_events` row (ADR 0092 decision 1): a Discord scheduled event
+ * or a channel reminder. `description` is set for events only.
+ */
+export interface UpcomingEventItem {
+  readonly kind: 'event' | 'reminder';
+  readonly title: string;
+  readonly startsAt: number;
+  readonly where: string;
+  readonly description?: string | undefined;
+}
+
+/** One `channel_history` page (ADR 0092 decision 2). */
+export interface ChannelHistoryPage {
+  readonly lines: readonly string[];
+  readonly oldestId?: string | undefined;
 }
 
 export interface AssistantToolResult {
@@ -276,6 +309,16 @@ const schemas = {
     })
     .strict(),
   refresh_source: z.object({ resourceId: z.string().min(1).max(64) }).strict(),
+  upcoming_events: z.object({}).strict(),
+  channel_history: z
+    .object({
+      before: z
+        .string()
+        .regex(/^\d{17,20}$/)
+        .optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    })
+    .strict(),
 } as const;
 type ToolName = keyof typeof schemas;
 
@@ -285,12 +328,16 @@ type ToolName = keyof typeof schemas;
  * can never drift from what the skill detail page shows (a test asserts
  * every entry here equals its catalogue entry). `web_search` is the one
  * conditional entry: it drops out entirely while search is off (ADR 0066).
- * Acting entries drop out while their skill is not allowed (B2a).
+ * `upcoming_events` and `channel_history` drop out the same way while their
+ * port is absent (ADR 0092). Acting entries drop out while their skill is
+ * not allowed (B2a).
  */
 export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =>
   TOOL_CATALOGUE.filter(
     (entry) =>
       (entry.name !== 'web_search' || ports.webSearch !== undefined) &&
+      (entry.name !== 'upcoming_events' || ports.upcomingEvents !== undefined) &&
+      (entry.name !== 'channel_history' || ports.channelHistory !== undefined) &&
       (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)),
   ).map((entry) => ({
     name: entry.name,
@@ -1176,6 +1223,48 @@ export const runAssistantTool = async (
             ? 'Refresh started; updated content will be available in about a minute.'
             : 'Already refreshed in the last 10 minutes.',
         );
+      }
+      case 'upcoming_events': {
+        if (ports.upcomingEvents === undefined)
+          return refused(name, "I couldn't check the schedule right now.");
+        // The service already filters, sorts and caps; the slice and sort
+        // here only bound a hand-built port in tests.
+        const items = [...(await ports.upcomingEvents())]
+          .sort((a, b) => a.startsAt - b.startsAt)
+          .slice(0, 10);
+        if (items.length === 0) return evidence(name, 'Nothing scheduled in the next 30 days.');
+        const clean = (text: string): string =>
+          neutraliseMarkers(redactEvidenceText(text).text);
+        const lines = items.map((item) => {
+          const line = `${clean(item.title)} — ${clock(ports, item.startsAt)} — ${clean(item.where)}`;
+          if (item.kind !== 'event' || item.description === undefined || item.description === '')
+            return line;
+          return `${line} — ${clean(item.description).slice(0, 200)}`;
+        });
+        return evidence(name, lines.join('\n'));
+      }
+      case 'channel_history': {
+        if (ports.channelHistory === undefined)
+          return refused(name, "I couldn't read the channel history.");
+        const { before, limit } = parsed.data as { before?: string; limit?: number };
+        const page = await ports.channelHistory({
+          ...(before === undefined ? {} : { before }),
+          // No limit named means a middle page, not the whole channel.
+          limit: limit ?? 20,
+        });
+        if (page === undefined) return refused(name, "I couldn't read the channel history.");
+        const body = evidence(name, page.lines.join('\n'));
+        if (page.oldestId === undefined) return { ...body, handles: [] };
+        // The cursor is code-issued (the port's own handle), not untrusted
+        // message text, so it joins after the evidence filter: a snowflake
+        // that happens to be Luhn-valid would otherwise redact into
+        // `[redacted …]` and the model could never page with it.
+        const cursor = `Older: before=${page.oldestId}`;
+        return {
+          ...body,
+          text: body.text === '' ? cursor : `${body.text}\n${cursor}`,
+          handles: [page.oldestId],
+        };
       }
     }
   } catch (err) {

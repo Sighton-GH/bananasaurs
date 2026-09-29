@@ -4027,7 +4027,9 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
       invocationId: 'int-ev-tz',
     });
     expect(result.ok).toBe(true);
-    expect(toolTurn(seen, 1)).toContain('Pacific/Auckland');
+    // 09:00 UTC is 22:00 the same day in Auckland (NZDT, UTC+13) — and 01:00
+    // in Vancouver, so the time itself proves which zone formatted the line.
+    expect(toolTurn(seen, 1)).toContain('22:00');
   });
 
   it('channel_history pages from the channel-context oldest id, then with a returned handle', async () => {
