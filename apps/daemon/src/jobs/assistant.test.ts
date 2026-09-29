@@ -1840,7 +1840,7 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
   });
 
   it('a dangling recalled id does not fail the job and the summary still enqueues', async () => {
-    const h = harness((input) => ({
+    const h = harness(() => ({
       ...answeredResult(),
       detail: {
         ...answeredResult().detail!,
