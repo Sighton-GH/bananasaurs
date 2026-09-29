@@ -169,6 +169,15 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
   ...(detail.model === undefined ? {} : { model: detail.model }),
   ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
   ...(detail.web === undefined ? {} : { web: detail.web }),
+  ...(detail.answeredBy === undefined
+    ? {}
+    : {
+        answeredBy: {
+          providerId: detail.answeredBy.providerId,
+          model: detail.answeredBy.model,
+          keyId: detail.answeredBy.keyId,
+        },
+      }),
   ...(detail.included === undefined
     ? {}
     : {

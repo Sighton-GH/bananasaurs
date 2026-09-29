@@ -47,6 +47,12 @@ export interface LoopResult {
   readonly outcome: 'answered' | 'failed';
   readonly model?: string;
   readonly provider?: string;
+  /**
+   * The chain entry whose response was accepted (ADR 0091). Carried so the
+   * summary job can re-resolve the same entry. Never written to the trace:
+   * the key id is not for display.
+   */
+  readonly answeredBy?: { readonly providerId: string; readonly model: string; readonly keyId: string };
   readonly attempts: AssistantTrace['attempts'];
   readonly toolCalls: AssistantTrace['toolCalls'];
   readonly usage: AssistantTrace['usage'];
@@ -419,6 +425,7 @@ interface EntrySuccess {
   readonly text: string;
   readonly model: string;
   readonly provider: string;
+  readonly answeredBy: { readonly providerId: string; readonly model: string; readonly keyId: string };
   readonly finishReason?: string;
   readonly guard: AssistantTrace['guard'];
 }
@@ -791,6 +798,11 @@ const finishEntry = async (deps: {
       text: guarded.text,
       model: deps.response.model,
       provider: deps.entry.providerId,
+      answeredBy: {
+        providerId: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+      },
       ...(deps.response.finishReason === undefined
         ? {}
         : { finishReason: deps.response.finishReason }),
@@ -804,6 +816,11 @@ const finishEntry = async (deps: {
       text: PROMPT_LEAK_TEXT,
       model: deps.response.model,
       provider: deps.entry.providerId,
+      answeredBy: {
+        providerId: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+      },
       ...(deps.response.finishReason === undefined
         ? {}
         : { finishReason: deps.response.finishReason }),
@@ -839,6 +856,11 @@ const finishEntry = async (deps: {
           text: second.text,
           model: retry.model,
           provider: deps.entry.providerId,
+          answeredBy: {
+            providerId: deps.entry.providerId,
+            model: deps.entry.model,
+            keyId: deps.entry.keyId,
+          },
           ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
           guard: { removed: [...guarded.removed, ...second.removed] },
         };
@@ -850,6 +872,11 @@ const finishEntry = async (deps: {
           text: PROMPT_LEAK_TEXT,
           model: retry.model,
           provider: deps.entry.providerId,
+          answeredBy: {
+            providerId: deps.entry.providerId,
+            model: deps.entry.model,
+            keyId: deps.entry.keyId,
+          },
           ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
           guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
         };
@@ -873,6 +900,11 @@ const finishEntry = async (deps: {
     text: GUARD_FAILURE_TEXT,
     model: deps.response.model,
     provider: deps.entry.providerId,
+    answeredBy: {
+      providerId: deps.entry.providerId,
+      model: deps.entry.model,
+      keyId: deps.entry.keyId,
+    },
     guard: { removed: [...guarded.removed] },
   };
 };

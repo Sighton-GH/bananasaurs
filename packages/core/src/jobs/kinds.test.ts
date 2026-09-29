@@ -24,6 +24,34 @@ const newCursor = (rule: NewRule) => ({
 });
 
 describe('assistantInvokeCursor resolution', () => {
+  it('carries answeredBy through the cursor detail', () => {
+    const parsed = assistantInvokeCursor.safeParse({
+      ...base,
+      result: {
+        ok: true,
+        content: 'answer',
+        detail: {
+          sections: [],
+          history: [],
+          attempts: [],
+          toolCalls: [],
+          usage: {},
+          guard: { removed: [] },
+          answeredBy: { providerId: 'gemini', model: 'm', keyId: 'k' },
+        },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      const detail = parsed.data.result;
+      expect(detail.ok && detail.detail?.answeredBy).toEqual({
+        providerId: 'gemini',
+        model: 'm',
+        keyId: 'k',
+      });
+    }
+  });
+
   it('parses a cursor for every continue rule', () => {
     for (const rule of CONTINUE_RULES) {
       const parsed = assistantInvokeCursor.safeParse(continueCursor(rule));

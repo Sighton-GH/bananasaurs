@@ -127,6 +127,14 @@ export interface AssistantTraceDetail {
   readonly model?: string | undefined;
   readonly finishReason?: string | undefined;
   readonly web?: boolean | undefined;
+  /**
+   * The chain entry whose response was accepted (ADR 0091). Carried in the
+   * job cursor so the summary job can re-resolve it; never written to the
+   * stored trace, since the key id is not for display.
+   */
+  readonly answeredBy?:
+    | { readonly providerId: string; readonly model: string; readonly keyId: string }
+    | undefined;
   /** Which context blocks the reply saw (ADR 0088 decision 2); tools offered live inside it. */
   readonly included?: AssistantTraceIncluded | undefined;
   /** B2b: the code-written action summaries appended to this answer. */

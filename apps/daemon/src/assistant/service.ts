@@ -1115,6 +1115,7 @@ export const createAssistantService = (
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
         ...(loop.web ? { web: true } : {}),
+        ...(loop.answeredBy === undefined ? {} : { answeredBy: { ...loop.answeredBy } }),
         // B2b: the summaries appended to the posted answer, in call order.
         ...(loop.actionSummaries.length === 0 ? {} : { actions: [...loop.actionSummaries] }),
       };

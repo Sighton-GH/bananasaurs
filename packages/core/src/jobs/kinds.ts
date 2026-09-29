@@ -451,6 +451,18 @@ const assistantInvokeDetail = z.object({
   finishReason: assistantTraceSchema.shape.finishReason,
   web: z.boolean().optional(),
   included: assistantTraceSchema.shape.included,
+  /**
+   * ADR 0091: the chain entry whose response was accepted. Carried so the
+   * summary job can re-resolve it; never written to the stored trace, since
+   * the key id is not for display.
+   */
+  answeredBy: z
+    .object({
+      providerId: z.string().min(1),
+      model: z.string().min(1),
+      keyId: z.string().min(1),
+    })
+    .optional(),
 });
 
 export const assistantInvokeCursor = z.object({
