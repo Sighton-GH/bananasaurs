@@ -963,8 +963,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         ...(settings === undefined
           ? {}
           : {
-              channelContextMessages: () =>
-                settings.get('assistant.channelContextMessages'),
+              channelContextMessages: () => settings.get('assistant.channelContextMessages'),
             }),
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),

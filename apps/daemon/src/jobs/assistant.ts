@@ -646,14 +646,11 @@ export const assistantInvokeHandler = (deps: {
             // parent channel, falling back to the thread itself (forum
             // posts). Its `at` is the thread id's snowflake time — the fetch
             // reports no timestamp of its own.
-            let starter:
-              | { authorName: string; content: string; at: number }
-              | undefined;
+            let starter: { authorName: string; content: string; at: number } | undefined;
             if (payload.threadParentId !== undefined && deps.fetchMessageContent !== undefined) {
               try {
                 const first = await deps.fetchMessageContent(payload.threadParentId, channelId);
-                const fetched =
-                  first ?? (await deps.fetchMessageContent(channelId, channelId));
+                const fetched = first ?? (await deps.fetchMessageContent(channelId, channelId));
                 if (fetched === undefined) {
                   deps.logger.warn(
                     safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),

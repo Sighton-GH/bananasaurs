@@ -230,10 +230,7 @@ export const lookupMessage = (scope: GuildScope, messageId: string): KnownMessag
   });
 
 /** Every Discord message id linked to one conversation (ADR 0089 channel context exclusion). */
-export const messageIdsForConversation = (
-  scope: GuildScope,
-  conversationId: string,
-): string[] =>
+export const messageIdsForConversation = (scope: GuildScope, conversationId: string): string[] =>
   read(scope, (db) =>
     db
       .select({ messageId: assistantConversationMessages.messageId })
