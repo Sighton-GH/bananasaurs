@@ -176,7 +176,7 @@ export function AssistantConversationPage() {
         }
       />
       <DataState resource={detail.resource}>
-        {({ conversation, turns, links }) => (
+        {({ conversation, summary, turns, links }) => (
           <div className="grid gap-4">
             <Card title="Summary">
               <h2 className="text-base font-medium">{conversation.title}</h2>
@@ -221,6 +221,25 @@ export function AssistantConversationPage() {
                 </Button>
               </div>
             </Card>
+            <Card title="Summary so far">
+              {summary === null || summary === undefined ? (
+                <p className="text-sm text-ink-muted">
+                  No summary yet. Long conversations get one once earlier messages drop out of what
+                  the AI sees.
+                </p>
+              ) : (
+                <>
+                  <p className="text-sm whitespace-pre-wrap">{summary.text}</p>
+                  <p className="mt-2 text-xs text-ink-muted">
+                    Updated{' '}
+                    <time dateTime={new Date(summary.updatedAt).toISOString()}>
+                      {new Date(summary.updatedAt).toLocaleString('en-CA')}
+                    </time>{' '}
+                    · version {summary.version}
+                  </p>
+                </>
+              )}
+            </Card>
             <Card title="Transcript">
               {turns.length === 0 ? (
                 <p className="text-sm text-ink-muted">No turns yet.</p>
@@ -242,7 +261,10 @@ export function AssistantConversationPage() {
                   {links.map((link) => {
                     const at = new Date(link.at);
                     return (
-                      <li key={link.otherConversationId} className="text-sm">
+                      <li
+                        key={`${link.otherConversationId}-${link.kind}-${link.direction}`}
+                        className="text-sm"
+                      >
                         <Link href={conversationPageUrl(link.otherConversationId)}>
                           {link.otherTitle}
                         </Link>{' '}
