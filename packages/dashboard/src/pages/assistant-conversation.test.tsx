@@ -49,6 +49,7 @@ const DETAIL = {
     },
   ],
   links: [],
+  summary: null,
 };
 
 function renderDetail(detail: unknown = DETAIL) {
@@ -315,5 +316,58 @@ describe('AssistantConversationPage', () => {
     renderDetail({ ...DETAIL, links: [] });
     expect(await screen.findByText('Linked conversations')).toBeTruthy();
     expect(screen.getByText('No linked conversations.')).toBeTruthy();
+  });
+
+  it('shows the stored summary with its update time and version', async () => {
+    renderDetail({
+      ...DETAIL,
+      summary: {
+        text: 'Topic: Friday social planning',
+        version: 2,
+        updatedAt: 1_790_000_005_000,
+      },
+    });
+    expect(await screen.findByText('Summary so far')).toBeTruthy();
+    expect(screen.getByText('Topic: Friday social planning')).toBeTruthy();
+    const time = screen.getByText(new Date(1_790_000_005_000).toLocaleString('en-CA'));
+    expect(time.getAttribute('dateTime')).toBe(new Date(1_790_000_005_000).toISOString());
+    expect(screen.getByText(/version 2/)).toBeTruthy();
+  });
+
+  it('says plainly when no summary is stored yet', async () => {
+    renderDetail({ ...DETAIL, summary: null });
+    expect(await screen.findByText('Summary so far')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'No summary yet. Long conversations get one once earlier messages drop out of what the AI sees.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('lists two kinds of link to the same conversation', async () => {
+    renderDetail({
+      ...DETAIL,
+      links: [
+        {
+          otherConversationId: 'conv-2',
+          otherTitle: 'Same neighbour',
+          kind: 'same-channel',
+          direction: 'outgoing',
+          at: 3_000,
+        },
+        {
+          otherConversationId: 'conv-2',
+          otherTitle: 'Same neighbour',
+          kind: 'recalled',
+          direction: 'outgoing',
+          at: 4_000,
+        },
+      ],
+    });
+    expect(await screen.findByText('Linked conversations')).toBeTruthy();
+    const neighbours = screen.getAllByRole('link', { name: 'Same neighbour' });
+    expect(neighbours).toHaveLength(2);
+    expect(screen.getByText('In the same channel at the same time')).toBeTruthy();
+    expect(screen.getByText('Looked back at')).toBeTruthy();
   });
 });

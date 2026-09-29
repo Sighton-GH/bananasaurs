@@ -45,6 +45,7 @@ export interface TraceIncluded {
   readonly quote?: boolean;
   readonly historyTurns?: number;
   readonly channelMessages?: number | undefined;
+  readonly summaryVersion?: number | undefined;
 }
 
 /** Reads the trace's typed `included` blocks; absent on rows written before ADR 0088. */
@@ -57,6 +58,7 @@ export const includedOf = (trace: TraceDetailResponse['trace']): TraceIncluded |
     quote: included.quote,
     historyTurns: included.historyTurns,
     channelMessages: included.channelMessages,
+    summaryVersion: included.summaryVersion,
   };
 };
 
@@ -138,6 +140,12 @@ function WhatTheAiSawTrace({ trace }: { readonly trace: TraceDetailResponse['tra
                   : orDash(String(included.channelMessages))}
               </dd>
             </div>
+            {included.summaryVersion !== undefined && (
+              <div>
+                <dt className="inline text-ink-muted">Summary version: </dt>
+                <dd className="inline">{orDash(String(included.summaryVersion))}</dd>
+              </div>
+            )}
           </dl>
         </section>
       )}

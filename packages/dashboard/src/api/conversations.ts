@@ -57,8 +57,16 @@ export interface ConversationLinkRow {
 
 export interface ConversationDetailResponse {
   readonly conversation: Omit<ConversationRow, 'people' | 'member'>;
+  readonly summary: ConversationSummaryView | null;
   readonly turns: readonly ConversationTurnRow[];
   readonly links: readonly ConversationLinkRow[];
+}
+
+/** The rendered conversation summary the detail endpoint returns; null means none stored yet. */
+export interface ConversationSummaryView {
+  readonly text: string;
+  readonly version: number;
+  readonly updatedAt: number;
 }
 
 /** The auto-delete window in days; null keeps conversations forever. */
