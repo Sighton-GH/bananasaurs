@@ -1801,6 +1801,35 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
     expect(summaryJobs()).toHaveLength(1);
   });
 
+  it('a dangling recalled id does not fail the job and the summary still enqueues', async () => {
+    const h = harness((input) => ({
+      ...answeredResult(),
+      detail: {
+        ...answeredResult().detail!,
+        recalled: ['conv_gone'],
+      },
+    }));
+    await h.run(mention({ invocationId: 'recall-gone', messageId: '810000000000000209' }));
+    // Twelve seeded turns plus the run's own two push the oldest out of the window.
+    for (let i = 0; i < 12; i += 1) {
+      conversationRepo.appendTurn(scope(), {
+        conversationId: 'conv_recall-gone',
+        turnId: `turn_seed_${i}`,
+        at: NOW - 60_000 + i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        authorId: AMA,
+        authorName: i % 2 === 0 ? 'Ama' : 'bananasaurs',
+        text: `seeded turn ${i}`,
+      });
+    }
+    nowMs += 1_000;
+    // `conv_gone` was never created, so its link write fails: the job must
+    // still resolve and enqueue the summary job after it.
+    await h.run(mention({ invocationId: 'recall-gone-next', messageId: '810000000000000210' }));
+    expect(conversationRepo.listLinks(scope(), 'conv_recall-gone')).toEqual([]);
+    expect(summaryJobs()).toHaveLength(1);
+  });
+
   it('passes the stored summary into the invoke and records its version on the trace', async () => {
     conversationRepo.createConversation(scope(), {
       conversationId: 'conv_sum-ver',

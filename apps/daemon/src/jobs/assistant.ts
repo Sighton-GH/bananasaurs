@@ -1076,12 +1076,19 @@ export const assistantInvokeHandler = (deps: {
       if (conversationId !== undefined && deps.conversations !== undefined) {
         const convScope = deps.conversations.scope;
         for (const recalledId of result.detail?.recalled ?? []) {
-          conversationRepo.linkConversations(convScope, {
-            conversationId,
-            linkedConversationId: recalledId,
-            kind: 'recalled',
-            at: deps.now(),
-          });
+          try {
+            conversationRepo.linkConversations(convScope, {
+              conversationId,
+              linkedConversationId: recalledId,
+              kind: 'recalled',
+              at: deps.now(),
+            });
+          } catch (err) {
+            deps.logger.warn(
+              safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+              'assistant recalled link write failed; continuing',
+            );
+          }
         }
       }
       // ADR 0091 decision 3: turns that fell out of the history window get
