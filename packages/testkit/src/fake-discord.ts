@@ -1264,8 +1264,7 @@ export class FakeDiscord implements DiscordPort {
       .filter((m) => m.channelId === channelId && !m.deleted)
       .filter((m) => BigInt(m.messageId) < BigInt(opts.before))
       .sort((a, b) => (BigInt(a.messageId) > BigInt(b.messageId) ? 1 : -1))
-      .slice(0, limit)
-      .reverse()
+      .slice(-limit)
       .map((m) => ({
         messageId: m.messageId,
         authorId: m.authorId,

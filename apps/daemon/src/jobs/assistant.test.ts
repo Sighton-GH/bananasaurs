@@ -544,6 +544,44 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(conversationRepo.listLinks(scope(), 'conv_child')).toHaveLength(1);
   });
 
+  it('a re-run after the conversation row exists still writes the new-conversation links exactly once', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    await h.run(
+      mention({
+        channelId: '777777777777777777',
+        invocationId: 'crash-parent',
+        messageId: '888888888888888888',
+      }),
+    );
+    // Simulate a crash after the row write but before the links: the row
+    // exists, the links do not.
+    conversationRepo.createConversation(scope(), {
+      conversationId: 'conv_crash-child',
+      channelId: '888888888888888888',
+      behaviourId: behaviour.id,
+      startedBy: AMA,
+      title: 'crashed run',
+      source: 'discord',
+      at: NOW,
+    });
+    const input = mention({
+      channelId: '888888888888888888',
+      threadParentId: '777777777777777777',
+      invocationId: 'crash-child',
+      messageId: '810000000000000078',
+    });
+    const first = await h.run(input);
+    expect(first.error).toBeUndefined();
+    expect(conversationRepo.listLinks(scope(), 'conv_crash-child')).toEqual([
+      expect.objectContaining({
+        otherConversationId: 'conv_crash-parent',
+        kind: 'thread-parent',
+      }),
+    ]);
+    await h.run(input, first.cursor);
+    expect(conversationRepo.listLinks(scope(), 'conv_crash-child')).toHaveLength(1);
+  });
+
   it('writes recalled links for the run detail once, and a retry adds none', async () => {
     conversationRepo.createConversation(scope(), {
       conversationId: 'conv_hit',
@@ -1798,6 +1836,35 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
       mention({ invocationId: 'sum-retry-next', messageId: '810000000000000207' }),
       cursor,
     );
+    expect(summaryJobs()).toHaveLength(1);
+  });
+
+  it('a dangling recalled id does not fail the job and the summary still enqueues', async () => {
+    const h = harness((input) => ({
+      ...answeredResult(),
+      detail: {
+        ...answeredResult().detail!,
+        recalled: ['conv_gone'],
+      },
+    }));
+    await h.run(mention({ invocationId: 'recall-gone', messageId: '810000000000000209' }));
+    // Twelve seeded turns plus the run's own two push the oldest out of the window.
+    for (let i = 0; i < 12; i += 1) {
+      conversationRepo.appendTurn(scope(), {
+        conversationId: 'conv_recall-gone',
+        turnId: `turn_seed_${i}`,
+        at: NOW - 60_000 + i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        authorId: AMA,
+        authorName: i % 2 === 0 ? 'Ama' : 'bananasaurs',
+        text: `seeded turn ${i}`,
+      });
+    }
+    nowMs += 1_000;
+    // `conv_gone` was never created, so its link write fails: the job must
+    // still resolve and enqueue the summary job after it.
+    await h.run(mention({ invocationId: 'recall-gone-next', messageId: '810000000000000210' }));
+    expect(conversationRepo.listLinks(scope(), 'conv_recall-gone')).toEqual([]);
     expect(summaryJobs()).toHaveLength(1);
   });
 

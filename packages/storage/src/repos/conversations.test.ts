@@ -743,6 +743,79 @@ describe('forgetAuthor', () => {
     const remaining = recentTurns(scope, 'conv-2', { maxTurns: 12, maxChars: 6_000 });
     expect(remaining.map((r) => r.turnId)).toEqual(['t4']);
   });
+
+  it('clears a surviving shared conversation’s summary so the index forgets it', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    const other = t.scopes.forGuild(GUILD_B);
+    const shared: ConversationSummary = {
+      topic: 'gearbox rebuild notes',
+      facts: [{ text: 'the gearbox needs grease', from: 'member' }],
+      botClaims: [],
+      openQuestions: [],
+      commitments: [],
+      participants: [],
+    };
+    const untouched: ConversationSummary = {
+      topic: 'gearbox rebuild notes',
+      facts: [{ text: 'the gearbox needs grease', from: 'member' }],
+      botClaims: [],
+      openQuestions: [],
+      commitments: [],
+      participants: [],
+    };
+    createConversation(scope, conversation({ conversationId: 'conv-shared', at: 1_000 }));
+    appendTurn(
+      scope,
+      turn({ conversationId: 'conv-shared', turnId: 't-a', at: 1_000, authorId: USER }),
+    );
+    appendTurn(
+      scope,
+      turn({
+        conversationId: 'conv-shared',
+        turnId: 't-b',
+        at: 2_000,
+        authorId: OTHER_USER,
+        authorName: 'other',
+        text: 'agreed',
+      }),
+    );
+    expect(
+      writeSummaryIfNewer(scope, {
+        conversationId: 'conv-shared',
+        summary: shared,
+        throughAt: 2_000,
+        now: 2_001,
+      }).written,
+    ).toBe(true);
+    createConversation(other, conversation({ conversationId: 'conv-other', at: 1_000 }));
+    appendTurn(other, turn({ conversationId: 'conv-other', turnId: 't-c', at: 1_000 }));
+    expect(
+      writeSummaryIfNewer(other, {
+        conversationId: 'conv-other',
+        summary: untouched,
+        throughAt: 1_000,
+        now: 1_001,
+      }).written,
+    ).toBe(true);
+
+    expect(forgetAuthor(scope, USER)).toBe(1);
+
+    // The surviving conversation keeps B's turn but loses its summary.
+    expect(
+      recentTurns(scope, 'conv-shared', { maxTurns: 12, maxChars: 6_000 }).map((r) => r.turnId),
+    ).toEqual(['t-b']);
+    expect(getSummary(scope, 'conv-shared')).toBeUndefined();
+    expect(searchSummaries(scope, { query: 'gearbox', channelIds: [CHANNEL], limit: 5 })).toEqual(
+      [],
+    );
+    // Another guild's summaries are untouched.
+    expect(getSummary(other, 'conv-other')?.summary.topic).toBe('gearbox rebuild notes');
+    expect(
+      searchSummaries(other, { query: 'gearbox', channelIds: [CHANNEL], limit: 5 }).map(
+        (hit) => hit.conversationId,
+      ),
+    ).toEqual(['conv-other']);
+  });
 });
 
 describe('peopleForConversations', () => {

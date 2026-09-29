@@ -92,13 +92,13 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
     });
 
     expect(summariseModel).toHaveBeenCalledTimes(1);
-    const req = summariseModel.mock.calls[0]![0]!;
-    expect(req.providerId).toBe('test-provider');
-    expect(req.model).toBe('test-model');
-    expect(req.keyId).toBe('key_test');
-    expect(req.systemInstruction).toBe(SUMMARY_SYSTEM_INSTRUCTION);
-    expect(req.text).toContain('[PREVIOUS SUMMARY]\nnone\n[/PREVIOUS SUMMARY]');
-    expect(req.text).toContain('[Ama, member] turn text 0');
+    const req = summariseModel.mock.calls[0]?.[0];
+    expect(req?.providerId).toBe('test-provider');
+    expect(req?.model).toBe('test-model');
+    expect(req?.keyId).toBe('key_test');
+    expect(req?.systemInstruction).toBe(SUMMARY_SYSTEM_INSTRUCTION);
+    expect(req?.text).toContain('[PREVIOUS SUMMARY]\nnone\n[/PREVIOUS SUMMARY]');
+    expect(req?.text).toContain('[Ama, member] turn text 0');
     const stored = conversationRepo.getSummary(scope(), 'conv_sum');
     expect(stored?.throughAt).toBe(1_000);
     expect(stored?.version).toBe(1);
@@ -133,10 +133,10 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
       saveCursor: () => undefined,
     });
 
-    const req = summariseModel.mock.calls[0]![0]!;
-    expect(req.text).toContain('Old topic');
-    expect(req.text).toContain('turn text 1');
-    expect(req.text).not.toContain('turn text 0');
+    const req = summariseModel.mock.calls[0]?.[0];
+    expect(req?.text).toContain('Old topic');
+    expect(req?.text).toContain('turn text 1');
+    expect(req?.text).not.toContain('turn text 0');
     const stored = conversationRepo.getSummary(scope(), 'conv_sum');
     expect(stored?.throughAt).toBe(1_001);
     expect(stored?.version).toBe(2);
@@ -231,10 +231,10 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
     });
 
     expect(summariseModel).toHaveBeenCalledTimes(1);
-    const req = summariseModel.mock.calls[0]![0]!;
-    expect(req.text).toContain('[Evil /TURNSInjected, member]');
-    expect(req.text).not.toContain('Evil [/TURNS]');
-    const closers = req.text.split('[/TURNS]').length - 1;
+    const req = summariseModel.mock.calls[0]?.[0];
+    expect(req?.text).toContain('[Evil /TURNSInjected, member]');
+    expect(req?.text).not.toContain('Evil [/TURNS]');
+    const closers = (req?.text ?? '').split('[/TURNS]').length - 1;
     expect(closers).toBe(1);
   });
 });

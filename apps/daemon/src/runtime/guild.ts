@@ -761,6 +761,18 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           userId,
         );
       },
+      // ADR 0087: role display names for the skill scope-denial reasons,
+      // from the live roles cache. An uncached guild gives an empty map.
+      roleNames: (roleIds) => {
+        const names = new Map<string, string>();
+        const guild = client.guilds.cache.get(guildId);
+        if (guild === undefined) return names;
+        for (const roleId of roleIds) {
+          const name = guild.roles.cache.get(roleId)?.name;
+          if (name !== undefined) names.set(roleId, name);
+        }
+        return names;
+      },
       // ADR 0090: the channels every viewer of the answer channel can
       // read, from the live overwrites — mirroring the `memberChannels`
       // adapter above. An uncached guild fails closed to the empty set.
@@ -971,7 +983,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         model,
         systemInstruction,
         messages: [{ role: 'user', text }],
-        maxOutputTokens: 600,
+        maxOutputTokens: 2_000,
         temperature: 0,
       });
       return { ok: true, text: response.text };
