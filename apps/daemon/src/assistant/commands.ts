@@ -69,6 +69,12 @@ export interface AssistantInvocation {
    * trace's `included.channelMessages`. Absent means none were sent.
    */
   readonly channelMessages?: number | undefined;
+  /**
+   * ADR 0092: the oldest message id of the channel-context window — the
+   * default `before` for the `channel_history` tool. Absent means the tool
+   * falls back to the invoking message id.
+   */
+  readonly channelContextOldestId?: string | undefined;
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
 }

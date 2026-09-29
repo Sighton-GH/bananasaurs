@@ -27,10 +27,13 @@ import { neutraliseMarkers } from './untrusted.js';
  * `read_chunk` and `open_resource` — are implemented; the enforcement below
  * still names them. `open_resource` takes either id: the resource id opens
  * the resource, the doc id lists its headings (ADR 0092 decision 3).
+ * `channel_history` pages with the `before` id an earlier page returned; in
+ * round 1 a call without `before` is allowed (ADR 0092 decision 2).
  */
 export const ID_TOOL_ARGS: Readonly<Record<string, readonly string[]>> = {
   read_chunk: ['chunkId'],
   open_resource: ['resourceId', 'docId'],
+  channel_history: ['before'],
 };
 
 export interface LoopTools {
