@@ -481,6 +481,11 @@ export const assistantInvokeHandler = (deps: {
         let quoteInHistory = false;
         let channelContext: string | undefined;
         let channelMessages = 0;
+        // ADR 0092 decision 2: the oldest id of the channel-context window —
+        // the `channel_history` tool's default `before`, so the first page
+        // starts just above what the model already saw. The fetch reports
+        // oldest first.
+        let channelContextOldestId: string | undefined;
         if (payload.channelId !== undefined && deps.conversations !== undefined) {
           const conv = deps.conversations;
           const channelId = payload.channelId;
@@ -684,6 +689,10 @@ export const assistantInvokeHandler = (deps: {
                 );
                 flagUnavailable();
               } else {
+                // The fetch reports oldest first: the window's oldest id is
+                // the history tool's default cursor, even when every line was
+                // excluded from the block itself.
+                channelContextOldestId = fetched[0]?.messageId;
                 // Already-linked messages are in the transcript; the invoking
                 // message becomes the current question. Neither is repeated.
                 const exclude = new Set<string>([invokingMessageId]);
@@ -731,6 +740,7 @@ export const assistantInvokeHandler = (deps: {
             ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
             ...(channelContext === undefined ? {} : { channelContext }),
             ...(channelMessages === 0 ? {} : { channelMessages }),
+            ...(channelContextOldestId === undefined ? {} : { channelContextOldestId }),
             askerName: payload.authorName,
           });
         } finally {
