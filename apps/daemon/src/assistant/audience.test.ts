@@ -6,6 +6,7 @@ import {
   guildAudienceChannels,
   type AudienceChannel,
   type AudienceGuild,
+  type AudienceGuildChannel,
 } from './audience.js';
 
 const VIEW = PermissionsBitField.Flags.ViewChannel;
@@ -299,7 +300,7 @@ describe('buildAudienceMap (discord.js mapping)', () => {
   it('maps threads from their type and parent, with no overwrites', () => {
     const guild: AudienceGuild = {
       channels: {
-        cache: new Map([
+        cache: new Map<string, AudienceGuildChannel>([
           ['general', guildChannel({ id: 'general', canRead: true })],
           [
             'open-thread',
