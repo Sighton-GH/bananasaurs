@@ -247,6 +247,14 @@ export interface AssistantDiscordPorts {
         opts: { before: string; limit: number },
       ) => Promise<readonly RecentMessage[] | undefined>)
     | undefined;
+  /**
+   * ADR 0087: role display names for the scope-denial reasons, by role id.
+   * Optional so existing callers keep compiling — production
+   * (`runtime/guild.ts`) always provides it. Absent, or with none of the
+   * scope's ids known, the reason stays the plain "only for certain roles"
+   * fallback.
+   */
+  readonly roleNames?: ((roleIds: readonly string[]) => ReadonlyMap<string, string>) | undefined;
 }
 /** B2b: the closed default — permissions cannot be checked, so no reminder. */
 const defaultResolveReminderTargets = (): Promise<ReminderTargetResult> =>
@@ -515,8 +523,9 @@ export const createAssistantService = (
       );
       // ADR 0087: catalogue skills the asker's scope denies, named plainly.
       // Not computed for skills hidden only by skipActions/missing invocation
-      // id — the scope check alone decides. No directory port is in scope
-      // here, so role reasons fall back to "only for certain roles".
+      // id — the scope check alone decides. Role reasons name the allowed
+      // roles the `roleNames` port knows, else fall back to
+      // "only for certain roles".
       const cleanRoleToken = (name: string): string =>
         neutraliseMarkers(name)
           .replace(/[[\]\r\n]+/g, ' ')
@@ -532,8 +541,10 @@ export const createAssistantService = (
         const scope = effectiveSkillScope(candidate, grants.get(candidate.id));
         if (scope.mode === 'owner') return { skill: candidate, reason: 'owner only' };
         if (scope.mode === 'roles') {
-          // No directory port in scope: names unavailable, reason stays plain.
-          const names: readonly string[] = [];
+          const known = discord.roleNames?.(scope.roleIds) ?? new Map<string, string>();
+          const names = scope.roleIds
+            .map((roleId) => known.get(roleId))
+            .filter((name): name is string => name !== undefined);
           const cleaned = names.map(cleanRoleToken).filter((name) => name !== '');
           if (cleaned.length === 0) return { skill: candidate, reason: 'only for certain roles' };
           return { skill: candidate, reason: `only for ${cleaned.join(', ')}` };

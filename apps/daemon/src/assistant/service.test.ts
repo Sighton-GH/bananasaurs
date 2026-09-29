@@ -2484,6 +2484,38 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(systems[0]).toContain('Reminders: only for certain roles');
     for (const names of declared) expect(names).not.toContain('set_reminder');
   });
+
+  it('a roles-scope denial names the allowed roles when the port knows them', async () => {
+    assistantRepo.setSkillScope(
+      h.t.scopes.forGuild(GUILD),
+      { skillId: 'reminders', mode: 'roles', roleIds: [SPECIAL_ROLE] },
+      NOW,
+    );
+    const systems: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        systems.push(req.systemInstruction ?? '');
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = h.serviceWith(provider, {
+      memberChannels: async () => [],
+      roleNames: () => new Map([[SPECIAL_ROLE, 'Robotics Leads']]),
+    });
+    const result = await service.invoke(
+      ask({
+        behaviour: { ...h.direct, preferredSkillIds: [] },
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        invocationId: 'int-roles-scope-named',
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(systems[0]).toContain('Reminders: only for Robotics Leads');
+  });
 });
 
 /**
