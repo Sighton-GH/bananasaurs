@@ -768,6 +768,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           guildAudienceChannels({ channels: guild.channels, roles: guild.roles }, answerChannelId),
         );
       },
+      // ADR 0092 decision 1: guild scheduled events behind `upcoming_events`.
+      listScheduledEvents: () => discord.listScheduledEvents(guildId),
+      // ADR 0092 decision 2: one channel page behind `channel_history`, the
+      // same shape as the invoke job's closure below.
+      fetchChannelMessages: (channelId, opts) =>
+        discord.fetchChannelMessages(guildId, channelId, opts),
       // ADR 0090 D3: resolves a `search_archive` `from` value against the
       // live member list. A bare 17–20 digit id or `<@id>` mention fetches
       // that member; anything else searches by name. Lookups never throw:
@@ -878,6 +884,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           totalCalls: settings.get('assistant.maxToolCalls'),
           maxOutputTokens: settings.get('assistant.maxOutputTokens'),
         }),
+    // ADR 0092 decision 2: the live channel-context window from the AI tuning
+    // settings. Absent means off, and the `channel_history` tool stays hidden.
+    settings === undefined
+      ? undefined
+      : () => settings.get('assistant.channelContextMessages'),
   );
   const { interactionTokenSealer } = deps;
 
