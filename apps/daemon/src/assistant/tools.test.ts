@@ -99,6 +99,8 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   ]),
   serverCard: () => 'SFU Racerbot builds autonomous cars.',
   visibleChannels: vi.fn(async () => [{ id: '111111111111111111', name: 'general' }]),
+  upcomingEvents: vi.fn(async () => []),
+  channelHistory: vi.fn(async () => ({ lines: [], oldestId: undefined })),
   cacheSearch: () => [],
   cacheChunk: () => undefined,
   cacheNeighbours: () => [],
