@@ -78,9 +78,10 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
 
   it('summarises evicted turns and writes the validated summary', async () => {
     seedTurns('conv_sum', 13);
-    const summariseModel = vi.fn<SummariseModelPort>(
-      async (_req) => ({ ok: true, text: SUMMARY_JSON }),
-    );
+    const summariseModel = vi.fn<SummariseModelPort>(async (_req) => ({
+      ok: true,
+      text: SUMMARY_JSON,
+    }));
     const handler = handlerWith(summariseModel);
 
     await handler.run(payload(), {
@@ -119,9 +120,10 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
       throughAt: 1_000,
       now: NOW,
     });
-    const summariseModel = vi.fn<SummariseModelPort>(
-      async (_req) => ({ ok: true, text: SUMMARY_JSON }),
-    );
+    const summariseModel = vi.fn<SummariseModelPort>(async (_req) => ({
+      ok: true,
+      text: SUMMARY_JSON,
+    }));
     const handler = handlerWith(summariseModel);
 
     await handler.run(payload({ throughAt: 1_001 }), {
@@ -175,9 +177,10 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
       throughAt: 1_010,
       now: NOW,
     });
-    const summariseModel = vi.fn<SummariseModelPort>(
-      async (_req) => ({ ok: true, text: SUMMARY_JSON }),
-    );
+    const summariseModel = vi.fn<SummariseModelPort>(async (_req) => ({
+      ok: true,
+      text: SUMMARY_JSON,
+    }));
     const handler = handlerWith(summariseModel);
 
     await handler.run(payload({ throughAt: 1_003 }), {
@@ -214,9 +217,10 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
         text: `turn text ${i}`,
       });
     }
-    const summariseModel = vi.fn<SummariseModelPort>(
-      async (_req) => ({ ok: true, text: SUMMARY_JSON }),
-    );
+    const summariseModel = vi.fn<SummariseModelPort>(async (_req) => ({
+      ok: true,
+      text: SUMMARY_JSON,
+    }));
     const handler = handlerWith(summariseModel);
 
     await handler.run(payload({ conversationId: 'conv_evil', throughAt: 1_000 }), {

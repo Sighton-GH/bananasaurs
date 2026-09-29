@@ -1817,9 +1817,7 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
 
     expect(h.inputs[0]?.summaryVersion).toBe(1);
     expect(h.inputs[0]?.history?.[0]).toBeDefined();
-    expect(h.inputs[0]?.history?.[0]!.text.startsWith('[EARLIER IN THIS CONVERSATION')).toBe(
-      true,
-    );
+    expect(h.inputs[0]?.history?.[0]!.text.startsWith('[EARLIER IN THIS CONVERSATION')).toBe(true);
     expect(h.inputs[0]?.history?.[0]!.text).toContain('Old topic');
     const stored = traceRepo.getTrace(scope(), 'trace_sum-ver');
     expect(stored?.included?.summaryVersion).toBe(1);
