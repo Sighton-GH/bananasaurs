@@ -735,6 +735,17 @@ export interface OpsPorts {
    * which the picker shows as an honest loading state, never a fake list.
    */
   listGuildChannels(): readonly OpsGuildChannelInfo[];
+  /** Live directory lookup for a task destination, including threads omitted by the channel picker.
+   * A missing/inaccessible channel returns undefined; callers fail closed. */
+  inspectTaskChannel(channelId: string): Promise<
+    | {
+        channelId: string;
+        kind: 'channel' | 'thread';
+        parentId: string | null;
+        categoryId: string | null;
+      }
+    | undefined
+  >;
   /**
    * The target check for an adopted reaction panel (the builder's
    * self-granted roles flow): does this channel exist in the guild, is it
@@ -743,6 +754,15 @@ export interface OpsPorts {
    * attaches to a guessed id.
    */
   findGuildMessage(channelId: string, messageId: string): Promise<OpsMessageLookup>;
+  /** Live destinations inside a team category: text and announcement channels plus unarchived, unlocked threads. Private threads are excluded. */
+  listTaskDestinations(categoryId: string): Promise<
+    readonly {
+      channelId: string;
+      name: string;
+      kind: 'channel' | 'thread';
+      parentName?: string | undefined;
+    }[]
+  >;
   /**
    * The guild's roles (minus `@everyone`) with name, colour and hierarchy
    * position — the role pickers' source, and the dashboard's answer to the

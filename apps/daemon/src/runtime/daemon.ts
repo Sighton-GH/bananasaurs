@@ -40,6 +40,10 @@ import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createConversationPruneTimer } from './conversation-prune-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
+import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
+import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
+import { reserveEntryCall } from '../assistant/local-limit.js';
+import { taskNudgeRepo } from '@bananasaurs/storage';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
@@ -273,6 +277,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // the same database, so the operator surface and the dashboard seam share
   // one rather than minting a second.
   const instanceScope = scopes.instance();
+  // ADR 0112: one evaluator for every guild's recorded progress updates,
+  // built from the same chain and local limits the assistant answers on.
+  // The worker calls it only when sends are on; otherwise no model call.
+  const taskUpdateEvaluator = createTaskUpdateEvaluator({
+    chain: assistantChain,
+    reserve: (entry, guildId) => reserveEntryCall(instanceScope, entry, guildId, now()),
+    now,
+  });
 
   // ADR 0046, Slice M1 Task 5 (PR-70): the daily archive-expiry producer. One
   // expiry job per guild per UTC day, beside the backup timer — the job table
@@ -509,6 +521,36 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   });
 
   // --- job loop -------------------------------------------------------------
+  let taskNudgeTimer: NodeJS.Timeout | undefined;
+  let taskNudgeRunning = false;
+  const nudgePass = async (): Promise<void> => {
+    if (taskNudgeRunning || config.BANANASAURS_READONLY) return;
+    taskNudgeRunning = true;
+    try {
+      for (const { scope } of byGuild.values()) {
+        // One guild's failure never stops the next guild's pass; the log
+        // line carries the guild so the failure is diagnosable.
+        try {
+          taskNudgeRepo.pruneReplyChoices(scope, now());
+          planTaskNudges(scope, now());
+          await deliverTaskNudges(scope, client, discord, now(), {
+            enabled: config.TASK_NUDGE_SEND_ENABLED && !config.BANANASAURS_DRY_RUN,
+            quietStart: config.TASK_NUDGE_QUIET_START,
+            quietEnd: config.TASK_NUDGE_QUIET_END,
+            evaluate: taskUpdateEvaluator,
+            logger,
+          });
+        } catch (err) {
+          logger.error(
+            safeLogFields({ component: 'task-nudges', guildId: scope.guildId, err }),
+            'task nudge pass failed for guild; continuing with the next guild',
+          );
+        }
+      }
+    } finally {
+      taskNudgeRunning = false;
+    }
+  };
   let timer: NodeJS.Timeout | undefined;
   let draining = false;
 
@@ -572,6 +614,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
     start() {
       for (const { runtime } of byGuild.values()) runtime.worker.recoverStranded();
+      if (!config.BANANASAURS_READONLY)
+        for (const { scope } of byGuild.values()) taskNudgeRepo.reconcileClaims(scope, now());
+      void nudgePass();
+      taskNudgeTimer = setInterval(() => void nudgePass(), 60_000);
+      taskNudgeTimer.unref();
       timer = setInterval(() => {
         void drainJobs().catch((err: unknown) => {
           logger.error(safeLogFields({ component: 'jobs', err }), 'job drain failed');
@@ -588,6 +635,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     },
 
     async stop() {
+      if (taskNudgeTimer !== undefined) clearInterval(taskNudgeTimer);
+      taskNudgeTimer = undefined;
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
       backupTimer.stop();

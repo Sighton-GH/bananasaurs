@@ -280,9 +280,9 @@ describe('skill scopes and richer reminder storage', () => {
         'utf8',
       ),
     ) as { entries: { tag: string }[] };
-    expect(journal.entries.some((e) => e.tag === '0049_skill_scopes_and_reminder_fields')).toBe(
-      true,
-    );
+    expect(
+      journal.entries.some((entry) => entry.tag === '0049_skill_scopes_and_reminder_fields'),
+    ).toBe(true);
     const sql = readFileSync(
       fileURLToPath(
         new URL('../../../../drizzle/0049_skill_scopes_and_reminder_fields.sql', import.meta.url),

@@ -231,8 +231,25 @@ export const MOD_COMMAND: GuildCommandDefinition = {
   ],
 };
 
-// ADR 0086: only moderator commands are slash commands; everything else is asked of the bot.
-export const REGISTERED_COMMANDS: readonly GuildCommandDefinition[] = [MOD_COMMAND];
+// ADR 0099: the owner made a narrow task exception to ADR 0086.
+export const TASK_COMMAND: GuildCommandDefinition = {
+  name: 'task',
+  description: 'List your open tasks or mark one ready for review',
+  type: ApplicationCommandType.ChatInput,
+  options: [
+    {
+      name: 'list',
+      description: 'List your open tasks',
+      type: ApplicationCommandOptionType.Subcommand,
+    },
+    {
+      name: 'complete',
+      description: 'Mark one of your tasks ready for review',
+      type: ApplicationCommandOptionType.Subcommand,
+    },
+  ],
+};
+export const REGISTERED_COMMANDS: readonly GuildCommandDefinition[] = [MOD_COMMAND, TASK_COMMAND];
 
 /** What one guild's registration did, so the caller can log it per guild. */
 export type GuildRegistration =

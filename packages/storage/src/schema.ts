@@ -2426,3 +2426,325 @@ export const assistantConversationLinks = sqliteTable(
     index('assistant_conversation_links_linked').on(t.guildId, t.linkedConversationId),
   ],
 );
+
+// Task tracking. Every parent/child relation carries the guild partition.
+export const taskTeams = sqliteTable(
+  'task_teams',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    teamId: text('team_id').notNull(),
+    name: text('name').notNull(),
+    categoryId: snowflake('category_id').notNull(),
+    announcementChannelId: snowflake('announcement_channel_id'),
+    leadRoleId: snowflake('lead_role_id'),
+    memberRoleId: snowflake('member_role_id'),
+    kind: text('kind').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.teamId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    unique('task_teams_category_once').on(t.guildId, t.categoryId),
+    check('task_teams_kind', sql`${t.kind} IN ('subteam','exec')`),
+    check('task_teams_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_teams_category_snowflake', snowflakeCheck(t.categoryId)),
+    check('task_teams_announcement_snowflake', nullableSnowflakeCheck(t.announcementChannelId)),
+    check('task_teams_lead_role_snowflake', nullableSnowflakeCheck(t.leadRoleId)),
+    check('task_teams_member_role_snowflake', nullableSnowflakeCheck(t.memberRoleId)),
+  ],
+);
+
+export const clubTasks = sqliteTable(
+  'club_tasks',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    taskId: text('task_id').notNull(),
+    teamId: text('team_id').notNull(),
+    title: text('title').notNull(),
+    description: text('description').notNull().default(''),
+    status: text('status').notNull().default('not_started'),
+    priority: text('priority').notNull().default('normal'),
+    assignmentKind: text('assignment_kind').notNull(),
+    assigneeId: snowflake('assignee_id'),
+    dueAt: integer('due_at').notNull(),
+    timezone: text('timezone').notNull(),
+    destinationId: snowflake('destination_id').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    version: integer('version').notNull().default(1),
+    archivedAt: integer('archived_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.taskId] }),
+    foreignKey({
+      columns: [t.guildId, t.teamId],
+      foreignColumns: [taskTeams.guildId, taskTeams.teamId],
+    }).onDelete('restrict'),
+    check('club_tasks_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('club_tasks_destination_snowflake', snowflakeCheck(t.destinationId)),
+    check('club_tasks_assignee_snowflake', nullableSnowflakeCheck(t.assigneeId)),
+    check(
+      'club_tasks_status',
+      sql`${t.status} IN ('not_started','in_progress','awaiting_approval','done')`,
+    ),
+    check('club_tasks_priority', sql`${t.priority} IN ('normal','urgent')`),
+    check('club_tasks_assignment', sql`${t.assignmentKind} IN ('team','individual')`),
+    check(
+      'club_tasks_assignment_id',
+      sql`(${t.assignmentKind} = 'team' AND ${t.assigneeId} IS NULL) OR (${t.assignmentKind} = 'individual' AND ${t.assigneeId} IS NOT NULL)`,
+    ),
+    check('club_tasks_version_positive', sql`${t.version} > 0`),
+  ],
+);
+
+/** All named members for an individual task. Kept alongside the legacy
+ * assignee_id primary during staged migration. */
+export const taskAssignees = sqliteTable(
+  'task_assignees',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    taskId: text('task_id').notNull(),
+    discordUserId: snowflake('discord_user_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.taskId, t.discordUserId] }),
+    foreignKey({
+      columns: [t.guildId, t.taskId],
+      foreignColumns: [clubTasks.guildId, clubTasks.taskId],
+    }).onDelete('cascade'),
+    check('task_assignees_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_assignees_user_snowflake', snowflakeCheck(t.discordUserId)),
+  ],
+);
+
+/** Task-specific posted message, not merely the shared destination. A reply to
+ * this anchor can identify the task without reading model text. */
+export const taskMessageAnchors = sqliteTable(
+  'task_message_anchors',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    taskId: text('task_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.taskId] }),
+    foreignKey({
+      columns: [t.guildId, t.taskId],
+      foreignColumns: [clubTasks.guildId, clubTasks.taskId],
+    }).onDelete('cascade'),
+    unique('task_anchor_message_once').on(t.guildId, t.messageId),
+    check('task_anchor_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_anchor_channel_snowflake', snowflakeCheck(t.channelId)),
+    check('task_anchor_message_snowflake', snowflakeCheck(t.messageId)),
+  ],
+);
+
+export const taskChildren = sqliteTable(
+  'task_children',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    taskId: text('task_id').notNull(),
+    childId: text('child_id').notNull(),
+    title: text('title').notNull(),
+    dueAt: integer('due_at').notNull(),
+    status: text('status').notNull().default('not_started'),
+    createdAt: integer('created_at').notNull(),
+    completedAt: integer('completed_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.taskId, t.childId] }),
+    foreignKey({
+      columns: [t.guildId, t.taskId],
+      foreignColumns: [clubTasks.guildId, clubTasks.taskId],
+    }).onDelete('cascade'),
+    check('task_children_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_children_status', sql`${t.status} IN ('not_started','in_progress','done')`),
+  ],
+);
+
+export const taskReports = sqliteTable(
+  'task_reports',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    taskId: text('task_id').notNull(),
+    reportId: text('report_id').notNull(),
+    authorId: text('author_id').notNull(),
+    body: text('body').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.taskId, t.reportId] }),
+    foreignKey({
+      columns: [t.guildId, t.taskId],
+      foreignColumns: [clubTasks.guildId, clubTasks.taskId],
+    }).onDelete('cascade'),
+    check('task_reports_guild_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+export const taskTeamMembers = sqliteTable(
+  'task_team_members',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    teamId: text('team_id').notNull(),
+    discordUserId: snowflake('discord_user_id').notNull(),
+    kind: text('kind').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.teamId, t.discordUserId] }),
+    foreignKey({
+      columns: [t.guildId, t.teamId],
+      foreignColumns: [taskTeams.guildId, taskTeams.teamId],
+    }).onDelete('cascade'),
+    check('task_member_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_member_user_snowflake', snowflakeCheck(t.discordUserId)),
+    check('task_member_kind', sql`${t.kind} IN ('member','lead')`),
+  ],
+);
+
+/** A role name is never authority; the owner pins the current Discord role ID per guild. */
+export const taskGuildRoles = sqliteTable(
+  'task_guild_roles',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    presidentRoleId: snowflake('president_role_id').notNull(),
+    updatedBy: text('updated_by').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('task_guild_roles_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_guild_roles_president_snowflake', snowflakeCheck(t.presidentRoleId)),
+  ],
+);
+
+/** Guild quiet hours (ADR 0109). No row means midnight-8am Pacific applies. */
+export const taskQuietHours = sqliteTable(
+  'task_quiet_hours',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    /** Minutes after midnight, local to `timezone`; start may exceed end (overnight). */
+    startMinute: integer('start_minute').notNull(),
+    endMinute: integer('end_minute').notNull(),
+    timezone: text('timezone').notNull(),
+    updatedBy: text('updated_by').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('task_quiet_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_quiet_start', sql`${t.startMinute} BETWEEN 0 AND 1439`),
+    check('task_quiet_end', sql`${t.endMinute} BETWEEN 0 AND 1439`),
+    check('task_quiet_distinct', sql`${t.startMinute} <> ${t.endMinute}`),
+  ],
+);
+
+/** Task nudges are immutable slots; changing a due date supersedes the old slot. */
+export const taskNudgeSlots = sqliteTable(
+  'task_nudge_slots',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    slotId: text('slot_id').notNull(),
+    taskId: text('task_id'),
+    teamId: text('team_id'),
+    kind: text('kind').notNull(),
+    dueAt: integer('due_at').notNull(),
+    state: text('state').notNull().default('pending'),
+    destinationId: snowflake('destination_id'),
+    messageId: snowflake('message_id'),
+    payload: text('payload'),
+    lastError: text('last_error'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.slotId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('task_nudge_slot_guild', snowflakeCheck(t.guildId)),
+    check('task_nudge_slot_destination', nullableSnowflakeCheck(t.destinationId)),
+    check('task_nudge_slot_message', nullableSnowflakeCheck(t.messageId)),
+    check(
+      'task_nudge_slot_kind',
+      sql`${t.kind} IN ('pre_due','custom','checkin','digest','followup','announce','review','clarify','evaluate')`,
+    ),
+    check(
+      'task_nudge_slot_state',
+      sql`${t.state} IN ('pending','paused','claimed','sent','failed','superseded','planned')`,
+    ),
+    index('task_nudge_due').on(t.guildId, t.state, t.dueAt),
+    index('task_nudge_message').on(t.guildId, t.messageId),
+  ],
+);
+
+/** Every attempted nudge, including planning-mode and refused sends, is recorded. */
+export const taskNudgeDeliveries = sqliteTable(
+  'task_nudge_deliveries',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    slotId: text('slot_id').notNull(),
+    outcome: text('outcome').notNull(),
+    destinationId: snowflake('destination_id'),
+    messageId: snowflake('message_id'),
+    attemptedAt: integer('attempted_at').notNull(),
+    detail: text('detail'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.slotId] }),
+    foreignKey({
+      columns: [t.guildId, t.slotId],
+      foreignColumns: [taskNudgeSlots.guildId, taskNudgeSlots.slotId],
+    }).onDelete('cascade'),
+    check('task_nudge_delivery_guild', snowflakeCheck(t.guildId)),
+    check('task_nudge_delivery_destination', nullableSnowflakeCheck(t.destinationId)),
+    check('task_nudge_delivery_message', nullableSnowflakeCheck(t.messageId)),
+  ],
+);
+
+/** Which open tasks a sent weekly check-in listed, so a reply can be attributed. */
+export const taskNudgeSlotTasks = sqliteTable(
+  'task_nudge_slot_tasks',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    slotId: text('slot_id').notNull(),
+    taskId: text('task_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.slotId, t.taskId] }),
+    foreignKey({
+      columns: [t.guildId, t.slotId],
+      foreignColumns: [taskNudgeSlots.guildId, taskNudgeSlots.slotId],
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.taskId],
+      foreignColumns: [clubTasks.guildId, clubTasks.taskId],
+    }).onDelete('cascade'),
+    check('task_nudge_slot_task_guild', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/** A progress reply that matched several tasks, held until its author picks one. */
+export const taskReplyChoices = sqliteTable(
+  'task_reply_choices',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    authorId: snowflake('author_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    body: text('body').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('task_reply_choice_guild', snowflakeCheck(t.guildId)),
+    check('task_reply_choice_message', snowflakeCheck(t.messageId)),
+    check('task_reply_choice_author', snowflakeCheck(t.authorId)),
+    check('task_reply_choice_channel', snowflakeCheck(t.channelId)),
+    index('task_reply_choice_created').on(t.guildId, t.createdAt),
+  ],
+);

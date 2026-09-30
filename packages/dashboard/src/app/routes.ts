@@ -25,6 +25,8 @@ export const GROUPS = [
 
 export const NAV: readonly NavEntry[] = [
   { path: '/', label: 'Overview', status: 'built', group: 'Start here' },
+  { path: '/tasks', label: 'Tasks', status: 'built', group: 'Start here', ownerOnly: true },
+  { path: '/docs', label: 'Guide', status: 'built', group: 'Start here' },
   { path: '/safety', label: 'Safety', status: 'built', group: 'Start here' },
   { path: '/permissions', label: 'Permissions', status: 'built', group: 'Start here' },
   { path: '/logging', label: 'Logging', status: 'built', group: 'Start here' },

@@ -14,6 +14,7 @@ import {
   createLoggingSubscriber,
   createMemberUpdateSubscriber,
   createModCommandSubscriber,
+  createTaskCommandSubscriber,
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
@@ -66,6 +67,8 @@ import {
   resourceCacheRepo,
   roleRepo,
   traceRepo,
+  taskNudgeRepo,
+  taskRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -100,6 +103,9 @@ import {
   resolveReminderTargets,
   type ReminderTargetMember,
 } from '../assistant/reminder-targets.js';
+import { taskMemberAccess } from '../task-access.js';
+import { decideTaskReview } from '../task-approval.js';
+import { createTaskReplySubscriber, resolveReplyChoice } from '../task-replies.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -744,6 +750,31 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     deps.assistantConfig ?? (() => config),
     logger,
     {
+      taskContext: {
+        access: async (actorId) => {
+          try {
+            const access = await taskMemberAccess(scope, client, discord, actorId);
+            if (access.teams.length === 0) return undefined;
+            const leadTeamIds = access.teams
+              .filter((team) => access.leadOf(team.teamId))
+              .map((team) => team.teamId);
+            return {
+              actorId,
+              teams: access.teams.map((team) => ({
+                teamId: team.teamId,
+                name: team.name,
+                kind: team.kind,
+                categoryId: team.categoryId,
+              })),
+              president: access.president,
+              leadTeamIds,
+            };
+          } catch {
+            return undefined;
+          }
+        },
+        anchorTaskId: (channelId, messageId) => taskRepo.taskForAnchor(scope, channelId, messageId),
+      },
       memberChannels: (userId) => {
         const guild = client.guilds.cache.get(guildId);
         return memberChannels(
@@ -927,7 +958,114 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // After automod so a message the automod deletes is archived as
     // created-then-deleted (ADR 0046 D5); read-side only.
     createArchiveSubscriber(archivePorts),
+    createTaskReplySubscriber(scope, deps.client, discord),
     createNativeAutomodSubscriber(nativeAutomodPorts),
+    createTaskCommandSubscriber({
+      guildId,
+      responder: {
+        defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+        respond: async (ref, message) => {
+          await discord.respondToInteraction(guildId, ref, message);
+        },
+      },
+      now,
+      listForMember: async (userId) => {
+        const { teams } = await taskMemberAccess(scope, deps.client, discord, userId);
+        const allowed = new Set(teams.map((team) => team.teamId));
+        return taskRepo
+          .listTasks(scope)
+          .filter((task) => allowed.has(task.teamId))
+          .map((task) => ({
+            taskId: task.taskId,
+            teamName: teams.find((team) => team.teamId === task.teamId)?.name ?? '',
+            title: task.title,
+            status: task.status,
+            dueAt: task.dueAt,
+            timezone: task.timezone,
+          }));
+      },
+      completableForMember: async (userId) => {
+        const access = await taskMemberAccess(scope, deps.client, discord, userId);
+        const allowed = new Set(access.teams.map((team) => team.teamId));
+        return taskRepo
+          .listTasks(scope)
+          .filter(
+            (task) =>
+              allowed.has(task.teamId) &&
+              (task.status === 'not_started' || task.status === 'in_progress'),
+          )
+          .filter((task) =>
+            task.assignmentKind === 'individual'
+              ? taskRepo.isTaskAssignee(scope, task.taskId, userId) && access.onTeam(task.teamId)
+              : access.onTeam(task.teamId),
+          )
+          .sort((a, b) => a.dueAt - b.dueAt)
+          .slice(0, 25)
+          .map((task) => ({
+            taskId: task.taskId,
+            title: task.title,
+            dueAt: task.dueAt,
+            timezone: task.timezone,
+          }));
+      },
+      completeForMember: async (userId, taskId) => {
+        const access = await taskMemberAccess(scope, deps.client, discord, userId);
+        const task = taskRepo.getTask(scope, taskId);
+        if (
+          !task ||
+          task.archivedAt ||
+          task.status === 'done' ||
+          !access.teams.some((team) => team.teamId === task.teamId)
+        )
+          return 'not-found';
+        if (
+          task.assignmentKind === 'individual' &&
+          !(taskRepo.isTaskAssignee(scope, taskId, userId) && access.onTeam(task.teamId))
+        )
+          return 'not-found';
+        if (task.assignmentKind === 'team' && !access.onTeam(task.teamId)) return 'not-found';
+        if (task.status === 'awaiting_approval') return 'already-awaiting';
+        return taskRepo.requestCompletion(
+          scope,
+          task.taskId,
+          task.version,
+          { actorType: 'member', actorId: userId, via: 'gateway' },
+          now(),
+        )
+          ? 'awaiting_approval'
+          : 'conflict';
+      },
+      decideReview: async (userId, taskId, version, decision) => {
+        const outcome = await decideTaskReview(
+          scope,
+          deps.client,
+          discord,
+          userId,
+          taskId,
+          version,
+          decision,
+          now(),
+        );
+        const found = taskRepo.getTask(scope, taskId);
+        return found?.title === undefined ? { outcome } : { outcome, title: found.title };
+      },
+      pickReplyTask: async (userId, choiceMessageId, taskId) => {
+        const outcome = await resolveReplyChoice(
+          scope,
+          deps.client,
+          discord,
+          userId,
+          choiceMessageId,
+          taskId,
+          now(),
+        );
+        const found = taskRepo.getTask(scope, taskId);
+        return found?.title === undefined ? { outcome } : { outcome, title: found.title };
+      },
+      editBotMessage: async (channelId, messageId, message) => {
+        await discord.editMessage(guildId, { channelId, messageId }, message);
+      },
+    }),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
 
@@ -947,6 +1085,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       logger,
       sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
       lookupMessage: (messageId) => conversationRepo.lookupMessage(scope, messageId),
+      // ADR 0112 decision 4: a pinged reply to a task post is a progress
+      // update for the reply subscriber, never a general assistant question.
+      isTaskPost: (messageId) => taskNudgeRepo.isTaskPost(scope, messageId),
       // Task 20: member 👍/👎 on a bot answer sets feedback and a trace
       // flag; anything else (and the bot's own reactions) is ignored inside.
       feedback: {

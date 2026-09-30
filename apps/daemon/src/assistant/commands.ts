@@ -57,6 +57,7 @@ export interface AssistantInvocation {
    * self-only-with-a-quote rule holds for the whole conversation.
    */
   readonly quoteInHistory?: boolean | undefined;
+  readonly referencedMessageId?: string | undefined;
   /**
    * ADR 0089: the channel-context evidence block the invoke job built from
    * the channel's recent messages (and the thread starter), placed first in
@@ -203,6 +204,12 @@ export interface AssistantCommandDeps {
    */
   readonly lookupMessage?: (messageId: string) => KnownMessage | undefined;
   /**
+   * ADR 0112 decision 4: whether a message id is a bot task post. A pinged
+   * reply to one never reaches the general assistant unless its text tags
+   * the bot. Optional like `lookupMessage`; omitting it routes as before.
+   */
+  readonly isTaskPost?: (messageId: string) => boolean;
+  /**
    * Task 20: member 👍/👎 reactions on bot answers. Guild-scoped closures
    * over `conversationRepo.setFeedback` and `traceRepo.addTraceFlag` (wired
    * in `runtime/guild.ts`), so this subscriber stays storage-free like the
@@ -268,7 +275,13 @@ function handleFeedback(
 
 async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): Promise<void> {
   const behaviours = await deps.service.behavioursForGuild(event.guildId);
-  const route = routeAssistantMention(event, behaviours, deps.botUserId, deps.lookupMessage);
+  const route = routeAssistantMention(
+    event,
+    behaviours,
+    deps.botUserId,
+    deps.lookupMessage,
+    deps.isTaskPost,
+  );
   if (route.kind === 'not-addressed') return;
   if (route.kind === 'ambiguous') {
     // Hard rule 6: this subscriber holds no idempotency key of its own, and

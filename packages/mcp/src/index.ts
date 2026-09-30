@@ -141,3 +141,33 @@ export {
   type McpSendRefusal,
   type SendOutcomeText,
 } from './tools/send.js';
+
+export {
+  GET_TASK_DETAILS_TOOL_NAME,
+  GET_TASK_DETAILS_TOOL_DESCRIPTION,
+  getTaskDetailsText,
+  type McpTaskDetail,
+  type McpTaskDetailPort,
+  LIST_TASK_REMINDERS_TOOL_NAME,
+  LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
+  listTaskRemindersText,
+  LIST_TASK_TEAMS_TOOL_NAME,
+  LIST_TASK_TEAMS_TOOL_DESCRIPTION,
+  listTaskTeamsText,
+  LIST_TASKS_TOOL_NAME,
+  LIST_TASKS_TOOL_DESCRIPTION,
+  listTasksText,
+  type McpTaskListFilter,
+  type McpTaskPort,
+  type McpTaskReminderSlot,
+  type McpTaskTeamMemberView,
+  type McpTaskTeamsView,
+  type McpTaskTeamView,
+} from './tools/tasks.js';
+
+export {
+  taskAdminTools,
+  runTaskAdmin,
+  type TaskAdminPort,
+  type TaskAdminName,
+} from './tools/task-admin.js';

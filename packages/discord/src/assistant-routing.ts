@@ -43,6 +43,7 @@ export const routeAssistantMention = (
   behaviours: readonly AssistantBehaviour[],
   botUserId: string,
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
+  isTaskPost?: (messageId: string) => boolean,
 ): MentionRoute => {
   if (event.kind !== 'messageCreate' || event.authorIsBot || event.authorId === undefined)
     return { kind: 'not-addressed' };
@@ -59,6 +60,19 @@ export const routeAssistantMention = (
   );
   const mentioned = new Set(event.mentionedRoleIds.filter((id) => configuredRoleIds.has(id)));
   const botTagged = event.mentionedUserIds.includes(botUserId);
+  // ADR 0112 decision 4: a pinged reply to a task post is not a tag.
+  // discord.js puts the replied-to user into `mentions.users` on a reply
+  // ping, so the reply alone looks tagged. Only an explicit `<@bot>` in the
+  // text still routes; an explicit assistant role tag routes below as usual.
+  if (
+    botTagged &&
+    mentioned.size === 0 &&
+    event.referencedMessageId !== undefined &&
+    (isTaskPost?.(event.referencedMessageId) ?? false) &&
+    !new RegExp(`<@!?${botUserId}>`).test(event.content ?? '')
+  ) {
+    return { kind: 'not-addressed' };
+  }
   if (mentioned.size === 0 && !botTagged) {
     if (
       lookupMessage !== undefined &&

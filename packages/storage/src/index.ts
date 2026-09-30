@@ -75,3 +75,7 @@ export * as resourceCacheRepo from './repos/resource-cache.js';
 export { computeDocId } from './repos/resource-cache.js';
 export * as roleRepo from './repos/roles.js';
 export * as schema from './schema.js';
+export * as taskRepo from './repos/tasks.js';
+export * as taskBindingRepo from './repos/task-binding.js';
+
+export * as taskNudgeRepo from './repos/task-nudges.js';

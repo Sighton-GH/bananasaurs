@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
+import { pino } from 'pino';
 import {
   parseConfig,
+  OpenAiCompatibleProvider,
   parseGuildId,
   type GenerateTextRequest,
   type TextProvider,
@@ -11,6 +14,9 @@ import {
 } from '@bananasaurs/storage/test-support';
 import {
   archiveRepo,
+  taskNudgeRepo,
+  taskRepo,
+  taskBindingRepo,
   assistantProvidersRepo,
   assistantRepo,
   computeDocId,
@@ -20,6 +26,7 @@ import {
   writeInstance,
 } from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
+import { createAssistantCommandSubscriber } from './commands.js';
 
 const seedCacheText = (
   t: MigratedTestDatabase,
@@ -65,6 +72,7 @@ const OTHER_ROLE = '900123456789012345';
 const IT_CHANNEL = '789012345678901234';
 const REVIEWER_ROLE = '890123456789012345';
 const NOW = 1_800_000_000_000;
+const ACTOR = { actorType: 'dashboard', actorId: 'owner', via: 'http' } as const;
 
 const config = parseConfig({
   DISCORD_BOT_TOKEN: 'test-token',
@@ -133,6 +141,166 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
   });
   afterEach(() => t.close());
 
+  it('connects a simulated model API over HTTP and refuses malformed vendor JSON', async () => {
+    const bodies: string[] = [];
+    const payloads = [
+      {
+        model: 'fixture-model',
+        choices: [{ message: { content: 'Which task and what changed?' } }],
+      },
+      { model: 'fixture-model', choices: [{ message: { content: 42 } }] },
+    ];
+    const api = createServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on('end', () => {
+        bodies.push(body);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(payloads.shift()));
+      });
+    });
+    await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = api.address();
+      if (!address || typeof address === 'string') throw new Error('model API did not bind');
+      const provider = new OpenAiCompatibleProvider({
+        id: 'openrouter',
+        apiKey: 'synthetic-test-token',
+        baseUrl: `http://127.0.0.1:${address.port}`,
+      });
+      const request = {
+        model: 'fixture-model',
+        messages: [{ role: 'user' as const, text: 'Task update: blocked' }],
+      };
+      expect((await provider.generateText(request)).text).toContain('Which task');
+      await expect(provider.generateText(request)).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0]).toContain('Task update: blocked');
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        api.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
+  });
+  it('simulates AI task context, clarification, malformed response and refusal without task writes', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const categoryId = '999999999999999999';
+    const taskRole = '678901234567890123';
+    const teamId = taskRepo.createTeam(
+      scope,
+      { name: 'Tech', categoryId, kind: 'subteam' },
+      ACTOR,
+      NOW,
+    );
+    const taskId = taskRepo.createTask(
+      scope,
+      {
+        teamId,
+        title: 'Test gearbox',
+        assignmentKind: 'team',
+        dueAt: NOW + 86400000,
+        timezone: 'America/Vancouver',
+        destinationId: CHANNEL,
+        createdBy: OWNER,
+      },
+      ACTOR,
+      NOW,
+    );
+    taskBindingRepo.addMembership(scope, teamId, MEMBER, 'member', ACTOR, NOW);
+    taskRepo.recordTaskAnchor(scope, taskId, CHANNEL, '888888888888888888', NOW);
+    const behaviour = {
+      id: 'task',
+      guildId: GUILD,
+      surface: 'bananasaurs' as const,
+      name: 'Task help',
+      systemPrompt: 'Answer member questions.',
+      promptVersion: 1,
+      callerRoleIds: [taskRole],
+      reviewerRoleIds: [],
+      preferredSkillIds: ['search-club'],
+      resourceIds: [],
+      enabled: true,
+    };
+    assistantRepo.putBehaviour(scope, behaviour, NOW);
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [taskRole], userIds: [] },
+      NOW,
+    );
+    seedEligibility(t, 'fixture');
+    const seen: string[] = [];
+    const replies: Array<'ok' | 'malformed' | 'refusal'> = ['ok', 'malformed', 'refusal'];
+    const provider: TextProvider = {
+      id: 'fixture',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        seen.push(req.systemInstruction ?? '');
+        const next = replies.shift();
+        if (next === 'malformed')
+          return { text: undefined as unknown as string, model: 'fixture-model' };
+        if (next === 'refusal')
+          throw new (await import('@bananasaurs/core')).ProviderError(
+            'safety-refusal',
+            'refused',
+            false,
+          );
+        return { text: 'Which task and what changed?', model: 'fixture-model' };
+      },
+    };
+    const service = createAssistantService(
+      scope,
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      { provider },
+      undefined,
+      undefined,
+      {
+        memberChannels: async () => [],
+        taskContext: {
+          access: async (actorId) =>
+            actorId === MEMBER
+              ? {
+                  actorId,
+                  teams: [{ teamId, name: 'Tech', kind: 'subteam', categoryId }],
+                  president: false,
+                  leadTeamIds: [],
+                }
+              : undefined,
+          anchorTaskId: (channelId, messageId) =>
+            taskRepo.taskForAnchor(scope, channelId, messageId),
+        },
+      },
+    );
+    const invoke = (id: string, referencedMessageId?: string) =>
+      service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds: [taskRole],
+        behaviour,
+        command: 'ask',
+        input: { question: 'Task update: blocked' },
+        source: 'mention',
+        invocationId: id,
+        ...(referencedMessageId ? { referencedMessageId } : {}),
+      });
+    const clarification = await invoke('task-clarification');
+    expect(clarification.ok).toBe(true);
+    expect(seen[0]).toContain("replies directly to the task's post");
+    expect(seen[0]).not.toContain('Ask which task');
+    await expect(invoke('task-anchored', '888888888888888888')).rejects.toMatchObject({
+      kind: 'invalid-response',
+    });
+    expect(seen[1]).toContain("replies directly to the task's post");
+    await expect(invoke('task-refusal')).rejects.toMatchObject({ kind: 'safety-refusal' });
+    expect(taskRepo.getTask(scope, taskId)).toMatchObject({ status: 'not_started', version: 1 });
+    expect(taskRepo.listReports(scope, taskId)).toHaveLength(0);
+  });
   it('runs organisation, resource, reminder, decision and IT flows without a real Discord send', async () => {
     const scope = t.scopes.forGuild(GUILD);
     const direct = {
@@ -1212,5 +1380,91 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     ).invoke(invocation('ask', { question: 'q' }));
     expect(fetchResource).not.toHaveBeenCalled();
     expect(requests[0]?.systemInstruction).toContain('CLUB SOURCES');
+  });
+});
+
+describe('task-post replies stay out of the general assistant (ADR 0112)', () => {
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+  });
+  afterEach(() => t.close());
+
+  it('does not enqueue a pinged reply to a stored task anchor', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const teamId = taskRepo.createTeam(
+      scope,
+      { name: 'Tech', categoryId: '999999999999999999', kind: 'subteam' },
+      ACTOR,
+      NOW,
+    );
+    const taskId = taskRepo.createTask(
+      scope,
+      {
+        teamId,
+        title: 'Gearbox',
+        assignmentKind: 'team',
+        dueAt: NOW + 86400000,
+        timezone: 'America/Vancouver',
+        destinationId: CHANNEL,
+        createdBy: OWNER,
+      },
+      ACTOR,
+      NOW,
+    );
+    taskRepo.recordTaskAnchor(scope, taskId, CHANNEL, '888888888888888888', NOW);
+    const behaviour = {
+      id: 'direct',
+      guildId: GUILD,
+      surface: 'direct-command' as const,
+      name: 'Club',
+      systemPrompt: 'Safe.',
+      promptVersion: 1,
+      callerRoleIds: [] as readonly string[],
+      reviewerRoleIds: [] as readonly string[],
+      preferredSkillIds: [] as readonly string[],
+      resourceIds: [] as readonly string[],
+      enabled: true,
+      answersBotTag: true,
+    };
+    const enqueue = vi.fn(() => ({ enqueued: true }));
+    const subscriber = createAssistantCommandSubscriber({
+      guildId: GUILD,
+      botUserId: '123456789012345678',
+      service: {
+        behavioursForGuild: async () => [behaviour],
+        invoke: async () => ({ ok: true as const, content: 'unused' }),
+      },
+      enqueue,
+      now: () => NOW,
+      logger: pino({ level: 'silent' }),
+      isTaskPost: (messageId) => taskNudgeRepo.isTaskPost(scope, messageId),
+    });
+    // The reply ping puts the bot into mentions.users, exactly as discord.js
+    // does — without isTaskPost this would route to the flagged behaviour.
+    await subscriber.handle({
+      kind: 'messageCreate',
+      guildId: GUILD,
+      receivedAtMs: NOW,
+      channelId: CHANNEL,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '999999999999999999',
+      authorId: MEMBER,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: 'finished the gearbox',
+      editedTimestampMs: undefined,
+      mentionedUserIds: ['123456789012345678'],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+      referencedMessageId: '888888888888888888',
+      referencedAuthorId: '123456789012345678',
+    });
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });

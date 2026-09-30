@@ -139,6 +139,8 @@ export const compileAssistantContext = (input: {
         readonly reason: string;
       }[]
     | undefined;
+  /** Read-only, member-scoped task context supplied by deterministic live checks. */
+  readonly taskSection?: string | undefined;
 }): CompiledAssistantContext => {
   const max = input.maxEvidenceChars ?? 12_000;
   const evidence = input.evidence.filter((item) => item.accessible);
@@ -236,6 +238,7 @@ export const compileAssistantContext = (input: {
     { name: 'server-card', text: `SERVER CARD\n${clean(input.serverCard, 3_000)}` },
     { name: 'resources', text: resources },
     { name: 'skills', text: skillsBlock },
+    { name: 'task-context', text: clean(input.taskSection ?? '', 2400) },
     { name: 'unavailable-skills', text: unavailableBlock },
   ].filter((section) => section.text !== '');
   const protectedText =

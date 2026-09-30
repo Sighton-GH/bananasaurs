@@ -44,6 +44,14 @@ export const LOGGABLE_FIELDS = new Set([
   'batchId',
   'jobId',
   'jobKind',
+  /**
+   * Nudge slot ids (`review:<taskId>:<version>`, `custom:…`, …) and their
+   * fixed kind enums (`pre_due`, `review`, …): routing facts like `jobKind`,
+   * never member text — member content lives in payloads and report bodies,
+   * which have no allowlisted name.
+   */
+  'slotId',
+  'kind',
   'eventKind',
   'fingerprint',
   'dedupeKey',
@@ -52,6 +60,12 @@ export const LOGGABLE_FIELDS = new Set([
   'maxAttempts',
   // outcome and shape
   'action',
+  /**
+   * Fixed MCP tool names (`list_tasks`, `approve_task_completion`, …): a
+   * routing fact like `action`, never caller-supplied arguments — those stay
+   * out of every log line by rule 4.
+   */
+  'tool',
   'state',
   'outcome',
   'reason',

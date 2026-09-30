@@ -19,6 +19,8 @@ import {
   loggingRepo,
   mcpSendRepo,
   roleRepo,
+  taskNudgeRepo,
+  taskRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
@@ -55,7 +57,7 @@ const PUBLIC_URL = 'https://bot.test';
 const REDIRECT = 'https://client.test/cb';
 /** Hard-coded, not imported: this test must not import its own oracle. */
 const CHALLENGE = `Bearer resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource"`;
-
+const ACTOR = { actorType: 'dashboard', actorId: 'owner', via: 'http' } as const;
 let t: MigratedTestDatabase;
 let clock: number;
 let deps: DashboardAppDeps;
@@ -283,7 +285,51 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all twelve tools', async () => {
+  it('lists owner task data through MCP and audits the read without title content', async () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = taskRepo.createTeam(
+      scope,
+      { name: 'Tech', categoryId: '333333333333333333', kind: 'subteam' },
+      ACTOR,
+      clock,
+    );
+    taskRepo.createTask(
+      scope,
+      {
+        teamId,
+        title: 'Measure chassis',
+        assignmentKind: 'team',
+        dueAt: clock + 86400000,
+        timezone: 'America/Vancouver',
+        destinationId: '444444444444444444',
+        createdBy: ACCOUNT,
+      },
+      ACTOR,
+      clock,
+    );
+    const accessToken = await mintToken();
+    const response = await mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'list_tasks', arguments: { guildId: String(GUILD_A) } },
+      },
+      accessToken,
+    );
+    expect(response.statusCode).toBe(200);
+    const result = sseData(response.body)[0] as {
+      result?: { isError?: boolean; content?: readonly { text: string }[] };
+    };
+    expect(result.result?.isError).not.toBe(true);
+    expect(result.result?.content?.[0]?.text).toContain('Measure chassis');
+    const row = effectRepo.tailAudit(scope).find((audit) => audit.action === 'mcp.read.list_tasks');
+    expect(row).toMatchObject({ subjectType: 'guild', actorType: 'mcp_operator' });
+    expect(row?.after).not.toContain('Measure chassis');
+  });
+
+  it('answers a valid read-scope token with tools/list containing the task read tool', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -291,8 +337,12 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(16);
     expect(names).toEqual([
+      'list_tasks',
+      'get_task_details',
+      'list_task_teams',
+      'list_task_reminders',
       'get_health',
       'search_messages',
       'read_channel_history',
@@ -362,7 +412,34 @@ describe('/mcp behind the bearer guard', () => {
     const bodies = sseData(response.body);
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
-    expect(result.result?.tools?.map((tool) => tool.name)).toEqual(['send_message']);
+    expect(result.result?.tools?.map((tool) => tool.name)).toEqual([
+      'send_message',
+      'create_task_team',
+      'configure_task_team',
+      'delete_task_team',
+      'set_task_president_role',
+      'clear_task_president_role',
+      'add_task_team_member',
+      'remove_task_team_member',
+      'create_club_task',
+      'edit_club_task',
+      'append_task_child',
+      'edit_task_child',
+      'complete_task_child',
+      'delete_task_child',
+      'record_task_progress',
+      'delete_task_report',
+      'request_task_completion',
+      'approve_task_completion',
+      'reject_task_completion',
+      'set_task_status',
+      'archive_task',
+      'unarchive_task',
+      'delete_club_task',
+      'add_task_reminder',
+      'cancel_task_reminder',
+      'configure_task_quiet_hours',
+    ]);
   });
 
   it('(ruling M4-D17) a send-only token sees no overview resource either', async () => {
@@ -1824,5 +1901,1109 @@ describe('/mcp read logging (ADR 0050)', () => {
     } finally {
       await logged.close();
     }
+  });
+});
+
+/** Network transport smoke: a separate SDK client connects to the daemon's actual HTTP listener. */
+it('simulated AI MCP client uses HTTP for task reads, completion, and fail-closed approval', async () => {
+  const { Client: McpClient } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } =
+    await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  const scope = t.scopes.forGuild(GUILD_A);
+  const categoryId = '999999999999999999';
+  const destinationId = '333333333333333333';
+  (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+    id: GUILD_A,
+    name: 'simulated guild',
+    owner_id: '345678901234567890',
+    channels: [
+      {
+        id: categoryId,
+        guild_id: GUILD_A,
+        type: ChannelType.GuildCategory,
+        name: 'tech',
+        position: 0,
+        permission_overwrites: [],
+      },
+      {
+        id: destinationId,
+        guild_id: GUILD_A,
+        type: ChannelType.GuildText,
+        name: 'tasks',
+        parent_id: categoryId,
+        position: 0,
+        permission_overwrites: [],
+      },
+    ],
+    roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+    members: [],
+    emojis: [],
+    unavailable: false,
+  });
+  const teamId = taskRepo.createTeam(
+    scope,
+    { name: 'Tech', categoryId, kind: 'subteam' },
+    ACTOR,
+    clock,
+  );
+  const taskId = taskRepo.createTask(
+    scope,
+    {
+      teamId,
+      title: 'Inspect suspension',
+      assignmentKind: 'team',
+      dueAt: clock + 86400000,
+      timezone: 'America/Vancouver',
+      destinationId,
+      createdBy: ACCOUNT,
+    },
+    ACTOR,
+    clock,
+  );
+  const multiId = taskRepo.createTask(
+    scope,
+    {
+      teamId,
+      title: 'Shared measurement',
+      assignmentKind: 'individual',
+      assigneeIds: ['666666666666666666', '777777777777777777'],
+      dueAt: clock + 86400000,
+      timezone: 'America/Vancouver',
+      destinationId,
+      createdBy: ACCOUNT,
+    },
+    ACTOR,
+    clock,
+  );
+  const read = await mintToken('bananasaurs:read');
+  const send = await mintToken('bananasaurs:send');
+  const url = await app.listen({ port: 0, host: '127.0.0.1' });
+  const connect = async (token: string) => {
+    const client = new McpClient({ name: 'simulated-ai-agent', version: '1.0.0' });
+    // The SDK's own transport declaration disagrees with its Transport interface
+    // under exactOptionalPropertyTypes (sessionId: string | undefined vs string).
+    const transport = new StreamableHTTPClientTransport(new URL('/mcp', url), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    });
+    await client.connect(transport as Parameters<typeof client.connect>[0]);
+    return client;
+  };
+  const reader = await connect(read);
+  const writer = await connect(send);
+  try {
+    const readNames = (await reader.listTools()).tools.map((tool) => tool.name);
+    const sendNames = (await writer.listTools()).tools.map((tool) => tool.name);
+    expect(readNames).toContain('list_tasks');
+    expect(readNames).toContain('get_task_details');
+    expect(readNames).toContain('list_task_teams');
+    expect(readNames).toContain('list_task_reminders');
+    expect(sendNames).toContain('request_task_completion');
+    expect(sendNames).not.toContain('list_tasks');
+    expect(sendNames).toContain('approve_task_completion');
+    const list = await reader.callTool({ name: 'list_tasks', arguments: { guildId: GUILD_A } });
+    expect(list.isError).not.toBe(true);
+    expect(JSON.stringify(list.content)).toContain('Inspect suspension');
+    const details = await reader.callTool({
+      name: 'get_task_details',
+      arguments: { guildId: GUILD_A, taskId },
+    });
+    expect(details.isError).not.toBe(true);
+    expect(JSON.stringify(details.content)).toContain(taskId);
+    const quiet = await writer.callTool({
+      name: 'configure_task_quiet_hours',
+      arguments: {
+        guildId: GUILD_A,
+        startMinute: 60,
+        endMinute: 480,
+        timezone: 'America/Vancouver',
+      },
+    });
+    expect(quiet.isError).not.toBe(true);
+    const teams = await reader.callTool({
+      name: 'list_task_teams',
+      arguments: { guildId: GUILD_A },
+    });
+    expect(teams.isError).not.toBe(true);
+    expect(JSON.stringify(teams.content)).toContain('Tech');
+    const child = await writer.callTool({
+      name: 'append_task_child',
+      arguments: {
+        guildId: GUILD_A,
+        taskId,
+        expectedVersion: 1,
+        title: 'Check dampers',
+        dueAt: clock + 3600000,
+      },
+    });
+    expect(child.isError).not.toBe(true);
+    const report = await writer.callTool({
+      name: 'record_task_progress',
+      arguments: {
+        guildId: GUILD_A,
+        taskId,
+        body: 'Measurements recorded',
+        requestId: '00000000-0000-4000-8000-000000000001',
+      },
+    });
+    expect(report.isError).not.toBe(true);
+    const reminder = await writer.callTool({
+      name: 'add_task_reminder',
+      arguments: { guildId: GUILD_A, taskId, at: clock + 3600000 },
+    });
+    expect(reminder.isError).not.toBe(true);
+    const slots = await reader.callTool({
+      name: 'list_task_reminders',
+      arguments: { guildId: GUILD_A, taskId },
+    });
+    expect(slots.isError).not.toBe(true);
+    expect(JSON.stringify(slots.content)).toContain('custom:');
+    fakeDiscord.defineMember('666666666666666666');
+    fakeDiscord.defineMember('777777777777777777');
+    for (const discordUserId of ['666666666666666666', '777777777777777777']) {
+      const added = await writer.callTool({
+        name: 'add_task_team_member',
+        arguments: { guildId: GUILD_A, teamId, discordUserId, kind: 'member' },
+      });
+      expect(added.isError).not.toBe(true);
+    }
+    const multiEdit = await writer.callTool({
+      name: 'edit_club_task',
+      arguments: {
+        guildId: GUILD_A,
+        taskId: multiId,
+        expectedVersion: 1,
+        title: 'Shared measurement, revised',
+        priority: 'normal',
+        assignmentKind: 'individual',
+        assigneeIds: ['666666666666666666', '777777777777777777'],
+        dueAt: clock + 86400000,
+        timezone: 'America/Vancouver',
+        destinationId,
+      },
+    });
+    expect(multiEdit.isError).not.toBe(true);
+    expect(JSON.stringify(multiEdit.content)).toContain('(version 2)');
+    expect(taskRepo.listTaskAssignees(scope, multiId)).toHaveLength(2);
+    const concurrentId = taskRepo.createTask(
+      scope,
+      {
+        teamId,
+        title: 'Concurrent completion',
+        assignmentKind: 'team',
+        dueAt: clock + 86400000,
+        timezone: 'America/Vancouver',
+        destinationId,
+        createdBy: ACCOUNT,
+      },
+      ACTOR,
+      clock,
+    );
+    const contenders = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        writer.callTool({
+          name: 'request_task_completion',
+          arguments: {
+            guildId: GUILD_A,
+            taskId: concurrentId,
+            expectedVersion: 1,
+          },
+        }),
+      ),
+    );
+    expect(contenders.filter((result) => result.isError !== true)).toHaveLength(1);
+    expect(taskRepo.getTask(scope, concurrentId)).toMatchObject({
+      status: 'awaiting_approval',
+      version: 2,
+    });
+    // recordReport bumps the version when it moves the task to in_progress, so the completion request uses the live version.
+    const liveVersion = taskRepo.getTask(scope, taskId)!.version;
+    const completion = await writer.callTool({
+      name: 'request_task_completion',
+      arguments: { guildId: GUILD_A, taskId, expectedVersion: liveVersion },
+    });
+    expect(completion.isError).not.toBe(true);
+    expect(taskRepo.getTask(scope, taskId)?.status).toBe('awaiting_approval');
+    const replay = await writer.callTool({
+      name: 'request_task_completion',
+      arguments: { guildId: GUILD_A, taskId, expectedVersion: liveVersion },
+    });
+    expect(replay.isError).toBe(true);
+    const awaitingVersion = taskRepo.getTask(scope, taskId)!.version;
+    const approval = await writer.callTool({
+      name: 'approve_task_completion',
+      arguments: { guildId: GUILD_A, taskId, expectedVersion: awaitingVersion },
+    });
+    expect(approval.isError).not.toBe(true);
+    expect(JSON.stringify(approval.content)).toContain('Approved task');
+    expect(taskRepo.getTask(scope, taskId)?.status).toBe('done');
+  } finally {
+    await reader.close();
+    await writer.close();
+  }
+});
+
+/**
+ * Task 9: the owner's MCP client can do everything the task system supports.
+ * Through the real composition (Fastify + bearer guard + per-request server +
+ * real ports over the real repositories and FakeDiscord), with tokens minted
+ * through the real OAuth flow.
+ */
+describe('MCP task admin full surface (owner-only)', () => {
+  const CATEGORY = '999999999999999999';
+  const SECOND_CATEGORY = '577777777777777777';
+  const DEST = '333333333333333333';
+  const LEAD_ROLE = '611111111111111111';
+  const MEMBER_ROLE = '622222222222222222';
+  const PRESIDENT_ROLE = '633333333333333333';
+  const MEMBER_A = '666666666666666666';
+  const MEMBER_B = '777777777777777777';
+  const MEMBER_ACCOUNT = 'acct_0123456789abcdef0123456789abcdea';
+
+  const seedTaskWorld = (): void => {
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'task guild',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'teams',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: SECOND_CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'exec',
+          position: 1,
+          permission_overwrites: [],
+        },
+        {
+          id: DEST,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'tasks',
+          parent_id: CATEGORY,
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    fakeDiscord.defineRole({ id: LEAD_ROLE });
+    fakeDiscord.defineRole({ id: MEMBER_ROLE });
+    fakeDiscord.defineRole({ id: PRESIDENT_ROLE });
+    fakeDiscord.defineMember(MEMBER_A);
+    fakeDiscord.defineMember(MEMBER_B);
+  };
+
+  const gid = (): string => String(GUILD_A);
+  const due = (): number => clock + 86400000;
+  let createTaskRequestCount = 0;
+
+  const call = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const text = (body: string): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const teamArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: gid(),
+    name: 'Tech',
+    categoryId: CATEGORY,
+    kind: 'subteam',
+    ...over,
+  });
+
+  const createTeam = async (token: string, over: Record<string, unknown> = {}): Promise<string> => {
+    const found = text((await call(token, 'create_task_team', teamArgs(over))).body);
+    expect(found.isError).not.toBe(true);
+    const id = /Created team (\S+)\./.exec(found.text)?.[1];
+    if (!id) throw new Error(`no team id in: ${found.text}`);
+    return id;
+  };
+
+  const createTeamTask = async (
+    token: string,
+    teamId: string,
+    over: Record<string, unknown> = {},
+  ): Promise<string> => {
+    // A fresh request id per call: sharing one would name the same task twice.
+    createTaskRequestCount += 1;
+    const found = text(
+      (
+        await call(token, 'create_club_task', {
+          guildId: gid(),
+          teamId,
+          title: 'Club task',
+          assignmentKind: 'team',
+          dueAt: due(),
+          timezone: 'America/Vancouver',
+          destinationId: DEST,
+          requestId: `test-create-request-${createTaskRequestCount}`,
+          ...over,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    const id = /Created task (\S+) \(version 1\)\./.exec(found.text)?.[1];
+    if (!id) throw new Error(`no task id in: ${found.text}`);
+    return id;
+  };
+
+  /** A real token for a non-owner account through the full OAuth flow. */
+  const mintTokenFor = async (
+    username: string,
+    password: string,
+    scope = 'bananasaurs:send',
+  ): Promise<string> => {
+    const registered = await app.inject({
+      method: 'POST',
+      url: '/oauth/register',
+      payload: { client_name: 'test client', redirect_uris: [REDIRECT] },
+    });
+    expect(registered.statusCode).toBe(201);
+    const clientId = registered.json<{ client_id: string }>().client_id;
+    const verifier = generateToken();
+    const page = await app.inject({
+      method: 'GET',
+      url: authorizeQuery({ client_id: clientId, code_challenge: s256(verifier), scope }),
+    });
+    expect(page.statusCode).toBe(200);
+    const approval = await app.inject({
+      method: 'POST',
+      url: '/oauth/authorize',
+      headers: formHeaders,
+      payload: formBody({
+        requestId: hiddenInput(page.body, 'requestId'),
+        nonce: hiddenInput(page.body, 'nonce'),
+        username,
+        password,
+        decision: 'approve',
+      }),
+    });
+    expect(approval.statusCode).toBe(302);
+    const location = approval.headers.location;
+    if (typeof location !== 'string') throw new Error('approve did not redirect');
+    const code = new URL(location).searchParams.get('code');
+    if (code === null) throw new Error('redirect carried no code');
+    const exchanged = await app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'authorization_code',
+        code,
+        client_id: clientId,
+        redirect_uri: REDIRECT,
+        code_verifier: verifier,
+      }),
+    });
+    expect(exchanged.statusCode).toBe(200);
+    return exchanged.json<{ access_token: string }>().access_token;
+  };
+
+  it('advertises every write tool to the owner and none of the task tools to a non-owner', async () => {
+    seedTaskWorld();
+    const ownerSend = await mintToken('bananasaurs:send');
+    const listed = await mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      ownerSend,
+    );
+    const names = (
+      sseData(listed.body)[0] as { result?: { tools?: Array<{ name: string }> } }
+    ).result?.tools?.map((tool) => tool.name);
+    expect(names).toContain('approve_task_completion');
+    expect(names).toContain('add_task_reminder');
+    expect(names).toContain('cancel_task_reminder');
+    expect(names).toContain('delete_task_team');
+    expect(names).toContain('delete_club_task');
+    expect(names).toContain('delete_task_report');
+    expect(names).toContain('clear_task_president_role');
+    expect(names).toContain('edit_task_child');
+    expect(names).not.toContain('list_tasks');
+
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: MEMBER_ACCOUNT,
+      username: 'member',
+      passwordHash: await hashPassword('member-pass'),
+      isOwner: false,
+      now: clock,
+    });
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD_A), MEMBER_ACCOUNT);
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: MEMBER_ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    const memberSend = await mintTokenFor('member', 'member-pass', 'bananasaurs:send');
+    const memberListed = await mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      memberSend,
+    );
+    expect(
+      (
+        sseData(memberListed.body)[0] as { result?: { tools?: Array<{ name: string }> } }
+      ).result?.tools?.map((tool) => tool.name),
+    ).toEqual(['send_message']);
+
+    // The port still rechecks per call: a non-owner token that names a hidden
+    // tool is refused, never executed.
+    const refused = text((await call(memberSend, 'create_task_team', teamArgs())).body);
+    expect(refused.isError).toBe(true);
+    const refusedDeleteTask = text(
+      (
+        await call(memberSend, 'delete_club_task', {
+          guildId: gid(),
+          taskId: '00000000-0000-4000-8000-000000000000',
+          expectedVersion: 1,
+        })
+      ).body,
+    );
+    expect(refusedDeleteTask.isError).toBe(true);
+    const refusedDeleteReport = text(
+      (
+        await call(memberSend, 'delete_task_report', {
+          guildId: gid(),
+          taskId: '00000000-0000-4000-8000-000000000000',
+          reportId: 'report-1',
+        })
+      ).body,
+    );
+    expect(refusedDeleteReport.isError).toBe(true);
+
+    const memberRead = await mintTokenFor('member', 'member-pass', 'bananasaurs:read');
+    const readRefused = text((await call(memberRead, 'list_tasks', { guildId: gid() })).body);
+    expect(readRefused.isError).toBe(true);
+  });
+
+  it('create (multi-assignee) → edit → request → approve ends done with mcp_operator audit', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    for (const discordUserId of [MEMBER_A, MEMBER_B]) {
+      const added = text(
+        (
+          await call(send, 'add_task_team_member', {
+            guildId: gid(),
+            teamId,
+            discordUserId,
+            kind: 'member',
+          })
+        ).body,
+      );
+      expect(added.isError).not.toBe(true);
+    }
+    const created = text(
+      (
+        await call(send, 'create_club_task', {
+          guildId: gid(),
+          teamId,
+          title: 'Shared measurement',
+          assignmentKind: 'individual',
+          assigneeIds: [MEMBER_A, MEMBER_B],
+          dueAt: due(),
+          timezone: 'America/Vancouver',
+          destinationId: DEST,
+          requestId: 'shared-measurement-1',
+        })
+      ).body,
+    );
+    expect(created.isError).not.toBe(true);
+    expect(created.text).toContain(
+      'Discord posts go out only when the operator has enabled task posts.',
+    );
+    const taskId = /Created task (\S+) \(version 1\)\./.exec(created.text)?.[1];
+    if (!taskId) throw new Error(`no task id in: ${created.text}`);
+    expect(taskRepo.listTaskAssignees(scope, taskId)).toEqual(
+      expect.arrayContaining([MEMBER_A, MEMBER_B]),
+    );
+
+    // Multi-assignee edits are allowed over MCP: the assignee list is required.
+    const edited = text(
+      (
+        await call(send, 'edit_club_task', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 1,
+          title: 'Shared measurement, revised',
+          assignmentKind: 'individual',
+          assigneeIds: [MEMBER_A, MEMBER_B],
+          dueAt: due(),
+          timezone: 'America/Vancouver',
+          destinationId: DEST,
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    expect(edited.text).toContain('(version 2)');
+
+    const requested = text(
+      (await call(send, 'request_task_completion', { guildId: gid(), taskId, expectedVersion: 2 }))
+        .body,
+    );
+    expect(requested.isError).not.toBe(true);
+    expect(requested.text).toContain('awaiting approval (version 3)');
+    expect(requested.text).toContain(
+      'Discord posts go out only when the operator has enabled task posts.',
+    );
+
+    const approved = text(
+      (await call(send, 'approve_task_completion', { guildId: gid(), taskId, expectedVersion: 3 }))
+        .body,
+    );
+    expect(approved.isError).not.toBe(true);
+    expect(approved.text).toContain('Approved task');
+    expect(approved.text).toContain('(version 4)');
+    expect(taskRepo.getTask(scope, taskId)).toMatchObject({ status: 'done', version: 4 });
+
+    const trail = effectRepo.tailAudit(scope).filter((row) => row.actorType === 'mcp_operator');
+    for (const action of [
+      'task.member_added',
+      'task.created',
+      'task.edited',
+      'task.completion_requested',
+      'task.approved',
+    ]) {
+      const row = trail.find((entry) => entry.action === action);
+      expect(row).toBeDefined();
+      expect(row).toMatchObject({ actorId: ACCOUNT, via: 'http' });
+    }
+  });
+
+  it('reject returns an awaiting task to in_progress', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    const taskId = await createTeamTask(send, teamId);
+    expect(
+      text(
+        (
+          await call(send, 'request_task_completion', {
+            guildId: gid(),
+            taskId,
+            expectedVersion: 1,
+          })
+        ).body,
+      ).isError,
+    ).not.toBe(true);
+    const rejected = text(
+      (await call(send, 'reject_task_completion', { guildId: gid(), taskId, expectedVersion: 2 }))
+        .body,
+    );
+    expect(rejected.isError).not.toBe(true);
+    expect(rejected.text).toContain('(version 3)');
+    expect(taskRepo.getTask(scope, taskId)?.status).toBe('in_progress');
+
+    const parked = text(
+      (
+        await call(send, 'set_task_status', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 3,
+          status: 'not_started',
+        })
+      ).body,
+    );
+    expect(parked.isError).not.toBe(true);
+    expect(taskRepo.getTask(scope, taskId)).toMatchObject({ status: 'not_started', version: 4 });
+  });
+
+  it('archive hides from list_tasks and includeArchived shows it again', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const read = await mintToken('bananasaurs:read');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    const taskId = await createTeamTask(send, teamId, { title: 'Archive me' });
+    const archived = text(
+      (await call(send, 'archive_task', { guildId: gid(), taskId, expectedVersion: 1 })).body,
+    );
+    expect(archived.isError).not.toBe(true);
+    expect(archived.text).toContain('(version 2)');
+
+    const hidden = text((await call(read, 'list_tasks', { guildId: gid() })).body);
+    expect(hidden.isError).not.toBe(true);
+    expect(hidden.text).not.toContain('Archive me');
+
+    const shown = text(
+      (await call(read, 'list_tasks', { guildId: gid(), includeArchived: true })).body,
+    );
+    expect(shown.isError).not.toBe(true);
+    expect(shown.text).toContain('Archive me');
+
+    const details = text((await call(read, 'get_task_details', { guildId: gid(), taskId })).body);
+    expect(details.isError).not.toBe(true);
+    expect((JSON.parse(details.text) as Record<string, unknown>)['archived']).toBe(true);
+
+    const restored = text(
+      (await call(send, 'unarchive_task', { guildId: gid(), taskId, expectedVersion: 2 })).body,
+    );
+    expect(restored.isError).not.toBe(true);
+    expect(taskRepo.getTask(scope, taskId)?.archivedAt).toBeNull();
+  });
+
+  it('record_task_progress twice with one requestId writes one report', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    const taskId = await createTeamTask(send, teamId);
+    const requestId = '00000000-0000-4000-8000-000000000007';
+    const first = text(
+      (
+        await call(send, 'record_task_progress', {
+          guildId: gid(),
+          taskId,
+          body: 'Measured',
+          requestId,
+        })
+      ).body,
+    );
+    expect(first.isError).not.toBe(true);
+    const second = text(
+      (
+        await call(send, 'record_task_progress', {
+          guildId: gid(),
+          taskId,
+          body: 'Measured',
+          requestId,
+        })
+      ).body,
+    );
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toBe('Already recorded.');
+    expect(taskRepo.listReports(scope, taskId)).toHaveLength(1);
+  });
+
+  it('create_club_task twice with one requestId makes one task and one announce slot', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    const args = {
+      guildId: gid(),
+      teamId,
+      title: 'Club task',
+      assignmentKind: 'team',
+      dueAt: due(),
+      timezone: 'America/Vancouver',
+      destinationId: DEST,
+      requestId: 'idempotent-create-1',
+    };
+    const first = text((await call(send, 'create_club_task', args)).body);
+    expect(first.isError).not.toBe(true);
+    const taskId = /Created task (\S+) \(version 1\)\./.exec(first.text)?.[1];
+    if (!taskId) throw new Error(`no task id in: ${first.text}`);
+    const second = text((await call(send, 'create_club_task', args)).body);
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toContain(taskId);
+    expect(second.text).toContain('nothing new was scheduled');
+    expect(taskRepo.listTasks(scope)).toHaveLength(1);
+    expect(
+      taskNudgeRepo.slotsForTask(scope, taskId).filter((slot) => slot.kind === 'announce'),
+    ).toHaveLength(1);
+  });
+
+  it('delete_club_task removes the task with CAS; delete_task_report removes one update', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    const taskId = await createTeamTask(send, teamId);
+    const recorded = text(
+      (
+        await call(send, 'record_task_progress', {
+          guildId: gid(),
+          taskId,
+          body: 'Measured',
+          requestId: '00000000-0000-4000-8000-000000000009',
+        })
+      ).body,
+    );
+    expect(recorded.isError).not.toBe(true);
+    // A stale version is refused and the task survives.
+    const stale = text(
+      (await call(send, 'delete_club_task', { guildId: gid(), taskId, expectedVersion: 99 })).body,
+    );
+    expect(stale.isError).toBe(true);
+    expect(taskRepo.getTask(scope, taskId)).toBeDefined();
+    const reportId = taskRepo.listReports(scope, taskId)[0]?.reportId;
+    if (!reportId) throw new Error('no report recorded');
+    const deletedReport = text(
+      (await call(send, 'delete_task_report', { guildId: gid(), taskId, reportId })).body,
+    );
+    expect(deletedReport.isError).not.toBe(true);
+    expect(taskRepo.listReports(scope, taskId)).toHaveLength(0);
+    const missingReport = text(
+      (await call(send, 'delete_task_report', { guildId: gid(), taskId, reportId })).body,
+    );
+    expect(missingReport.isError).toBe(true);
+    const version = taskRepo.getTask(scope, taskId)?.version ?? 0;
+    const deleted = text(
+      (await call(send, 'delete_club_task', { guildId: gid(), taskId, expectedVersion: version }))
+        .body,
+    );
+    expect(deleted.isError).not.toBe(true);
+    expect(taskRepo.getTask(scope, taskId)).toBeUndefined();
+    expect(taskRepo.listTasks(scope)).toHaveLength(0);
+  });
+
+  it('complete_task_child with a stale version is refused', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const teamId = await createTeam(send);
+    const taskId = await createTeamTask(send, teamId);
+    const appended = text(
+      (
+        await call(send, 'append_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 1,
+          title: 'Check dampers',
+          dueAt: clock + 3600000,
+        })
+      ).body,
+    );
+    expect(appended.isError).not.toBe(true);
+    expect(appended.text).toContain('(version 2)');
+    const childId = /Appended dated child (\S+) to task/.exec(appended.text)?.[1];
+    if (!childId) throw new Error(`no child id in: ${appended.text}`);
+
+    const renamed = text(
+      (
+        await call(send, 'edit_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 2,
+          childId,
+          title: 'Check dampers and springs',
+          dueAt: clock + 3600000,
+        })
+      ).body,
+    );
+    expect(renamed.isError).not.toBe(true);
+    expect(renamed.text).toContain('(version 3)');
+
+    const stale = text(
+      (
+        await call(send, 'complete_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 2,
+          childId,
+        })
+      ).body,
+    );
+    expect(stale.isError).toBe(true);
+
+    const done = text(
+      (
+        await call(send, 'complete_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 3,
+          childId,
+        })
+      ).body,
+    );
+    expect(done.isError).not.toBe(true);
+    expect(done.text).toContain('(version 4)');
+
+    const appendedTwo = text(
+      (
+        await call(send, 'append_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 4,
+          title: 'Torque check',
+          dueAt: clock + 3600000,
+        })
+      ).body,
+    );
+    const childTwo = /Appended dated child (\S+) to task/.exec(appendedTwo.text)?.[1];
+    if (!childTwo) throw new Error(`no child id in: ${appendedTwo.text}`);
+    const deleted = text(
+      (
+        await call(send, 'delete_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 5,
+          childId: childTwo,
+        })
+      ).body,
+    );
+    expect(deleted.isError).not.toBe(true);
+    expect(deleted.text).toContain('(version 6)');
+  });
+
+  it('edit_club_task to a new channel is refused once the task was announced', async () => {
+    seedTaskWorld();
+    // The shared harness stub resolves only DEST; this variant app resolves
+    // one more channel in the same category, so a destination move passes
+    // live verification and reaches the anchor check.
+    const DEST_TWO = '344444444444444444';
+    const portsFor: DashboardAppDeps['portsFor'] = (scope) => {
+      const base = testPortsFor(scope, () => clock);
+      return {
+        ...base,
+        inspectTaskChannel: (channelId) =>
+          channelId === DEST_TWO
+            ? Promise.resolve({
+                channelId,
+                kind: 'channel' as const,
+                parentId: CATEGORY,
+                categoryId: CATEGORY,
+              })
+            : base.inspectTaskChannel(channelId),
+      };
+    };
+    const anchoredApp = buildDashboardApp({ ...deps, portsFor });
+    try {
+      const send = await mintToken('bananasaurs:send', anchoredApp);
+      const teamId = await createTeam(send);
+      const taskId = await createTeamTask(send, teamId);
+      expect(
+        taskRepo.recordTaskAnchor(
+          t.scopes.forGuild(GUILD_A),
+          taskId,
+          DEST,
+          '955555555555555555',
+          clock,
+        ),
+      ).toBe('recorded');
+      const moved = text(
+        (
+          await mcpPost(
+            anchoredApp,
+            {
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: {
+                name: 'edit_club_task',
+                arguments: {
+                  guildId: gid(),
+                  taskId,
+                  expectedVersion: 1,
+                  title: 'Club task',
+                  assignmentKind: 'team',
+                  dueAt: due(),
+                  timezone: 'America/Vancouver',
+                  destinationId: DEST_TWO,
+                },
+              },
+            },
+            send,
+          )
+        ).body,
+      );
+      expect(moved.isError).toBe(true);
+      expect(moved.text).toContain('its channel cannot change');
+      expect(taskRepo.getTask(t.scopes.forGuild(GUILD_A), taskId)?.destinationId).toBe(DEST);
+    } finally {
+      await anchoredApp.close();
+    }
+  });
+
+  it('complete_task_child is refused when the team category no longer resolves', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    // Seeded straight through the repository: this category was never
+    // injected into the gateway cache, so the live team check fails exactly
+    // as if the category had been deleted after the task was created.
+    const teamId = taskRepo.createTeam(
+      scope,
+      { name: 'Gone', categoryId: '588888888888888888', kind: 'subteam' },
+      ACTOR,
+      clock,
+    );
+    const taskId = taskRepo.createTask(
+      scope,
+      {
+        teamId,
+        title: 'Orphan',
+        assignmentKind: 'team',
+        dueAt: due(),
+        timezone: 'America/Vancouver',
+        destinationId: DEST,
+        createdBy: ACCOUNT,
+      },
+      ACTOR,
+      clock,
+    );
+    const added = taskRepo.changeChild(
+      scope,
+      taskId,
+      1,
+      { kind: 'add', title: 'Step', dueAt: clock + 3600000 },
+      ACTOR,
+      clock,
+    );
+    expect(added?.version).toBe(2);
+    if (!added) throw new Error('child was not added');
+    const refused = text(
+      (
+        await call(send, 'complete_task_child', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 2,
+          childId: added.childId,
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(taskRepo.getTask(scope, taskId)).toMatchObject({ version: 2 });
+  });
+
+  it('delete_task_team with tasks is refused; an empty team deletes', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const teamId = await createTeam(send);
+    await createTeamTask(send, teamId);
+    const refused = text((await call(send, 'delete_task_team', { guildId: gid(), teamId })).body);
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('Archive or move its tasks first');
+
+    const second = await createTeam(send, { name: 'Empty', categoryId: SECOND_CATEGORY });
+    const deleted = text(
+      (await call(send, 'delete_task_team', { guildId: gid(), teamId: second })).body,
+    );
+    expect(deleted.isError).not.toBe(true);
+    expect(deleted.text).toContain(`Deleted team ${second}.`);
+  });
+
+  it('cancel_task_reminder on a pending custom reminder succeeds, then refuses', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    const read = await mintToken('bananasaurs:read');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const teamId = await createTeam(send);
+    const at = clock + 3600000;
+    const taskId = await createTeamTask(send, teamId, { extraReminderAt: [clock + 7200000] });
+    const added = text(
+      (await call(send, 'add_task_reminder', { guildId: gid(), taskId, at })).body,
+    );
+    expect(added.isError).not.toBe(true);
+
+    const listed = text((await call(read, 'list_task_reminders', { guildId: gid(), taskId })).body);
+    expect(listed.isError).not.toBe(true);
+    expect(listed.text).toContain(`custom:${taskId}:${at}`);
+
+    const slotId = `custom:${taskId}:${at}`;
+    const cancelled = text(
+      (await call(send, 'cancel_task_reminder', { guildId: gid(), taskId, slotId })).body,
+    );
+    expect(cancelled.isError).not.toBe(true);
+
+    const again = text(
+      (await call(send, 'cancel_task_reminder', { guildId: gid(), taskId, slotId })).body,
+    );
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain('Only a pending custom reminder can be cancelled.');
+
+    const trail = effectRepo.tailAudit(scope).filter((row) => row.actorType === 'mcp_operator');
+    expect(trail.some((row) => row.action === 'task.reminder_added')).toBe(true);
+    expect(trail.some((row) => row.action === 'task.reminder_cancelled')).toBe(true);
+
+    const past = text(
+      (await call(send, 'add_task_reminder', { guildId: gid(), taskId, at: clock - 1000 })).body,
+    );
+    expect(past.isError).toBe(true);
+  });
+
+  it('list_task_teams returns the member role id, members, president and quiet hours', async () => {
+    seedTaskWorld();
+    fakeDiscord.defineMember(MEMBER_A, [LEAD_ROLE]);
+    const send = await mintToken('bananasaurs:send');
+    const read = await mintToken('bananasaurs:read');
+    const teamId = await createTeam(send, { leadRoleId: LEAD_ROLE, memberRoleId: MEMBER_ROLE });
+    const president = text(
+      (await call(send, 'set_task_president_role', { guildId: gid(), roleId: PRESIDENT_ROLE }))
+        .body,
+    );
+    expect(president.isError).not.toBe(true);
+    const lead = text(
+      (
+        await call(send, 'add_task_team_member', {
+          guildId: gid(),
+          teamId,
+          discordUserId: MEMBER_A,
+          kind: 'lead',
+        })
+      ).body,
+    );
+    expect(lead.isError).not.toBe(true);
+
+    const found = text((await call(read, 'list_task_teams', { guildId: gid() })).body);
+    expect(found.isError).not.toBe(true);
+    const parsed = JSON.parse(found.text) as {
+      teams: Array<Record<string, unknown>>;
+      presidentRoleId: string | null;
+      quietHours: Record<string, unknown>;
+    };
+    expect(parsed.teams).toHaveLength(1);
+    expect(parsed.teams[0]).toMatchObject({
+      teamId,
+      name: 'Tech',
+      categoryId: CATEGORY,
+      leadRoleId: LEAD_ROLE,
+      memberRoleId: MEMBER_ROLE,
+    });
+    expect(JSON.stringify(parsed.teams[0])).toContain(MEMBER_A);
+    expect(parsed.presidentRoleId).toBe(PRESIDENT_ROLE);
+    expect(parsed.quietHours).toMatchObject({ timezone: 'America/Los_Angeles' });
+
+    const configured = text(
+      (await call(send, 'configure_task_team', { guildId: gid(), teamId, memberRoleId: null }))
+        .body,
+    );
+    expect(configured.isError).not.toBe(true);
+    const removed = text(
+      (
+        await call(send, 'remove_task_team_member', {
+          guildId: gid(),
+          teamId,
+          discordUserId: MEMBER_A,
+        })
+      ).body,
+    );
+    expect(removed.isError).not.toBe(true);
+    const cleared = text((await call(send, 'clear_task_president_role', { guildId: gid() })).body);
+    expect(cleared.isError).not.toBe(true);
+    const deleted = text((await call(send, 'delete_task_team', { guildId: gid(), teamId })).body);
+    expect(deleted.isError).not.toBe(true);
+  });
+
+  it('a duplicate category is refused with the team text', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send');
+    await createTeam(send);
+    const duplicate = text((await call(send, 'create_task_team', teamArgs())).body);
+    expect(duplicate.isError).toBe(true);
+    expect(duplicate.text).toContain('That category already has a team.');
   });
 });

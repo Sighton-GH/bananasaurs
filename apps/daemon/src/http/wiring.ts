@@ -30,6 +30,8 @@ import {
   registerOAuthRoutes,
   registerOpsReadRoutes,
   registerOpsWriteRoutes,
+  registerTaskRoutes,
+  registerTaskWriteRoutes,
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
@@ -299,6 +301,8 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       registerAssistantTraceRoutes(instance, guard, routeDeps);
       registerAssistantConversationRoutes(instance, guard, routeDeps);
       registerOpsReadRoutes(instance, guard, routeDeps);
+      registerTaskRoutes(instance, guard, routeDeps);
+      registerTaskWriteRoutes(instance, guard, routeDeps);
       registerOpsWriteRoutes(instance, guard, routeDeps);
       registerWriteRoutes(instance, guard, routeDeps);
       registerAutomodRoutes(instance, guard, routeDeps);
