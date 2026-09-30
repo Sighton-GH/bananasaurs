@@ -73,6 +73,7 @@ import {
 } from './tools/send.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
+import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
@@ -169,7 +170,10 @@ const okReadResult = (
 };
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
-  const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
+  const server = new McpServer(
+    { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
+    { instructions: MCP_SERVER_INSTRUCTIONS },
+  );
   // Ruling M4-D17: the scope check happens at registration, not at call
   // time. A token without `bananasaurs:read` gets a server without any of the
   // read tools or the resource — it cannot see them in `tools/list`

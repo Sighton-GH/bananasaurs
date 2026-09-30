@@ -33,6 +33,7 @@ import {
   type McpGuildPort,
 } from './tools/guild.js';
 import { MCP_READ_LIST_THREADS } from './read-audit.js';
+import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
@@ -182,6 +183,15 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
+  it('sends MCP_SERVER_INSTRUCTIONS at initialize, exactly', async () => {
+    const { client, close } = await connectPair(principalWith([GUILD]));
+    try {
+      expect(client.getInstructions()).toBe(MCP_SERVER_INSTRUCTIONS);
+    } finally {
+      await close();
+    }
+  });
+
   it('lists send_message first, alongside the sixteen read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
