@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { braveWebSearch } from './brave-search.js';
+import { SearchHttpError } from './web-search.js';
 
 const ok = (value: unknown): Response =>
   new Response(JSON.stringify(value), {
@@ -36,11 +37,16 @@ describe('braveWebSearch (ADR 0066)', () => {
     expect(new Headers(init?.headers).get('x-subscription-token')).toBe('brave-secret');
   });
 
-  it('throws a short error on a failed request', async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(new Response('{}', { status: 429 }));
-    await expect(braveWebSearch({ apiKey: 'k', fetch }, 'q')).rejects.toThrow('HTTP 429');
+  it('throws a SearchHttpError on a failed request without reading the body', async () => {
+    const response = new Response('{}', { status: 429 });
+    const jsonSpy = vi.spyOn(response, 'json');
+    const textSpy = vi.spyOn(response, 'text');
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    const err = await braveWebSearch({ apiKey: 'k', fetch }, 'q').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SearchHttpError);
+    expect((err as SearchHttpError).status).toBe(429);
+    expect(jsonSpy).not.toHaveBeenCalled();
+    expect(textSpy).not.toHaveBeenCalled();
   });
 
   it('treats a response without web results as no results', async () => {
