@@ -92,7 +92,7 @@ const providerConfig = z.object({
   enabled: z.boolean(),
   costClass: z.enum(['free', 'paid', 'unknown']).optional(),
   fallbackModels: z.array(z.string().trim().min(1).max(200)).max(2).optional(),
-  searchApiKey: z.string().min(1).max(1000).optional(),
+  searchSource: z.enum(['brave', 'tavily']).optional(),
   searchEnabled: z.boolean().optional(),
 });
 const memory = z.object({
@@ -234,16 +234,20 @@ export const registerAssistantRoutes = (
       !isInstanceOwner(deps, session)
     )
       return reply.status(403).send({ error: 'owner-only', field: 'costClass' });
-    // ADR 0066: web search sends queries to a new outside service, so turning
-    // it on and replacing its key are the owner's call, like the cost class.
+    // ADR 0066 and ADR 0120: web search sends queries to a new outside
+    // service, so turning it on and changing its source are the owner's call,
+    // like the cost class. Sending the stored source back is not a change.
     if (!isInstanceOwner(deps, session)) {
       if (
         parsed.data.searchEnabled !== undefined &&
         parsed.data.searchEnabled !== (before.webSearch?.enabled ?? false)
       )
         return reply.status(403).send({ error: 'owner-only', field: 'searchEnabled' });
-      if (parsed.data.searchApiKey !== undefined)
-        return reply.status(403).send({ error: 'owner-only', field: 'searchApiKey' });
+      if (
+        parsed.data.searchSource !== undefined &&
+        parsed.data.searchSource !== (before.webSearch?.source ?? 'brave')
+      )
+        return reply.status(403).send({ error: 'owner-only', field: 'searchSource' });
     }
     deps.assistantProviderConfig.save(parsed.data, deps.now());
     const after = deps.assistantProviderConfig.status();
@@ -260,6 +264,7 @@ export const registerAssistantRoutes = (
         costClass: before.costClass,
         fallbackModels: before.fallbackModels ?? [],
         searchEnabled: before.webSearch?.enabled ?? false,
+        searchSource: before.webSearch?.source ?? 'brave',
       },
       after: {
         provider: after.provider,
@@ -269,7 +274,7 @@ export const registerAssistantRoutes = (
         keyReplaced: parsed.data.apiKey !== undefined,
         fallbackModels: after.fallbackModels ?? [],
         searchEnabled: after.webSearch?.enabled ?? false,
-        searchKeyReplaced: parsed.data.searchApiKey !== undefined,
+        searchSource: after.webSearch?.source ?? 'brave',
       },
     });
     return reply.status(200).send(after);
