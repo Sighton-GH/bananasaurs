@@ -1245,6 +1245,7 @@ function WebSearchCard({
                     value="brave"
                     checked={source === 'brave'}
                     onChange={() => setSource('brave')}
+                    disabled={!isOwner}
                   />
                   Brave Search
                 </label>
@@ -1278,6 +1279,7 @@ function WebSearchCard({
                     value="tavily"
                     checked={source === 'tavily'}
                     onChange={() => setSource('tavily')}
+                    disabled={!isOwner}
                   />
                   Tavily
                 </label>
@@ -1343,6 +1345,10 @@ function WebSearchCard({
             </DataState>
             <form
               className="grid gap-3"
+              // Native min/step validation would stop the submit before the
+              // inline limit check below runs; the card reports bad limits
+              // itself so the owner always sees the same message.
+              noValidate
               onSubmit={(event) => {
                 event.preventDefault();
                 void add();

@@ -78,11 +78,21 @@ const assistantBody = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const SEARCH_KEYS_URL = '/api/assistant/search-keys';
+
+const searchKeysBody = (overrides: Record<string, unknown> = {}) => ({
+  enabled: false,
+  source: 'brave',
+  keys: [],
+  ...overrides,
+});
+
 const stubPage = (setup: unknown, assistant: unknown = assistantBody()) =>
   stubFetch([
     { url: ASSISTANT_PROVIDERS_URL, body: setup },
     { url: '/api/assistant', body: assistant },
     { url: '/api/providers/eligibility', body: { warnings: [] } },
+    { url: SEARCH_KEYS_URL, body: searchKeysBody() },
   ]);
 
 const inputOf = (element: HTMLElement): HTMLInputElement => {
@@ -149,6 +159,7 @@ describe('ProvidersPage sections', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
     ]);
     const { hook } = memoryLocation({ path: '/providers' });
     renderWithSession(
@@ -277,18 +288,23 @@ describe('ProvidersPage API keys', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'POST', url: ASSISTANT_KEYS_URL, body: { keyId: 'key_new' } },
     ]);
     renderWithSession(<ProvidersPage />);
-    await screen.findByRole('heading', { name: 'API keys' });
-    fireEvent.change(selectOf(screen.getByLabelText('Service')), { target: { value: 'gemini' } });
-    fireEvent.change(inputOf(screen.getByLabelText('Label')), { target: { value: 'Spare' } });
-    fireEvent.change(inputOf(screen.getByLabelText('API key')), {
+    const section = (await screen.findByRole('heading', { name: 'API keys' })).closest('section');
+    if (!(section instanceof HTMLElement)) throw new Error('no API keys section');
+    const inSection = within(section);
+    fireEvent.change(selectOf(inSection.getByLabelText('Service')), {
+      target: { value: 'gemini' },
+    });
+    fireEvent.change(inputOf(inSection.getByLabelText('Label')), { target: { value: 'Spare' } });
+    fireEvent.change(inputOf(inSection.getByLabelText('API key')), {
       target: { value: 'sk-spare-key' },
     });
-    fireEvent.click(screen.getByRole('radio', { name: 'Free' }));
+    fireEvent.click(inSection.getByRole('radio', { name: 'Free' }));
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Add key' }));
+      fireEvent.click(inSection.getByRole('button', { name: 'Add key' }));
     });
     const post = mock.mock.calls.find(
       (c) => (c[0] as string) === ASSISTANT_KEYS_URL && c[1]?.method === 'POST',
@@ -307,6 +323,7 @@ describe('ProvidersPage API keys', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PATCH', url: assistantKeyUrl('key_a'), body: { ok: true } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -327,6 +344,7 @@ describe('ProvidersPage API keys', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PATCH', url: assistantKeyUrl('key_a'), body: { ok: true } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -353,6 +371,8 @@ describe('ProvidersPage API keys', () => {
         return new Response(JSON.stringify(assistantBody()), { status: 200 });
       if (method === 'GET' && url === '/api/providers/eligibility')
         return new Response(JSON.stringify({ warnings: [] }), { status: 200 });
+      if (method === 'GET' && url === SEARCH_KEYS_URL)
+        return new Response(JSON.stringify(searchKeysBody()), { status: 200 });
       if (method === 'PATCH' && url === assistantKeyUrl('key_a')) {
         patchAttempts += 1;
         return patchAttempts === 1
@@ -384,6 +404,7 @@ describe('ProvidersPage API keys', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'DELETE', url: assistantKeyUrl('key_a'), body: { ok: true } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -446,6 +467,7 @@ describe('ProvidersPage model order', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: twoRows() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 2 } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -471,6 +493,7 @@ describe('ProvidersPage model order', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: twoRows() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 2 } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -569,6 +592,7 @@ describe('ProvidersPage model order', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'POST',
         url: MODEL_CHAIN_TEST_URL,
@@ -592,6 +616,7 @@ describe('ProvidersPage model order', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: twoRows() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'POST', url: PROVIDER_MODELS_URL, body: MODELS },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -607,6 +632,7 @@ describe('ProvidersPage GitHub token', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: GITHUB_TOKEN_URL, body: { ok: true, tokenConfigured: true } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -637,6 +663,7 @@ describe('ProvidersPage GitHub token', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody({ github: { tokenConfigured: true } }) },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: GITHUB_TOKEN_URL, body: { ok: true, tokenConfigured: false } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -657,6 +684,7 @@ describe('ProvidersPage terms and web search', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'PUT',
         url: '/api/providers/gemini/terms',
@@ -701,6 +729,7 @@ describe('ProvidersPage terms and web search', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'PUT',
         url: '/api/providers/gemini/terms',
@@ -734,6 +763,7 @@ describe('ProvidersPage terms and web search', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'PUT',
         url: '/api/providers/gemini/terms',
@@ -769,16 +799,8 @@ describe('ProvidersPage terms and web search', () => {
     expect(screen.queryByText('Terms record saved')).toBeNull();
   });
 
-  const SEARCH_KEYS_URL = '/api/assistant/search-keys';
   const searchKeyUrl = (keyId: string) => `${SEARCH_KEYS_URL}/${encodeURIComponent(keyId)}`;
   const searchKeyMoveUrl = (keyId: string) => `${searchKeyUrl(keyId)}/move`;
-
-  const searchKeysBody = (overrides: Record<string, unknown> = {}) => ({
-    enabled: false,
-    source: 'brave',
-    keys: [],
-    ...overrides,
-  });
 
   const ownerAssistantWithSearch = (overrides: Record<string, unknown> = {}) =>
     assistantBody({
@@ -950,7 +972,10 @@ describe('ProvidersPage terms and web search', () => {
       apiKey: 'tvly-secret',
       monthlyLimit: 1000,
     });
-    expect((within(card).getByLabelText('Key') as HTMLInputElement).value).toBe('');
+    // Saving reloads the page data, which replaces the card's DOM node, so
+    // re-query it before asserting the write-only key field was cleared.
+    const freshCard = await webCard();
+    expect((within(freshCard).getByLabelText('Key') as HTMLInputElement).value).toBe('');
   });
 
   it('a blank monthly limit posts null and zero shows an inline error without posting', async () => {
@@ -1164,6 +1189,7 @@ describe('ProvidersPage terms and web search', () => {
         }),
       },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
     ]);
     renderWithSession(<ProvidersPage />);
     const card = await webCard();
@@ -1188,6 +1214,7 @@ describe('ProvidersPage row test refusal', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'POST',
         url: MODEL_CHAIN_TEST_URL,
@@ -1217,6 +1244,7 @@ describe('Task 10 (h): AI setup Test renders a classified failure', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'POST',
         url: MODEL_CHAIN_TEST_URL,
@@ -1297,6 +1325,7 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody({ chain: [limitedRow()] }) },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -1321,6 +1350,7 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       {
         method: 'PUT',
         url: MODEL_CHAIN_URL,
@@ -1350,6 +1380,7 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -1377,6 +1408,7 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
       { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
     ]);
     renderWithSession(<ProvidersPage />);
