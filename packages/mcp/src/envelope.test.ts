@@ -118,7 +118,9 @@ describe('evidence withholding (ADR 0110)', () => {
     expect(text).toContain('message: 333333333333333333');
   });
   it('passes clean content through unchanged', () => {
-    expect(envelope([item('the CAD file is in the drive')])).toContain('the CAD file is in the drive');
+    expect(envelope([item('the CAD file is in the drive')])).toContain(
+      'the CAD file is in the drive',
+    );
   });
   it('withholds secrets', () => {
     expect(envelope([item('my key is sk-abcdefghijklmnop1234')])).not.toContain(

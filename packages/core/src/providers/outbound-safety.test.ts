@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { GenerateTextRequest } from './contracts.js';
-import { assertOutboundRequestSafe, detectWithheldEvidence, scanOutboundRequest } from './outbound-safety.js';
+import {
+  assertOutboundRequestSafe,
+  detectWithheldEvidence,
+  scanOutboundRequest,
+} from './outbound-safety.js';
 
 const request = (text: string): GenerateTextRequest => ({
   model: 'test',
