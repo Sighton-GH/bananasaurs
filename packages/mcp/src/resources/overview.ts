@@ -67,7 +67,9 @@ const countByMode = (
 };
 
 /** One channel row in the card's JSON: names escaped, topics omitted. */
-const channelRow = (channel: McpGuildChannel): Record<string, unknown> => ({
+const channelRow = (
+  channel: McpGuildChannel,
+): { readonly id: string; readonly name: string; readonly type: string; readonly archive: boolean } => ({
   id: channel.id,
   name: safeName(channel.name),
   type: channel.type,
