@@ -67,7 +67,7 @@ const fakeStore = (
     keys?: FakeKey[];
     chain?: { keyId: string; model: string; rpmLimit?: number | null; rpdLimit?: number | null }[];
     eligibility?: Record<string, { trainsOnInput: string; productionUseAllowed: boolean }>;
-    webSearch?: { keyConfigured: boolean; enabled: boolean };
+    webSearch?: { keyConfigured: boolean; enabled: boolean; source: 'brave' | 'tavily' };
     githubConfigured?: boolean;
     modelUsage?: (entry: {
       readonly keyId: string;
@@ -456,7 +456,7 @@ describe('GET shape and ledger reset', () => {
     deps = {
       ...deps,
       assistantProviderConfig: fakeStore({
-        webSearch: { keyConfigured: true, enabled: true },
+        webSearch: { keyConfigured: true, enabled: true, source: 'brave' },
         githubConfigured: true,
       }) as unknown as HttpDeps['assistantProviderConfig'],
       assistantAllowanceResetsAt: () => undefined,
@@ -486,7 +486,7 @@ describe('GET shape and ledger reset', () => {
         model: string;
         status: string;
       }[];
-      webSearch: { keyConfigured: boolean; enabled: boolean };
+      webSearch: { keyConfigured: boolean; enabled: boolean; source: 'brave' | 'tavily' };
       github: { tokenConfigured: boolean };
     }>();
     expect(body.providers.map((p) => p.provider).sort()).toEqual([
@@ -510,7 +510,7 @@ describe('GET shape and ledger reset', () => {
         status: 'ready',
       },
     ]);
-    expect(body.webSearch).toEqual({ keyConfigured: true, enabled: true });
+    expect(body.webSearch).toEqual({ keyConfigured: true, enabled: true, source: 'brave' });
     expect(body.github).toEqual({ tokenConfigured: true });
   });
 
