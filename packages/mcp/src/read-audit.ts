@@ -38,6 +38,7 @@ export const MCP_READ_LIST_JOBS = 'mcp.read.list_jobs';
 export const MCP_READ_GET_JOB = 'mcp.read.get_job';
 export const MCP_READ_GET_MEMBER = 'mcp.read.get_member';
 export const MCP_READ_SEARCH_MEMBERS = 'mcp.read.search_members';
+export const MCP_READ_GET_SERVER_CONTEXT = 'mcp.read.get_server_context';
 
 /**
  * One durable audit row for a read that returned member content or
