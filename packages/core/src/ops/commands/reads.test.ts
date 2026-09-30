@@ -897,4 +897,20 @@ describe('bananasaurs doctor dashboard access (S13-D5)', () => {
     expect(res.text).not.toContain('dashboard access');
     expect(res.data).toMatchObject({ ok: true });
   });
+
+  it('advises when the instance runs with BANANASAURS_ENV=development', async () => {
+    const res = await drive(doctorCommand, healthy, {}, { env: 'development' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('BANANASAURS_ENV is development on this instance');
+    // An advisory, never a problem count.
+    expect(res.text).not.toContain('doctor: PROBLEMS FOUND');
+  });
+
+  it('says nothing about the env when the instance runs in production', async () => {
+    const res = await drive(doctorCommand, healthy, {}, { env: 'production' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('BANANASAURS_ENV is development');
+  });
 });

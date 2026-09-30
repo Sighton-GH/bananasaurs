@@ -382,6 +382,16 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       }
     }
 
+    // Instance-level beside the dashboard-access finding above: a development
+    // env pretty-prints logs instead of emitting JSON, so a production bot
+    // running on it is a silent observability gap. Advisory, never a problem
+    // count — a dev host running development is the intended state.
+    if (ctx.instance.env === 'development') {
+      advisories.push(
+        'BANANASAURS_ENV is development on this instance - logs are pretty-printed instead of JSON. If this is the production bot, set BANANASAURS_ENV=production in .env and restart.',
+      );
+    }
+
     if (surface.ok) {
       clear.push('public surface: the dashboard is not publicly reachable');
     } else {
