@@ -17,6 +17,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import {
   createMcpServer,
   GUILD_REFUSAL_MESSAGE,
+  MEMBER_LISTING_CAP,
   type McpArchiveMessage,
   type McpArchivePort,
   type McpGuildHealth,
@@ -24,6 +25,8 @@ import {
   type McpHealthPort,
   type McpJob,
   type McpJobsPort,
+  type McpMemberProfile,
+  type McpMembersPort,
   type McpPrincipal,
   type McpReadAuditPort,
   type McpRecordsPort,
@@ -594,6 +597,68 @@ const jobsPortFor = (deps: HttpDeps): McpJobsPort => ({
 });
 
 /**
+ * The `McpMembersPort` behind `get_member` and `search_members`, field by
+ * field like `healthPortFor` above. `listAllMembers` pages the REST listing
+ * (`guild.members.list`, ruling M4-D10 — the 50-entry
+ * `GuildMemberManager` cap makes a cache read silently wrong) at Discord's
+ * own per-page maximum of 1000 with `cache: false`, following the `after`
+ * cursor until a short page or `MEMBER_LISTING_CAP` (then truncated, sliced
+ * to the cap). Each member is projected field by field — the guild-id
+ * (@everyone) role dropped from `roleIds` like `list_members`, no presence,
+ * no status, no activity — never spread from the discord.js object.
+ * `lastMessageAt` reads the archive's newest message time per author, so the
+ * tools can answer "hasn't posted in N days" in one call. A guild missing
+ * from the cache throws the shared refusal, the same as every guild method.
+ * A fault leaves one allowlisted-fields error line via the logged calls
+ * above, never a member name (rule 4).
+ */
+const membersPortFor = (deps: HttpDeps, client: Client): McpMembersPort => ({
+  listAllMembers: (guildId) =>
+    loggedCallAsync(deps.logger, 'listAllMembers', async () => {
+      const guild = client.guilds.cache.get(guildId);
+      if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
+      const collected: McpMemberProfile[] = [];
+      let after: string | undefined;
+      for (;;) {
+        const page = await guild.members.list({
+          limit: 1000,
+          ...(after !== undefined ? { after } : {}),
+          // Not a cache read (ruling M4-D10): paginated REST, and `false` so
+          // the listing does not churn the 50-entry member cache either.
+          cache: false,
+        });
+        for (const member of page.values()) {
+          collected.push({
+            id: member.id,
+            username: member.user.username,
+            displayName: member.displayName,
+            nickname: member.nickname ?? undefined,
+            // Same @everyone drop as `listMembers` above: the manager inserts
+            // the guild id into every member's role cache, while `list_roles`
+            // deliberately hides it.
+            roleIds: [...member.roles.cache.keys()].filter((id) => id !== guildId).sort(),
+            // Projected field by field: no presence, no activity, no status.
+            joinedAt: member.joinedAt?.getTime(),
+          });
+        }
+        if (collected.length >= MEMBER_LISTING_CAP) {
+          return { members: collected.slice(0, MEMBER_LISTING_CAP), truncated: true };
+        }
+        if (page.size < 1000) break;
+        const last = [...page.keys()].pop();
+        if (last === undefined) break;
+        after = last;
+      }
+      return { members: collected, truncated: false };
+    }),
+  lastMessageAt: (guildId, authorIds) =>
+    loggedCall(deps.logger, 'lastMessageAt', () =>
+      archiveRepo.lastMessageAtByAuthor(deps.scopes.forGuild(guildId), [...authorIds]),
+    ),
+  now: deps.now,
+});
+
+/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -940,6 +1005,7 @@ export const registerMcpRoutes = (
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
+      members: membersPortFor(deps, client),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

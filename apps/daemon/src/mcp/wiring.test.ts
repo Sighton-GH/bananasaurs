@@ -284,7 +284,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all fourteen tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all sixteen tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -292,7 +292,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(16);
     expect(names).toEqual([
       'get_health',
       'search_messages',
@@ -308,6 +308,8 @@ describe('/mcp behind the bearer guard', () => {
       'get_server_overview',
       'list_jobs',
       'get_job',
+      'get_member',
+      'search_members',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -1722,6 +1724,146 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       );
       expect(refused.isError).toBe(true);
       expect(refused.text).toBe(GUILD_REFUSAL_MESSAGE);
+    } finally {
+      await guildApp.close();
+    }
+  });
+});
+
+/**
+ * `get_member` / `search_members` page past 1,000 through the real stack —
+ * Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * `membersPortFor` — against a fake discord.js guild whose `members.list`
+ * serves scripted pages.
+ *
+ * The load-bearing assertions are the `after` cursors and the call count: a
+ * port that read `members.cache` would make no `members.list` call at all,
+ * and one that stopped at the first page would answer 1,000 of 2,300.
+ */
+describe('/mcp member tools page past 1000', () => {
+  const ROLE = '344444444444444444';
+
+  /** A member shaped like the real thing, for the stubbed `members.list`. */
+  const pagedMember = (id: string): GuildMember =>
+    ({
+      id,
+      user: { id, username: `user-${id.slice(-4)}` },
+      displayName: `User ${id.slice(-6)}`,
+      nickname: null,
+      roles: { cache: new Collection([[ROLE, undefined]]) },
+      joinedAt: new Date('2024-05-01T00:00:00.000Z'),
+    }) as unknown as GuildMember;
+
+  /** 18-digit ids: same length, so lexicographic order is numeric order. */
+  const pageIdOf = (n: number): string => String(400000000000000000n + BigInt(n));
+
+  const buildPagedClient = (): { client: Client; calls: unknown[]; serve: (sizes: number[]) => void } => {
+    const client = new Client(buildClientOptions(() => '123456789012345678'));
+    (client as unknown as { guilds: { _add: (data: object) => Guild } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('fake guild did not land in the cache');
+    const calls: unknown[] = [];
+    let made = 0;
+    const serve = (sizes: number[]): void => {
+      guild.members.list = async (options?: unknown) => {
+        calls.push(options);
+        const size = sizes[calls.length - 1] ?? 1000;
+        const members: GuildMember[] = [];
+        for (let i = 0; i < size; i += 1) {
+          made += 1;
+          members.push(pagedMember(pageIdOf(made)));
+        }
+        return new Collection(members.map((m) => [m.id, m] as const));
+      };
+    };
+    return { client, calls, serve };
+  };
+
+  const buildGuildApp = (discordClient: Client): FastifyInstance =>
+    createServer({
+      deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, discordClient, fakeDiscord);
+      },
+    });
+
+  const memberCall = (target: FastifyInstance, accessToken: string, args: Record<string, unknown>) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'search_members', arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('pages 1000, 1000, then 300 into 2,300 members with the right after cursors', async () => {
+    const { client: discordClient, calls, serve } = buildPagedClient();
+    serve([1000, 1000, 300]);
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (await memberCall(guildApp, accessToken, { guildId: '111111111111111111' })).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('2300 members match');
+      expect(found.text).not.toContain('capped at 5,000');
+      expect(calls).toHaveLength(3);
+      expect(calls[0]).toMatchObject({ limit: 1000, cache: false });
+      expect(calls[0] as Record<string, unknown>).not.toHaveProperty('after');
+      // Page ids run made = 1..2300: page one ends at id #1000, page two at #2000.
+      expect(calls[1]).toMatchObject({ limit: 1000, cache: false, after: pageIdOf(1000) });
+      expect(calls[2]).toMatchObject({ limit: 1000, cache: false, after: pageIdOf(2000) });
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('stops at 5,000 with truncated:true when every page is full', async () => {
+    const { client: discordClient, calls, serve } = buildPagedClient();
+    serve([]);
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (await memberCall(guildApp, accessToken, { guildId: '111111111111111111' })).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('5000 members match');
+      expect(found.text).toContain('member listing was capped at 5,000');
+      expect(calls).toHaveLength(5);
+      for (const options of calls) {
+        expect(options).toMatchObject({ limit: 1000, cache: false });
+      }
     } finally {
       await guildApp.close();
     }
