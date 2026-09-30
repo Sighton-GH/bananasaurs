@@ -566,6 +566,10 @@ describe('migration 0036 adds the fallback model, web search and assistant setti
         fallback_models_json: '[]',
         search_api_key_enc: null,
         search_enabled: 0,
+        // ADR 0120 (migration 0090) adds this column after this test's own
+        // migration; the row it seeded predates it, so it reads back the
+        // rebuild default.
+        search_source: 'brave',
         // ADR 0075 (migration 0038) adds this column after this test's own
         // migration; the row it seeded predates it, so it reads back null.
         github_token_enc: null,
