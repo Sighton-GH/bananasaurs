@@ -45,7 +45,7 @@ is never throttled by Bananasaurs during normal work.
 | D7 | Edit/delete | Any message the bot authored, except role-panel messages and task anchors. |
 | D8 | Self-assign roles | Full panel management, using existing or new roles. |
 | D9 | Extras | Discord events + native polls; pins + reactions; unanswered-question report. **Not** channel admin. |
-| D10 | Send targets | **Default all** channels/threads/forums the bot can post in, switchable to allowlist. Threads inherit their parent. |
+| D10 | Send targets | Anywhere in the dashboard's existing **send scope** (ADR 0047: channel or category rows; public threads and forum posts inherit their parent) **and** where the bot has live permission to post. No new send policy. Private threads the MCP creates under an in-scope parent get an explicit row. |
 | D11 | Bulk roles | Yes: preview, confirm, 100 members per call, run as a durable job. |
 | D12 | DMs | No. |
 | D13 | Rate caps | High backstops only (§5.4); Discord's own limits bind first. |
@@ -80,7 +80,7 @@ One function per action kind. Each runs the same fixed pipeline:
 1. **Resolve target** from live Discord state (channel/thread/role/member/
    message). Accept names as well as ids (§4.3); ambiguity is a refusal that lists
    candidates.
-2. **Policy.** Send-target policy (D10), role policy (D1/D2), the dangerous-
+2. **Policy.** Send scope + live bot permission (D10), role policy (D1/D2), the dangerous-
    permission floor, and protected messages (panels, task anchors) for edit/delete.
 3. **Killswitch / breaker / readonly.** Reuse the existing ones.
 4. **Rate cap** per kind (§5.4).
@@ -172,7 +172,7 @@ entity shows `name (id)`.
 | `read_channel_history` / `search_messages` | Add `authorFilter: "bot" \| "members" \| userId`. `"bot"` = messages authored by Bananasaurs. |
 | message results | Add metadata: `replyTo`, `threadId`, `pinned`, `reactions:[{emoji,count}]` (needs §7 archive columns). |
 | `list_threads` | Includes private threads that pass D6, marked `private`. |
-| `list_unanswered` | **New (D9).** Messages in chosen channels (default: every channel whose name contains `help`) older than N hours (default 12), with no reply, no thread reply, and no reaction from anyone except the author. |
+| `list_unanswered` | **New (D9).** Archived messages that mention the **@help role** (any channel in archive scope), older than N hours (default 12), with no reply and no thread reply from anyone but the author. The role is found by name `help` or set with `helpRole`. Needs the archive's mentioned-role ids (§7). |
 | `list_scheduled` | **New.** The owner's scheduled sends (§5.3). |
 | `list_events` | **New.** Discord scheduled events. |
 
@@ -284,12 +284,12 @@ after being allowlisted stops being grantable. `@everyone` and managed
 
 - `mcp_role_policy(guild_id PK, grant_mode 'below-bot'|'allowlist', ping_mode 'below-bot'|'allowlist')`
 - `mcp_role_allowlist(guild_id, role_id, purpose 'grant'|'ping', …)`, unique.
-- `mcp_send_policy(guild_id PK, mode 'all'|'allowlist')`. The existing
-  `mcp_send_allowlist` is reused for allowlist mode. **Migration default:
-  `all`** (D10). That is a behaviour change from today's empty allowlist, and
-  the ADR must say so.
+- Send targets use the existing `mcp_send_allowlist` send scope (ADR 0047),
+  unchanged, plus a live bot-permission check (SendMessages, and
+  SendMessagesInThreads / CreatePublicThreads / CreatePrivateThreads as the
+  action needs).
 
-All three are editable through the existing `bananasaurs mcp` CLI and the
+Both role tables are editable through the existing `bananasaurs mcp` CLI and the
 dashboard's MCP page. Only the policy controls are added (current-release
 dashboard rule).
 
@@ -311,9 +311,9 @@ owner account. Content is fetched live and
 ## 7. Storage (migrations reserved 0080–0089)
 
 - `mcp_actions`: the ledger (§3.1), with `undo_json`, `kind` and `status`.
-- `mcp_role_policy`, `mcp_role_allowlist`, `mcp_send_policy`
+- `mcp_role_policy`, `mcp_role_allowlist`
 - `mcp_private_threads(guild_id, thread_id, created_action_id)`
-- `archive_messages` + `reply_to_message_id`, `pinned` (ingestion sets them
+- `archive_messages` + `reply_to_message_id`, `pinned`, `mentioned_role_ids` (ingestion sets them
   from `message.reference` and pin events)
 - `archive_reactions(guild_id, message_id, emoji_key, count)`, maintained by the
   existing reaction events. **Verify** the reaction intent is already enabled
@@ -370,7 +370,7 @@ whole-branch review, and an ADR written before code.
 |---|---|---|
 | **1 — fixes + reads** | Overview JSON; `list_jobs`/`get_job`; health failed-jobs; injection filter; names-or-ids resolver; `get_member`/`search_members`; `authorFilter`; doctor env warning; scope vocabulary (`roles`, `tasks`); `register*` refactor | 0110 injection filter + output format; 0111 scope split |
 | **2 — context + deep reads** | Server `instructions` (incl. Markdown); `get_server_context`; resources; `read_thread`; `read_digest`; archive reply/pin/reaction metadata; `list_unanswered` | 0112 private-thread read (D6) |
-| **3 — message writes** | `McpActionGateway` + `mcp_actions` + undo; send policy (default all); send upgrades (reply/thread/embeds/pings); threads; forum posts; edit/delete; pins/reactions; archive/lock thread | 0113 action gateway + send policy default-all; 0114 role pings |
+| **3 — message writes** | `McpActionGateway` + `mcp_actions` + undo; send scope + live permission check; send upgrades (reply/thread/embeds/pings); threads; forum posts; edit/delete; pins/reactions; archive/lock thread | 0113 action gateway + send targets; 0114 role pings |
 | **4 — roles + panels** | Role policy + floor; grant/remove; bulk with confirm token + job; create/edit role; panel CRUD | 0115 amends ADR 0044 §4 (roles) |
 | **5 — schedule, events, polls** | `schedule_message` on reminders; events; polls; caps in tuning settings; dashboard MCP-page policy controls | 0116 scheduled sends are fixed text |
 
@@ -399,10 +399,6 @@ of Claude; webhooks; attachments/images in posts; voice.
 
 ## 12. Open items for review
 
-- **O1.** Default send policy `all` widens today's behaviour for existing
-  tokens as soon as slice 3 deploys. Accept, or hold `allowlist` until the
-  owner flips it?
-- **O2.** `list_unanswered` default channel match is "name contains `help`".
-  Should it be a named list instead?
-- **O3.** Bulk-role cap: 100 per call. Is a whole-team semester rollover
-  bigger than that?
+Resolved 2026-09-29: send targets = dashboard send scope ∩ live bot
+permission (D10); `list_unanswered` = unreplied @help mentions; the bulk cap of
+100 per call stands.
