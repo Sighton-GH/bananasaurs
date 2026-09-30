@@ -3,7 +3,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId } from '@bananasaurs/core';
-import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  MCP_ROLES_SCOPE,
+  MCP_TASKS_SCOPE,
+  type McpPrincipal,
+} from './scope.js';
 import type { McpReadAuditPort } from './read-audit.js';
 import { createMcpServer } from './server.js';
 import {
@@ -273,6 +278,35 @@ describe('createMcpServer', () => {
     try {
       const list = await client.listTools();
       expect(list.tools.map((tool) => tool.name)).not.toContain(SEND_MESSAGE_TOOL_NAME);
+    } finally {
+      await close();
+    }
+  });
+
+  it('(ADR 0111) a roles-only principal sees no tools and no resources', async () => {
+    // No tool registers under the roles scope yet (slice 4 does that), so a
+    // token carrying only `bananasaurs:roles` must see neither the read/send
+    // tools nor the overview resource.
+    const { client, close } = await connectPair(principalWith([GUILD], [MCP_ROLES_SCOPE]));
+    try {
+      const list = await client.listTools();
+      expect(list.tools).toHaveLength(0);
+      await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('(ADR 0111) a tasks-only principal sees no tools and no resources', async () => {
+    // No tool registers under the tasks scope on this branch (the
+    // task-tracking branch switches its writes to it when it merges), so a
+    // token carrying only `bananasaurs:tasks` must see neither the read/send
+    // tools nor the overview resource.
+    const { client, close } = await connectPair(principalWith([GUILD], [MCP_TASKS_SCOPE]));
+    try {
+      const list = await client.listTools();
+      expect(list.tools).toHaveLength(0);
+      await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();
     }
