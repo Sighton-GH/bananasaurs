@@ -277,8 +277,14 @@ const bigFixture = (): Parameters<typeof buildOverviewCard>[0] => {
 
 describe('overview tool on the MCP server', () => {
   it('TEMPORARY step 2 measurement: logs the old card size for bigFixture', () => {
+    const card = buildOverviewCard(bigFixture());
+    const lines = card.split('\n');
     // eslint-disable-next-line no-console
-    console.log(`OLD_OVERVIEW_CARD_LENGTH=${String(buildOverviewCard(bigFixture()).length)}`);
+    console.log(
+      `CARD_LEN=${String(card.length)} LINES=${String(lines.length)} ` +
+        `HEAD=${String(lines[0]?.length)} NOTE=${String(lines[1]?.length)} ` +
+        `JSON=${String(lines[2]?.length)}`,
+    );
   });
 
   it('answers get_server_overview through a tool call', async () => {
