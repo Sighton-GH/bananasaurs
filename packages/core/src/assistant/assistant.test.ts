@@ -388,6 +388,27 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
   });
 });
 
+describe('OUTPUT_RULES brevity, apologies and kindness (ADR 0094)', () => {
+  it('asks for the shortest reply and forbids follow-up offers', () => {
+    expect(OUTPUT_RULES).toContain('as short as possible');
+    expect(OUTPUT_RULES).toContain('Never end with an offer');
+  });
+
+  it('allows an apology only for a real, nameable mistake', () => {
+    expect(OUTPUT_RULES).toContain('Apologise only when you actually made a mistake');
+    expect(OUTPUT_RULES).toContain('Never as an opener or a reflex');
+  });
+
+  it('treats teasing and reactions as not being corrections', () => {
+    expect(OUTPUT_RULES).toContain('is not a correction');
+  });
+
+  it('asks for kindness and no defensiveness', () => {
+    expect(OUTPUT_RULES).toContain('Be kind and assume good faith');
+    expect(OUTPUT_RULES).toContain('never defensive');
+  });
+});
+
 describe('compileAssistantContext output rules (ADR 0085)', () => {
   const resource = (id: string, title: string) => ({
     id,
