@@ -6,14 +6,16 @@ import {
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
-import { structuredText } from '../structured.js';
+import { safeName, structuredText } from '../structured.js';
 import { MCP_READ_GET_JOB, MCP_READ_LIST_JOBS } from '../read-audit.js';
 import { registerReadTool, type ReadOutcome, type RegisterContext } from '../register.js';
 
 /**
  * `list_jobs` / `get_job` — the owner's "14 failed jobs" answer. Each job's
- * last error arrives with secrets redacted (`redactEvidenceText`); the list
- * carries a 500-char preview, the single-job read the full redacted text.
+ * last error arrives with secrets redacted (`redactEvidenceText`) and framed
+ * (`safeName`, so a quoted provider or Discord body cannot forge an envelope
+ * marker); the list carries a 500-char preview, the single-job read the full
+ * safe text.
  *
  * The port takes the already-resolved `GuildId`, never raw input (hard rule
  * 2). The daemon projects `OpsJobRow` field by field in
@@ -97,12 +99,16 @@ const refuseInvalidArgs = (): ReadOutcome => ({
 });
 
 const previewError = (err: string): string => {
-  const redacted = redactEvidenceText(err).text;
-  if (redacted.length <= JOB_ERROR_PREVIEW_MAX) return redacted;
-  return `${redacted.slice(0, JOB_ERROR_PREVIEW_MAX)}…`;
+  // Redacted, then framed like every other structured string (ADR 0110 §2):
+  // a handler's error can quote a provider or Discord body, so the preview
+  // must not carry an envelope marker or an injection phrase unfiltered.
+  // Truncation runs after escaping, on the final string.
+  const safe = safeName(redactEvidenceText(err).text);
+  if (safe.length <= JOB_ERROR_PREVIEW_MAX) return safe;
+  return `${safe.slice(0, JOB_ERROR_PREVIEW_MAX)}…`;
 };
 
-const fullError = (err: string): string => redactEvidenceText(err).text;
+const fullError = (err: string): string => safeName(redactEvidenceText(err).text);
 
 const listJobsInner = (
   principal: McpPrincipal,
