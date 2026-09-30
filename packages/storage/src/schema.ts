@@ -1787,6 +1787,8 @@ export const assistantProviderConfig = sqliteTable(
     /** ADR 0066: the Brave Search API key, sealed like `api_key_enc`. */
     searchApiKeyEnc: text('search_api_key_enc'),
     searchEnabled: integer('search_enabled').notNull().default(0),
+    /** ADR 0120: which search backend answers — `brave` keeps prior behaviour. */
+    searchSource: text('search_source').notNull().default('brave'),
     /** ADR 0075: the GitHub token, sealed like `api_key_enc`. */
     githubTokenEnc: text('github_token_enc'),
     updatedAt: integer('updated_at').notNull(),
@@ -1794,6 +1796,10 @@ export const assistantProviderConfig = sqliteTable(
   (t) => [
     check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
     check('assistant_provider_config_search_enabled_bool', boolCheck(t.searchEnabled)),
+    check(
+      'assistant_provider_config_search_source',
+      sql`${t.searchSource} IN ('brave','tavily')`,
+    ),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
@@ -1892,6 +1898,63 @@ export const assistantModelCalls = sqliteTable(
     ),
     index('assistant_model_calls_key_model_at').on(t.keyId, t.model, t.at),
     check('assistant_model_calls_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+// ADR 0120: several sealed search keys per source (brave/tavily), tried in the
+// owner's order. Instance-level like the provider keys they sit beside; each
+// key carries nullable sliding-window limits (null = no limit), enforced at
+// reserve time against `assistantSearchCalls`.
+export const assistantSearchKeys = sqliteTable(
+  'assistant_search_keys',
+  {
+    keyId: text('key_id').primaryKey(),
+    source: text('source').notNull(),
+    /** Owner-chosen label. Never a secret itself. */
+    label: text('label').notNull(),
+    apiKeyEnc: text('api_key_enc').notNull(),
+    enabled: integer('enabled').notNull().default(1),
+    /** Owner-set order within one source; dense but not unique (see moveSearchKey). */
+    position: integer('position').notNull().default(0),
+    monthlyLimit: integer('monthly_limit'),
+    dailyLimit: integer('daily_limit'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    check('assistant_search_keys_source', sql`${t.source} IN ('brave','tavily')`),
+    check('assistant_search_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
+    check('assistant_search_keys_enabled_bool', boolCheck(t.enabled)),
+    check(
+      'assistant_search_keys_monthly_limit',
+      sql`${t.monthlyLimit} IS NULL OR ${t.monthlyLimit} BETWEEN 1 AND 1000000`,
+    ),
+    check(
+      'assistant_search_keys_daily_limit',
+      sql`${t.dailyLimit} IS NULL OR ${t.dailyLimit} BETWEEN 1 AND 1000000`,
+    ),
+  ],
+);
+
+// ADR 0120: every web-search HTTP call is recorded here (key + time, plus
+// which guild spent the call), so a key at its daily/monthly limit is skipped
+// before calling. Instance-scoped because the key is shared; `guild_id`
+// records who spent the call (hard rule 2, as in `assistantModelCalls`);
+// rows older than 32 days are pruned on reserve.
+export const assistantSearchCalls = sqliteTable(
+  'assistant_search_calls',
+  {
+    callId: integer('call_id').primaryKey({ autoIncrement: true }),
+    keyId: text('key_id').notNull(),
+    at: integer('at').notNull(),
+    guildId: snowflake('guild_id').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantSearchKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    index('assistant_search_calls_key_at').on(t.keyId, t.at),
+    check('assistant_search_calls_guild_id_snowflake', snowflakeCheck(t.guildId)),
   ],
 );
 
