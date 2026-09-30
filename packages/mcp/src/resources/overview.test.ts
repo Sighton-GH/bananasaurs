@@ -285,12 +285,9 @@ const cardJsonOf = (text: string): Record<string, unknown> => {
 };
 
 describe('overview tool on the MCP server', () => {
-  it('the JSON card stays well under the evidence-block size', () => {
-    // The plan's /4 divisor assumed shorter rows than the specified
-    // rendering produces (measured 12105 against 31474, ~2.6x): the bound
-    // below is half, which still proves the shrink the task exists for.
+  it('the JSON card stays under a quarter of the evidence-block size', () => {
     expect(buildOverviewCard(bigFixture()).length).toBeLessThan(
-      Math.ceil(PRE_ADR_0110_CARD_LENGTH / 2),
+      Math.ceil(PRE_ADR_0110_CARD_LENGTH / 4),
     );
   });
 
@@ -376,7 +373,7 @@ describe('overview card JSON (ADR 0110)', () => {
       },
     ]);
     expect(data['uncategorised']).toEqual([
-      { id: '777777777777777777', name: 'lounge', type: 'GuildVoice', archive: false },
+      { id: '777777777777777777', name: 'lounge', type: 'GuildVoice' },
     ]);
   });
 
@@ -402,7 +399,7 @@ describe('overview card JSON (ADR 0110)', () => {
       {
         id: '000000000000000001',
         name: '',
-        channels: [{ id: '999999999999999999', name: 'orphan', type: 'GuildText', archive: false }],
+        channels: [{ id: '999999999999999999', name: 'orphan', type: 'GuildText' }],
       },
     ]);
     expect(data['uncategorised']).toEqual([]);
@@ -412,15 +409,13 @@ describe('overview card JSON (ADR 0110)', () => {
     expect(buildOverviewCard(smallInput())).not.toContain('plan the picnic');
   });
 
-  it('lists roles with hex colours, panels and rule counts', () => {
+  it('lists roles highest-first as id and name, panels and rule counts', () => {
     const data = cardJsonOf(buildOverviewCard(smallInput()));
     expect(data['roles']).toEqual([
       {
         id: '666666666666666666',
         name: 'organizer',
-        position: 3,
-        color: '#000000',
-        managedByBananasaurs: true,
+        managed: true,
       },
     ]);
     expect(data['panels']).toEqual([{ id: 'roles-panel' }]);
@@ -429,6 +424,36 @@ describe('overview card JSON (ADR 0110)', () => {
       observe: { total: 0, enabled: 0 },
       enforce: { total: 1, enabled: 1 },
     });
+  });
+
+  it('an unmanaged role carries no managed key', () => {
+    const input = smallInput();
+    const data = cardJsonOf(
+      buildOverviewCard({
+        ...input,
+        roles: [
+          {
+            id: '666666666666666666',
+            name: 'organizer',
+            position: 3,
+            color: 0,
+            managedByBananasaurs: true,
+          },
+          {
+            id: '777777777777777777',
+            name: 'member',
+            position: 1,
+            color: 0,
+            managedByBananasaurs: false,
+          },
+        ],
+      }),
+    );
+    // Highest position first; only the managed role carries the key.
+    expect(data['roles']).toEqual([
+      { id: '666666666666666666', name: 'organizer', managed: true },
+      { id: '777777777777777777', name: 'member' },
+    ]);
   });
 
   it('bigFixture groups six categories of ten with sixty roles', () => {

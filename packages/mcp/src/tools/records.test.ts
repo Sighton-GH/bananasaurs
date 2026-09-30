@@ -497,9 +497,7 @@ describe('get_server_overview reports the gateway scalar, not the listing size',
       {
         id: '666666666666666666',
         name: 'organizer',
-        position: 3,
-        color: '#000000',
-        managedByBananasaurs: true,
+        managed: true,
       },
     ]);
     expect(data['panels']).toEqual([{ id: 'roles-panel' }, { id: 'welcome' }]);

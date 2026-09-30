@@ -56,8 +56,6 @@ export type OverviewOutcome =
   | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
   | { readonly ok: false; readonly message: string };
 
-const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
-
 const countByMode = (
   rules: readonly McpOverviewRule[],
   mode: string,
@@ -66,19 +64,19 @@ const countByMode = (
   return { total: inMode.length, enabled: inMode.filter((rule) => rule.enabled).length };
 };
 
-/** One channel row in the card's JSON: names escaped, topics omitted. */
+/** One channel row in the card's JSON: names escaped, topics omitted, `archive` only when true. */
 const channelRow = (
   channel: McpGuildChannel,
 ): {
   readonly id: string;
   readonly name: string;
   readonly type: string;
-  readonly archive: boolean;
+  readonly archive?: boolean;
 } => ({
   id: channel.id,
   name: safeName(channel.name),
   type: channel.type,
-  archive: channel.archiveEnabled,
+  ...(channel.archiveEnabled ? { archive: true as const } : {}),
 });
 
 const byNameThenId = (a: { name: string; id: string }, b: { name: string; id: string }): number =>
@@ -90,7 +88,9 @@ const byNameThenId = (a: { name: string; id: string }, b: { name: string; id: st
  * category, then the unparented channels, roles, panels and rule counts
  * (ADR 0110). Every name a human typed rides in the JSON as an escaped
  * string via `safeName`, never in unframed prose. Topics are not in the
- * overview — `list_channels` carries them.
+ * overview — `list_channels` carries them. Roles are listed highest-first
+ * as `{ id, name }` with `managed: true` only when Bananasaurs manages the
+ * role; colour and position live in `list_roles`.
  */
 export const buildOverviewCard = (input: OverviewCardInput): string => {
   const head =
@@ -135,13 +135,13 @@ export const buildOverviewCard = (input: OverviewCardInput): string => {
     guild: { id: input.guildId, memberCount: input.memberCount },
     categories,
     uncategorised,
-    roles: input.roles.map((r) => ({
-      id: r.id,
-      name: safeName(r.name),
-      position: r.position,
-      color: toHexColor(r.color),
-      managedByBananasaurs: r.managedByBananasaurs,
-    })),
+    roles: [...input.roles]
+      .sort((a, b) => b.position - a.position)
+      .map((r) => ({
+        id: r.id,
+        name: safeName(r.name),
+        ...(r.managedByBananasaurs ? { managed: true as const } : {}),
+      })),
     panels: input.panels.map((p) => ({ id: p.panelId })),
     rules: {
       test: countByMode(input.rules, 'test'),
