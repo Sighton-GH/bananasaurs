@@ -27,6 +27,8 @@ import type {
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 import type { CitationRegistry } from './citations.js';
+import type { WebSearchOutcome, WebSearchRun } from './web-search.js';
+import { WebSearchLimitError } from './web-search.js';
 
 /**
  * The read-only tools the model may call (ADR 0067, Task 16).
@@ -157,7 +159,7 @@ export interface AssistantToolPorts {
   readonly resources: () => readonly ClubResource[];
   readonly fetchResource: (url: string) => Promise<ResourceFetchResult>;
   /** Absent while web search is off (ADR 0066). */
-  readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
+  readonly webSearch?: WebSearchRun | undefined;
   readonly serverCard: () => string;
   readonly visibleChannels: () => Promise<readonly { id: string; name: string }[]>;
   /**
@@ -231,8 +233,8 @@ export interface AssistantToolResult {
   /** What goes back to the model: redacted, untrusted evidence. */
   readonly text: string;
   readonly sources: readonly ToolSource[];
-  /** True when the result came from Brave (the answer must say so). */
-  readonly web?: boolean;
+  /** ADR 0120: which search source produced this result; 'brave' means the answer must say "Powered by Brave Search". */
+  readonly webSource?: 'brave' | 'tavily';
   /**
    * IDs follow-up rounds may open (ADR 0071): cache tools return the ids
    * they actually showed; every other tool returns none.
@@ -776,15 +778,24 @@ export const runAssistantTool = async (
           !scanOutboundRequest({ model: 'web-search', messages: [{ role: 'user', text: q }] }).safe
         )
           return refused(name, 'The query looked like it contained personal data or a secret.');
-        const results = await ports.webSearch(q);
-        if (results.length === 0) return { ...evidence(name, 'No web results.'), web: true };
+        let outcome: WebSearchOutcome;
+        try {
+          outcome = await ports.webSearch(q);
+        } catch (err) {
+          if (err instanceof WebSearchLimitError)
+            return refused(name, 'Web search has reached its limit for now. Answer without it.');
+          throw err;
+        }
+        const results = outcome.results;
+        if (results.length === 0)
+          return { ...evidence(name, 'No web results.'), webSource: outcome.source };
         return {
           ...evidence(
             name,
             results.map((r) => `${r.title} (${r.url})\n${r.description}`).join('\n\n'),
             results.map((r) => ({ title: r.title, url: r.url })),
           ),
-          web: true,
+          webSource: outcome.source,
         };
       }
       case 'server_info': {
