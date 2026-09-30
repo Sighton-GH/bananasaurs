@@ -967,7 +967,12 @@ describe('/mcp archive tools across two guilds', () => {
     // user id, and the repository narrows to that author. Seeded the way the
     // neighbouring tests seed — through the storage repo, never a fake port.
     const BOT = '999999999999999999';
-    (deps.client as unknown as { user: { id: string } | null }).user = { id: BOT };
+    // The client is shared by the whole file: restore the previous user so
+    // later tests do not depend on this one having run first.
+    const sharedClient = deps.client as unknown as { user: { id: string } | null };
+    const prevUser = sharedClient.user;
+    sharedClient.user = { id: BOT };
+    try {
     const scope = t.scopes.forGuild(GUILD_A);
     archiveRepo.enableChannel(scope, {
       channelId: CHANNEL,
@@ -1019,6 +1024,9 @@ describe('/mcp archive tools across two guilds', () => {
     expect(all.isError).not.toBe(true);
     expect(all.text).toContain('bot says alpha picnic reminder');
     expect(all.text).toContain('member says alpha picnic plans');
+    } finally {
+      sharedClient.user = prevUser;
+    }
   });
 
   it("read_channel_history rolls a forum's posts up under the forum id (M1)", async () => {
