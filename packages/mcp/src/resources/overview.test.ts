@@ -21,7 +21,11 @@ import {
   type McpRecordsPort,
 } from '../tools/records.js';
 import type { McpGuildPort } from '../tools/guild.js';
-import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './overview.js';
+import {
+  buildOverviewCard,
+  OVERVIEW_RESOURCE_URI_TEMPLATE,
+  readOverviewResource,
+} from './overview.js';
 
 /**
  * Task 6 (absorbing Task 8), resource side: `bananasaurs://guild/{guildId}/overview`
@@ -216,7 +220,67 @@ describe('resource and tool serve the same card', () => {
   });
 });
 
+/** Step 2 (temporary): a large fixture to measure the old card size. */
+const bigFixture = (): Parameters<typeof buildOverviewCard>[0] => {
+  const channels: Array<{
+    id: string;
+    name: string;
+    type: string;
+    parentId: string | undefined;
+    parentName: string | undefined;
+    topic: string | undefined;
+    archiveEnabled: boolean;
+  }> = [];
+  for (let c = 0; c < 6; c += 1) {
+    const categoryId = `40000000000000000${String(c)}`;
+    channels.push({
+      id: categoryId,
+      name: `category-${String(c)}`,
+      type: 'GuildCategory',
+      parentId: undefined,
+      parentName: undefined,
+      topic: undefined,
+      archiveEnabled: false,
+    });
+    for (let t = 0; t < 10; t += 1) {
+      channels.push({
+        id: `500000000000000${String(c)}${String(t)}`,
+        name: `channel-${String(c)}-${String(t)}`,
+        type: 'GuildText',
+        parentId: categoryId,
+        parentName: `category-${String(c)}`,
+        topic: 't'.repeat(40),
+        archiveEnabled: t % 2 === 0,
+      });
+    }
+  }
+  return {
+    guildId: GUILD_A,
+    channels,
+    roles: Array.from({ length: 60 }, (_, i) => ({
+      id: `6000000000000000${String(i).padStart(2, '0')}`,
+      name: `role-${String(i)}`,
+      position: i,
+      color: 0,
+      managedByBananasaurs: i % 3 === 0,
+    })),
+    memberCount: 210,
+    rules: [
+      { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
+      { ruleId: 'rule-observe-1', name: 'Observe one', mode: 'observe', enabled: true },
+      { ruleId: 'rule-observe-2', name: 'Observe two', mode: 'observe', enabled: false },
+      { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+    ],
+    panels: [{ panelId: 'roles-panel' }, { panelId: 'welcome' }, { panelId: 'rules' }],
+  };
+};
+
 describe('overview tool on the MCP server', () => {
+  it('TEMPORARY step 2 measurement: logs the old card size for bigFixture', () => {
+    // eslint-disable-next-line no-console
+    console.log(`OLD_OVERVIEW_CARD_LENGTH=${String(buildOverviewCard(bigFixture()).length)}`);
+  });
+
   it('answers get_server_overview through a tool call', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
