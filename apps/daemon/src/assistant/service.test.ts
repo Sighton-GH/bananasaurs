@@ -544,9 +544,10 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       () => NOW,
       {
         provider: web.provider,
-        webSearch: async () => [
-          { title: 'Guide', url: 'https://a.example/', description: 'LiPo care.' },
-        ],
+        webSearch: async () => ({
+          results: [{ title: 'Guide', url: 'https://a.example/', description: 'LiPo care.' }],
+          source: 'brave' as const,
+        }),
       },
     );
     const result = await service.invoke(ask);
@@ -554,6 +555,78 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       ok: true,
       content: 'Store them half charged.\n\n-# Powered by Brave Search',
     });
+  });
+
+  it('omits the Brave attribution when web results came from Tavily', async () => {
+    eligibilityRepo.recordEligibilityClaim(t.scopes.instance(), {
+      provider: 'fake',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/terms',
+      evidenceClause: 'For production.',
+      productionUseAllowed: true,
+      now: NOW,
+    });
+    const web = fakeProvider([
+      { text: '', model: 'm', toolCalls: [{ name: 'web_search', args: { query: 'lipo' } }] },
+      { text: 'Store them half charged.', model: 'm' },
+    ]);
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        provider: web.provider,
+        webSearch: async () => ({
+          results: [{ title: 'Guide', url: 'https://a.example/', description: 'LiPo care.' }],
+          source: 'tavily' as const,
+        }),
+      },
+    );
+    const result = await service.invoke(ask);
+    expect(result).toMatchObject({ ok: true, content: 'Store them half charged.' });
+  });
+
+  it('uses the webSearch constructor parameter when no test port is given', async () => {
+    eligibilityRepo.recordEligibilityClaim(t.scopes.instance(), {
+      provider: 'fake',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/terms',
+      evidenceClause: 'For production.',
+      productionUseAllowed: true,
+      now: NOW,
+    });
+    const web = fakeProvider([
+      { text: '', model: 'm', toolCalls: [{ name: 'web_search', args: { query: 'lipo' } }] },
+      { text: 'Store them half charged.', model: 'm' },
+    ]);
+    const run = vi.fn(async () => ({
+      results: [{ title: 'Guide', url: 'https://a.example/', description: 'LiPo care.' }],
+      source: 'brave' as const,
+    }));
+    const webSearch = vi.fn(() => run);
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      { provider: web.provider },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      webSearch,
+    );
+    const result = await service.invoke(ask);
+    expect(result).toMatchObject({
+      ok: true,
+      content: 'Store them half charged.\n\n-# Powered by Brave Search',
+    });
+    expect(webSearch).toHaveBeenCalledWith(GUILD);
+    expect(run).toHaveBeenCalledWith('lipo');
   });
 
   it('a chain entry at its RPM limit throws LocalLimitError and the provider stays at one call', async () => {
@@ -1901,9 +1974,10 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
       },
     };
     const service = serviceWith(provider, {
-      webSearch: async () => [
-        { title: 'Web Guide', url: 'https://web.example/guide', description: 'Web care.' },
-      ],
+      webSearch: async () => ({
+        results: [{ title: 'Web Guide', url: 'https://web.example/guide', description: 'Web care.' }],
+        source: 'brave' as const,
+      }),
     });
     const result = await service.invoke({
       guildId: GUILD,
