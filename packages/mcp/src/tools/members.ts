@@ -27,7 +27,7 @@ export const GET_MEMBER_TOOL_NAME = 'get_member';
 export const GET_MEMBER_TOOL_DESCRIPTION =
   'One guild member by id or by username, display name or nickname: id, names, ' +
   'role ids with names, joined-at, and last archived message time. ' +
-  'lastMessageAt null means no archived message in the last 30 days. ' +
+  'lastMessageAt null means no archived message from this member in any archive-enabled channel. ' +
   'An ambiguous name answers candidates to pick an id from. ' +
   'Refuses when the guild is unreachable.';
 
@@ -35,8 +35,8 @@ export const SEARCH_MEMBERS_TOOL_NAME = 'search_members';
 export const SEARCH_MEMBERS_TOOL_DESCRIPTION =
   'Search guild members by role names, name text, inactivity, or join date: ' +
   'id, names, role ids with names, joined-at, and last archived message time. ' +
-  'lastMessageAt null means no archived message in the last 30 days. ' +
-  'inactiveDays keeps members silent that long (never-posters count as inactive). ' +
+  'lastMessageAt null means no archived message from this member in any archive-enabled channel. ' +
+  'inactiveDays keeps members with no archived message in that many days, or none at all (never-posters count as inactive). ' +
   'Refuses when the guild is unreachable.';
 
 /** The listing cap the daemon's port enforces; the head says so when hit. */
@@ -114,7 +114,7 @@ export const searchMembersParams = {
   inactiveDays: z
     .number()
     .describe(
-      'Keep members with no archived message in this many days (1..30; never-posters count).',
+      'Keep members with no archived message in this many days (1..30), or with no archived message at all (never-posters count).',
     )
     .optional(),
   joinedAfter: z
