@@ -93,6 +93,7 @@ import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
+import type { WebSearchRun } from '../assistant/web-search.js';
 import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
 import { guildAudienceChannels } from '../assistant/audience.js';
@@ -157,6 +158,8 @@ export interface GuildRuntimeDeps {
    * in isolated uses, where the service falls back to its own ledger.
    */
   readonly quotaLedger?: QuotaLedger | undefined;
+  /** ADR 0120: the web search run for one request, from the composition root. */
+  readonly assistantWebSearch?: ((guildId: string) => WebSearchRun | undefined) | undefined;
   /**
    * Task 17: the sealed GitHub token, opened for the GitHub client only.
    * Supplied by the composition root (`daemon.ts` owns the provider store);
@@ -902,6 +905,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // ADR 0092 decision 2: the live channel-context window from the AI tuning
     // settings. Absent means off, and the `channel_history` tool stays hidden.
     settings === undefined ? undefined : () => settings.get('assistant.channelContextMessages'),
+    deps.assistantWebSearch,
   );
   const { interactionTokenSealer } = deps;
 

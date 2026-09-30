@@ -48,6 +48,8 @@ import { openWithKey, sealWithKey } from '../crypto/seal.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { applyConnectFallback } from './network.js';
 import { QuotaLedger } from '../assistant/quota-ledger.js';
+import { braveWebSearch } from '../assistant/brave-search.js';
+import { createWebSearchRun, type WebSearchRun } from '../assistant/web-search.js';
 import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
@@ -119,6 +121,8 @@ export interface Daemon {
    * assistant loop and read by the dashboard's allowance pill.
    */
   readonly quotaLedger: QuotaLedger;
+  /** ADR 0120: the web search run for one request, from the composition root. */
+  readonly webSearch: (guildId: string) => WebSearchRun | undefined;
   /** Why no provider store exists, for the dashboard's setup step; absent when one does. */
   readonly providerSecretProblem?:
     'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
@@ -225,6 +229,22 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // its reset no matter which guild spent it. Returned below so `index.ts`
   // can hand the same instance to the dashboard wiring; never copied.
   const quotaLedger = new QuotaLedger();
+  // ADR 0120: web search through the provider store (Brave or Tavily, with
+  // key order and limits). With no store (no encryption secret), only the
+  // `.env` Brave key can exist, and it is never limited.
+  const assistantWebSearch = (guildId: string): WebSearchRun | undefined =>
+    providerStore !== undefined
+      ? providerStore.webSearch(guildId)
+      : config.BRAVE_SEARCH_API_KEY === undefined
+        ? undefined
+        : createWebSearchRun({
+            instance: scopes.instance(),
+            guildId,
+            source: 'brave',
+            keys: [{ keyId: null, apiKey: config.BRAVE_SEARCH_API_KEY, monthlyLimit: null, dailyLimit: null }],
+            now,
+            client: (apiKey, query) => braveWebSearch({ apiKey }, query),
+          });
 
   // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
   // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
@@ -261,6 +281,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         assistantChain,
         quotaLedger,
         instanceSettings,
+        assistantWebSearch,
         // Task 17: the GitHub client reads the sealed token per request, for
         // the `Authorization` header only — it never reaches logs or audit.
         githubToken: () => providerStore?.githubToken(),
@@ -562,6 +583,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     portsFor,
     instance,
     quotaLedger,
+    webSearch: assistantWebSearch,
     // Returned, not only closed over: `index.ts` hands it to the dashboard, and
     // before 2026-09-23 it was never returned, so the dashboard had no store.
     ...(providerStore === undefined ? {} : { providerStore }),
