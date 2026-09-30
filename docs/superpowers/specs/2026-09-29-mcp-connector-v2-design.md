@@ -50,7 +50,7 @@ is never throttled by Bananasaurs during normal work.
 | D12 | DMs | No. |
 | D13 | Rate caps | High backstops only (§5.4); Discord's own limits bind first. |
 | D14 | Build approach | One shared MCP action gateway, 5 slices. |
-| D15 | Member lookup | Profile + roles + last-active (from the ≤30-day archive). |
+| D15 | Member lookup | Profile + roles + last-active (newest archived message; live messages are kept indefinitely, only deleted ones are purged 30 days after deletion). |
 
 Separately, **health says `env development`** because `BANANASAURS_ENV` defaults
 to `development`. It only switches Pino to pretty-printed logs
@@ -165,10 +165,10 @@ entity shows `name (id)`.
 | `get_health` | Adds `failedJobs` by kind and a pointer to `list_jobs`. |
 | `list_jobs` | **New.** `status` (queued/running/failed/done), `kind`, `limit`. Returns id, kind, state, attempts, updated-at, `lastError` (truncated to 500 chars and secret-redacted). |
 | `get_job` | **New.** One job, with its full redacted `lastError` and a payload summary (ids only). |
-| `get_member` | **New.** By id or name: username, display name, nickname, roles, joined-at, last-message-at (archive, ≤30 days, else "not in the last 30 days"). |
+| `get_member` | **New.** By id or name: username, display name, nickname, roles, joined-at, last-message-at (newest archived message in any archive-enabled channel, else null). |
 | `search_members` | **New.** `hasRoles[]`, `lacksRoles[]`, `nameContains`, `inactiveDays`, `joinedAfter`; paged at 200. Answers "who has Car Team A but not Club Member" in one call. |
 | `read_thread` | **New.** Messages in a thread or forum post: archive for public threads, live REST for private threads that pass D6. |
-| `read_digest` | **New.** All archived messages under a **category** (or channel list) since a timestamp, grouped by channel/thread, capped at 1,000 messages per call with a cursor. Bounded by the 30-day archive. |
+| `read_digest` | **New.** All archived messages under a **category** (or channel list) since a timestamp, grouped by channel/thread, capped at 1,000 messages per call with a cursor. Bounded by what the archive holds (archive-enabled channels since each was enabled). |
 | `read_channel_history` / `search_messages` | Add `authorFilter: "bot" \| "members" \| userId`. `"bot"` = messages authored by Bananasaurs. |
 | message results | Add metadata: `replyTo`, `threadId`, `pinned`, `reactions:[{emoji,count}]` (needs §7 archive columns). |
 | `list_threads` | Includes private threads that pass D6, marked `private`. |
