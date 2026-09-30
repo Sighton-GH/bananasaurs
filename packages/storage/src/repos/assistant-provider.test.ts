@@ -42,6 +42,25 @@ it('reads absent optional settings as absent and search as off', () => {
     enabled: false,
     costClass: 'unknown',
     searchEnabled: false,
+    searchSource: 'brave',
     updatedAt: 1,
   });
+});
+
+it('round-trips the search source', () => {
+  const scope = t.scopes.instance();
+  put(scope, {
+    provider: 'off',
+    enabled: false,
+    costClass: 'unknown',
+    searchSource: 'tavily',
+    updatedAt: 1,
+  });
+  expect(get(scope)?.searchSource).toBe('tavily');
+});
+
+it('defaults the search source to brave when omitted', () => {
+  const scope = t.scopes.instance();
+  put(scope, { provider: 'off', enabled: false, costClass: 'unknown', updatedAt: 1 });
+  expect(get(scope)?.searchSource).toBe('brave');
 });
