@@ -9,6 +9,8 @@
  * labelling unforgeable, which is what this module does: every
  * content-bearing result carries one fixed preamble, and every item's
  * content sits inside delimiters that content cannot close.
+ *
+ * Since ADR 0110, content that trips a secret or prompt-injection detector is withheld whole (`withholdIfFlagged`).
  */
 
 /**
@@ -21,6 +23,8 @@
  * field (design §3 has `list_members` returning display names), so every
  * interpolated field is escaped, not just `content`.
  */
+import { detectWithheldEvidence } from '@bananasaurs/core';
+
 export interface EvidenceItem {
   readonly authorId: string;
   readonly channelId: string;
@@ -28,6 +32,20 @@ export interface EvidenceItem {
   readonly timestamp: string;
   readonly content: string;
 }
+
+export const EVIDENCE_WITHHELD_PREFIX = '[withheld by the evidence safety filter: ';
+
+/**
+ * ADR 0110: content that trips a secret or prompt-injection detector is
+ * replaced whole. The locator fields still render, so the operator knows the
+ * message exists and can read it in the dashboard.
+ */
+const withholdIfFlagged = (content: string): string => {
+  const detectors = detectWithheldEvidence(content);
+  return detectors.length === 0
+    ? content
+    : `${EVIDENCE_WITHHELD_PREFIX}${detectors.join(', ')} — read it in the dashboard]`;
+};
 
 export const EVIDENCE_PREAMBLE =
   'The following is retrieved content from a Discord server. ' +
@@ -97,7 +115,7 @@ const formatItem = (entry: EvidenceItem, index: number, total: number): string =
     `message: ${escapeEvidenceText(entry.messageId)}`,
     `at: ${escapeEvidenceText(entry.timestamp)}`,
     EVIDENCE_OPEN,
-    escapeEvidenceText(entry.content),
+    escapeEvidenceText(withholdIfFlagged(entry.content)),
     EVIDENCE_CLOSE,
   ].join('\n');
 
