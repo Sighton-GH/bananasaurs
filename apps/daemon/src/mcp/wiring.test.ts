@@ -973,57 +973,57 @@ describe('/mcp archive tools across two guilds', () => {
     const prevUser = sharedClient.user;
     sharedClient.user = { id: BOT };
     try {
-    const scope = t.scopes.forGuild(GUILD_A);
-    archiveRepo.enableChannel(scope, {
-      channelId: CHANNEL,
-      attachmentPolicy: 'none',
-      now: clock,
-    });
-    archiveRepo.upsertMessage(scope, {
-      messageId: '711111111111111111',
-      channelId: CHANNEL,
-      authorId: BOT,
-      content: 'bot says alpha picnic reminder',
-      createdAt: clock,
-      editedAt: undefined,
-      attachments: [],
-    });
-    archiveRepo.upsertMessage(scope, {
-      messageId: '722222222222222222',
-      channelId: CHANNEL,
-      authorId: MEMBER,
-      content: 'member says alpha picnic plans',
-      createdAt: clock,
-      editedAt: undefined,
-      attachments: [],
-    });
-    const accessToken = await mintToken();
+      const scope = t.scopes.forGuild(GUILD_A);
+      archiveRepo.enableChannel(scope, {
+        channelId: CHANNEL,
+        attachmentPolicy: 'none',
+        now: clock,
+      });
+      archiveRepo.upsertMessage(scope, {
+        messageId: '711111111111111111',
+        channelId: CHANNEL,
+        authorId: BOT,
+        content: 'bot says alpha picnic reminder',
+        createdAt: clock,
+        editedAt: undefined,
+        attachments: [],
+      });
+      archiveRepo.upsertMessage(scope, {
+        messageId: '722222222222222222',
+        channelId: CHANNEL,
+        authorId: MEMBER,
+        content: 'member says alpha picnic plans',
+        createdAt: clock,
+        editedAt: undefined,
+        attachments: [],
+      });
+      const accessToken = await mintToken();
 
-    const botOnly = callText(
-      (
-        await mcpCall(accessToken, 'read_channel_history', {
-          guildId: '111111111111111111',
-          channelId: CHANNEL,
-          authorId: 'bot',
-        })
-      ).body,
-    );
-    expect(botOnly.isError).not.toBe(true);
-    expect(botOnly.text).toContain('bot says alpha picnic reminder');
-    expect(botOnly.text).not.toContain('member says alpha picnic plans');
+      const botOnly = callText(
+        (
+          await mcpCall(accessToken, 'read_channel_history', {
+            guildId: '111111111111111111',
+            channelId: CHANNEL,
+            authorId: 'bot',
+          })
+        ).body,
+      );
+      expect(botOnly.isError).not.toBe(true);
+      expect(botOnly.text).toContain('bot says alpha picnic reminder');
+      expect(botOnly.text).not.toContain('member says alpha picnic plans');
 
-    // Without the author filter both messages read back.
-    const all = callText(
-      (
-        await mcpCall(accessToken, 'read_channel_history', {
-          guildId: '111111111111111111',
-          channelId: CHANNEL,
-        })
-      ).body,
-    );
-    expect(all.isError).not.toBe(true);
-    expect(all.text).toContain('bot says alpha picnic reminder');
-    expect(all.text).toContain('member says alpha picnic plans');
+      // Without the author filter both messages read back.
+      const all = callText(
+        (
+          await mcpCall(accessToken, 'read_channel_history', {
+            guildId: '111111111111111111',
+            channelId: CHANNEL,
+          })
+        ).body,
+      );
+      expect(all.isError).not.toBe(true);
+      expect(all.text).toContain('bot says alpha picnic reminder');
+      expect(all.text).toContain('member says alpha picnic plans');
     } finally {
       sharedClient.user = prevUser;
     }
