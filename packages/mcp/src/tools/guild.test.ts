@@ -606,3 +606,92 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     expect(data['threads']).toHaveLength(2);
   });
 });
+
+describe('list_threads accepts a channel id or name', () => {
+  const PLANNING = '333333333333333333';
+
+  const recordingThreads = (): McpGuildPort & { readonly seen: string[] } => {
+    const base = fakePort();
+    const seen: string[] = [];
+    return {
+      ...base,
+      seen,
+      listThreads: async (guildId, channelId, includeArchived) => {
+        seen.push(channelId);
+        return base.listThreads(guildId, channelId, includeArchived);
+      },
+    };
+  };
+
+  it('resolves a channel name to its id', async () => {
+    const port = recordingThreads();
+    const result = await listThreadsText(principalWith(GUILD_A), port, {
+      guildId: '111111111111111111',
+      channelId: 'planning',
+    });
+    expect(result.ok).toBe(true);
+    expect(port.seen).toEqual([PLANNING]);
+  });
+
+  it('strips one leading #', async () => {
+    const port = recordingThreads();
+    const result = await listThreadsText(principalWith(GUILD_A), port, {
+      guildId: '111111111111111111',
+      channelId: '#planning',
+    });
+    expect(result.ok).toBe(true);
+    expect(port.seen).toEqual([PLANNING]);
+  });
+
+  it('an ambiguous name refuses with candidates', async () => {
+    const port: McpGuildPort = {
+      ...fakePort(),
+      listChannels: () => [
+        {
+          id: '333333333333333333',
+          name: 'general',
+          type: 'GuildText',
+          parentId: undefined,
+          parentName: undefined,
+          topic: undefined,
+          archiveEnabled: true,
+        },
+        {
+          id: '555555555555555555',
+          name: 'general',
+          type: 'GuildText',
+          parentId: undefined,
+          parentName: undefined,
+          topic: undefined,
+          archiveEnabled: false,
+        },
+      ],
+    };
+    const result = await listThreadsText(principalWith(GUILD_A), port, {
+      guildId: '111111111111111111',
+      channelId: 'general',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('(333333333333333333)');
+    expect(result.message).toContain('(555555555555555555)');
+    expect(result.message.endsWith('Pass an id.')).toBe(true);
+  });
+
+  it('an unreachable guild refuses before resolution', async () => {
+    let calls = 0;
+    const port: McpGuildPort = {
+      ...fakePort(),
+      listChannels: () => {
+        calls += 1;
+        return [];
+      },
+    };
+    const result = await listThreadsText(principalWith(GUILD_B), port, {
+      guildId: '111111111111111111',
+      channelId: 'planning',
+    });
+    expect(result).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(calls).toBe(0);
+  });
+});

@@ -7,6 +7,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { safeName, structuredText } from '../structured.js';
+import { resolveChannelRef } from '../resolve.js';
 import {
   MCP_READ_LIST_THREADS,
   MCP_READ_LIST_CHANNELS,
@@ -67,7 +68,9 @@ export const LIST_CHANNELS_TOOL_DESCRIPTION =
 
 export const LIST_THREADS_TOOL_NAME = 'list_threads';
 export const LIST_THREADS_TOOL_DESCRIPTION =
-  'Lists public threads under one channel or forum. Private threads are never returned. Refuses when the guild is unreachable.';
+  'Lists public threads under one channel or forum, given by id or by name ' +
+  '(e.g. "help" or "#help"). Private threads are never returned. ' +
+  'Refuses when the guild is unreachable.';
 
 export const LIST_ROLES_TOOL_NAME = 'list_roles';
 export const LIST_ROLES_TOOL_DESCRIPTION =
@@ -228,7 +231,7 @@ export const listChannelsParams = {
 
 export const listThreadsParams = {
   guildId: z.string(),
-  channelId: z.string(),
+  channelId: z.string().describe('Channel id, or its name (e.g. "help" or "#help").'),
   includeArchived: z.boolean().optional(),
 };
 
@@ -436,24 +439,26 @@ export const listMembersText = async (
   }
 };
 
-export const listThreadsText = async (
+const listThreadsInner = async (
   principal: McpPrincipal,
   port: McpGuildPort,
   rawArgs: unknown,
 ): Promise<GuildToolOutcome> => {
   const parsed = threadsArgsSchema.safeParse(rawArgs);
-  if (!parsed.success || !idsAreWellFormed([parsed.data.channelId])) return refuseInvalidArgs();
+  if (!parsed.success) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
-  const threads = await port.listThreads(
-    gate.guildId,
-    parsed.data.channelId,
-    parsed.data.includeArchived ?? false,
-  );
+  // The channel ref resolves after the gate, against this guild's channels
+  // only (hard rule 2): a snowflake passes through, a name matches
+  // case-insensitively with ambiguity refused as candidates.
+  const resolved = resolveChannelRef(port.listChannels(gate.guildId), parsed.data.channelId);
+  if (!resolved.ok) return { ok: false, message: resolved.message };
+  const channelId = resolved.id;
+  const threads = await port.listThreads(gate.guildId, channelId, parsed.data.includeArchived ?? false);
   const archived = threads.filter((thread) => thread.archived).length;
   const noun = threads.length === 1 ? 'thread' : 'threads';
   const head =
-    `Public threads under channel ${parsed.data.channelId}: ` +
+    `Public threads under channel ${channelId}: ` +
     `${String(threads.length)} ${noun} (${String(archived)} archived). ` +
     'Private threads are never listed.';
   const data = {
@@ -476,4 +481,21 @@ export const listThreadsText = async (
       resultCount: threads.length,
     },
   };
+};
+
+/**
+ * Never throws and never rejects: a rejected port promise — a rate limit, a
+ * missing intent, the guild gone mid-page — is the shared refusal, because a
+ * Discord API fault must not propagate out of the handler as an exception.
+ */
+export const listThreadsText = async (
+  principal: McpPrincipal,
+  port: McpGuildPort,
+  rawArgs: unknown,
+): Promise<GuildToolOutcome> => {
+  try {
+    return await listThreadsInner(principal, port, rawArgs);
+  } catch {
+    return { ok: false, message: GUILD_REFUSAL_MESSAGE };
+  }
 };
