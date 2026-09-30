@@ -145,6 +145,10 @@ export const registerAssistantSearchKeyRoutes = (
     }
     configured.updateSearchKey(keyId, { ...parsed.data }, deps.now());
     const after = configured.searchKeys().find((key) => key.keyId === keyId);
+    // The re-read row is the shown value; `before` is only the fallback when
+    // the row went missing. Reading fields off `after` with `??` would turn a
+    // limit cleared to `null` back into the old value in the audit row.
+    const shown = after ?? before;
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'assistant_search.key_updated',
@@ -158,11 +162,11 @@ export const registerAssistantSearchKeyRoutes = (
         dailyLimit: before.dailyLimit,
       },
       after: {
-        source: after?.source ?? before.source,
-        label: after?.label ?? before.label,
-        enabled: after?.enabled ?? before.enabled,
-        monthlyLimit: after?.monthlyLimit ?? before.monthlyLimit,
-        dailyLimit: after?.dailyLimit ?? before.dailyLimit,
+        source: shown.source,
+        label: shown.label,
+        enabled: shown.enabled,
+        monthlyLimit: shown.monthlyLimit,
+        dailyLimit: shown.dailyLimit,
         keyReplaced: parsed.data.apiKey !== undefined,
       },
     });

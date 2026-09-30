@@ -407,6 +407,35 @@ describe('PATCH /api/assistant/search-keys/:keyId', () => {
     expect(JSON.stringify(row)).not.toContain(SECRET);
   });
 
+  it('clearing limits to null audits null, not the old value', async () => {
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const added = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/search-keys',
+      headers,
+      payload: { source: 'brave', label: 'A', apiKey: SECRET, dailyLimit: 5 },
+    });
+    const keyId = added.json<{ keyId: string }>().keyId;
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/assistant/search-keys/${keyId}`,
+      headers,
+      payload: { monthlyLimit: null, dailyLimit: null },
+    });
+    expect(patched.statusCode).toBe(200);
+    const row = auditRows().find((r) => r.action === 'assistant_search.key_updated');
+    expect(JSON.parse(row?.before ?? 'null')).toMatchObject({
+      monthlyLimit: 1000,
+      dailyLimit: 5,
+    });
+    expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
+      monthlyLimit: null,
+      dailyLimit: null,
+    });
+    expect(JSON.stringify(row)).not.toContain(SECRET);
+  });
+
   it('replacing the key audits keyReplaced without the key', async () => {
     const owner = await signInAs('owner');
     const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
