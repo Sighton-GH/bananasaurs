@@ -197,8 +197,8 @@ export interface AiStatus {
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
   /** ADR 0068: up to two more models, tried in order when the one before is busy. */
   readonly fallbackModels?: readonly string[];
-  /** ADR 0066. Absent while no Brave key is saved and search is off. */
-  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
+  /** ADR 0066, amended by ADR 0120. Absent while no search key is saved and search is off. */
+  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean; readonly source: SearchSource };
 }
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
@@ -335,8 +335,33 @@ export interface AssistantSetupData {
   readonly providers: readonly SetupProviderRow[];
   readonly keys: readonly SetupKeyRow[];
   readonly chain: readonly SetupChainRow[];
-  readonly webSearch: { readonly keyConfigured: boolean; readonly enabled: boolean };
+  readonly webSearch: {
+    readonly keyConfigured: boolean;
+    readonly enabled: boolean;
+    readonly source: SearchSource;
+  };
   readonly github: { readonly tokenConfigured: boolean };
+}
+/** ADR 0120: the web search source. Exactly 'brave' or 'tavily'. */
+export type SearchSource = 'brave' | 'tavily';
+export const SEARCH_KEYS_URL = '/api/assistant/search-keys';
+export const searchKeyUrl = (keyId: string) => `${SEARCH_KEYS_URL}/${encodeURIComponent(keyId)}`;
+export const searchKeyMoveUrl = (keyId: string) => `${searchKeyUrl(keyId)}/move`;
+export interface SearchKeyRow {
+  readonly keyId: string;
+  readonly source: SearchSource;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly position: number;
+  readonly monthlyLimit: number | null;
+  readonly dailyLimit: number | null;
+  readonly readable: boolean;
+  readonly usage: { readonly last24h: number; readonly last31d: number; readonly availableAt?: number };
+}
+export interface SearchKeysData {
+  readonly enabled: boolean;
+  readonly source: SearchSource;
+  readonly keys: readonly SearchKeyRow[];
 }
 /** ADR 0063: which behaviour answers a tag of the bot user itself. */
 export const BOT_TAG_URL = '/api/assistant/bot-tag';
