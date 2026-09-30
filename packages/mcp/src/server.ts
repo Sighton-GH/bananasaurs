@@ -172,11 +172,11 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
   // Ruling M4-D17: the scope check happens at registration, not at call
   // time. A token without `bananasaurs:read` gets a server without any of the
-  // fourteen read tools or the resource — it cannot see them in `tools/list`
+  // read tools or the resource — it cannot see them in `tools/list`
   // at all — and a token without `bananasaurs:send` likewise never sees
   // `send_message`. M5 adds the second half: `send_message` registers only
   // under the send scope, independently of the read-scope block, so a token
-  // with both scopes gets all fifteen.
+  // with both scopes gets the read tools plus `send_message`.
   if (hasSendScope(deps.principal)) {
     const send = deps.send;
     server.tool(
