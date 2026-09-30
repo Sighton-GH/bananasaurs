@@ -816,12 +816,12 @@ describe('ProvidersPage terms and web search', () => {
     expect(within(card).getByRole('radio', { name: 'Tavily' })).toBeTruthy();
     expect(
       within(card).getByText(
-        'Tavily may keep search queries and use them to improve its services, including training AI.',
+        /Tavily may keep search queries and use them to improve its services, including training AI/,
       ),
     ).toBeTruthy();
     expect(
       within(card).getByText(
-        'Several keys are for a spare or a paid key. Using several free accounts to get more searches breaks Brave’s and Tavily’s terms.',
+        /Several keys are for a spare or a paid key\. Using several free accounts to get more searches breaks Brave’s and Tavily’s terms/,
       ),
     ).toBeTruthy();
   });
