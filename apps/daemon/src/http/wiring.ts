@@ -18,6 +18,7 @@ import {
   createServer,
   issueBootstrapTokenIfNeeded,
   registerAssistantProviderRoutes,
+  registerAssistantSearchKeyRoutes,
   registerAssistantTuningRoutes,
   registerAssistantGithubRoutes,
   registerAssistantRoutes,
@@ -298,6 +299,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       // carries the Try-it runner, which `HttpDeps` itself never mentions.
       registerAssistantTryRoutes(instance, guard, httpDeps);
       registerAssistantProviderRoutes(instance, guard, routeDeps);
+      registerAssistantSearchKeyRoutes(instance, guard, routeDeps);
       registerAssistantTuningRoutes(instance, guard, routeDeps);
       registerAssistantGithubRoutes(instance, guard, routeDeps);
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
