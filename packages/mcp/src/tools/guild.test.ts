@@ -29,11 +29,19 @@ import {
 } from './guild.js';
 import type { McpPrincipal } from '../scope.js';
 import type { McpJobsPort } from './jobs.js';
+import type { McpMembersPort } from './members.js';
 
 /** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
   findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins the guild tools, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
 });
 
 /**
@@ -486,6 +494,7 @@ describe('guild tools on the MCP server', () => {
       send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
+      members: stubMembers(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -498,7 +507,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all fourteen tools and still no send_message', async () => {
+  it('lists all sixteen tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -517,6 +526,8 @@ describe('guild tools on the MCP server', () => {
         'get_server_overview',
         'list_jobs',
         'get_job',
+        'get_member',
+        'search_members',
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

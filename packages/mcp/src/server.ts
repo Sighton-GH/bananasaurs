@@ -72,6 +72,7 @@ import {
   type McpSendPort,
 } from './tools/send.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
+import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
@@ -141,6 +142,13 @@ export interface McpServerDeps {
    * not serve refusals dressed as a working toolset.
    */
   readonly jobs: McpJobsPort;
+  /**
+   * The daemon's per-request members port (`get_member` / `search_members`):
+   * role names and last-active times in one call. Required like the ports
+   * above: a missing port must fail at construction, not serve refusals
+   * dressed as a working toolset.
+   */
+  readonly members: McpMembersPort;
 }
 
 /** The ok-outcome shape every read tool returns (ADR 0050). */
@@ -397,6 +405,11 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     },
   );
   registerJobTools({ server, principal: deps.principal, readAudit }, deps.jobs);
+  registerMemberTools(
+    { server, principal: deps.principal, readAudit },
+    deps.members,
+    deps.guild,
+  );
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

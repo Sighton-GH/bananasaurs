@@ -45,8 +45,23 @@ export {
   type McpJobsPort,
 } from './tools/jobs.js';
 export {
+  GET_MEMBER_TOOL_DESCRIPTION,
+  GET_MEMBER_TOOL_NAME,
+  getMemberParams,
+  getMemberText,
+  MEMBER_LISTING_CAP,
+  SEARCH_MEMBERS_TOOL_DESCRIPTION,
+  SEARCH_MEMBERS_TOOL_NAME,
+  searchMembersParams,
+  searchMembersText,
+  registerMemberTools,
+  type McpMemberProfile,
+  type McpMembersPort,
+} from './tools/members.js';
+export {
   MCP_READ_GET_HEALTH,
   MCP_READ_GET_JOB,
+  MCP_READ_GET_MEMBER,
   MCP_READ_GET_MESSAGE,
   MCP_READ_GET_MOD_CASE,
   MCP_READ_GET_SERVER_OVERVIEW,
@@ -57,6 +72,7 @@ export {
   MCP_READ_LIST_MOD_CASES,
   MCP_READ_LIST_ROLES,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_SEARCH_MEMBERS,
   MCP_READ_SEARCH_MESSAGES,
   performReadRecord,
   type McpContentReadRecord,

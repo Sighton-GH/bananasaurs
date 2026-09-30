@@ -45,11 +45,19 @@ import type { McpHealthPort } from './health.js';
 import type { McpGuildPort } from './guild.js';
 import type { McpRecordsPort } from './records.js';
 import type { McpJobsPort } from './jobs.js';
+import type { McpMembersPort } from './members.js';
 
 /** Minimal jobs port: this file pins the archive tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
   findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins the archive tools, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
 });
 
 /**
@@ -718,6 +726,7 @@ describe('archive tools on the MCP server', () => {
       send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
+      members: stubMembers(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -747,6 +756,7 @@ describe('archive tools on the MCP server', () => {
         GET_SERVER_OVERVIEW_TOOL_NAME,
       } = await import('./records.js');
       const { LIST_JOBS_TOOL_NAME, GET_JOB_TOOL_NAME } = await import('./jobs.js');
+      const { GET_MEMBER_TOOL_NAME, SEARCH_MEMBERS_TOOL_NAME } = await import('./members.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
         SEARCH_MESSAGES_TOOL_NAME,
@@ -762,6 +772,8 @@ describe('archive tools on the MCP server', () => {
         GET_SERVER_OVERVIEW_TOOL_NAME,
         LIST_JOBS_TOOL_NAME,
         GET_JOB_TOOL_NAME,
+        GET_MEMBER_TOOL_NAME,
+        SEARCH_MEMBERS_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {
