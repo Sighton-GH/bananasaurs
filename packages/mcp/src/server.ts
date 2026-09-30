@@ -281,9 +281,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     async (args) => {
       try {
         const outcome = await listThreadsText(deps.principal, guild, args);
-        return outcome.ok
-          ? { content: [{ type: 'text' as const, text: outcome.text }] }
-          : { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
       } catch {
         return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
       }

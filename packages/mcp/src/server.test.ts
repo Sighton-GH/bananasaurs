@@ -24,8 +24,10 @@ import {
   LIST_CHANNELS_TOOL_NAME,
   LIST_MEMBERS_TOOL_NAME,
   LIST_ROLES_TOOL_NAME,
+  LIST_THREADS_TOOL_NAME,
   type McpGuildPort,
 } from './tools/guild.js';
+import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
@@ -106,15 +108,16 @@ const stubSend = (): McpSendPort => ({
 const connectPair = async (
   principal: McpPrincipal,
   send: McpSendPort = stubSend(),
+  overrides: { readonly guild?: McpGuildPort; readonly readAudit?: McpReadAuditPort } = {},
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
   const server = createMcpServer({
     principal,
     health: stubPort(),
     archive: stubArchive(),
-    guild: stubGuild(),
+    guild: overrides.guild ?? stubGuild(),
     records: stubRecords(),
-    readAudit: noopReadAudit,
+    readAudit: overrides.readAudit ?? noopReadAudit,
     send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -236,6 +239,35 @@ describe('createMcpServer', () => {
       })) as CallToolResult;
       expect(result.isError).toBe(true);
       expect(textOf(result)).toBe(GUILD_REFUSAL_MESSAGE);
+    } finally {
+      await close();
+    }
+  });
+
+  it('a successful list_threads call performs its read record exactly once (ADR 0050)', async () => {
+    // The handler used to return the text directly, skipping `okReadResult`
+    // — the one read path whose record nothing observed. A counting port
+    // proves the fix: one call, one structural log line, never an audit row.
+    const seen: { action: string; guildId: unknown }[] = [];
+    const { client, close } = await connectPair(principalWith([GUILD]), stubSend(), {
+      readAudit: {
+        auditContentRead: () => {
+          throw new Error('list_threads is structural — it must never audit');
+        },
+        logStructuralRead: (input) => {
+          seen.push({ action: input.action, guildId: input.guildId });
+        },
+      },
+    });
+    try {
+      const result = (await client.callTool({
+        name: LIST_THREADS_TOOL_NAME,
+        arguments: { guildId: '111111111111111111', channelId: '333333333333333333' },
+      })) as CallToolResult;
+      expect(result.isError).not.toBe(true);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.action).toBe(MCP_READ_LIST_THREADS);
+      expect(String(seen[0]?.guildId)).toBe('111111111111111111');
     } finally {
       await close();
     }
