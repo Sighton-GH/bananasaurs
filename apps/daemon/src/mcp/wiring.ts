@@ -602,8 +602,10 @@ const jobsPortFor = (deps: HttpDeps): McpJobsPort => ({
  * (`guild.members.list`, ruling M4-D10 — the 50-entry
  * `GuildMemberManager` cap makes a cache read silently wrong) at Discord's
  * own per-page maximum of 1000 with `cache: false`, following the `after`
- * cursor until a short page or `MEMBER_LISTING_CAP` (then truncated, sliced
- * to the cap). Each member is projected field by field — the guild-id
+ * cursor until a short page. When the collected count reaches
+ * `MEMBER_LISTING_CAP` on a full last page, one more `limit: 1` probe past
+ * the last id decides `truncated`: a guild with exactly 5,000 members
+ * reports `truncated: false`. Each member is projected field by field — the guild-id
  * (@everyone) role dropped from `roleIds` like `list_members`, no presence,
  * no status, no activity — never spread from the discord.js object.
  * `lastMessageAt` reads the archive's newest message time per author, so the
@@ -642,7 +644,16 @@ const membersPortFor = (deps: HttpDeps, client: Client): McpMembersPort => ({
           });
         }
         if (collected.length >= MEMBER_LISTING_CAP) {
-          return { members: collected.slice(0, MEMBER_LISTING_CAP), truncated: true };
+          const members = collected.slice(0, MEMBER_LISTING_CAP);
+          // The last page was full, so exactly CAP members is ambiguous with
+          // more beyond: probe one row past the last id and claim truncation
+          // only when it exists.
+          const lastId = [...page.keys()].pop();
+          const probe =
+            lastId === undefined
+              ? undefined
+              : await guild.members.list({ limit: 1, after: lastId, cache: false });
+          return { members, truncated: probe !== undefined && probe.size > 0 };
         }
         if (page.size < 1000) break;
         const last = [...page.keys()].pop();

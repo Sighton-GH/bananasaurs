@@ -55,7 +55,7 @@ export interface McpMemberProfile {
 }
 
 export interface McpMembersPort {
-  /** Every member via paged REST (1,000 per page) until a short page, capped at 5,000; truncated when the cap cut it. */
+  /** Every member via paged REST (1,000 per page) until a short page, capped at 5,000; truncated when a probe past the cap finds more. */
   readonly listAllMembers: (guildId: GuildId) => Promise<{
     readonly members: readonly McpMemberProfile[];
     readonly truncated: boolean;

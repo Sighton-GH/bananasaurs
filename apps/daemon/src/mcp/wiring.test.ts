@@ -1864,9 +1864,9 @@ describe('/mcp member tools page past 1000', () => {
     }
   });
 
-  it('stops at 5,000 with truncated:true when every page is full', async () => {
+  it('five full pages plus a 1-member probe stops at 5,000 truncated:true', async () => {
     const { client: discordClient, calls, serve } = buildPagedClient();
-    serve([]);
+    serve([1000, 1000, 1000, 1000, 1000, 1]);
     const guildApp = buildGuildApp(discordClient);
     try {
       const accessToken = await mintToken();
@@ -1876,10 +1876,31 @@ describe('/mcp member tools page past 1000', () => {
       expect(found.isError).not.toBe(true);
       expect(found.text).toContain('5000 members match');
       expect(found.text).toContain('member listing was capped at 5,000');
-      expect(calls).toHaveLength(5);
-      for (const options of calls) {
+      expect(calls).toHaveLength(6);
+      for (const options of calls.slice(0, 5)) {
         expect(options).toMatchObject({ limit: 1000, cache: false });
       }
+      // The probe is one row past the 5,000th id.
+      expect(calls[5]).toMatchObject({ limit: 1, cache: false, after: pageIdOf(5000) });
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('five full pages plus an empty probe stops at 5,000 truncated:false', async () => {
+    const { client: discordClient, calls, serve } = buildPagedClient();
+    serve([1000, 1000, 1000, 1000, 1000, 0]);
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (await memberCall(guildApp, accessToken, { guildId: '111111111111111111' })).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('5000 members match');
+      expect(found.text).not.toContain('member listing was capped at 5,000');
+      expect(calls).toHaveLength(6);
+      expect(calls[5]).toMatchObject({ limit: 1, cache: false, after: pageIdOf(5000) });
     } finally {
       await guildApp.close();
     }
