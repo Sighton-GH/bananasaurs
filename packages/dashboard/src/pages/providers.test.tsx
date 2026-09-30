@@ -51,7 +51,7 @@ const setupBody = (overrides: Record<string, unknown> = {}) => ({
       status: 'ready',
     },
   ],
-  webSearch: { keyConfigured: false, enabled: false },
+  webSearch: { keyConfigured: false, enabled: false, source: 'brave' },
   github: { tokenConfigured: false },
   ...overrides,
 });
@@ -769,31 +769,74 @@ describe('ProvidersPage terms and web search', () => {
     expect(screen.queryByText('Terms record saved')).toBeNull();
   });
 
-  it('lets the owner save a Brave key and turn web search on, keeping the key write-only', async () => {
-    const mock = stubFetch([
-      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
-      { url: '/api/assistant', body: assistantBody() },
-      { url: '/api/providers/eligibility', body: { warnings: [] } },
-      {
-        method: 'PUT',
-        url: PROVIDER_URL,
-        body: {
-          provider: 'gemini',
-          enabled: true,
-          modelConfigured: true,
-          keyConfigured: true,
-          keyReadable: true,
-          costClass: 'free',
-          secretSource: 'file',
-          webSearch: { keyConfigured: true, enabled: true },
-        },
+  const SEARCH_KEYS_URL = '/api/assistant/search-keys';
+  const searchKeyUrl = (keyId: string) => `${SEARCH_KEYS_URL}/${encodeURIComponent(keyId)}`;
+  const searchKeyMoveUrl = (keyId: string) => `${searchKeyUrl(keyId)}/move`;
+
+  const searchKeysBody = (overrides: Record<string, unknown> = {}) => ({
+    enabled: false,
+    source: 'brave',
+    keys: [],
+    ...overrides,
+  });
+
+  const ownerAssistantWithSearch = (overrides: Record<string, unknown> = {}) =>
+    assistantBody({
+      aiStatus: {
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        enabled: true,
+        modelConfigured: true,
+        keyConfigured: true,
+        keyReadable: true,
+        costClass: 'free',
+        secretSource: 'file',
+        webSearch: { keyConfigured: false, enabled: false, source: 'brave' },
       },
+      ...overrides,
+    });
+
+  const webCard = async (): Promise<HTMLElement> => {
+    const heading = await screen.findByRole('heading', { name: 'Web search' });
+    const card = heading.closest('section');
+    if (!(card instanceof HTMLElement)) throw new Error('no Web search section');
+    return card;
+  };
+
+  it('shows both source options and the Tavily retention sentence', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
     ]);
     renderWithSession(<ProvidersPage />);
-    const card = (await screen.findByRole('heading', { name: 'Web search' })).closest('section')!;
-    fireEvent.change(within(card).getByLabelText('Brave Search API key'), {
-      target: { value: 'brave-raw-key' },
-    });
+    const card = await webCard();
+    expect(within(card).getByRole('radio', { name: 'Brave Search' })).toBeTruthy();
+    expect(within(card).getByRole('radio', { name: 'Tavily' })).toBeTruthy();
+    expect(
+      within(card).getByText(
+        'Tavily may keep search queries and use them to improve its services, including training AI.',
+      ),
+    ).toBeTruthy();
+    expect(
+      within(card).getByText(
+        'Several keys are for a spare or a paid key. Using several free accounts to get more searches breaks Brave’s and Tavily’s terms.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('saving after choosing Tavily sends searchSource without searchApiKey', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+      { method: 'PUT', url: PROVIDER_URL, body: { ok: true } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    fireEvent.click(within(card).getByRole('radio', { name: 'Tavily' }));
     fireEvent.click(within(card).getByLabelText('Let the assistant search the web'));
     await act(async () => {
       fireEvent.click(within(card).getByRole('button', { name: 'Save web search' }));
@@ -802,15 +845,340 @@ describe('ProvidersPage terms and web search', () => {
       (c) => (c[0] as string) === PROVIDER_URL && c[1]?.method === 'PUT',
     );
     expect(put).toBeTruthy();
-    expect(bodyOf(put!)).toEqual({
+    const body = bodyOf(put!) as Record<string, unknown>;
+    expect(body).toEqual({
       provider: 'gemini',
       enabled: true,
-      searchApiKey: 'brave-raw-key',
       searchEnabled: true,
+      searchSource: 'tavily',
     });
-    // The save reloads the page, so re-query rather than reusing the stale section.
-    const after = (await screen.findByRole('heading', { name: 'Web search' })).closest('section')!;
-    expect(within(after).getByLabelText('Brave Search API key')).toHaveProperty('value', '');
+    expect('searchApiKey' in body).toBe(false);
+  });
+
+  it('lists only the selected source keys with usage and paused state', async () => {
+    const pausedAt = 1_700_000_000_000;
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        url: SEARCH_KEYS_URL,
+        body: searchKeysBody({
+          keys: [
+            {
+              keyId: 'search_brave_1',
+              source: 'brave',
+              label: 'Brave main',
+              enabled: true,
+              position: 0,
+              monthlyLimit: 1000,
+              dailyLimit: 20,
+              readable: true,
+              usage: { last24h: 3, last31d: 12, availableAt: pausedAt },
+            },
+            {
+              keyId: 'search_tavily_1',
+              source: 'tavily',
+              label: 'Tavily main',
+              enabled: true,
+              position: 0,
+              monthlyLimit: 1000,
+              dailyLimit: null,
+              readable: true,
+              usage: { last24h: 1, last31d: 5 },
+            },
+          ],
+        }),
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    expect(await within(card).findByText('Brave main')).toBeTruthy();
+    expect(within(card).queryByText('Tavily main')).toBeNull();
+    expect(within(card).getByText('12 / 1000 searches in the last 31 days')).toBeTruthy();
+    expect(within(card).getByText('3 / 20 today')).toBeTruthy();
+    expect(
+      within(card).getByText(`Paused until ${new Date(pausedAt).toLocaleString()}`),
+    ).toBeTruthy();
+    fireEvent.click(within(card).getByRole('radio', { name: 'Tavily' }));
+    expect(await within(card).findByText('Tavily main')).toBeTruthy();
+    expect(within(card).queryByText('Brave main')).toBeNull();
+    expect(within(card).getByText('5 / 1000 searches in the last 31 days')).toBeTruthy();
+  });
+
+  it('adding a key posts source, label, key and monthly limit, then clears the key field', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      {
+        url: '/api/assistant',
+        body: ownerAssistantWithSearch({
+          aiStatus: {
+            provider: 'gemini',
+            model: 'gemini-2.5-flash',
+            enabled: true,
+            modelConfigured: true,
+            keyConfigured: true,
+            keyReadable: true,
+            costClass: 'free',
+            secretSource: 'file',
+            webSearch: { keyConfigured: false, enabled: false, source: 'tavily' },
+          },
+        }),
+      },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody({ source: 'tavily', keys: [] }) },
+      { method: 'POST', url: SEARCH_KEYS_URL, body: { keyId: 'search_new' } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    expect(await within(card).findByText('No Tavily keys yet.')).toBeTruthy();
+    fireEvent.change(within(card).getByLabelText('Label'), { target: { value: 'Spare' } });
+    const keyInput = within(card).getByLabelText('Key') as HTMLInputElement;
+    expect(keyInput.type).toBe('password');
+    fireEvent.change(keyInput, { target: { value: 'tvly-secret' } });
+    expect((within(card).getByLabelText('Monthly limit') as HTMLInputElement).value).toBe('1000');
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: 'Add key' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === SEARCH_KEYS_URL && c[1]?.method === 'POST',
+    );
+    expect(post).toBeTruthy();
+    expect(bodyOf(post!)).toEqual({
+      source: 'tavily',
+      label: 'Spare',
+      apiKey: 'tvly-secret',
+      monthlyLimit: 1000,
+    });
+    expect((within(card).getByLabelText('Key') as HTMLInputElement).value).toBe('');
+  });
+
+  it('a blank monthly limit posts null and zero shows an inline error without posting', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+      { method: 'POST', url: SEARCH_KEYS_URL, body: { keyId: 'search_new' } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    await within(card).findByText('No Brave keys yet.');
+    fireEvent.change(within(card).getByLabelText('Label'), { target: { value: 'Spare' } });
+    fireEvent.change(within(card).getByLabelText('Key'), { target: { value: 'brave-secret' } });
+    fireEvent.change(within(card).getByLabelText('Monthly limit'), { target: { value: '' } });
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: 'Add key' }));
+    });
+    const posts = mock.mock.calls.filter(
+      (c) => (c[0] as string) === SEARCH_KEYS_URL && c[1]?.method === 'POST',
+    );
+    expect(posts).toHaveLength(1);
+    expect(bodyOf(posts[0]!)).toEqual({
+      source: 'brave',
+      label: 'Spare',
+      apiKey: 'brave-secret',
+      monthlyLimit: null,
+    });
+
+    cleanup();
+    const mock2 = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+      { method: 'POST', url: SEARCH_KEYS_URL, body: { keyId: 'search_new' } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card2 = await webCard();
+    await within(card2).findByText('No Brave keys yet.');
+    fireEvent.change(within(card2).getByLabelText('Label'), { target: { value: 'Spare' } });
+    fireEvent.change(within(card2).getByLabelText('Key'), { target: { value: 'brave-secret' } });
+    fireEvent.change(within(card2).getByLabelText('Monthly limit'), { target: { value: '0' } });
+    await act(async () => {
+      fireEvent.click(within(card2).getByRole('button', { name: 'Add key' }));
+    });
+    expect(
+      await within(card2).findByText(
+        'Limits must be whole numbers from 1 to 1,000,000. Leave a limit blank for no limit.',
+      ),
+    ).toBeTruthy();
+    expect(
+      mock2.mock.calls.filter(
+        (c) => (c[0] as string) === SEARCH_KEYS_URL && c[1]?.method === 'POST',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('editing a key daily limit PATCHes only that field', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        url: SEARCH_KEYS_URL,
+        body: searchKeysBody({
+          keys: [
+            {
+              keyId: 'search_brave_1',
+              source: 'brave',
+              label: 'Brave main',
+              enabled: true,
+              position: 0,
+              monthlyLimit: 1000,
+              dailyLimit: 20,
+              readable: true,
+              usage: { last24h: 3, last31d: 12 },
+            },
+          ],
+        }),
+      },
+      { method: 'PATCH', url: searchKeyUrl('search_brave_1'), body: { ok: true } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    await within(card).findByText('Brave main');
+    fireEvent.click(within(card).getByRole('button', { name: 'Edit Brave main' }));
+    const row = within(card).getByText('Brave main').closest('li')!;
+    fireEvent.change(within(row).getByLabelText('Daily limit'), { target: { value: '25' } });
+    await act(async () => {
+      fireEvent.click(within(row).getByRole('button', { name: 'Save key' }));
+    });
+    const patch = mock.mock.calls.find(
+      (c) => (c[0] as string) === searchKeyUrl('search_brave_1') && c[1]?.method === 'PATCH',
+    );
+    expect(patch).toBeTruthy();
+    expect(bodyOf(patch!)).toEqual({ dailyLimit: 25 });
+  });
+
+  it('move up posts the direction and the first row cannot move up', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        url: SEARCH_KEYS_URL,
+        body: searchKeysBody({
+          keys: [
+            {
+              keyId: 'search_brave_1',
+              source: 'brave',
+              label: 'First key',
+              enabled: true,
+              position: 0,
+              monthlyLimit: 1000,
+              dailyLimit: null,
+              readable: true,
+              usage: { last24h: 0, last31d: 1 },
+            },
+            {
+              keyId: 'search_brave_2',
+              source: 'brave',
+              label: 'Second key',
+              enabled: true,
+              position: 1,
+              monthlyLimit: 1000,
+              dailyLimit: null,
+              readable: true,
+              usage: { last24h: 0, last31d: 2 },
+            },
+          ],
+        }),
+      },
+      { method: 'POST', url: searchKeyMoveUrl('search_brave_2'), body: { ok: true } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    await within(card).findByText('First key');
+    expect(
+      (within(card).getByRole('button', { name: 'Move First key up' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: 'Move Second key up' }));
+    });
+    const move = mock.mock.calls.find(
+      (c) => (c[0] as string) === searchKeyMoveUrl('search_brave_2') && c[1]?.method === 'POST',
+    );
+    expect(move).toBeTruthy();
+    expect(bodyOf(move!)).toEqual({ direction: 'up' });
+  });
+
+  it('remove asks for confirmation then deletes', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        url: SEARCH_KEYS_URL,
+        body: searchKeysBody({
+          keys: [
+            {
+              keyId: 'search_brave_1',
+              source: 'brave',
+              label: 'Brave main',
+              enabled: true,
+              position: 0,
+              monthlyLimit: 1000,
+              dailyLimit: null,
+              readable: true,
+              usage: { last24h: 0, last31d: 0 },
+            },
+          ],
+        }),
+      },
+      { method: 'DELETE', url: searchKeyUrl('search_brave_1'), body: { ok: true } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    await within(card).findByText('Brave main');
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove Brave main' }));
+    const dialog = await screen.findByRole('dialog');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
+    });
+    const del = mock.mock.calls.find(
+      (c) => (c[0] as string) === searchKeyUrl('search_brave_1') && c[1]?.method === 'DELETE',
+    );
+    expect(del).toBeTruthy();
+  });
+
+  it('a non-owner sees the card read-only and no key list request is made', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      {
+        url: '/api/assistant',
+        body: assistantBody({
+          aiStatus: {
+            provider: 'gemini',
+            model: 'gemini-2.5-flash',
+            enabled: true,
+            modelConfigured: true,
+            keyConfigured: true,
+            keyReadable: true,
+            costClass: 'free',
+            secretSource: 'file',
+            webSearch: { keyConfigured: true, enabled: true, source: 'tavily' },
+          },
+          viewerIsOwner: false,
+        }),
+      },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    expect(
+      within(card).getByText('Only the server owner can change web search.'),
+    ).toBeTruthy();
+    expect(
+      (within(card).getByRole('radio', { name: 'Tavily' }) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(
+      (within(card).getByRole('radio', { name: 'Brave Search' }) as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(mock.mock.calls.some((c) => String(c[0]).includes('/api/assistant/search-keys'))).toBe(
+      false,
+    );
   });
 });
 

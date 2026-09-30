@@ -213,4 +213,42 @@ describe('AssistantSkillsPage', () => {
     const web = within(tools).getByText('Search the web').closest('li')!;
     expect(within(web).getByText('On')).toBeTruthy();
   });
+
+  it('names the Brave API until Tavily is chosen', async () => {
+    renderPage({
+      ...FULL,
+      aiStatus: {
+        ...FULL.aiStatus,
+        webSearch: { keyConfigured: true, enabled: true, source: 'brave' },
+      },
+    });
+    const tools = (await screen.findByRole('heading', { name: 'Look-up tools' })).closest(
+      'section',
+    )!;
+    const web = within(tools).getByText('Search the web').closest('li')!;
+    expect(
+      within(web).getByText(
+        'Sends a short query to the Brave Search API. Queries that look like they carry personal data are refused.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('names the Tavily API when the owner chose Tavily', async () => {
+    renderPage({
+      ...FULL,
+      aiStatus: {
+        ...FULL.aiStatus,
+        webSearch: { keyConfigured: true, enabled: true, source: 'tavily' },
+      },
+    });
+    const tools = (await screen.findByRole('heading', { name: 'Look-up tools' })).closest(
+      'section',
+    )!;
+    const web = within(tools).getByText('Search the web').closest('li')!;
+    expect(
+      within(web).getByText(
+        'Sends a short query to the Tavily search API. Queries that look like they carry personal data are refused.',
+      ),
+    ).toBeTruthy();
+  });
 });
