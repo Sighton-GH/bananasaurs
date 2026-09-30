@@ -139,9 +139,7 @@ export const renderHealth = (port: McpHealthPort): string => {
     // why, so a guild with failures points at the tool that shows them.
     const failed = guild.jobCounts['failed'] ?? 0;
     if (failed > 0) {
-      lines.push(
-        `  ${String(failed)} failed job(s): call list_jobs with this guildId to see why.`,
-      );
+      lines.push(`  ${String(failed)} failed job(s): call list_jobs with this guildId to see why.`);
     }
   }
   return lines.join('\n');

@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseGuildId } from '@bananasaurs/core';
-import {
-  GUILD_REFUSAL_MESSAGE,
-  INVALID_ARGUMENTS_MESSAGE,
-  type McpPrincipal,
-} from '../scope.js';
+import { GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
 import { MCP_READ_GET_JOB, MCP_READ_LIST_JOBS } from '../read-audit.js';
 import {
   getJobText,
@@ -40,7 +36,7 @@ const job = (over: Partial<McpJob> = {}): McpJob => ({
 
 const portWith = (jobs: readonly McpJob[]): McpJobsPort => ({
   listJobs: () => jobs,
-  findJob: (guildId, jobId) => jobs.find((j) => j.jobId === jobId),
+  findJob: (_guildId, jobId) => jobs.find((j) => j.jobId === jobId),
 });
 
 const jsonOf = (text: string): Record<string, unknown> =>
@@ -118,9 +114,7 @@ describe('list_jobs query defaults', () => {
 
 describe('list_jobs lastError', () => {
   it('redacts secrets in lastError', () => {
-    const port = portWith([
-      job({ lastError: 'HTTP 401 authorization: Bearer abc.def.ghi' }),
-    ]);
+    const port = portWith([job({ lastError: 'HTTP 401 authorization: Bearer abc.def.ghi' })]);
     const outcome = listJobsText(principal, port, { guildId: GUILD });
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;

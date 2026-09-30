@@ -7,10 +7,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { structuredText } from '../structured.js';
-import {
-  MCP_READ_GET_JOB,
-  MCP_READ_LIST_JOBS,
-} from '../read-audit.js';
+import { MCP_READ_GET_JOB, MCP_READ_LIST_JOBS } from '../read-audit.js';
 import { registerReadTool, type ReadOutcome, type RegisterContext } from '../register.js';
 
 /**
@@ -145,11 +142,7 @@ const listJobsInner = (
   };
 };
 
-const getJobInner = (
-  principal: McpPrincipal,
-  port: McpJobsPort,
-  rawArgs: unknown,
-): ReadOutcome => {
+const getJobInner = (principal: McpPrincipal, port: McpJobsPort, rawArgs: unknown): ReadOutcome => {
   const parsed = getJobArgsSchema.safeParse(rawArgs);
   if (!parsed.success) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);

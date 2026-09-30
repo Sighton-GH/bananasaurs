@@ -95,9 +95,7 @@ describe('get_health points at list_jobs when jobs have failed', () => {
     const text = textOf(
       getHealthText(principalWith(GUILD), portWithJobCounts({ failed: 14, done: 3 })),
     );
-    expect(text).toContain(
-      '14 failed job(s): call list_jobs with this guildId to see why.',
-    );
+    expect(text).toContain('14 failed job(s): call list_jobs with this guildId to see why.');
   });
 
   it('a guild with no failures carries no such line', () => {

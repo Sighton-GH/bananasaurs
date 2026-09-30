@@ -19,8 +19,6 @@ import {
   jobRepo,
   loggingRepo,
   mcpSendRepo,
-  modCaseRepo,
-  panelRepo,
   roleRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
@@ -1202,16 +1200,14 @@ describe('/mcp jobs tools across two guilds', () => {
     const accessToken = await mintToken();
 
     const own = callText(
-      (await mcpCall(accessToken, 'get_job', { guildId: '111111111111111111', jobId: jobA }))
-        .body,
+      (await mcpCall(accessToken, 'get_job', { guildId: '111111111111111111', jobId: jobA })).body,
     );
     expect(own.isError).not.toBe(true);
     expect(own.text).toContain('alpha failure marker');
 
     // B's id through A answers ok with a null job — never B's error text.
     const cross = callText(
-      (await mcpCall(accessToken, 'get_job', { guildId: '111111111111111111', jobId: jobB }))
-        .body,
+      (await mcpCall(accessToken, 'get_job', { guildId: '111111111111111111', jobId: jobB })).body,
     );
     expect(cross.isError).not.toBe(true);
     expect(cross.text).toContain('not found');

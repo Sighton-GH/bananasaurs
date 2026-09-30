@@ -29,11 +29,7 @@ export {
   type McpGuildHealth,
   type McpHealthPort,
 } from './tools/health.js';
-export {
-  registerReadTool,
-  type ReadOutcome,
-  type RegisterContext,
-} from './register.js';
+export { registerReadTool, type ReadOutcome, type RegisterContext } from './register.js';
 export {
   GET_JOB_TOOL_DESCRIPTION,
   GET_JOB_TOOL_NAME,

@@ -4,6 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { parseGuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE } from './scope.js';
 import { registerReadTool, type ReadOutcome } from './register.js';
 import type { McpReadAuditPort } from './read-audit.js';
@@ -72,7 +73,7 @@ describe('registerReadTool', () => {
         read: {
           kind: 'structural',
           action: 'mcp.read.fake_tool',
-          guildIds: ['111111111111111111'],
+          guildIds: [parseGuildId('111111111111111111')],
           resultCount: 1,
         },
       }),
@@ -112,12 +113,9 @@ describe('registerReadTool', () => {
 
   it('a throwing run answers the shared refusal', async () => {
     const audit = countingAudit();
-    const { client, close } = await connectWith(
-      (): ReadOutcome => {
-        throw new Error('boom');
-      },
-      audit,
-    );
+    const { client, close } = await connectWith((): ReadOutcome => {
+      throw new Error('boom');
+    }, audit);
     try {
       const result = (await client.callTool({
         name: 'fake_tool',
