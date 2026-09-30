@@ -11,11 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import {
-  EVIDENCE_CLOSE,
-  GUILD_REFUSAL_MESSAGE,
-  INVALID_ARGUMENTS_MESSAGE,
-} from '../index.js';
+import { EVIDENCE_CLOSE, GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE } from '../index.js';
 import { STRUCTURED_NOTE } from '../structured.js';
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
@@ -237,9 +233,7 @@ describe('every guild result is head, note, then one line of JSON (ADR 0110)', (
       }),
     );
     const [head] = text.split('\n');
-    expect(head).toBe(
-      'Channels in guild 111111111111111111: 2 channels (1 archive-enabled).',
-    );
+    expect(head).toBe('Channels in guild 111111111111111111: 2 channels (1 archive-enabled).');
     const data = jsonOf(text);
     expect(data['channels']).toEqual([
       {

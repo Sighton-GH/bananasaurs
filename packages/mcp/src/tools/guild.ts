@@ -290,9 +290,7 @@ const listChannelsInner = (
       name: safeName(c.name),
       type: c.type,
       parent:
-        c.parentId === undefined
-          ? null
-          : { id: c.parentId, name: safeName(c.parentName ?? '') },
+        c.parentId === undefined ? null : { id: c.parentId, name: safeName(c.parentName ?? '') },
       topic: c.topic === undefined ? null : safeName(c.topic),
       archive: c.archiveEnabled,
     })),
@@ -367,8 +365,7 @@ const listMembersInner = async (
     result.nextCursor === undefined
       ? 'End of list.'
       : `Next cursor: ${result.nextCursor} (pass as after to continue).`;
-  const head =
-    `Members in guild ${gate.guildId}: showing ${String(result.members.length)} ${noun}. ${cursor}`;
+  const head = `Members in guild ${gate.guildId}: showing ${String(result.members.length)} ${noun}. ${cursor}`;
   const data = {
     members: result.members.map((m) => ({
       id: m.id,

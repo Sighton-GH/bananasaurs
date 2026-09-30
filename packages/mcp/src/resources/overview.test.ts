@@ -402,9 +402,7 @@ describe('overview card JSON (ADR 0110)', () => {
       {
         id: '000000000000000001',
         name: '',
-        channels: [
-          { id: '999999999999999999', name: 'orphan', type: 'GuildText', archive: false },
-        ],
+        channels: [{ id: '999999999999999999', name: 'orphan', type: 'GuildText', archive: false }],
       },
     ]);
     expect(data['uncategorised']).toEqual([]);
@@ -443,8 +441,8 @@ describe('overview card JSON (ADR 0110)', () => {
       expect(category.channels).toHaveLength(10);
     }
     expect(data['uncategorised']).toEqual([]);
-    expect((data['roles'] as readonly unknown[])).toHaveLength(60);
-    expect((data['panels'] as readonly unknown[])).toHaveLength(3);
+    expect(data['roles'] as readonly unknown[]).toHaveLength(60);
+    expect(data['panels'] as readonly unknown[]).toHaveLength(3);
     expect(data['rules']).toEqual({
       test: { total: 1, enabled: 1 },
       observe: { total: 2, enabled: 1 },
