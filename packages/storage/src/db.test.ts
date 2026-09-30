@@ -623,6 +623,192 @@ describe('migration 0039 keeps one chain row per model when 0038 duplicated fall
   });
 });
 
+describe('migration 0080 rebuild preserves archive rows, edits, attachments and FTS', () => {
+  const GUILD_ID = '111111111111111111';
+  const CHANNEL_ID = '222222222222222222';
+  const MEMBER_ID = '333333333333333333';
+  const MESSAGE_ONE = '444444444444444444';
+  const MESSAGE_PURGED = '555555555555555555';
+  const ATTACHMENT_ID = '666666666666666666';
+
+  /**
+   * A migrations folder containing only the journal entries and `.sql` files
+   * up to and including `tag`, so `migrate()` can run against a snapshot of
+   * the schema older than what ships. Same shape as the neighbouring
+   * `migrationsFolderUpTo` helpers, keyed by tag rather than idx so the test
+   * names the migration it stops before.
+   */
+  const migrationsFolderUpToTag = (tag: string): string => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+    const last = journal.entries.find((entry) => entry.tag === tag);
+    expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-rebuild-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries) {
+      fs.copyFileSync(
+        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+        path.join(dir, `${entry.tag}.sql`),
+      );
+    }
+    return dir;
+  };
+
+  it('0080 rebuild preserves archive rows, edits, attachments and FTS', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0080, seeded the way a
+    // real upgrade would find it: two message rows (one live with searchable
+    // content, one purged), an edit row and an attachment row on the first.
+    runMigrations(raw, db, migrationsFolderUpToTag('0052_conversation_summary_search'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(`INSERT INTO archive_channels (guild_id, channel_id, enabled_at) VALUES (?, ?, 0)`)
+      .run(GUILD_ID, CHANNEL_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages
+           (guild_id, message_id, channel_id, thread_id, author_id, content,
+            created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at)
+         VALUES (?, ?, ?, NULL, ?, 'quokka snack manifest for the picnic', 1000, NULL, NULL, 'default', NULL, NULL)`,
+      )
+      .run(GUILD_ID, MESSAGE_ONE, CHANNEL_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages
+           (guild_id, message_id, channel_id, thread_id, author_id, content,
+            created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at)
+         VALUES (?, ?, ?, NULL, ?, NULL, 2000, NULL, 2500, 'default', NULL, 4000)`,
+      )
+      .run(GUILD_ID, MESSAGE_PURGED, CHANNEL_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_message_edits (guild_id, message_id, edit_seq, content, edited_at)
+         VALUES (?, ?, 1, 'quokka snack draft', 900)`,
+      )
+      .run(GUILD_ID, MESSAGE_ONE);
+    raw
+      .prepare(
+        `INSERT INTO archive_attachments
+           (guild_id, message_id, attachment_id, filename, content_type, size, sha256, bytes_path)
+         VALUES (?, ?, ?, 'menu.png', 'image/png', 1234, NULL, NULL)`,
+      )
+      .run(GUILD_ID, MESSAGE_ONE, ATTACHMENT_ID);
+
+    // Applies 0080 against the seeded rows, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // Both message rows survive with every original column value unchanged.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, message_id, channel_id, thread_id, author_id, content,
+                  created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at
+           FROM archive_messages ORDER BY message_id`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ONE,
+        channel_id: CHANNEL_ID,
+        thread_id: null,
+        author_id: MEMBER_ID,
+        content: 'quokka snack manifest for the picnic',
+        created_at: 1000,
+        edited_at: null,
+        deleted_at: null,
+        retention_class: 'default',
+        case_id: null,
+        content_purged_at: null,
+      },
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_PURGED,
+        channel_id: CHANNEL_ID,
+        thread_id: null,
+        author_id: MEMBER_ID,
+        content: null,
+        created_at: 2000,
+        edited_at: null,
+        deleted_at: 2500,
+        retention_class: 'default',
+        case_id: null,
+        content_purged_at: 4000,
+      },
+    ]);
+    // The two new columns land NULL on the carried rows.
+    expect(
+      raw
+        .prepare(
+          `SELECT message_id, reply_to_message_id, mentioned_role_ids
+           FROM archive_messages ORDER BY message_id`,
+        )
+        .all(),
+    ).toEqual([
+      { message_id: MESSAGE_ONE, reply_to_message_id: null, mentioned_role_ids: null },
+      { message_id: MESSAGE_PURGED, reply_to_message_id: null, mentioned_role_ids: null },
+    ]);
+    // The edit and attachment rows survive with the message they belong to.
+    expect(
+      raw.prepare(`SELECT guild_id, message_id, edit_seq, content, edited_at FROM archive_message_edits`).all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ONE,
+        edit_seq: 1,
+        content: 'quokka snack draft',
+        edited_at: 900,
+      },
+    ]);
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, message_id, attachment_id, filename, content_type, size, sha256, bytes_path
+           FROM archive_attachments`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ONE,
+        attachment_id: ATTACHMENT_ID,
+        filename: 'menu.png',
+        content_type: 'image/png',
+        size: 1234,
+        sha256: null,
+        bytes_path: null,
+      },
+    ]);
+    // The rebuild leaves no dangling reference behind.
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+    // The re-attached triggers plus the trailing rebuild keep the FTS index
+    // tracking content: the distinctive word still finds the first message.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, channel_id, message_id FROM archive_messages_fts
+           WHERE archive_messages_fts MATCH 'quokka'`,
+        )
+        .all(),
+    ).toEqual([{ guild_id: GUILD_ID, channel_id: CHANNEL_ID, message_id: MESSAGE_ONE }]);
+
+    raw.close();
+  });
+});
+
 describe('migration journal ordering (ADR 0112 section 3)', () => {
   interface JournalEntry {
     readonly idx: number;
