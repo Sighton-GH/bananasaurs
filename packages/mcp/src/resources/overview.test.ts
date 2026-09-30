@@ -21,6 +21,7 @@ import {
   type McpRecordsPort,
 } from '../tools/records.js';
 import type { McpGuildChannel, McpGuildPort } from '../tools/guild.js';
+import type { McpJobsPort } from '../tools/jobs.js';
 import {
   buildOverviewCard,
   OVERVIEW_RESOURCE_URI_TEMPLATE,
@@ -100,6 +101,12 @@ const stubRecords = (): McpRecordsPort => ({
   listPanels: () => [{ panelId: 'roles-panel' }],
 });
 
+/** Minimal jobs port: this file pins the overview resource, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -114,6 +121,7 @@ const connectPair = async (
     // Required since M5 Task 4; never called by the resource pinned here.
     send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
     readAudit: noopReadAudit,
+    jobs: stubJobs(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

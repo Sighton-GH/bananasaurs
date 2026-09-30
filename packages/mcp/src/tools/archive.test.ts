@@ -40,6 +40,13 @@ import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
 import type { McpGuildPort } from './guild.js';
 import type { McpRecordsPort } from './records.js';
+import type { McpJobsPort } from './jobs.js';
+
+/** Minimal jobs port: this file pins the archive tools, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
 
 /**
  * Task 4b, tool layer: `search_messages`, `read_channel_history` and
@@ -533,6 +540,7 @@ describe('archive tools on the MCP server', () => {
       // Required since M5 Task 4; never called by the archive tools pinned here.
       send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
       readAudit: noopReadAudit,
+      jobs: stubJobs(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -549,10 +557,10 @@ describe('archive tools on the MCP server', () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
       const list = await client.listTools();
-      // Eleven since Task 6: the records tools register alongside the archive
-      // and guild ones (the guild and records stubs above answer empty, which
-      // is all this file needs — their own behaviour is pinned in guild.test.ts
-      // and records.test.ts).
+      // Fourteen since the jobs tools: the records and jobs tools register
+      // alongside the archive and guild ones (the guild, records and jobs
+      // stubs above answer empty, which is all this file needs — their own
+      // behaviour is pinned in guild.test.ts, records.test.ts and jobs.test.ts).
       const { LIST_CHANNELS_TOOL_NAME, LIST_MEMBERS_TOOL_NAME, LIST_ROLES_TOOL_NAME } =
         await import('./guild.js');
       const {
@@ -561,6 +569,7 @@ describe('archive tools on the MCP server', () => {
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
       } = await import('./records.js');
+      const { LIST_JOBS_TOOL_NAME, GET_JOB_TOOL_NAME } = await import('./jobs.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
         SEARCH_MESSAGES_TOOL_NAME,
@@ -574,6 +583,8 @@ describe('archive tools on the MCP server', () => {
         GET_MOD_CASE_TOOL_NAME,
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
+        LIST_JOBS_TOOL_NAME,
+        GET_JOB_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

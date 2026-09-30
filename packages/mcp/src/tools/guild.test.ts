@@ -28,6 +28,13 @@ import {
   type McpGuildPort,
 } from './guild.js';
 import type { McpPrincipal } from '../scope.js';
+import type { McpJobsPort } from './jobs.js';
+
+/** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
 
 /**
  * Task 5, tool layer: `list_channels`, `list_roles` and `list_members` over a
@@ -477,6 +484,7 @@ describe('guild tools on the MCP server', () => {
       // Required since M5 Task 4; never called by the guild tools pinned here.
       send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
       readAudit: noopReadAudit,
+      jobs: stubJobs(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -489,7 +497,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all twelve tools and still no send_message', async () => {
+  it('lists all fourteen tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -506,6 +514,8 @@ describe('guild tools on the MCP server', () => {
         'get_mod_case',
         'list_audit_events',
         'get_server_overview',
+        'list_jobs',
+        'get_job',
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

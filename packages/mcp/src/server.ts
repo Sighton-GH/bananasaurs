@@ -71,6 +71,7 @@ import {
   sendMessageText,
   type McpSendPort,
 } from './tools/send.js';
+import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
@@ -134,6 +135,12 @@ export interface McpServerDeps {
    * construction, not silently at the first call.
    */
   readonly readAudit: McpReadAuditPort;
+  /**
+   * The daemon's per-request jobs port (the owner's "14 failed jobs" answer).
+   * Required like the ports above: a missing port must fail at construction,
+   * not serve refusals dressed as a working toolset.
+   */
+  readonly jobs: McpJobsPort;
 }
 
 /** The ok-outcome shape every read tool returns (ADR 0050). */
@@ -157,11 +164,11 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
   // Ruling M4-D17: the scope check happens at registration, not at call
   // time. A token without `bananasaurs:read` gets a server without any of the
-  // eleven read tools or the resource — it cannot see them in `tools/list`
+  // fourteen read tools or the resource — it cannot see them in `tools/list`
   // at all — and a token without `bananasaurs:send` likewise never sees
   // `send_message`. M5 adds the second half: `send_message` registers only
   // under the send scope, independently of the read-scope block, so a token
-  // with both scopes gets all twelve.
+  // with both scopes gets all fifteen.
   if (hasSendScope(deps.principal)) {
     const send = deps.send;
     server.tool(
@@ -389,6 +396,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       }
     },
   );
+  registerJobTools({ server, principal: deps.principal, readAudit }, deps.jobs);
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

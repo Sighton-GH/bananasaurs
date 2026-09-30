@@ -29,6 +29,7 @@ import {
 } from './tools/guild.js';
 import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
+import type { McpJobsPort } from './tools/jobs.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -104,6 +105,12 @@ const stubSend = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
 });
 
+/** Minimal jobs port: this file pins registration, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -118,6 +125,7 @@ const connectPair = async (
     guild: overrides.guild ?? stubGuild(),
     records: stubRecords(),
     readAudit: overrides.readAudit ?? noopReadAudit,
+    jobs: stubJobs(),
     send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -159,13 +167,13 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists send_message first, alongside the twelve read tools', async () => {
+  it('lists send_message first, alongside the fourteen read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(13);
+      expect(list.tools).toHaveLength(15);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
@@ -180,11 +188,32 @@ describe('createMcpServer', () => {
         GET_MOD_CASE_TOOL_NAME,
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
+        'list_jobs',
+        'get_job',
       ]);
       const resources = await client.listResourceTemplates();
       expect(resources.resourceTemplates).toHaveLength(1);
     } finally {
       await close();
+    }
+  });
+
+  it('a read-scoped tools/list includes list_jobs and get_job; a send-only one does not', async () => {
+    const read = await connectPair(principalWith([GUILD]));
+    try {
+      const list = await read.client.listTools();
+      expect(list.tools.map((tool) => tool.name)).toContain('list_jobs');
+      expect(list.tools.map((tool) => tool.name)).toContain('get_job');
+    } finally {
+      await read.close();
+    }
+    const sendOnly = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
+    try {
+      const list = await sendOnly.client.listTools();
+      expect(list.tools.map((tool) => tool.name)).not.toContain('list_jobs');
+      expect(list.tools.map((tool) => tool.name)).not.toContain('get_job');
+    } finally {
+      await sendOnly.close();
     }
   });
 

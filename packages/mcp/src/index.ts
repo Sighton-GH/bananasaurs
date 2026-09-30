@@ -30,12 +30,33 @@ export {
   type McpHealthPort,
 } from './tools/health.js';
 export {
+  registerReadTool,
+  type ReadOutcome,
+  type RegisterContext,
+} from './register.js';
+export {
+  GET_JOB_TOOL_DESCRIPTION,
+  GET_JOB_TOOL_NAME,
+  getJobParams,
+  getJobText,
+  JOB_ERROR_PREVIEW_MAX,
+  LIST_JOBS_TOOL_DESCRIPTION,
+  LIST_JOBS_TOOL_NAME,
+  listJobsParams,
+  listJobsText,
+  registerJobTools,
+  type McpJob,
+  type McpJobsPort,
+} from './tools/jobs.js';
+export {
   MCP_READ_GET_HEALTH,
+  MCP_READ_GET_JOB,
   MCP_READ_GET_MESSAGE,
   MCP_READ_GET_MOD_CASE,
   MCP_READ_GET_SERVER_OVERVIEW,
   MCP_READ_LIST_AUDIT_EVENTS,
   MCP_READ_LIST_CHANNELS,
+  MCP_READ_LIST_JOBS,
   MCP_READ_LIST_MEMBERS,
   MCP_READ_LIST_MOD_CASES,
   MCP_READ_LIST_ROLES,

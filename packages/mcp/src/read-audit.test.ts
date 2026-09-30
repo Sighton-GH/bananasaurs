@@ -44,6 +44,7 @@ import {
 } from './tools/records.js';
 import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
 import type { McpSendPort } from './tools/send.js';
+import type { McpJobsPort } from './tools/jobs.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -386,6 +387,12 @@ const stubSendPort = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
 });
 
+/** Minimal jobs port: this file pins read logging, never the jobs tools. */
+const stubJobsPort = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -398,6 +405,7 @@ const connectWithReadAudit = async (
     guild: guildPort(),
     records: recordsPort(),
     readAudit,
+    jobs: stubJobsPort(),
     send: stubSendPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
