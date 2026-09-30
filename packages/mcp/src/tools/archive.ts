@@ -310,7 +310,10 @@ const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => {
     timestamp: new Date(message.createdAt).toISOString(),
     // A reply names the message it answers on the first line; the envelope
     // frames the whole content, so the id stays data, never instruction.
-    content: message.replyToMessageId === undefined ? body : `reply to: ${message.replyToMessageId}\n${body}`,
+    content:
+      message.replyToMessageId === undefined
+        ? body
+        : `reply to: ${message.replyToMessageId}\n${body}`,
   };
 };
 

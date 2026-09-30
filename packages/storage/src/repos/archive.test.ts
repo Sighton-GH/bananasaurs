@@ -35,7 +35,6 @@ import {
   upsertMessage,
 } from './archive.js';
 import { SEARCH_LIMIT_MAX } from './archive-search.js';
-import type { UpsertMessageInput } from './archive.js';
 
 /**
  * The archive repository against the real migrations.
@@ -919,7 +918,7 @@ describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
       attachments: [],
       replyToMessageId: REPLY_TO,
       mentionedRoleIds: [ROLE_A, ROLE_B],
-    } as UpsertMessageInput);
+    });
     expect(readReplyColumns(a, '666666666666666661')).toEqual({
       replyTo: REPLY_TO,
       roles: JSON.stringify([ROLE_A, ROLE_B]),
@@ -937,7 +936,7 @@ describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
       editedAt: undefined,
       attachments: [],
       mentionedRoleIds: [],
-    } as UpsertMessageInput);
+    });
     expect(readReplyColumns(a, '666666666666666662')).toEqual({ replyTo: null, roles: null });
   });
 
@@ -952,14 +951,14 @@ describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
       editedAt: undefined,
       attachments: [],
       mentionedRoleIds: [ROLE_A],
-    } as UpsertMessageInput);
+    });
     expect(
       recordEdit(a, {
         messageId: '666666666666666663',
         content: 'after',
         editedAt: 3000,
         mentionedRoleIds: [ROLE_B],
-      } as Parameters<typeof recordEdit>[1]),
+      }),
     ).toBe('recorded');
     expect(readReplyColumns(a, '666666666666666663')).toEqual({
       replyTo: null,
