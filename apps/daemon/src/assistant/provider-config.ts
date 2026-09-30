@@ -4,6 +4,7 @@ import {
   assistantProviderRepo,
   assistantProvidersRepo,
   eligibilityRepo,
+  searchKeysRepo,
   type InstanceScope,
 } from '@bananasaurs/storage';
 import {
@@ -13,6 +14,14 @@ import {
   type ProviderId,
 } from './model-chain.js';
 import { entryUsage, reserveEntryCall, type ReserveOutcome } from './local-limit.js';
+import { braveWebSearch } from './brave-search.js';
+import { tavilyWebSearch } from './tavily-search.js';
+import {
+  createWebSearchRun,
+  type SearchClient,
+  type WebSearchKey,
+  type WebSearchRun,
+} from './web-search.js';
 import { openWithKey as open, sealWithKey as seal } from '../crypto/seal.js';
 
 /** Same display labels the 0039 migration gave a provider's copied key. */
@@ -40,8 +49,12 @@ export interface ProviderConfigStatus {
   readonly secretSource: ProviderSecretSource;
   /** ADR 0068: up to two more models, tried in order when the one before is busy. */
   readonly fallbackModels?: readonly string[];
-  /** ADR 0066. Absent while no Brave key is saved and search is off. */
-  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
+  /** ADR 0120. Absent while no search key is stored and search is off. */
+  readonly webSearch?: {
+    readonly keyConfigured: boolean;
+    readonly enabled: boolean;
+    readonly source: 'brave' | 'tavily';
+  };
 }
 export interface ProviderConfigStore {
   status(): ProviderConfigStatus;
@@ -55,8 +68,8 @@ export interface ProviderConfigStore {
       costClass?: ProviderCostClass | undefined;
       /** ADR 0068: the backups in order; `[]` clears them, omitted keeps them. */
       fallbackModels?: readonly string[] | undefined;
-      /** Write-only; omitted keeps the saved key. */
-      searchApiKey?: string | undefined;
+      /** ADR 0120: omitted keeps the saved source, default `'brave'`. */
+      searchSource?: 'brave' | 'tavily' | undefined;
       searchEnabled?: boolean | undefined;
     },
     now: number,
@@ -134,6 +147,42 @@ export interface ProviderConfigStore {
    * saved or while it does not open under this daemon's secret.
    */
   githubToken(): string | undefined;
+  /** ADR 0120: the stored search keys, sealed values never opened. */
+  searchKeys(): readonly searchKeysRepo.StoredSearchKey[];
+  /** Seals `apiKey`; returns the new key id. */
+  addSearchKey(
+    input: {
+      source: 'brave' | 'tavily';
+      label: string;
+      apiKey: string;
+      monthlyLimit?: number | null | undefined;
+      dailyLimit?: number | null | undefined;
+    },
+    now: number,
+  ): string;
+  /** Write-only: an omitted `apiKey` keeps the saved one. false when the key does not exist. */
+  updateSearchKey(
+    keyId: string,
+    input: {
+      label?: string | undefined;
+      apiKey?: string | undefined;
+      enabled?: boolean | undefined;
+      monthlyLimit?: number | null | undefined;
+      dailyLimit?: number | null | undefined;
+    },
+    now: number,
+  ): boolean;
+  moveSearchKey(keyId: string, direction: 'up' | 'down', now: number): boolean;
+  removeSearchKey(keyId: string): boolean;
+  /** Whether the stored key opens under this daemon's secret; false when unknown. */
+  isSearchKeyReadable(keyId: string): boolean;
+  /** Live usage for the dashboard; undefined for an unknown key. */
+  searchKeyUsage(keyId: string): searchKeysRepo.SearchKeyUsage | undefined;
+  /** ADR 0120: the web search run for one request, or undefined while search is off or no key is usable. */
+  webSearch(
+    guildId: string,
+    clients?: { readonly brave?: SearchClient; readonly tavily?: SearchClient },
+  ): WebSearchRun | undefined;
 }
 /**
  * The provider as `.env` configures it: what runs when nothing is saved in
@@ -186,13 +235,21 @@ export const createProviderConfigStore = (
       const storedKeys = assistantProvidersRepo.listKeys(instance);
       const chainRows = assistantProvidersRepo.getModelChain(instance);
       const searchRow = assistantProviderRepo.get(instance);
+      const storedSearchKeys = searchKeysRepo.listSearchKeys(instance);
+      // ADR 0120: present when any search key is stored or search is on.
+      // keyConfigured counts only enabled keys of the current source.
+      const searchSource = searchRow?.searchSource ?? 'brave';
+      const searchEnabled = searchRow?.searchEnabled === true;
       const webSearch =
-        searchRow?.searchApiKeyEnc === undefined && searchRow?.searchEnabled !== true
+        storedSearchKeys.length === 0 && !searchEnabled
           ? {}
           : {
               webSearch: {
-                keyConfigured: searchRow.searchApiKeyEnc !== undefined,
-                enabled: searchRow.searchEnabled === true,
+                keyConfigured: storedSearchKeys.some(
+                  (k) => k.source === searchSource && k.enabled,
+                ),
+                enabled: searchEnabled,
+                source: searchSource,
               },
             };
       if (storedKeys.length === 0 && chainRows.length === 0) {
@@ -245,19 +302,14 @@ export const createProviderConfigStore = (
     effective(envConfig) {
       const storedKeys = assistantProvidersRepo.listKeys(instance);
       const chainRows = assistantProvidersRepo.getModelChain(instance);
-      const searchRow = assistantProviderRepo.get(instance);
       // A saved row is authoritative for web search too: off there means off.
+      // Search itself no longer flows through here — it runs through
+      // webSearch() (ADR 0120) — so the env seed is dropped whenever a row
+      // exists and never injected back.
       const rest: Config = { ...envConfig };
       delete rest.BRAVE_SEARCH_API_KEY;
       delete rest.AI_FALLBACK_MODELS;
-      const searchKey =
-        searchRow?.searchEnabled === true && searchRow.searchApiKeyEnc !== undefined
-          ? open(key, searchRow.searchApiKeyEnc)
-          : undefined;
-      const base: Config = {
-        ...rest,
-        ...(searchKey === undefined ? {} : { BRAVE_SEARCH_API_KEY: searchKey }),
-      };
+      const base: Config = { ...rest };
       if (storedKeys.length === 0 && chainRows.length === 0) return base;
       const entry0 = chainRows[0];
       if (entry0 === undefined) return { ...base, AI_PROVIDER: 'off' };
@@ -298,10 +350,9 @@ export const createProviderConfigStore = (
       const costClass =
         input.costClass ??
         (same !== undefined && model === same.model && sameOrder ? same.costClass : 'unknown');
-      // Web search is its own service (ADR 0066): its key survives an AI
-      // service switch.
-      const searchApiKeyEnc =
-        input.searchApiKey !== undefined ? seal(key, input.searchApiKey) : current?.searchApiKeyEnc;
+      // Web search is its own service (ADR 0120): the source survives an AI
+      // service switch, and the old `search_api_key_enc` column is kept but
+      // no longer read.
       assistantProviderRepo.put(instance, {
         provider: input.provider,
         ...(model === undefined ? {} : { model }),
@@ -309,8 +360,11 @@ export const createProviderConfigStore = (
         enabled: input.enabled,
         costClass,
         ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
-        ...(searchApiKeyEnc === undefined ? {} : { searchApiKeyEnc }),
+        ...(current?.searchApiKeyEnc === undefined
+          ? {}
+          : { searchApiKeyEnc: current.searchApiKeyEnc }),
         searchEnabled: input.searchEnabled ?? current?.searchEnabled ?? false,
+        searchSource: input.searchSource ?? current?.searchSource ?? 'brave',
         updatedAt: now,
       });
       // Task 6b fix round 1: `status()`/`effective()`/`chain()` read the keys
@@ -443,6 +497,90 @@ export const createProviderConfigStore = (
       if (sealed === null) return undefined;
       const opened = open(key, sealed);
       return opened === undefined || opened === '' ? undefined : opened;
+    },
+    searchKeys() {
+      return searchKeysRepo.listSearchKeys(instance);
+    },
+    addSearchKey(input, now) {
+      return searchKeysRepo.addSearchKey(instance, {
+        source: input.source,
+        label: input.label,
+        apiKeyEnc: seal(key, input.apiKey),
+        ...(input.monthlyLimit === undefined ? {} : { monthlyLimit: input.monthlyLimit }),
+        ...(input.dailyLimit === undefined ? {} : { dailyLimit: input.dailyLimit }),
+        now,
+      });
+    },
+    updateSearchKey(keyId, input, now) {
+      return searchKeysRepo.updateSearchKey(instance, keyId, {
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.apiKey === undefined ? {} : { apiKeyEnc: seal(key, input.apiKey) }),
+        ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+        ...(input.monthlyLimit === undefined ? {} : { monthlyLimit: input.monthlyLimit }),
+        ...(input.dailyLimit === undefined ? {} : { dailyLimit: input.dailyLimit }),
+        now,
+      });
+    },
+    moveSearchKey(keyId, direction, now) {
+      return searchKeysRepo.moveSearchKey(instance, keyId, direction, now);
+    },
+    removeSearchKey(keyId) {
+      return searchKeysRepo.removeSearchKey(instance, keyId);
+    },
+    isSearchKeyReadable(keyId) {
+      const stored = searchKeysRepo.listSearchKeys(instance).find((k) => k.keyId === keyId);
+      if (stored === undefined) return false;
+      // Opened and dropped: the plaintext never leaves this expression.
+      return open(key, stored.apiKeyEnc) !== undefined;
+    },
+    searchKeyUsage(keyId) {
+      const stored = searchKeysRepo.listSearchKeys(instance).find((k) => k.keyId === keyId);
+      if (stored === undefined) return undefined;
+      return searchKeysRepo.searchKeyUsage(instance, {
+        keyId,
+        now: clock(),
+        monthlyLimit: stored.monthlyLimit,
+        dailyLimit: stored.dailyLimit,
+      });
+    },
+    webSearch(guildId, clients) {
+      const row = assistantProviderRepo.get(instance);
+      // No saved row: the `.env` Brave seed runs as before, never limited
+      // and never recorded (ADR 0120 §9).
+      if (row === undefined) {
+        const envKey = envBase?.BRAVE_SEARCH_API_KEY;
+        if (envKey === undefined) return undefined;
+        return createWebSearchRun({
+          instance,
+          guildId,
+          source: 'brave',
+          keys: [{ keyId: null, apiKey: envKey, monthlyLimit: null, dailyLimit: null }],
+          now: clock,
+          client: clients?.brave ?? ((apiKey, q) => braveWebSearch({ apiKey }, q)),
+        });
+      }
+      if (row.searchEnabled !== true) return undefined;
+      const source = row.searchSource ?? 'brave';
+      const keys: WebSearchKey[] = [];
+      for (const stored of searchKeysRepo.listSearchKeys(instance)) {
+        if (stored.source !== source || !stored.enabled) continue;
+        // Opened for the client call only; unreadable keys are dropped.
+        const apiKey = open(key, stored.apiKeyEnc);
+        if (apiKey === undefined) continue;
+        keys.push({
+          keyId: stored.keyId,
+          apiKey,
+          monthlyLimit: stored.monthlyLimit,
+          dailyLimit: stored.dailyLimit,
+        });
+      }
+      if (keys.length === 0) return undefined;
+      const client =
+        clients?.[source] ??
+        (source === 'brave'
+          ? ((apiKey: string, q: string) => braveWebSearch({ apiKey }, q))
+          : ((apiKey: string, q: string) => tavilyWebSearch({ apiKey }, q)));
+      return createWebSearchRun({ instance, guildId, source, keys, now: clock, client });
     },
   };
 };
