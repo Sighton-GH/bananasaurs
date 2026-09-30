@@ -601,6 +601,7 @@ export {
 } from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,
+  detectWithheldEvidence,
   redactEvidenceText,
   scanOutboundRequest,
   type OutboundSafetyResult,
