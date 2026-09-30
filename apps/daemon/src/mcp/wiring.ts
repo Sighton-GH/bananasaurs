@@ -9,6 +9,7 @@ import {
   type DiscordPort,
   type GuildId,
   type Logger,
+  type OpsJobRow,
 } from '@bananasaurs/core';
 import { resolveChannel } from '../channels/resolver.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
@@ -21,6 +22,8 @@ import {
   type McpGuildHealth,
   type McpGuildPort,
   type McpHealthPort,
+  type McpJob,
+  type McpJobsPort,
   type McpPrincipal,
   type McpReadAuditPort,
   type McpRecordsPort,
@@ -551,6 +554,44 @@ const recordsPortFor = (
 });
 
 /**
+ * Projects one ops job row to the seven fields `packages/mcp` reads, field
+ * by field like every other port here. `dedupeKey` stops at this boundary:
+ * it names the dedupe contract, which the operator never needs, and the
+ * point of naming each field is that a column added to `jobs` later cannot
+ * arrive in the MCP package for free.
+ */
+const projectJob = (row: OpsJobRow): McpJob => ({
+  jobId: row.jobId,
+  kind: row.kind,
+  state: row.state,
+  attempts: row.attempts,
+  maxAttempts: row.maxAttempts,
+  runAfter: row.runAfter,
+  lastError: row.lastError,
+});
+
+/**
+ * The `McpJobsPort` behind `list_jobs` and `get_job`, field by field like
+ * `healthPortFor` above. Each method turns the already-resolved `GuildId`
+ * into a `GuildScope` per call and reads through the real ops ports —
+ * nothing here writes, and M4 is read-only. Guild isolation comes from the
+ * scope: a job enqueued in guild B is invisible to a `list_jobs` call for
+ * guild A. A fault leaves one allowlisted-fields error line via `loggedCall`
+ * above, never the last error text (rule 4).
+ */
+const jobsPortFor = (deps: HttpDeps): McpJobsPort => ({
+  listJobs: (guildId, query) =>
+    loggedCall(deps.logger, 'listJobs', () =>
+      deps.portsFor(deps.scopes.forGuild(guildId)).listJobs(query).map(projectJob),
+    ),
+  findJob: (guildId, jobId) =>
+    loggedCall(deps.logger, 'findJob', () => {
+      const row = deps.portsFor(deps.scopes.forGuild(guildId)).findJob(jobId);
+      return row === undefined ? undefined : projectJob(row);
+    }),
+});
+
+/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -896,6 +937,7 @@ export const registerMcpRoutes = (
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
+      jobs: jobsPortFor(deps),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

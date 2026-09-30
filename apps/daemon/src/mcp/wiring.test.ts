@@ -16,8 +16,11 @@ import {
   authzRepo,
   effectRepo,
   guildRepo,
+  jobRepo,
   loggingRepo,
   mcpSendRepo,
+  modCaseRepo,
+  panelRepo,
   roleRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
@@ -283,7 +286,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all twelve tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all fourteen tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -291,7 +294,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(14);
     expect(names).toEqual([
       'get_health',
       'search_messages',
@@ -305,6 +308,8 @@ describe('/mcp behind the bearer guard', () => {
       'get_mod_case',
       'list_audit_events',
       'get_server_overview',
+      'list_jobs',
+      'get_job',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -1118,6 +1123,99 @@ describe('/mcp archive tools across two guilds', () => {
     expect(noText.isError).not.toBe(true);
     expect(noText.text).toContain(ARCHIVE_NO_TEXT_MARKER);
     expect(noText.text).not.toContain(ARCHIVE_PURGED_MARKER);
+  });
+});
+
+describe('/mcp jobs tools across two guilds', () => {
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  /** One failed job per guild through the real ops ports, returning both ids. */
+  const seedFailedJobs = (): { readonly jobA: number; readonly jobB: number } => {
+    const enqueuedA = jobRepo.enqueue(t.scopes.forGuild(GUILD_A), {
+      kind: 'reconcile_guild',
+      payload: '{}',
+      dedupeKey: 'mcp-jobs-test-a',
+      now: clock,
+    });
+    const enqueuedB = jobRepo.enqueue(t.scopes.forGuild(GUILD_B), {
+      kind: 'reconcile_guild',
+      payload: '{}',
+      dedupeKey: 'mcp-jobs-test-b',
+      now: clock,
+    });
+    expect(enqueuedA.jobId).toBeDefined();
+    expect(enqueuedB.jobId).toBeDefined();
+    const jobA = enqueuedA.jobId as number;
+    const jobB = enqueuedB.jobId as number;
+    jobRepo.failJob(t.scopes.forGuild(GUILD_A), jobA, 'alpha failure marker', clock, {
+      permanent: true,
+    });
+    jobRepo.failJob(t.scopes.forGuild(GUILD_B), jobB, 'beta failure marker', clock, {
+      permanent: true,
+    });
+    return { jobA, jobB };
+  };
+
+  it('list_jobs for guild A returns only guild A jobs', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    seedFailedJobs();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (await mcpCall(accessToken, 'list_jobs', { guildId: '111111111111111111' })).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha failure marker');
+    expect(found.text).not.toContain('beta failure marker');
+  });
+
+  it('get_job is guild-partitioned too: guild B job id through guild A is not found', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    const { jobA, jobB } = seedFailedJobs();
+    const accessToken = await mintToken();
+
+    const own = callText(
+      (await mcpCall(accessToken, 'get_job', { guildId: '111111111111111111', jobId: jobA }))
+        .body,
+    );
+    expect(own.isError).not.toBe(true);
+    expect(own.text).toContain('alpha failure marker');
+
+    // B's id through A answers ok with a null job — never B's error text.
+    const cross = callText(
+      (await mcpCall(accessToken, 'get_job', { guildId: '111111111111111111', jobId: jobB }))
+        .body,
+    );
+    expect(cross.isError).not.toBe(true);
+    expect(cross.text).toContain('not found');
+    expect(cross.text).not.toContain('beta failure marker');
   });
 });
 
