@@ -42,9 +42,27 @@ const channels: readonly McpGuildChannel[] = [
 ];
 
 const roles: readonly McpGuildRole[] = [
-  { id: '300000000000000001', name: 'Car Team A', position: 1, color: 0, managedByBananasaurs: false },
-  { id: '300000000000000002', name: 'club member', position: 2, color: 0, managedByBananasaurs: false },
-  { id: '300000000000000003', name: 'Club Member', position: 3, color: 0, managedByBananasaurs: false },
+  {
+    id: '300000000000000001',
+    name: 'Car Team A',
+    position: 1,
+    color: 0,
+    managedByBananasaurs: false,
+  },
+  {
+    id: '300000000000000002',
+    name: 'club member',
+    position: 2,
+    color: 0,
+    managedByBananasaurs: false,
+  },
+  {
+    id: '300000000000000003',
+    name: 'Club Member',
+    position: 3,
+    color: 0,
+    managedByBananasaurs: false,
+  },
 ];
 
 describe('resolveChannelRef', () => {

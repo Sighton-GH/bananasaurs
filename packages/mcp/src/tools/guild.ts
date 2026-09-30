@@ -454,7 +454,11 @@ const listThreadsInner = async (
   const resolved = resolveChannelRef(port.listChannels(gate.guildId), parsed.data.channelId);
   if (!resolved.ok) return { ok: false, message: resolved.message };
   const channelId = resolved.id;
-  const threads = await port.listThreads(gate.guildId, channelId, parsed.data.includeArchived ?? false);
+  const threads = await port.listThreads(
+    gate.guildId,
+    channelId,
+    parsed.data.includeArchived ?? false,
+  );
   const archived = threads.filter((thread) => thread.archived).length;
   const noun = threads.length === 1 ? 'thread' : 'threads';
   const head =

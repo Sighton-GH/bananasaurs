@@ -913,9 +913,7 @@ export const listChannelHistory = (
           input.beforeMessageId === undefined
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
-          input.authorId === undefined
-            ? undefined
-            : eq(archiveMessages.authorId, input.authorId),
+          input.authorId === undefined ? undefined : eq(archiveMessages.authorId, input.authorId),
         ),
       )
       .orderBy(sql`length(${archiveMessages.messageId}) DESC`, desc(archiveMessages.messageId))

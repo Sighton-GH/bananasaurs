@@ -333,7 +333,10 @@ describe('every content-bearing result carries the envelope preamble', () => {
 
   it('search_messages frames member text between preamble and delimiters', () => {
     const text = textOf(
-      searchMessagesText(principal(), port, emptyGuild(), { guildId: '111111111111111111', query: 'pineapple' }),
+      searchMessagesText(principal(), port, emptyGuild(), {
+        guildId: '111111111111111111',
+        query: 'pineapple',
+      }),
     );
     expect(text).toContain(EVIDENCE_PREAMBLE);
     const preambleAt = text.indexOf(EVIDENCE_PREAMBLE);

@@ -212,10 +212,7 @@ export const searchMessagesParams = {
     .array(z.string())
     .describe('Narrow within archive-enabled channels; ids or names.')
     .optional(),
-  authorId: z
-    .string()
-    .describe('Author id, or "bot" for messages Bananasaurs posted.')
-    .optional(),
+  authorId: z.string().describe('Author id, or "bot" for messages Bananasaurs posted.').optional(),
   before: z.number().describe('Only messages created before this unix-ms timestamp.').optional(),
   after: z.number().describe('Only messages created after this unix-ms timestamp.').optional(),
   limit: z
@@ -232,10 +229,7 @@ export const readChannelHistoryParams = {
     .number()
     .describe(`Max messages, 1..${String(SEARCH_LIMIT_MAX)}.`)
     .optional(),
-  authorId: z
-    .string()
-    .describe('Author id, or "bot" for messages Bananasaurs posted.')
-    .optional(),
+  authorId: z.string().describe('Author id, or "bot" for messages Bananasaurs posted.').optional(),
 };
 
 export const getMessageParams = {
