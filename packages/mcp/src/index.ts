@@ -68,6 +68,7 @@ export {
   MCP_READ_GET_MEMBER,
   MCP_READ_GET_MESSAGE,
   MCP_READ_GET_MOD_CASE,
+  MCP_READ_GET_SERVER_CONTEXT,
   MCP_READ_GET_SERVER_OVERVIEW,
   MCP_READ_LIST_AUDIT_EVENTS,
   MCP_READ_LIST_CHANNELS,
@@ -180,6 +181,17 @@ export {
   type McpSendRefusal,
   type SendOutcomeText,
 } from './tools/send.js';
+export { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
+export {
+  GET_SERVER_CONTEXT_TOOL_DESCRIPTION,
+  GET_SERVER_CONTEXT_TOOL_NAME,
+  getServerContextParams,
+  getServerContextText,
+  NO_SERVER_CARD_MARKER,
+  registerContextTools,
+  type McpContextPort,
+  type McpContextSkill,
+} from './tools/context.js';
 export { STRUCTURED_NOTE, safeName, structuredText } from './structured.js';
 export {
   isSnowflake,

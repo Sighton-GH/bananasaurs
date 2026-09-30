@@ -46,6 +46,7 @@ import type { McpGuildPort } from './guild.js';
 import type { McpRecordsPort } from './records.js';
 import type { McpJobsPort } from './jobs.js';
 import type { McpMembersPort } from './members.js';
+import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './context.js';
 
 /** Minimal jobs port: this file pins the archive tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -58,6 +59,14 @@ const stubMembers = (): McpMembersPort => ({
   listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
   lastMessageAt: () => new Map(),
   now: () => 1_700_000_000_000,
+});
+
+/** Minimal context port: this file pins the archive tools, never the context tool. */
+const stubContext = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
 });
 
 /**
@@ -727,6 +736,7 @@ describe('archive tools on the MCP server', () => {
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),
+      context: stubContext(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -743,10 +753,12 @@ describe('archive tools on the MCP server', () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
       const list = await client.listTools();
-      // Fourteen since the jobs tools: the records and jobs tools register
-      // alongside the archive and guild ones (the guild, records and jobs
+      // Fourteen since the jobs tools, fifteen since the context tool: the
+      // records, jobs, members and context tools register alongside the
+      // archive and guild ones (the guild, records, jobs, members and context
       // stubs above answer empty, which is all this file needs — their own
-      // behaviour is pinned in guild.test.ts, records.test.ts and jobs.test.ts).
+      // behaviour is pinned in guild.test.ts, records.test.ts, jobs.test.ts,
+      // members.test.ts and context.test.ts).
       const { LIST_CHANNELS_TOOL_NAME, LIST_MEMBERS_TOOL_NAME, LIST_ROLES_TOOL_NAME } =
         await import('./guild.js');
       const {
@@ -774,6 +786,7 @@ describe('archive tools on the MCP server', () => {
         GET_JOB_TOOL_NAME,
         GET_MEMBER_TOOL_NAME,
         SEARCH_MEMBERS_TOOL_NAME,
+        GET_SERVER_CONTEXT_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

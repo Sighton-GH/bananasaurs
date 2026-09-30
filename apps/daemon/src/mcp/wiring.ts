@@ -2,10 +2,13 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
 import {
+  CLUB_ASSISTANT_SKILLS,
+  effectiveSkillScope,
   isInScope,
   parseSnowflakeId,
   safeLogFields,
   sendMessageEffect,
+  skillScopeAllows,
   type DiscordPort,
   type GuildId,
   type Logger,
@@ -20,6 +23,7 @@ import {
   MEMBER_LISTING_CAP,
   type McpArchiveMessage,
   type McpArchivePort,
+  type McpContextPort,
   type McpGuildHealth,
   type McpGuildPort,
   type McpHealthPort,
@@ -35,6 +39,7 @@ import {
 import {
   archiveRepo,
   archiveSearchRepo,
+  assistantRepo,
   automodAdminRepo,
   effectRepo,
   guildRepo,
@@ -670,6 +675,58 @@ const membersPortFor = (deps: HttpDeps, client: Client): McpMembersPort => ({
 });
 
 /**
+ * The club time zone behind `get_server_context`: `BANANASAURS_TIME_ZONE`
+ * from the instance's redacted config — the only config surface `HttpDeps`
+ * carries (there is no `deps.config` on this wiring). A missing or empty
+ * value throws, which the tool layer answers as its shared refusal.
+ */
+const contextTimeZone = (deps: HttpDeps): string => {
+  const raw = deps.instance.redactedConfig()['BANANASAURS_TIME_ZONE'];
+  if (typeof raw !== 'string' || raw === '') throw new Error('BANANASAURS_TIME_ZONE unavailable');
+  return raw;
+};
+
+/**
+ * The `McpContextPort` behind `get_server_context` (slice 2, Task 1), field
+ * by field like `healthPortFor` above. The card is the same owner-written
+ * text the assistant's `server_info` sees (`assistantRepo.getServerCard`,
+ * per-guild like every other port here). The skills are the guild's allowed
+ * skills computed the way the assistant service computes them — the stored
+ * grants through `effectiveSkillScope`/`skillScopeAllows` for the owner, who
+ * is this tool's caller — projected to `{ id, name, description }`.
+ *
+ * `timeZone` is a getter, not a value: the daemon builds one port per
+ * request before it knows which tool the request will call, so an eager read
+ * would fail every `tools/list` when the key is absent; read at call time it
+ * fails inside the tool layer's try/catch as the shared refusal instead. A
+ * fault leaves one allowlisted-fields error line via the logged calls above,
+ * never the card text (rule 4).
+ */
+const contextPortFor = (deps: HttpDeps): McpContextPort => ({
+  serverCard: (guildId) =>
+    loggedCall(deps.logger, 'serverCard', () =>
+      assistantRepo.getServerCard(deps.scopes.forGuild(guildId)),
+    ),
+  get timeZone(): string {
+    return contextTimeZone(deps);
+  },
+  now: deps.now,
+  skills: (guildId) =>
+    loggedCall(deps.logger, 'contextSkills', () => {
+      const scope = deps.scopes.forGuild(guildId);
+      const grants = new Map(
+        assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant] as const),
+      );
+      return CLUB_ASSISTANT_SKILLS.filter((skill) =>
+        skillScopeAllows(effectiveSkillScope(skill, grants.get(skill.id)), {
+          owner: true,
+          roleIds: [],
+        }),
+      ).map((skill) => ({ id: skill.id, name: skill.name, description: skill.description }));
+    }),
+});
+
+/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -1017,6 +1074,7 @@ export const registerMcpRoutes = (
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),
+      context: contextPortFor(deps),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

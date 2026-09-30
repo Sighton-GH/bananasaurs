@@ -13,6 +13,7 @@ import {
 import {
   accountRepo,
   archiveRepo,
+  assistantRepo,
   authzRepo,
   effectRepo,
   guildRepo,
@@ -284,7 +285,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all sixteen tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all seventeen tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -292,7 +293,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(16);
+    expect(names).toHaveLength(17);
     expect(names).toEqual([
       'get_health',
       'search_messages',
@@ -310,6 +311,7 @@ describe('/mcp behind the bearer guard', () => {
       'get_job',
       'get_member',
       'search_members',
+      'get_server_context',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -1281,6 +1283,102 @@ describe('/mcp jobs tools across two guilds', () => {
     expect(cross.isError).not.toBe(true);
     expect(cross.text).toContain('not found');
     expect(cross.text).not.toContain('beta failure marker');
+  });
+});
+
+describe('/mcp get_server_context across two guilds', () => {
+  /**
+   * Slice 2 Task 1, daemon side: `get_server_context` through the real stack
+   * — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+   * `contextPortFor` over the real repositories — with a token minted through
+   * the real OAuth flow. The load-bearing assertion is guild isolation: the
+   * stored card for A never answers for B, and vice versa.
+   *
+   * The app is rebuilt with the instance's redacted config carrying the club
+   * time zone (`testInstanceFor` redacts to `{}`), the way production's
+   * `redactedConfig` carries the real `BANANASAURS_TIME_ZONE`.
+   */
+  const zonedApp = (): FastifyInstance =>
+    buildDashboardApp({
+      ...deps,
+      instance: {
+        ...deps.instance,
+        redactedConfig: () => ({ BANANASAURS_TIME_ZONE: 'America/Vancouver' }),
+      },
+    });
+
+  const mcpCallOn = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    mcpPost(
+      target,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('returns the stored server card for guild A only', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    assistantRepo.putServerCard(
+      t.scopes.forGuild(GUILD_A),
+      'Guild A server card: alpha clubhouse rules.',
+      clock,
+    );
+    assistantRepo.putServerCard(
+      t.scopes.forGuild(GUILD_B),
+      'Guild B server card: beta clubhouse rules.',
+      clock,
+    );
+    const zoned = zonedApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:read', zoned);
+
+      const own = callText(
+        (
+          await mcpCallOn(zoned, accessToken, 'get_server_context', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(own.isError).not.toBe(true);
+      expect(own.text).toContain('time zone America/Vancouver');
+      expect(own.text).toContain('alpha clubhouse rules');
+      expect(own.text).not.toContain('beta clubhouse rules');
+      expect(own.text).toContain('Enabled assistant skills:');
+
+      // B's card through B answers B's text — never A's.
+      const other = callText(
+        (
+          await mcpCallOn(zoned, accessToken, 'get_server_context', {
+            guildId: '222222222222222222',
+          })
+        ).body,
+      );
+      expect(other.isError).not.toBe(true);
+      expect(other.text).toContain('beta clubhouse rules');
+      expect(other.text).not.toContain('alpha clubhouse rules');
+    } finally {
+      await zoned.close();
+    }
   });
 });
 

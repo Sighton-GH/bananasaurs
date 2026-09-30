@@ -73,6 +73,7 @@ import {
 } from './tools/send.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
+import { registerContextTools, type McpContextPort } from './tools/context.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
@@ -150,6 +151,14 @@ export interface McpServerDeps {
    * dressed as a working toolset.
    */
   readonly members: McpMembersPort;
+  /**
+   * The daemon's per-request context port (slice 2, Task 1): the
+   * owner-written server card, the club time zone, the clock and the
+   * guild's enabled skills behind `get_server_context`. Required like the
+   * ports above: a missing port must fail at construction, not serve a
+   * context tool that always refuses.
+   */
+  readonly context: McpContextPort;
 }
 
 /** The ok-outcome shape every read tool returns (ADR 0050). */
@@ -410,6 +419,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   );
   registerJobTools({ server, principal: deps.principal, readAudit }, deps.jobs);
   registerMemberTools({ server, principal: deps.principal, readAudit }, deps.members, deps.guild);
+  registerContextTools({ server, principal: deps.principal, readAudit }, deps.context);
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

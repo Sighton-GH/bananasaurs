@@ -46,6 +46,7 @@ import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resource
 import type { McpSendPort } from './tools/send.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
+import type { McpContextPort } from './tools/context.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -404,6 +405,14 @@ const stubMembersPort = (): McpMembersPort => ({
   now: () => 1_700_000_000_000,
 });
 
+/** Minimal context port: this file pins read logging, never the context tool. */
+const stubContextPort = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -418,6 +427,7 @@ const connectWithReadAudit = async (
     readAudit,
     jobs: stubJobsPort(),
     members: stubMembersPort(),
+    context: stubContextPort(),
     send: stubSendPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
