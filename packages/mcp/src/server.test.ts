@@ -286,11 +286,13 @@ describe('createMcpServer', () => {
   it('(ADR 0111) a roles-only principal sees no tools and no resources', async () => {
     // No tool registers under the roles scope yet (slice 4 does that), so a
     // token carrying only `bananasaurs:roles` must see neither the read/send
-    // tools nor the overview resource.
+    // tools nor the overview resource. With zero tools registered the SDK
+    // never installs its `tools/list` handler, so the client answers
+    // Method-not-found rather than an empty array — the same laziness the
+    // send-only test pins for `resources/templates/list` below.
     const { client, close } = await connectPair(principalWith([GUILD], [MCP_ROLES_SCOPE]));
     try {
-      const list = await client.listTools();
-      expect(list.tools).toHaveLength(0);
+      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();
@@ -301,11 +303,10 @@ describe('createMcpServer', () => {
     // No tool registers under the tasks scope on this branch (the
     // task-tracking branch switches its writes to it when it merges), so a
     // token carrying only `bananasaurs:tasks` must see neither the read/send
-    // tools nor the overview resource.
+    // tools nor the overview resource — Method-not-found on both, as above.
     const { client, close } = await connectPair(principalWith([GUILD], [MCP_TASKS_SCOPE]));
     try {
-      const list = await client.listTools();
-      expect(list.tools).toHaveLength(0);
+      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();

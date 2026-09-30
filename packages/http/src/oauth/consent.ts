@@ -43,6 +43,8 @@ const errorLine = (error: NonNullable<ConsentView['error']>): string => {
 const SCOPE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   'bananasaurs:read': 'read messages, cases and server settings',
   'bananasaurs:send': 'send messages as the bot',
+  'bananasaurs:roles': 'give and remove member roles and manage role panels',
+  'bananasaurs:tasks': 'create and change club tasks',
 };
 
 export const renderConsentPage = (view: ConsentView): string => {
