@@ -867,6 +867,7 @@ export const listChannelHistory = (
     readonly channelId: string;
     readonly beforeMessageId?: string;
     readonly limit?: number;
+    readonly authorId?: string;
     /**
      * ADR 0047 amendment 2026-09-20 (M1): a forum owns no messages of its
      * own — every post is a thread — so a forum's history read rolls its
@@ -912,6 +913,9 @@ export const listChannelHistory = (
           input.beforeMessageId === undefined
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
+          input.authorId === undefined
+            ? undefined
+            : eq(archiveMessages.authorId, input.authorId),
         ),
       )
       .orderBy(sql`length(${archiveMessages.messageId}) DESC`, desc(archiveMessages.messageId))

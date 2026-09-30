@@ -772,6 +772,39 @@ describe('listChannelHistory', () => {
     }
   });
 
+  it('authorId narrows to one author; without it every message returns', () => {
+    const BOT = '888888888888888888';
+    enable(a, CHANNEL_A);
+    const botIds = [historyId(1), historyId(2)];
+    const memberIds = [historyId(3), historyId(4)];
+    for (const messageId of botIds) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: BOT,
+        content: `bot message ${messageId}`,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    for (const messageId of memberIds) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: MEMBER,
+        content: `member message ${messageId}`,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, authorId: BOT }).map((m) => m.messageId),
+    ).toEqual([...botIds].reverse());
+    expect(listChannelHistory(a, { channelId: CHANNEL_A })).toHaveLength(4);
+  });
+
   it('a purged message is returned as a tombstone, not omitted', () => {
     const ids = seedHistory(a, CHANNEL_A, 3);
     const purgedId = ids[1];
