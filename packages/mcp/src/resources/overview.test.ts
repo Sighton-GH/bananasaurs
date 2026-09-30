@@ -352,7 +352,7 @@ describe('overview card JSON (ADR 0110)', () => {
     const [head, note] = text.split('\n');
     expect(head).toBe(
       'Server overview for guild 111111111111111111: 210 members, ' +
-        '2 channels, 1 roles, 1 panels, 2 rules.',
+        '2 channels, 1 roles, 1 panels, 2 rules. Channels without a type are text channels.',
     );
     expect(note).toBe(STRUCTURED_NOTE);
     const data = cardJsonOf(text);
@@ -367,9 +367,7 @@ describe('overview card JSON (ADR 0110)', () => {
       {
         id: '444444444444444444',
         name: 'club',
-        channels: [
-          { id: '333333333333333333', name: 'planning', type: 'GuildText', archive: true },
-        ],
+        channels: [{ id: '333333333333333333', name: 'planning', archive: true }],
       },
     ]);
     expect(data['uncategorised']).toEqual([
@@ -399,7 +397,7 @@ describe('overview card JSON (ADR 0110)', () => {
       {
         id: '000000000000000001',
         name: '',
-        channels: [{ id: '999999999999999999', name: 'orphan', type: 'GuildText' }],
+        channels: [{ id: '999999999999999999', name: 'orphan' }],
       },
     ]);
     expect(data['uncategorised']).toEqual([]);
@@ -407,6 +405,22 @@ describe('overview card JSON (ADR 0110)', () => {
 
   it('topics are not in the overview', () => {
     expect(buildOverviewCard(smallInput())).not.toContain('plan the picnic');
+  });
+
+  it('a text channel omits type while a voice channel keeps it, and the head says so', () => {
+    const text = buildOverviewCard(smallInput());
+    expect(text.split('\n')[0]).toContain('Channels without a type are text channels.');
+    const data = cardJsonOf(text);
+    // planning is GuildText: no type key. lounge is GuildVoice: type kept.
+    const categories = data['categories'] as ReadonlyArray<{
+      channels: ReadonlyArray<Record<string, unknown>>;
+    }>;
+    expect(categories[0]?.channels).toEqual([
+      { id: '333333333333333333', name: 'planning', archive: true },
+    ]);
+    expect(data['uncategorised']).toEqual([
+      { id: '777777777777777777', name: 'lounge', type: 'GuildVoice' },
+    ]);
   });
 
   it('lists roles highest-first as id and name, panels and rule counts', () => {

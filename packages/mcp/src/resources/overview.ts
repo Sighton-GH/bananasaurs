@@ -64,18 +64,18 @@ const countByMode = (
   return { total: inMode.length, enabled: inMode.filter((rule) => rule.enabled).length };
 };
 
-/** One channel row in the card's JSON: names escaped, topics omitted, `archive` only when true. */
+/** One channel row in the card's JSON: names escaped, topics omitted, `archive` only when true, `type` omitted for plain text channels. */
 const channelRow = (
   channel: McpGuildChannel,
 ): {
   readonly id: string;
   readonly name: string;
-  readonly type: string;
+  readonly type?: string;
   readonly archive?: boolean;
 } => ({
   id: channel.id,
   name: safeName(channel.name),
-  type: channel.type,
+  ...(channel.type === 'GuildText' ? {} : { type: channel.type }),
   ...(channel.archiveEnabled ? { archive: true as const } : {}),
 });
 
@@ -90,13 +90,16 @@ const byNameThenId = (a: { name: string; id: string }, b: { name: string; id: st
  * string via `safeName`, never in unframed prose. Topics are not in the
  * overview — `list_channels` carries them. Roles are listed highest-first
  * as `{ id, name }` with `managed: true` only when Bananasaurs manages the
- * role; colour and position live in `list_roles`.
+ * role; colour and position live in `list_roles`. Channel entries omit
+ * `type` when the channel is a plain text channel — the head line says so —
+ * and every other channel type keeps it.
  */
 export const buildOverviewCard = (input: OverviewCardInput): string => {
   const head =
     `Server overview for guild ${input.guildId}: ${String(input.memberCount)} members, ` +
     `${String(input.channels.length)} channels, ${String(input.roles.length)} roles, ` +
-    `${String(input.panels.length)} panels, ${String(input.rules.length)} rules.`;
+    `${String(input.panels.length)} panels, ${String(input.rules.length)} rules. ` +
+    'Channels without a type are text channels.';
   const categoryChannels = input.channels.filter((channel) => channel.type === 'GuildCategory');
   const knownCategoryIds = new Set(categoryChannels.map((channel) => channel.id));
   const childChannels = input.channels.filter((channel) => channel.type !== 'GuildCategory');
