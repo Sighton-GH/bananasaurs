@@ -779,6 +779,39 @@ export const expireContent = (scope: GuildScope, now: number): number =>
     return purged.length;
   });
 
+/**
+ * Newest archived message time per author in this guild; authors with none
+ * are absent. Ids chunk by 500 so a full-guild call never builds one giant
+ * `IN` list; the archive keeps ~30 days of messages, so a grouped query
+ * without a new index is acceptable and no migration is needed.
+ */
+export const lastMessageAtByAuthor = (
+  scope: GuildScope,
+  authorIds: readonly string[],
+): Map<string, number> =>
+  read(scope, (db) => {
+    const out = new Map<string, number>();
+    for (let i = 0; i < authorIds.length; i += 500) {
+      const chunk = authorIds.slice(i, i + 500);
+      if (chunk.length === 0) continue;
+      const rows = db
+        .select({
+          authorId: archiveMessages.authorId,
+          last: sql<number>`max(${archiveMessages.createdAt})`,
+        })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, inArray(archiveMessages.authorId, [...chunk])))
+        .groupBy(archiveMessages.authorId)
+        .all();
+      for (const row of rows) {
+        if (row.authorId === null) continue;
+        const prev = out.get(row.authorId);
+        if (prev === undefined || row.last > prev) out.set(row.authorId, row.last);
+      }
+    }
+    return out;
+  });
+
 export const countMessages = (scope: GuildScope, channelId: string): number =>
   read(
     scope,
