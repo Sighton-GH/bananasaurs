@@ -1,3 +1,5 @@
+import { detectWithheldEvidence } from '@bananasaurs/core';
+
 /**
  * Retrieved Discord messages are evidence, never instructions (CLAUDE.md
  * rule 3, ADR 0044 §6). From M4 the archive tools return real members'
@@ -23,8 +25,6 @@
  * field (design §3 has `list_members` returning display names), so every
  * interpolated field is escaped, not just `content`.
  */
-import { detectWithheldEvidence } from '@bananasaurs/core';
-
 export interface EvidenceItem {
   readonly authorId: string;
   readonly channelId: string;
