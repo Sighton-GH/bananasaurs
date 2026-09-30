@@ -126,9 +126,10 @@ const jsonOf = (text: string): Record<string, unknown> => {
 
 const headOf = (text: string): string => text.split('\n')[0] ?? '';
 
-const textOf = async (
-  outcome: { readonly ok: boolean; readonly text?: string },
-): Promise<string> => {
+const textOf = async (outcome: {
+  readonly ok: boolean;
+  readonly text?: string;
+}): Promise<string> => {
   expect(outcome.ok).toBe(true);
   if (!outcome.ok) throw new Error('expected ok:true');
   return (outcome as { readonly text: string }).text;
@@ -306,7 +307,7 @@ describe('search_members', () => {
     expect(last.ok).toBe(true);
     if (!last.ok) return;
     const lastData = jsonOf(last.text);
-    expect((lastData['members'] as ReadonlyArray<unknown>)).toHaveLength(1);
+    expect(lastData['members'] as ReadonlyArray<unknown>).toHaveLength(1);
     expect(headOf(last.text)).not.toContain('Next offset');
   });
 

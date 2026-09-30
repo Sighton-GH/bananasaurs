@@ -90,7 +90,9 @@ const searchMembersArgsSchema = z.object({
  */
 export const getMemberParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  member: z.string().describe('Member id, or a username, display name or nickname ("@" prefix optional).'),
+  member: z
+    .string()
+    .describe('Member id, or a username, display name or nickname ("@" prefix optional).'),
 };
 
 export const searchMembersParams = {
@@ -105,11 +107,15 @@ export const searchMembersParams = {
     .optional(),
   nameContains: z
     .string()
-    .describe('Keep members whose username, display name or nickname contains this text (case-insensitive).')
+    .describe(
+      'Keep members whose username, display name or nickname contains this text (case-insensitive).',
+    )
     .optional(),
   inactiveDays: z
     .number()
-    .describe('Keep members with no archived message in this many days (1..30; never-posters count).')
+    .describe(
+      'Keep members with no archived message in this many days (1..30; never-posters count).',
+    )
     .optional(),
   joinedAfter: z
     .number()
@@ -254,9 +260,7 @@ const getMemberInner = async (
     candidates.map((c) => c.id),
   );
   const rows = candidates.map((c) => renderRow(c, roleNameById, last.get(c.id)));
-  const list = candidates
-    .map((c) => `${safeName(c.displayName)} (${c.id})`)
-    .join(', ');
+  const list = candidates.map((c) => `${safeName(c.displayName)} (${c.id})`).join(', ');
   return {
     ok: true,
     text: structuredText(
@@ -320,13 +324,14 @@ const searchMembersInner = async (
     preActivity.map((m) => m.id),
   );
   const now = port.now();
+  const inactiveDays = input.inactiveDays;
   const filtered =
-    input.inactiveDays === undefined
+    inactiveDays === undefined
       ? preActivity
       : preActivity.filter((m) => {
           const last = lastById.get(m.id);
           // Never-posters count as inactive: null is silence, not unknown.
-          return last === undefined || last <= now - input.inactiveDays * DAY_MS;
+          return last === undefined || last <= now - inactiveDays * DAY_MS;
         });
   const sorted = filtered.slice().sort(compareMembers);
   const limit = input.limit ?? 100;
@@ -391,8 +396,12 @@ export const registerMemberTools = (
   port: McpMembersPort,
   guild: McpGuildPort,
 ): void => {
-  registerReadTool(ctx, GET_MEMBER_TOOL_NAME, GET_MEMBER_TOOL_DESCRIPTION, getMemberParams, (args) =>
-    getMemberText(ctx.principal, port, guild, args),
+  registerReadTool(
+    ctx,
+    GET_MEMBER_TOOL_NAME,
+    GET_MEMBER_TOOL_DESCRIPTION,
+    getMemberParams,
+    (args) => getMemberText(ctx.principal, port, guild, args),
   );
   registerReadTool(
     ctx,

@@ -405,11 +405,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     },
   );
   registerJobTools({ server, principal: deps.principal, readAudit }, deps.jobs);
-  registerMemberTools(
-    { server, principal: deps.principal, readAudit },
-    deps.members,
-    deps.guild,
-  );
+  registerMemberTools({ server, principal: deps.principal, readAudit }, deps.members, deps.guild);
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

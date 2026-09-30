@@ -1757,7 +1757,11 @@ describe('/mcp member tools page past 1000', () => {
   /** 18-digit ids: same length, so lexicographic order is numeric order. */
   const pageIdOf = (n: number): string => String(400000000000000000n + BigInt(n));
 
-  const buildPagedClient = (): { client: Client; calls: unknown[]; serve: (sizes: number[]) => void } => {
+  const buildPagedClient = (): {
+    client: Client;
+    calls: unknown[];
+    serve: (sizes: number[]) => void;
+  } => {
     const client = new Client(buildClientOptions(() => '123456789012345678'));
     (client as unknown as { guilds: { _add: (data: object) => Guild } }).guilds._add({
       id: GUILD_A,
@@ -1796,7 +1800,11 @@ describe('/mcp member tools page past 1000', () => {
       },
     });
 
-  const memberCall = (target: FastifyInstance, accessToken: string, args: Record<string, unknown>) =>
+  const memberCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    args: Record<string, unknown>,
+  ) =>
     target.inject({
       method: 'POST',
       url: '/mcp',
