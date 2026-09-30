@@ -1378,9 +1378,12 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain('rest-bo');
       expect(found.text).not.toContain('cached-una');
       // The @everyone guild-id role the manager inserts into every member's
-      // cache is dropped by the port, matching `list_roles`: the roles line
-      // names only the real role, never the guild id.
-      expect(found.text).toContain(`roles: ${ROLE_MANAGED}`);
+      // cache is dropped by the port, matching `list_roles`: the members'
+      // role ids name only the real role, never the guild id.
+      const membersData = JSON.parse(found.text.split('\n')[2] ?? '') as {
+        members: Array<{ roleIds: readonly string[] }>;
+      };
+      expect(membersData.members.flatMap((m) => m.roleIds)).toContain(ROLE_MANAGED);
       // Paginated REST fetch, not a cache read: `cache: false` pinned on the
       // exact options object the port passed to discord.js.
       expect(memberListCalls).toHaveLength(1);
@@ -1409,8 +1412,13 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain('planning');
       expect(found.text).toContain('lounge');
       expect(found.text).toContain('club');
-      expect(found.text).toContain('archive-enabled: yes');
-      expect(found.text).toContain('archive-enabled: no');
+      // Both archive states render as JSON booleans, so a port that always
+      // answered one way would fail.
+      const channelsData = JSON.parse(found.text.split('\n')[2] ?? '') as {
+        channels: Array<{ archive: boolean }>;
+      };
+      expect(channelsData.channels.map((c) => c.archive)).toContain(true);
+      expect(channelsData.channels.map((c) => c.archive)).toContain(false);
     } finally {
       await guildApp.close();
     }
@@ -1497,8 +1505,13 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.isError).not.toBe(true);
       expect(found.text).toContain('organizer');
       expect(found.text).toContain('member');
-      expect(found.text).toContain('managed-by-bananasaurs: yes');
-      expect(found.text).toContain('managed-by-bananasaurs: no');
+      // Both managed states render as JSON booleans, so a port that always
+      // answered one way would fail.
+      const rolesData = JSON.parse(found.text.split('\n')[2] ?? '') as {
+        roles: Array<{ managedByBananasaurs: boolean }>;
+      };
+      expect(rolesData.roles.map((r) => r.managedByBananasaurs)).toContain(true);
+      expect(rolesData.roles.map((r) => r.managedByBananasaurs)).toContain(false);
       // The header names the exclusion honestly; no *row* carries the
       // @everyone name — the port dropped the guild-id role upstream.
       expect(found.text).toContain('@everyone excluded');

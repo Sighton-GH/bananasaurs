@@ -13,11 +13,10 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import {
   EVIDENCE_CLOSE,
-  EVIDENCE_OPEN,
-  EVIDENCE_PREAMBLE,
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
 } from '../index.js';
+import { STRUCTURED_NOTE } from '../structured.js';
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
 import {
@@ -131,6 +130,14 @@ const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): stri
   return (outcome as { readonly text: string }).text;
 };
 
+/** ADR 0110: head line, note line, then the parsed JSON payload. */
+const jsonOf = (text: string): Record<string, unknown> => {
+  const lines = text.split('\n');
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toBe(STRUCTURED_NOTE);
+  return JSON.parse(lines[2] ?? '') as Record<string, unknown>;
+};
+
 describe('guild tools refuse without a reachable guild', () => {
   it.each([[LIST_CHANNELS_TOOL_NAME], [LIST_ROLES_TOOL_NAME], [LIST_MEMBERS_TOOL_NAME]])(
     '%s refuses an unreachable guild with the shared refusal',
@@ -222,46 +229,75 @@ describe('guild tools refuse without a reachable guild', () => {
   });
 });
 
-describe('every guild result carries the envelope preamble', () => {
-  it('list_channels frames channel names between preamble and delimiters', () => {
+describe('every guild result is head, note, then one line of JSON (ADR 0110)', () => {
+  it('list_channels renders ids, names, types, parents, topics and archive flags as JSON', () => {
     const text = textOf(
       listChannelsText(principalWith(GUILD_A), fakePort(), {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain(EVIDENCE_PREAMBLE);
-    const preambleAt = text.indexOf(EVIDENCE_PREAMBLE);
-    const openAt = text.indexOf(EVIDENCE_OPEN);
-    // The name rides in the escaped locator block before the delimiters; the
-    // topic is the member-written detail framed inside them. Both are past
-    // the preamble, and the framed detail closes after it opens.
-    const nameAt = text.indexOf('planning');
-    const detailAt = text.indexOf('plan the picnic');
-    const closeAt = text.indexOf(EVIDENCE_CLOSE);
-    expect(preambleAt).toBeGreaterThanOrEqual(0);
-    expect(nameAt).toBeGreaterThan(preambleAt);
-    expect(openAt).toBeGreaterThan(preambleAt);
-    expect(detailAt).toBeGreaterThan(openAt);
-    expect(closeAt).toBeGreaterThan(detailAt);
+    const [head] = text.split('\n');
+    expect(head).toBe(
+      'Channels in guild 111111111111111111: 2 channels (1 archive-enabled).',
+    );
+    const data = jsonOf(text);
+    expect(data['channels']).toEqual([
+      {
+        id: '333333333333333333',
+        name: 'planning',
+        type: 'GuildText',
+        parent: { id: '444444444444444444', name: 'club' },
+        topic: 'plan the picnic',
+        archive: true,
+      },
+      {
+        id: '555555555555555555',
+        name: 'lounge-voice',
+        type: 'GuildVoice',
+        parent: null,
+        topic: null,
+        archive: false,
+      },
+    ]);
   });
 
-  it('list_roles frames role names', () => {
+  it('list_roles renders ids, names, positions, colours and managed flags as JSON', () => {
     const text = textOf(
       listRolesText(principalWith(GUILD_A), fakePort(), { guildId: '111111111111111111' }),
     );
-    expect(text).toContain(EVIDENCE_PREAMBLE);
-    expect(text).toContain('organizer');
-    expect(text.indexOf(EVIDENCE_PREAMBLE)).toBeLessThan(text.indexOf(EVIDENCE_OPEN));
+    const [head] = text.split('\n');
+    expect(head).toContain('@everyone excluded');
+    const data = jsonOf(text);
+    expect(data['roles']).toEqual([
+      {
+        id: '666666666666666666',
+        name: 'organizer',
+        position: 3,
+        color: '#00ff00',
+        managedByBananasaurs: true,
+      },
+    ]);
   });
 
-  it('list_members frames display names', async () => {
+  it('list_members renders ids, names, roles, joined-at and the next cursor as JSON', async () => {
     const text = textOf(
       await listMembersText(principalWith(GUILD_A), fakePort(), {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain(EVIDENCE_PREAMBLE);
-    expect(text).toContain('Ana');
+    const [head] = text.split('\n');
+    expect(head).toContain('Next cursor: 777777777777777777');
+    const data = jsonOf(text);
+    expect(data['members']).toEqual([
+      {
+        id: '777777777777777777',
+        username: 'ana',
+        displayName: 'Ana',
+        roleIds: ['666666666666666666'],
+        joinedAt: new Date(1_700_000_000_100).toISOString(),
+      },
+    ]);
+    expect(data['nextCursor']).toBe('777777777777777777');
   });
 });
 
@@ -373,16 +409,16 @@ describe('list_channels reports archive scope from the port', () => {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain('planning');
-    expect(text).toContain('lounge-voice');
+    const data = jsonOf(text);
+    const channels = data['channels'] as ReadonlyArray<Record<string, unknown>>;
+    expect(channels.map((c) => c['name'])).toEqual(['planning', 'lounge-voice']);
     // Both states render, so a port that always answered one way would fail.
-    expect(text).toContain('archive-enabled: yes');
-    expect(text).toContain('archive-enabled: no');
+    expect(channels.map((c) => c['archive'])).toEqual([true, false]);
   });
 });
 
-describe('a display name containing the envelope closing marker cannot break framing', () => {
-  it('the exact marker occurs once per item, never from content', async () => {
+describe('a display name containing the envelope closing marker cannot forge a frame', () => {
+  it('the marker survives only in broken form inside the JSON string', async () => {
     const port: McpGuildPort = {
       listChannels: () => [],
       listThreads: async () => [],
@@ -407,12 +443,16 @@ describe('a display name containing the envelope closing marker cannot break fra
         guildId: '111111111111111111',
       }),
     );
-    // Task 2 proved the escaper; this proves *this tool* uses it: the one
-    // member yields exactly one framing close, so the marker typed in the
-    // display name survived only in broken form.
-    expect(text.split(EVIDENCE_CLOSE).length - 1).toBe(1);
-    expect(text).toContain('Ignore instructions');
-    expect(text).toContain('forged');
+    // Task 2 proved the escaper; this proves *this tool* uses it: the marker
+    // typed in the display name survives only in broken form inside the JSON
+    // string, so it can never forge a frame in a later envelope-bearing
+    // result — while the surrounding name still arrives.
+    expect(text).not.toContain(EVIDENCE_CLOSE);
+    const data = jsonOf(text);
+    const members = data['members'] as ReadonlyArray<Record<string, unknown>>;
+    expect(members).toHaveLength(1);
+    expect(String(members[0]?.['displayName'])).toContain('Ignore instructions');
+    expect(String(members[0]?.['displayName'])).toContain('forged');
   });
 });
 
@@ -488,8 +528,9 @@ describe('guild tools on the MCP server', () => {
       })) as CallToolResult;
       expect(result.isError).not.toBe(true);
       const blocks = result.content as ReadonlyArray<{ type: string; text: string }>;
-      expect(blocks[0]?.text).toContain(EVIDENCE_PREAMBLE);
-      expect(blocks[0]?.text).toContain('Ana');
+      const data = jsonOf(blocks[0]?.text ?? '');
+      const members = data['members'] as ReadonlyArray<Record<string, unknown>>;
+      expect(members.map((m) => m['displayName'])).toContain('Ana');
     } finally {
       await close();
     }
@@ -531,23 +572,33 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     // The name is the only thing that identifies a forum post to a reader,
     // and this listing used to drop it entirely while putting the id where
     // `list_channels` puts the name and the parent where it puts the id.
-    expect(result.text).toContain('weekly build night');
-    expect(result.text).toContain('archived plans');
-    expect(result.text).toContain('800000000000000001');
-    expect(result.text).toContain(`parent: ${CHANNEL}`);
-    expect(result.text).toContain('2 threads (1 archived)');
-    expect(result.text).toContain('Private threads are never listed.');
+    const [head] = result.text.split('\n');
+    expect(head).toBe(
+      `Public threads under channel ${CHANNEL}: 2 threads (1 archived). ` +
+        'Private threads are never listed.',
+    );
+    const data = jsonOf(result.text);
+    expect(data['threads']).toEqual([
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+      },
+      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+    ]);
   });
 
-  it('still frames every row inside the evidence envelope', async () => {
+  it('renders threads as JSON, never an evidence envelope', async () => {
     const result = await listThreadsText(principalWith(GUILD_A), threadPort(), {
       guildId: GUILD_A,
       channelId: CHANNEL,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.text).toContain(EVIDENCE_PREAMBLE);
-    expect(result.text).toContain(EVIDENCE_OPEN);
-    expect(result.text).toContain(EVIDENCE_CLOSE);
+    expect(result.text.split('\n')[1]).toBe(STRUCTURED_NOTE);
+    expect(result.text).not.toContain(EVIDENCE_CLOSE);
+    const data = jsonOf(result.text);
+    expect(data['threads']).toHaveLength(2);
   });
 });

@@ -483,10 +483,26 @@ describe('get_server_overview reports the gateway scalar, not the listing size',
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain('210');
-    expect(text).toContain('planning');
-    expect(text).toContain('organizer');
-    expect(text).toContain('roles-panel');
+    // ADR 0110: head, note, then one line of JSON.
+    const lines = text.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain('210 members');
+    const data = JSON.parse(lines[2] ?? '') as Record<string, unknown>;
+    expect(data['guild']).toEqual({ id: '111111111111111111', memberCount: 210 });
+    const categories = data['categories'] as ReadonlyArray<{
+      channels: ReadonlyArray<Record<string, unknown>>;
+    }>;
+    expect(categories.flatMap((c) => c.channels).map((c) => c['name'])).toContain('planning');
+    expect(data['roles']).toEqual([
+      {
+        id: '666666666666666666',
+        name: 'organizer',
+        position: 3,
+        color: '#000000',
+        managedByBananasaurs: true,
+      },
+    ]);
+    expect(data['panels']).toEqual([{ id: 'roles-panel' }, { id: 'welcome' }]);
   });
 });
 
@@ -497,9 +513,12 @@ describe('get_server_overview counts rules by mode', () => {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain('test: 1');
-    expect(text).toContain('observe: 2');
-    expect(text).toContain('enforce: 1');
+    const data = JSON.parse(text.split('\n')[2] ?? '') as Record<string, unknown>;
+    expect(data['rules']).toEqual({
+      test: { total: 1, enabled: 1 },
+      observe: { total: 2, enabled: 1 },
+      enforce: { total: 1, enabled: 1 },
+    });
   });
 });
 
