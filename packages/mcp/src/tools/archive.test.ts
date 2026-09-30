@@ -47,6 +47,7 @@ import type { McpRecordsPort } from './records.js';
 import type { McpJobsPort } from './jobs.js';
 import type { McpMembersPort } from './members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './context.js';
+import type { McpResourcesPort } from './resources.js';
 
 /** Minimal jobs port: this file pins the archive tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -67,6 +68,13 @@ const stubContext = (): McpContextPort => ({
   timeZone: 'America/Vancouver',
   now: () => 1_700_000_000_000,
   skills: () => [],
+});
+
+/** Minimal resources port: this file pins the archive tools, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
 });
 
 /**
@@ -737,6 +745,7 @@ describe('archive tools on the MCP server', () => {
       jobs: stubJobs(),
       members: stubMembers(),
       context: stubContext(),
+      resources: stubResources(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -769,6 +778,8 @@ describe('archive tools on the MCP server', () => {
       } = await import('./records.js');
       const { LIST_JOBS_TOOL_NAME, GET_JOB_TOOL_NAME } = await import('./jobs.js');
       const { GET_MEMBER_TOOL_NAME, SEARCH_MEMBERS_TOOL_NAME } = await import('./members.js');
+      const { SEARCH_RESOURCES_TOOL_NAME, OPEN_RESOURCE_TOOL_NAME } =
+        await import('./resources.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
         SEARCH_MESSAGES_TOOL_NAME,
@@ -787,6 +798,8 @@ describe('archive tools on the MCP server', () => {
         GET_MEMBER_TOOL_NAME,
         SEARCH_MEMBERS_TOOL_NAME,
         GET_SERVER_CONTEXT_TOOL_NAME,
+        SEARCH_RESOURCES_TOOL_NAME,
+        OPEN_RESOURCE_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

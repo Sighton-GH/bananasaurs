@@ -24,6 +24,7 @@ import type { McpGuildChannel, McpGuildPort } from '../tools/guild.js';
 import type { McpJobsPort } from '../tools/jobs.js';
 import type { McpMembersPort } from '../tools/members.js';
 import type { McpContextPort } from '../tools/context.js';
+import type { McpResourcesPort } from '../tools/resources.js';
 import {
   buildOverviewCard,
   OVERVIEW_RESOURCE_URI_TEMPLATE,
@@ -125,6 +126,13 @@ const stubContext = (): McpContextPort => ({
   skills: () => [],
 });
 
+/** Minimal resources port: this file pins the overview resource, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -142,6 +150,7 @@ const connectPair = async (
     jobs: stubJobs(),
     members: stubMembers(),
     context: stubContext(),
+    resources: stubResources(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

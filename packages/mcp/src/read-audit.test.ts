@@ -14,8 +14,10 @@ import {
   MCP_READ_LIST_MEMBERS,
   MCP_READ_LIST_ROLES,
   MCP_READ_LIST_MOD_CASES,
+  MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
   MCP_READ_SEARCH_MESSAGES,
+  MCP_READ_SEARCH_RESOURCES,
   type McpContentReadRecord,
   type McpReadAuditPort,
 } from './read-audit.js';
@@ -47,6 +49,7 @@ import type { McpSendPort } from './tools/send.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
+import { openResourceText, searchResourcesText, type McpResourcesPort } from './tools/resources.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -271,6 +274,65 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
     });
     expect(captured.captured).toMatchObject({ excludeActions: [MCP_READ_LIST_AUDIT_EVENTS] });
   });
+
+  it('search_resources records a guild content read with the hit count', () => {
+    const outcome = searchResourcesText(
+      principalWith(GUILD_A),
+      {
+        listResources: () => [
+          { id: 'handbook', title: 'Handbook', kind: 'document', url: 'https://example.com/h' },
+        ],
+        searchChunks: () => [
+          {
+            chunkId: 'c1',
+            docId: 'd1',
+            resourceId: 'handbook',
+            headingPath: 'H',
+            text: 'secret operator query text',
+          },
+        ],
+        resourceChunks: () => [],
+      },
+      { guildId: String(GUILD_A), query: 'secret operator query text' },
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('expected ok');
+    expect(outcome.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_SEARCH_RESOURCES,
+      guildId: GUILD_A,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: 1,
+    });
+    expect(JSON.stringify(outcome.read)).not.toContain('secret operator query text');
+  });
+
+  it('open_resource records a resource content read keyed by resource id', () => {
+    const port: McpResourcesPort = {
+      listResources: () => [
+        { id: 'handbook', title: 'Handbook', kind: 'document', url: 'https://example.com/h' },
+      ],
+      searchChunks: () => [],
+      resourceChunks: () => [
+        { chunkId: 'c1', docId: 'd1', resourceId: 'handbook', headingPath: 'H', text: 'body' },
+      ],
+    };
+    const outcome = openResourceText(principalWith(GUILD_A), port, {
+      guildId: String(GUILD_A),
+      resourceId: 'handbook',
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('expected ok');
+    expect(outcome.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_OPEN_RESOURCE,
+      guildId: GUILD_A,
+      subjectType: 'resource',
+      subjectId: 'handbook',
+      resultCount: 1,
+    });
+  });
 });
 
 describe('ADR 0050: structural reads annotate a log record, never an audit row', () => {
@@ -413,6 +475,13 @@ const stubContextPort = (): McpContextPort => ({
   skills: () => [],
 });
 
+/** Minimal resources port: this file pins read logging, never the resource tools. */
+const stubResourcesPort = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -428,6 +497,7 @@ const connectWithReadAudit = async (
     jobs: stubJobsPort(),
     members: stubMembersPort(),
     context: stubContextPort(),
+    resources: stubResourcesPort(),
     send: stubSendPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

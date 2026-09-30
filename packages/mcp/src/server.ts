@@ -74,6 +74,7 @@ import {
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { registerContextTools, type McpContextPort } from './tools/context.js';
+import { registerResourceTools, type McpResourcesPort } from './tools/resources.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
@@ -159,6 +160,14 @@ export interface McpServerDeps {
    * context tool that always refuses.
    */
   readonly context: McpContextPort;
+  /**
+   * The daemon's per-request resources port (slice 2, Task 2): the enabled
+   * club resources and their cached chunks behind `search_resources` and
+   * `open_resource`. Required like the ports above: a missing port must fail
+   * at construction, not serve resource tools that always refuse. Cache
+   * only — the port has no refresh member, so MCP can never trigger a fetch.
+   */
+  readonly resources: McpResourcesPort;
 }
 
 /** The ok-outcome shape every read tool returns (ADR 0050). */
@@ -420,6 +429,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   registerJobTools({ server, principal: deps.principal, readAudit }, deps.jobs);
   registerMemberTools({ server, principal: deps.principal, readAudit }, deps.members, deps.guild);
   registerContextTools({ server, principal: deps.principal, readAudit }, deps.context);
+  registerResourceTools({ server, principal: deps.principal, readAudit }, deps.resources);
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

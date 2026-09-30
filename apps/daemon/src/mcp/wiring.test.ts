@@ -15,14 +15,17 @@ import {
   archiveRepo,
   assistantRepo,
   authzRepo,
+  computeDocId,
   effectRepo,
   guildRepo,
   jobRepo,
   loggingRepo,
   mcpSendRepo,
+  resourceCacheRepo,
   roleRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
+import type { Chunk } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
   ARCHIVE_NO_TEXT_MARKER,
@@ -285,7 +288,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all seventeen tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all nineteen tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -293,7 +296,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(17);
+    expect(names).toHaveLength(19);
     expect(names).toEqual([
       'get_health',
       'search_messages',
@@ -312,6 +315,8 @@ describe('/mcp behind the bearer guard', () => {
       'get_member',
       'search_members',
       'get_server_context',
+      'search_resources',
+      'open_resource',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -1379,6 +1384,260 @@ describe('/mcp get_server_context across two guilds', () => {
     } finally {
       await zoned.close();
     }
+  });
+});
+
+/**
+ * Slice 2 Task 2, daemon side: `search_resources` and `open_resource`
+ * through the real stack — Fastify + `registerMcpRoutes` + `createMcpServer`
+ * + the real `resourcesPortFor` over the real repositories — with a token
+ * minted through the real OAuth flow.
+ *
+ * Seeded through the storage repositories, never a fake port: an enabled
+ * resource with cached chunks, a disabled resource with cached chunks (its
+ * text must stay invisible even to an exact query), an enabled resource
+ * with no cache (the dashboard pointer, never a fetch), and a second
+ * guild's cache proving cross-guild isolation.
+ */
+describe('/mcp resource tools across two guilds', () => {
+  const seedResource = (
+    guild: typeof GUILD_A,
+    input: {
+      readonly id: string;
+      readonly title: string;
+      readonly url: string;
+      readonly enabled: boolean;
+    },
+  ): void => {
+    assistantRepo.putResource(t.scopes.forGuild(guild), {
+      id: input.id,
+      guildId: guild,
+      title: input.title,
+      url: input.url,
+      kind: 'website',
+      enabled: input.enabled,
+      reviewedAt: new Date(clock).toISOString(),
+    });
+  };
+
+  const seedCached = (
+    guild: typeof GUILD_A,
+    resourceId: string,
+    url: string,
+    chunks: readonly Chunk[],
+  ): void => {
+    const scope = t.scopes.forGuild(guild);
+    const docId = computeDocId(url);
+    resourceCacheRepo.upsertDocument(scope, {
+      resourceId,
+      docId,
+      url,
+      path: '/guide',
+      title: `${resourceId} doc`,
+      contentHash: `hash-${resourceId}`,
+      fetchedAt: clock,
+      bytes: 100,
+      status: 'ok',
+    });
+    resourceCacheRepo.replaceChunks(scope, docId, resourceId, chunks);
+  };
+
+  const chunk = (ordinal: number, text: string): Chunk => ({
+    ordinal,
+    headingPath: `Guide › Part ${String(ordinal)}`,
+    lineStart: ordinal + 1,
+    lineEnd: ordinal + 1,
+    text,
+  });
+
+  const seedAll = (): void => {
+    seedResource(GUILD_A, {
+      id: 'handbook',
+      title: 'Alpha handbook',
+      url: 'https://example.com/alpha-handbook',
+      enabled: true,
+    });
+    seedCached(GUILD_A, 'handbook', 'https://example.com/alpha-handbook', [
+      chunk(0, 'the alphahandbookword rota for the alpha clubhouse'),
+    ]);
+    // Disabled but cached: search must not find it, open must not see it.
+    seedResource(GUILD_A, {
+      id: 'off',
+      title: 'Disabled notes',
+      url: 'https://example.com/off-notes',
+      enabled: false,
+    });
+    seedCached(GUILD_A, 'off', 'https://example.com/off-notes', [
+      chunk(0, 'the offkeywordword rota nobody should read over mcp'),
+    ]);
+    // Enabled but never fetched: the dashboard pointer, never a refresh.
+    seedResource(GUILD_A, {
+      id: 'empty',
+      title: 'Empty guide',
+      url: 'https://example.com/empty-guide',
+      enabled: true,
+    });
+    seedResource(GUILD_B, {
+      id: 'beta-guide',
+      title: 'Beta guide',
+      url: 'https://example.com/beta-guide',
+      enabled: true,
+    });
+    seedCached(GUILD_B, 'beta-guide', 'https://example.com/beta-guide', [
+      chunk(0, 'the betaguideword rota for the beta clubhouse'),
+    ]);
+  };
+
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const grantB = (): void => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+  };
+
+  it('search_resources finds the enabled cache but never the disabled one', async () => {
+    grantB();
+    seedAll();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '111111111111111111',
+          query: 'alphahandbookword',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alphahandbookword');
+    expect(found.text).toContain('Alpha handbook');
+
+    // An exact query for the disabled resource's distinctive word finds
+    // nothing: the daemon scopes the search to the enabled ids.
+    const hidden = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '111111111111111111',
+          query: 'offkeywordword',
+        })
+      ).body,
+    );
+    expect(hidden.isError).not.toBe(true);
+    expect(hidden.text).toContain('0 matches');
+    expect(hidden.text).not.toContain('offkeywordword');
+  });
+
+  it('open_resource refuses a disabled id without reading chunks, and points at the dashboard when unfetched (never fetching)', async () => {
+    grantB();
+    seedAll();
+    const accessToken = await mintToken();
+
+    const refused = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'off',
+        })
+      ).body,
+    );
+    expect(refused.isError).not.toBe(true);
+    expect(refused.text).toContain('No enabled resource with id "off".');
+    expect(refused.text).not.toContain('offkeywordword');
+
+    const pending = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'empty',
+        })
+      ).body,
+    );
+    expect(pending.isError).not.toBe(true);
+    expect(pending.text).toContain(
+      'This resource has not been fetched yet; the owner can refresh it in the dashboard.',
+    );
+    // Cache only: nothing was fetched, so nothing new is cached afterwards.
+    expect(resourceCacheRepo.listDocuments(t.scopes.forGuild(GUILD_A), 'empty')).toHaveLength(0);
+  });
+
+  it("open_resource reads the enabled cache, and guild B's cache is invisible to guild A", async () => {
+    grantB();
+    seedAll();
+    const accessToken = await mintToken();
+
+    const own = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'handbook',
+        })
+      ).body,
+    );
+    expect(own.isError).not.toBe(true);
+    expect(own.text).toContain('Alpha handbook');
+    expect(own.text).toContain('https://example.com/alpha-handbook');
+    expect(own.text).toContain('alphahandbookword');
+    expect(own.text).not.toContain('betaguideword');
+
+    // Guild B's resource id through guild A is unknown — never B's text.
+    const cross = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'beta-guide',
+        })
+      ).body,
+    );
+    expect(cross.isError).not.toBe(true);
+    expect(cross.text).toContain('No enabled resource with id "beta-guide".');
+    expect(cross.text).not.toContain('betaguideword');
+
+    // Same channel of proof for search: B's distinctive word finds nothing
+    // through A, but answers through B.
+    const crossSearch = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '111111111111111111',
+          query: 'betaguideword',
+        })
+      ).body,
+    );
+    expect(crossSearch.isError).not.toBe(true);
+    expect(crossSearch.text).toContain('0 matches');
+    expect(crossSearch.text).not.toContain('betaguideword');
+
+    const home = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '222222222222222222',
+          query: 'betaguideword',
+        })
+      ).body,
+    );
+    expect(home.isError).not.toBe(true);
+    expect(home.text).toContain('betaguideword');
+    expect(home.text).not.toContain('alphahandbookword');
   });
 });
 

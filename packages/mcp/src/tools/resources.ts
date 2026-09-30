@@ -208,7 +208,9 @@ const openResourceInner = (
   // The guild gate, as above: no call answers another guild's cache.
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
-  const found = port.listResources(gate.guildId).find((resource) => resource.id === parsed.data.resourceId);
+  const found = port
+    .listResources(gate.guildId)
+    .find((resource) => resource.id === parsed.data.resourceId);
   if (found === undefined) {
     return {
       ok: true,

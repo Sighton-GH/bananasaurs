@@ -34,6 +34,7 @@ import {
   type McpPrincipal,
   type McpReadAuditPort,
   type McpRecordsPort,
+  type McpResourcesPort,
   type McpSendPort,
 } from '@bananasaurs/mcp';
 import {
@@ -47,6 +48,7 @@ import {
   mcpSendRepo,
   modCaseRepo,
   panelRepo,
+  resourceCacheRepo,
   roleRepo,
 } from '@bananasaurs/storage';
 
@@ -727,6 +729,93 @@ const contextPortFor = (deps: HttpDeps): McpContextPort => ({
 });
 
 /**
+ * The `McpResourcesPort` behind `search_resources` and `open_resource`
+ * (slice 2, Task 2), field by field like `healthPortFor` above. Each method
+ * turns the already-resolved `GuildId` into a `GuildScope` per call and reads
+ * through the assistant resource catalogue and the resource cache — nothing
+ * here writes, and M4 is read-only.
+ *
+ * Enabled resources only: the catalogue rows are filtered to `enabled`
+ * exactly the way the assistant service filters them (`service.ts` keeps
+ * `listResources(scope).filter((r) => r.enabled)`), and the chunk search is
+ * scoped to those ids, so a disabled resource's chunks are invisible even to
+ * an exact query. Guild isolation comes from the scope: guild B's cache rows
+ * are invisible to a call for guild A.
+ *
+ * Cache only, by construction: the port's three members are reads
+ * (`listResources`, `searchChunks`, `listDocuments`/`outline`/`getChunk`).
+ * There is no refresh member — `enqueueAssistantRefresh` and the fetcher are
+ * never referenced here, let alone called — so an unfetched resource answers
+ * with the dashboard pointer and no fetch is ever enqueued. A fault leaves
+ * one allowlisted-fields error line via `loggedCall` above, never a title, a
+ * snippet or chunk text (rule 4).
+ */
+const resourcesPortFor = (deps: HttpDeps): McpResourcesPort => {
+  const enabledIds = (guildId: GuildId): readonly string[] =>
+    assistantRepo
+      .listResources(deps.scopes.forGuild(guildId))
+      .filter((resource) => resource.enabled)
+      .map((resource) => resource.id);
+  return {
+    listResources: (guildId) =>
+      loggedCall(deps.logger, 'listResources', () =>
+        assistantRepo
+          .listResources(deps.scopes.forGuild(guildId))
+          .filter((resource) => resource.enabled)
+          .map((resource) => ({
+            id: resource.id,
+            title: resource.title,
+            kind: resource.kind,
+            url: resource.url,
+          })),
+      ),
+    searchChunks: (guildId, input) =>
+      loggedCall(deps.logger, 'resourceSearchChunks', () =>
+        resourceCacheRepo
+          .searchChunks(deps.scopes.forGuild(guildId), {
+            query: input.query,
+            resourceIds: enabledIds(guildId),
+            limit: input.limit,
+          })
+          .map((hit) => ({
+            chunkId: hit.chunkId,
+            docId: hit.docId,
+            resourceId: hit.resourceId,
+            headingPath: hit.headingPath,
+            text: hit.snippet,
+          })),
+      ),
+    resourceChunks: (guildId, resourceId, limit) =>
+      loggedCall(deps.logger, 'resourceChunks', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const docs = resourceCacheRepo.listDocuments(scope, resourceId);
+        const first = docs[0];
+        if (first === undefined) return [];
+        // The first document's chunks in outline order — the same
+        // outline-then-getChunk walk the assistant's `cacheResourceChunks`
+        // makes, projected field by field.
+        return resourceCacheRepo
+          .outline(scope, first.docId)
+          .slice(0, limit)
+          .flatMap((row) => {
+            const found = resourceCacheRepo.getChunk(scope, row.chunkId);
+            return found === undefined
+              ? []
+              : [
+                  {
+                    chunkId: found.chunkId,
+                    docId: found.docId,
+                    resourceId: found.resourceId,
+                    headingPath: found.headingPath,
+                    text: found.text,
+                  },
+                ];
+          });
+      }),
+  };
+};
+
+/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -1075,6 +1164,7 @@ export const registerMcpRoutes = (
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),
       context: contextPortFor(deps),
+      resources: resourcesPortFor(deps),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

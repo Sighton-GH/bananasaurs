@@ -38,6 +38,11 @@ import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './tools/context.js';
+import {
+  OPEN_RESOURCE_TOOL_NAME,
+  SEARCH_RESOURCES_TOOL_NAME,
+  type McpResourcesPort,
+} from './tools/resources.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -135,6 +140,13 @@ const stubContext = (): McpContextPort => ({
   skills: () => [],
 });
 
+/** Minimal resources port: this file pins registration, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -152,6 +164,7 @@ const connectPair = async (
     jobs: stubJobs(),
     members: stubMembers(),
     context: stubContext(),
+    resources: stubResources(),
     send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -202,13 +215,13 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message first, alongside the seventeen read tools', async () => {
+  it('lists send_message first, alongside the nineteen read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(18);
+      expect(list.tools).toHaveLength(20);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
@@ -228,6 +241,8 @@ describe('createMcpServer', () => {
         'get_member',
         'search_members',
         GET_SERVER_CONTEXT_TOOL_NAME,
+        SEARCH_RESOURCES_TOOL_NAME,
+        OPEN_RESOURCE_TOOL_NAME,
       ]);
       const resources = await client.listResourceTemplates();
       expect(resources.resourceTemplates).toHaveLength(1);

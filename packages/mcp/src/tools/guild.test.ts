@@ -31,6 +31,11 @@ import type { McpPrincipal } from '../scope.js';
 import type { McpJobsPort } from './jobs.js';
 import type { McpMembersPort } from './members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './context.js';
+import {
+  OPEN_RESOURCE_TOOL_NAME,
+  SEARCH_RESOURCES_TOOL_NAME,
+  type McpResourcesPort,
+} from './resources.js';
 
 /** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -51,6 +56,13 @@ const stubContext = (): McpContextPort => ({
   timeZone: 'America/Vancouver',
   now: () => 1_700_000_000_000,
   skills: () => [],
+});
+
+/** Minimal resources port: this file pins the guild tools, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
 });
 
 /**
@@ -505,6 +517,7 @@ describe('guild tools on the MCP server', () => {
       jobs: stubJobs(),
       members: stubMembers(),
       context: stubContext(),
+      resources: stubResources(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -517,7 +530,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all seventeen tools and still no send_message', async () => {
+  it('lists all nineteen tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -539,6 +552,8 @@ describe('guild tools on the MCP server', () => {
         'get_member',
         'search_members',
         GET_SERVER_CONTEXT_TOOL_NAME,
+        SEARCH_RESOURCES_TOOL_NAME,
+        OPEN_RESOURCE_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

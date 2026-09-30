@@ -7,6 +7,7 @@ import {
   EVIDENCE_CLOSE,
 } from '../envelope.js';
 import { GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
+import type { ReadOutcome } from '../register.js';
 import { MCP_READ_OPEN_RESOURCE, MCP_READ_SEARCH_RESOURCES } from '../read-audit.js';
 import {
   OPEN_RESOURCE_CHUNK_LIMIT,
@@ -59,9 +60,7 @@ const portWith = (over: Partial<McpResourcesPort> = {}): McpResourcesPort => ({
   ...over,
 });
 
-const okText = (
-  outcome: ReturnType<typeof searchResourcesText> | ReturnType<typeof openResourceText>,
-): string => {
+const okText = (outcome: ReadOutcome): string => {
   expect(outcome.ok).toBe(true);
   if (!outcome.ok) throw new Error('expected ok');
   return outcome.text;
@@ -86,7 +85,9 @@ describe('resource tools gate', () => {
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,
     });
-    expect(openResourceText(principal, port, { guildId: String(OTHER_GUILD), resourceId: 'handbook' })).toEqual({
+    expect(
+      openResourceText(principal, port, { guildId: String(OTHER_GUILD), resourceId: 'handbook' }),
+    ).toEqual({
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,
     });
@@ -97,7 +98,9 @@ describe('resource tools gate', () => {
 
   it('a malformed guild id refuses before any port call', () => {
     const port = portWith({ listResources: vi.fn(() => [summary()]) });
-    expect(searchResourcesText(principal, port, { guildId: 'not-a-snowflake', query: 'x' })).toEqual({
+    expect(
+      searchResourcesText(principal, port, { guildId: 'not-a-snowflake', query: 'x' }),
+    ).toEqual({
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,
     });
@@ -120,7 +123,11 @@ describe('resource tools gate', () => {
         message: INVALID_ARGUMENTS_MESSAGE,
       });
     }
-    for (const args of [{}, { guildId: String(GUILD) }, { guildId: String(GUILD), resourceId: '' }]) {
+    for (const args of [
+      {},
+      { guildId: String(GUILD) },
+      { guildId: String(GUILD), resourceId: '' },
+    ]) {
       expect(openResourceText(principal, port, args)).toEqual({
         ok: false,
         message: INVALID_ARGUMENTS_MESSAGE,
@@ -141,9 +148,9 @@ describe('resource tools gate', () => {
         throw new Error('store unavailable');
       },
     };
-    expect(
-      searchResourcesText(principal, failing, { guildId: String(GUILD), query: 'x' }),
-    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(searchResourcesText(principal, failing, { guildId: String(GUILD), query: 'x' })).toEqual(
+      { ok: false, message: GUILD_REFUSAL_MESSAGE },
+    );
     expect(
       openResourceText(principal, failing, { guildId: String(GUILD), resourceId: 'handbook' }),
     ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
@@ -161,7 +168,12 @@ describe('search_resources', () => {
       resources: { id: string; title: string; kind: string; url: string }[];
     };
     expect(data.resources).toEqual([
-      { id: 'handbook', title: 'Club handbook', kind: 'document', url: 'https://example.com/handbook' },
+      {
+        id: 'handbook',
+        title: 'Club handbook',
+        kind: 'document',
+        url: 'https://example.com/handbook',
+      },
     ]);
     const head = lines[0] ?? '';
     expect(head).toContain('1 matches');
@@ -305,7 +317,11 @@ describe('open_resource', () => {
 
   it('a cached resource names its title and url and envelopes up to ten chunks', () => {
     const chunks = Array.from({ length: 12 }, (_, i) =>
-      chunk({ chunkId: `c_d_abc_${String(i)}`, headingPath: `H › ${String(i)}`, text: `body ${String(i)}` }),
+      chunk({
+        chunkId: `c_d_abc_${String(i)}`,
+        headingPath: `H › ${String(i)}`,
+        text: `body ${String(i)}`,
+      }),
     );
     const resourceChunks = vi.fn((): readonly McpResourceChunk[] => chunks.slice(0, 10));
     const text = okText(

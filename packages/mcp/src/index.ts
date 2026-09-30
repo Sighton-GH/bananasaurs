@@ -76,9 +76,11 @@ export {
   MCP_READ_LIST_MEMBERS,
   MCP_READ_LIST_MOD_CASES,
   MCP_READ_LIST_ROLES,
+  MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
   MCP_READ_SEARCH_MEMBERS,
   MCP_READ_SEARCH_MESSAGES,
+  MCP_READ_SEARCH_RESOURCES,
   performReadRecord,
   type McpContentReadRecord,
   type McpReadAuditPort,
@@ -192,6 +194,22 @@ export {
   type McpContextPort,
   type McpContextSkill,
 } from './tools/context.js';
+export {
+  OPEN_RESOURCE_CHUNK_LIMIT,
+  OPEN_RESOURCE_TEXT_MAX,
+  OPEN_RESOURCE_TOOL_DESCRIPTION,
+  OPEN_RESOURCE_TOOL_NAME,
+  openResourceParams,
+  openResourceText,
+  registerResourceTools,
+  SEARCH_RESOURCES_TOOL_DESCRIPTION,
+  SEARCH_RESOURCES_TOOL_NAME,
+  searchResourcesParams,
+  searchResourcesText,
+  type McpResourceChunk,
+  type McpResourcesPort,
+  type McpResourceSummary,
+} from './tools/resources.js';
 export { STRUCTURED_NOTE, safeName, structuredText } from './structured.js';
 export {
   isSnowflake,
