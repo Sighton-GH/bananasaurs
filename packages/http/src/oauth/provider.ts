@@ -14,8 +14,13 @@ export const REFRESH_TOKEN_TTL_MS = 2_592_000_000;
 export const AUTHORIZATION_CODE_TTL_MS = 300_000;
 export const PENDING_AUTHORIZATION_TTL_MS = 600_000;
 
-/** The scope vocabulary (ruling PR-103): exactly these two, not `write`. */
-export const OAUTH_SCOPES = ['bananasaurs:read', 'bananasaurs:send'] as const;
+/** The scope vocabulary (ruling PR-103, extended by ADR 0111): exactly these four, not `write`. */
+export const OAUTH_SCOPES = [
+  'bananasaurs:read',
+  'bananasaurs:send',
+  'bananasaurs:roles',
+  'bananasaurs:tasks',
+] as const;
 export type OAuthScope = (typeof OAUTH_SCOPES)[number];
 
 /** RFC 6749 §5.2 error codes this server emits. Task 4 maps them to HTTP. */

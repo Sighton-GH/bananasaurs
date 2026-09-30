@@ -23,6 +23,7 @@ import {
   findChannel,
   findMessage,
   isChannelEnabled,
+  lastMessageAtByAuthor,
   linkToCase,
   listChannelHistory,
   listChannels,
@@ -772,6 +773,39 @@ describe('listChannelHistory', () => {
     }
   });
 
+  it('authorId narrows to one author; without it every message returns', () => {
+    const BOT = '888888888888888888';
+    enable(a, CHANNEL_A);
+    const botIds = [historyId(1), historyId(2)];
+    const memberIds = [historyId(3), historyId(4)];
+    for (const messageId of botIds) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: BOT,
+        content: `bot message ${messageId}`,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    for (const messageId of memberIds) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: MEMBER,
+        content: `member message ${messageId}`,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, authorId: BOT }).map((m) => m.messageId),
+    ).toEqual([...botIds].reverse());
+    expect(listChannelHistory(a, { channelId: CHANNEL_A })).toHaveLength(4);
+  });
+
   it('a purged message is returned as a tombstone, not omitted', () => {
     const ids = seedHistory(a, CHANNEL_A, 3);
     const purgedId = ids[1];
@@ -789,5 +823,69 @@ describe('listChannelHistory', () => {
       authorId: MEMBER,
       retentionClass: 'default',
     });
+  });
+});
+
+describe('lastMessageAtByAuthor', () => {
+  const AUTHOR_X = '600000000000000001';
+  const AUTHOR_Y = '600000000000000002';
+  const AUTHOR_Z = '600000000000000003';
+
+  const seedAuthorMessage = (
+    scope: GuildScope,
+    input: { messageId: string; authorId: string; createdAt: number },
+  ) => {
+    enable(scope, CHANNEL_A);
+    upsertMessage(scope, {
+      messageId: input.messageId,
+      channelId: CHANNEL_A,
+      authorId: input.authorId,
+      content: `from ${input.authorId}`,
+      createdAt: input.createdAt,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  it('returns the newest time per author in this guild only', () => {
+    seedAuthorMessage(a, {
+      messageId: '700000000000000001',
+      authorId: AUTHOR_X,
+      createdAt: 1000,
+    });
+    seedAuthorMessage(a, {
+      messageId: '700000000000000002',
+      authorId: AUTHOR_X,
+      createdAt: 3000,
+    });
+    seedAuthorMessage(a, {
+      messageId: '700000000000000003',
+      authorId: AUTHOR_Y,
+      createdAt: 2000,
+    });
+    seedAuthorMessage(b, { messageId: '700000000000000004', authorId: AUTHOR_X, createdAt: 9000 });
+
+    expect(lastMessageAtByAuthor(a, [AUTHOR_X, AUTHOR_Y, AUTHOR_Z])).toEqual(
+      new Map([
+        [AUTHOR_X, 3000],
+        [AUTHOR_Y, 2000],
+      ]),
+    );
+  });
+
+  it('chunks ids past 500 and still returns the match', () => {
+    seedAuthorMessage(a, {
+      messageId: '700000000000000001',
+      authorId: AUTHOR_X,
+      createdAt: 3000,
+    });
+    const ids: string[] = [AUTHOR_X];
+    for (let i = 0; i < 599; i += 1) {
+      ids.push(String(800000000000000000n + BigInt(i)));
+    }
+    expect(ids).toHaveLength(600);
+    const found = lastMessageAtByAuthor(a, ids);
+    expect(found.get(AUTHOR_X)).toBe(3000);
+    expect(found.size).toBe(1);
   });
 });

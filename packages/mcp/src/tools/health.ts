@@ -17,7 +17,7 @@ export const GET_HEALTH_TOOL_NAME = 'get_health';
 export const GET_HEALTH_TOOL_DESCRIPTION =
   'Process health: uptime, gateway connection, per-guild safety controls ' +
   '(kill switch, dry run, breaker), job counts and scheduler lag. ' +
-  'Refuses when the caller reaches no guild.';
+  'Refuses when the caller reaches no guild. Use list_jobs to see why jobs failed.';
 
 /**
  * One reachable guild's share of the report. Projected field by field from
@@ -135,6 +135,12 @@ export const renderHealth = (port: McpHealthPort): string => {
     const lagText =
       guild.schedulerLagMs === 0 ? 'none' : `${humaniseDuration(guild.schedulerLagMs)} behind`;
     lines.push(`  jobs: ${jobText}; scheduler lag: ${lagText}`);
+    // The owner's "14 failed jobs" answer: a bare count gives no way to see
+    // why, so a guild with failures points at the tool that shows them.
+    const failed = guild.jobCounts['failed'] ?? 0;
+    if (failed > 0) {
+      lines.push(`  ${String(failed)} failed job(s): call list_jobs with this guildId to see why.`);
+    }
   }
   return lines.join('\n');
 };

@@ -172,7 +172,12 @@ describe('the metadata documents', () => {
     expect(body.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
     expect(body.code_challenge_methods_supported).toEqual(['S256']);
     expect(body.token_endpoint_auth_methods_supported).toEqual(['none']);
-    expect(body.scopes_supported).toEqual(['bananasaurs:read', 'bananasaurs:send']);
+    expect(body.scopes_supported).toEqual([
+      'bananasaurs:read',
+      'bananasaurs:send',
+      'bananasaurs:roles',
+      'bananasaurs:tasks',
+    ]);
   });
 
   it('serves the protected-resource document', async () => {
@@ -185,7 +190,12 @@ describe('the metadata documents', () => {
     const body = response.json<Record<string, unknown>>();
     expect(body.resource).toBe(`${PUBLIC_URL}/mcp`);
     expect(body.authorization_servers).toEqual([PUBLIC_URL]);
-    expect(body.scopes_supported).toEqual(['bananasaurs:read', 'bananasaurs:send']);
+    expect(body.scopes_supported).toEqual([
+      'bananasaurs:read',
+      'bananasaurs:send',
+      'bananasaurs:roles',
+      'bananasaurs:tasks',
+    ]);
     expect(body.bearer_methods_supported).toEqual(['header']);
   });
 });

@@ -5,7 +5,7 @@ import {
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
-import { envelope, type EvidenceItem } from '../envelope.js';
+import { safeName, structuredText } from '../structured.js';
 import type { McpGuildChannel, McpGuildPort, McpGuildRole } from '../tools/guild.js';
 import type { McpOverviewPanel, McpOverviewRule, McpRecordsPort } from '../tools/records.js';
 import { MCP_READ_GET_SERVER_OVERVIEW, type McpReadRecord } from '../read-audit.js';
@@ -56,57 +56,6 @@ export type OverviewOutcome =
   | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
   | { readonly ok: false; readonly message: string };
 
-/**
- * Channel and role rows reuse the guild tools' locator shape (guild, row id,
- * row name, order key) with the human-readable row as `content`, so a client
- * scanning for an id finds it without parsing prose. The mapping is
- * duplicated from `tools/guild.ts` rather than imported: those helpers are
- * module-private there, and the card owns its rendering.
- */
-const channelToEvidenceItem = (guildId: GuildId, channel: McpGuildChannel): EvidenceItem => ({
-  authorId: guildId,
-  channelId: channel.id,
-  messageId: channel.name,
-  timestamp: channel.type,
-  content: [
-    `parent: ${channel.parentName !== undefined && channel.parentId !== undefined ? `${channel.parentName} (${channel.parentId})` : '(none)'}`,
-    `topic: ${channel.topic ?? '(none)'}`,
-    `archive-enabled: ${channel.archiveEnabled ? 'yes' : 'no'}`,
-  ].join('\n'),
-});
-
-const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
-
-const roleToEvidenceItem = (guildId: GuildId, role: McpGuildRole): EvidenceItem => ({
-  authorId: guildId,
-  channelId: role.id,
-  messageId: role.name,
-  timestamp: `position ${String(role.position)}`,
-  content: [
-    `color: ${toHexColor(role.color)}`,
-    `managed-by-bananasaurs: ${role.managedByBananasaurs ? 'yes' : 'no'}`,
-  ].join('\n'),
-});
-
-const panelToEvidenceItem = (guildId: GuildId, panel: McpOverviewPanel): EvidenceItem => ({
-  authorId: guildId,
-  channelId: '(panels)',
-  messageId: panel.panelId,
-  timestamp: 'panel',
-  content: `panel: ${panel.panelId}`,
-});
-
-/** Channels grouped by category: categorised first by category name, then the unparented. */
-const byCategoryThenName = (a: McpGuildChannel, b: McpGuildChannel): number => {
-  if (a.parentName === undefined && b.parentName !== undefined) return 1;
-  if (a.parentName !== undefined && b.parentName === undefined) return -1;
-  return (
-    (a.parentName ?? '').localeCompare(b.parentName ?? '') ||
-    a.name.localeCompare(b.name) ||
-    (a.id < b.id ? -1 : 1)
-  );
-};
-
 const countByMode = (
   rules: readonly McpOverviewRule[],
   mode: string,
@@ -115,38 +64,95 @@ const countByMode = (
   return { total: inMode.length, enabled: inMode.filter((rule) => rule.enabled).length };
 };
 
+/** One channel row in the card's JSON: names escaped, topics omitted, `archive` only when true, `type` omitted for plain text channels. */
+const channelRow = (
+  channel: McpGuildChannel,
+): {
+  readonly id: string;
+  readonly name: string;
+  readonly type?: string;
+  readonly archive?: boolean;
+} => ({
+  id: channel.id,
+  name: safeName(channel.name),
+  ...(channel.type === 'GuildText' ? {} : { type: channel.type }),
+  ...(channel.archiveEnabled ? { archive: true as const } : {}),
+});
+
+const byNameThenId = (a: { name: string; id: string }, b: { name: string; id: string }): number =>
+  a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1);
+
 /**
- * The one card builder both doors call. The header carries counts and the
- * guild id only — every name a human typed (channels, roles, panels) rides
- * inside the enveloped items below it, never in unframed prose.
+ * The one card builder both doors call. The head line carries counts and the
+ * guild id only; everything else is one line of JSON: channels grouped by
+ * category, then the unparented channels, roles, panels and rule counts
+ * (ADR 0110). Every name a human typed rides in the JSON as an escaped
+ * string via `safeName`, never in unframed prose. Topics are not in the
+ * overview — `list_channels` carries them. Roles are listed highest-first
+ * as `{ id, name }` with `managed: true` only when Bananasaurs manages the
+ * role; colour and position live in `list_roles`. Channel entries omit
+ * `type` when the channel is a plain text channel — the head line says so —
+ * and every other channel type keeps it.
  */
 export const buildOverviewCard = (input: OverviewCardInput): string => {
-  const channels = [...input.channels].sort(byCategoryThenName);
-  const enabledChannels = channels.filter((channel) => channel.archiveEnabled).length;
-  const categoryCount = new Set(channels.map((channel) => channel.parentId ?? '')).size;
-  const managedRoles = input.roles.filter((role) => role.managedByBananasaurs).length;
-  const test = countByMode(input.rules, 'test');
-  const observe = countByMode(input.rules, 'observe');
-  const enforce = countByMode(input.rules, 'enforce');
-  const enabledRules = input.rules.filter((rule) => rule.enabled).length;
-  const categoryNoun = categoryCount === 1 ? 'category' : 'categories';
-  const lines = [
-    `Server overview for guild ${input.guildId}:`,
-    `members: ${String(input.memberCount)}`,
-    `channels: ${String(channels.length)} (${String(enabledChannels)} archive-enabled) in ${String(categoryCount)} ${categoryNoun}`,
-    `roles: ${String(input.roles.length)} (${String(managedRoles)} managed by Bananasaurs)`,
-    `panels: ${String(input.panels.length)}`,
-    `rules: ${String(input.rules.length)} total (${String(enabledRules)} enabled) — by mode: ` +
-      `test: ${String(test.total)} (enabled: ${String(test.enabled)}), ` +
-      `observe: ${String(observe.total)} (enabled: ${String(observe.enabled)}), ` +
-      `enforce: ${String(enforce.total)} (enabled: ${String(enforce.enabled)})`,
-  ];
-  const items: EvidenceItem[] = [
-    ...channels.map((channel) => channelToEvidenceItem(input.guildId, channel)),
-    ...input.roles.map((role) => roleToEvidenceItem(input.guildId, role)),
-    ...input.panels.map((panel) => panelToEvidenceItem(input.guildId, panel)),
-  ];
-  return `${lines.join('\n')}\n\n${envelope(items)}`;
+  const head =
+    `Server overview for guild ${input.guildId}: ${String(input.memberCount)} members, ` +
+    `${String(input.channels.length)} channels, ${String(input.roles.length)} roles, ` +
+    `${String(input.panels.length)} panels, ${String(input.rules.length)} rules. ` +
+    'Channels without a type are text channels.';
+  const categoryChannels = input.channels.filter((channel) => channel.type === 'GuildCategory');
+  const knownCategoryIds = new Set(categoryChannels.map((channel) => channel.id));
+  const childChannels = input.channels.filter((channel) => channel.type !== 'GuildCategory');
+  const rowsByCategory = new Map<string, McpGuildChannel[]>();
+  for (const channel of childChannels) {
+    if (channel.parentId === undefined) continue;
+    const rows = rowsByCategory.get(channel.parentId) ?? [];
+    rows.push(channel);
+    rowsByCategory.set(channel.parentId, rows);
+  }
+  const categoryNameById = new Map<string, string>();
+  for (const channel of categoryChannels) {
+    categoryNameById.set(channel.id, channel.name);
+  }
+  for (const channel of childChannels) {
+    if (channel.parentId !== undefined && !knownCategoryIds.has(channel.parentId)) {
+      // A channel whose parent names a category absent from the list: the
+      // card synthesises the category entry from the child's locator.
+      if (!categoryNameById.has(channel.parentId)) {
+        categoryNameById.set(channel.parentId, channel.parentName ?? '');
+      }
+    }
+  }
+  const categories = [...categoryNameById.entries()]
+    .map(([id, name]) => ({
+      id,
+      name: safeName(name),
+      channels: (rowsByCategory.get(id) ?? []).map(channelRow).sort(byNameThenId),
+    }))
+    .sort(byNameThenId);
+  const uncategorised = childChannels
+    .filter((channel) => channel.parentId === undefined)
+    .map(channelRow)
+    .sort(byNameThenId);
+  const data = {
+    guild: { id: input.guildId, memberCount: input.memberCount },
+    categories,
+    uncategorised,
+    roles: [...input.roles]
+      .sort((a, b) => b.position - a.position)
+      .map((r) => ({
+        id: r.id,
+        name: safeName(r.name),
+        ...(r.managedByBananasaurs ? { managed: true as const } : {}),
+      })),
+    panels: input.panels.map((p) => ({ id: p.panelId })),
+    rules: {
+      test: countByMode(input.rules, 'test'),
+      observe: countByMode(input.rules, 'observe'),
+      enforce: countByMode(input.rules, 'enforce'),
+    },
+  };
+  return structuredText(head, data);
 };
 
 /**

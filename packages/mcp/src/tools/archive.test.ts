@@ -20,6 +20,8 @@ import {
 import { archiveRepo as archiveRepoIndex } from '@bananasaurs/storage';
 import {
   ARCHIVE_PURGED_MARKER,
+  BOT_AUTHOR,
+  BOT_NOT_READY_MESSAGE,
   GET_MESSAGE_TOOL_NAME,
   getMessageText,
   READ_CHANNEL_HISTORY_TOOL_NAME,
@@ -27,6 +29,8 @@ import {
   SEARCH_MESSAGES_TOOL_NAME,
   searchMessagesText,
   type McpArchivePort,
+  type McpArchiveSearchInput,
+  type McpChannelHistoryInput,
 } from './archive.js';
 import type { McpPrincipal } from '../scope.js';
 import {
@@ -40,6 +44,21 @@ import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
 import type { McpGuildPort } from './guild.js';
 import type { McpRecordsPort } from './records.js';
+import type { McpJobsPort } from './jobs.js';
+import type { McpMembersPort } from './members.js';
+
+/** Minimal jobs port: this file pins the archive tools, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins the archive tools, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
 
 /**
  * Task 4b, tool layer: `search_messages`, `read_channel_history` and
@@ -58,6 +77,16 @@ const CHANNEL_2 = '444444444444444444';
 /** Real-format snowflake, never enabled: the narrowing probe. */
 const OUTSIDE_CHANNEL = '999999999999999999';
 const MEMBER = '555555555555555555';
+const BOT_ID = '888888888888888888';
+
+/** A guild port with no channels: names refuse, snowflakes pass through. */
+const emptyGuild = (): McpGuildPort => ({
+  listChannels: () => [],
+  listThreads: async () => [],
+  listRoles: () => [],
+  listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
+  memberCount: () => 0,
+});
 
 let t: MigratedTestDatabase;
 let port: McpArchivePort;
@@ -134,7 +163,9 @@ beforeEach(() => {
         channelId: input.channelId,
         ...(input.beforeMessageId !== undefined ? { beforeMessageId: input.beforeMessageId } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
       }),
+    botUserId: () => BOT_ID,
   };
 
   seedChannel(GUILD_A, CHANNEL_1);
@@ -184,9 +215,10 @@ describe('archive tools refuse without a reachable guild', () => {
     principal: McpPrincipal,
     args: unknown,
   ): { readonly ok: boolean; readonly message?: string; readonly text?: string } => {
-    if (name === SEARCH_MESSAGES_TOOL_NAME) return searchMessagesText(principal, port, args);
+    if (name === SEARCH_MESSAGES_TOOL_NAME)
+      return searchMessagesText(principal, port, emptyGuild(), args);
     if (name === READ_CHANNEL_HISTORY_TOOL_NAME)
-      return readChannelHistoryText(principal, port, args);
+      return readChannelHistoryText(principal, port, emptyGuild(), args);
     return getMessageText(principal, port, args);
   };
 
@@ -216,15 +248,15 @@ describe('archive tools refuse without a reachable guild', () => {
   );
 
   it('the refusal is identical whether the guild is unreachable or malformed', () => {
-    const malformed = searchMessagesText(principalWith(GUILD_A, GUILD_B), port, {
+    const malformed = searchMessagesText(principalWith(GUILD_A, GUILD_B), port, emptyGuild(), {
       guildId: 'not-a-snowflake',
       query: 'banana',
     });
-    const unreachable = searchMessagesText(principalWith(GUILD_A), port, {
+    const unreachable = searchMessagesText(principalWith(GUILD_A), port, emptyGuild(), {
       guildId: '222222222222222222',
       query: 'banana',
     });
-    const empty = searchMessagesText(principalWith(), port, {
+    const empty = searchMessagesText(principalWith(), port, emptyGuild(), {
       guildId: '111111111111111111',
       query: 'banana',
     });
@@ -244,28 +276,23 @@ describe('archive tools refuse without a reachable guild', () => {
       { guildId: '111111111111111111', query: 'banana', limit: 101 },
       { guildId: '111111111111111111', query: 'x'.repeat(600) },
       { guildId: '111111111111111111', query: 'banana', limit: 1.5 },
-      { guildId: '111111111111111111', query: 'banana', channelIds: ['nope'] },
       { guildId: '111111111111111111', query: 'banana', authorId: 'nope' },
     ];
     for (const args of bad) {
-      expect(() => searchMessagesText(principal, port, args)).not.toThrow();
-      expect(searchMessagesText(principal, port, args)).toEqual({
+      expect(() => searchMessagesText(principal, port, emptyGuild(), args)).not.toThrow();
+      expect(searchMessagesText(principal, port, emptyGuild(), args)).toEqual({
         ok: false,
         message: INVALID_ARGUMENTS_MESSAGE,
       });
     }
-    expect(() =>
-      readChannelHistoryText(principal, port, {
-        guildId: '111111111111111111',
-        channelId: 'nope',
-      }),
-    ).not.toThrow();
+    // A non-snowflake channel ref is a name, not a malformed id: with no such
+    // channel in the guild it refuses by name, never as an argument fault.
     expect(
-      readChannelHistoryText(principal, port, {
+      readChannelHistoryText(principal, port, emptyGuild(), {
         guildId: '111111111111111111',
         channelId: 'nope',
       }),
-    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    ).toEqual({ ok: false, message: 'No channel named "nope" in this guild.' });
     expect(() =>
       getMessageText(principal, port, { guildId: '111111111111111111', messageId: 'nope' }),
     ).not.toThrow();
@@ -289,13 +316,13 @@ describe('archive tools refuse without a reachable guild', () => {
     };
     const principal = principalWith(GUILD_A);
     expect(
-      searchMessagesText(principal, throwing, {
+      searchMessagesText(principal, throwing, emptyGuild(), {
         guildId: '111111111111111111',
         query: 'banana',
       }),
     ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
     expect(
-      readChannelHistoryText(principal, throwing, {
+      readChannelHistoryText(principal, throwing, emptyGuild(), {
         guildId: '111111111111111111',
         channelId: CHANNEL_1,
       }),
@@ -314,7 +341,10 @@ describe('every content-bearing result carries the envelope preamble', () => {
 
   it('search_messages frames member text between preamble and delimiters', () => {
     const text = textOf(
-      searchMessagesText(principal(), port, { guildId: '111111111111111111', query: 'pineapple' }),
+      searchMessagesText(principal(), port, emptyGuild(), {
+        guildId: '111111111111111111',
+        query: 'pineapple',
+      }),
     );
     expect(text).toContain(EVIDENCE_PREAMBLE);
     const preambleAt = text.indexOf(EVIDENCE_PREAMBLE);
@@ -334,7 +364,7 @@ describe('every content-bearing result carries the envelope preamble', () => {
 
   it('read_channel_history frames every message', () => {
     const text = textOf(
-      readChannelHistoryText(principal(), port, {
+      readChannelHistoryText(principal(), port, emptyGuild(), {
         guildId: '111111111111111111',
         channelId: CHANNEL_1,
       }),
@@ -357,7 +387,7 @@ describe('every content-bearing result carries the envelope preamble', () => {
 
   it('an empty result is the preamble alone, never unlabelled text', () => {
     const text = textOf(
-      searchMessagesText(principal(), port, {
+      searchMessagesText(principal(), port, emptyGuild(), {
         guildId: '111111111111111111',
         query: 'zucchini-no-match-anywhere',
       }),
@@ -401,7 +431,7 @@ describe('purged content returns a tombstone (ruling M4-D8)', () => {
 
   it('read_channel_history keeps the tombstone in place, not omitted', () => {
     const text = textOf(
-      readChannelHistoryText(principalWith(GUILD_A), port, {
+      readChannelHistoryText(principalWith(GUILD_A), port, emptyGuild(), {
         guildId: '111111111111111111',
         channelId: CHANNEL_1,
       }),
@@ -417,9 +447,9 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
   const base = { guildId: '111111111111111111', query: 'banana' };
 
   it('a real but non-archive channel id contributes nothing to hits or total', () => {
-    const open = searchMessagesText(principal(), port, base);
+    const open = searchMessagesText(principal(), port, emptyGuild(), base);
     expect(open.ok).toBe(true);
-    const narrowed = searchMessagesText(principal(), port, {
+    const narrowed = searchMessagesText(principal(), port, emptyGuild(), {
       ...base,
       channelIds: [OUTSIDE_CHANNEL],
     });
@@ -431,11 +461,11 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
   });
 
   it('mixing a visible channel with an outside one answers exactly the visible one', () => {
-    const visibleOnly = searchMessagesText(principal(), port, {
+    const visibleOnly = searchMessagesText(principal(), port, emptyGuild(), {
       ...base,
       channelIds: [CHANNEL_1],
     });
-    const mixed = searchMessagesText(principal(), port, {
+    const mixed = searchMessagesText(principal(), port, emptyGuild(), {
       ...base,
       channelIds: [CHANNEL_1, OUTSIDE_CHANNEL],
     });
@@ -468,7 +498,7 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
       .run('111111111111111111', ORPHAN);
     t.raw.exec('PRAGMA foreign_keys = ON');
 
-    const open = searchMessagesText(principal(), port, {
+    const open = searchMessagesText(principal(), port, emptyGuild(), {
       ...base,
       query: 'quince',
     });
@@ -477,7 +507,7 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
       text: expect.stringContaining('0 matches'),
       read: expect.anything(),
     });
-    const named = searchMessagesText(principal(), port, {
+    const named = searchMessagesText(principal(), port, emptyGuild(), {
       ...base,
       query: 'quince',
       channelIds: [ORPHAN],
@@ -487,6 +517,168 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
       text: expect.stringContaining('0 matches'),
       read: expect.anything(),
     });
+  });
+});
+
+describe('channel names resolve after the guild gate; authorId "bot" reads the bot', () => {
+  const HELP_ID = '200000000000000001';
+  const principal = (): McpPrincipal => principalWith(GUILD_A);
+
+  const helpGuild = (calls: { count: number }): McpGuildPort => ({
+    listChannels: () => {
+      calls.count += 1;
+      return [
+        {
+          id: HELP_ID,
+          name: 'help',
+          type: 'GuildText',
+          parentId: undefined,
+          parentName: undefined,
+          topic: undefined,
+          archiveEnabled: true,
+        },
+      ];
+    },
+    listThreads: async () => [],
+    listRoles: () => [],
+    listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
+    memberCount: () => 0,
+  });
+
+  const recordingArchive = (
+    botId: string | undefined,
+  ): McpArchivePort & {
+    readonly seenHistory: McpChannelHistoryInput[];
+    readonly seenSearch: McpArchiveSearchInput[];
+  } => {
+    const seenHistory: McpChannelHistoryInput[] = [];
+    const seenSearch: McpArchiveSearchInput[] = [];
+    return {
+      seenHistory,
+      seenSearch,
+      listArchiveChannelIds: () => [HELP_ID],
+      searchMessages: (_guildId, input) => {
+        seenSearch.push(input);
+        return { total: 0, hits: [] };
+      },
+      findMessage: () => undefined,
+      listChannelHistory: (_guildId, input) => {
+        seenHistory.push(input);
+        return [];
+      },
+      botUserId: () => botId,
+    };
+  };
+
+  it("read_channel_history resolves '#help' to the help channel id", () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(BOT_ID);
+    const outcome = readChannelHistoryText(principal(), archive, helpGuild(calls), {
+      guildId: '111111111111111111',
+      channelId: '#help',
+    });
+    expect(outcome.ok).toBe(true);
+    expect(calls.count).toBeGreaterThan(0);
+    expect(archive.seenHistory).toEqual([{ channelId: HELP_ID }]);
+  });
+
+  it("search_messages resolves 'help' inside channelIds", () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(BOT_ID);
+    const outcome = searchMessagesText(principal(), archive, helpGuild(calls), {
+      guildId: '111111111111111111',
+      query: 'banana',
+      channelIds: ['help'],
+    });
+    expect(outcome.ok).toBe(true);
+    expect(calls.count).toBeGreaterThan(0);
+    expect(archive.seenSearch).toHaveLength(1);
+    expect(archive.seenSearch[0]?.channelIds).toEqual([HELP_ID]);
+  });
+
+  it('an unknown channel name refuses and never reaches the port', () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(BOT_ID);
+    const outcome = readChannelHistoryText(principal(), archive, helpGuild(calls), {
+      guildId: '111111111111111111',
+      channelId: 'nope',
+    });
+    expect(outcome).toEqual({ ok: false, message: 'No channel named "nope" in this guild.' });
+    expect(archive.seenHistory).toEqual([]);
+  });
+
+  it(`authorId "${BOT_AUTHOR}" reaches the port as the bot id, on both tools`, () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(BOT_ID);
+    const guild = helpGuild(calls);
+    const history = readChannelHistoryText(principal(), archive, guild, {
+      guildId: '111111111111111111',
+      channelId: HELP_ID,
+      authorId: BOT_AUTHOR,
+    });
+    expect(history.ok).toBe(true);
+    expect(archive.seenHistory).toEqual([{ channelId: HELP_ID, authorId: BOT_ID }]);
+    const search = searchMessagesText(principal(), archive, guild, {
+      guildId: '111111111111111111',
+      query: 'banana',
+      authorId: BOT_AUTHOR,
+    });
+    expect(search.ok).toBe(true);
+    expect(archive.seenSearch[0]?.authorId).toBe(BOT_ID);
+  });
+
+  it(`authorId "${BOT_AUTHOR}" refuses when the gateway is not ready`, () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(undefined);
+    expect(
+      readChannelHistoryText(principal(), archive, helpGuild(calls), {
+        guildId: '111111111111111111',
+        channelId: HELP_ID,
+        authorId: BOT_AUTHOR,
+      }),
+    ).toEqual({ ok: false, message: BOT_NOT_READY_MESSAGE });
+    expect(
+      searchMessagesText(principal(), archive, helpGuild(calls), {
+        guildId: '111111111111111111',
+        query: 'banana',
+        authorId: BOT_AUTHOR,
+      }),
+    ).toEqual({ ok: false, message: BOT_NOT_READY_MESSAGE });
+    expect(archive.seenHistory).toEqual([]);
+    expect(archive.seenSearch).toEqual([]);
+  });
+
+  it('a non-snowflake, non-"bot" authorId is an argument fault', () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(BOT_ID);
+    expect(
+      readChannelHistoryText(principal(), archive, helpGuild(calls), {
+        guildId: '111111111111111111',
+        channelId: HELP_ID,
+        authorId: 'nope',
+      }),
+    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(
+      searchMessagesText(principal(), archive, helpGuild(calls), {
+        guildId: '111111111111111111',
+        query: 'banana',
+        authorId: 'nope',
+      }),
+    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(archive.seenHistory).toEqual([]);
+    expect(archive.seenSearch).toEqual([]);
+  });
+
+  it('an unreachable guild with a channel name is the shared refusal, before resolution', () => {
+    const calls = { count: 0 };
+    const archive = recordingArchive(BOT_ID);
+    const outcome = readChannelHistoryText(principalWith(GUILD_B), archive, helpGuild(calls), {
+      guildId: '111111111111111111',
+      channelId: 'help',
+    });
+    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(calls.count).toBe(0);
+    expect(archive.seenHistory).toEqual([]);
   });
 });
 
@@ -533,6 +725,8 @@ describe('archive tools on the MCP server', () => {
       // Required since M5 Task 4; never called by the archive tools pinned here.
       send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
       readAudit: noopReadAudit,
+      jobs: stubJobs(),
+      members: stubMembers(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -549,10 +743,10 @@ describe('archive tools on the MCP server', () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
       const list = await client.listTools();
-      // Eleven since Task 6: the records tools register alongside the archive
-      // and guild ones (the guild and records stubs above answer empty, which
-      // is all this file needs — their own behaviour is pinned in guild.test.ts
-      // and records.test.ts).
+      // Fourteen since the jobs tools: the records and jobs tools register
+      // alongside the archive and guild ones (the guild, records and jobs
+      // stubs above answer empty, which is all this file needs — their own
+      // behaviour is pinned in guild.test.ts, records.test.ts and jobs.test.ts).
       const { LIST_CHANNELS_TOOL_NAME, LIST_MEMBERS_TOOL_NAME, LIST_ROLES_TOOL_NAME } =
         await import('./guild.js');
       const {
@@ -561,6 +755,8 @@ describe('archive tools on the MCP server', () => {
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
       } = await import('./records.js');
+      const { LIST_JOBS_TOOL_NAME, GET_JOB_TOOL_NAME } = await import('./jobs.js');
+      const { GET_MEMBER_TOOL_NAME, SEARCH_MEMBERS_TOOL_NAME } = await import('./members.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
         SEARCH_MESSAGES_TOOL_NAME,
@@ -574,6 +770,10 @@ describe('archive tools on the MCP server', () => {
         GET_MOD_CASE_TOOL_NAME,
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
+        LIST_JOBS_TOOL_NAME,
+        GET_JOB_TOOL_NAME,
+        GET_MEMBER_TOOL_NAME,
+        SEARCH_MEMBERS_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

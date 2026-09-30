@@ -3,7 +3,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId } from '@bananasaurs/core';
-import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  MCP_ROLES_SCOPE,
+  MCP_TASKS_SCOPE,
+  type McpPrincipal,
+} from './scope.js';
 import type { McpReadAuditPort } from './read-audit.js';
 import { createMcpServer } from './server.js';
 import {
@@ -24,9 +29,13 @@ import {
   LIST_CHANNELS_TOOL_NAME,
   LIST_MEMBERS_TOOL_NAME,
   LIST_ROLES_TOOL_NAME,
+  LIST_THREADS_TOOL_NAME,
   type McpGuildPort,
 } from './tools/guild.js';
+import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
+import type { McpJobsPort } from './tools/jobs.js';
+import type { McpMembersPort } from './tools/members.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -76,6 +85,7 @@ const stubArchive = (): McpArchivePort => ({
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  botUserId: () => undefined,
 });
 
 /** Minimal guild port: this file pins `get_health`, never the guild tools. */
@@ -102,19 +112,35 @@ const stubSend = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
 });
 
+/** Minimal jobs port: this file pins registration, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins registration, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
   send: McpSendPort = stubSend(),
+  overrides: { readonly guild?: McpGuildPort; readonly readAudit?: McpReadAuditPort } = {},
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
   const server = createMcpServer({
     principal,
     health: stubPort(),
     archive: stubArchive(),
-    guild: stubGuild(),
+    guild: overrides.guild ?? stubGuild(),
     records: stubRecords(),
-    readAudit: noopReadAudit,
+    readAudit: overrides.readAudit ?? noopReadAudit,
+    jobs: stubJobs(),
+    members: stubMembers(),
     send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -156,13 +182,13 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists send_message first, alongside the twelve read tools', async () => {
+  it('lists send_message first, alongside the sixteen read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(13);
+      expect(list.tools).toHaveLength(17);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
@@ -177,11 +203,53 @@ describe('createMcpServer', () => {
         GET_MOD_CASE_TOOL_NAME,
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
+        'list_jobs',
+        'get_job',
+        'get_member',
+        'search_members',
       ]);
       const resources = await client.listResourceTemplates();
       expect(resources.resourceTemplates).toHaveLength(1);
     } finally {
       await close();
+    }
+  });
+
+  it('a read-scoped tools/list includes list_jobs and get_job; a send-only one does not', async () => {
+    const read = await connectPair(principalWith([GUILD]));
+    try {
+      const list = await read.client.listTools();
+      expect(list.tools.map((tool) => tool.name)).toContain('list_jobs');
+      expect(list.tools.map((tool) => tool.name)).toContain('get_job');
+    } finally {
+      await read.close();
+    }
+    const sendOnly = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
+    try {
+      const list = await sendOnly.client.listTools();
+      expect(list.tools.map((tool) => tool.name)).not.toContain('list_jobs');
+      expect(list.tools.map((tool) => tool.name)).not.toContain('get_job');
+    } finally {
+      await sendOnly.close();
+    }
+  });
+
+  it('a read-scoped tools/list includes get_member and search_members; a send-only one does not', async () => {
+    const read = await connectPair(principalWith([GUILD]));
+    try {
+      const list = await read.client.listTools();
+      expect(list.tools.map((tool) => tool.name)).toContain('get_member');
+      expect(list.tools.map((tool) => tool.name)).toContain('search_members');
+    } finally {
+      await read.close();
+    }
+    const sendOnly = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
+    try {
+      const list = await sendOnly.client.listTools();
+      expect(list.tools.map((tool) => tool.name)).not.toContain('get_member');
+      expect(list.tools.map((tool) => tool.name)).not.toContain('search_members');
+    } finally {
+      await sendOnly.close();
     }
   });
 
@@ -215,6 +283,36 @@ describe('createMcpServer', () => {
     }
   });
 
+  it('(ADR 0111) a roles-only principal sees no tools and no resources', async () => {
+    // No tool registers under the roles scope yet (slice 4 does that), so a
+    // token carrying only `bananasaurs:roles` must see neither the read/send
+    // tools nor the overview resource. With zero tools registered the SDK
+    // never installs its `tools/list` handler, so the client answers
+    // Method-not-found rather than an empty array — the same laziness the
+    // send-only test pins for `resources/templates/list` below.
+    const { client, close } = await connectPair(principalWith([GUILD], [MCP_ROLES_SCOPE]));
+    try {
+      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
+      await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('(ADR 0111) a tasks-only principal sees no tools and no resources', async () => {
+    // No tool registers under the tasks scope on this branch (the
+    // task-tracking branch switches its writes to it when it merges), so a
+    // token carrying only `bananasaurs:tasks` must see neither the read/send
+    // tools nor the overview resource — Method-not-found on both, as above.
+    const { client, close } = await connectPair(principalWith([GUILD], [MCP_TASKS_SCOPE]));
+    try {
+      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
+      await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
+    } finally {
+      await close();
+    }
+  });
+
   it('answers get_health for a principal that reaches a guild', async () => {
     const { client, close } = await connectPair(principalWith([GUILD]));
     try {
@@ -236,6 +334,35 @@ describe('createMcpServer', () => {
       })) as CallToolResult;
       expect(result.isError).toBe(true);
       expect(textOf(result)).toBe(GUILD_REFUSAL_MESSAGE);
+    } finally {
+      await close();
+    }
+  });
+
+  it('a successful list_threads call performs its read record exactly once (ADR 0050)', async () => {
+    // The handler used to return the text directly, skipping `okReadResult`
+    // — the one read path whose record nothing observed. A counting port
+    // proves the fix: one call, one structural log line, never an audit row.
+    const seen: { action: string; guildId: unknown }[] = [];
+    const { client, close } = await connectPair(principalWith([GUILD]), stubSend(), {
+      readAudit: {
+        auditContentRead: () => {
+          throw new Error('list_threads is structural — it must never audit');
+        },
+        logStructuralRead: (input) => {
+          seen.push({ action: input.action, guildId: input.guildId });
+        },
+      },
+    });
+    try {
+      const result = (await client.callTool({
+        name: LIST_THREADS_TOOL_NAME,
+        arguments: { guildId: '111111111111111111', channelId: '333333333333333333' },
+      })) as CallToolResult;
+      expect(result.isError).not.toBe(true);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.action).toBe(MCP_READ_LIST_THREADS);
+      expect(String(seen[0]?.guildId)).toBe('111111111111111111');
     } finally {
       await close();
     }

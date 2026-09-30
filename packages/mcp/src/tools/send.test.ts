@@ -27,6 +27,8 @@ import type { McpHealthPort } from './health.js';
 import type { McpArchivePort } from './archive.js';
 import type { McpGuildPort } from './guild.js';
 import type { McpRecordsPort } from './records.js';
+import type { McpJobsPort } from './jobs.js';
+import type { McpMembersPort } from './members.js';
 
 /**
  * Task 3, tool layer: `send_message` against a fake `McpSendPort` — the same
@@ -349,6 +351,7 @@ const stubArchive = (): McpArchivePort => ({
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  botUserId: () => undefined,
 });
 
 const stubGuild = (): McpGuildPort => ({
@@ -372,6 +375,19 @@ const stubSend = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: '444444444444444444' }),
 });
 
+/** Minimal jobs port: this file pins `send_message`, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins `send_message`, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
+
 const READ_TOOL_NAMES = [
   'get_health',
   'search_messages',
@@ -385,6 +401,10 @@ const READ_TOOL_NAMES = [
   'get_mod_case',
   'list_audit_events',
   'get_server_overview',
+  'list_jobs',
+  'get_job',
+  'get_member',
+  'search_members',
 ];
 
 const connectPair = async (
@@ -399,6 +419,8 @@ const connectPair = async (
     records: stubRecords(),
     send: stubSend(),
     readAudit: noopReadAudit,
+    jobs: stubJobs(),
+    members: stubMembers(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -422,9 +444,9 @@ const toolNamesOf = async (principal: McpPrincipal): Promise<string[]> => {
 };
 
 describe('send_message scope filtering (ruling M4-D17)', () => {
-  it('a read-only token sees the twelve read tools and not send_message', async () => {
+  it('a read-only token sees the sixteen read tools and not send_message', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A, GUILD_B], ['bananasaurs:read']));
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(16);
     expect(names).toEqual(READ_TOOL_NAMES);
     expect(names).not.toContain(SEND_MESSAGE_TOOL_NAME);
   });
@@ -435,11 +457,11 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
     expect(names).toEqual([SEND_MESSAGE_TOOL_NAME]);
   });
 
-  it('a token with both scopes sees thirteen tools', async () => {
+  it('a token with both scopes sees seventeen tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(17);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

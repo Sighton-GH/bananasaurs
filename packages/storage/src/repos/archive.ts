@@ -779,6 +779,43 @@ export const expireContent = (scope: GuildScope, now: number): number =>
     return purged.length;
   });
 
+/**
+ * Newest archived message time per author in this guild; authors with none
+ * are absent. Ids chunk by 500 so a full-guild call never builds one giant
+ * `IN` list. Live messages are kept indefinitely — only deleted messages are
+ * purged, 30 days after deletion (`expireContent`) — so each chunk is a scan
+ * of the guild's archived rows grouped by author, with no `author_id` index
+ * to narrow it. Acceptable at the club's size; an
+ * `(guild_id, author_id, created_at)` index is planned for slice 2 if this
+ * shows up in profiling.
+ */
+export const lastMessageAtByAuthor = (
+  scope: GuildScope,
+  authorIds: readonly string[],
+): Map<string, number> =>
+  read(scope, (db) => {
+    const out = new Map<string, number>();
+    for (let i = 0; i < authorIds.length; i += 500) {
+      const chunk = authorIds.slice(i, i + 500);
+      if (chunk.length === 0) continue;
+      const rows = db
+        .select({
+          authorId: archiveMessages.authorId,
+          last: sql<number>`max(${archiveMessages.createdAt})`,
+        })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, inArray(archiveMessages.authorId, [...chunk])))
+        .groupBy(archiveMessages.authorId)
+        .all();
+      for (const row of rows) {
+        if (row.authorId === null) continue;
+        const prev = out.get(row.authorId);
+        if (prev === undefined || row.last > prev) out.set(row.authorId, row.last);
+      }
+    }
+    return out;
+  });
+
 export const countMessages = (scope: GuildScope, channelId: string): number =>
   read(
     scope,
@@ -867,6 +904,7 @@ export const listChannelHistory = (
     readonly channelId: string;
     readonly beforeMessageId?: string;
     readonly limit?: number;
+    readonly authorId?: string;
     /**
      * ADR 0047 amendment 2026-09-20 (M1): a forum owns no messages of its
      * own — every post is a thread — so a forum's history read rolls its
@@ -912,6 +950,7 @@ export const listChannelHistory = (
           input.beforeMessageId === undefined
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
+          input.authorId === undefined ? undefined : eq(archiveMessages.authorId, input.authorId),
         ),
       )
       .orderBy(sql`length(${archiveMessages.messageId}) DESC`, desc(archiveMessages.messageId))

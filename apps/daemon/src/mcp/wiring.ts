@@ -9,6 +9,7 @@ import {
   type DiscordPort,
   type GuildId,
   type Logger,
+  type OpsJobRow,
 } from '@bananasaurs/core';
 import { resolveChannel } from '../channels/resolver.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
@@ -16,11 +17,16 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import {
   createMcpServer,
   GUILD_REFUSAL_MESSAGE,
+  MEMBER_LISTING_CAP,
   type McpArchiveMessage,
   type McpArchivePort,
   type McpGuildHealth,
   type McpGuildPort,
   type McpHealthPort,
+  type McpJob,
+  type McpJobsPort,
+  type McpMemberProfile,
+  type McpMembersPort,
   type McpPrincipal,
   type McpReadAuditPort,
   type McpRecordsPort,
@@ -248,9 +254,11 @@ const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
             ? { beforeMessageId: input.beforeMessageId }
             : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
         })
         .map(toMcpArchiveMessage),
     ),
+  botUserId: () => client.user?.id ?? undefined,
 });
 
 /**
@@ -548,6 +556,117 @@ const recordsPortFor = (
         panelId: panel.panelId,
       })),
     ),
+});
+
+/**
+ * Projects one ops job row to the seven fields `packages/mcp` reads, field
+ * by field like every other port here. `dedupeKey` stops at this boundary:
+ * it names the dedupe contract, which the operator never needs, and the
+ * point of naming each field is that a column added to `jobs` later cannot
+ * arrive in the MCP package for free.
+ */
+const projectJob = (row: OpsJobRow): McpJob => ({
+  jobId: row.jobId,
+  kind: row.kind,
+  state: row.state,
+  attempts: row.attempts,
+  maxAttempts: row.maxAttempts,
+  runAfter: row.runAfter,
+  lastError: row.lastError,
+});
+
+/**
+ * The `McpJobsPort` behind `list_jobs` and `get_job`, field by field like
+ * `healthPortFor` above. Each method turns the already-resolved `GuildId`
+ * into a `GuildScope` per call and reads through the real ops ports —
+ * nothing here writes, and M4 is read-only. Guild isolation comes from the
+ * scope: a job enqueued in guild B is invisible to a `list_jobs` call for
+ * guild A. A fault leaves one allowlisted-fields error line via `loggedCall`
+ * above, never the last error text (rule 4).
+ */
+const jobsPortFor = (deps: HttpDeps): McpJobsPort => ({
+  listJobs: (guildId, query) =>
+    loggedCall(deps.logger, 'listJobs', () =>
+      deps.portsFor(deps.scopes.forGuild(guildId)).listJobs(query).map(projectJob),
+    ),
+  findJob: (guildId, jobId) =>
+    loggedCall(deps.logger, 'findJob', () => {
+      const row = deps.portsFor(deps.scopes.forGuild(guildId)).findJob(jobId);
+      return row === undefined ? undefined : projectJob(row);
+    }),
+});
+
+/**
+ * The `McpMembersPort` behind `get_member` and `search_members`, field by
+ * field like `healthPortFor` above. `listAllMembers` pages the REST listing
+ * (`guild.members.list`, ruling M4-D10 — the 50-entry
+ * `GuildMemberManager` cap makes a cache read silently wrong) at Discord's
+ * own per-page maximum of 1000 with `cache: false`, following the `after`
+ * cursor until a short page. When the collected count reaches
+ * `MEMBER_LISTING_CAP` on a full last page, one more `limit: 1` probe past
+ * the last id decides `truncated`: a guild with exactly 5,000 members
+ * reports `truncated: false`. Each member is projected field by field — the guild-id
+ * (@everyone) role dropped from `roleIds` like `list_members`, no presence,
+ * no status, no activity — never spread from the discord.js object.
+ * `lastMessageAt` reads the archive's newest message time per author, so the
+ * tools can answer "hasn't posted in N days" in one call. A guild missing
+ * from the cache throws the shared refusal, the same as every guild method.
+ * A fault leaves one allowlisted-fields error line via the logged calls
+ * above, never a member name (rule 4).
+ */
+const membersPortFor = (deps: HttpDeps, client: Client): McpMembersPort => ({
+  listAllMembers: (guildId) =>
+    loggedCallAsync(deps.logger, 'listAllMembers', async () => {
+      const guild = client.guilds.cache.get(guildId);
+      if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
+      const collected: McpMemberProfile[] = [];
+      let after: string | undefined;
+      for (;;) {
+        const page = await guild.members.list({
+          limit: 1000,
+          ...(after !== undefined ? { after } : {}),
+          // Not a cache read (ruling M4-D10): paginated REST, and `false` so
+          // the listing does not churn the 50-entry member cache either.
+          cache: false,
+        });
+        for (const member of page.values()) {
+          collected.push({
+            id: member.id,
+            username: member.user.username,
+            displayName: member.displayName,
+            nickname: member.nickname ?? undefined,
+            // Same @everyone drop as `listMembers` above: the manager inserts
+            // the guild id into every member's role cache, while `list_roles`
+            // deliberately hides it.
+            roleIds: [...member.roles.cache.keys()].filter((id) => id !== guildId).sort(),
+            // Projected field by field: no presence, no activity, no status.
+            joinedAt: member.joinedAt?.getTime(),
+          });
+        }
+        if (collected.length >= MEMBER_LISTING_CAP) {
+          const members = collected.slice(0, MEMBER_LISTING_CAP);
+          // The last page was full, so exactly CAP members is ambiguous with
+          // more beyond: probe one row past the last id and claim truncation
+          // only when it exists.
+          const lastId = [...page.keys()].pop();
+          const probe =
+            lastId === undefined
+              ? undefined
+              : await guild.members.list({ limit: 1, after: lastId, cache: false });
+          return { members, truncated: probe !== undefined && probe.size > 0 };
+        }
+        if (page.size < 1000) break;
+        const last = [...page.keys()].pop();
+        if (last === undefined) break;
+        after = last;
+      }
+      return { members: collected, truncated: false };
+    }),
+  lastMessageAt: (guildId, authorIds) =>
+    loggedCall(deps.logger, 'lastMessageAt', () =>
+      archiveRepo.lastMessageAtByAuthor(deps.scopes.forGuild(guildId), [...authorIds]),
+    ),
+  now: deps.now,
 });
 
 /**
@@ -896,6 +1015,8 @@ export const registerMcpRoutes = (
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
+      jobs: jobsPortFor(deps),
+      members: membersPortFor(deps, client),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

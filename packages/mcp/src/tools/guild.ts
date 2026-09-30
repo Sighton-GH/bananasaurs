@@ -6,7 +6,8 @@ import {
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
-import { envelope, type EvidenceItem } from '../envelope.js';
+import { safeName, structuredText } from '../structured.js';
+import { resolveChannelRef } from '../resolve.js';
 import {
   MCP_READ_LIST_THREADS,
   MCP_READ_LIST_CHANNELS,
@@ -37,12 +38,15 @@ import {
  * `node_modules/discord-api-types/rest/v10/guild.d.ts`) — a 1000-member page
  * is a large tool result, and 100 is the defensible cap.
  *
- * Ruling M4-D11 — everything member-controlled goes through the envelope.
- * Channel names, topics, role names and display names are all text a human
- * typed, so all three results are enveloped, and the `list_members`
- * projection carries no presence, status or activity field at all (the client
- * caches `PresenceManager` at 0, so Discord never even sends it — the
- * projection not carrying it is the second lock on the same door).
+ * Ruling M4-D11, as amended by ADR 0110 — member-chosen names are escaped
+ * JSON strings, not envelope content. Channel names, topics, role names and
+ * display names are all text a human typed, so each passes through `safeName`
+ * (envelope markers broken, detector hits withheld) before it lands in the
+ * compact JSON result; the envelope is kept for prose people typed as prose.
+ * The `list_members` projection carries no presence, status or activity field
+ * at all (the client caches `PresenceManager` at 0, so Discord never even
+ * sends it — the projection not carrying it is the second lock on the same
+ * door).
  *
  * Deliberate inclusions, matching what an operator asking "what exists"
  * would want, stated so a future reader does not "fix" them:
@@ -64,7 +68,9 @@ export const LIST_CHANNELS_TOOL_DESCRIPTION =
 
 export const LIST_THREADS_TOOL_NAME = 'list_threads';
 export const LIST_THREADS_TOOL_DESCRIPTION =
-  'Lists public threads under one channel or forum. Private threads are never returned. Refuses when the guild is unreachable.';
+  'Lists public threads under one channel or forum, given by id or by name ' +
+  '(e.g. "help" or "#help"). Private threads are never returned. ' +
+  'Refuses when the guild is unreachable.';
 
 export const LIST_ROLES_TOOL_NAME = 'list_roles';
 export const LIST_ROLES_TOOL_DESCRIPTION =
@@ -225,7 +231,7 @@ export const listChannelsParams = {
 
 export const listThreadsParams = {
   guildId: z.string(),
-  channelId: z.string(),
+  channelId: z.string().describe('Channel id, or its name (e.g. "help" or "#help").'),
   includeArchived: z.boolean().optional(),
 };
 
@@ -261,66 +267,7 @@ const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
   }
 };
 
-/**
- * One row per item: the labelled fields are locators (guild, row id, row
- * name, order key) and `content` is the full human-readable row, so a client
- * scanning for an id finds it without parsing prose. Every interpolated
- * field passes through the envelope's escaper — the framing guarantee rests
- * on that, not on any claim about what a name can contain.
- */
-const channelToEvidenceItem = (guildId: GuildId, channel: McpGuildChannel): EvidenceItem => ({
-  authorId: guildId,
-  channelId: channel.id,
-  messageId: channel.name,
-  timestamp: channel.type,
-  content: [
-    `parent: ${channel.parentName !== undefined && channel.parentId !== undefined ? `${channel.parentName} (${channel.parentId})` : '(none)'}`,
-    `topic: ${channel.topic ?? '(none)'}`,
-    `archive-enabled: ${channel.archiveEnabled ? 'yes' : 'no'}`,
-  ].join('\n'),
-});
-
-/**
- * A thread row in the same shape `channelToEvidenceItem` uses: guild, row
- * id, row name, order key, then the human-readable row.
- *
- * Review 2 N3: this listing used to put the thread id in the name slot and
- * the parent in the id slot, and never returned the thread's name at all —
- * which for a forum post is the only thing that identifies it to a reader.
- */
-const threadToEvidenceItem = (guildId: GuildId, thread: McpGuildThread): EvidenceItem => ({
-  authorId: guildId,
-  channelId: thread.id,
-  messageId: thread.name,
-  timestamp: thread.archived ? 'archived' : 'active',
-  content: [`parent: ${thread.parentId}`, `state: ${thread.archived ? 'archived' : 'active'}`].join(
-    '\n',
-  ),
-});
-
 const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
-
-const roleToEvidenceItem = (guildId: GuildId, role: McpGuildRole): EvidenceItem => ({
-  authorId: guildId,
-  channelId: role.id,
-  messageId: role.name,
-  timestamp: `position ${String(role.position)}`,
-  content: [
-    `color: ${toHexColor(role.color)}`,
-    `managed-by-bananasaurs: ${role.managedByBananasaurs ? 'yes' : 'no'}`,
-  ].join('\n'),
-});
-
-const memberToEvidenceItem = (guildId: GuildId, member: McpGuildMember): EvidenceItem => ({
-  authorId: member.id,
-  channelId: guildId,
-  messageId: member.username,
-  timestamp: member.joinedAt === undefined ? 'unknown' : new Date(member.joinedAt).toISOString(),
-  content: [
-    `display name: ${member.displayName}`,
-    `roles: ${member.roleIds.length === 0 ? '(none)' : member.roleIds.join(', ')}`,
-  ].join('\n'),
-});
 
 const listChannelsInner = (
   principal: McpPrincipal,
@@ -335,15 +282,25 @@ const listChannelsInner = (
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   const channels = port.listChannels(gate.guildId);
-  const items = channels.map((channel) => channelToEvidenceItem(gate.guildId, channel));
   const enabled = channels.filter((channel) => channel.archiveEnabled).length;
   const noun = channels.length === 1 ? 'channel' : 'channels';
   const head =
     `Channels in guild ${gate.guildId}: ` +
     `${String(channels.length)} ${noun} (${String(enabled)} archive-enabled).`;
+  const data = {
+    channels: channels.map((c) => ({
+      id: c.id,
+      name: safeName(c.name),
+      type: c.type,
+      parent:
+        c.parentId === undefined ? null : { id: c.parentId, name: safeName(c.parentName ?? '') },
+      topic: c.topic === undefined ? null : safeName(c.topic),
+      archive: c.archiveEnabled,
+    })),
+  };
   return {
     ok: true,
-    text: `${head}\n\n${envelope(items)}`,
+    text: structuredText(head, data),
     read: {
       kind: 'structural',
       action: MCP_READ_LIST_CHANNELS,
@@ -363,15 +320,23 @@ const listRolesInner = (
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   const roles = port.listRoles(gate.guildId);
-  const items = roles.map((role) => roleToEvidenceItem(gate.guildId, role));
   const managed = roles.filter((role) => role.managedByBananasaurs).length;
   const noun = roles.length === 1 ? 'role' : 'roles';
   const head =
     `Roles in guild ${gate.guildId} (@everyone excluded): ` +
     `${String(roles.length)} ${noun} (${String(managed)} managed by Bananasaurs).`;
+  const data = {
+    roles: roles.map((r) => ({
+      id: r.id,
+      name: safeName(r.name),
+      position: r.position,
+      color: toHexColor(r.color),
+      managedByBananasaurs: r.managedByBananasaurs,
+    })),
+  };
   return {
     ok: true,
-    text: `${head}\n\n${envelope(items)}`,
+    text: structuredText(head, data),
     read: {
       kind: 'structural',
       action: MCP_READ_LIST_ROLES,
@@ -398,21 +363,30 @@ const listMembersInner = async (
   // Clamped, not refused: see the schema comment above.
   const limit = Math.min(input.limit ?? MEMBER_DEFAULT_LIMIT, MEMBER_LIMIT_MAX);
   const result = await port.listMembers(gate.guildId, { limit, after: input.after });
-  const items = result.members.map((member) => memberToEvidenceItem(gate.guildId, member));
-  const noun = items.length === 1 ? 'member' : 'members';
+  const noun = result.members.length === 1 ? 'member' : 'members';
   const cursor =
     result.nextCursor === undefined
       ? 'End of list.'
       : `Next cursor: ${result.nextCursor} (pass as after to continue).`;
-  const head = `Members in guild ${gate.guildId}: showing ${String(items.length)} ${noun}. ${cursor}`;
+  const head = `Members in guild ${gate.guildId}: showing ${String(result.members.length)} ${noun}. ${cursor}`;
+  const data = {
+    members: result.members.map((m) => ({
+      id: m.id,
+      username: safeName(m.username),
+      displayName: safeName(m.displayName),
+      roleIds: m.roleIds,
+      joinedAt: m.joinedAt === undefined ? null : new Date(m.joinedAt).toISOString(),
+    })),
+    nextCursor: result.nextCursor ?? null,
+  };
   return {
     ok: true,
-    text: `${head}\n\n${envelope(items)}`,
+    text: structuredText(head, data),
     read: {
       kind: 'structural',
       action: MCP_READ_LIST_MEMBERS,
       guildIds: [gate.guildId],
-      resultCount: items.length,
+      resultCount: result.members.length,
     },
   };
 };
@@ -465,29 +439,43 @@ export const listMembersText = async (
   }
 };
 
-export const listThreadsText = async (
+const listThreadsInner = async (
   principal: McpPrincipal,
   port: McpGuildPort,
   rawArgs: unknown,
 ): Promise<GuildToolOutcome> => {
   const parsed = threadsArgsSchema.safeParse(rawArgs);
-  if (!parsed.success || !idsAreWellFormed([parsed.data.channelId])) return refuseInvalidArgs();
+  if (!parsed.success) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
+  // The channel ref resolves after the gate, against this guild's channels
+  // only (hard rule 2): a snowflake passes through, a name matches
+  // case-insensitively with ambiguity refused as candidates.
+  const resolved = resolveChannelRef(port.listChannels(gate.guildId), parsed.data.channelId);
+  if (!resolved.ok) return { ok: false, message: resolved.message };
+  const channelId = resolved.id;
   const threads = await port.listThreads(
     gate.guildId,
-    parsed.data.channelId,
+    channelId,
     parsed.data.includeArchived ?? false,
   );
   const archived = threads.filter((thread) => thread.archived).length;
   const noun = threads.length === 1 ? 'thread' : 'threads';
   const head =
-    `Public threads under channel ${parsed.data.channelId}: ` +
+    `Public threads under channel ${channelId}: ` +
     `${String(threads.length)} ${noun} (${String(archived)} archived). ` +
     'Private threads are never listed.';
+  const data = {
+    threads: threads.map((t) => ({
+      id: t.id,
+      name: safeName(t.name),
+      parentId: t.parentId,
+      archived: t.archived,
+    })),
+  };
   return {
     ok: true,
-    text: `${head}\n\n${envelope(threads.map((thread) => threadToEvidenceItem(gate.guildId, thread)))}`,
+    text: structuredText(head, data),
     // Thread ids, parents and archived flags are structure, not member
     // content: structural read under ADR 0050's split (one log line).
     read: {
@@ -497,4 +485,21 @@ export const listThreadsText = async (
       resultCount: threads.length,
     },
   };
+};
+
+/**
+ * Never throws and never rejects: a rejected port promise — a rate limit, a
+ * missing intent, the guild gone mid-page — is the shared refusal, because a
+ * Discord API fault must not propagate out of the handler as an exception.
+ */
+export const listThreadsText = async (
+  principal: McpPrincipal,
+  port: McpGuildPort,
+  rawArgs: unknown,
+): Promise<GuildToolOutcome> => {
+  try {
+    return await listThreadsInner(principal, port, rawArgs);
+  } catch {
+    return { ok: false, message: GUILD_REFUSAL_MESSAGE };
+  }
 };

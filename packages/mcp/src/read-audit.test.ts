@@ -44,6 +44,8 @@ import {
 } from './tools/records.js';
 import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
 import type { McpSendPort } from './tools/send.js';
+import type { McpJobsPort } from './tools/jobs.js';
+import type { McpMembersPort } from './tools/members.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -91,6 +93,7 @@ const archivePort = (): McpArchivePort => ({
       contentPurgedAt: undefined,
     },
   ],
+  botUserId: () => undefined,
 });
 
 const recordsPort = (tailAuditInput?: { captured: unknown }): McpRecordsPort => ({
@@ -177,7 +180,7 @@ const healthPort = (): McpHealthPort => ({
 
 describe('ADR 0050: content-bearing reads annotate an audit record', () => {
   it('search_messages records guild, tool and result count — never the query', () => {
-    const outcome = searchMessagesText(principalWith(GUILD_A), archivePort(), {
+    const outcome = searchMessagesText(principalWith(GUILD_A), archivePort(), guildPort(), {
       guildId: String(GUILD_A),
       query: 'secret operator query text',
     });
@@ -195,7 +198,7 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
   });
 
   it('read_channel_history records the channel as subject', () => {
-    const outcome = readChannelHistoryText(principalWith(GUILD_A), archivePort(), {
+    const outcome = readChannelHistoryText(principalWith(GUILD_A), archivePort(), guildPort(), {
       guildId: String(GUILD_A),
       channelId: CHANNEL,
     });
@@ -342,12 +345,14 @@ describe('ADR 0050: structural reads annotate a log record, never an audit row',
 
 describe('ADR 0050: a refused read annotates nothing', () => {
   it('guild refusal, argument fault and empty reachable set carry no record', () => {
-    const refused = searchMessagesText(principalWith(GUILD_B), archivePort(), {
+    const refused = searchMessagesText(principalWith(GUILD_B), archivePort(), guildPort(), {
       guildId: String(GUILD_A),
       query: 'x',
     });
     expect(refused).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    const invalidArgs = searchMessagesText(principalWith(GUILD_A), archivePort(), { guildId: 7 });
+    const invalidArgs = searchMessagesText(principalWith(GUILD_A), archivePort(), guildPort(), {
+      guildId: 7,
+    });
     expect(invalidArgs.ok).toBe(false);
     if (invalidArgs.ok) throw new Error('expected refusal');
     expect('read' in invalidArgs && invalidArgs.read !== undefined).toBe(false);
@@ -386,6 +391,19 @@ const stubSendPort = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
 });
 
+/** Minimal jobs port: this file pins read logging, never the jobs tools. */
+const stubJobsPort = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins read logging, never the member tools. */
+const stubMembersPort = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -398,6 +416,8 @@ const connectWithReadAudit = async (
     guild: guildPort(),
     records: recordsPort(),
     readAudit,
+    jobs: stubJobsPort(),
+    members: stubMembersPort(),
     send: stubSendPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
