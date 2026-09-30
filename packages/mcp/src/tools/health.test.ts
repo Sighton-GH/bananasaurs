@@ -37,6 +37,23 @@ const portWithName = (guildName: string | undefined): McpHealthPort => ({
   ],
 });
 
+const portWithJobCounts = (jobCounts: Readonly<Record<string, number>>): McpHealthPort => ({
+  startedAtMs: 1_700_000_000_000,
+  readonly: false,
+  env: 'test',
+  gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
+  now: () => 1_700_000_000_000 + 3_661_000,
+  guilds: () => [
+    {
+      guildId: GUILD,
+      guildName: 'guild a',
+      safety: { killswitch: false, dryRun: false, breakerOpen: false, breakerReason: null },
+      jobCounts,
+      schedulerLagMs: 0,
+    },
+  ],
+});
+
 const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): string => {
   expect(outcome.ok).toBe(true);
   if (!outcome.ok) throw new Error('expected ok:true');
@@ -70,5 +87,21 @@ describe('get_health escapes the member-controlled guild name', () => {
   it('an unknown name keeps the placeholder', () => {
     const text = textOf(getHealthText(principalWith(GUILD), portWithName(undefined)));
     expect(text).toContain('(name not yet known)');
+  });
+});
+
+describe('get_health points at list_jobs when jobs have failed', () => {
+  it('a guild with 14 failed jobs names the tool that shows why', () => {
+    const text = textOf(
+      getHealthText(principalWith(GUILD), portWithJobCounts({ failed: 14, done: 3 })),
+    );
+    expect(text).toContain(
+      '14 failed job(s): call list_jobs with this guildId to see why.',
+    );
+  });
+
+  it('a guild with no failures carries no such line', () => {
+    const text = textOf(getHealthText(principalWith(GUILD), portWithJobCounts({ done: 3 })));
+    expect(text).not.toContain('list_jobs');
   });
 });
