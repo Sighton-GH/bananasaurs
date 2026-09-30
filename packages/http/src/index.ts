@@ -35,6 +35,7 @@ export {
   type TryAssistantDeps,
 } from './routes/assistant-try.js';
 export { registerAssistantProviderRoutes } from './routes/assistant-providers.js';
+export { registerAssistantSearchKeyRoutes } from './routes/assistant-search-keys.js';
 export {
   registerAssistantTuningRoutes,
   type InstanceSettingsPort,

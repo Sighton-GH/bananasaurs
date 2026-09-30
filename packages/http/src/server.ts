@@ -67,8 +67,12 @@ export interface AssistantProviderStatus {
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
   /** ADR 0068: up to two more models, tried in order when the one before is busy. */
   readonly fallbackModels?: readonly string[];
-  /** ADR 0066. Absent while no Brave key is saved and search is off. */
-  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
+  /** ADR 0120. Absent while no search key is stored and search is off. */
+  readonly webSearch?: {
+    readonly keyConfigured: boolean;
+    readonly enabled: boolean;
+    readonly source: 'brave' | 'tavily';
+  };
 }
 
 /**
@@ -119,7 +123,7 @@ export interface HttpDeps extends AuthDeps {
             enabled: boolean;
             costClass?: 'free' | 'paid' | 'unknown' | undefined;
             fallbackModels?: readonly string[] | undefined;
-            searchApiKey?: string | undefined;
+            searchSource?: 'brave' | 'tavily' | undefined;
             searchEnabled?: boolean | undefined;
           },
           now: number,
@@ -199,6 +203,48 @@ export interface HttpDeps extends AuthDeps {
         saveGithubToken?(token: string | null): void;
         isKeyReadable?(keyId: string): boolean;
         githubTokenConfigured?(): boolean;
+        /**
+         * ADR 0120: the web search keys. Restated here rather than imported:
+         * the store type lives in `apps/daemon`, which `packages/http` must
+         * not import (ADR 0014) — and the rows carry no `apiKeyEnc`, so the
+         * route cannot reach a sealed key.
+         */
+        searchKeys?(): readonly {
+          readonly keyId: string;
+          readonly source: 'brave' | 'tavily';
+          readonly label: string;
+          readonly enabled: boolean;
+          readonly position: number;
+          readonly monthlyLimit: number | null;
+          readonly dailyLimit: number | null;
+        }[];
+        addSearchKey?(
+          input: {
+            source: 'brave' | 'tavily';
+            label: string;
+            apiKey: string;
+            monthlyLimit?: number | null | undefined;
+            dailyLimit?: number | null | undefined;
+          },
+          now: number,
+        ): string;
+        updateSearchKey?(
+          keyId: string,
+          input: {
+            label?: string | undefined;
+            apiKey?: string | undefined;
+            enabled?: boolean | undefined;
+            monthlyLimit?: number | null | undefined;
+            dailyLimit?: number | null | undefined;
+          },
+          now: number,
+        ): boolean;
+        moveSearchKey?(keyId: string, direction: 'up' | 'down', now: number): boolean;
+        removeSearchKey?(keyId: string): boolean;
+        isSearchKeyReadable?(keyId: string): boolean;
+        searchKeyUsage?(
+          keyId: string,
+        ): { readonly last24h: number; readonly last31d: number; readonly availableAt?: number } | undefined;
         /**
          * Task 10: the chain test reserves its call against the entry's
          * owner-set RPM/RPD limits first (wired by a later task). Absent in
