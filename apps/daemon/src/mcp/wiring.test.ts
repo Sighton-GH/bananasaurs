@@ -960,6 +960,65 @@ describe('/mcp archive tools across two guilds', () => {
     expect(history.text).not.toContain('alpha plans');
   });
 
+  it(`read_channel_history with authorId 'bot' returns only the bot's messages`, async () => {
+    // Through the real composition: the tool maps 'bot' to the live client's
+    // user id, and the repository narrows to that author. Seeded the way the
+    // neighbouring tests seed — through the storage repo, never a fake port.
+    const BOT = '999999999999999999';
+    (deps.client as unknown as { user: { id: string } | null }).user = { id: BOT };
+    const scope = t.scopes.forGuild(GUILD_A);
+    archiveRepo.enableChannel(scope, {
+      channelId: CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: '711111111111111111',
+      channelId: CHANNEL,
+      authorId: BOT,
+      content: 'bot says alpha picnic reminder',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: '722222222222222222',
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: 'member says alpha picnic plans',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    const accessToken = await mintToken();
+
+    const botOnly = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          authorId: 'bot',
+        })
+      ).body,
+    );
+    expect(botOnly.isError).not.toBe(true);
+    expect(botOnly.text).toContain('bot says alpha picnic reminder');
+    expect(botOnly.text).not.toContain('member says alpha picnic plans');
+
+    // Without the author filter both messages read back.
+    const all = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+        })
+      ).body,
+    );
+    expect(all.isError).not.toBe(true);
+    expect(all.text).toContain('bot says alpha picnic reminder');
+    expect(all.text).toContain('member says alpha picnic plans');
+  });
+
   it("read_channel_history rolls a forum's posts up under the forum id (M1)", async () => {
     const FORUM = '599999999999999999';
     const POST_A = '911111111111111111';

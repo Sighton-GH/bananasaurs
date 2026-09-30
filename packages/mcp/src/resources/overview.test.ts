@@ -61,6 +61,7 @@ const stubArchive = (): McpArchivePort => ({
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  botUserId: () => undefined,
 });
 
 const stubGuild = (): McpGuildPort => ({

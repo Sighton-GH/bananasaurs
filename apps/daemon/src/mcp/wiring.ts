@@ -251,9 +251,11 @@ const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
             ? { beforeMessageId: input.beforeMessageId }
             : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
         })
         .map(toMcpArchiveMessage),
     ),
+  botUserId: () => client.user?.id ?? undefined,
 });
 
 /**

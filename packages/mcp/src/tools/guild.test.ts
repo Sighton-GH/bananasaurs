@@ -471,6 +471,7 @@ describe('guild tools on the MCP server', () => {
         searchMessages: () => ({ total: 0, hits: [] }),
         findMessage: () => undefined,
         listChannelHistory: () => [],
+        botUserId: () => undefined,
       },
       guild: port,
       records: {

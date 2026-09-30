@@ -79,6 +79,7 @@ const stubArchive = (): McpArchivePort => ({
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  botUserId: () => undefined,
 });
 
 /** Minimal guild port: this file pins `get_health`, never the guild tools. */

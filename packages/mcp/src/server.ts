@@ -218,7 +218,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     searchMessagesParams,
     (args) => {
       try {
-        const outcome = searchMessagesText(deps.principal, archive, args);
+        const outcome = searchMessagesText(deps.principal, archive, deps.guild, args);
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
@@ -237,7 +237,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     readChannelHistoryParams,
     (args) => {
       try {
-        const outcome = readChannelHistoryText(deps.principal, archive, args);
+        const outcome = readChannelHistoryText(deps.principal, archive, deps.guild, args);
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
