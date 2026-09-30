@@ -395,3 +395,40 @@ describe('archive subscriber ingestion', () => {
     });
   });
 });
+
+describe('archive subscriber reply links and mentioned roles (slice 2 task 3)', () => {
+  it('passes the reply link and mentioned roles to upsertMessage on create', async () => {
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+
+    await subscriber.handle(
+      messageCreate({
+        referencedMessageId: '777777777777777777',
+        mentionedRoleIds: ['888888888888888888'],
+      }),
+    );
+
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]?.input).toMatchObject({
+      replyToMessageId: '777777777777777777',
+      mentionedRoleIds: ['888888888888888888'],
+    });
+  });
+
+  it('passes the updated mentioned roles to recordEdit on update', async () => {
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+    await subscriber.handle(messageCreate({ content: 'before' }));
+
+    await subscriber.handle(
+      messageCreate({
+        kind: 'messageUpdate',
+        content: 'after',
+        mentionedRoleIds: ['999999999999999999'],
+      }),
+    );
+
+    const edit = f.calls.find((c) => c.method === 'recordEdit');
+    expect(edit?.input).toMatchObject({ mentionedRoleIds: ['999999999999999999'] });
+  });
+});

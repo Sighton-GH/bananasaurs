@@ -622,3 +622,72 @@ describe('migration 0039 keeps one chain row per model when 0038 duplicated fall
     raw.close();
   });
 });
+
+describe('migration journal ordering (ADR 0112 section 3)', () => {
+  interface JournalEntry {
+    readonly idx: number;
+    readonly when: number;
+    readonly tag: string;
+  }
+
+  /**
+   * The migrator applies a migration only when its journal `when` is later
+   * than the newest migration already applied, so an entry whose `when` is
+   * equal to or smaller than its predecessor's is silently skipped on a
+   * database that has already run the earlier migration. Returns a
+   * description of the first disorder, or undefined when strictly increasing.
+   */
+  const firstOutOfOrder = (entries: readonly JournalEntry[]): string | undefined => {
+    for (let i = 1; i < entries.length; i += 1) {
+      const prev = entries[i - 1]!;
+      const curr = entries[i]!;
+      if (curr.when <= prev.when) {
+        return (
+          `${curr.tag} (idx ${curr.idx}) has when ${curr.when}, not strictly greater than ` +
+          `${prev.tag} (idx ${prev.idx}) with when ${prev.when}; ` +
+          `the migrator would silently skip it.`
+        );
+      }
+    }
+    return undefined;
+  };
+
+  const readJournal = (): { entries: JournalEntry[] } =>
+    JSON.parse(fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8')) as {
+      entries: JournalEntry[];
+    };
+
+  it('journal when strictly increases', () => {
+    const { entries } = readJournal();
+    expect(entries.length).toBeGreaterThan(0);
+    expect(firstOutOfOrder(entries)).toBeUndefined();
+  });
+
+  it('every journal tag has a matching .sql file', () => {
+    const { entries } = readJournal();
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(
+        fs.existsSync(path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`)),
+        `${entry.tag} has no matching .sql file`,
+      ).toBe(true);
+    }
+  });
+
+  it('the ordering checker fails on a crafted out-of-order journal', () => {
+    expect(
+      firstOutOfOrder([
+        { idx: 0, when: 100, tag: '0000_first' },
+        { idx: 1, when: 90, tag: '0001_second' },
+      ]),
+    ).toContain('0001_second');
+    // Equal timestamps fail too: the migrator's gate is `created_at <`, so an
+    // equal `when` is skipped just like a smaller one.
+    expect(
+      firstOutOfOrder([
+        { idx: 0, when: 100, tag: '0000_first' },
+        { idx: 1, when: 100, tag: '0001_second' },
+      ]),
+    ).toContain('0001_second');
+  });
+});

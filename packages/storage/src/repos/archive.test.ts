@@ -35,6 +35,7 @@ import {
   upsertMessage,
 } from './archive.js';
 import { SEARCH_LIMIT_MAX } from './archive-search.js';
+import type { UpsertMessageInput } from './archive.js';
 
 /**
  * The archive repository against the real migrations.
@@ -887,5 +888,82 @@ describe('lastMessageAtByAuthor', () => {
     const found = lastMessageAtByAuthor(a, ids);
     expect(found.get(AUTHOR_X)).toBe(3000);
     expect(found.size).toBe(1);
+  });
+});
+
+describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
+  const REPLY_TO = '777777777777777777';
+  const ROLE_A = '888888888888888888';
+  const ROLE_B = '999999999999999999';
+
+  const readReplyColumns = (
+    scope: GuildScope,
+    messageId: string,
+  ): { replyTo: string | null; roles: string | null } =>
+    t.raw
+      .prepare(
+        `SELECT reply_to_message_id AS replyTo, mentioned_role_ids AS roles
+         FROM archive_messages WHERE guild_id = ? AND message_id = ?`,
+      )
+      .get(scope.guildId, messageId) as { replyTo: string | null; roles: string | null };
+
+  it('stores the reply link and mentioned roles on upsert', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666661',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'a reply',
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [],
+      replyToMessageId: REPLY_TO,
+      mentionedRoleIds: [ROLE_A, ROLE_B],
+    } as UpsertMessageInput);
+    expect(readReplyColumns(a, '666666666666666661')).toEqual({
+      replyTo: REPLY_TO,
+      roles: JSON.stringify([ROLE_A, ROLE_B]),
+    });
+  });
+
+  it('stores NULL when there is no reply link and the role list is empty', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666662',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'no reply, no roles',
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [],
+      mentionedRoleIds: [],
+    } as UpsertMessageInput);
+    expect(readReplyColumns(a, '666666666666666662')).toEqual({ replyTo: null, roles: null });
+  });
+
+  it('an edit updates the mentioned roles', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666663',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'before',
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [],
+      mentionedRoleIds: [ROLE_A],
+    } as UpsertMessageInput);
+    expect(
+      recordEdit(a, {
+        messageId: '666666666666666663',
+        content: 'after',
+        editedAt: 3000,
+        mentionedRoleIds: [ROLE_B],
+      } as Parameters<typeof recordEdit>[1]),
+    ).toBe('recorded');
+    expect(readReplyColumns(a, '666666666666666663')).toEqual({
+      replyTo: null,
+      roles: JSON.stringify([ROLE_B]),
+    });
   });
 });
