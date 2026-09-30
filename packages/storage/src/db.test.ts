@@ -763,7 +763,11 @@ describe('migration 0080 rebuild preserves archive rows, edits, attachments and 
     ]);
     // The edit and attachment rows survive with the message they belong to.
     expect(
-      raw.prepare(`SELECT guild_id, message_id, edit_seq, content, edited_at FROM archive_message_edits`).all(),
+      raw
+        .prepare(
+          `SELECT guild_id, message_id, edit_seq, content, edited_at FROM archive_message_edits`,
+        )
+        .all(),
     ).toEqual([
       {
         guild_id: GUILD_ID,
