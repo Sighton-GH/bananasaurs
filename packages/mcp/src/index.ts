@@ -141,3 +141,4 @@ export {
   type McpSendRefusal,
   type SendOutcomeText,
 } from './tools/send.js';
+export { STRUCTURED_NOTE, safeName, structuredText } from './structured.js';
