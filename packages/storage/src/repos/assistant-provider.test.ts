@@ -30,6 +30,7 @@ it('round-trips the fallback model and the web search settings', () => {
     costClass: 'free',
     searchApiKeyEnc: 'sealed-search-key',
     searchEnabled: true,
+    searchSource: 'brave',
     updatedAt: 1,
   });
 });
