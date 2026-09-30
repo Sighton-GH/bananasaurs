@@ -964,5 +964,16 @@ describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
       replyTo: null,
       roles: JSON.stringify([ROLE_B]),
     });
+    // An edit that mentions no roles clears them: an empty list is stored as
+    // NULL, never '[]'. Omitting the key instead would leave them untouched.
+    expect(
+      recordEdit(a, {
+        messageId: '666666666666666663',
+        content: 'after again',
+        editedAt: 4000,
+        mentionedRoleIds: [],
+      }),
+    ).toBe('recorded');
+    expect(readReplyColumns(a, '666666666666666663')).toEqual({ replyTo: null, roles: null });
   });
 });

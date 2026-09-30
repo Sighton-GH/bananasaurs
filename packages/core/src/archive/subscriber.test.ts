@@ -74,6 +74,9 @@ const fakePorts = (over: FakeOptions = {}) => {
         ...current,
         content: input.content,
         editedAt: input.editedAt,
+        // Mirrors the repository: an absent key leaves the stored roles
+        // untouched, a present one replaces them.
+        ...('mentionedRoleIds' in input ? { mentionedRoleIds: input.mentionedRoleIds } : {}),
       });
       return 'recorded';
     },
@@ -307,6 +310,39 @@ describe('archive subscriber ingestion', () => {
       editedAt: NOW_MS,
       mentionedRoleIds: [],
     });
+  });
+
+  it('a partial update without content leaves the stored mentioned roles untouched', async () => {
+    // A partial messageUpdate carries mentionedRoleIds: [] because nothing is
+    // known (MessageEvent), not because no role was mentioned — passing it
+    // through would wipe the roles the create stored.
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+    await subscriber.handle(messageCreate({ mentionedRoleIds: ['888888888888888888'] }));
+
+    await subscriber.handle(
+      messageCreate({ kind: 'messageUpdate', content: undefined, mentionedRoleIds: [] }),
+    );
+
+    const edit = f.calls.find((c) => c.method === 'recordEdit');
+    expect(edit?.input).not.toHaveProperty('mentionedRoleIds');
+    expect(f.messages.get(MESSAGE)?.mentionedRoleIds).toEqual(['888888888888888888']);
+  });
+
+  it('a content-bearing update with no roles replaces the stored mentioned roles', async () => {
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+    await subscriber.handle(messageCreate({ mentionedRoleIds: ['888888888888888888'] }));
+
+    await subscriber.handle(
+      messageCreate({ kind: 'messageUpdate', content: 'after', mentionedRoleIds: [] }),
+    );
+
+    const edit = f.calls.find((c) => c.method === 'recordEdit');
+    expect(edit?.input).toHaveProperty('mentionedRoleIds', []);
+    // The repository stores an empty list as NULL (proved in storage); here
+    // the fake mirrors the replacement itself.
+    expect(f.messages.get(MESSAGE)?.mentionedRoleIds).toEqual([]);
   });
 
   it('inserts on an edit to an unknown message — it predates enablement', async () => {
