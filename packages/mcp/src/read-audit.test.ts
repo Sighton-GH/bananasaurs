@@ -95,6 +95,7 @@ const archivePort = (): McpArchivePort => ({
       content: null,
       createdAt: 1,
       contentPurgedAt: undefined,
+      replyToMessageId: undefined,
     },
   ],
   botUserId: () => undefined,
@@ -447,6 +448,7 @@ const contentfulArchivePort = (): McpArchivePort => ({
     content: SECRET_MESSAGE_TEXT,
     createdAt: 1,
     contentPurgedAt: undefined,
+    replyToMessageId: undefined,
   }),
 });
 

@@ -1198,6 +1198,42 @@ describe('/mcp archive tools across two guilds', () => {
     expect(noText.text).toContain(ARCHIVE_NO_TEXT_MARKER);
     expect(noText.text).not.toContain(ARCHIVE_PURGED_MARKER);
   });
+
+  it('(slice 2 task 3) a reply stored through the repo renders its reply link', async () => {
+    // Through the real composition: the daemon's `toMcpArchiveMessage`
+    // projection must carry `replyToMessageId` for the tool layer to render
+    // it — a dropped field here would read as a non-reply, never an error.
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    seedArchive();
+    const REPLY = '999999999999999991';
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_B), {
+      messageId: REPLY,
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: 'seconding the beta plans',
+      createdAt: clock + 1,
+      editedAt: undefined,
+      attachments: [],
+      replyToMessageId: MESSAGE_B,
+    });
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '222222222222222222',
+          messageId: REPLY,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain(`reply to: ${MESSAGE_B}\nseconding the beta plans`);
+  });
 });
 
 describe('/mcp jobs tools across two guilds', () => {

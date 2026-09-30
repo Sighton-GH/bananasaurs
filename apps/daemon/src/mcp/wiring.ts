@@ -186,9 +186,9 @@ const loggedCallAsync = async <T>(
 };
 
 /**
- * Projects the archive row to the six fields `packages/mcp` reads, field by
- * field like every other port here. `retentionClass`, `caseId`, `deletedAt`
- * and `editedAt` stop at this boundary: they were crossing it and being read
+ * Projects the archive row to the seven fields `packages/mcp` reads, field by
+ * field like every other port here. `retentionClass`, `caseId`, `deletedAt`,
+ * `editedAt` and `mentionedRoleIds` stop at this boundary: they were crossing it and being read
  * by nothing, and the point of naming each field is that a column added to
  * `archive_messages` later cannot arrive in the MCP package for free.
  */
@@ -200,6 +200,7 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
   content: row.content,
   createdAt: row.createdAt,
   contentPurgedAt: row.contentPurgedAt,
+  replyToMessageId: row.replyToMessageId,
 });
 
 /**

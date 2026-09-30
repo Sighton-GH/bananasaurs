@@ -76,6 +76,16 @@ export interface UpsertMessageInput {
   readonly createdAt: number;
   readonly editedAt: number | undefined;
   readonly attachments: readonly ArchiveAttachmentInput[];
+  /**
+   * The message this one replies to (slice 2 task 3), from the event's
+   * `referencedMessageId`. Absent when this message is not a reply.
+   */
+  readonly replyToMessageId?: string | undefined;
+  /**
+   * Mentioned roles (slice 2 task 3), from the event's `mentionedRoleIds`.
+   * Stored as a JSON array of snowflakes, `NULL` when none — never `'[]'`.
+   */
+  readonly mentionedRoleIds?: readonly string[] | undefined;
 }
 
 export const ARCHIVE_DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -445,6 +455,14 @@ export const setBackfillCursor = (
   });
 
 /**
+ * Mentioned roles as stored: a JSON array of snowflakes, `NULL` when the
+ * message mentioned none — never `'[]'` — so "mentions a role" and
+ * "mentions no role" stay distinguishable in SQL (slice 2 task 3).
+ */
+const toMentionedRoleIds = (input: readonly string[] | undefined): string | null =>
+  input === undefined || input.length === 0 ? null : JSON.stringify([...input]);
+
+/**
  * Inserts the message row, or nothing when it is already there.
  *
  * `ON CONFLICT(guild_id, message_id) DO NOTHING`, targeted at the primary
@@ -502,6 +520,8 @@ export const upsertMessage = (scope: GuildScope, input: UpsertMessageInput): boo
         createdAt: input.createdAt,
         editedAt: input.editedAt ?? null,
         deletedAt: null,
+        replyToMessageId: input.replyToMessageId ?? null,
+        mentionedRoleIds: toMentionedRoleIds(input.mentionedRoleIds),
         retentionClass: 'default',
         caseId: null,
         contentPurgedAt: null,
@@ -538,13 +558,22 @@ export const upsertMessage = (scope: GuildScope, input: UpsertMessageInput): boo
  * Records an edit: appends a row holding the PREVIOUS content (`edit_seq` =
  * count + 1), then sets the message's content and edited timestamp.
  *
+ * `mentionedRoleIds`, when provided, replaces the stored mentioned roles
+ * (slice 2 task 3) — an edit can add or remove a role mention. Absent means
+ * "leave them", so callers that do not track mentions change nothing.
+ *
  * 'no-such-message' when the row is absent — an edit to a message created
  * before the channel was enabled. Discord sends full content on update, so
  * the caller may upsert first; this function does not.
  */
 export const recordEdit = (
   scope: GuildScope,
-  input: { messageId: string; content: string | undefined; editedAt: number },
+  input: {
+    messageId: string;
+    content: string | undefined;
+    editedAt: number;
+    mentionedRoleIds?: readonly string[] | undefined;
+  },
 ): 'recorded' | 'no-such-message' =>
   write(scope, ({ db }) => {
     const current = db
@@ -569,7 +598,13 @@ export const recordEdit = (
       })
       .run();
     db.update(archiveMessages)
-      .set({ content: input.content ?? null, editedAt: input.editedAt })
+      .set({
+        content: input.content ?? null,
+        editedAt: input.editedAt,
+        ...(input.mentionedRoleIds !== undefined
+          ? { mentionedRoleIds: toMentionedRoleIds(input.mentionedRoleIds) }
+          : {}),
+      })
       .where(scope.only(archiveMessages, eq(archiveMessages.messageId, input.messageId)))
       .run();
     return 'recorded';
@@ -784,10 +819,9 @@ export const expireContent = (scope: GuildScope, now: number): number =>
  * are absent. Ids chunk by 500 so a full-guild call never builds one giant
  * `IN` list. Live messages are kept indefinitely — only deleted messages are
  * purged, 30 days after deletion (`expireContent`) — so each chunk is a scan
- * of the guild's archived rows grouped by author, with no `author_id` index
- * to narrow it. Acceptable at the club's size; an
- * `(guild_id, author_id, created_at)` index is planned for slice 2 if this
- * shows up in profiling.
+ * of the guild's archived rows grouped by author, narrowed by the
+ * `(guild_id, author_id, created_at)` index (slice 2 task 3, migration 0080).
+ * Acceptable at the club's size even so; revisit if profiling says otherwise.
  */
 export const lastMessageAtByAuthor = (
   scope: GuildScope,
@@ -843,6 +877,10 @@ export interface ArchiveMessage {
   readonly createdAt: number;
   readonly editedAt: number | undefined;
   readonly deletedAt: number | undefined;
+  /** The message this one replies to, absent when it is not a reply (slice 2 task 3). */
+  readonly replyToMessageId: string | undefined;
+  /** Mentioned roles as stored (slice 2 task 3); undefined when the message mentioned none. */
+  readonly mentionedRoleIds: readonly string[] | undefined;
   readonly retentionClass: RetentionClass;
   readonly caseId: string | undefined;
   readonly contentPurgedAt: number | undefined;
@@ -857,6 +895,9 @@ const toArchiveMessage = (row: typeof archiveMessages.$inferSelect): ArchiveMess
   createdAt: row.createdAt,
   editedAt: row.editedAt ?? undefined,
   deletedAt: row.deletedAt ?? undefined,
+  replyToMessageId: row.replyToMessageId ?? undefined,
+  mentionedRoleIds:
+    row.mentionedRoleIds === null ? undefined : (JSON.parse(row.mentionedRoleIds) as string[]),
   retentionClass: row.retentionClass as RetentionClass,
   caseId: row.caseId ?? undefined,
   contentPurgedAt: row.contentPurgedAt ?? undefined,

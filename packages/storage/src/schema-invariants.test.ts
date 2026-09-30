@@ -102,8 +102,9 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'role_id',
   'channel_id',
   'message_id',
-  'attachment_id',
-  'required_role_id',
+  // Slice 2 task 3 (migration 0080): the message a reply answers.
+  'reply_to_message_id',
+  'attachment_id',  'required_role_id',
   'principal_id',
   // ADR 0072: assistant_conversations.started_by.
   'started_by',

@@ -80,7 +80,7 @@ export type ArchiveOutcome =
   | { readonly ok: false; readonly message: string };
 
 /**
- * The archived message as this package needs it: six fields, named here,
+ * The archived message as this package needs it: seven fields, named here,
  * rather than the storage row type passed through whole. (The row type is
  * not named anywhere in this file on purpose — the test at the bottom of
  * `archive.test.ts` asserts its absence as text.)
@@ -104,6 +104,8 @@ export interface McpArchiveMessage {
   readonly createdAt: number;
   /** Distinguishes a purged message from an attachment-only one — see the two markers above. */
   readonly contentPurgedAt: number | undefined;
+  /** The message this one replies to; the renders show it as a first `reply to:` line when set. */
+  readonly replyToMessageId: string | undefined;
 }
 
 export interface McpArchiveSearchInput {
@@ -297,15 +299,20 @@ const resolveAuthorId = (port: McpArchivePort, raw: string | undefined): AuthorR
   return { ok: true, authorId: raw };
 };
 
-const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => ({
-  authorId: message.authorId ?? '(unknown author)',
-  channelId: message.threadId ?? message.channelId,
-  messageId: message.messageId,
-  timestamp: new Date(message.createdAt).toISOString(),
-  content:
+const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => {
+  const body =
     message.content ??
-    (message.contentPurgedAt !== undefined ? ARCHIVE_PURGED_MARKER : ARCHIVE_NO_TEXT_MARKER),
-});
+    (message.contentPurgedAt !== undefined ? ARCHIVE_PURGED_MARKER : ARCHIVE_NO_TEXT_MARKER);
+  return {
+    authorId: message.authorId ?? '(unknown author)',
+    channelId: message.threadId ?? message.channelId,
+    messageId: message.messageId,
+    timestamp: new Date(message.createdAt).toISOString(),
+    // A reply names the message it answers on the first line; the envelope
+    // frames the whole content, so the id stays data, never instruction.
+    content: message.replyToMessageId === undefined ? body : `reply to: ${message.replyToMessageId}\n${body}`,
+  };
+};
 
 const searchMessagesInner = (
   principal: McpPrincipal,

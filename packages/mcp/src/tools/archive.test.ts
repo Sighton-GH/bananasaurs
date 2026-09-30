@@ -459,6 +459,47 @@ describe('purged content returns a tombstone (ruling M4-D8)', () => {
   });
 });
 
+describe('a reply names the message it answers (slice 2 task 3)', () => {
+  const PARENT_ID = '666666666666666661';
+  const REPLY_ID = '666666666666666665';
+
+  beforeEach(() => {
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: REPLY_ID,
+      channelId: CHANNEL_1,
+      authorId: MEMBER,
+      content: 'agreeing with the recipe',
+      createdAt: 1_700_000_000_600,
+      editedAt: undefined,
+      attachments: [],
+      replyToMessageId: PARENT_ID,
+    });
+  });
+
+  it('get_message shows the reply link as the first content line', () => {
+    const text = textOf(
+      getMessageText(principalWith(GUILD_A), port, {
+        guildId: '111111111111111111',
+        messageId: REPLY_ID,
+      }),
+    );
+    expect(text).toContain(`reply to: ${PARENT_ID}\nagreeing with the recipe`);
+  });
+
+  it('read_channel_history shows the reply link; a non-reply has no such line', () => {
+    const text = textOf(
+      readChannelHistoryText(principalWith(GUILD_A), port, emptyGuild(), {
+        guildId: '111111111111111111',
+        channelId: CHANNEL_1,
+      }),
+    );
+    expect(text).toContain(`reply to: ${PARENT_ID}`);
+    // The seeded non-reply ('banana bread recipe') renders its body with no
+    // reply line: the only `reply to:` in the output belongs to the reply.
+    expect(text.match(/reply to: /g)).toHaveLength(1);
+  });
+});
+
 describe('channelIds narrows within the visibility set, never widens it', () => {
   const principal = (): McpPrincipal => principalWith(GUILD_A);
   const base = { guildId: '111111111111111111', query: 'banana' };

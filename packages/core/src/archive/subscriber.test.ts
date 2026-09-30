@@ -256,6 +256,9 @@ describe('archive subscriber ingestion', () => {
           size: 1234,
         },
       ],
+      // Slice 2 task 3: not a reply, no roles mentioned.
+      replyToMessageId: undefined,
+      mentionedRoleIds: [],
     });
   });
 
@@ -298,7 +301,12 @@ describe('archive subscriber ingestion', () => {
     );
 
     const edit = f.calls.find((c) => c.method === 'recordEdit');
-    expect(edit?.input).toEqual({ messageId: MESSAGE, content: 'after', editedAt: NOW_MS });
+    expect(edit?.input).toEqual({
+      messageId: MESSAGE,
+      content: 'after',
+      editedAt: NOW_MS,
+      mentionedRoleIds: [],
+    });
   });
 
   it('inserts on an edit to an unknown message — it predates enablement', async () => {
