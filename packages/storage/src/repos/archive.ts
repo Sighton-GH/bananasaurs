@@ -782,8 +782,12 @@ export const expireContent = (scope: GuildScope, now: number): number =>
 /**
  * Newest archived message time per author in this guild; authors with none
  * are absent. Ids chunk by 500 so a full-guild call never builds one giant
- * `IN` list; the archive keeps ~30 days of messages, so a grouped query
- * without a new index is acceptable and no migration is needed.
+ * `IN` list. Live messages are kept indefinitely — only deleted messages are
+ * purged, 30 days after deletion (`expireContent`) — so each chunk is a scan
+ * of the guild's archived rows grouped by author, with no `author_id` index
+ * to narrow it. Acceptable at the club's size; an
+ * `(guild_id, author_id, created_at)` index is planned for slice 2 if this
+ * shows up in profiling.
  */
 export const lastMessageAtByAuthor = (
   scope: GuildScope,
