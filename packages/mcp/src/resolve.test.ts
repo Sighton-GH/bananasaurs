@@ -73,6 +73,13 @@ describe('resolveChannelRef', () => {
     });
   });
 
+  it('a padded snowflake passes through as the trimmed id, not name matching', () => {
+    expect(resolveChannelRef(channels, '  200000000000000009  ')).toEqual({
+      ok: true,
+      id: '200000000000000009',
+    });
+  });
+
   it('resolves #help by name', () => {
     expect(resolveChannelRef(channels, '#help')).toEqual({
       ok: true,

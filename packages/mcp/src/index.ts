@@ -181,4 +181,4 @@ export {
   type SendOutcomeText,
 } from './tools/send.js';
 export { STRUCTURED_NOTE, safeName, structuredText } from './structured.js';
-export { resolveChannelRef, resolveRoleRef, type Resolved } from './resolve.js';
+export { isSnowflake, normalizeRef, resolveChannelRef, resolveRoleRef, type Resolved } from './resolve.js';

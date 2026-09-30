@@ -175,6 +175,17 @@ describe('get_member', () => {
     expect(row['lastMessageAt']).toBe(new Date(NOW - 2 * DAY_MS).toISOString());
   });
 
+  it('a padded member id takes the id path and finds m4', async () => {
+    const outcome = await getMemberText(principal, portWith(fiveMembers()), guildWith(), {
+      guildId: String(GUILD),
+      member: `  ${M4}  `,
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const data = jsonOf(outcome.text);
+    expect((data['member'] as Record<string, unknown>)['id']).toBe(M4);
+  });
+
   it("matches '@bobo' by nickname and 'Ana' by display, case-insensitively", async () => {
     const port = portWith(fiveMembers());
     const byNick = await getMemberText(principal, port, guildWith(), {

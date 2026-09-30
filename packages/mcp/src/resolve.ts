@@ -5,18 +5,24 @@ import { safeName } from './structured.js';
 export type Resolved =
   { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string };
 
-const isSnowflake = (ref: string): boolean => {
+export const isSnowflake = (text: string): boolean => {
   try {
-    parseSnowflakeId(ref);
+    parseSnowflakeId(text);
     return true;
   } catch {
     return false;
   }
 };
 
-const stripPrefix = (ref: string, prefix: string): string => {
+/**
+ * Trim, strip ONE leading `prefix`, trim again, lowercase — the single
+ * normaliser for `#channel` / `@role` / `@member` refs, shared with
+ * `tools/members.ts` so a padded or prefixed ref behaves one way everywhere.
+ */
+export const normalizeRef = (ref: string, prefix: '#' | '@'): string => {
   const trimmed = ref.trim();
-  return trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+  const stripped = trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+  return stripped.trim().toLowerCase();
 };
 
 const resolveRef = (
@@ -24,11 +30,12 @@ const resolveRef = (
   ref: string,
   kind: 'channel' | 'role',
 ): Resolved => {
-  if (isSnowflake(ref)) return { ok: true, id: ref };
-  const shown = safeName(ref);
-  const needle = (kind === 'channel' ? stripPrefix(ref, '#') : stripPrefix(ref, '@'))
-    .trim()
-    .toLowerCase();
+  // Trimmed once here: a padded snowflake passes through as an id rather
+  // than dropping into name matching and refusing as "no channel named".
+  const trimmed = ref.trim();
+  if (isSnowflake(trimmed)) return { ok: true, id: trimmed };
+  const shown = safeName(trimmed);
+  const needle = normalizeRef(trimmed, kind === 'channel' ? '#' : '@');
   const matches = names
     .filter((entry) => entry.name.toLowerCase() === needle)
     .slice()

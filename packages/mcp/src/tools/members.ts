@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
+import { type GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
@@ -7,7 +7,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { safeName, structuredText } from '../structured.js';
-import { resolveRoleRef } from '../resolve.js';
+import { isSnowflake, normalizeRef, resolveRoleRef } from '../resolve.js';
 import { MCP_READ_GET_MEMBER, MCP_READ_SEARCH_MEMBERS } from '../read-audit.js';
 import { registerReadTool, type ReadOutcome, type RegisterContext } from '../register.js';
 import type { McpGuildPort } from './guild.js';
@@ -132,20 +132,6 @@ const refuseInvalidArgs = (): ReadOutcome => ({
   message: INVALID_ARGUMENTS_MESSAGE,
 });
 
-const isSnowflake = (ref: string): boolean => {
-  try {
-    parseSnowflakeId(ref);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const stripAtPrefix = (ref: string): string => {
-  const trimmed = ref.trim();
-  return trimmed.startsWith('@') ? trimmed.slice(1) : trimmed;
-};
-
 const compareMembers = (a: McpMemberProfile, b: McpMemberProfile): number => {
   const an = a.displayName.toLowerCase();
   const bn = b.displayName.toLowerCase();
@@ -188,7 +174,8 @@ const getMemberInner = async (
   if (!gate.ok) return { ok: false, message: gate.message };
   const roleNameById = roleNameByIdOf(guild, gate.guildId);
   const { members } = await port.listAllMembers(gate.guildId);
-  const query = parsed.data.member;
+  // Trimmed once here, like `resolveRef`: a padded id takes the id path.
+  const query = parsed.data.member.trim();
   if (isSnowflake(query)) {
     const found = members.find((m) => m.id === query);
     if (found === undefined) {
@@ -216,7 +203,7 @@ const getMemberInner = async (
       },
     };
   }
-  const needle = stripAtPrefix(query).trim().toLowerCase();
+  const needle = normalizeRef(query, '@');
   const matches = members
     .filter(
       (m) =>
