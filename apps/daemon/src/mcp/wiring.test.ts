@@ -34,7 +34,7 @@ import {
   taskNudgeRepo,
   taskRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId, DiscordApiError, contentHashFor } from '@bananasaurs/core';
+import { parseGuildId, DiscordApiError, contentHashFor, panelDefinitionSchema } from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -45,7 +45,7 @@ import {
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
-import { FakeDiscord } from '@bananasaurs/testkit';
+import { FakeDiscord, BOT_USER_ID } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -1075,6 +1075,505 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.text).toContain('kill switch');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
     expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'kill-send')).toBeUndefined();
+  });
+});
+
+/**
+ * Task 6 Step 2, daemon side: the six message-write tools through the real
+ * composition — target resolution, the protected-message guard, the live
+ * authorship check, then the single `runMcpAction` pipeline each.
+ *
+ * The composed client's bot id is the testkit bot id, so a message
+ * `defineMessage`d as authored by `BOT_USER_ID` is the bot's own and any
+ * other author is a member's — the same authorship the wiring checks live.
+ */
+describe('/mcp message writes through the real composition', () => {
+  const CHANNEL = '711111111111111111';
+  const PANEL_MESSAGE = '722222222222222222';
+  const ANCHOR_MESSAGE = '733333333333333333';
+  const MEMBER_MESSAGE = '744444444444444444';
+  const BOT_MESSAGE = '755555555555555555';
+  const PIN_MESSAGE = '766666666666666666';
+  const EMOJI_ID = '777777777777777777';
+  const FOREIGN_EMOJI_ID = '788888888888888888';
+  const MEMBER_USER = '799999999999999999';
+  const BOT_ROLE = '811111111111111111';
+  const TASK_ROLE = '822222222222222222';
+  /** Distinctive bot-written text: must reach the undo row, never the audit row. */
+  const ORIGINAL = 'picnic-probe-original-bot-text-that-must-never-reach-audit-zz9';
+
+  interface WritesDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  /**
+   * The message-write guild: one text channel, a bot member whose role
+   * carries the given permission bits, and optionally guild emoji. The bot
+   * user is the testkit bot, so `defineMessage`d bot authorship agrees with
+   * the wiring's live `client.user.id` check.
+   */
+  const seedWritesGuild = (
+    botPermissions: bigint,
+    emojis: readonly { readonly id: string; readonly name: string }[] = [],
+  ): void => {
+    const internals = deps.client as unknown as WritesDiscordInternals;
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions.toString(),
+          managed: true,
+        },
+      ],
+      members: [
+        { user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        { user: { id: MEMBER_USER, username: 'member', discriminator: '0' }, roles: [] },
+      ],
+      emojis: emojis.map((emoji) => ({ id: emoji.id, name: emoji.name })),
+      unavailable: false,
+    });
+  };
+
+  /** Base permissions: post and react, but neither pin half. */
+  const BASE_PERMS =
+    PermissionsBitField.Flags.ViewChannel |
+    PermissionsBitField.Flags.SendMessages |
+    PermissionsBitField.Flags.SendMessagesInThreads |
+    PermissionsBitField.Flags.AddReactions;
+
+  const allowWrites = (
+    botPermissions: bigint = BASE_PERMS,
+    emojis: readonly { readonly id: string; readonly name: string }[] = [],
+  ): void => {
+    seedWritesGuild(botPermissions, emojis);
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const writeCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      accessToken,
+    );
+
+  const readCall = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const editArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: '111111111111111111',
+    channelId: CHANNEL,
+    messageId: BOT_MESSAGE,
+    content: 'edited through the mcp',
+    idempotencyKey: 'write-k1',
+    ...over,
+  });
+
+  /** No Discord write call of any kind — the eligibility refusal precedes every one. */
+  const expectNoDiscordWrites = (): void => {
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+  };
+
+  const seedPanel = (): void => {
+    panelRepo.createPanel(
+      t.scopes.forGuild(GUILD_A),
+      panelDefinitionSchema.parse({
+        panelId: 'roles',
+        kind: 'adopted',
+        channelId: CHANNEL,
+        messageId: PANEL_MESSAGE,
+        behaviour: 'toggle',
+        component: 'reaction',
+        options: [{ optionId: 'a', roleId: TASK_ROLE, emojiKey: 'u:1f9e0', position: 0 }],
+      }),
+      clock,
+      [TASK_ROLE],
+    );
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: PANEL_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+  };
+
+  const seedAnchor = (): void => {
+    const teamId = taskRepo.createTeam(
+      t.scopes.forGuild(GUILD_A),
+      { name: 'Tech', categoryId: CHANNEL, kind: 'subteam' },
+      ACTOR,
+      clock,
+    );
+    const taskId = taskRepo.createTask(
+      t.scopes.forGuild(GUILD_A),
+      {
+        teamId,
+        title: 'Project',
+        assignmentKind: 'team',
+        dueAt: clock + 86_400_000,
+        timezone: 'America/Vancouver',
+        destinationId: CHANNEL,
+        createdBy: 'owner',
+      },
+      ACTOR,
+      clock,
+    );
+    expect(
+      taskRepo.recordTaskAnchor(t.scopes.forGuild(GUILD_A), taskId, CHANNEL, ANCHOR_MESSAGE, clock),
+    ).toBe('recorded');
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: ANCHOR_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+  };
+
+  it('a role-panel message is refused before any Discord call', async () => {
+    allowWrites();
+    seedPanel();
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ messageId: PANEL_MESSAGE, idempotencyKey: 'panel-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('role-panel');
+    // The protected check runs before the live authorship read: not even
+    // `fetchMessageAuthor` reached Discord.
+    expectNoDiscordWrites();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-edit')).toBeUndefined();
+  });
+
+  it('a task anchor is refused before any Discord call', async () => {
+    allowWrites();
+    seedAnchor();
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'delete_message',
+          {
+            guildId: '111111111111111111',
+            channelId: CHANNEL,
+            messageId: ANCHOR_MESSAGE,
+            idempotencyKey: 'anchor-delete',
+          },
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('task anchor');
+    expectNoDiscordWrites();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'anchor-delete')).toBeUndefined();
+  });
+
+  it("a member's message is refused with no Discord write call", async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: MEMBER_MESSAGE,
+      authorId: MEMBER_USER,
+      content: 'a member wrote this',
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ messageId: MEMBER_MESSAGE, idempotencyKey: 'member-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('someone else');
+    // The live authorship read ran (one read), but no write did.
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('deleteMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('createReaction')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('deleteOwnReaction')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'member-edit')).toBeUndefined();
+  });
+
+  it('an edit records the previous content for undo, never in the audit row', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = readCall((await writeCall(accessToken, 'edit_message', editArgs())).body);
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Edited message');
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(1);
+
+    // The undo row keeps the bot's own previous text — for `undo_action`.
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'write-k1');
+    expect(row?.status).toBe('done');
+    expect(row?.resultMessageId).toBe(BOT_MESSAGE);
+    const undo = JSON.parse(row?.undoJson ?? '{}') as Record<string, unknown>;
+    expect(undo['content']).toBe(ORIGINAL);
+
+    // The audit row carries ids and the outcome — never either text (rule 4).
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+    const audit = trail.find((entry) => entry.action === 'mcp.message.edit');
+    expect(audit).toBeDefined();
+    expect(audit?.actorType).toBe('mcp_operator');
+    expect(audit?.via).toBe('http');
+    expect(JSON.stringify(trail)).not.toContain(ORIGINAL);
+    expect(JSON.stringify(trail)).not.toContain('edited through the mcp');
+  });
+
+  it('a delete reports that it cannot be undone', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = readCall(
+      (
+        await writeCall(accessToken, 'delete_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          idempotencyKey: 'write-delete',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('cannot be undone');
+    expect(fakeDiscord.restCalls('deleteMessage')).toHaveLength(1);
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'write-delete');
+    expect(row?.status).toBe('done');
+    expect(row?.undoJson).toBeUndefined();
+  });
+
+  it('a pin without PinMessages and ManageMessages is refused naming both', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: PIN_MESSAGE,
+      authorId: MEMBER_USER,
+      content: 'pin me',
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(accessToken, 'pin_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: PIN_MESSAGE,
+          idempotencyKey: 'pin-denied',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('PinMessages');
+    expect(refused.text).toContain('ManageMessages');
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'pin-denied')).toBeUndefined();
+  });
+
+  it('a pin with only PinMessages passes, on any in-scope message', async () => {
+    allowWrites(BASE_PERMS | PermissionsBitField.Flags.PinMessages);
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: PIN_MESSAGE,
+      authorId: MEMBER_USER,
+      content: 'pin me',
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = readCall(
+      (
+        await writeCall(accessToken, 'pin_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: PIN_MESSAGE,
+          idempotencyKey: 'pin-ok',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Pinned message');
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(1);
+  });
+
+  it("a foreign guild's custom emoji is refused with no Discord call", async () => {
+    allowWrites(BASE_PERMS, [{ id: EMOJI_ID, name: 'party' }]);
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(accessToken, 'add_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: `party:${FOREIGN_EMOJI_ID}`,
+          idempotencyKey: 'react-foreign',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not usable in guild');
+    expect(fakeDiscord.restCalls('createReaction')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'react-foreign')).toBeUndefined();
+  });
+
+  it('a unicode emoji and this guild emoji react, with canonical keys', async () => {
+    allowWrites(BASE_PERMS, [{ id: EMOJI_ID, name: 'party' }]);
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const first = readCall(
+      (
+        await writeCall(accessToken, 'add_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: '👍',
+          idempotencyKey: 'react-unicode',
+        })
+      ).body,
+    );
+    expect(first.isError).not.toBe(true);
+    const second = readCall(
+      (
+        await writeCall(accessToken, 'add_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: 'party:777777777777777777',
+          idempotencyKey: 'react-custom',
+        })
+      ).body,
+    );
+    expect(second.isError).not.toBe(true);
+    const reacted = fakeDiscord.restCalls('createReaction');
+    expect(reacted).toHaveLength(2);
+    expect(reacted[0]?.args[2]).toBe('u:1f44d');
+    expect(reacted[1]?.args[2]).toBe(`c:${EMOJI_ID}`);
+  });
+
+  it('a write for the other guild is refused with no Discord call', async () => {
+    allowWrites();
+    const accessToken = await mintToken('bananasaurs:send');
+    // The channel is allowlisted in guild A only, and the composed client
+    // knows no guild B: the target never resolves.
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ guildId: '222222222222222222', idempotencyKey: 'other-guild-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("is not a channel this guild's bot can see");
+    expectNoDiscordWrites();
+  });
+
+  it('the same idempotency key twice edits once and answers the second as a replay', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const first = readCall((await writeCall(accessToken, 'edit_message', editArgs())).body);
+    expect(first.isError).not.toBe(true);
+    const second = readCall((await writeCall(accessToken, 'edit_message', editArgs())).body);
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toContain('Already recorded under this idempotency key');
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(1);
+  });
+
+  it('the kill switch refuses the edit with no Discord write', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ idempotencyKey: 'kill-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('kill switch');
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'kill-edit')).toBeUndefined();
   });
 });
 
