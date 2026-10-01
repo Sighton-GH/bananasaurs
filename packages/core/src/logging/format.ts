@@ -64,6 +64,95 @@ export function formatMemberLeave(event: MemberEvent): string {
   return `Member left: <@${event.userId}>`;
 }
 
+/**
+ * One member-change line for the logging module's last-seen record (ADR 0123
+ * decision 9). `added`/`removed` are role ids; an empty side is omitted, so a
+ * pure grant names no removal and vice versa.
+ */
+export function formatMemberRolesChanged(
+  userId: string,
+  added: readonly string[],
+  removed: readonly string[],
+): string {
+  const parts = [`Roles changed: <@${userId}>`];
+  if (added.length > 0) parts.push(added.map((id) => `+<@&${id}>`).join(' '));
+  if (removed.length > 0) parts.push(removed.map((id) => `-<@&${id}>`).join(' '));
+  return parts.join('  ');
+}
+
+const displayNameOrNone = (name: string | undefined): string =>
+  name === undefined ? '(none)' : `"${name}"`;
+
+/** Nickname old → new, with `(none)` for an absent nickname on either side. */
+export function formatMemberNicknameChanged(
+  userId: string,
+  oldNickname: string | undefined,
+  newNickname: string | undefined,
+): string {
+  return `Nickname changed: <@${userId}>  ${displayNameOrNone(oldNickname)} → ${displayNameOrNone(newNickname)}`;
+}
+
+/**
+ * Username and/or display-name old → new. Both lines when both changed, so one
+ * `member_username_changed` change can carry the two together.
+ */
+export function formatMemberUsernameChanged(input: {
+  userId: string;
+  oldUsername: string | undefined;
+  newUsername: string;
+  oldGlobalName: string | undefined;
+  newGlobalName: string | undefined;
+}): string {
+  const lines: string[] = [];
+  if (input.oldUsername !== undefined && input.oldUsername !== input.newUsername) {
+    lines.push(`Username changed: <@${input.userId}>  ${input.oldUsername} → ${input.newUsername}`);
+  }
+  if ((input.oldGlobalName ?? undefined) !== (input.newGlobalName ?? undefined)) {
+    lines.push(
+      `Display name changed: <@${input.userId}>  ${displayNameOrNone(input.oldGlobalName)} → ${displayNameOrNone(input.newGlobalName)}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+const accountAvatarUrl = (userId: string, hash: string): string =>
+  `https://cdn.discordapp.com/avatars/${userId}/${hash}.png`;
+
+const guildAvatarUrl = (guildId: string, userId: string, hash: string): string =>
+  `https://cdn.discordapp.com/guilds/${guildId}/users/${userId}/avatars/${hash}.png`;
+
+/**
+ * Account and/or server avatar old → new. A link is text in a Discord message
+ * — the bot never fetches it — and a removed avatar names that instead of a
+ * URL. Both lines when both changed, so one `member_avatar_changed` change
+ * can carry the two together.
+ */
+export function formatMemberAvatarChanged(input: {
+  userId: string;
+  guildId: string;
+  accountChanged: boolean;
+  newAvatarHash: string | undefined;
+  guildAvatarChanged: boolean;
+  newGuildAvatarHash: string | undefined;
+}): string {
+  const lines: string[] = [];
+  if (input.accountChanged) {
+    lines.push(
+      input.newAvatarHash === undefined
+        ? `Avatar changed: <@${input.userId}>  removed their avatar`
+        : `Avatar changed: <@${input.userId}>  ${accountAvatarUrl(input.userId, input.newAvatarHash)}`,
+    );
+  }
+  if (input.guildAvatarChanged) {
+    lines.push(
+      input.newGuildAvatarHash === undefined
+        ? `Server avatar changed: <@${input.userId}>  removed their avatar`
+        : `Server avatar changed: <@${input.userId}>  ${guildAvatarUrl(input.guildId, input.userId, input.newGuildAvatarHash)}`,
+    );
+  }
+  return lines.join('\n');
+}
+
 export function formatRoleCreate(event: RoleEvent): string {
   return `Role created: **${event.name}** (${event.roleId})`;
 }
