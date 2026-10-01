@@ -658,3 +658,24 @@ export {
   renderSummary,
   type ConversationSummary,
 } from './assistant/conversation-summary.js';
+
+export {
+  ADMINISTRATOR,
+  BAN_MEMBERS,
+  DANGEROUS_PERMISSION_BITS,
+  isDangerousRole,
+  KICK_MEMBERS,
+  MANAGE_CHANNELS,
+  MANAGE_EVENTS,
+  MANAGE_GUILD,
+  MANAGE_GUILD_EXPRESSIONS,
+  MANAGE_MESSAGES,
+  MANAGE_ROLES,
+  MANAGE_THREADS,
+  MANAGE_WEBHOOKS,
+  MENTION_EVERYONE,
+  MODERATE_MEMBERS,
+  rolePingAllowed,
+  type RoleFacts,
+  type RolePingRefusal,
+} from './roles/dangerous.js';
