@@ -169,6 +169,13 @@ export type PingResolution =
   | { readonly ok: true; readonly roleIds: string[]; readonly userIds: string[] }
   | { readonly ok: false; readonly reason: PingRefusal; readonly ref: string };
 
+/** Discord's 10007 Unknown Member / 10013 Unknown User, or a bare 404. */
+const isUnknownMember = (err: unknown): boolean => {
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, status } = err as { code?: unknown; status?: unknown };
+  return code === 10007 || code === 10013 || status === 404;
+};
+
 export const resolvePings = async (
   client: Client,
   scope: GuildScope,
@@ -177,16 +184,10 @@ export const resolvePings = async (
 ): Promise<PingResolution> => {
   const guild = client.guilds.cache.get(guildId);
   if (guild === undefined) {
-    if (input.roles.length > 0) {
-      const first = input.roles[0];
-      if (first === undefined) throw new Error('unreachable');
-      return { ok: false, reason: 'role-unknown', ref: first };
-    }
-    if (input.users.length > 0) {
-      const first = input.users[0];
-      if (first === undefined) throw new Error('unreachable');
-      return { ok: false, reason: 'user-not-member', ref: first };
-    }
+    const firstRole = input.roles[0];
+    if (firstRole !== undefined) return { ok: false, reason: 'role-unknown', ref: firstRole };
+    const firstUser = input.users[0];
+    if (firstUser !== undefined) return { ok: false, reason: 'user-not-member', ref: firstUser };
     return { ok: true, roleIds: [], userIds: [] };
   }
   const roleIds: string[] = [];
@@ -238,7 +239,17 @@ export const resolvePings = async (
     const cached = guild.members.cache.get(ref) !== undefined;
     // Live, not cached: the cache caps at fifty members, so a cache hit
     // proves membership but a miss proves nothing — one REST read decides.
-    const member = cached ? true : (await guild.members.fetch(ref).catch(() => null)) !== null;
+    // Only Discord's own "no such member/user" answer means not a member; a
+    // transport fault throws, so an outage is never reported as a refusal.
+    const member = cached
+      ? true
+      : await guild.members.fetch(ref).then(
+          () => true,
+          (err: unknown) => {
+            if (isUnknownMember(err)) return false;
+            throw err;
+          },
+        );
     if (!member) return { ok: false, reason: 'user-not-member', ref };
     if (!userIds.includes(ref)) userIds.push(ref);
   }

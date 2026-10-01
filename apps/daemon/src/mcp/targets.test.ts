@@ -429,18 +429,38 @@ describe('resolvePings', () => {
     expect(resolved).toEqual({ ok: true, roleIds: [], userIds: [MEMBER_USER] });
   });
 
-  it('a user not in the guild is refused without touching the network', async () => {
+  it('a user not in the guild is refused after one live lookup answered Unknown Member', async () => {
     const client = makeClient({ members: [{ id: MEMBER_USER, roles: [] }] });
     const guild = client.guilds.cache.get(GUILD_A);
     if (guild === undefined) throw new Error('guild missing from test client cache');
-    // The membership probe must stay in the cache: a logged-out client has no
-    // REST to fall back on, so fail the fetch loudly if it is ever reached.
-    guild.members.fetch = (() =>
-      Promise.reject(new Error('network fetch in unit test'))) as typeof guild.members.fetch;
+    // A cache miss proves nothing (the cache caps at fifty), so the miss path
+    // makes exactly one live fetch; Discord's 10007 answer means not a member.
+    let fetches = 0;
+    guild.members.fetch = (() => {
+      fetches += 1;
+      return Promise.reject(
+        Object.assign(new Error('Unknown Member'), { code: 10007, status: 404 }),
+      );
+    }) as typeof guild.members.fetch;
     const resolved = await resolvePings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
       roles: [],
       users: [STRANGER_USER],
     });
     expect(resolved).toEqual({ ok: false, reason: 'user-not-member', ref: STRANGER_USER });
+    expect(fetches).toBe(1);
+  });
+
+  it('a transport fault on the membership lookup throws instead of refusing as not-a-member', async () => {
+    const client = makeClient({ members: [{ id: MEMBER_USER, roles: [] }] });
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    guild.members.fetch = (() =>
+      Promise.reject(new Error('connection reset'))) as typeof guild.members.fetch;
+    await expect(
+      resolvePings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [],
+        users: [STRANGER_USER],
+      }),
+    ).rejects.toThrow('connection reset');
   });
 });
