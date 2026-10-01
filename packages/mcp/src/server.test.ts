@@ -35,6 +35,15 @@ import {
 import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
+import {
+  ADD_REACTION_TOOL_NAME,
+  DELETE_MESSAGE_TOOL_NAME,
+  EDIT_MESSAGE_TOOL_NAME,
+  PIN_MESSAGE_TOOL_NAME,
+  REMOVE_REACTION_TOOL_NAME,
+  UNPIN_MESSAGE_TOOL_NAME,
+  type McpMessageWritesPort,
+} from './tools/message-writes.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './tools/context.js';
@@ -125,6 +134,18 @@ const stubSend = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
 });
 
+/** Minimal message-writes port: this file pins registration, never the writes themselves. */
+const stubMessageWrites = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
 /** Minimal jobs port: this file pins registration, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
@@ -181,6 +202,7 @@ const connectPair = async (
     resources: stubResources(),
     threads: stubThreads(),
     send,
+    messageWrites: stubMessageWrites(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -230,15 +252,21 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message first, alongside the twenty-two read tools', async () => {
+  it('lists send_message and the six message-write tools first, alongside the twenty-two read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(23);
+      expect(list.tools).toHaveLength(29);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
+        EDIT_MESSAGE_TOOL_NAME,
+        DELETE_MESSAGE_TOOL_NAME,
+        PIN_MESSAGE_TOOL_NAME,
+        UNPIN_MESSAGE_TOOL_NAME,
+        ADD_REACTION_TOOL_NAME,
+        REMOVE_REACTION_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
@@ -307,14 +335,23 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ruling M4-D17) a send-only principal gets send_message and nothing else', async () => {
+  it('(ruling M4-D17) a send-only principal gets the seven send tools and nothing else', async () => {
     const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
     try {
-      // `send_message` registers under the send scope independently of the
-      // read-scope block, so a send-only server lists exactly one tool — and
-      // still no resource, which stays behind the read scope.
+      // `send_message` and the six message-write tools register under the
+      // send scope independently of the read-scope block, so a send-only
+      // server lists exactly seven tools — and still no resource, which
+      // stays behind the read scope.
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual([SEND_MESSAGE_TOOL_NAME]);
+      expect(list.tools.map((tool) => tool.name)).toEqual([
+        SEND_MESSAGE_TOOL_NAME,
+        EDIT_MESSAGE_TOOL_NAME,
+        DELETE_MESSAGE_TOOL_NAME,
+        PIN_MESSAGE_TOOL_NAME,
+        UNPIN_MESSAGE_TOOL_NAME,
+        ADD_REACTION_TOOL_NAME,
+        REMOVE_REACTION_TOOL_NAME,
+      ]);
       // The SDK installs its `resources/templates/list` handler lazily on the
       // first `registerResource()` call, so a server with no resource answers
       // Method-not-found rather than an empty array.

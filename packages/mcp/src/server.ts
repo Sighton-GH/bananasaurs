@@ -71,6 +71,33 @@ import {
   sendMessageText,
   type McpSendPort,
 } from './tools/send.js';
+import {
+  ADD_REACTION_TOOL_DESCRIPTION,
+  ADD_REACTION_TOOL_NAME,
+  DELETE_MESSAGE_TOOL_DESCRIPTION,
+  DELETE_MESSAGE_TOOL_NAME,
+  EDIT_MESSAGE_TOOL_DESCRIPTION,
+  EDIT_MESSAGE_TOOL_NAME,
+  PIN_MESSAGE_TOOL_DESCRIPTION,
+  PIN_MESSAGE_TOOL_NAME,
+  REMOVE_REACTION_TOOL_DESCRIPTION,
+  REMOVE_REACTION_TOOL_NAME,
+  UNPIN_MESSAGE_TOOL_DESCRIPTION,
+  UNPIN_MESSAGE_TOOL_NAME,
+  addReactionParams,
+  addReactionText,
+  deleteMessageParams,
+  deleteMessageText,
+  editMessageParams,
+  editMessageText,
+  pinMessageParams,
+  pinMessageText,
+  removeReactionParams,
+  removeReactionText,
+  unpinMessageParams,
+  unpinMessageText,
+  type McpMessageWritesPort,
+} from './tools/message-writes.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { registerContextTools, type McpContextPort } from './tools/context.js';
@@ -155,6 +182,16 @@ export interface McpServerDeps {
    * still registers only when the principal carries the send scope.
    */
   readonly send: McpSendPort;
+  /**
+   * The daemon's per-request message-write port (slice 3, Task 6): editing
+   * and deleting the bot's own messages, pinning, and the bot's own
+   * reactions. Required like `send`: the daemon always provides it, and a
+   * missing port must fail at construction, not serve tools that always
+   * refuse. Required means the port is always present, not that the tools
+   * are always advertised: the six tools still register only when the
+   * principal carries the send scope.
+   */
+  readonly messageWrites: McpMessageWritesPort;
   readonly tasks?: McpTaskPort | undefined;
   readonly taskDetail?: McpTaskDetailPort | undefined;
   readonly taskAdmin?: TaskAdminPort | undefined;
@@ -255,6 +292,55 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
+    // Task 6: the six message-write tools, same handler shape as
+    // `send_message` above — each text function already answers every
+    // malformed argument and every port fault, so the try/catch here only
+    // fires on something the tool layer did not foresee.
+    const writes = deps.messageWrites;
+    const writeTools = [
+      [EDIT_MESSAGE_TOOL_NAME, EDIT_MESSAGE_TOOL_DESCRIPTION, editMessageParams, editMessageText],
+      [
+        DELETE_MESSAGE_TOOL_NAME,
+        DELETE_MESSAGE_TOOL_DESCRIPTION,
+        deleteMessageParams,
+        deleteMessageText,
+      ],
+      [PIN_MESSAGE_TOOL_NAME, PIN_MESSAGE_TOOL_DESCRIPTION, pinMessageParams, pinMessageText],
+      [
+        UNPIN_MESSAGE_TOOL_NAME,
+        UNPIN_MESSAGE_TOOL_DESCRIPTION,
+        unpinMessageParams,
+        unpinMessageText,
+      ],
+      [
+        ADD_REACTION_TOOL_NAME,
+        ADD_REACTION_TOOL_DESCRIPTION,
+        addReactionParams,
+        addReactionText,
+      ],
+      [
+        REMOVE_REACTION_TOOL_NAME,
+        REMOVE_REACTION_TOOL_DESCRIPTION,
+        removeReactionParams,
+        removeReactionText,
+      ],
+    ] as const;
+    for (const [name, description, params, text] of writeTools) {
+      server.tool(name, description, params, async (args) => {
+        try {
+          const outcome = await text(deps.principal, writes, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
   }
   if (hasSendScope(deps.principal) && deps.taskAdmin) {
     const taskAdmin = deps.taskAdmin;
