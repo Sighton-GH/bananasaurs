@@ -356,6 +356,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         runAfter,
         now: now(),
       }),
+    getMemberSnapshot: (id) => loggingRepo.getMemberSnapshot(scope, id),
+    saveMemberSnapshot: (s) =>
+      loggingRepo.upsertMemberSnapshot(scope, { ...s, roleIds: [...s.roleIds] }),
+    deleteMemberSnapshot: (id) => {
+      loggingRepo.deleteMemberSnapshot(scope, id);
+    },
     now,
     logger,
   };

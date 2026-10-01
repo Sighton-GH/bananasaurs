@@ -95,6 +95,12 @@ beforeEach(() => {
         runAfter,
         now: 0,
       }),
+    getMemberSnapshot: (id) => loggingRepo.getMemberSnapshot(scope, id),
+    saveMemberSnapshot: (s) =>
+      loggingRepo.upsertMemberSnapshot(scope, { ...s, roleIds: [...s.roleIds] }),
+    deleteMemberSnapshot: (id) => {
+      loggingRepo.deleteMemberSnapshot(scope, id);
+    },
     now: () => 0,
     logger,
   };
@@ -381,6 +387,55 @@ describe('members', () => {
     await subscriber.handle(memberJoin());
 
     expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+});
+
+describe('member changes end to end', () => {
+  it('join, then a nickname update, then a leave posts one change line and clears the snapshot', async () => {
+    seedRoute('member_nickname_changed');
+    const subscriber = createLoggingSubscriber(ports);
+
+    await subscriber.handle({
+      ...memberJoin(),
+      profile: {
+        username: 'member',
+        globalName: undefined,
+        nickname: undefined,
+        avatarHash: undefined,
+        guildAvatarHash: undefined,
+      },
+    });
+    // No member_join route, so nothing posts — but the baseline is kept.
+    expect(discord.restCalls('sendMessage')).toHaveLength(0);
+    expect(loggingRepo.getMemberSnapshot(scope, USER)?.nickname).toBeUndefined();
+
+    await subscriber.handle({
+      kind: 'memberUpdate',
+      guildId: GUILD,
+      receivedAtMs: 2_000,
+      userId: USER,
+      roleIds: [],
+      previousRoleIds: [],
+      joinedAtMs: 100,
+      profile: {
+        username: 'member',
+        globalName: undefined,
+        nickname: 'new',
+        avatarHash: undefined,
+        guildAvatarHash: undefined,
+      },
+      previousMember: { nickname: undefined, guildAvatarHash: undefined },
+    });
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect((calls[0]?.args[2] as { content: string }).content).toBe(
+      `Nickname changed: <@${USER}>  (none) → "new"`,
+    );
+    expect(calls[0]?.args[2]).toMatchObject({ allowedMentions: { parse: [] } });
+
+    await subscriber.handle(memberLeave());
+    expect(loggingRepo.getMemberSnapshot(scope, USER)).toBeUndefined();
   });
 });
 
