@@ -316,6 +316,13 @@ export interface DiscordPort {
    */
   listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
   /**
+   * Whether a user is a member of a thread (ADR 0112): `GET
+   * /channels/{thread}/thread-members/{user}` — 200 answers true, 404
+   * answers false. Checked live on every private-thread read, never cached;
+   * any other error propagates.
+   */
+  isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean>;
+  /**
    * Guild scheduled events for the assistant's `upcoming_events` tool
    * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway
    * intent needed. An empty list when there are none — or when the bot may

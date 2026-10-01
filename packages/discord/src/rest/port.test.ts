@@ -1122,6 +1122,39 @@ describe('archived thread pagination (S3)', () => {
   });
 });
 
+describe('thread membership (ADR 0112)', () => {
+  const THREAD = '666666666666666666';
+
+  it('answers true on 200, on the thread-member route', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { user_id: USER, thread_id: THREAD } },
+    ]);
+    await expect(port.isThreadMember(GUILD, THREAD, USER)).resolves.toBe(true);
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}/thread-members/${USER}`);
+  });
+
+  it('answers false on 404, never a throw', async () => {
+    const { port } = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMember, message: 'Unknown Member' } },
+    ]);
+    await expect(port.isThreadMember(GUILD, THREAD, USER)).resolves.toBe(false);
+  });
+
+  it('still raises anything else (e.g. 403 or a server error)', async () => {
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(forbidden.port.isThreadMember(GUILD, THREAD, USER)).rejects.toBeInstanceOf(
+      DiscordApiError,
+    );
+    const broken = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(broken.port.isThreadMember(GUILD, THREAD, USER)).rejects.toBeInstanceOf(
+      DiscordApiError,
+    );
+  });
+});
+
 describe('guild lifecycle', () => {
   it('leaves a guild on the @me route', async () => {
     const { port, requests } = harness();

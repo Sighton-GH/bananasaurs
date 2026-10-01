@@ -172,6 +172,8 @@ export class FakeDiscord implements DiscordPort {
    */
   private moderationState = new Map<Snowflake, { until: number } | 'kicked'>();
   private messages = new Map<string, FakeMessage>();
+  /** Thread memberships (`threadId` -> member user ids), for `isThreadMember` (ADR 0112). */
+  private threadMembers = new Map<Snowflake, Set<Snowflake>>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
@@ -232,6 +234,16 @@ export class FakeDiscord implements DiscordPort {
 
   defineMember(userId: Snowflake, roleIds: Snowflake[] = [], isGuildOwner = false): void {
     this.members.set(userId, { userId, roleIds: new Set(roleIds), isGuildOwner });
+  }
+  /**
+   * Adds a user to a thread's membership, for `isThreadMember` (ADR 0112).
+   * Absent unless added: a thread the fake was never told about has no
+   * members, the way an unknown thread answers 404 on the real endpoint.
+   */
+  addThreadMember(threadId: Snowflake, userId: Snowflake): void {
+    const members = this.threadMembers.get(threadId) ?? new Set<Snowflake>();
+    members.add(userId);
+    this.threadMembers.set(threadId, members);
   }
   memberRoles(userId: Snowflake): Snowflake[] {
     return [...(this.members.get(userId)?.roleIds ?? [])].sort();
@@ -1231,6 +1243,18 @@ export class FakeDiscord implements DiscordPort {
     this.record('listPublicThreads', [guildId, channelId]);
     this.check('listPublicThreads', guildId);
     return [];
+  }
+
+  /**
+   * Thread membership (ADR 0112): what `addThreadMember` recorded. The real
+   * endpoint folds an unknown thread into 404 (false); the fake answers the
+   * same — absence is false, never a throw — so a caller under test sees the
+   * same refusal it would against real Discord.
+   */
+  async isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean> {
+    this.record('isThreadMember', [guildId, threadId, userId]);
+    this.check('isThreadMember', guildId);
+    return this.threadMembers.get(threadId)?.has(userId) ?? false;
   }
 
   /**

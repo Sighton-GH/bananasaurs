@@ -469,6 +469,22 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     },
 
     /**
+     * Thread membership for ADR 0112's private-thread reads: 200 answers
+     * true, 404 answers false; anything else still throws. `_guildId` is
+     * the mandatory scope key with nothing to address — the thread-member
+     * route carries no guild id, like the other channel routes above.
+     */
+    async isThreadMember(_guildId, threadId, userId) {
+      try {
+        await mapErrors(() => rest.get(Routes.threadMembers(threadId, userId)));
+        return true;
+      } catch (err) {
+        if (err instanceof DiscordApiError && err.status === 404) return false;
+        throw err;
+      }
+    },
+
+    /**
      * Guild scheduled events for the assistant (ADR 0092 decision 1): no
      * gateway intent is needed for the REST read. A 403 (the bot may not
      * see them) answers `[]` rather than failing the turn; anything else
