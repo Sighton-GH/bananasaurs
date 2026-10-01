@@ -11,7 +11,7 @@
 
 Every one of these goes through one guarded, idempotent, audited pipeline.
 
-**Architecture:** One new core pipeline, `packages/core/src/effects/mcp-action-gateway.ts` (ADR 0116), runs every MCP write. It stores each one in one ledger, `mcp_actions` (migration tag `0081`). The daemon resolves targets against ADR 0047 send scope and the bot's live permissions. The new Discord REST calls go through `DiscordPort`. New tools are registered only under `bananasaurs:send`.
+**Architecture:** One new core pipeline, `packages/core/src/effects/mcp-action-gateway.ts` (ADR 0116), runs every MCP write. It stores each one in one ledger, `mcp_actions` (migration tag `0092`). The daemon resolves targets against ADR 0047 send scope and the bot's live permissions. The new Discord REST calls go through `DiscordPort`. New tools are registered only under `bananasaurs:send`.
 
 **Tech Stack:** TypeScript (Node 22, strict), `@modelcontextprotocol/sdk`, Zod, Drizzle/better-sqlite3, discord.js v14 REST, Vitest.
 
@@ -21,7 +21,7 @@ Every one of these goes through one guarded, idempotent, audited pipeline.
 1. Merge slice 2 into `worktree-mcp-connector-v2`.
 2. Merge `main` (task tracking + Tavily) into it.
 3. Renumber this work's ADRs 0110/0111/0112 to 0113/0114/0115, updating every reference in code comments and docs.
-4. Re-index migration `0080_archive_reply_links` after main's `0053_task_tracking`, with a `when` above it. The journal test must pass.
+4. Re-tag migration `0080_archive_reply_links` as `0091_archive_reply_links` (drizzle-kit takes the last snapshot by file name, so it must sort after main's `0090_search_keys`); place it last in the journal (idx 91) with a `when` above 0090's; rebuild its snapshot on 0090's and re-chain `prevId`; `npm run db:generate` must report no changes. The journal test must pass. *(Done 2026-10-01.)*
 5. Run the gates green.
 
 ## Global Constraints
@@ -34,7 +34,7 @@ Every one of these goes through one guarded, idempotent, audited pipeline.
 - Content stored in `mcp_actions` is limited to: the bot's own previous content in `undo_json` (edits), and the posted content's hash. The posted content itself is not stored.
 - `packages/mcp` must not import `discord.js`, `@bananasaurs/storage` or `@bananasaurs/http`. `packages/core` must not import storage.
 - Storage functions take `GuildScope` first and filter with `scope.only(...)`. New tables are guild-partitioned with an FK to `guilds` and snowflake CHECKs, and satisfy `schema-invariants.test.ts`.
-- Migration tags for this work are `0081`–`0089`. The journal `idx` is the next sequential number, and `when` must be above every earlier entry (the journal test enforces it).
+- Migration tags for this work are `0092`–`0099`. The journal `idx` is the next sequential number, and `when` must be above every earlier entry (the journal test enforces it).
 - No new dependencies. No new outbound network destinations (Discord REST only). No DMs, no moderation actions, no channel create/delete.
 - Tool names must be unique across all registrars, including main's task tools (Task 7 adds the test).
 - Gates: `npm run typecheck`, `npm run lint`, `npm run test`, each run alone and never piped through `tail`/`head`. Shell rules: explicit paths for `rg`/`git`; no `cd x && …`; no heredoc-plus-redirect.
@@ -52,11 +52,11 @@ Every one of these goes through one guarded, idempotent, audited pipeline.
 
 ---
 
-### Task 1: Storage — `mcp_actions`, role policy, private threads (migration 0081)
+### Task 1: Storage — `mcp_actions`, role policy, private threads (migration 0092)
 
 **Files:**
 - Modify `packages/storage/src/schema.ts`, `packages/storage/src/index.ts`, `packages/storage/src/db.test.ts`, `packages/storage/src/schema-invariants.test.ts` (only if its allowlists need the new columns).
-- Create `packages/storage/src/repos/mcp-actions.ts` + `.test.ts`, `packages/storage/src/repos/mcp-role-policy.ts` + `.test.ts`, `drizzle/0081_mcp_actions.sql`, `drizzle/meta/0081_snapshot.json`.
+- Create `packages/storage/src/repos/mcp-actions.ts` + `.test.ts`, `packages/storage/src/repos/mcp-role-policy.ts` + `.test.ts`, `drizzle/0092_mcp_actions.sql`, `drizzle/meta/0092_snapshot.json`.
 - Modify `drizzle/meta/_journal.json`.
 
 **Interfaces:**
@@ -98,7 +98,7 @@ export const isMcpPrivateThread: (scope, threadId) => boolean;
   - `status` = `CASE outcome WHEN 'dry_run' THEN 'dry_run' ELSE 'done' END`;
   - `target_channel_id` = `channel_id`; `result_message_id` = `message_id`;
   - `created_at` = `sent_at`, `completed_at` = `sent_at`.
-  - Generate with `npm run db:generate -- --name mcp_actions`, rename the SQL and snapshot to tag `0081`, and fix the journal tag. Then append the copy `INSERT … SELECT` by hand at the end of the SQL (drizzle-kit does not emit data moves). Say in the RESULT that you did.
+  - Generate with `npm run db:generate -- --name mcp_actions`, rename the SQL and snapshot to tag `0092`, and fix the journal tag. Then append the copy `INSERT … SELECT` by hand at the end of the SQL (drizzle-kit does not emit data moves). Say in the RESULT that you did.
 
 - [ ] Step 1: failing repo tests:
   - claim twice with one key → the second returns `claimed:false`;
@@ -247,7 +247,7 @@ export const resolvePings: (client, scope, guildId, input: { roles: readonly str
   - a reply with no ping → `replied_user` false;
   - posting into a thread under an in-scope channel passes, and into a private thread without its own row is refused;
   - bot lacks SendMessages → refused naming the permission;
-  - **legacy key replays** (a row copied by migration 0081 with the old `content_hash` → the same plain-text args replay);
+  - **legacy key replays** (a row copied by migration 0092 with the old `content_hash` → the same plain-text args replay);
   - an embed with an image field → invalid arguments.
 
 - [ ] Step 1: targets/pings tests → implement. Step 2: actions deps factory tests → implement. Step 3: tool + wiring tests → implement. Step 4: Gates. Commit per step.

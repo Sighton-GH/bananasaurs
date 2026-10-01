@@ -274,7 +274,7 @@ describe('resource and tool serve the same card', () => {
 });
 
 /**
- * A large fixture modelling the ~125-block guild from the ADR 0110 context:
+ * A large fixture modelling the ~125-block guild from the ADR 0113 context:
  * 6 categories of 10 text channels (each with a 40-character topic), 60
  * roles, 3 panels and 4 rules.
  */
@@ -324,7 +324,7 @@ const bigFixture = (): OverviewCardInput => {
   };
 };
 
-// measured with the pre-ADR-0110 evidence-block card
+// measured with the pre-ADR-0113 evidence-block card
 const PRE_ADR_0110_CARD_LENGTH = 31474;
 
 /** Head line, note line, then the parsed JSON payload. */
@@ -358,7 +358,7 @@ describe('overview tool on the MCP server', () => {
   });
 });
 
-describe('overview card JSON (ADR 0110)', () => {
+describe('overview card JSON (ADR 0113)', () => {
   const smallInput = (): OverviewCardInput => ({
     guildId: GUILD_A,
     channels: [

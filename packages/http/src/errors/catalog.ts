@@ -30,6 +30,91 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'One or more fields were missing or had the wrong format.',
     hint: 'Fix the highlighted fields and try again.',
   },
+  'category-in-use': {
+    title: 'That category already has a team',
+    explanation: 'Each team needs its own category.',
+  },
+  'assignee-list-required': {
+    title: 'Choose every assignee',
+    explanation:
+      'This task has more than one assignee. Include the full current list when editing.',
+  },
+  'assignee-mismatch': {
+    title: 'Assignees do not match',
+    explanation: 'The assignment type and assignee IDs do not match.',
+  },
+  'assignee-not-in-guild': {
+    title: 'Assignee unavailable',
+    explanation: 'An assignee is not a current member of this server.',
+  },
+  'assignee-not-in-team': {
+    title: 'Assignee not on the team',
+    explanation: 'An assignee is not recorded as a member of this task team.',
+  },
+  'child-not-current': {
+    title: 'Task item changed',
+    explanation: 'That dated task item is missing or its version changed. Reload and try again.',
+  },
+  'destination-not-verified': {
+    title: 'Task channel unavailable',
+    explanation: 'The selected channel is no longer verified inside the team category.',
+  },
+  'discord-member-not-verified': {
+    title: 'Server member unavailable',
+    explanation: 'That Discord member could not be verified in this server.',
+  },
+  'invalid-extra-reminder': {
+    title: 'Invalid reminder time',
+    explanation: 'Choose a future reminder before the task due date.',
+  },
+  'invalid-membership-id': {
+    title: 'Invalid team membership',
+    explanation: 'The team or member ID is not valid.',
+  },
+  'lead-role-not-verified': {
+    title: 'Lead role unavailable',
+    explanation: 'That member does not currently have the team lead role.',
+  },
+  'president-role-not-verified': {
+    title: 'President role unavailable',
+    explanation: 'The selected role could not be verified in this server.',
+  },
+  'stale-task-version': {
+    title: 'Task changed',
+    explanation: 'This task changed since you opened it. Reload and try again.',
+  },
+  'task-anchored-destination': {
+    title: 'This task cannot move channels',
+    explanation: "This task's announcement is in its current channel; it cannot move.",
+  },
+  'task-not-open': {
+    title: 'Task not open',
+    explanation: 'That task has already finished or is waiting for approval.',
+  },
+  'task-not-found': {
+    title: 'Task not found',
+    explanation: 'That task is unavailable in this server.',
+  },
+  'task-report-not-found': {
+    title: 'Progress update not found',
+    explanation: 'That progress update is unavailable on this task.',
+  },
+  'team-has-tasks': {
+    title: 'That team still has tasks',
+    explanation: 'A team with tasks cannot be deleted. Archive its tasks first, then try again.',
+  },
+  'reminder-not-pending': {
+    title: 'Reminder already sent',
+    explanation: 'That reminder already sent or was cancelled, so there is nothing to cancel.',
+  },
+  'team-not-found': {
+    title: 'Task team not found',
+    explanation: 'That team is unavailable in this server.',
+  },
+  'team-not-verified': {
+    title: 'Task team unavailable',
+    explanation: 'The team category or configured role/channel could not be verified.',
+  },
   'owner-only': {
     title: 'Only the owner can do that',
     explanation: "This setting belongs to the bot's owner account.",

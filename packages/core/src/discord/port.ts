@@ -339,14 +339,14 @@ export interface DiscordPort {
    */
   listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
   /**
-   * Whether a user is a member of a thread (ADR 0112): `GET
+   * Whether a user is a member of a thread (ADR 0115): `GET
    * /channels/{thread}/thread-members/{user}` — 200 answers true, 404
    * answers false. Checked live on every private-thread read, never cached;
    * any other error propagates.
    */
   isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean>;
   /**
-   * One thread's facts over REST (ADR 0112's sweeper fallback): `GET
+   * One thread's facts over REST (ADR 0115's sweeper fallback): `GET
    * /channels/{thread}` — `undefined` on 404 (gone) or 403 (no access),
    * when the channel is not in this guild, when it is not a thread, or when
    * it has no parent. Any other error propagates. The MCP daemon calls this

@@ -7,3 +7,4 @@ package-lock.json
 .claude/worktrees/
 .oc-worktrees/
 .oc-runs/
+.claude/settings.local.json

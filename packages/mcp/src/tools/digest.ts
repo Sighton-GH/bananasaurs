@@ -32,7 +32,7 @@ import type { McpGuildPort } from './guild.js';
  * rule is "should just check for replies to an @help tag".
  *
  * Message bodies travel inside `envelope()` (which withholds detector hits
- * — ADR 0110); channel and role names render via `safeName`. The port takes
+ * — ADR 0113); channel and role names render via `safeName`. The port takes
  * the already-resolved `GuildId`, never raw input (hard rule 2).
  */
 

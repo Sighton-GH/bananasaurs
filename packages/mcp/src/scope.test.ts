@@ -138,7 +138,7 @@ describe('hasSendScope (slice M5, the send half of M4-D17)', () => {
   });
 });
 
-describe('hasRolesScope (ADR 0111)', () => {
+describe('hasRolesScope (ADR 0114)', () => {
   const withScopes = (...scopes: readonly string[]): McpPrincipal => ({
     accountId: 'acct_00000000000000000000000000000000',
     reachableGuilds: [GUILD_A],
@@ -157,7 +157,7 @@ describe('hasRolesScope (ADR 0111)', () => {
   });
 });
 
-describe('hasTasksScope (ADR 0111)', () => {
+describe('hasTasksScope (ADR 0114)', () => {
   const withScopes = (...scopes: readonly string[]): McpPrincipal => ({
     accountId: 'acct_00000000000000000000000000000000',
     reachableGuilds: [GUILD_A],

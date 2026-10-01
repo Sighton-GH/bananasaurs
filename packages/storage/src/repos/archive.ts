@@ -820,7 +820,7 @@ export const expireContent = (scope: GuildScope, now: number): number =>
  * `IN` list. Live messages are kept indefinitely — only deleted messages are
  * purged, 30 days after deletion (`expireContent`) — so each chunk is a scan
  * of the guild's archived rows grouped by author, narrowed by the
- * `(guild_id, author_id, created_at)` index (slice 2 task 3, migration 0080).
+ * `(guild_id, author_id, created_at)` index (slice 2 task 3, migration 0091).
  * Acceptable at the club's size even so; revisit if profiling says otherwise.
  */
 export const lastMessageAtByAuthor = (

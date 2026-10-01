@@ -55,13 +55,30 @@ const ROLES = {
 
 const MESSAGE_ID = '424242424242424242';
 
+const EMOJIS = {
+  emojis: [
+    {
+      emojiId: '123456789012345678',
+      name: 'party-blob',
+      animated: false,
+      url: 'https://cdn.discordapp.com/emojis/123456789012345678.webp',
+    },
+  ],
+};
+
 const stubAll = (opts?: { lookup?: string; post?: { status: number; body: unknown } }) =>
   stubFetch([
     { url: '/api/guild/channels', body: CHANNELS },
     { url: '/api/guild/roles', body: ROLES },
+    { url: '/api/guild/emojis', body: EMOJIS },
     {
       url: `/api/guild/channels/333333333333333333/messages/${MESSAGE_ID}`,
-      body: { lookup: opts?.lookup ?? 'ok' },
+      body: {
+        lookup: opts?.lookup ?? 'ok',
+        ...((opts?.lookup ?? 'ok') === 'ok'
+          ? { message: { authorName: 'Ada', content: 'React to pick a colour!' } }
+          : {}),
+      },
     },
     ...(opts?.post !== undefined
       ? [
@@ -75,6 +92,13 @@ const stubAll = (opts?: { lookup?: string; post?: { status: number; body: unknow
       : []),
   ]);
 
+/** Open an option's emoji picker, search, and choose the named result. */
+const pickEmoji = async (option: number, search: string, name: string) => {
+  fireEvent.click(screen.getByRole('button', { name: `Option ${String(option)} emoji` }));
+  fireEvent.change(await screen.findByLabelText('Search emoji'), { target: { value: search } });
+  fireEvent.click(await screen.findByRole('button', { name }));
+};
+
 /** Pick the role-panel type and fill the minimum valid form. */
 const fillPanelForm = async () => {
   fireEvent.click(screen.getByRole('button', { name: /^Role panel/ }));
@@ -83,7 +107,6 @@ const fillPanelForm = async () => {
   await screen.findAllByRole('option', { name: 'Blue' });
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'colour-roles' } });
   fireEvent.change(screen.getByLabelText('Channel'), { target: { value: '333333333333333333' } });
-  fireEvent.change(screen.getByLabelText('Option 1 id'), { target: { value: 'blue' } });
   fireEvent.change(screen.getByLabelText('Option 1 role'), {
     target: { value: '666666666666666666' },
   });
@@ -99,12 +122,14 @@ const fillReactionForm = async () => {
   fireEvent.change(screen.getByLabelText('Message ID'), { target: { value: MESSAGE_ID } });
   fireEvent.click(screen.getByRole('button', { name: 'Check' }));
   await screen.findByText(/the bot can see that message/);
-  fireEvent.change(screen.getByLabelText('Option 1 id'), { target: { value: 'blue' } });
   fireEvent.change(screen.getByLabelText('Option 1 role'), {
     target: { value: '666666666666666666' },
   });
-  fireEvent.change(screen.getByLabelText('Option 1 emoji'), { target: { value: '🍌' } });
+  await pickEmoji(1, 'banana', 'banana');
 };
+
+// Each emoji pick mounts the whole ~1,900-emoji catalogue; jsdom is slow at that.
+vi.setConfig({ testTimeout: 30_000 });
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -121,6 +146,103 @@ describe('PanelBuilder', () => {
     // The reaction form asks for the existing message and no message text.
     expect(screen.getByLabelText('Message ID')).toBeTruthy();
     expect(screen.queryByLabelText('Message text')).toBeNull();
+    // A reaction has no label, and option ids are numbered for you.
+    expect(screen.queryByLabelText('Option 1 label')).toBeNull();
+    expect(screen.queryByLabelText('Option 1 id')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Option 1 emoji' })).toBeTruthy();
+  });
+
+  it('role panel: keeps the label field, still without an option id box', async () => {
+    stubAll();
+    renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Role panel/ }));
+    await screen.findAllByRole('option', { name: 'Blue' });
+    expect(screen.getByLabelText('Option 1 label')).toBeTruthy();
+    expect(screen.queryByLabelText('Option 1 id')).toBeNull();
+  });
+
+  it('turns spaces in the name into dashes as you type, and lowercases it', async () => {
+    stubAll();
+    renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Reaction role/ }));
+    const name = screen.getByLabelText('Name');
+    fireEvent.change(name, { target: { value: 'Colour roles' } });
+    expect(name).toHaveProperty('value', 'colour-roles');
+    fireEvent.change(name, { target: { value: 'colour roles!' } });
+    expect(name).toHaveProperty('value', 'colour-roles');
+    fireEvent.change(name, { target: { value: 'a  b' } });
+    expect(name).toHaveProperty('value', 'a-b');
+  });
+
+  it('numbers new options for you and never reuses a removed number', async () => {
+    const mock = stubAll({
+      post: { status: 201, body: { ok: true, panelId: 'colour-roles', published: false } },
+    });
+    renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
+    await fillReactionForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Add option' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add option' }));
+    // Remove the middle row (option-2); the next added row is option-4, not option-2.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1] as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Add option' }));
+    fireEvent.change(screen.getByLabelText('Option 2 role'), {
+      target: { value: '777777777777777777' },
+    });
+    await pickEmoji(2, 'red heart', 'red heart');
+    // Row 3 (option-4) is left blank: an untouched row is ignored, not an error.
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
+    expect(await screen.findByText(/nothing is live yet/)).toBeTruthy();
+    const post = mock.mock.calls.find((call) => (call[1]?.method ?? 'GET') === 'POST');
+    const body = bodyOf(post ?? []) as { options: { optionId: string; position: number }[] };
+    expect(body.options.map((o) => [o.optionId, o.position])).toEqual([
+      ['option-1', 0],
+      ['option-3', 1],
+    ]);
+  });
+
+  it('reaction role: previews the real message and the chosen reactions beside the form', async () => {
+    stubAll();
+    renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Reaction role/ }));
+    await screen.findAllByRole('option', { name: 'Blue' });
+    const preview = screen.getByRole('region', { name: 'Preview' });
+    expect(preview.textContent).toContain('press Check');
+
+    fireEvent.change(screen.getByLabelText('Channel'), {
+      target: { value: '333333333333333333' },
+    });
+    fireEvent.change(screen.getByLabelText('Message ID'), { target: { value: MESSAGE_ID } });
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }));
+    await screen.findByText(/the bot can see that message/);
+    expect(preview.textContent).toContain('Ada');
+    expect(preview.textContent).toContain('React to pick a colour!');
+    expect(preview.textContent).toContain('#general');
+
+    await pickEmoji(1, 'banana', 'banana');
+    const reactions = screen.getByLabelText('Reactions');
+    expect(reactions.textContent).toContain('🍌');
+  });
+
+  it("offers the server's custom emoji and previews them as images", async () => {
+    const mock = stubAll({
+      post: { status: 201, body: { ok: true, panelId: 'colour-roles', published: false } },
+    });
+    renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
+    await fillReactionForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Option 1 emoji' }));
+    fireEvent.click(await screen.findByRole('button', { name: ':party-blob:' }));
+    const reactions = screen.getByLabelText('Reactions');
+    expect(reactions.querySelector('img')?.getAttribute('alt')).toBe(':party-blob:');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
+    expect(await screen.findByText(/nothing is live yet/)).toBeTruthy();
+    const post = mock.mock.calls.find((call) => (call[1]?.method ?? 'GET') === 'POST');
+    expect(bodyOf(post ?? [])).toMatchObject({
+      options: [{ optionId: 'option-1', emojiKey: 'c:123456789012345678' }],
+    });
   });
 
   it('disables the roles a panel cannot use, with the reason in the label', async () => {
@@ -168,7 +290,7 @@ describe('PanelBuilder', () => {
     const onCreated = vi.fn();
     renderWithSession(<PanelBuilder onCreated={onCreated} onCancel={() => undefined} />);
     await fillPanelForm();
-    fireEvent.change(screen.getByLabelText('Option 1 emoji'), { target: { value: '🍌' } });
+    await pickEmoji(1, 'banana', 'banana');
 
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     expect(await screen.findByText('colour-roles')).toBeTruthy();
@@ -190,7 +312,7 @@ describe('PanelBuilder', () => {
       blockedRoleIds: [],
       options: [
         {
-          optionId: 'blue',
+          optionId: 'option-1',
           roleId: '666666666666666666',
           label: 'Blue',
           emojiKey: 'u:1f34c',
@@ -230,7 +352,7 @@ describe('PanelBuilder', () => {
       messageId: MESSAGE_ID,
       blockedRoleIds: [],
       options: [
-        { optionId: 'blue', roleId: '666666666666666666', emojiKey: 'u:1f34c', position: 0 },
+        { optionId: 'option-1', roleId: '666666666666666666', emojiKey: 'u:1f34c', position: 0 },
       ],
     });
   });
@@ -249,11 +371,10 @@ describe('PanelBuilder', () => {
     const checkAlert = await screen.findByRole('alert');
     expect(checkAlert.textContent).toContain('Not found in the picked channel');
 
-    fireEvent.change(screen.getByLabelText('Option 1 id'), { target: { value: 'blue' } });
     fireEvent.change(screen.getByLabelText('Option 1 role'), {
       target: { value: '666666666666666666' },
     });
-    fireEvent.change(screen.getByLabelText('Option 1 emoji'), { target: { value: '🍌' } });
+    await pickEmoji(1, 'banana', 'banana');
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     const alerts = await screen.findAllByRole('alert');
     expect(alerts.some((a) => a.textContent?.includes('run the check again'))).toBe(true);
@@ -306,16 +427,15 @@ describe('PanelBuilder', () => {
     });
     fireEvent.click(screen.getByRole('checkbox', { name: 'GitHub' }));
 
-    fireEvent.change(screen.getByLabelText('Option 1 id'), { target: { value: 'blue' } });
     fireEvent.change(screen.getByLabelText('Option 1 role'), {
       target: { value: '666666666666666666' },
     });
-    // No label: fine on reactions. But no emoji yet — the form says so first.
+    // No label on reactions. But no emoji yet — the form says so first.
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Every option needs an emoji');
 
-    fireEvent.change(screen.getByLabelText('Option 1 emoji'), { target: { value: '🍌' } });
+    await pickEmoji(1, 'banana', 'banana');
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     expect(await screen.findByText(/only members with the Red role/)).toBeTruthy();
     expect(screen.getByText(/blocked: GitHub/)).toBeTruthy();
@@ -334,7 +454,7 @@ describe('PanelBuilder', () => {
       requiredRoleId: '777777777777777777',
       blockedRoleIds: ['888888888888888888'],
       options: [
-        { optionId: 'blue', roleId: '666666666666666666', emojiKey: 'u:1f34c', position: 0 },
+        { optionId: 'option-1', roleId: '666666666666666666', emojiKey: 'u:1f34c', position: 0 },
       ],
     });
   });
@@ -345,9 +465,7 @@ describe('PanelBuilder', () => {
     });
     renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
     await fillPanelForm();
-    fireEvent.change(screen.getByLabelText('Option 1 emoji'), {
-      target: { value: '1\uFE0F\u20E3' },
-    });
+    await pickEmoji(1, 'keycap', 'keycap: 1');
 
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
@@ -363,7 +481,7 @@ describe('PanelBuilder', () => {
       blockedRoleIds: [],
       options: [
         {
-          optionId: 'blue',
+          optionId: 'option-1',
           roleId: '666666666666666666',
           label: 'Blue',
           emojiKey: 'u:31-20e3',
@@ -373,14 +491,14 @@ describe('PanelBuilder', () => {
     });
   });
 
-  it('still rejects plain ASCII text as an emoji', async () => {
+  it('role panel: an emoji is optional and can be cleared', async () => {
     stubAll();
     renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
     await fillPanelForm();
-    fireEvent.change(screen.getByLabelText('Option 1 emoji'), { target: { value: 'banana' } });
-
+    await pickEmoji(1, 'banana', 'banana');
+    fireEvent.click(screen.getByRole('button', { name: 'Option 1 emoji' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'No emoji' }));
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('emoji');
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeTruthy();
   });
 });

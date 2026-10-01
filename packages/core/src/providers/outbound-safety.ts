@@ -120,7 +120,7 @@ const DETECTORS: readonly Detector[] = [
 ];
 
 /**
- * The MCP connector's withholding policy (ADR 0110): member text that trips a
+ * The MCP connector's withholding policy (ADR 0113): member text that trips a
  * secret or prompt-injection detector is not shown to the operator's model at
  * all. Personal-data detectors are deliberately excluded — the operator runs
  * the club and needs names, emails and phone numbers in its messages.

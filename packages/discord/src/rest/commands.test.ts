@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { REST } from 'discord.js';
 import { DiscordApiError } from '@bananasaurs/core';
 import { REST_OPTIONS } from '../client.js';
-import { MOD_COMMAND, REGISTERED_COMMANDS, registerGuildCommands } from './commands.js';
+import {
+  MOD_COMMAND,
+  TASK_COMMAND,
+  REGISTERED_COMMANDS,
+  registerGuildCommands,
+} from './commands.js';
 
 /**
  * Slash-command registration (ADR 0032), tested against the real
@@ -55,8 +60,14 @@ function harness(replies: { status: number; body?: unknown }[] = [{ status: 200,
 }
 
 describe('the registered command set', () => {
-  it('contains only /mod', () => {
-    expect(REGISTERED_COMMANDS.map((command) => command.name)).toEqual(['mod']);
+  it('contains only /mod and the narrow /task exception', () => {
+    expect(REGISTERED_COMMANDS.map((command) => command.name)).toEqual(['mod', 'task']);
+    expect(TASK_COMMAND.options?.map((option) => option.name)).toEqual(['list', 'complete']);
+  });
+
+  it('/task complete has no options and uses the select', () => {
+    const complete = TASK_COMMAND.options?.find((o) => o.name === 'complete');
+    expect(complete?.options ?? []).toEqual([]);
   });
 
   it('/mod carries the five Task 6 subcommands, ban and purge (Task 7), note/evidence (Task 8), and history (Task 9)', () => {
@@ -155,9 +166,10 @@ describe('registerGuildCommands', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.method).toBe('PUT');
     expect(requests[0]?.path).toBe(`/api/v10/applications/${APPLICATION}/guilds/${GUILD}/commands`);
-    expect(requests[0]?.body).toEqual([MOD_COMMAND]);
+    expect(requests[0]?.body).toEqual([MOD_COMMAND, TASK_COMMAND]);
     expect((requests[0]?.body as { name: string }[]).map((command) => command.name)).toEqual([
       'mod',
+      'task',
     ]);
   });
 
@@ -178,8 +190,8 @@ describe('registerGuildCommands', () => {
       `/api/v10/applications/${APPLICATION}/guilds/${OTHER_GUILD}/commands`,
     ]);
     expect(results).toEqual([
-      { guildId: GUILD, ok: true, count: 1 },
-      { guildId: OTHER_GUILD, ok: true, count: 1 },
+      { guildId: GUILD, ok: true, count: 2 },
+      { guildId: OTHER_GUILD, ok: true, count: 2 },
     ]);
   });
 
@@ -210,7 +222,7 @@ describe('registerGuildCommands', () => {
 
     expect(requests).toHaveLength(2);
     expect(results[0]).toMatchObject({ guildId: GUILD, ok: false });
-    expect(results[1]).toEqual({ guildId: OTHER_GUILD, ok: true, count: 1 });
+    expect(results[1]).toEqual({ guildId: OTHER_GUILD, ok: true, count: 2 });
   });
 
   /**

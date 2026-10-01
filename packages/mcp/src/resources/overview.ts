@@ -86,7 +86,7 @@ const byNameThenId = (a: { name: string; id: string }, b: { name: string; id: st
  * The one card builder both doors call. The head line carries counts and the
  * guild id only; everything else is one line of JSON: channels grouped by
  * category, then the unparented channels, roles, panels and rule counts
- * (ADR 0110). Every name a human typed rides in the JSON as an escaped
+ * (ADR 0113). Every name a human typed rides in the JSON as an escaped
  * string via `safeName`, never in unframed prose. Topics are not in the
  * overview — `list_channels` carries them. Roles are listed highest-first
  * as `{ id, name }` with `managed: true` only when Bananasaurs manages the

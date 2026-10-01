@@ -252,6 +252,14 @@ export interface GuildChannelInfo {
   readonly parentId?: string | undefined;
 }
 
+/** One row of `GET /api/guild/emojis`'s `emojis` - mirrors `OpsGuildEmojiInfo`. */
+export interface GuildEmojiInfo {
+  readonly emojiId: string;
+  readonly name: string;
+  readonly animated: boolean;
+  readonly url: string;
+}
+
 /**
  * One row of `GET /api/guild/roles`'s `roles` — mirrors `OpsGuildRoleInfo`
  * plus the route's `optionable` join: Bananasaurs manages the role and

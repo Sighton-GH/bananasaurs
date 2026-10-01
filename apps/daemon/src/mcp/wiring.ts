@@ -15,6 +15,7 @@ import {
   type OpsJobRow,
 } from '@bananasaurs/core';
 import { resolveChannel } from '../channels/resolver.js';
+import { taskAdminPortFor } from './task-admin-port.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
@@ -39,6 +40,8 @@ import {
   type McpResourceSummary,
   type McpSendPort,
   type McpThreadsPort,
+  type McpTaskDetailPort,
+  type McpTaskPort,
 } from '@bananasaurs/mcp';
 import {
   archiveRepo,
@@ -53,6 +56,10 @@ import {
   panelRepo,
   resourceCacheRepo,
   roleRepo,
+  accountRepo,
+  taskBindingRepo,
+  taskNudgeRepo,
+  taskRepo,
 } from '@bananasaurs/storage';
 
 /**
@@ -1237,6 +1244,139 @@ const readAuditPortFor = (
   },
 });
 
+/**
+ * The `McpTaskDetailPort` behind `get_task_details` and `list_task_reminders`,
+ * field by field like `healthPortFor` above. Each method rechecks the enabled
+ * instance owner per call — the tool layer names the task, the daemon supplies
+ * the authority — and reads through the task repositories. Archived tasks are
+ * returned with `archived: true` rather than refused, so the owner can inspect
+ * what left the default listing. Nothing here writes.
+ */
+const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
+  const requireOwner = (accountId: string): boolean => {
+    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
+    return account?.isOwner === true && !account.disabled;
+  };
+  const reminderSlots = (guildId: GuildId, taskId: string) =>
+    taskNudgeRepo.reminderSlotsForTask(deps.scopes.forGuild(guildId), taskId).map((slot) => ({
+      slotId: slot.slotId,
+      kind: slot.kind,
+      dueAt: slot.dueAt,
+      state: slot.state,
+    }));
+  return {
+    detail: (guildId, accountId, taskId) => {
+      if (!requireOwner(accountId)) return undefined;
+      const scope = deps.scopes.forGuild(guildId);
+      const task = taskRepo.getTask(scope, taskId);
+      if (!task) return undefined;
+      return {
+        taskId: task.taskId,
+        teamId: task.teamId,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        priority: task.priority,
+        assignmentKind: task.assignmentKind,
+        assigneeId: task.assigneeId,
+        assigneeIds: taskRepo.listTaskAssignees(scope, taskId),
+        dueAt: task.dueAt,
+        timezone: task.timezone,
+        destinationId: task.destinationId,
+        version: task.version,
+        archived: task.archivedAt !== null,
+        children: taskRepo.listChildren(scope, taskId).map((child) => ({
+          childId: child.childId,
+          title: child.title,
+          dueAt: child.dueAt,
+          status: child.status,
+        })),
+        reports: taskRepo.listReports(scope, taskId).map((report) => ({
+          reportId: report.reportId,
+          authorId: report.authorId,
+          body: report.body,
+          createdAt: report.createdAt,
+        })),
+        reminders: reminderSlots(guildId, taskId),
+      };
+    },
+    reminders: (guildId, accountId, taskId) => {
+      if (!requireOwner(accountId)) return undefined;
+      if (!taskRepo.getTask(deps.scopes.forGuild(guildId), taskId)) return undefined;
+      return reminderSlots(guildId, taskId);
+    },
+  };
+};
+
+/**
+ * The `McpTaskPort` behind `list_tasks` and `list_task_teams`, field by field
+ * like `healthPortFor` above. Each method rechecks the enabled instance owner
+ * per call and reads through the task repositories — nothing here writes.
+ * `list` passes the caller's visibility filter straight to the repository, so
+ * the default answer stays open tasks while `includeDone`/`includeArchived`
+ * opt back in; `teams` carries each team's members, the president role and
+ * the quiet-hours row (or the default when no override is stored).
+ */
+const tasksPortFor = (deps: HttpDeps): McpTaskPort => {
+  const requireOwner = (accountId: string): boolean => {
+    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
+    return account?.isOwner === true && !account.disabled;
+  };
+  return {
+    list: (guildId, accountId, filter) => {
+      if (!requireOwner(accountId)) return undefined;
+      const scope = deps.scopes.forGuild(guildId);
+      return {
+        teams: taskRepo.listTeams(scope).map((team) => ({ teamId: team.teamId, name: team.name })),
+        tasks: taskRepo
+          .listTasks(scope, {
+            ...(filter.teamId !== undefined ? { teamId: filter.teamId } : {}),
+            ...(filter.includeDone !== undefined ? { includeDone: filter.includeDone } : {}),
+            ...(filter.includeArchived !== undefined
+              ? { includeArchived: filter.includeArchived }
+              : {}),
+          })
+          .map((task) => ({
+            taskId: task.taskId,
+            teamId: task.teamId,
+            title: task.title,
+            status: task.status,
+            dueAt: task.dueAt,
+            assigneeIds: taskRepo.listTaskAssignees(scope, task.taskId),
+          })),
+      };
+    },
+    teams: (guildId, accountId) => {
+      if (!requireOwner(accountId)) return undefined;
+      const scope = deps.scopes.forGuild(guildId);
+      const quiet = taskRepo.getQuietHours(scope);
+      return {
+        teams: taskRepo.listTeams(scope).map((team) => ({
+          teamId: team.teamId,
+          name: team.name,
+          categoryId: team.categoryId,
+          kind: team.kind,
+          announcementChannelId: team.announcementChannelId,
+          leadRoleId: team.leadRoleId,
+          memberRoleId: team.memberRoleId,
+          members: taskBindingRepo.listTeamMemberships(scope, team.teamId).map((member) => ({
+            discordUserId: member.discordUserId,
+            kind: member.kind,
+          })),
+        })),
+        presidentRoleId: taskBindingRepo.presidentRoleId(scope) ?? null,
+        quietHours: quiet
+          ? {
+              startMinute: quiet.startMinute,
+              endMinute: quiet.endMinute,
+              timezone: quiet.timezone,
+            }
+          : { ...taskRepo.DEFAULT_QUIET_HOURS },
+      };
+    },
+  };
+};
+
 /** Hop-by-hop headers that must not survive the Fastify → Web conversion. */
 const DROPPED_REQUEST_HEADERS = new Set([
   'host',
@@ -1365,6 +1505,22 @@ export const registerMcpRoutes = (
       context: contextPortFor(deps),
       resources: resourcesPortFor(deps),
       threads: threadsPortFor(deps, client, discord),
+      // Task tools are advertised only to the enabled instance owner at
+      // connect time, so a non-owner token never sees them in `tools/list`
+      // at all. The ports still recheck the owner on every call, so a token
+      // whose owner was disabled mid-lifetime is refused rather than served.
+      ...(() => {
+        const ownerAccount = accountRepo.findAccountById(
+          deps.scopes.instance(),
+          principal.accountId,
+        );
+        if (ownerAccount?.isOwner !== true || ownerAccount.disabled) return {};
+        return {
+          taskAdmin: taskAdminPortFor(deps, client, discord),
+          taskDetail: taskDetailPortFor(deps),
+          tasks: tasksPortFor(deps),
+        };
+      })(),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

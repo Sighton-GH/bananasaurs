@@ -12,9 +12,9 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 
 ## The short version
 
-- Bananasaurs stores messages **only from channels the server owner has specifically turned on**. It is off everywhere else by default.
+- Bananasaurs stores messages **only from channels the server owner has specifically turned on** — except replies to task posts, described under Task tracking. It is off everywhere else by default.
 - It keeps a copy of those messages, including edits and deletions, so the server has a searchable history and a moderation log.
-- When someone asks it a question, small, relevant excerpts may be sent to an external AI provider to generate an answer. Nothing is sent unless someone asks.
+- When someone asks it a question, small, relevant excerpts may be sent to an external AI provider to generate an answer. Nothing is sent unless someone asks, or a member replies to a task post with a progress update (see Task tracking).
 - Nothing is sold or advertised against. Excerpts sent to the AI provider may be used by that provider to train its models; see "One exception: AI answers" below.
 - You can see what is stored about you, and you can ask for it to be removed.
 
@@ -58,11 +58,11 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 **It stays on one computer.** Bananasaurs runs on a machine owned and operated by the server owner. There is no Bananasaurs company, no cloud account holding your messages, and no analytics service receiving them.
 
-**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks. The provider currently in use, what its terms say about training on this data, and the date that was checked are recorded on the bot's AI setup page; a server admin can show you.
+**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks, or when a member's reply to a task post is recorded as a progress update — that update's text is sent so the AI can check whether it is clear (see Task tracking). The provider currently in use, what its terms say about training on this data, and the date that was checked are recorded on the bot's AI setup page; a server admin can show you.
 
 **The AI provider may train on what is sent.** The server owner has chosen a provider whose terms allow it to use the excerpts it receives to train its models. The bot shows a warning on its setup page while that is the case. If you do not want your messages used this way, do not ask Bananasaurs questions that would draw on them, and ask a server admin which channels are stored.
 
-**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the Brave Search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use web results say "Powered by Brave Search".
+**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the search service the owner chose: the Brave Search API or the Tavily search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use Brave results say "Powered by Brave Search". Tavily's terms let it keep queries and use them to improve its services, including training AI models.
 
 **AI log channel.** If the server owner chooses a log channel, every question asked of Bananasaurs is copied there, together with its answer, the sources used and the outcome. That channel is meant for server staff only. Messages in it are kept by Discord, not by Bananasaurs, until someone deletes them.
 
@@ -89,6 +89,25 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   test and are never posted to Discord.
 - Long conversations keep a short AI-written summary of their earlier part, made by the same AI provider that answered. It is deleted with the conversation.
 - The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Names are left out of what it sees. There is no opt-out.
+
+## Task tracking
+
+- Tasks the owner creates — title, due date, steps, and who they are
+  assigned to — are stored on the club's server, along with the text of
+  replies to the bot's task posts that count as progress updates. These
+  replies are kept from any channel a task posts in, including channels not
+  enabled for archiving.
+- A reply that could belong to several tasks is held for up to 7 days until
+  the member picks which task it belongs to, then recorded or dropped.
+- Each recorded update is sent to the configured AI provider to check
+  whether it is clear; if it is not, the bot asks one clarifying question.
+  The provider-training disclosure that applies to the assistant applies
+  here too: if the provider may train on what it receives, that includes
+  these updates.
+- Updates are kept until the owner deletes the update or the whole task.
+  Completed tasks are archived automatically and not deleted. To ask for
+  deletion, ask the owner, who can delete individual updates on the task's
+  page.
 
 ## Who can see it
 
@@ -123,6 +142,7 @@ a member says can cause the bot to post one of these.
 | Moderation records | Kept as long as the server needs them for consistent moderation |
 | Automod test examples | Kept until the owner removes them. `/forgetme` removes yours. |
 | Bot conversations and answers | Kept until deleted on request |
+| Task progress updates | Kept until the owner deletes the update or the task |
 | Attachments | Same as the messages they belong to |
 | Archived messages from channels the owner enabled | Kept until the owner disables the channel or purges; nothing is archived unless the owner lists the server and enables the channel |
 | Archived messages that were deleted | Content removed 30 days after deletion; the fact that a message existed is kept |

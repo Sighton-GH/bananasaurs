@@ -12,7 +12,7 @@ import { detectWithheldEvidence } from '@bananasaurs/core';
  * content-bearing result carries one fixed preamble, and every item's
  * content sits inside delimiters that content cannot close.
  *
- * Since ADR 0110, content that trips a secret or prompt-injection detector is withheld whole (`withholdIfFlagged`).
+ * Since ADR 0113, content that trips a secret or prompt-injection detector is withheld whole (`withholdIfFlagged`).
  */
 
 /**
@@ -36,7 +36,7 @@ export interface EvidenceItem {
 export const EVIDENCE_WITHHELD_PREFIX = '[withheld by the evidence safety filter: ';
 
 /**
- * ADR 0110: content that trips a secret or prompt-injection detector is
+ * ADR 0113: content that trips a secret or prompt-injection detector is
  * replaced whole. The locator fields still render, so the operator knows the
  * message exists and can read it in the dashboard.
  */

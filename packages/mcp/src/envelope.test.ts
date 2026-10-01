@@ -102,7 +102,7 @@ describe('envelope', () => {
   });
 });
 
-describe('evidence withholding (ADR 0110)', () => {
+describe('evidence withholding (ADR 0113)', () => {
   const item = (content: string) => ({
     authorId: '111111111111111111',
     channelId: '222222222222222222',

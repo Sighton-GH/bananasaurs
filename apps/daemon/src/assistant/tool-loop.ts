@@ -67,6 +67,8 @@ export interface LoopResult {
   readonly guard: AssistantTrace['guard'];
   readonly sources: readonly ToolSource[];
   readonly web: boolean;
+  /** ADR 0120: the search sources used, unique, first-seen order. */
+  readonly webSources: readonly ('brave' | 'tavily')[];
   /**
    * B2b: the code-written confirmations from ok tool results
    * (`AssistantToolResult.actionSummary`), in call order. The service appends
@@ -221,6 +223,7 @@ export const runToolLoop = async (input: {
   const sources: ToolSource[] = [];
   const actionSummaries: string[] = [];
   let web = false;
+  const webSources: ('brave' | 'tavily')[] = [];
   let promptTokens = 0;
   let completionTokens = 0;
   let thinkingTokens = 0;
@@ -354,8 +357,9 @@ export const runToolLoop = async (input: {
       noteError: (err) => {
         lastError = err;
       },
-      recordWeb: () => {
+      recordWeb: (source: 'brave' | 'tavily') => {
         web = true;
+        if (!webSources.includes(source)) webSources.push(source);
       },
       recordOffered: (names) => {
         for (const name of names) {
@@ -388,6 +392,7 @@ export const runToolLoop = async (input: {
         sources,
         actionSummaries,
         web,
+        webSources: [...webSources],
         toolsOffered: [...toolsOffered],
         ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
@@ -407,6 +412,7 @@ export const runToolLoop = async (input: {
     sources,
     actionSummaries,
     web,
+    webSources: [...webSources],
     toolsOffered: [...toolsOffered],
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
@@ -477,7 +483,7 @@ const runEntry = async (deps: {
   readonly budgets: { callsUsed: number; resultChars: number };
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
   readonly noteError: (err: ProviderError) => void;
-  readonly recordWeb: () => void;
+  readonly recordWeb: (source: 'brave' | 'tavily') => void;
   /** Task G3: round-1 declaration names actually sent, in first-sent order. */
   readonly recordOffered: (names: readonly string[]) => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
@@ -595,6 +601,11 @@ const runEntry = async (deps: {
     };
     try {
       const response = await provider.generateText(request);
+      // An adapter or injected provider may violate its TypeScript contract at runtime.
+      // Never let an invalid model response reach the output guard or tool runner.
+      if (!response || typeof response.text !== 'string' || typeof response.model !== 'string') {
+        throw new ProviderError('invalid-response', 'Provider returned an invalid response', false);
+      }
       deps.recordUsage(response.usage);
       return response;
     } catch (err) {
@@ -703,7 +714,7 @@ const runEntry = async (deps: {
       for (const handle of result.handles ?? []) handles.add(handle);
       if (result.ok) {
         for (const source of result.sources) deps.sources.push(source);
-        if (result.web === true) deps.recordWeb();
+        if (result.webSource !== undefined) deps.recordWeb(result.webSource);
         // B2b: only ok results carry a summary — a refused tool adds none.
         // A failover replay of the same content-derived write returns the same
         // summary; list it once so the answer carries one confirmation.

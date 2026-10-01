@@ -142,10 +142,7 @@ const STYLE_EXAMPLE_PAIRS: Record<
 > = {
   friendly: [
     ['thanks!', 'Anytime!'],
-    [
-      'is anyone around today?',
-      "I can't see who's around, sorry! Asking in the main channel is your best bet.",
-    ],
+    ['is anyone around today?', "I can't see who's around. The main channel is your best bet."],
   ],
   professional: [
     ['thanks!', "You're welcome."],

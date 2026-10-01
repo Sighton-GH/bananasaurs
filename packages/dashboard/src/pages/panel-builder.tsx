@@ -1,25 +1,26 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   customEmojiKey,
   emojiKeySchema,
-  isCustomEmojiKey,
   panelDefinitionSchema,
-  unicodeEmojiChars,
   unicodeEmojiKey,
   type PanelBehaviour,
   type PanelComponent,
 } from '@bananasaurs/core';
 import { ApiError } from '../api.js';
-import type { GuildChannelInfo, GuildRoleInfo } from '../api/ops.js';
+import type { GuildChannelInfo, GuildEmojiInfo, GuildRoleInfo } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmojiGlyph } from '../ui/EmojiGlyph.js';
+import { EmojiPicker } from '../ui/EmojiPicker.js';
 import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
+import { PanelPreview } from '../ui/PanelPreview.js';
 
 /**
  * The self-granted roles builder (ADRs 0053 and 0054, Bryan's roles lane):
@@ -40,14 +41,33 @@ const MAX_OPTIONS = 25;
 const MAX_CONTENT = 2000;
 
 interface DraftOption {
+  /** Numbered by the form (`option-1`, `option-2`, ...); the operator never types it. */
   readonly optionId: string;
   readonly roleId: string;
+  /** Buttons and dropdown options only; a reaction has no label. */
   readonly label: string;
-  /** Raw user input: unicode emoji characters, or a custom emoji snowflake. */
+  /** The picker's value: unicode emoji characters, or a custom emoji snowflake. */
   readonly emoji: string;
 }
 
-const emptyOption = (): DraftOption => ({ optionId: '', roleId: '', label: '', emoji: '' });
+const emptyOption = (number: number): DraftOption => ({
+  optionId: `option-${String(number)}`,
+  roleId: '',
+  label: '',
+  emoji: '',
+});
+
+/**
+ * What the Name box keeps while typing: spaces become dashes, capitals become
+ * lowercase, and anything the name rules refuse is dropped. A pasted
+ * "Colour Roles!" lands as "colour-roles".
+ */
+export const toPanelName = (typed: string): string =>
+  typed
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 64);
 
 const BEHAVIOURS: readonly { value: PanelBehaviour; label: string; help: string }[] = [
   {
@@ -140,6 +160,14 @@ export function PanelBuilder({
     (channels.resource.state === 'ready'
       ? channels.resource.data.channels.find((c) => c.channelId === id)?.name
       : undefined) ?? id;
+  // The guild's custom emoji for the picker and the preview. A failed load
+  // only means the picker offers Unicode emoji alone.
+  const loadEmojis = useCallback(
+    () => session.read<{ emojis: readonly GuildEmojiInfo[] }>('/api/guild/emojis'),
+    [session],
+  );
+  const emojis = useResource('the custom emoji list', loadEmojis);
+  const customEmojis = emojis.resource.state === 'ready' ? emojis.resource.data.emojis : [];
 
   // The first question: which kind of self-granted role setup (Bryan's
   // lane). `undefined` shows the type-choice step.
@@ -151,13 +179,27 @@ export function PanelBuilder({
   // exactly what the check exists to prevent.
   const [messageId, setMessageId] = useState('');
   const [messageCheck, setMessageCheck] = useState<'idle' | 'checking' | 'ok' | 'failed'>('idle');
+  // The checked message's author and text, for the preview.
+  const [messagePreview, setMessagePreview] = useState<
+    { readonly authorName: string; readonly content: string } | undefined
+  >(undefined);
   const [content, setContent] = useState('');
   const [behaviour, setBehaviour] = useState<PanelBehaviour>('toggle');
   const [format, setFormat] = useState<PanelComponent>('reaction');
   const [maxRoles, setMaxRoles] = useState('');
   const [requiredRoleId, setRequiredRoleId] = useState('');
   const [blockedRoleIds, setBlockedRoleIds] = useState<readonly string[]>([]);
-  const [options, setOptions] = useState<readonly DraftOption[]>([emptyOption()]);
+  const [options, setOptions] = useState<readonly DraftOption[]>([emptyOption(1)]);
+  // Next option number; only ever counts up, so removing an option never
+  // hands its id to a new one.
+  const nextOptionNumber = useRef(2);
+  const addOption = () => {
+    // Build the option before queueing the update: React runs the updater
+    // later, after the counter has already moved on.
+    const added = emptyOption(nextOptionNumber.current);
+    nextOptionNumber.current += 1;
+    setOptions((current) => [...current, added]);
+  };
   const [step, setStep] = useState<'edit' | 'review'>('edit');
   const [problems, setProblems] = useState<readonly string[]>([]);
   const [submitText, setSubmitText] = useState<string | undefined>(undefined);
@@ -180,11 +222,14 @@ export function PanelBuilder({
   /** The live target check for a reaction role's existing message. */
   const checkMessage = async (): Promise<void> => {
     setMessageCheck('checking');
+    setMessagePreview(undefined);
     try {
-      const result = await session.read<{ lookup: string }>(
-        `/api/guild/channels/${channelId.trim()}/messages/${messageId.trim()}`,
-      );
+      const result = await session.read<{
+        lookup: string;
+        message?: { authorName: string; content: string };
+      }>(`/api/guild/channels/${channelId.trim()}/messages/${messageId.trim()}`);
       setMessageCheck(result?.lookup === 'ok' ? 'ok' : 'failed');
+      if (result?.lookup === 'ok') setMessagePreview(result.message);
     } catch {
       setMessageCheck('failed');
     }
@@ -204,6 +249,11 @@ export function PanelBuilder({
     );
   };
 
+  /** Rows the operator actually started; an untouched blank row is ignored, not an error. */
+  const usableOptions = options.filter(
+    (o) => o.roleId !== '' || o.emoji !== '' || (!isReaction && o.label.trim() !== ''),
+  );
+
   /** Assemble the definition exactly as the submit will send it. */
   const assemble = () => ({
     panelId: panelId.trim(),
@@ -218,10 +268,10 @@ export function PanelBuilder({
     ...(maxRoles.trim() !== '' ? { maxRoles: Number(maxRoles) } : {}),
     ...(requiredRoleId !== '' ? { requiredRoleId } : {}),
     blockedRoleIds: [...blockedRoleIds],
-    options: options.map((o, index) => ({
-      optionId: o.optionId.trim(),
+    options: usableOptions.map((o, index) => ({
+      optionId: o.optionId,
       roleId: o.roleId,
-      ...(o.label.trim() !== '' ? { label: o.label.trim() } : {}),
+      ...(!isReaction && o.label.trim() !== '' ? { label: o.label.trim() } : {}),
       ...(o.emoji.trim() !== '' ? { emojiKey: emojiToKey(o.emoji) } : {}),
       position: index,
     })),
@@ -249,20 +299,9 @@ export function PanelBuilder({
     if (content.length > MAX_CONTENT) {
       found.push(`Message text: at most ${String(MAX_CONTENT)} characters (Discord's limit).`);
     }
-    const usable = options.filter(
-      (o) =>
-        o.optionId.trim() !== '' ||
-        o.roleId !== '' ||
-        o.label.trim() !== '' ||
-        o.emoji.trim() !== '',
-    );
+    const usable = usableOptions;
     if (usable.length === 0) found.push('Add at least one option.');
     if (usable.length > MAX_OPTIONS) found.push(`At most ${String(MAX_OPTIONS)} options.`);
-    const ids = usable.map((o) => o.optionId.trim());
-    if (ids.some((id) => !IDENTIFIER.test(id))) {
-      found.push('Every option needs an id: lowercase letters, numbers, dashes, at most 64.');
-    }
-    if (new Set(ids).size !== ids.length) found.push('Option ids must be unique.');
     if (usable.some((o) => !SNOWFLAKE.test(o.roleId))) {
       found.push('Every option needs a role.');
     }
@@ -287,9 +326,7 @@ export function PanelBuilder({
         key.startsWith('invalid:') ||
         !emojiKeySchema.safeParse(key).success
       ) {
-        found.push(
-          `"${o.emoji.trim()}" is not a usable emoji — paste one emoji or a custom emoji ID.`,
-        );
+        found.push(`"${o.emoji.trim()}" is not a usable emoji — pick one from the emoji list.`);
         break;
       }
     }
@@ -407,7 +444,9 @@ export function PanelBuilder({
               setContent('');
               setRequiredRoleId('');
               setBlockedRoleIds([]);
-              setOptions([emptyOption()]);
+              setOptions([emptyOption(1)]);
+              nextOptionNumber.current = 2;
+              setMessagePreview(undefined);
             }}
           >
             Build another
@@ -470,269 +509,301 @@ export function PanelBuilder({
       }
     >
       {step === 'edit' ? (
-        <form onSubmit={review} className="grid max-w-2xl gap-4">
-          <Field
-            label="Name"
-            hint="Lowercase letters, numbers, dashes. Only you see it, and it cannot change later."
-          >
-            <Input
-              value={panelId}
-              onChange={(e) => setPanelId(e.target.value)}
-              placeholder="colour-roles"
-              autoComplete="off"
-            />
-          </Field>
-          <ChannelPicker
-            label="Channel"
-            hint={
-              isReaction
-                ? 'The channel the existing message lives in.'
-                : 'Where the message will be posted when you publish.'
-            }
-            value={channelId}
-            onChange={(id) => {
-              setChannelId(id);
-              setMessageCheck('idle');
-            }}
-          />
-          {isReaction && (
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,42rem)_minmax(0,1fr)]">
+          <form onSubmit={review} className="grid gap-4">
             <Field
-              label="Message ID"
-              hint="The existing message members react to. In Discord: right-click the message, Copy Message ID."
+              label="Name"
+              hint="Only you see it, and it cannot change later. Spaces become dashes."
             >
-              <div>
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={messageId}
-                    onChange={(e) => {
-                      setMessageId(e.target.value);
-                      setMessageCheck('idle');
-                    }}
-                    inputMode="numeric"
-                    placeholder="1234567890123456789"
-                    autoComplete="off"
-                  />
-                  <Button
-                    onClick={() => void checkMessage()}
-                    disabled={
-                      !SNOWFLAKE.test(messageId.trim()) || !SNOWFLAKE.test(channelId.trim())
-                    }
-                    busy={messageCheck === 'checking'}
-                  >
-                    Check
-                  </Button>
-                </div>
-                {messageCheck === 'ok' && (
-                  <p className="mt-1 text-sm text-ok">Found - the bot can see that message.</p>
-                )}
-                {messageCheck === 'failed' && (
-                  <p role="alert" className="mt-1 text-sm text-danger">
-                    Not found in the picked channel - check the message ID.
-                  </p>
-                )}
-              </div>
+              <Input
+                value={panelId}
+                onChange={(e) => setPanelId(toPanelName(e.target.value))}
+                placeholder="colour-roles"
+                autoComplete="off"
+              />
             </Field>
-          )}
-          {!isReaction && (
-            <>
+            <ChannelPicker
+              label="Channel"
+              hint={
+                isReaction
+                  ? 'The channel the existing message lives in.'
+                  : 'Where the message will be posted when you publish.'
+              }
+              value={channelId}
+              onChange={(id) => {
+                setChannelId(id);
+                setMessageCheck('idle');
+              }}
+            />
+            {isReaction && (
               <Field
-                label="Message text"
-                hint="What the message says above the buttons or dropdown. Leave empty for a short default."
+                label="Message ID"
+                hint="The existing message members react to. In Discord: right-click the message, Copy Message ID."
               >
-                <textarea
-                  aria-label="Message text"
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  rows={3}
-                  maxLength={MAX_CONTENT}
-                  placeholder="Pick your colour below!"
-                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-                />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={messageId}
+                      onChange={(e) => {
+                        setMessageId(e.target.value);
+                        setMessageCheck('idle');
+                      }}
+                      inputMode="numeric"
+                      placeholder="1234567890123456789"
+                      autoComplete="off"
+                    />
+                    <Button
+                      onClick={() => void checkMessage()}
+                      disabled={
+                        !SNOWFLAKE.test(messageId.trim()) || !SNOWFLAKE.test(channelId.trim())
+                      }
+                      busy={messageCheck === 'checking'}
+                    >
+                      Check
+                    </Button>
+                  </div>
+                  {messageCheck === 'ok' && (
+                    <p className="mt-1 text-sm text-ok">Found - the bot can see that message.</p>
+                  )}
+                  {messageCheck === 'failed' && (
+                    <p role="alert" className="mt-1 text-sm text-danger">
+                      Not found in the picked channel - check the message ID.
+                    </p>
+                  )}
+                </div>
               </Field>
-              <Field label="How members pick">
+            )}
+            {!isReaction && (
+              <>
+                <Field
+                  label="Message text"
+                  hint="What the message says above the buttons or dropdown. Leave empty for a short default."
+                >
+                  <textarea
+                    aria-label="Message text"
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    rows={3}
+                    maxLength={MAX_CONTENT}
+                    placeholder="Pick your colour below!"
+                    className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                  />
+                </Field>
+                <Field label="How members pick">
+                  <div className="flex items-center gap-1">
+                    <select
+                      aria-label="How members pick"
+                      value={format}
+                      onChange={(e) => setFormat(e.target.value as PanelComponent)}
+                      className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                    >
+                      {formats.map((f) => (
+                        <option key={f.value} value={f.value}>
+                          {f.label}
+                        </option>
+                      ))}
+                    </select>
+                    <HelpTip label="how members pick">{formatHelp}</HelpTip>
+                  </div>
+                </Field>
+              </>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Behaviour">
                 <div className="flex items-center gap-1">
                   <select
-                    aria-label="How members pick"
-                    value={format}
-                    onChange={(e) => setFormat(e.target.value as PanelComponent)}
+                    aria-label="Behaviour"
+                    value={behaviour}
+                    onChange={(e) => setBehaviour(e.target.value as PanelBehaviour)}
                     className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
                   >
-                    {formats.map((f) => (
-                      <option key={f.value} value={f.value}>
-                        {f.label}
+                    {behaviours.map((b) => (
+                      <option key={b.value} value={b.value}>
+                        {b.label}
                       </option>
                     ))}
                   </select>
-                  <HelpTip label="how members pick">{formatHelp}</HelpTip>
+                  <HelpTip label="behaviour">{behaviourHelp}</HelpTip>
                 </div>
               </Field>
-            </>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Behaviour">
-              <div className="flex items-center gap-1">
-                <select
-                  aria-label="Behaviour"
-                  value={behaviour}
-                  onChange={(e) => setBehaviour(e.target.value as PanelBehaviour)}
-                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-                >
-                  {behaviours.map((b) => (
-                    <option key={b.value} value={b.value}>
-                      {b.label}
-                    </option>
-                  ))}
-                </select>
-                <HelpTip label="behaviour">{behaviourHelp}</HelpTip>
-              </div>
+            </div>
+            <Field label="Max roles per member" hint="Optional. Leave empty for no limit.">
+              <Input
+                value={maxRoles}
+                onChange={(e) => setMaxRoles(e.target.value)}
+                inputMode="numeric"
+                placeholder="No limit"
+                autoComplete="off"
+              />
             </Field>
-          </div>
-          <Field label="Max roles per member" hint="Optional. Leave empty for no limit.">
-            <Input
-              value={maxRoles}
-              onChange={(e) => setMaxRoles(e.target.value)}
-              inputMode="numeric"
-              placeholder="No limit"
-              autoComplete="off"
-            />
-          </Field>
 
-          <fieldset className="grid gap-3">
-            <legend className="text-sm font-medium text-ink">
-              Who can use it{' '}
-              <HelpTip label="who can use it">
-                Optional limits on who may pick up roles here. A required role means only members
-                already holding it can use this; blocked roles can never use it, whatever else they
-                hold. Neither limit ever grants or removes those roles.
-              </HelpTip>
-            </legend>
-            <Field
-              label="Require a role first"
-              hint="Optional. Only members already holding this role can pick up roles here."
-            >
-              <select
-                aria-label="Require a role first"
-                value={requiredRoleId}
-                onChange={(e) => setRequiredRoleId(e.target.value)}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                <option value="">No requirement — everyone</option>
-                {(roleList ?? []).map((role) => (
-                  <option key={role.roleId} value={role.roleId}>
-                    {role.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {roleList !== undefined && roleList.length > 0 && (
+            <fieldset className="grid gap-3">
+              <legend className="text-sm font-medium text-ink">
+                Who can use it{' '}
+                <HelpTip label="who can use it">
+                  Optional limits on who may pick up roles here. A required role means only members
+                  already holding it can use this; blocked roles can never use it, whatever else
+                  they hold. Neither limit ever grants or removes those roles.
+                </HelpTip>
+              </legend>
               <Field
-                label="Block roles"
-                hint="Optional. Members holding any of these cannot use it."
+                label="Require a role first"
+                hint="Optional. Only members already holding this role can pick up roles here."
               >
-                <div
-                  role="group"
-                  aria-label="Blocked roles"
-                  className="grid max-h-40 gap-1 overflow-y-auto rounded-sm border border-line p-2"
-                >
-                  {roleList.map((role) => (
-                    <label key={role.roleId} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={blockedRoleIds.includes(role.roleId)}
-                        onChange={() => toggleBlocked(role.roleId)}
-                      />
-                      {role.name}
-                    </label>
-                  ))}
-                </div>
-              </Field>
-            )}
-          </fieldset>
-
-          <fieldset className="grid gap-3">
-            <legend className="text-sm font-medium text-ink">Options</legend>
-            {roles.resource.state === 'error' && (
-              <p className="text-xs text-ink-muted">
-                The role list is unavailable — you can still paste role IDs, but the picker cannot
-                check which roles Bananasaurs manages.
-              </p>
-            )}
-            {options.map((option, index) => (
-              <div
-                key={index}
-                className="grid gap-2 rounded-sm border border-line p-2 sm:grid-cols-[1fr_1.4fr_1fr_6rem_auto]"
-              >
-                <Input
-                  aria-label={`Option ${String(index + 1)} id`}
-                  value={option.optionId}
-                  onChange={(e) => updateOption(index, { optionId: e.target.value })}
-                  placeholder="option id"
-                  autoComplete="off"
-                />
                 <select
-                  aria-label={`Option ${String(index + 1)} role`}
-                  value={option.roleId}
-                  onChange={(e) => updateOption(index, { roleId: e.target.value })}
+                  aria-label="Require a role first"
+                  value={requiredRoleId}
+                  onChange={(e) => setRequiredRoleId(e.target.value)}
                   className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
                 >
-                  <option value="">role…</option>
+                  <option value="">No requirement — everyone</option>
                   {(roleList ?? []).map((role) => (
-                    <option key={role.roleId} value={role.roleId} disabled={!role.optionable}>
+                    <option key={role.roleId} value={role.roleId}>
                       {role.name}
-                      {role.optionable
-                        ? ''
-                        : role.managed
-                          ? ' (Discord-managed)'
-                          : " (above the bot's role)"}
                     </option>
                   ))}
                 </select>
-                <Input
-                  aria-label={`Option ${String(index + 1)} label`}
-                  value={option.label}
-                  onChange={(e) => updateOption(index, { label: e.target.value })}
-                  placeholder={isReaction ? 'label (optional)' : 'label'}
-                  autoComplete="off"
-                />
-                <Input
-                  aria-label={`Option ${String(index + 1)} emoji`}
-                  value={option.emoji}
-                  onChange={(e) => updateOption(index, { emoji: e.target.value })}
-                  placeholder={isReaction ? 'emoji (required)' : 'emoji'}
-                  autoComplete="off"
-                />
-                <Button
-                  onClick={() => setOptions((current) => current.filter((_, i) => i !== index))}
-                  disabled={options.length === 1}
+              </Field>
+              {roleList !== undefined && roleList.length > 0 && (
+                <Field
+                  label="Block roles"
+                  hint="Optional. Members holding any of these cannot use it."
                 >
-                  Remove
+                  <div
+                    role="group"
+                    aria-label="Blocked roles"
+                    className="grid max-h-40 gap-1 overflow-y-auto rounded-sm border border-line p-2"
+                  >
+                    {roleList.map((role) => (
+                      <label key={role.roleId} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={blockedRoleIds.includes(role.roleId)}
+                          onChange={() => toggleBlocked(role.roleId)}
+                        />
+                        {role.name}
+                      </label>
+                    ))}
+                  </div>
+                </Field>
+              )}
+            </fieldset>
+
+            <fieldset className="grid gap-3">
+              <legend className="text-sm font-medium text-ink">Options</legend>
+              {roles.resource.state === 'error' && (
+                <p className="text-xs text-ink-muted">
+                  The role list is unavailable — you can still paste role IDs, but the picker cannot
+                  check which roles Bananasaurs manages.
+                </p>
+              )}
+              {options.map((option, index) => (
+                <div
+                  key={option.optionId}
+                  className={`grid items-center gap-2 rounded-sm border border-line p-2 ${
+                    isReaction
+                      ? 'sm:grid-cols-[1.4fr_auto_auto]'
+                      : 'sm:grid-cols-[1.4fr_1fr_auto_auto]'
+                  }`}
+                >
+                  <select
+                    aria-label={`Option ${String(index + 1)} role`}
+                    value={option.roleId}
+                    onChange={(e) => updateOption(index, { roleId: e.target.value })}
+                    className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                  >
+                    <option value="">role…</option>
+                    {(roleList ?? []).map((role) => (
+                      <option key={role.roleId} value={role.roleId} disabled={!role.optionable}>
+                        {role.name}
+                        {role.optionable
+                          ? ''
+                          : role.managed
+                            ? ' (Discord-managed)'
+                            : " (above the bot's role)"}
+                      </option>
+                    ))}
+                  </select>
+                  {!isReaction && (
+                    <Input
+                      aria-label={`Option ${String(index + 1)} label`}
+                      value={option.label}
+                      onChange={(e) => updateOption(index, { label: e.target.value })}
+                      placeholder="label"
+                      autoComplete="off"
+                    />
+                  )}
+                  <EmojiPicker
+                    label={`Option ${String(index + 1)} emoji`}
+                    value={option.emoji}
+                    onChange={(emoji) => updateOption(index, { emoji })}
+                    customEmojis={customEmojis}
+                    clearable={!isReaction}
+                  />
+                  <Button
+                    onClick={() => setOptions((current) => current.filter((_, i) => i !== index))}
+                    disabled={options.length === 1}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button onClick={addOption} disabled={options.length >= MAX_OPTIONS}>
+                  Add option
                 </Button>
               </div>
-            ))}
-            <div>
-              <Button
-                onClick={() => setOptions((current) => [...current, emptyOption()])}
-                disabled={options.length >= MAX_OPTIONS}
-              >
-                Add option
-              </Button>
-            </div>
-          </fieldset>
+            </fieldset>
 
-          {problems.length > 0 && (
-            <ul role="alert" className="grid gap-1 text-sm text-danger">
-              {problems.map((problem) => (
-                <li key={problem}>{problem}</li>
-              ))}
-            </ul>
-          )}
-          <div className="flex gap-2">
-            <Button type="submit" variant="primary">
-              Review
-            </Button>
-            <Button onClick={onCancel}>Cancel</Button>
-          </div>
-        </form>
+            {problems.length > 0 && (
+              <ul role="alert" className="grid gap-1 text-sm text-danger">
+                {problems.map((problem) => (
+                  <li key={problem}>{problem}</li>
+                ))}
+              </ul>
+            )}
+            <div className="flex gap-2">
+              <Button type="submit" variant="primary">
+                Review
+              </Button>
+              <Button onClick={onCancel}>Cancel</Button>
+            </div>
+          </form>
+          <aside className="lg:sticky lg:top-4 lg:self-start">
+            <PanelPreview
+              kind={isReaction ? 'reaction' : 'panel'}
+              component={format === 'select' ? 'select' : 'button'}
+              channelName={
+                SNOWFLAKE.test(channelId.trim()) ? channelName(channelId.trim()) : undefined
+              }
+              authorName={
+                isReaction
+                  ? messageCheck === 'ok' && messagePreview !== undefined
+                    ? messagePreview.authorName
+                    : 'Message author'
+                  : 'Bananasaurs'
+              }
+              content={
+                isReaction
+                  ? messageCheck === 'ok' && messagePreview !== undefined
+                    ? messagePreview.content
+                    : ''
+                  : content
+              }
+              contentPlaceholder={
+                isReaction
+                  ? 'Enter the message ID and press Check to see the message here.'
+                  : 'Pick your roles. (the default message)'
+              }
+              options={options.map((o) => ({
+                key: o.optionId,
+                emoji: o.emoji,
+                label: o.label,
+              }))}
+              customEmojis={customEmojis}
+            />
+          </aside>
+        </div>
       ) : (
         <div className="grid max-w-2xl gap-4">
           <dl className="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-2 text-sm">
@@ -783,15 +854,16 @@ export function PanelBuilder({
               {
                 key: 'face',
                 header: 'Shown as',
-                // Review shows what members will see: the emoji itself for
-                // unicode keys, the key for custom ones (their image needs a
-                // live guild), the label otherwise.
-                cell: (o) =>
-                  o.emojiKey !== undefined
-                    ? isCustomEmojiKey(o.emojiKey)
-                      ? o.emojiKey
-                      : unicodeEmojiChars(o.emojiKey)
-                    : (o.label ?? '—'),
+                // Review shows what members will see: the emoji itself
+                // (custom ones as their image), the label otherwise.
+                cell: (o) => {
+                  const emoji = usableOptions.find((u) => u.optionId === o.optionId)?.emoji ?? '';
+                  return emoji !== '' ? (
+                    <EmojiGlyph value={emoji} customEmojis={customEmojis} />
+                  ) : (
+                    (o.label ?? '—')
+                  );
+                },
               },
             ]}
           />

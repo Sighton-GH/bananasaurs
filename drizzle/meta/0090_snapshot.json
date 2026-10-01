@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "9c5c73df-dcf4-4782-81b1-5cbb47394354",
-  "prevId": "a43dee82-128c-4b4f-8f01-efb2fabc297f",
+  "id": "7de05dbf-8033-47f7-ae0e-82f9b0f4372b",
+  "prevId": "4905367a-cb44-4fe5-a4f2-644f5b2f1d13",
   "tables": {
     "account_capabilities": {
       "name": "account_capabilities",
@@ -535,20 +535,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "reply_to_message_id": {
-          "name": "reply_to_message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "mentioned_role_ids": {
-          "name": "mentioned_role_ids",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "retention_class": {
           "name": "retention_class",
           "type": "text",
@@ -598,15 +584,6 @@
             "deleted_at"
           ],
           "isUnique": false
-        },
-        "archive_messages_author_created": {
-          "name": "archive_messages_author_created",
-          "columns": [
-            "guild_id",
-            "author_id",
-            "created_at"
-          ],
-          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -652,10 +629,6 @@
         "archive_messages_thread_id_snowflake": {
           "name": "archive_messages_thread_id_snowflake",
           "value": "(\"archive_messages\".\"thread_id\" IS NULL OR (\"archive_messages\".\"thread_id\" NOT GLOB '*[^0-9]*' AND length(\"archive_messages\".\"thread_id\") BETWEEN 17 AND 20))"
-        },
-        "archive_messages_reply_to_message_id_snowflake": {
-          "name": "archive_messages_reply_to_message_id_snowflake",
-          "value": "(\"archive_messages\".\"reply_to_message_id\" IS NULL OR (\"archive_messages\".\"reply_to_message_id\" NOT GLOB '*[^0-9]*' AND length(\"archive_messages\".\"reply_to_message_id\") BETWEEN 17 AND 20))"
         },
         "archive_messages_retention_class": {
           "name": "archive_messages_retention_class",
@@ -1884,6 +1857,14 @@
           "autoincrement": false,
           "default": 0
         },
+        "search_source": {
+          "name": "search_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'brave'"
+        },
         "github_token_enc": {
           "name": "github_token_enc",
           "type": "text",
@@ -1911,6 +1892,10 @@
         "assistant_provider_config_search_enabled_bool": {
           "name": "assistant_provider_config_search_enabled_bool",
           "value": "\"assistant_provider_config\".\"search_enabled\" IN (0,1)"
+        },
+        "assistant_provider_config_search_source": {
+          "name": "assistant_provider_config_search_source",
+          "value": "\"assistant_provider_config\".\"search_source\" IN ('brave','tavily')"
         },
         "assistant_provider_config_provider": {
           "name": "assistant_provider_config_provider",
@@ -2328,6 +2313,175 @@
         "assistant_resources_fetch_status": {
           "name": "assistant_resources_fetch_status",
           "value": "\"assistant_resources\".\"fetch_status\" IN ('pending','ok','failed','blocked')"
+        }
+      }
+    },
+    "assistant_search_calls": {
+      "name": "assistant_search_calls",
+      "columns": {
+        "call_id": {
+          "name": "call_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "at": {
+          "name": "at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "assistant_search_calls_key_at": {
+          "name": "assistant_search_calls_key_at",
+          "columns": [
+            "key_id",
+            "at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "assistant_search_calls_key_id_assistant_search_keys_key_id_fk": {
+          "name": "assistant_search_calls_key_id_assistant_search_keys_key_id_fk",
+          "tableFrom": "assistant_search_calls",
+          "tableTo": "assistant_search_keys",
+          "columnsFrom": [
+            "key_id"
+          ],
+          "columnsTo": [
+            "key_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_search_calls_guild_id_snowflake": {
+          "name": "assistant_search_calls_guild_id_snowflake",
+          "value": "(\"assistant_search_calls\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_search_calls\".\"guild_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "assistant_search_keys": {
+      "name": "assistant_search_keys",
+      "columns": {
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "api_key_enc": {
+          "name": "api_key_enc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "monthly_limit": {
+          "name": "monthly_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "daily_limit": {
+          "name": "daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_search_keys_source": {
+          "name": "assistant_search_keys_source",
+          "value": "\"assistant_search_keys\".\"source\" IN ('brave','tavily')"
+        },
+        "assistant_search_keys_label_length": {
+          "name": "assistant_search_keys_label_length",
+          "value": "length(\"assistant_search_keys\".\"label\") BETWEEN 1 AND 60"
+        },
+        "assistant_search_keys_enabled_bool": {
+          "name": "assistant_search_keys_enabled_bool",
+          "value": "\"assistant_search_keys\".\"enabled\" IN (0,1)"
+        },
+        "assistant_search_keys_monthly_limit": {
+          "name": "assistant_search_keys_monthly_limit",
+          "value": "\"assistant_search_keys\".\"monthly_limit\" IS NULL OR \"assistant_search_keys\".\"monthly_limit\" BETWEEN 1 AND 1000000"
+        },
+        "assistant_search_keys_daily_limit": {
+          "name": "assistant_search_keys_daily_limit",
+          "value": "\"assistant_search_keys\".\"daily_limit\" IS NULL OR \"assistant_search_keys\".\"daily_limit\" BETWEEN 1 AND 1000000"
         }
       }
     },
@@ -3548,6 +3702,196 @@
         "capability_grants_principal_id_snowflake": {
           "name": "capability_grants_principal_id_snowflake",
           "value": "(\"capability_grants\".\"principal_id\" NOT GLOB '*[^0-9]*' AND length(\"capability_grants\".\"principal_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "club_tasks": {
+      "name": "club_tasks",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'not_started'"
+        },
+        "priority": {
+          "name": "priority",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'normal'"
+        },
+        "assignment_kind": {
+          "name": "assignment_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "assignee_id": {
+          "name": "assignee_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination_id": {
+          "name": "destination_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "club_tasks_guild_id_team_id_task_teams_guild_id_team_id_fk": {
+          "name": "club_tasks_guild_id_team_id_task_teams_guild_id_team_id_fk",
+          "tableFrom": "club_tasks",
+          "tableTo": "task_teams",
+          "columnsFrom": [
+            "guild_id",
+            "team_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "team_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "club_tasks_guild_id_task_id_pk": {
+          "columns": [
+            "guild_id",
+            "task_id"
+          ],
+          "name": "club_tasks_guild_id_task_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "club_tasks_guild_snowflake": {
+          "name": "club_tasks_guild_snowflake",
+          "value": "(\"club_tasks\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"club_tasks\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "club_tasks_destination_snowflake": {
+          "name": "club_tasks_destination_snowflake",
+          "value": "(\"club_tasks\".\"destination_id\" NOT GLOB '*[^0-9]*' AND length(\"club_tasks\".\"destination_id\") BETWEEN 17 AND 20)"
+        },
+        "club_tasks_assignee_snowflake": {
+          "name": "club_tasks_assignee_snowflake",
+          "value": "(\"club_tasks\".\"assignee_id\" IS NULL OR (\"club_tasks\".\"assignee_id\" NOT GLOB '*[^0-9]*' AND length(\"club_tasks\".\"assignee_id\") BETWEEN 17 AND 20))"
+        },
+        "club_tasks_status": {
+          "name": "club_tasks_status",
+          "value": "\"club_tasks\".\"status\" IN ('not_started','in_progress','awaiting_approval','done')"
+        },
+        "club_tasks_priority": {
+          "name": "club_tasks_priority",
+          "value": "\"club_tasks\".\"priority\" IN ('normal','urgent')"
+        },
+        "club_tasks_assignment": {
+          "name": "club_tasks_assignment",
+          "value": "\"club_tasks\".\"assignment_kind\" IN ('team','individual')"
+        },
+        "club_tasks_assignment_id": {
+          "name": "club_tasks_assignment_id",
+          "value": "(\"club_tasks\".\"assignment_kind\" = 'team' AND \"club_tasks\".\"assignee_id\" IS NULL) OR (\"club_tasks\".\"assignment_kind\" = 'individual' AND \"club_tasks\".\"assignee_id\" IS NOT NULL)"
+        },
+        "club_tasks_version_positive": {
+          "name": "club_tasks_version_positive",
+          "value": "\"club_tasks\".\"version\" > 0"
         }
       }
     },
@@ -7045,6 +7389,1129 @@
         "role_effects_had_role_before_bool": {
           "name": "role_effects_had_role_before_bool",
           "value": "\"role_effects\".\"had_role_before\" IN (0,1)"
+        }
+      }
+    },
+    "task_assignees": {
+      "name": "task_assignees",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "discord_user_id": {
+          "name": "discord_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_assignees_guild_id_task_id_club_tasks_guild_id_task_id_fk": {
+          "name": "task_assignees_guild_id_task_id_club_tasks_guild_id_task_id_fk",
+          "tableFrom": "task_assignees",
+          "tableTo": "club_tasks",
+          "columnsFrom": [
+            "guild_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "task_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_assignees_guild_id_task_id_discord_user_id_pk": {
+          "columns": [
+            "guild_id",
+            "task_id",
+            "discord_user_id"
+          ],
+          "name": "task_assignees_guild_id_task_id_discord_user_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_assignees_guild_snowflake": {
+          "name": "task_assignees_guild_snowflake",
+          "value": "(\"task_assignees\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_assignees\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_assignees_user_snowflake": {
+          "name": "task_assignees_user_snowflake",
+          "value": "(\"task_assignees\".\"discord_user_id\" NOT GLOB '*[^0-9]*' AND length(\"task_assignees\".\"discord_user_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "task_children": {
+      "name": "task_children",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "child_id": {
+          "name": "child_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'not_started'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_children_guild_id_task_id_club_tasks_guild_id_task_id_fk": {
+          "name": "task_children_guild_id_task_id_club_tasks_guild_id_task_id_fk",
+          "tableFrom": "task_children",
+          "tableTo": "club_tasks",
+          "columnsFrom": [
+            "guild_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "task_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_children_guild_id_task_id_child_id_pk": {
+          "columns": [
+            "guild_id",
+            "task_id",
+            "child_id"
+          ],
+          "name": "task_children_guild_id_task_id_child_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_children_guild_snowflake": {
+          "name": "task_children_guild_snowflake",
+          "value": "(\"task_children\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_children\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_children_status": {
+          "name": "task_children_status",
+          "value": "\"task_children\".\"status\" IN ('not_started','in_progress','done')"
+        }
+      }
+    },
+    "task_guild_roles": {
+      "name": "task_guild_roles",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "president_role_id": {
+          "name": "president_role_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_guild_roles_guild_id_guilds_guild_id_fk": {
+          "name": "task_guild_roles_guild_id_guilds_guild_id_fk",
+          "tableFrom": "task_guild_roles",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_guild_roles_guild_snowflake": {
+          "name": "task_guild_roles_guild_snowflake",
+          "value": "(\"task_guild_roles\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_guild_roles\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_guild_roles_president_snowflake": {
+          "name": "task_guild_roles_president_snowflake",
+          "value": "(\"task_guild_roles\".\"president_role_id\" NOT GLOB '*[^0-9]*' AND length(\"task_guild_roles\".\"president_role_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "task_message_anchors": {
+      "name": "task_message_anchors",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "task_anchor_message_once": {
+          "name": "task_anchor_message_once",
+          "columns": [
+            "guild_id",
+            "message_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "task_message_anchors_guild_id_task_id_club_tasks_guild_id_task_id_fk": {
+          "name": "task_message_anchors_guild_id_task_id_club_tasks_guild_id_task_id_fk",
+          "tableFrom": "task_message_anchors",
+          "tableTo": "club_tasks",
+          "columnsFrom": [
+            "guild_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "task_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_message_anchors_guild_id_task_id_pk": {
+          "columns": [
+            "guild_id",
+            "task_id"
+          ],
+          "name": "task_message_anchors_guild_id_task_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_anchor_guild_snowflake": {
+          "name": "task_anchor_guild_snowflake",
+          "value": "(\"task_message_anchors\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_message_anchors\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_anchor_channel_snowflake": {
+          "name": "task_anchor_channel_snowflake",
+          "value": "(\"task_message_anchors\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"task_message_anchors\".\"channel_id\") BETWEEN 17 AND 20)"
+        },
+        "task_anchor_message_snowflake": {
+          "name": "task_anchor_message_snowflake",
+          "value": "(\"task_message_anchors\".\"message_id\" NOT GLOB '*[^0-9]*' AND length(\"task_message_anchors\".\"message_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "task_nudge_deliveries": {
+      "name": "task_nudge_deliveries",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "slot_id": {
+          "name": "slot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination_id": {
+          "name": "destination_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "attempted_at": {
+          "name": "attempted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_nudge_deliveries_guild_id_slot_id_task_nudge_slots_guild_id_slot_id_fk": {
+          "name": "task_nudge_deliveries_guild_id_slot_id_task_nudge_slots_guild_id_slot_id_fk",
+          "tableFrom": "task_nudge_deliveries",
+          "tableTo": "task_nudge_slots",
+          "columnsFrom": [
+            "guild_id",
+            "slot_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "slot_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_nudge_deliveries_guild_id_slot_id_pk": {
+          "columns": [
+            "guild_id",
+            "slot_id"
+          ],
+          "name": "task_nudge_deliveries_guild_id_slot_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_nudge_delivery_guild": {
+          "name": "task_nudge_delivery_guild",
+          "value": "(\"task_nudge_deliveries\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_deliveries\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_nudge_delivery_destination": {
+          "name": "task_nudge_delivery_destination",
+          "value": "(\"task_nudge_deliveries\".\"destination_id\" IS NULL OR (\"task_nudge_deliveries\".\"destination_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_deliveries\".\"destination_id\") BETWEEN 17 AND 20))"
+        },
+        "task_nudge_delivery_message": {
+          "name": "task_nudge_delivery_message",
+          "value": "(\"task_nudge_deliveries\".\"message_id\" IS NULL OR (\"task_nudge_deliveries\".\"message_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_deliveries\".\"message_id\") BETWEEN 17 AND 20))"
+        }
+      }
+    },
+    "task_nudge_slot_tasks": {
+      "name": "task_nudge_slot_tasks",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "slot_id": {
+          "name": "slot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_nudge_slot_tasks_guild_id_slot_id_task_nudge_slots_guild_id_slot_id_fk": {
+          "name": "task_nudge_slot_tasks_guild_id_slot_id_task_nudge_slots_guild_id_slot_id_fk",
+          "tableFrom": "task_nudge_slot_tasks",
+          "tableTo": "task_nudge_slots",
+          "columnsFrom": [
+            "guild_id",
+            "slot_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "slot_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_nudge_slot_tasks_guild_id_task_id_club_tasks_guild_id_task_id_fk": {
+          "name": "task_nudge_slot_tasks_guild_id_task_id_club_tasks_guild_id_task_id_fk",
+          "tableFrom": "task_nudge_slot_tasks",
+          "tableTo": "club_tasks",
+          "columnsFrom": [
+            "guild_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "task_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_nudge_slot_tasks_guild_id_slot_id_task_id_pk": {
+          "columns": [
+            "guild_id",
+            "slot_id",
+            "task_id"
+          ],
+          "name": "task_nudge_slot_tasks_guild_id_slot_id_task_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_nudge_slot_task_guild": {
+          "name": "task_nudge_slot_task_guild",
+          "value": "(\"task_nudge_slot_tasks\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_slot_tasks\".\"guild_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "task_nudge_slots": {
+      "name": "task_nudge_slots",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "slot_id": {
+          "name": "slot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'pending'"
+        },
+        "destination_id": {
+          "name": "destination_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "task_nudge_due": {
+          "name": "task_nudge_due",
+          "columns": [
+            "guild_id",
+            "state",
+            "due_at"
+          ],
+          "isUnique": false
+        },
+        "task_nudge_message": {
+          "name": "task_nudge_message",
+          "columns": [
+            "guild_id",
+            "message_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "task_nudge_slots_guild_id_guilds_guild_id_fk": {
+          "name": "task_nudge_slots_guild_id_guilds_guild_id_fk",
+          "tableFrom": "task_nudge_slots",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_nudge_slots_guild_id_slot_id_pk": {
+          "columns": [
+            "guild_id",
+            "slot_id"
+          ],
+          "name": "task_nudge_slots_guild_id_slot_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_nudge_slot_guild": {
+          "name": "task_nudge_slot_guild",
+          "value": "(\"task_nudge_slots\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_slots\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_nudge_slot_destination": {
+          "name": "task_nudge_slot_destination",
+          "value": "(\"task_nudge_slots\".\"destination_id\" IS NULL OR (\"task_nudge_slots\".\"destination_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_slots\".\"destination_id\") BETWEEN 17 AND 20))"
+        },
+        "task_nudge_slot_message": {
+          "name": "task_nudge_slot_message",
+          "value": "(\"task_nudge_slots\".\"message_id\" IS NULL OR (\"task_nudge_slots\".\"message_id\" NOT GLOB '*[^0-9]*' AND length(\"task_nudge_slots\".\"message_id\") BETWEEN 17 AND 20))"
+        },
+        "task_nudge_slot_kind": {
+          "name": "task_nudge_slot_kind",
+          "value": "\"task_nudge_slots\".\"kind\" IN ('pre_due','custom','checkin','digest','followup','announce','review','clarify','evaluate')"
+        },
+        "task_nudge_slot_state": {
+          "name": "task_nudge_slot_state",
+          "value": "\"task_nudge_slots\".\"state\" IN ('pending','paused','claimed','sent','failed','superseded','planned')"
+        }
+      }
+    },
+    "task_quiet_hours": {
+      "name": "task_quiet_hours",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "start_minute": {
+          "name": "start_minute",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "end_minute": {
+          "name": "end_minute",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_quiet_hours_guild_id_guilds_guild_id_fk": {
+          "name": "task_quiet_hours_guild_id_guilds_guild_id_fk",
+          "tableFrom": "task_quiet_hours",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_quiet_guild_snowflake": {
+          "name": "task_quiet_guild_snowflake",
+          "value": "(\"task_quiet_hours\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_quiet_hours\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_quiet_start": {
+          "name": "task_quiet_start",
+          "value": "\"task_quiet_hours\".\"start_minute\" BETWEEN 0 AND 1439"
+        },
+        "task_quiet_end": {
+          "name": "task_quiet_end",
+          "value": "\"task_quiet_hours\".\"end_minute\" BETWEEN 0 AND 1439"
+        },
+        "task_quiet_distinct": {
+          "name": "task_quiet_distinct",
+          "value": "\"task_quiet_hours\".\"start_minute\" <> \"task_quiet_hours\".\"end_minute\""
+        }
+      }
+    },
+    "task_reply_choices": {
+      "name": "task_reply_choices",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "author_id": {
+          "name": "author_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "task_reply_choice_created": {
+          "name": "task_reply_choice_created",
+          "columns": [
+            "guild_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "task_reply_choices_guild_id_guilds_guild_id_fk": {
+          "name": "task_reply_choices_guild_id_guilds_guild_id_fk",
+          "tableFrom": "task_reply_choices",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_reply_choices_guild_id_message_id_pk": {
+          "columns": [
+            "guild_id",
+            "message_id"
+          ],
+          "name": "task_reply_choices_guild_id_message_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_reply_choice_guild": {
+          "name": "task_reply_choice_guild",
+          "value": "(\"task_reply_choices\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_reply_choices\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_reply_choice_message": {
+          "name": "task_reply_choice_message",
+          "value": "(\"task_reply_choices\".\"message_id\" NOT GLOB '*[^0-9]*' AND length(\"task_reply_choices\".\"message_id\") BETWEEN 17 AND 20)"
+        },
+        "task_reply_choice_author": {
+          "name": "task_reply_choice_author",
+          "value": "(\"task_reply_choices\".\"author_id\" NOT GLOB '*[^0-9]*' AND length(\"task_reply_choices\".\"author_id\") BETWEEN 17 AND 20)"
+        },
+        "task_reply_choice_channel": {
+          "name": "task_reply_choice_channel",
+          "value": "(\"task_reply_choices\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"task_reply_choices\".\"channel_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "task_reports": {
+      "name": "task_reports",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "report_id": {
+          "name": "report_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "author_id": {
+          "name": "author_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_reports_guild_id_task_id_club_tasks_guild_id_task_id_fk": {
+          "name": "task_reports_guild_id_task_id_club_tasks_guild_id_task_id_fk",
+          "tableFrom": "task_reports",
+          "tableTo": "club_tasks",
+          "columnsFrom": [
+            "guild_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "task_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_reports_guild_id_task_id_report_id_pk": {
+          "columns": [
+            "guild_id",
+            "task_id",
+            "report_id"
+          ],
+          "name": "task_reports_guild_id_task_id_report_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_reports_guild_snowflake": {
+          "name": "task_reports_guild_snowflake",
+          "value": "(\"task_reports\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_reports\".\"guild_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "task_team_members": {
+      "name": "task_team_members",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "discord_user_id": {
+          "name": "discord_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_team_members_guild_id_team_id_task_teams_guild_id_team_id_fk": {
+          "name": "task_team_members_guild_id_team_id_task_teams_guild_id_team_id_fk",
+          "tableFrom": "task_team_members",
+          "tableTo": "task_teams",
+          "columnsFrom": [
+            "guild_id",
+            "team_id"
+          ],
+          "columnsTo": [
+            "guild_id",
+            "team_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_team_members_guild_id_team_id_discord_user_id_pk": {
+          "columns": [
+            "guild_id",
+            "team_id",
+            "discord_user_id"
+          ],
+          "name": "task_team_members_guild_id_team_id_discord_user_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_member_guild_snowflake": {
+          "name": "task_member_guild_snowflake",
+          "value": "(\"task_team_members\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_team_members\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_member_user_snowflake": {
+          "name": "task_member_user_snowflake",
+          "value": "(\"task_team_members\".\"discord_user_id\" NOT GLOB '*[^0-9]*' AND length(\"task_team_members\".\"discord_user_id\") BETWEEN 17 AND 20)"
+        },
+        "task_member_kind": {
+          "name": "task_member_kind",
+          "value": "\"task_team_members\".\"kind\" IN ('member','lead')"
+        }
+      }
+    },
+    "task_teams": {
+      "name": "task_teams",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "category_id": {
+          "name": "category_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "announcement_channel_id": {
+          "name": "announcement_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "lead_role_id": {
+          "name": "lead_role_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "member_role_id": {
+          "name": "member_role_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "task_teams_category_once": {
+          "name": "task_teams_category_once",
+          "columns": [
+            "guild_id",
+            "category_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "task_teams_guild_id_guilds_guild_id_fk": {
+          "name": "task_teams_guild_id_guilds_guild_id_fk",
+          "tableFrom": "task_teams",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_teams_guild_id_team_id_pk": {
+          "columns": [
+            "guild_id",
+            "team_id"
+          ],
+          "name": "task_teams_guild_id_team_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "task_teams_kind": {
+          "name": "task_teams_kind",
+          "value": "\"task_teams\".\"kind\" IN ('subteam','exec')"
+        },
+        "task_teams_guild_snowflake": {
+          "name": "task_teams_guild_snowflake",
+          "value": "(\"task_teams\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"task_teams\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "task_teams_category_snowflake": {
+          "name": "task_teams_category_snowflake",
+          "value": "(\"task_teams\".\"category_id\" NOT GLOB '*[^0-9]*' AND length(\"task_teams\".\"category_id\") BETWEEN 17 AND 20)"
+        },
+        "task_teams_announcement_snowflake": {
+          "name": "task_teams_announcement_snowflake",
+          "value": "(\"task_teams\".\"announcement_channel_id\" IS NULL OR (\"task_teams\".\"announcement_channel_id\" NOT GLOB '*[^0-9]*' AND length(\"task_teams\".\"announcement_channel_id\") BETWEEN 17 AND 20))"
+        },
+        "task_teams_lead_role_snowflake": {
+          "name": "task_teams_lead_role_snowflake",
+          "value": "(\"task_teams\".\"lead_role_id\" IS NULL OR (\"task_teams\".\"lead_role_id\" NOT GLOB '*[^0-9]*' AND length(\"task_teams\".\"lead_role_id\") BETWEEN 17 AND 20))"
+        },
+        "task_teams_member_role_snowflake": {
+          "name": "task_teams_member_role_snowflake",
+          "value": "(\"task_teams\".\"member_role_id\" IS NULL OR (\"task_teams\".\"member_role_id\" NOT GLOB '*[^0-9]*' AND length(\"task_teams\".\"member_role_id\") BETWEEN 17 AND 20))"
         }
       }
     },

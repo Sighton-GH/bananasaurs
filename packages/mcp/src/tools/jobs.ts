@@ -99,7 +99,7 @@ const refuseInvalidArgs = (): ReadOutcome => ({
 });
 
 const previewError = (err: string): string => {
-  // Redacted, then framed like every other structured string (ADR 0110 §2):
+  // Redacted, then framed like every other structured string (ADR 0113 §2):
   // a handler's error can quote a provider or Discord body, so the preview
   // must not carry an envelope marker or an injection phrase unfiltered.
   // Truncation runs after escaping, on the final string.

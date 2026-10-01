@@ -8,6 +8,7 @@ import {
 } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 import { createCitationRegistry } from './citations.js';
+import { WebSearchLimitError, SearchHttpError } from './web-search.js';
 import type { assistantRepo } from '@bananasaurs/storage';
 
 type StoredReminder = assistantRepo.StoredReminder;
@@ -94,9 +95,12 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
       trust: 'untrusted-reviewed-resource' as const,
     },
   })),
-  webSearch: vi.fn(async () => [
-    { title: 'Battery guide', url: 'https://batteries.example/guide', description: 'LiPo care.' },
-  ]),
+  webSearch: vi.fn(async () => ({
+    results: [
+      { title: 'Battery guide', url: 'https://batteries.example/guide', description: 'LiPo care.' },
+    ],
+    source: 'brave' as const,
+  })),
   serverCard: () => 'SFU Racerbot builds autonomous cars.',
   visibleChannels: vi.fn(async () => [{ id: '111111111111111111', name: 'general' }]),
   upcomingEvents: vi.fn(async () => []),
@@ -344,10 +348,59 @@ describe('runAssistantTool', () => {
     );
     expect(result).toMatchObject({
       ok: true,
-      web: true,
+      webSource: 'brave',
       sources: [{ title: 'Battery guide', url: 'https://batteries.example/guide' }],
     });
     expect(result.text).toContain('LiPo care.');
+  });
+
+  it('marks a Tavily outcome with webSource tavily', async () => {
+    const result = await runAssistantTool(
+      { name: 'web_search', args: { query: 'lipo storage' } },
+      ports({
+        webSearch: vi.fn(async () => ({
+          results: [
+            {
+              title: 'Battery guide',
+              url: 'https://batteries.example/guide',
+              description: 'LiPo care.',
+            },
+          ],
+          source: 'tavily' as const,
+        })),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      webSource: 'tavily',
+      sources: [{ title: 'Battery guide', url: 'https://batteries.example/guide' }],
+    });
+    expect(result.text).toContain('LiPo care.');
+  });
+
+  it('carries webSource on empty web results', async () => {
+    const result = await runAssistantTool(
+      { name: 'web_search', args: { query: 'lipo storage' } },
+      ports({
+        webSearch: vi.fn(async () => ({ results: [], source: 'tavily' as const })),
+      }),
+    );
+    expect(result).toMatchObject({ ok: true, text: 'No web results.', webSource: 'tavily' });
+  });
+
+  it('refuses with the limit text when the search run is at its limit', async () => {
+    const result = await runAssistantTool(
+      { name: 'web_search', args: { query: 'lipo' } },
+      ports({
+        webSearch: vi.fn(async () => {
+          throw new WebSearchLimitError(1_800_000_000_000);
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Web search has reached its limit for now. Answer without it.',
+    });
   });
 
   it('refuses a web query that looks like it carries personal data or a secret', async () => {
@@ -365,11 +418,23 @@ describe('runAssistantTool', () => {
       { name: 'web_search', args: { query: 'lipo' } },
       ports({
         webSearch: vi.fn(async () => {
-          throw new Error('HTTP 429');
+          throw new Error('secret body text');
         }),
       }),
     );
-    expect(result).toMatchObject({ ok: false, text: 'Web search failed: HTTP 429' });
+    expect(result).toMatchObject({ ok: false, text: 'Web search failed.' });
+  });
+
+  it('reports a web search HTTP failure with the status only', async () => {
+    const result = await runAssistantTool(
+      { name: 'web_search', args: { query: 'lipo' } },
+      ports({
+        webSearch: vi.fn(async () => {
+          throw new SearchHttpError(503);
+        }),
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, text: 'Web search failed (HTTP 503).' });
   });
 
   it('gives the time in the club time zone', async () => {

@@ -15,7 +15,7 @@ import { toEvidenceItem, type McpArchiveMessage } from './archive.js';
 
 /**
  * `read_thread` — archive reads for public threads, live reads for private
- * threads the owner shares (slice 2, Task 4; ADR 0112).
+ * threads the owner shares (slice 2, Task 4; ADR 0115).
  *
  * A public thread reads from the archive exactly like `read_channel_history`
  * (the daemon's `archiveThread` is the same `listChannelHistory` call with
@@ -28,7 +28,7 @@ import { toEvidenceItem, type McpArchiveMessage } from './archive.js';
  *
  * The port takes the already-resolved `GuildId`, never raw input (hard rule
  * 2). Message bodies travel inside `envelope()` (which withholds detector
- * hits — ADR 0110); the thread name is structure rendered with `safeName`.
+ * hits — ADR 0113); the thread name is structure rendered with `safeName`.
  */
 
 export const READ_THREAD_TOOL_NAME = 'read_thread';
@@ -84,7 +84,7 @@ export interface McpThreadsPort {
   ) => readonly McpArchiveMessage[];
   /** Thread facts from the live cache: undefined when not a thread in this guild. */
   readonly threadInfo: (guildId: GuildId, threadId: string) => Promise<McpThreadInfo | undefined>;
-  /** ADR 0112: bot AND owner are both members (live). */
+  /** ADR 0115: bot AND owner are both members (live). */
   readonly privateThreadReadable: (guildId: GuildId, threadId: string) => Promise<boolean>;
   /** Live REST read of a private thread; never archived. */
   readonly liveThreadMessages: (

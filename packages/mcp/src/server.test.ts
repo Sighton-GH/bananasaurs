@@ -337,7 +337,7 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ADR 0111) a roles-only principal sees no tools and no resources', async () => {
+  it('(ADR 0114) a roles-only principal sees no tools and no resources', async () => {
     // No tool registers under the roles scope yet (slice 4 does that), so a
     // token carrying only `bananasaurs:roles` must see neither the read/send
     // tools nor the overview resource. With zero tools registered the SDK
@@ -353,7 +353,7 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ADR 0111) a tasks-only principal sees no tools and no resources', async () => {
+  it('(ADR 0114) a tasks-only principal sees no tools and no resources', async () => {
     // No tool registers under the tasks scope on this branch (the
     // task-tracking branch switches its writes to it when it merges), so a
     // token carrying only `bananasaurs:tasks` must see neither the read/send

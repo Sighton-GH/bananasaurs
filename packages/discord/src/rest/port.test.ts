@@ -1215,7 +1215,7 @@ describe('archived thread pagination (S3)', () => {
   });
 });
 
-describe('thread membership (ADR 0112)', () => {
+describe('thread membership (ADR 0115)', () => {
   const THREAD = '666666666666666666';
 
   it('answers true on 200, on the thread-member route', async () => {
@@ -1248,7 +1248,7 @@ describe('thread membership (ADR 0112)', () => {
   });
 });
 
-describe('thread info (ADR 0112 sweeper fallback)', () => {
+describe('thread info (ADR 0115 sweeper fallback)', () => {
   const THREAD = '666666666666666666';
   const PARENT = '777777777777777777';
 

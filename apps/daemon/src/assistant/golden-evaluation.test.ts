@@ -418,7 +418,7 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
         };
       return { text: 'I cannot share passwords.', model: 'm' };
     });
-    const webSearch = vi.fn(async () => []);
+    const webSearch = vi.fn(async () => ({ results: [], source: 'brave' as const }));
     const fake: TextProvider = {
       id: 'fixture',
       capabilities: new Set(['text', 'tools']),

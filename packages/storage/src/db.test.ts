@@ -566,6 +566,10 @@ describe('migration 0036 adds the fallback model, web search and assistant setti
         fallback_models_json: '[]',
         search_api_key_enc: null,
         search_enabled: 0,
+        // ADR 0120 (migration 0090) adds this column after this test's own
+        // migration; the row it seeded predates it, so it reads back the
+        // rebuild default.
+        search_source: 'brave',
         // ADR 0075 (migration 0038) adds this column after this test's own
         // migration; the row it seeded predates it, so it reads back null.
         github_token_enc: null,
@@ -623,7 +627,7 @@ describe('migration 0039 keeps one chain row per model when 0038 duplicated fall
   });
 });
 
-describe('migration 0080 rebuild preserves archive rows, edits, attachments and FTS', () => {
+describe('migration 0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
   const GUILD_ID = '111111111111111111';
   const CHANNEL_ID = '222222222222222222';
   const MEMBER_ID = '333333333333333333';
@@ -660,12 +664,12 @@ describe('migration 0080 rebuild preserves archive rows, edits, attachments and 
     return dir;
   };
 
-  it('0080 rebuild preserves archive rows, edits, attachments and FTS', () => {
+  it('0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
     const raw = new Database(':memory:');
     raw.pragma('foreign_keys = ON');
     const db = drizzle(raw, { schema });
 
-    // A database migrated to the state just before 0080, seeded the way a
+    // A database migrated to the state just before 0091, seeded the way a
     // real upgrade would find it: two message rows (one live with searchable
     // content, one purged), an edit row and an attachment row on the first.
     runMigrations(raw, db, migrationsFolderUpToTag('0052_conversation_summary_search'));
@@ -706,7 +710,7 @@ describe('migration 0080 rebuild preserves archive rows, edits, attachments and 
       )
       .run(GUILD_ID, MESSAGE_ONE, ATTACHMENT_ID);
 
-    // Applies 0080 against the seeded rows, through `runMigrations` — the
+    // Applies 0091 against the seeded rows, through `runMigrations` — the
     // exact call a real upgrade makes — never `migrate()` directly.
     runMigrations(raw, db, MIGRATIONS_FOLDER);
 
@@ -813,7 +817,7 @@ describe('migration 0080 rebuild preserves archive rows, edits, attachments and 
   });
 });
 
-describe('migration journal ordering (ADR 0112 section 3)', () => {
+describe('migration journal ordering (ADR 0115 section 3)', () => {
   interface JournalEntry {
     readonly idx: number;
     readonly when: number;

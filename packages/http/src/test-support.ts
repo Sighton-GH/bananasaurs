@@ -64,6 +64,33 @@ export const testPortsFor = (
   // No Discord client in route tests: the default is an honest miss, and a
   // test that exercises the adopted-panel path stubs its own verdict.
   findGuildMessage: () => Promise.resolve('message-not-found' as const),
+  previewGuildMessage: () => Promise.resolve(undefined),
+  listGuildEmojis: () =>
+    Promise.resolve([
+      {
+        emojiId: '123456789012345678',
+        name: 'banana',
+        animated: false,
+        url: 'https://cdn.discordapp.com/emojis/123456789012345678.webp',
+      },
+    ]),
+  inspectTaskChannel: (channelId) =>
+    Promise.resolve(
+      channelId === '333333333333333333'
+        ? {
+            channelId,
+            kind: 'channel' as const,
+            parentId: '999999999999999999',
+            categoryId: '999999999999999999',
+          }
+        : undefined,
+    ),
+  listTaskDestinations: (categoryId) =>
+    Promise.resolve(
+      categoryId === '999999999999999999'
+        ? [{ channelId: '333333333333333333', name: 'general', kind: 'channel' as const }]
+        : [],
+    ),
   jobCounts: () => jobRepo.countByState(scope),
   oldestDueJobAtMs: (nowMs) => jobRepo.oldestDueAt(scope, nowMs),
   recordAudit: (input) =>

@@ -1,0 +1,5 @@
+# ADR 0095: task tracking starts with a guild-scoped, owner-only slice
+
+The new task system is a club workflow, not the existing personal assistant reminder table. Store category-to-team mapping and tasks under a guild partition, and never infer dashboard account ownership from a Discord display name. Until a verified account-to-Discord binding and live role/membership checks exist, task data is exposed only to an instance-owner dashboard session. The first slice does not send Discord messages or enable member writes. A task without children is ordinary; dated children inherit its team and destination. Later Discord and MCP adapters must use the same validated service and must not bypass the task authority check.
+
+This is an interim safety boundary, not the final visibility policy. The intended member, lead and president views require binding and role proof before release. The interface must state when that work is not yet wired instead of implying that reminders or member access are live.

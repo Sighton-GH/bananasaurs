@@ -308,7 +308,7 @@ owner account. Content is fetched live and
 **never** written to the archive. The ADR 0050 read record marks
 `private=true`.
 
-## 7. Storage (migrations reserved 0080–0089)
+## 7. Storage (migration tags 0091–0099; originally reserved 0080–0089)
 
 - `mcp_actions`: the ledger (§3.1), with `undo_json`, `kind` and `status`.
 - `mcp_role_policy`, `mcp_role_allowlist`
@@ -331,8 +331,9 @@ That branch is staged and unmerged. It adds `list_tasks`, `get_task_details`
 and ~10 task write tools under `send`, ADRs 0087–0103 and migrations 0053,
 0060, 0061, 0070 and 0071.
 
-1. **Numbering.** This work takes **ADRs 0110–0119** and **migrations
-   0080–0089**. (Main already has ADRs 0087–0093 from assistant-memory, which
+1. **Numbering.** This work takes **ADRs 0113–0119** (originally 0110–0119;
+   0110–0112 were renumbered to 0113–0115 when main's task-tracking ADRs
+   0110–0112 merged first) and **migration tags 0091–0099** (originally 0080–0089; drizzle-kit orders snapshots by file name, so they must sort after main's `0090_search_keys`). (Main already has ADRs 0087–0093 from assistant-memory, which
    collide with the task branch's 0087–0093. That branch must renumber on merge;
    flagged to the owner, not fixed here.)
 2. **Tool names.** None of the new names collide with `list_tasks`,
@@ -368,11 +369,11 @@ whole-branch review, and an ADR written before code.
 
 | Slice | Content | ADR |
 |---|---|---|
-| **1 — fixes + reads** | Overview JSON; `list_jobs`/`get_job`; health failed-jobs; injection filter; names-or-ids resolver; `get_member`/`search_members`; `authorFilter`; doctor env warning; scope vocabulary (`roles`, `tasks`); `register*` refactor | 0110 injection filter + output format; 0111 scope split |
-| **2 — context + deep reads** | Server `instructions` (incl. Markdown); `get_server_context`; resources; `read_thread`; `read_digest`; archive reply/pin/reaction metadata; `list_unanswered` | 0112 private-thread read (D6) |
-| **3 — message writes** | `McpActionGateway` + `mcp_actions` + undo; send scope + live permission check; send upgrades (reply/thread/embeds/pings); threads; forum posts; edit/delete; pins/reactions; archive/lock thread | 0113 action gateway + send targets; 0114 role pings |
-| **4 — roles + panels** | Role policy + floor; grant/remove; bulk with confirm token + job; create/edit role; panel CRUD | 0115 amends ADR 0044 §4 (roles) |
-| **5 — schedule, events, polls** | `schedule_message` on reminders; events; polls; caps in tuning settings; dashboard MCP-page policy controls | 0116 scheduled sends are fixed text |
+| **1 — fixes + reads** | Overview JSON; `list_jobs`/`get_job`; health failed-jobs; injection filter; names-or-ids resolver; `get_member`/`search_members`; `authorFilter`; doctor env warning; scope vocabulary (`roles`, `tasks`); `register*` refactor | 0113 injection filter + output format; 0114 scope split |
+| **2 — context + deep reads** | Server `instructions` (incl. Markdown); `get_server_context`; resources; `read_thread`; `read_digest`; archive reply/pin/reaction metadata; `list_unanswered` | 0115 private-thread read (D6) |
+| **3 — message writes** | `McpActionGateway` + `mcp_actions` + undo; send scope + live permission check; send upgrades (reply/thread/embeds/pings); threads; forum posts; edit/delete; pins/reactions; archive/lock thread | 0116 action gateway + send targets; 0117 role pings |
+| **4 — roles + panels** | Role policy + floor; grant/remove; bulk with confirm token + job; create/edit role; panel CRUD | 0118 amends ADR 0044 §4 (roles) |
+| **5 — schedule, events, polls** | `schedule_message` on reminders; events; polls; caps in tuning settings; dashboard MCP-page policy controls | 0119 scheduled sends are fixed text |
 
 Slices 1 and 2 are read-only and can ship while 3–5 are reviewed.
 

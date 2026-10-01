@@ -1,4 +1,4 @@
-# ADR 0110: MCP structural output is JSON, and flagged evidence is withheld
+# ADR 0113: MCP structural output is JSON, and flagged evidence is withheld
 
 Status: accepted (2026-09-29)
 

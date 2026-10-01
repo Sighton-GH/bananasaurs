@@ -40,6 +40,10 @@ import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createConversationPruneTimer } from './conversation-prune-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
+import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
+import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
+import { reserveEntryCall } from '../assistant/local-limit.js';
+import { taskNudgeRepo } from '@bananasaurs/storage';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
@@ -48,6 +52,8 @@ import { openWithKey, sealWithKey } from '../crypto/seal.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { applyConnectFallback } from './network.js';
 import { QuotaLedger } from '../assistant/quota-ledger.js';
+import { braveWebSearch } from '../assistant/brave-search.js';
+import { createWebSearchRun, type WebSearchRun } from '../assistant/web-search.js';
 import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
@@ -119,6 +125,8 @@ export interface Daemon {
    * assistant loop and read by the dashboard's allowance pill.
    */
   readonly quotaLedger: QuotaLedger;
+  /** ADR 0120: the web search run for one request, from the composition root. */
+  readonly webSearch: (guildId: string) => WebSearchRun | undefined;
   /** Why no provider store exists, for the dashboard's setup step; absent when one does. */
   readonly providerSecretProblem?:
     'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
@@ -194,7 +202,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           providerSecret.source,
           config,
           undefined,
-          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs') },
+          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs'), logger },
         );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
   // ADR 0080: the connect fallback wait applies to new connections at once —
@@ -225,6 +233,30 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // its reset no matter which guild spent it. Returned below so `index.ts`
   // can hand the same instance to the dashboard wiring; never copied.
   const quotaLedger = new QuotaLedger();
+  // ADR 0120: web search through the provider store (Brave or Tavily, with
+  // key order and limits). With no store (no encryption secret), only the
+  // `.env` Brave key can exist, and it is never limited.
+  const assistantWebSearch = (guildId: string): WebSearchRun | undefined =>
+    providerStore !== undefined
+      ? providerStore.webSearch(guildId)
+      : config.BRAVE_SEARCH_API_KEY === undefined
+        ? undefined
+        : createWebSearchRun({
+            instance: scopes.instance(),
+            guildId,
+            source: 'brave',
+            keys: [
+              {
+                keyId: null,
+                apiKey: config.BRAVE_SEARCH_API_KEY,
+                monthlyLimit: null,
+                dailyLimit: null,
+              },
+            ],
+            now,
+            logger,
+            client: (apiKey, query) => braveWebSearch({ apiKey }, query),
+          });
 
   // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
   // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
@@ -261,6 +293,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         assistantChain,
         quotaLedger,
         instanceSettings,
+        assistantWebSearch,
         // Task 17: the GitHub client reads the sealed token per request, for
         // the `Authorization` header only — it never reaches logs or audit.
         githubToken: () => providerStore?.githubToken(),
@@ -273,6 +306,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // the same database, so the operator surface and the dashboard seam share
   // one rather than minting a second.
   const instanceScope = scopes.instance();
+  // ADR 0112: one evaluator for every guild's recorded progress updates,
+  // built from the same chain and local limits the assistant answers on.
+  // The worker calls it only when sends are on; otherwise no model call.
+  const taskUpdateEvaluator = createTaskUpdateEvaluator({
+    chain: assistantChain,
+    reserve: (entry, guildId) => reserveEntryCall(instanceScope, entry, guildId, now()),
+    now,
+  });
 
   // ADR 0046, Slice M1 Task 5 (PR-70): the daily archive-expiry producer. One
   // expiry job per guild per UTC day, beside the backup timer — the job table
@@ -509,6 +550,36 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   });
 
   // --- job loop -------------------------------------------------------------
+  let taskNudgeTimer: NodeJS.Timeout | undefined;
+  let taskNudgeRunning = false;
+  const nudgePass = async (): Promise<void> => {
+    if (taskNudgeRunning || config.BANANASAURS_READONLY) return;
+    taskNudgeRunning = true;
+    try {
+      for (const { scope } of byGuild.values()) {
+        // One guild's failure never stops the next guild's pass; the log
+        // line carries the guild so the failure is diagnosable.
+        try {
+          taskNudgeRepo.pruneReplyChoices(scope, now());
+          planTaskNudges(scope, now());
+          await deliverTaskNudges(scope, client, discord, now(), {
+            enabled: config.TASK_NUDGE_SEND_ENABLED && !config.BANANASAURS_DRY_RUN,
+            quietStart: config.TASK_NUDGE_QUIET_START,
+            quietEnd: config.TASK_NUDGE_QUIET_END,
+            evaluate: taskUpdateEvaluator,
+            logger,
+          });
+        } catch (err) {
+          logger.error(
+            safeLogFields({ component: 'task-nudges', guildId: scope.guildId, err }),
+            'task nudge pass failed for guild; continuing with the next guild',
+          );
+        }
+      }
+    } finally {
+      taskNudgeRunning = false;
+    }
+  };
   let timer: NodeJS.Timeout | undefined;
   let draining = false;
 
@@ -562,6 +633,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     portsFor,
     instance,
     quotaLedger,
+    webSearch: assistantWebSearch,
     // Returned, not only closed over: `index.ts` hands it to the dashboard, and
     // before 2026-09-23 it was never returned, so the dashboard had no store.
     ...(providerStore === undefined ? {} : { providerStore }),
@@ -572,6 +644,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
     start() {
       for (const { runtime } of byGuild.values()) runtime.worker.recoverStranded();
+      if (!config.BANANASAURS_READONLY)
+        for (const { scope } of byGuild.values()) taskNudgeRepo.reconcileClaims(scope, now());
+      void nudgePass();
+      taskNudgeTimer = setInterval(() => void nudgePass(), 60_000);
+      taskNudgeTimer.unref();
       timer = setInterval(() => {
         void drainJobs().catch((err: unknown) => {
           logger.error(safeLogFields({ component: 'jobs', err }), 'job drain failed');
@@ -588,6 +665,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     },
 
     async stop() {
+      if (taskNudgeTimer !== undefined) clearInterval(taskNudgeTimer);
+      taskNudgeTimer = undefined;
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
       backupTimer.stop();

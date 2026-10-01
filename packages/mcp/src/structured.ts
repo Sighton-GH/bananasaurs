@@ -2,7 +2,7 @@ import { detectWithheldEvidence } from '@bananasaurs/core';
 import { escapeEvidenceText } from './envelope.js';
 
 /**
- * ADR 0110: structural results (names, ids, types, counts) are compact JSON,
+ * ADR 0113: structural results (names, ids, types, counts) are compact JSON,
  * not evidence blocks. The envelope is kept for text people typed as prose.
  * Member-chosen names still pass through `safeName`, which breaks envelope
  * markers and withholds detector hits, so JSON output can never forge a

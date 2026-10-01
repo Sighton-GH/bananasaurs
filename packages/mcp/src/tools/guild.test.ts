@@ -171,7 +171,7 @@ const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): stri
   return (outcome as { readonly text: string }).text;
 };
 
-/** ADR 0110: head line, note line, then the parsed JSON payload. */
+/** ADR 0113: head line, note line, then the parsed JSON payload. */
 const jsonOf = (text: string): Record<string, unknown> => {
   const lines = text.split('\n');
   expect(lines).toHaveLength(3);
@@ -270,7 +270,7 @@ describe('guild tools refuse without a reachable guild', () => {
   });
 });
 
-describe('every guild result is head, note, then one line of JSON (ADR 0110)', () => {
+describe('every guild result is head, note, then one line of JSON (ADR 0113)', () => {
   it('list_channels renders ids, names, types, parents, topics and archive flags as JSON', () => {
     const text = textOf(
       listChannelsText(principalWith(GUILD_A), fakePort(), {

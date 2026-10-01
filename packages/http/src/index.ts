@@ -35,6 +35,7 @@ export {
   type TryAssistantDeps,
 } from './routes/assistant-try.js';
 export { registerAssistantProviderRoutes } from './routes/assistant-providers.js';
+export { registerAssistantSearchKeyRoutes } from './routes/assistant-search-keys.js';
 export {
   registerAssistantTuningRoutes,
   type InstanceSettingsPort,
@@ -59,3 +60,5 @@ export { ERROR_CATALOG, explainError, type ErrorExplanation } from './errors/cat
 export { RESOURCE_FAILURE_TEXT } from './errors/resource-failures.js';
 export { badRequest, fieldsOf, type FieldProblem } from './errors/reply.js';
 export { isInstanceOwner } from './owner.js';
+export { registerTaskRoutes } from './routes/tasks.js';
+export { registerTaskWriteRoutes } from './routes/task-write.js';

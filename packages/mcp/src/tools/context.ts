@@ -18,9 +18,9 @@ import { registerReadTool, type ReadOutcome, type RegisterContext } from '../reg
  * names and descriptions.
  *
  * The card is owner-typed prose, so it travels inside `envelope()` (which
- * withholds detector hits — ADR 0110). The skills are catalogue entries,
+ * withholds detector hits — ADR 0113). The skills are catalogue entries,
  * rendered as one compact JSON line with `safeName` framing, like every
- * other structured string (ADR 0110 §2).
+ * other structured string (ADR 0113 §2).
  *
  * The port takes the already-resolved `GuildId`, never raw input (hard rule
  * 2). The daemon projects the assistant repositories field by field in

@@ -659,6 +659,92 @@ export const opsPortsFor = (
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   },
+  inspectTaskChannel: async (channelId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (!guild) return undefined;
+    try {
+      // A cache hit alone is not current authority: fetch the destination and its parent.
+      const channel = await guild.channels.fetch(channelId, { force: true });
+      if (!channel || !channel.isTextBased()) return undefined;
+      if (channel.isThread()) {
+        // Private threads are never task destinations: the bot cannot rely on
+        // seeing them, so they return the existing invalid-destination answer.
+        if (channel.type === ChannelType.PrivateThread) return undefined;
+        if (!channel.parentId) return undefined;
+        const parent = await guild.channels.fetch(channel.parentId, { force: true });
+        if (!parent || parent.isThread() || !parent.parentId) return undefined;
+        return {
+          channelId,
+          kind: 'thread' as const,
+          parentId: parent.id,
+          categoryId: parent.parentId,
+        };
+      }
+      return {
+        channelId,
+        kind: 'channel' as const,
+        parentId: channel.parentId,
+        categoryId: channel.parentId,
+      };
+    } catch {
+      return undefined;
+    }
+  },
+  /** Live destinations inside a team category: text and announcement channels plus open threads. Private threads are excluded. */
+  listTaskDestinations: async (categoryId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (!guild) return [];
+    try {
+      // A full fetch always hits REST; the cache alone is not current authority.
+      const channels = await guild.channels.fetch();
+      const destinations: {
+        channelId: string;
+        name: string;
+        kind: 'channel' | 'thread';
+        parentName?: string | undefined;
+      }[] = [];
+      for (const channel of channels.values()) {
+        if (!channel || channel.isThread()) continue;
+        if (
+          (channel.type === ChannelType.GuildText ||
+            channel.type === ChannelType.GuildAnnouncement) &&
+          channel.parentId === categoryId
+        ) {
+          destinations.push({ channelId: channel.id, name: channel.name, kind: 'channel' });
+        }
+      }
+      destinations.sort((a, b) => a.name.localeCompare(b.name));
+      const { threads } = await guild.channels.fetchActiveThreads();
+      const threadRows: {
+        channelId: string;
+        name: string;
+        kind: 'thread';
+        parentName?: string | undefined;
+      }[] = [];
+      for (const thread of threads.values()) {
+        if (thread.archived || thread.locked) continue;
+        // Private threads are never task destinations (see inspectTaskChannel).
+        if (thread.type === ChannelType.PrivateThread) continue;
+        const parentId = thread.parentId;
+        if (!parentId) continue;
+        const parent = channels.get(parentId);
+        if (!parent || parent.isThread() || parent.parentId !== categoryId) continue;
+        threadRows.push({
+          channelId: thread.id,
+          name: thread.name,
+          kind: 'thread',
+          parentName: parent.name,
+        });
+      }
+      threadRows.sort(
+        (a, b) =>
+          (a.parentName ?? '').localeCompare(b.parentName ?? '') || a.name.localeCompare(b.name),
+      );
+      return [...destinations, ...threadRows];
+    } catch {
+      return [];
+    }
+  },
   findGuildMessage: async (channelId, messageId) => {
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return 'channel-not-found';
@@ -670,6 +756,40 @@ export const opsPortsFor = (
       return 'ok';
     } catch {
       return 'message-not-found';
+    }
+  },
+  previewGuildMessage: async (channelId, messageId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const channel = guild?.channels.cache.get(channelId);
+    if (channel === undefined || !channel.isTextBased()) return undefined;
+    try {
+      const message = await channel.messages.fetch(messageId);
+      return {
+        authorName: message.member?.displayName ?? message.author.displayName,
+        content: message.content.slice(0, 2000),
+      };
+    } catch {
+      return undefined;
+    }
+  },
+  // REST, not the cache: the emoji cache is not guaranteed warm, and this is
+  // only read when an operator opens the picker.
+  listGuildEmojis: async () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    try {
+      const emojis = await guild.emojis.fetch();
+      return [...emojis.values()]
+        .filter((emoji) => emoji.name !== null)
+        .map((emoji) => ({
+          emojiId: emoji.id,
+          name: emoji.name ?? '',
+          animated: emoji.animated ?? false,
+          url: emoji.imageURL({ size: 64 }),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return [];
     }
   },
   // Same gateway-cache honesty as listGuildChannels: the guild's roles,

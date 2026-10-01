@@ -483,7 +483,7 @@ describe('get_server_overview reports the gateway scalar, not the listing size',
         guildId: '111111111111111111',
       }),
     );
-    // ADR 0110: head, note, then one line of JSON.
+    // ADR 0113: head, note, then one line of JSON.
     const lines = text.split('\n');
     expect(lines).toHaveLength(3);
     expect(lines[0]).toContain('210 members');

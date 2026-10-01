@@ -63,6 +63,7 @@ export * as assistantProviderRepo from './repos/assistant-provider.js';
 export * as assistantProvidersRepo from './repos/assistant-providers.js';
 export * as instanceSettingsRepo from './repos/instance-settings.js';
 export * as modelCallsRepo from './repos/model-calls.js';
+export * as searchKeysRepo from './repos/search-keys.js';
 export * as traceRepo from './repos/traces.js';
 export * as conversationRepo from './repos/conversations.js';
 export * as jobRepo from './repos/jobs.js';
@@ -75,3 +76,7 @@ export * as resourceCacheRepo from './repos/resource-cache.js';
 export { computeDocId } from './repos/resource-cache.js';
 export * as roleRepo from './repos/roles.js';
 export * as schema from './schema.js';
+export * as taskRepo from './repos/tasks.js';
+export * as taskBindingRepo from './repos/task-binding.js';
+
+export * as taskNudgeRepo from './repos/task-nudges.js';

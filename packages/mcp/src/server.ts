@@ -78,6 +78,27 @@ import { registerResourceTools, type McpResourcesPort } from './tools/resources.
 import { registerThreadTools, type McpThreadsPort } from './tools/threads.js';
 import { registerDigestTools } from './tools/digest.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
+import {
+  GET_TASK_DETAILS_TOOL_DESCRIPTION,
+  GET_TASK_DETAILS_TOOL_NAME,
+  getTaskDetailsParams,
+  getTaskDetailsText,
+  LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
+  LIST_TASK_REMINDERS_TOOL_NAME,
+  LIST_TASK_TEAMS_TOOL_DESCRIPTION,
+  LIST_TASK_TEAMS_TOOL_NAME,
+  LIST_TASKS_TOOL_NAME,
+  LIST_TASKS_TOOL_DESCRIPTION,
+  listTaskRemindersParams,
+  listTaskRemindersText,
+  listTaskTeamsParams,
+  listTaskTeamsText,
+  listTasksParams,
+  listTasksText,
+  type McpTaskPort,
+  type McpTaskDetailPort,
+} from './tools/tasks.js';
+import { taskAdminTools, runTaskAdmin, type TaskAdminPort } from './tools/task-admin.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
@@ -134,6 +155,9 @@ export interface McpServerDeps {
    * still registers only when the principal carries the send scope.
    */
   readonly send: McpSendPort;
+  readonly tasks?: McpTaskPort | undefined;
+  readonly taskDetail?: McpTaskDetailPort | undefined;
+  readonly taskAdmin?: TaskAdminPort | undefined;
   /**
    * The daemon's per-request read-logging port (ADR 0050). Required like
    * the five ports above: a server without it would serve unaudited reads,
@@ -232,8 +256,143 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       },
     );
   }
+  if (hasSendScope(deps.principal) && deps.taskAdmin) {
+    const taskAdmin = deps.taskAdmin;
+    for (const [name, spec] of Object.entries(taskAdminTools)) {
+      server.tool(name, spec.description, spec.params, async (args: unknown) => {
+        const outcome = await runTaskAdmin(
+          deps.principal,
+          taskAdmin,
+          name as keyof typeof taskAdminTools,
+          args,
+        );
+        return outcome.ok
+          ? { content: [{ type: 'text' as const, text: outcome.text }] }
+          : { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+      });
+    }
+  }
   if (!hasReadScope(deps.principal)) return server;
   const readAudit = deps.readAudit;
+  // Task tracking remains a staged, owner-scoped surface. The port is absent in
+  // isolated legacy clients and no tool is advertised when daemon wiring omits it.
+  const taskPort = deps.tasks;
+  if (taskPort)
+    server.tool(LIST_TASKS_TOOL_NAME, LIST_TASKS_TOOL_DESCRIPTION, listTasksParams, (args) => {
+      try {
+        const outcome = listTasksText(deps.principal, taskPort, args);
+        if (!outcome.ok)
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        return okReadResult(readAudit, {
+          ok: true,
+          text: outcome.text,
+          read: {
+            kind: 'content',
+            action: 'mcp.read.list_tasks',
+            guildId: outcome.guildId,
+            subjectType: 'guild',
+            subjectId: undefined,
+            resultCount: outcome.itemCount,
+          },
+        });
+      } catch {
+        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+      }
+    });
+  if (deps.taskDetail) {
+    const detailPort = deps.taskDetail;
+    server.tool(
+      GET_TASK_DETAILS_TOOL_NAME,
+      GET_TASK_DETAILS_TOOL_DESCRIPTION,
+      getTaskDetailsParams,
+      (args) => {
+        try {
+          const outcome = getTaskDetailsText(deps.principal, detailPort, args);
+          if (!outcome.ok)
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          return okReadResult(readAudit, {
+            ok: true,
+            text: outcome.text,
+            read: {
+              kind: 'content',
+              action: 'mcp.read.get_task_details',
+              guildId: outcome.guildId,
+              subjectType: 'club_task',
+              subjectId: outcome.taskId,
+              resultCount: 1,
+            },
+          });
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
+  if (taskPort)
+    server.tool(
+      LIST_TASK_TEAMS_TOOL_NAME,
+      LIST_TASK_TEAMS_TOOL_DESCRIPTION,
+      listTaskTeamsParams,
+      (args) => {
+        try {
+          const outcome = listTaskTeamsText(deps.principal, taskPort, args);
+          if (!outcome.ok)
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          return okReadResult(readAudit, {
+            ok: true,
+            text: outcome.text,
+            read: {
+              kind: 'content',
+              action: 'mcp.read.list_task_teams',
+              guildId: outcome.guildId,
+              subjectType: 'guild',
+              subjectId: undefined,
+              resultCount: outcome.itemCount,
+            },
+          });
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  if (deps.taskDetail) {
+    const detailPort = deps.taskDetail;
+    server.tool(
+      LIST_TASK_REMINDERS_TOOL_NAME,
+      LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
+      listTaskRemindersParams,
+      (args) => {
+        try {
+          const outcome = listTaskRemindersText(deps.principal, detailPort, args);
+          if (!outcome.ok)
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          return okReadResult(readAudit, {
+            ok: true,
+            text: outcome.text,
+            read: {
+              kind: 'content',
+              action: 'mcp.read.list_task_reminders',
+              guildId: outcome.guildId,
+              subjectType: 'club_task',
+              subjectId: outcome.taskId,
+              resultCount: outcome.itemCount,
+            },
+          });
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
   server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, () => {
     try {
       const outcome = getHealthText(deps.principal, deps.health);

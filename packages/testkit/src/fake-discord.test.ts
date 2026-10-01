@@ -714,7 +714,7 @@ describe('the audit log, per ADR 0019', () => {
   });
 });
 
-describe('thread membership (ADR 0112)', () => {
+describe('thread membership (ADR 0115)', () => {
   const THREAD = '666666666666666666';
   const OWNER = '777777777777777777';
 
@@ -734,7 +734,7 @@ describe('thread membership (ADR 0112)', () => {
   });
 });
 
-describe('thread info (ADR 0112 sweeper fallback)', () => {
+describe('thread info (ADR 0115 sweeper fallback)', () => {
   const THREAD = '666666666666666666';
   const PARENT = '777777777777777777';
   const OTHER_GUILD = '999999999999999999';

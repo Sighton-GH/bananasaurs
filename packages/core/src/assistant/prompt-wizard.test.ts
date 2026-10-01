@@ -188,10 +188,7 @@ describe('buildSystemPrompt — glossary and channels', () => {
 
 describe('buildSystemPrompt — STYLE EXAMPLES', () => {
   const expected: Record<PromptWizardAnswers['tone'], readonly [string, string]> = {
-    friendly: [
-      'Anytime!',
-      "I can't see who's around, sorry! Asking in the main channel is your best bet.",
-    ],
+    friendly: ['Anytime!', "I can't see who's around. The main channel is your best bet."],
     professional: [
       "You're welcome.",
       "I can't see who is available today. The main channel is the best place to ask.",

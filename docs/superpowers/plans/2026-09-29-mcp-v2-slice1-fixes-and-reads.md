@@ -8,14 +8,14 @@
 
 **Tech Stack:** TypeScript (Node 22, strict), `@modelcontextprotocol/sdk` `McpServer.tool`, Zod, Drizzle over better-sqlite3, discord.js v14, Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` (slice 1 row of §9; §4.1–§4.4; §3.3). ADRs written before code: `docs/decisions/0110-mcp-output-format-and-evidence-withholding.md`, `docs/decisions/0111-mcp-scope-split.md`.
+**Spec:** `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` (slice 1 row of §9; §4.1–§4.4; §3.3). ADRs written before code: `docs/decisions/0113-mcp-output-format-and-evidence-withholding.md`, `docs/decisions/0114-mcp-scope-split.md`.
 
 ## Global Constraints
 
 - Read `CLAUDE.md` hard rules 1–9 before starting. Every new tool takes `guildId` and calls `requireReachableGuild(principal, guildId)` **before** any port call (hard rule 2; ADR 0044 §5).
 - Every tool function follows: Zod `safeParse` → id well-formedness → `requireReachableGuild` → port call → render; returns `{ ok: false, message: INVALID_ARGUMENTS_MESSAGE }` on parse failure and `{ ok: false, message: GUILD_REFUSAL_MESSAGE }` on gate failure or any throw. Never throws out of a tool function.
 - Every successful read returns a `read: McpReadRecord` and the server performs it via `okReadResult` (ADR 0050). Structural reads: `kind: 'structural'`. Content reads: `kind: 'content'`.
-- Member-typed text (message bodies, channel topics, audit payloads) stays inside `envelope()`. Names, ids, types and counts are rendered as JSON, not enveloped (ADR 0110).
+- Member-typed text (message bodies, channel topics, audit payloads) stays inside `envelope()`. Names, ids, types and counts are rendered as JSON, not enveloped (ADR 0113).
 - `packages/mcp` must not import `discord.js`, `@bananasaurs/storage` or `@bananasaurs/http` (eslint boundary). Ports are plain data.
 - No new dependencies. No migrations. No Discord side effects in this slice.
 - Tool names must not collide with the task branch's: `list_tasks`, `get_task_details`, `create_task_team`, `configure_task_team`, `set_task_president_role`, `add_task_team_member`, `remove_task_team_member`, `create_club_task`, `edit_club_task`, `append_task_child`, `record_task_progress`, `request_task_completion`.
@@ -101,7 +101,7 @@ Run: `npx vitest run packages/core/src/providers/outbound-safety.test.ts`
 
 ```ts
 /**
- * The MCP connector's withholding policy (ADR 0110): member text that trips a
+ * The MCP connector's withholding policy (ADR 0113): member text that trips a
  * secret or prompt-injection detector is not shown to the operator's model at
  * all. Personal-data detectors are deliberately excluded — the operator runs
  * the club and needs names, emails and phone numbers in its messages.
@@ -125,7 +125,7 @@ Add `detectWithheldEvidence,` to the `./providers/outbound-safety.js` export blo
 ```ts
 import { EVIDENCE_WITHHELD_PREFIX, envelope } from './envelope.js';
 
-describe('evidence withholding (ADR 0110)', () => {
+describe('evidence withholding (ADR 0113)', () => {
   const item = (content: string) => ({
     authorId: '111111111111111111',
     channelId: '222222222222222222',
@@ -159,7 +159,7 @@ import { detectWithheldEvidence } from '@bananasaurs/core';
 export const EVIDENCE_WITHHELD_PREFIX = '[withheld by the evidence safety filter: ';
 
 /**
- * ADR 0110: content that trips a secret or prompt-injection detector is
+ * ADR 0113: content that trips a secret or prompt-injection detector is
  * replaced whole. The locator fields still render, so the operator knows the
  * message exists and can read it in the dashboard.
  */
@@ -171,12 +171,12 @@ const withholdIfFlagged = (content: string): string => {
 };
 ```
 
-In `formatItem`, replace `escapeEvidenceText(entry.content)` with `escapeEvidenceText(withholdIfFlagged(entry.content))`. Update the module doc comment with one sentence pointing at ADR 0110.
+In `formatItem`, replace `escapeEvidenceText(entry.content)` with `escapeEvidenceText(withholdIfFlagged(entry.content))`. Update the module doc comment with one sentence pointing at ADR 0113.
 
 - [ ] **Step 8: Run both test files and the whole mcp package — expect PASS.**
 `npx vitest run packages/mcp packages/core/src/providers` — fix any existing test whose fixture text now trips a detector by changing the fixture text (not the detector), and say which in the RESULT.
 
-- [ ] **Step 9: Commit** — `git add packages/core/src/providers/outbound-safety.ts packages/core/src/providers/outbound-safety.test.ts packages/core/src/index.ts packages/mcp/src/envelope.ts packages/mcp/src/envelope.test.ts` then `git commit -m "feat(mcp): withhold injection- and secret-bearing evidence (ADR 0110)"`
+- [ ] **Step 9: Commit** — `git add packages/core/src/providers/outbound-safety.ts packages/core/src/providers/outbound-safety.test.ts packages/core/src/index.ts packages/mcp/src/envelope.ts packages/mcp/src/envelope.test.ts` then `git commit -m "feat(mcp): withhold injection- and secret-bearing evidence (ADR 0113)"`
 
 ---
 
@@ -234,7 +234,7 @@ import { detectWithheldEvidence } from '@bananasaurs/core';
 import { escapeEvidenceText } from './envelope.js';
 
 /**
- * ADR 0110: structural results (names, ids, types, counts) are compact JSON,
+ * ADR 0113: structural results (names, ids, types, counts) are compact JSON,
  * not evidence blocks. The envelope is kept for text people typed as prose.
  * Member-chosen names still pass through `safeName`, which breaks envelope
  * markers and withholds detector hits, so JSON output can never forge a
@@ -281,7 +281,7 @@ const data = {
   - `list_roles`: head unchanged text; data `{ roles: [{ id, name: safeName, position, color: hex, managedByBananasaurs }] }`.
   - `list_members`: head unchanged text (with cursor sentence); data `{ members: [{ id, username: safeName, displayName: safeName, roleIds, joinedAt: iso | null }], nextCursor: string | null }`.
   - `list_threads`: head unchanged; data `{ threads: [{ id, name: safeName, parentId, archived }] }`.
-  Update the module comment's "Ruling M4-D11" paragraph: names now render as escaped JSON under ADR 0110.
+  Update the module comment's "Ruling M4-D11" paragraph: names now render as escaped JSON under ADR 0113.
 
 - [ ] **Step 8: Fix `list_threads` read recording in `server.ts`:** the handler currently returns `outcome.text` without `okReadResult`; change it to `return okReadResult(readAudit, outcome)` on success, matching `list_roles`. Add a server test that a successful `list_threads` call invokes `logStructuralRead` once.
 
@@ -289,7 +289,7 @@ const data = {
 
 - [ ] **Step 10: Run** `npx vitest run packages/mcp` — PASS.
 
-- [ ] **Step 11: Commit** — add the files above; `git commit -m "feat(mcp): compact JSON for overview and structural lists (ADR 0110)"`
+- [ ] **Step 11: Commit** — add the files above; `git commit -m "feat(mcp): compact JSON for overview and structural lists (ADR 0113)"`
 
 ---
 
@@ -469,7 +469,7 @@ Behaviour:
 - [ ] **Step 1: Failing tests**: authorize request with `scope: 'bananasaurs:read bananasaurs:roles'` is accepted and the token carries both; `bananasaurs:tasks` likewise; an unknown scope is still `invalid_scope`; `scopes_supported` in the metadata route lists all four; consent page renders the two new descriptions; `hasRolesScope`/`hasTasksScope` true/false cases. **And a registration test:** a principal holding only `bananasaurs:roles` gets an empty `tools/list` (no read or send tools leak to it).
 - [ ] **Step 2: Run** `npx vitest run packages/http/src packages/mcp/src/scope.test.ts packages/mcp/src/server.test.ts` — FAIL.
 - [ ] **Step 3: Implement.** Also add the two scopes to any dashboard/CLI place that enumerates scopes for display (`rg -n "bananasaurs:send" packages/dashboard/src packages/cli/src apps/daemon/src`) — display only.
-- [ ] **Step 4: Run — PASS. Step 5: Commit** — `feat(oauth): add bananasaurs:roles and bananasaurs:tasks scopes (ADR 0111)`
+- [ ] **Step 4: Run — PASS. Step 5: Commit** — `feat(oauth): add bananasaurs:roles and bananasaurs:tasks scopes (ADR 0114)`
 
 ---
 

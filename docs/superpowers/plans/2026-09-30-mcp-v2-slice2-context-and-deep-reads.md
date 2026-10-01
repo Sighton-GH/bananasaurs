@@ -4,23 +4,23 @@
 
 **Goal:** Tell the operator's model what Bananasaurs is and how Discord formats text, give it the server context and the club's resource cache, and let it read threads (including private threads the owner shares), whole categories since a date, unanswered @help questions, and message metadata.
 
-**Architecture:** New read tools in `packages/mcp` registered via `registerReadTool` (slice 1). One migration (tag `0080`) adds `reply_to_message_id`, `mentioned_role_ids` and an author index to `archive_messages`; ingestion fills them from fields `MessageEvent` already carries. Private threads are read live through two new `DiscordPort` methods and never archived (ADR 0112). No Discord side effects.
+**Architecture:** New read tools in `packages/mcp` registered via `registerReadTool` (slice 1). One migration (tag `0080`) adds `reply_to_message_id`, `mentioned_role_ids` and an author index to `archive_messages`; ingestion fills them from fields `MessageEvent` already carries. Private threads are read live through two new `DiscordPort` methods and never archived (ADR 0115). No Discord side effects.
 
 **Tech Stack:** TypeScript (Node 22, strict), `@modelcontextprotocol/sdk`, Zod, Drizzle/better-sqlite3, discord.js v14 REST, Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` (slice 2 row of §9; §4.4, §4.5, §6.4, §7). ADR written before code: `docs/decisions/0112-mcp-private-thread-reads-and-live-message-metadata.md`. Slice 1 ADRs 0110 (output format, evidence withholding) and 0111 (scopes) bind this slice.
+**Spec:** `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` (slice 2 row of §9; §4.4, §4.5, §6.4, §7). ADR written before code: `docs/decisions/0115-mcp-private-thread-reads-and-live-message-metadata.md`. Slice 1 ADRs 0110 (output format, evidence withholding) and 0111 (scopes) bind this slice.
 
 ## Global Constraints
 
 - Read `CLAUDE.md` hard rules 1–9. Every new tool takes `guildId` and calls `requireReachableGuild(principal, guildId)` before any port call (hard rule 2).
 - Every tool: Zod `safeParse` → id well-formedness → `requireReachableGuild` → port call → render; `INVALID_ARGUMENTS_MESSAGE` on parse failure; `GUILD_REFUSAL_MESSAGE` on gate failure or any throw; never throws. Register new read tools with `registerReadTool(ctx, name, description, params, run)` from `packages/mcp/src/register.ts`.
-- Member-typed text (message bodies, server card, resource text) goes through `envelope()` (which withholds detector hits — ADR 0110). Structure renders via `structuredText(head, data)` and names via `safeName` (`packages/mcp/src/structured.ts`).
+- Member-typed text (message bodies, server card, resource text) goes through `envelope()` (which withholds detector hits — ADR 0113). Structure renders via `structuredText(head, data)` and names via `safeName` (`packages/mcp/src/structured.ts`).
 - Reads of member content are `kind: 'content'` read records (one audit row); structure-only reads are `kind: 'structural'`.
 - Channel/role arguments accept ids or names via `resolveChannelRef`/`resolveRoleRef` (`packages/mcp/src/resolve.ts`), resolved only after the guild gate.
 - `packages/mcp` must not import `discord.js`, `@bananasaurs/storage` or `@bananasaurs/http`. Ports are plain data; daemon ports project fields by name.
 - Storage functions take `GuildScope` first and filter with `scope.only(...)`.
 - No new dependencies. No new outbound network destinations: resource tools read the cache only and never enqueue a fetch. No Discord side effects.
-- Migration tags for this work are `0080`–`0089` (journal `idx` stays sequential); see ADR 0112 §3.
+- Migration tags for this work are `0080`–`0089` (journal `idx` stays sequential); see ADR 0115 §3.
 - Tool names must not collide with the task-tracking branch's (`list_tasks`, `get_task_details`, `create_task_team`, `configure_task_team`, `set_task_president_role`, `add_task_team_member`, `remove_task_team_member`, `create_club_task`, `edit_club_task`, `append_task_child`, `record_task_progress`, `request_task_completion`).
 - Gates: `npm run typecheck`, `npm run lint`, `npm run test`, each alone, never piped through `tail`/`head`. Shell: explicit paths for `rg`/`git`; no `cd x && …`; no heredoc-plus-redirect.
 - Before the first gate in an oc worktree run `bash /home/bryan/projects/bananasaurs/.claude/worktrees/mcp-connector-v2/.oc-runs/mcp-v2-s1/relink.sh`.
@@ -140,7 +140,7 @@ export const registerResourceTools: (ctx: RegisterContext, port: McpResourcesPor
 
 ---
 
-### Task 4: `read_thread`, private threads the owner shares (ADR 0112)
+### Task 4: `read_thread`, private threads the owner shares (ADR 0115)
 
 **Files:** Modify `packages/core/src/discord/port.ts`, `packages/discord/src/rest/port.ts`, `packages/discord/src/rest/port.test.ts`, `packages/testkit/src/fake-discord.ts`, `packages/mcp/src/tools/guild.ts`, `packages/mcp/src/tools/guild.test.ts`, `packages/mcp/src/server.ts`, `packages/mcp/src/read-audit.ts`, `packages/mcp/src/index.ts`, `apps/daemon/src/mcp/wiring.ts`, `apps/daemon/src/mcp/wiring.test.ts`. Create `packages/mcp/src/tools/threads.ts`, `packages/mcp/src/tools/threads.test.ts`.
 
@@ -156,7 +156,7 @@ export interface McpThreadsPort {
   readonly archiveThread: (guildId: GuildId, threadId: string, beforeMessageId: string | undefined, limit: number) => readonly McpArchiveMessage[];
   /** Thread facts from the live cache/REST: undefined when not a thread in this guild. */
   readonly threadInfo: (guildId: GuildId, threadId: string) => Promise<{ readonly id: string; readonly name: string; readonly parentId: string; readonly isPrivate: boolean } | undefined>;
-  /** ADR 0112: bot AND owner are both members (live). */
+  /** ADR 0115: bot AND owner are both members (live). */
   readonly privateThreadReadable: (guildId: GuildId, threadId: string) => Promise<boolean>;
   /** Live REST read of a private thread; never archived. */
   readonly liveThreadMessages: (guildId: GuildId, threadId: string, beforeMessageId: string | undefined, limit: number) => Promise<readonly McpArchiveMessage[]>;

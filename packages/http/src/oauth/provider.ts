@@ -14,7 +14,7 @@ export const REFRESH_TOKEN_TTL_MS = 2_592_000_000;
 export const AUTHORIZATION_CODE_TTL_MS = 300_000;
 export const PENDING_AUTHORIZATION_TTL_MS = 600_000;
 
-/** The scope vocabulary (ruling PR-103, extended by ADR 0111): exactly these four, not `write`. */
+/** The scope vocabulary (ruling PR-103, extended by ADR 0114): exactly these four, not `write`. */
 export const OAUTH_SCOPES = [
   'bananasaurs:read',
   'bananasaurs:send',

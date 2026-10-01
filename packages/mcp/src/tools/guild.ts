@@ -39,7 +39,7 @@ import {
  * `node_modules/discord-api-types/rest/v10/guild.d.ts`) — a 1000-member page
  * is a large tool result, and 100 is the defensible cap.
  *
- * Ruling M4-D11, as amended by ADR 0110 — member-chosen names are escaped
+ * Ruling M4-D11, as amended by ADR 0113 — member-chosen names are escaped
  * JSON strings, not envelope content. Channel names, topics, role names and
  * display names are all text a human typed, so each passes through `safeName`
  * (envelope markers broken, detector hits withheld) before it lands in the

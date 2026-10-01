@@ -21,8 +21,8 @@ import { registerReadTool, type ReadOutcome, type RegisterContext } from '../reg
  * three reads), so an unfetched resource answers with the dashboard pointer
  * and stops there. Resource text is member- or owner-typed prose, so hits
  * and chunks travel inside `envelope()` (which withholds detector hits —
- * ADR 0110) while the catalogue entries render as compact JSON with
- * `safeName` framing, like every other structured string (ADR 0110 §2).
+ * ADR 0113) while the catalogue entries render as compact JSON with
+ * `safeName` framing, like every other structured string (ADR 0113 §2).
  *
  * The port takes the already-resolved `GuildId`, never raw input (hard rule
  * 2). The daemon projects the assistant repositories field by field in

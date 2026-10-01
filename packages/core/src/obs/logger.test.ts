@@ -100,6 +100,14 @@ describe('safeLogFields — allowlist, not denylist', () => {
     }
   });
 
+  it('keeps nudge slot ids and kinds, which are routing facts rather than member text', () => {
+    expect(safeLogFields({ slotId: 'review:task:2', kind: 'review', guildId: '1' })).toEqual({
+      slotId: 'review:task:2',
+      kind: 'review',
+      guildId: '1',
+    });
+  });
+
   it('allowlists the OAuth id fields (ADR 0045 D8)', () => {
     // An id is a row key, never a credential — the credential is the token
     // VALUE, which has no allowlisted name. `code` stays allowlisted for its

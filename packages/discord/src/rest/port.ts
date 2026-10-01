@@ -509,7 +509,7 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     },
 
     /**
-     * Thread membership for ADR 0112's private-thread reads: 200 answers
+     * Thread membership for ADR 0115's private-thread reads: 200 answers
      * true, 404 answers false; anything else still throws. `_guildId` is
      * the mandatory scope key with nothing to address — the thread-member
      * route carries no guild id, like the other channel routes above.
@@ -526,7 +526,7 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
 
     /**
      * Thread facts over REST for threads the gateway cache has swept
-     * (ADR 0112): `GET /channels/{thread}`. `undefined` on 404 (gone) or 403
+     * (ADR 0115): `GET /channels/{thread}`. `undefined` on 404 (gone) or 403
      * (no access), on a channel outside this guild, on a non-thread, or on a
      * thread with no parent — all routine here, reported the same way rather
      * than thrown, so the caller answers "no thread" instead of failing.

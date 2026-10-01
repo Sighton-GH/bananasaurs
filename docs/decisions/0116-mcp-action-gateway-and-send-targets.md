@@ -18,7 +18,7 @@ Spec: `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` §3.1, §3.
 2. **`mcp_actions` is the ledger** for every MCP write, keyed
    `(guild_id, idempotency_key)` and unique. Each row holds the action `kind`,
    an `args_hash`, `status`, the resulting ids, an optional `undo_json`, the
-   token id, and timestamps. `send_message` moves onto it: migration `0081`
+   token id, and timestamps. `send_message` moves onto it: migration `0092`
    copies every `mcp_sends` row into `mcp_actions` (kind `message.send`,
    `args_hash` = the old `content_hash`), and `mcp_sends` becomes history that
    nothing writes. A plain-text send's `args_hash` is still

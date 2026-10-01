@@ -182,9 +182,9 @@ export class FakeDiscord implements DiscordPort {
    */
   private moderationState = new Map<Snowflake, { until: number } | 'kicked'>();
   private messages = new Map<string, FakeMessage>();
-  /** Thread memberships (`threadId` -> member user ids), for `isThreadMember` (ADR 0112). */
+  /** Thread memberships (`threadId` -> member user ids), for `isThreadMember` (ADR 0115). */
   private threadMembers = new Map<Snowflake, Set<Snowflake>>();
-  /** Thread facts (`threadId` -> info), for `fetchThreadInfo` (ADR 0112). */
+  /** Thread facts (`threadId` -> info), for `fetchThreadInfo` (ADR 0115). */
   private threadInfos = new Map<Snowflake, FakeThreadInfo>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
@@ -248,7 +248,7 @@ export class FakeDiscord implements DiscordPort {
     this.members.set(userId, { userId, roleIds: new Set(roleIds), isGuildOwner });
   }
   /**
-   * Adds a user to a thread's membership, for `isThreadMember` (ADR 0112).
+   * Adds a user to a thread's membership, for `isThreadMember` (ADR 0115).
    * Absent unless added: a thread the fake was never told about has no
    * members, the way an unknown thread answers 404 on the real endpoint.
    */
@@ -258,7 +258,7 @@ export class FakeDiscord implements DiscordPort {
     this.threadMembers.set(threadId, members);
   }
   /**
-   * Describes a thread for `fetchThreadInfo` (ADR 0112's sweeper fallback).
+   * Describes a thread for `fetchThreadInfo` (ADR 0115's sweeper fallback).
    * `guildId` defaults to this fake's guild; pass another guild's id to
    * model a cross-guild thread, which answers `undefined` for this guild —
    * the way the REST adapter folds a foreign `guild_id` — rather than
@@ -1307,7 +1307,7 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
-   * Thread membership (ADR 0112): what `addThreadMember` recorded. The real
+   * Thread membership (ADR 0115): what `addThreadMember` recorded. The real
    * endpoint folds an unknown thread into 404 (false); the fake answers the
    * same — absence is false, never a throw — so a caller under test sees the
    * same refusal it would against real Discord.
@@ -1323,7 +1323,7 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
-   * Thread facts (ADR 0112's sweeper fallback): what `defineThread`
+   * Thread facts (ADR 0115's sweeper fallback): what `defineThread`
    * recorded. An unknown thread answers `undefined` — mirroring the REST
    * adapter's 404/403 fold, not a thrown error — as does a thread from
    * another guild, mirroring its foreign-`guild_id` fold. The guild id is

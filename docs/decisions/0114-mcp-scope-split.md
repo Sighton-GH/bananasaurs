@@ -1,4 +1,4 @@
-# ADR 0111: The MCP connector's OAuth scopes split by blast radius
+# ADR 0114: The MCP connector's OAuth scopes split by blast radius
 
 Status: accepted (2026-09-29)
 

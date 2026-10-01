@@ -787,6 +787,7 @@ export const assistantInvokeHandler = (deps: {
             // never returns the conversation to itself.
             ...(conversationId === undefined ? {} : { conversationId }),
             askerName: payload.authorName,
+            referencedMessageId: payload.referencedMessageId,
           });
         } finally {
           stopTyping();

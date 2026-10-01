@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { WebResult } from './tools.js';
+import { SearchHttpError } from './web-search.js';
 
 /**
  * The Brave Search API (ADR 0066). The one outbound destination web search
@@ -43,8 +44,14 @@ export const braveWebSearch = async (
     headers: { accept: 'application/json', 'x-subscription-token': options.apiKey },
     signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
   });
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
-  const parsed = braveResponse.safeParse(await response.json());
+  if (!response.ok) throw new SearchHttpError(response.status);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error('Brave returned an invalid response');
+  }
+  const parsed = braveResponse.safeParse(body);
   if (!parsed.success) throw new Error('Brave returned an invalid response');
   return (parsed.data.web?.results ?? []).flatMap((result) =>
     result.url === undefined || !/^https?:\/\//.test(result.url)
