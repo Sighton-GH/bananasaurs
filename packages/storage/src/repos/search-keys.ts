@@ -228,9 +228,34 @@ export type SearchReserveResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly limit: 'daily' | 'monthly' | 'missing'; readonly availableAt: number };
 
-/** A row counts toward a window while `at` is strictly after its start. */
-const windowAts = (db: Db, keyId: string, windowStart: number): number[] =>
+/** How many rows for `keyId` fall in the window starting at `windowStart`. */
+const windowCount = (db: Db, keyId: string, windowStart: number): number =>
   db
+    .select({ n: sql<number>`count(*)` })
+    .from(assistantSearchCalls)
+    .where(
+      and(
+        eq(assistantSearchCalls.keyId, keyId),
+        sql`${assistantSearchCalls.at} > ${windowStart}`,
+      ),
+    )
+    .get()?.n ?? 0;
+
+/**
+ * When a window holding `count` rows is at `limit`, the oldest row that
+ * still counts frees its slot first — hence the `(count - limit)`-th
+ * ascending timestamp plus the window length. One row, not the whole
+ * window, so a large window never loads every timestamp into JS.
+ */
+const windowAvailableAt = (
+  db: Db,
+  keyId: string,
+  windowStart: number,
+  count: number,
+  limit: number,
+  windowMs: number,
+): number => {
+  const row = db
     .select({ at: assistantSearchCalls.at })
     .from(assistantSearchCalls)
     .where(
@@ -239,17 +264,11 @@ const windowAts = (db: Db, keyId: string, windowStart: number): number[] =>
         sql`${assistantSearchCalls.at} > ${windowStart}`,
       ),
     )
-    .all()
-    .map((row) => row.at);
-
-/**
- * When a window holding `count` rows is at `limit`, the oldest row that
- * still counts frees its slot first — hence the `(count - limit)`-th
- * ascending timestamp plus the window length.
- */
-const availableAt = (ats: number[], limit: number, windowMs: number): number => {
-  const sorted = [...ats].sort((a, b) => a - b);
-  return sorted[sorted.length - limit]! + windowMs;
+    .orderBy(asc(assistantSearchCalls.at))
+    .limit(1)
+    .offset(count - limit)
+    .get();
+  return row!.at + windowMs;
 };
 
 /**
@@ -283,23 +302,37 @@ export const reserveSearchCall = (
       .run();
     // 3. Sliding 24-hour window.
     if (input.dailyLimit !== null) {
-      const ats = windowAts(db, input.keyId, input.now - DAY_MS);
-      if (ats.length >= input.dailyLimit) {
+      const dayCount = windowCount(db, input.keyId, input.now - DAY_MS);
+      if (dayCount >= input.dailyLimit) {
         return {
           ok: false as const,
           limit: 'daily' as const,
-          availableAt: availableAt(ats, input.dailyLimit, DAY_MS),
+          availableAt: windowAvailableAt(
+            db,
+            input.keyId,
+            input.now - DAY_MS,
+            dayCount,
+            input.dailyLimit,
+            DAY_MS,
+          ),
         };
       }
     }
     // 4. Sliding 31-day window.
     if (input.monthlyLimit !== null) {
-      const ats = windowAts(db, input.keyId, input.now - MONTH_WINDOW_MS);
-      if (ats.length >= input.monthlyLimit) {
+      const monthCount = windowCount(db, input.keyId, input.now - MONTH_WINDOW_MS);
+      if (monthCount >= input.monthlyLimit) {
         return {
           ok: false as const,
           limit: 'monthly' as const,
-          availableAt: availableAt(ats, input.monthlyLimit, MONTH_WINDOW_MS),
+          availableAt: windowAvailableAt(
+            db,
+            input.keyId,
+            input.now - MONTH_WINDOW_MS,
+            monthCount,
+            input.monthlyLimit,
+            MONTH_WINDOW_MS,
+          ),
         };
       }
     }
@@ -327,16 +360,27 @@ export const searchKeyUsage = (
   },
 ): SearchKeyUsage =>
   readInstance(scope, (db) => {
-    const dayAts = windowAts(db, input.keyId, input.now - DAY_MS);
-    const monthAts = windowAts(db, input.keyId, input.now - MONTH_WINDOW_MS);
+    const dayCount = windowCount(db, input.keyId, input.now - DAY_MS);
+    const monthCount = windowCount(db, input.keyId, input.now - MONTH_WINDOW_MS);
     const candidates: number[] = [];
-    if (input.dailyLimit !== null && dayAts.length >= input.dailyLimit)
-      candidates.push(availableAt(dayAts, input.dailyLimit, DAY_MS));
-    if (input.monthlyLimit !== null && monthAts.length >= input.monthlyLimit)
-      candidates.push(availableAt(monthAts, input.monthlyLimit, MONTH_WINDOW_MS));
+    if (input.dailyLimit !== null && dayCount >= input.dailyLimit)
+      candidates.push(
+        windowAvailableAt(db, input.keyId, input.now - DAY_MS, dayCount, input.dailyLimit, DAY_MS),
+      );
+    if (input.monthlyLimit !== null && monthCount >= input.monthlyLimit)
+      candidates.push(
+        windowAvailableAt(
+          db,
+          input.keyId,
+          input.now - MONTH_WINDOW_MS,
+          monthCount,
+          input.monthlyLimit,
+          MONTH_WINDOW_MS,
+        ),
+      );
     return {
-      last24h: dayAts.length,
-      last31d: monthAts.length,
+      last24h: dayCount,
+      last31d: monthCount,
       ...(candidates.length === 0 ? {} : { availableAt: Math.max(...candidates) }),
     };
   });
