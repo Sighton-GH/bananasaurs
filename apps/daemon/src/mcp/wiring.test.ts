@@ -3545,4 +3545,65 @@ describe('/mcp digest tools over real storage', () => {
       await digestApp.close();
     }
   });
+
+  it('read_digest at limit 1000 over 1001 rows emits a cursor that reaches the last row', async () => {
+    // The probe row: the tool asks storage for limit + 1, so storage must
+    // answer 1001 rows here — clamping the probe away would silently drop
+    // the cursor at exactly the public max.
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    archiveRepo.enableChannel(scopeA, {
+      channelId: HELP_CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    const base = 700000000000000000n;
+    for (let i = 1; i <= 1001; i += 1) {
+      archiveRepo.upsertMessage(scopeA, {
+        messageId: String(base + BigInt(i)),
+        channelId: HELP_CHANNEL,
+        authorId: ASKER,
+        content: `bulk message ${String(i)}`,
+        createdAt: clock + i,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const page1 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+            limit: 1000,
+          })
+        ).body,
+      );
+      expect(page1.isError).not.toBe(true);
+      const [head1] = page1.text.split('\n');
+      expect(head1).toContain('showing 1000 messages');
+      const cursor = page1.text.match(/Next cursor: (\S+)/)?.[1];
+      expect(cursor).toBeDefined();
+      const page2 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+            limit: 1000,
+            cursor,
+          })
+        ).body,
+      );
+      expect(page2.isError).not.toBe(true);
+      const [head2] = page2.text.split('\n');
+      expect(head2).toContain('showing 1 message');
+      expect(page2.text).not.toContain('Next cursor');
+      expect(page2.text).toContain('bulk message 1001');
+    } finally {
+      await digestApp.close();
+    }
+  });
 });

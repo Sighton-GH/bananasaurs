@@ -1003,6 +1003,13 @@ export const listChannelHistory = (
 /** `read_digest` reads bigger pages than the search/history tools (plan Task 5). */
 export const DIGEST_LIMIT_MAX = 1000;
 const DIGEST_LIMIT_DEFAULT = 500;
+/**
+ * The tool asks for `limit + 1` rows so one row past the page proves there
+ * is more (never a silent cut). Storage therefore accepts one row over the
+ * public max for the probe; the tool's own schema still caps callers at
+ * `DIGEST_LIMIT_MAX`.
+ */
+const DIGEST_LIMIT_PROBE_MAX = DIGEST_LIMIT_MAX + 1;
 
 const sanitizeDigestLimit = (limit: number, fallback: number, max: number): number => {
   if (!Number.isFinite(limit)) return fallback;
@@ -1030,7 +1037,7 @@ export const listMessagesSince = (
 ): ArchiveMessage[] =>
   read(scope, (db) => {
     if (input.channelIds.length === 0) return [];
-    const limit = sanitizeDigestLimit(input.limit, DIGEST_LIMIT_DEFAULT, DIGEST_LIMIT_MAX);
+    const limit = sanitizeDigestLimit(input.limit, DIGEST_LIMIT_DEFAULT, DIGEST_LIMIT_PROBE_MAX);
     return db
       .select()
       .from(archiveMessages)
