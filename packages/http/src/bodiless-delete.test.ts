@@ -4,12 +4,13 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, authzRepo, guildRepo, loggingRepo } from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from './server.js';
 import { hashPassword } from './secrets.js';
 import { testInstanceFor, testPortsFor } from './test-support.js';
 import { registerOpsWriteRoutes } from './routes/ops-write.js';
+import { registerWriteRoutes } from './routes/write.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const PASSWORD = 'correct horse battery staple';
@@ -57,7 +58,15 @@ beforeEach(async () => {
   });
   accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), ACCOUNT);
 
-  app = createServer({ deps, registerRoutes: registerOpsWriteRoutes });
+  app = createServer({
+    deps,
+    registerRoutes: (fastify, guard, routesDeps) => {
+      registerOpsWriteRoutes(fastify, guard, routesDeps);
+      // DELETE /api/log-routes/:routeId lives in `write.ts` beside the other
+      // log-route writes, so it is registered here too.
+      registerWriteRoutes(fastify, guard, routesDeps);
+    },
+  });
 });
 
 afterEach(async () => {
@@ -127,6 +136,27 @@ describe('bodiless DELETE with a JSON content-type', () => {
       expect(res.statusCode).toBe(200);
     },
   );
+
+  it('a bodiless DELETE on a log route reaches its route (status is not 500)', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['logging.manage']);
+    const routeId = loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+      name: 'mod log',
+      channelId: '333333333333333333',
+      includeContent: true,
+      enabled: true,
+      eventKinds: ['member_join'],
+      excludedChannelIds: [],
+      nowMs: clock,
+    }).routeId;
+    const res = await app.inject({
+      method: 'DELETE',
+      url: `/api/log-routes/${routeId}`,
+      headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)).toBeUndefined();
+  });
 
   it('a body over the limit still answers 413', async () => {
     const { cookie, csrf } = await signIn();

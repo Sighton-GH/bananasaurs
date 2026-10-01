@@ -1,35 +1,44 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { snowflakeIdSchema, LOG_EVENT_KINDS } from '@bananasaurs/core';
+import { logRouteIdSchema, logRouteInputSchema } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
 /**
- * The dashboard's two write endpoints (`docs/19` §6.10; `docs/decisions/
- * 0031-dashboard-audit-attribution.md` for the audit row shape).
+ * The dashboard's logging write endpoints (`docs/19` §6.10; `docs/decisions/
+ * 0031-dashboard-audit-attribution.md` for the audit row shape) — create,
+ * update and delete for the named routes (ADR 0123), beside the killswitch.
  *
- * Neither goes through `createDispatcher` — it resolves guilds from a
+ * None goes through `createDispatcher` — it resolves guilds from a
  * CLI-shaped request and hard-codes `actorType: 'operator_cli'` in its own
  * audit row, so an HTTP request routed through it would misattribute itself.
  * Each handler here constructs its own `OpsAuditWrite` and calls
- * `ports.recordAudit` directly.
+ * `ports.recordAudit` directly. The enabled toggle lives in `ops-write.ts`
+ * beside the other operator-command mirrors.
  */
 
 const killswitchBodySchema = z.object({ on: z.boolean() });
 
-const eventKindSchema = z.string().refine(
-  (k) => LOG_EVENT_KINDS.includes(k),
-  (k) => ({
-    message: `no such log event kind: ${k}`,
-  }),
-);
-
-const logRouteBodySchema = z.object({
-  eventKind: eventKindSchema,
-  channelId: snowflakeIdSchema,
-  includeContent: z.boolean(),
+/**
+ * The audited shape of a route: the same projection the operator CLI writes
+ * into its `before`/`after`, so the two trails read the same.
+ */
+const routeAuditShape = (route: {
+  readonly name: string;
+  readonly channelId: string;
+  readonly includeContent: boolean;
+  readonly enabled: boolean;
+  readonly eventKinds: readonly string[];
+  readonly excludedChannelIds: readonly string[];
+}): Record<string, unknown> => ({
+  name: route.name,
+  channelId: route.channelId,
+  includeContent: route.includeContent,
+  enabled: route.enabled,
+  eventKinds: [...route.eventKinds],
+  excludedChannelIds: [...route.excludedChannelIds],
 });
 
 export const registerWriteRoutes = (
@@ -70,30 +79,69 @@ export const registerWriteRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'logging.manage', reply)) return reply;
 
-    const parsed = logRouteBodySchema.safeParse(request.body);
+    const parsed = logRouteInputSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
-    const before = ports.listRoutes().find((r) => r.eventKind === parsed.data.eventKind);
-    ports.setRoute(parsed.data);
+    const route = ports.createRoute(parsed.data);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'log_route.set',
+      action: 'log_route.created',
       subjectType: 'log_route',
-      subjectId: parsed.data.eventKind,
-      before:
-        before === undefined
-          ? undefined
-          : {
-              channelId: before.channelId,
-              includeContent: before.includeContent,
-              enabled: before.enabled,
-            },
-      after: {
-        channelId: parsed.data.channelId,
-        includeContent: parsed.data.includeContent,
-        enabled: true,
-      },
+      subjectId: route.routeId,
+      before: undefined,
+      after: routeAuditShape(route),
+    });
+
+    return reply.status(201).send({ ok: true, route });
+  });
+
+  app.put<{ Params: { routeId: string } }>('/api/log-routes/:routeId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'logging.manage', reply)) return reply;
+
+    const id = logRouteIdSchema.safeParse(request.params.routeId);
+    if (!id.success) return badRequest(reply, id.error);
+    const parsed = logRouteInputSchema.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+
+    const ports = deps.portsFor(session.scope);
+    const before = ports.getRoute(id.data);
+    if (before === undefined) return reply.status(404).send({ error: 'not-found' });
+    const route = ports.updateRoute(id.data, parsed.data);
+    if (route === undefined) return reply.status(404).send({ error: 'not-found' });
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'log_route.updated',
+      subjectType: 'log_route',
+      subjectId: route.routeId,
+      before: routeAuditShape(before),
+      after: routeAuditShape(route),
+    });
+
+    return reply.status(200).send({ ok: true, route });
+  });
+
+  app.delete<{ Params: { routeId: string } }>('/api/log-routes/:routeId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'logging.manage', reply)) return reply;
+
+    const id = logRouteIdSchema.safeParse(request.params.routeId);
+    if (!id.success) return badRequest(reply, id.error);
+
+    const ports = deps.portsFor(session.scope);
+    const before = ports.getRoute(id.data);
+    if (before === undefined) return reply.status(404).send({ error: 'not-found' });
+    ports.deleteRoute(id.data);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'log_route.deleted',
+      subjectType: 'log_route',
+      subjectId: id.data,
+      before: routeAuditShape(before),
+      after: undefined,
     });
 
     return reply.status(200).send({ ok: true });

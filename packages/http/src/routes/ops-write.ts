@@ -2,10 +2,10 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import {
   CAPABILITIES,
-  LOG_EVENT_KINDS,
   MAX_PANEL_OPTIONS,
   PANEL_BEHAVIOURS,
   PANEL_COMPONENTS,
+  logRouteIdSchema,
   panelDefinitionSchema,
   snowflakeIdSchema,
 } from '@bananasaurs/core';
@@ -32,13 +32,6 @@ import { requireCapability } from './capability.js';
  * or 409 as the union's own comments direct; `already-present` /
  * `not-present` are real answers and return 200 with the outcome named.
  */
-
-const eventKindParamSchema = z.string().refine(
-  (k) => LOG_EVENT_KINDS.includes(k),
-  (k) => ({
-    message: `no such log event kind: ${k}`,
-  }),
-);
 
 const settingsBodySchema = z.discriminatedUnion('key', [
   z.object({ key: z.literal('dry_run'), value: z.boolean() }),
@@ -390,27 +383,27 @@ export const registerOpsWriteRoutes = (
     return reply.status(200).send({ ok: true });
   });
 
-  app.post<{ Params: { eventKind: string }; Body: { enabled?: boolean } }>(
-    '/api/log-routes/:eventKind/enabled',
+  app.post<{ Params: { routeId: string }; Body: { enabled?: boolean } }>(
+    '/api/log-routes/:routeId/enabled',
     (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'logging.manage', reply)) return reply;
 
-      const kindParsed = eventKindParamSchema.safeParse(request.params.eventKind);
+      const idParsed = logRouteIdSchema.safeParse(request.params.routeId);
       const bodyParsed = z.object({ enabled: z.boolean() }).safeParse(request.body);
-      if (!kindParsed.success || !bodyParsed.success) {
+      if (!idParsed.success || !bodyParsed.success) {
         return reply.status(400).send({ error: 'bad-request' });
       }
 
       const ports = deps.portsFor(session.scope);
-      const existed = ports.setRouteEnabled(kindParsed.data, bodyParsed.data.enabled);
+      const existed = ports.setRouteEnabled(idParsed.data, bodyParsed.data.enabled);
       if (!existed) return reply.status(404).send({ error: 'not-found' });
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
         action: bodyParsed.data.enabled ? 'log_route.enabled' : 'log_route.disabled',
         subjectType: 'log_route',
-        subjectId: kindParsed.data,
+        subjectId: idParsed.data,
         before: { enabled: !bodyParsed.data.enabled },
         after: { enabled: bodyParsed.data.enabled },
       });

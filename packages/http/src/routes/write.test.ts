@@ -4,7 +4,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, authzRepo, effectRepo, guildRepo, loggingRepo } from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
@@ -223,14 +223,19 @@ describe('POST /api/killswitch', () => {
 });
 
 describe('POST /api/log-routes', () => {
-  const EVENT_KIND = 'message_delete';
   const CHANNEL = '333333333333333333';
+  const UNKNOWN_ROUTE_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+  const validBody = {
+    channelId: CHANNEL,
+    eventKinds: ['message_delete'],
+  };
 
   it('answers 401 with no session', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/log-routes',
-      payload: { eventKind: EVENT_KIND, channelId: CHANNEL, includeContent: false },
+      payload: validBody,
     });
     expect(response.statusCode).toBe(401);
   });
@@ -241,24 +246,32 @@ describe('POST /api/log-routes', () => {
       method: 'POST',
       url: '/api/log-routes',
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { eventKind: EVENT_KIND, channelId: CHANNEL, includeContent: false },
+      payload: validBody,
     });
     expect(response.statusCode).toBe(403);
   });
 
-  it('answers 400 for an unknown event kind', async () => {
+  it.each([
+    { name: 'an unknown event kind', body: { channelId: CHANNEL, eventKinds: ['not-a-real-kind'] } },
+    { name: 'an empty event-kind list', body: { channelId: CHANNEL, eventKinds: [] } },
+    { name: 'a non-snowflake channel', body: { channelId: 'not-a-channel', eventKinds: ['message_delete'] } },
+    {
+      name: 'the destination among the exclusions',
+      body: { channelId: CHANNEL, eventKinds: ['message_delete'], excludedChannelIds: [CHANNEL] },
+    },
+  ])('answers 400 for $name', async ({ body }) => {
     grant(['logging.manage']);
     const { cookie, csrf } = await signIn();
     const response = await app.inject({
       method: 'POST',
       url: '/api/log-routes',
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { eventKind: 'not-a-real-kind', channelId: CHANNEL, includeContent: false },
+      payload: body,
     });
     expect(response.statusCode).toBe(400);
   });
 
-  it('sets the route and records an attributed audit row', async () => {
+  it('creates the route and records an attributed audit row', async () => {
     grant(['logging.manage']);
     const { cookie, csrf } = await signIn();
 
@@ -266,23 +279,33 @@ describe('POST /api/log-routes', () => {
       method: 'POST',
       url: '/api/log-routes',
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { eventKind: EVENT_KIND, channelId: CHANNEL, includeContent: true },
+      payload: { ...validBody, name: 'mod log', includeContent: false },
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode).toBe(201);
+    const body = response.json<{ ok: boolean; route: { routeId: string } }>();
+    expect(body.ok).toBe(true);
 
     const routes = testPortsFor(t.scopes.forGuild(GUILD), () => clock).listRoutes();
-    expect(routes).toContainEqual({
-      eventKind: EVENT_KIND,
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      routeId: body.route.routeId,
+      name: 'mod log',
       channelId: CHANNEL,
+      includeContent: false,
       enabled: true,
-      includeContent: true,
+      eventKinds: ['message_delete'],
     });
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10, sinceMs: undefined });
-    const row = rows.find((r) => r.action === 'log_route.set');
+    const row = rows.find((r) => r.action === 'log_route.created');
     expect(row?.actorType).toBe('dashboard');
     expect(row?.actorId).toBe(ACCOUNT);
     expect(row?.via).toBe('http');
+    expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
+      name: 'mod log',
+      channelId: CHANNEL,
+      eventKinds: ['message_delete'],
+    });
   });
 
   it('answers 503 under BANANASAURS_READONLY', async () => {
@@ -293,9 +316,188 @@ describe('POST /api/log-routes', () => {
       method: 'POST',
       url: '/api/log-routes',
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { eventKind: EVENT_KIND, channelId: CHANNEL, includeContent: false },
+      payload: validBody,
     });
     expect(response.statusCode).toBe(503);
     await readonlyApp.close();
+  });
+
+  describe('PUT /api/log-routes/:routeId', () => {
+    const seedRoute = (): string =>
+      loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+        name: 'old',
+        channelId: CHANNEL,
+        includeContent: true,
+        enabled: true,
+        eventKinds: ['message_delete'],
+        excludedChannelIds: [],
+        nowMs: clock,
+      }).routeId;
+
+    it('answers 401 with no session', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${UNKNOWN_ROUTE_ID}`,
+        payload: validBody,
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('answers 403 no-grant without logging.manage', async () => {
+      const routeId = seedRoute();
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: validBody,
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('answers 400 for a route id that is not a UUID', async () => {
+      grant(['logging.manage']);
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/log-routes/abc',
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: validBody,
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('answers 400 for a bad body', async () => {
+      grant(['logging.manage']);
+      const routeId = seedRoute();
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: { channelId: CHANNEL, eventKinds: ['not-a-real-kind'] },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('answers 404 for an unknown route id', async () => {
+      grant(['logging.manage']);
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${UNKNOWN_ROUTE_ID}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: validBody,
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('replaces the route and records before and after', async () => {
+      grant(['logging.manage']);
+      const routeId = seedRoute();
+      const { cookie, csrf } = await signIn();
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: { channelId: '444444444444444444', eventKinds: ['member_join'], name: 'new' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ ok: true });
+
+      expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)).toMatchObject({
+        name: 'new',
+        channelId: '444444444444444444',
+        eventKinds: ['member_join'],
+      });
+
+      const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
+        limit: 10,
+        sinceMs: undefined,
+      });
+      const row = rows.find((r) => r.action === 'log_route.updated');
+      expect(row?.actorType).toBe('dashboard');
+      expect(row?.subjectId).toBe(routeId);
+      expect(JSON.parse(row?.before ?? 'null')).toMatchObject({ name: 'old' });
+      expect(JSON.parse(row?.after ?? 'null')).toMatchObject({ name: 'new' });
+    });
+  });
+
+  describe('DELETE /api/log-routes/:routeId', () => {
+    const seedRoute = (): string =>
+      loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+        name: 'old',
+        channelId: CHANNEL,
+        includeContent: true,
+        enabled: true,
+        eventKinds: ['message_delete'],
+        excludedChannelIds: [],
+        nowMs: clock,
+      }).routeId;
+
+    it('answers 401 with no session', async () => {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/log-routes/${UNKNOWN_ROUTE_ID}`,
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('answers 403 no-grant without logging.manage', async () => {
+      const routeId = seedRoute();
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('answers 400 for a route id that is not a UUID', async () => {
+      grant(['logging.manage']);
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/log-routes/abc',
+        headers: { cookie, [CSRF_HEADER]: csrf },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('answers 404 for an unknown route id', async () => {
+      grant(['logging.manage']);
+      const { cookie, csrf } = await signIn();
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/log-routes/${UNKNOWN_ROUTE_ID}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('removes the route and records what it was', async () => {
+      grant(['logging.manage']);
+      const routeId = seedRoute();
+      const { cookie, csrf } = await signIn();
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)).toBeUndefined();
+
+      const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
+        limit: 10,
+        sinceMs: undefined,
+      });
+      const row = rows.find((r) => r.action === 'log_route.deleted');
+      expect(row?.actorType).toBe('dashboard');
+      expect(row?.subjectId).toBe(routeId);
+      expect(JSON.parse(row?.before ?? 'null')).toMatchObject({ name: 'old' });
+    });
   });
 });

@@ -112,7 +112,11 @@ const ALL_CALLS: readonly Call[] = [
   { method: 'POST', url: '/api/panels/p1/publish' },
   { method: 'POST', url: '/api/panels/p1/reconcile' },
   { method: 'POST', url: '/api/settings', payload: { key: 'dry_run', value: true } },
-  { method: 'POST', url: '/api/log-routes/member_join/enabled', payload: { enabled: false } },
+  {
+    method: 'POST',
+    url: '/api/log-routes/123e4567-e89b-12d3-a456-426614174000/enabled',
+    payload: { enabled: false },
+  },
   { method: 'POST', url: '/api/log-exclusions', payload: { channelId: '333333333333333333' } },
   { method: 'DELETE', url: '/api/log-exclusions/333333333333333333' },
   {
@@ -390,6 +394,76 @@ describe('ops-write routes', () => {
       expect(row.actorType).toBe('dashboard');
       expect(row.via).toBe('http');
     }
+  });
+
+  it('toggles a log route and records the audit rows', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['logging.manage']);
+    const routeId = loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+      name: 'mod log',
+      channelId: '333333333333333333',
+      includeContent: true,
+      enabled: true,
+      eventKinds: ['member_join'],
+      excludedChannelIds: [],
+      nowMs: clock,
+    }).routeId;
+
+    const off = await app.inject({
+      method: 'POST',
+      url: `/api/log-routes/${routeId}/enabled`,
+      headers: { cookie, [CSRF]: csrf },
+      payload: { enabled: false },
+    });
+    expect(off.statusCode).toBe(200);
+    expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)?.enabled).toBe(false);
+
+    const on = await app.inject({
+      method: 'POST',
+      url: `/api/log-routes/${routeId}/enabled`,
+      headers: { cookie, [CSRF]: csrf },
+      payload: { enabled: true },
+    });
+    expect(on.statusCode).toBe(200);
+    expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)?.enabled).toBe(true);
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
+    const actions = rows.map((row) => row.action);
+    expect(actions).toContain('log_route.disabled');
+    expect(actions).toContain('log_route.enabled');
+    for (const row of rows) {
+      expect(row.actorType).toBe('dashboard');
+      expect(row.via).toBe('http');
+    }
+  });
+
+  it('answers 404 for an unknown route id and 400 for a bad one', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['logging.manage']);
+
+    const missing = await app.inject({
+      method: 'POST',
+      url: '/api/log-routes/123e4567-e89b-12d3-a456-426614174000/enabled',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { enabled: false },
+    });
+    expect(missing.statusCode).toBe(404);
+
+    const badId = await app.inject({
+      method: 'POST',
+      url: '/api/log-routes/abc/enabled',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { enabled: false },
+    });
+    expect(badId.statusCode).toBe(400);
+
+    const badBody = await app.inject({
+      method: 'POST',
+      url: '/api/log-routes/123e4567-e89b-12d3-a456-426614174000/enabled',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { enabled: 'yes' },
+    });
+    expect(badBody.statusCode).toBe(400);
   });
 
   it('disables and deletes a real account with audit attribution', async () => {
