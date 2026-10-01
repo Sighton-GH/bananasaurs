@@ -429,6 +429,14 @@ export const guildPortFor = (
       // never reach the tool, which renders but never filters. Archived ones
       // list only when the caller asked for archived threads, the way
       // archived public threads do.
+      //
+      // Limits, stated rather than implied. This walks the gateway cache
+      // only: an archived private thread the sweeper has evicted is not
+      // listed even with `includeArchived`, although `read_thread` still
+      // reaches it by id through the REST fallback. Each cached private
+      // thread costs two sequential REST calls (bot, then owner), and any
+      // failure — rate limit, unknown member, owner unconfigured — unlists
+      // the thread rather than listing it unreadable (fail closed).
       const sharedPrivate = async (
         includeArchived: boolean,
       ): Promise<readonly McpGuildThread[]> => {

@@ -72,6 +72,7 @@ export const LIST_THREADS_TOOL_DESCRIPTION =
   '(e.g. "help" or "#help"). Public threads are always listed; private threads ' +
   'only when shared with the MCP (both the bot and the owner are members), ' +
   'marked "private": true and read live by read_thread. ' +
+  'Private threads swept from the gateway cache are not listed, but read_thread still reaches them by id. ' +
   'Refuses when the guild is unreachable.';
 
 export const LIST_ROLES_TOOL_NAME = 'list_roles';
