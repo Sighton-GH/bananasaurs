@@ -274,6 +274,70 @@ describe('GET /api/guild/channels', () => {
   });
 });
 
+describe('the panel builder reads: message preview and guild emojis', () => {
+  const MESSAGE_URL = '/api/guild/channels/333333333333333333/messages/424242424242424242';
+
+  it('answers 403 without panels.manage - config.read alone is not enough', async () => {
+    const { cookie } = await signIn();
+    grant(['config.read']);
+    for (const url of [MESSAGE_URL, '/api/guild/emojis']) {
+      const response = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(response.statusCode, url).toBe(403);
+    }
+  });
+
+  it('lists the guild emojis with their image urls', async () => {
+    const { cookie } = await signIn();
+    grant(['panels.manage']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/guild/emojis',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      emojis: [
+        {
+          emojiId: '123456789012345678',
+          name: 'banana',
+          animated: false,
+          url: 'https://cdn.discordapp.com/emojis/123456789012345678.webp',
+        },
+      ],
+    });
+  });
+
+  it('adds the message text to a found message so the form can preview it', async () => {
+    const { cookie } = await signIn();
+    grant(['panels.manage']);
+    const real = deps.portsFor;
+    (deps as { portsFor: typeof real }).portsFor = (scope: Parameters<typeof real>[0]) => ({
+      ...real(scope),
+      findGuildMessage: () => Promise.resolve('ok' as const),
+      previewGuildMessage: () => Promise.resolve({ authorName: 'Ada', content: 'Pick a colour' }),
+    });
+    const response = await app.inject({ method: 'GET', url: MESSAGE_URL, headers: { cookie } });
+    expect(response.json()).toEqual({
+      lookup: 'ok',
+      message: { authorName: 'Ada', content: 'Pick a colour' },
+    });
+  });
+
+  it('does not fetch a preview for a message that was not found', async () => {
+    const { cookie } = await signIn();
+    grant(['panels.manage']);
+    const real = deps.portsFor;
+    (deps as { portsFor: typeof real }).portsFor = (scope: Parameters<typeof real>[0]) => ({
+      ...real(scope),
+      previewGuildMessage: () => {
+        throw new Error('preview must not run for a miss');
+      },
+    });
+    const response = await app.inject({ method: 'GET', url: MESSAGE_URL, headers: { cookie } });
+    expect(response.json()).toEqual({ lookup: 'message-not-found' });
+  });
+});
+
 describe('GET /api/guild/roles', () => {
   it('answers the guild role list with colour, rank and managed flags for the pickers', async () => {
     const { cookie } = await signIn();

@@ -31,6 +31,8 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   tailAudit: unstubbed('tailAudit'),
   listGuildChannels: unstubbed('listGuildChannels'),
   findGuildMessage: unstubbed('findGuildMessage'),
+  previewGuildMessage: unstubbed('previewGuildMessage'),
+  listGuildEmojis: unstubbed('listGuildEmojis'),
   listTaskDestinations: () => Promise.resolve([]),
   inspectTaskChannel: () => Promise.resolve(undefined),
   listGuildRoles: unstubbed('listGuildRoles'),

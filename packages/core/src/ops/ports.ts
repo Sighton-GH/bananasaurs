@@ -688,6 +688,22 @@ export interface OpsGuildMemberPage {
 export type OpsMessageLookup =
   'ok' | 'channel-not-found' | 'not-text-channel' | 'message-not-found';
 
+/** What the builder's live preview shows of an existing message. */
+export interface OpsMessagePreview {
+  readonly authorName: string;
+  /** The message text, cut to Discord's 2000-character limit. */
+  readonly content: string;
+}
+
+/** One custom emoji of the guild, for the emoji picker and the preview. */
+export interface OpsGuildEmojiInfo {
+  readonly emojiId: string;
+  readonly name: string;
+  readonly animated: boolean;
+  /** Discord CDN image the dashboard renders. */
+  readonly url: string;
+}
+
 export interface OpsGuildRoleInfo {
   readonly roleId: string;
   readonly name: string;
@@ -754,6 +770,17 @@ export interface OpsPorts {
    * attaches to a guessed id.
    */
   findGuildMessage(channelId: string, messageId: string): Promise<OpsMessageLookup>;
+  /**
+   * The text and author of an existing message, for the builder's preview.
+   * Live fetch, same rules as `findGuildMessage`; `undefined` on any miss.
+   */
+  previewGuildMessage(channelId: string, messageId: string): Promise<OpsMessagePreview | undefined>;
+  /**
+   * The guild's custom emoji (live REST read), for the emoji picker. Empty
+   * when the guild is not cached or the read fails - the picker still offers
+   * every Unicode emoji.
+   */
+  listGuildEmojis(): Promise<readonly OpsGuildEmojiInfo[]>;
   /** Live destinations inside a team category: text and announcement channels plus unarchived, unlocked threads. Private threads are excluded. */
   listTaskDestinations(categoryId: string): Promise<
     readonly {

@@ -83,9 +83,26 @@ export const registerOpsReadRoutes = (
         request.params.channelId,
         request.params.messageId,
       );
-      return reply.status(200).send({ lookup });
+      // The preview rides along so the form can show the message it is
+      // about to attach to; a miss on the preview alone is not an error.
+      const message =
+        lookup === 'ok'
+          ? await ports.previewGuildMessage(request.params.channelId, request.params.messageId)
+          : undefined;
+      return reply.status(200).send({ lookup, ...(message !== undefined ? { message } : {}) });
     },
   );
+
+  // The emoji picker's custom emoji: part of the panel builder, so the same
+  // capability as the message check beside it.
+  app.get('/api/guild/emojis', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'panels.manage', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    return reply.status(200).send({ emojis: await ports.listGuildEmojis() });
+  });
 
   // The MCP `read_channel_history` / `get_message` answers as routes
   // (ADR 0051): archived content, so `audit.read` like archive search. The

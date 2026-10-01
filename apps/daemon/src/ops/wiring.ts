@@ -758,6 +758,40 @@ export const opsPortsFor = (
       return 'message-not-found';
     }
   },
+  previewGuildMessage: async (channelId, messageId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const channel = guild?.channels.cache.get(channelId);
+    if (channel === undefined || !channel.isTextBased()) return undefined;
+    try {
+      const message = await channel.messages.fetch(messageId);
+      return {
+        authorName: message.member?.displayName ?? message.author.displayName,
+        content: message.content.slice(0, 2000),
+      };
+    } catch {
+      return undefined;
+    }
+  },
+  // REST, not the cache: the emoji cache is not guaranteed warm, and this is
+  // only read when an operator opens the picker.
+  listGuildEmojis: async () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    try {
+      const emojis = await guild.emojis.fetch();
+      return [...emojis.values()]
+        .filter((emoji) => emoji.name !== null)
+        .map((emoji) => ({
+          emojiId: emoji.id,
+          name: emoji.name ?? '',
+          animated: emoji.animated ?? false,
+          url: emoji.imageURL({ size: 64 }),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return [];
+    }
+  },
   // Same gateway-cache honesty as listGuildChannels: the guild's roles,
   // `@everyone` excluded (it is not a panel option), highest rank first.
   // `rawPosition`, deliberately: discord.js's `Role.position` is the role's

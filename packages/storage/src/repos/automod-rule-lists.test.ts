@@ -225,6 +225,8 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   listAccountCapabilities: notNeeded('listAccountCapabilities'),
   listGuildChannels: notNeeded('listGuildChannels'),
   findGuildMessage: notNeeded('findGuildMessage'),
+  previewGuildMessage: notNeeded('previewGuildMessage'),
+  listGuildEmojis: notNeeded('listGuildEmojis'),
   listTaskDestinations: notNeeded('listTaskDestinations'),
   inspectTaskChannel: notNeeded('inspectTaskChannel'),
   accountGrantGuild: notNeeded('accountGrantGuild'),
