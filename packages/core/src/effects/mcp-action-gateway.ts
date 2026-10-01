@@ -104,7 +104,13 @@ const canonicalJson = (value: unknown): string => {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
 };
 
-export interface McpActionIntent<A> {
+// NOTE: the plan sketches this as `McpActionIntent<A>`, but the parameter is
+// vestigial — only `argsHash` crosses this boundary, never the args, so there
+// is nothing for `A` to describe. Both `tsc --noUnusedLocals` (TS6133) and
+// `@typescript-eslint/no-unused-vars` reject the unused parameter, so the
+// interface is non-generic. Callers needing the argument shape keep it on
+// their own side and hash it with `argsHashFor`.
+export interface McpActionIntent {
   readonly kind: string;
   readonly capGroup: McpCapGroup;
   readonly idempotencyKey: string;
@@ -203,11 +209,7 @@ export interface McpActionDeps {
     complete(actionId: string, result: McpActionCompletion): void;
     countSince(capGroup: McpCapGroup, sinceMs: number): number;
     /** M5-D8 layer B: identical arguments against this target within the window. */
-    recentSameContent(
-      argsHash: string,
-      channelId: string | undefined,
-      sinceMs: number,
-    ): boolean;
+    recentSameContent(argsHash: string, channelId: string | undefined, sinceMs: number): boolean;
   };
   readonly audit: { record(input: McpActionAuditInput): void };
 }
@@ -216,7 +218,7 @@ export const runMcpAction = async <
   R extends { resultMessageId?: string; resultThreadId?: string; undo?: unknown },
 >(
   deps: McpActionDeps,
-  intent: McpActionIntent<unknown>,
+  intent: McpActionIntent,
   /** Policy result computed by the caller from live state BEFORE calling; a string is the refusal detail. */
   targetCheck: true | string,
   execute: () => Promise<R>,
@@ -338,9 +340,7 @@ export const runMcpAction = async <
       return {
         status: 'replayed',
         actionId: raced.actionId,
-        ...(raced.resultMessageId !== undefined
-          ? { resultMessageId: raced.resultMessageId }
-          : {}),
+        ...(raced.resultMessageId !== undefined ? { resultMessageId: raced.resultMessageId } : {}),
         ...(raced.resultThreadId !== undefined ? { resultThreadId: raced.resultThreadId } : {}),
       };
     }
@@ -356,9 +356,7 @@ export const runMcpAction = async <
       kind: intent.kind,
       actionId,
       outcome: 'dry-run',
-      ...(intent.targetChannelId !== undefined
-        ? { targetChannelId: intent.targetChannelId }
-        : {}),
+      ...(intent.targetChannelId !== undefined ? { targetChannelId: intent.targetChannelId } : {}),
       tokenId: intent.tokenId,
       dryRun: true,
       atMs: deps.now(),
@@ -395,9 +393,7 @@ export const runMcpAction = async <
       kind: intent.kind,
       actionId,
       outcome: 'failed',
-      ...(intent.targetChannelId !== undefined
-        ? { targetChannelId: intent.targetChannelId }
-        : {}),
+      ...(intent.targetChannelId !== undefined ? { targetChannelId: intent.targetChannelId } : {}),
       tokenId: intent.tokenId,
       dryRun: false,
       atMs: deps.now(),

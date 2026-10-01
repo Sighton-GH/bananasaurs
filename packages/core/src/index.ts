@@ -218,6 +218,22 @@ export {
   type SendLedgerRow,
 } from './effects/message-gateway.js';
 export {
+  argsHashFor,
+  MCP_ACTION_CAPS,
+  MCP_ACTION_DUPLICATE_WINDOW_MS,
+  MCP_ACTION_WINDOW_MS,
+  runMcpAction,
+  type LedgerRow,
+  type McpActionAuditInput,
+  type McpActionClaim,
+  type McpActionCompletion,
+  type McpActionDeps,
+  type McpActionIntent,
+  type McpActionOutcome,
+  type McpActionRefusal,
+  type McpCapGroup,
+} from './effects/mcp-action-gateway.js';
+export {
   inverseOf,
   undoBatch,
   type UndoableEffect,

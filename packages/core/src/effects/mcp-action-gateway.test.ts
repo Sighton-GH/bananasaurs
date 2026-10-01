@@ -104,22 +104,14 @@ class FakeLedger {
   countSince(capGroup: StoredRow['capGroup'], sinceMs: number): number {
     let n = 0;
     for (const row of this.rows.values()) {
-      if (
-        row.capGroup === capGroup &&
-        row.createdAt >= sinceMs &&
-        row.status !== 'failed'
-      ) {
+      if (row.capGroup === capGroup && row.createdAt >= sinceMs && row.status !== 'failed') {
         n += 1;
       }
     }
     return n;
   }
 
-  recentSameContent(
-    argsHash: string,
-    channelId: string | undefined,
-    sinceMs: number,
-  ): boolean {
+  recentSameContent(argsHash: string, channelId: string | undefined, sinceMs: number): boolean {
     for (const row of this.rows.values()) {
       if (
         row.argsHash === argsHash &&
@@ -237,7 +229,7 @@ const build = (): Harness => {
 const hashForContent = (content: string = CONTENT): string =>
   argsHashFor(KIND, { channelId: CHANNEL, content });
 
-const intent = (over: Partial<McpActionIntent<unknown>> = {}): McpActionIntent<unknown> => ({
+const intent = (over: Partial<McpActionIntent> = {}): McpActionIntent => ({
   kind: KIND,
   capGroup: 'message',
   idempotencyKey: 'key-1',
@@ -251,7 +243,7 @@ const intent = (over: Partial<McpActionIntent<unknown>> = {}): McpActionIntent<u
 
 const succeedingExecute = (h: Harness) => async () => {
   h.executeCalls.value += 1;
-  return { resultMessageId: '444444444444444445', resultThreadId: undefined as string | undefined };
+  return { resultMessageId: '444444444444444445' };
 };
 
 describe('argsHashFor', () => {
@@ -306,8 +298,7 @@ describe('runMcpAction layer order', () => {
     const failed = await runMcpAction(h.deps, intent(), true, failing);
     expect(failed.status).toBe('failed');
     expect(calls).toBe(1);
-    const failedActionId =
-      failed.status === 'failed' ? failed.actionId : undefined;
+    const failedActionId = failed.status === 'failed' ? failed.actionId : undefined;
     expect(failedActionId).toMatch(/^action-/);
     // The ledger row stays, so a retry finds it.
     expect(h.ledger.find('key-1')).toBeDefined();
@@ -442,12 +433,7 @@ describe('runMcpAction layer order', () => {
 
   it('refuses on target before reading state', async () => {
     const h = build();
-    const outcome = await runMcpAction(
-      h.deps,
-      intent(),
-      'not-in-send-scope',
-      succeedingExecute(h),
-    );
+    const outcome = await runMcpAction(h.deps, intent(), 'not-in-send-scope', succeedingExecute(h));
     expect(outcome).toEqual({
       status: 'refused',
       reason: 'target',
