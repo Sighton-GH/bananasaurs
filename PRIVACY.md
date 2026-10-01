@@ -40,9 +40,10 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 To log what changed when a member's roles, nickname, username, display name
 or avatar change, Bananasaurs keeps a last-seen record for each member:
 username, display name, nickname, avatar IDs, and role IDs. It holds IDs and
-hashes only — no images are downloaded or stored. The record is kept only
-while some logging route includes a member-change action, and it is deleted
-when the member leaves.
+hashes only — no images are downloaded or stored. The record is written
+only while some logging route includes a member-change action; when no route
+does, a member's record is deleted the next time Bananasaurs sees an update
+for them; and it is always deleted when the member leaves.
 
 **Not stored:**
 

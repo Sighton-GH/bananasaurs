@@ -47,8 +47,10 @@ shows it as **Excluded**, and the archive and MCP sending both obey it.
    and the row is deleted once the member leaves. With no record yet, the first update
    establishes the baseline silently, because without a previous value the bot cannot tell
    whether a name or avatar changed at all (discord.js shares the user object between before
-   and after). The record is only kept while some enabled route includes a member-change
-   action. PRIVACY.md says this.
+   and after). The record is written only while some logging route includes
+   a member-change action; when no route does, a member's record is deleted
+   the next time Bananasaurs sees an update for them; and it is always
+   deleted when the member leaves. PRIVACY.md says this.
 9. **"Member updated" is replaced** (D3) by `member_roles_changed`, `member_nickname_changed`,
    `member_username_changed` and `member_avatar_changed`.
 10. **New actions** (D2): `message_bulk_delete`, `member_kick`, `member_ban`, `member_unban`,

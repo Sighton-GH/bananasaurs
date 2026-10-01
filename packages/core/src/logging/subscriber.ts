@@ -321,9 +321,13 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
       if (firstError === undefined) {
         // Like the update path below: a failed send must not advance the
         // snapshot — the replay must see the same baseline.
-        const snapshot = snapshotOf(event);
-        if (snapshot !== undefined && wantsMemberChanges(ports)) {
-          ports.saveMemberSnapshot(snapshot);
+        if (wantsMemberChanges(ports)) {
+          const snapshot = snapshotOf(event);
+          if (snapshot !== undefined) ports.saveMemberSnapshot(snapshot);
+        } else {
+          // No route wants member changes, so no record is kept: drop any
+          // existing row the next time the member is seen (ADR 0123 decision 8).
+          ports.deleteMemberSnapshot(event.userId);
         }
       }
       if (firstError !== undefined) throw firstError;
@@ -346,9 +350,13 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
         // The replay must see the same baseline and therefore the same
         // fingerprints (routes that already posted are skipped by their
         // claims), so a failed send leaves the snapshot untouched.
-        const snapshot = snapshotOf(event);
-        if (snapshot !== undefined && wantsMemberChanges(ports)) {
-          ports.saveMemberSnapshot(snapshot);
+        if (wantsMemberChanges(ports)) {
+          const snapshot = snapshotOf(event);
+          if (snapshot !== undefined) ports.saveMemberSnapshot(snapshot);
+        } else {
+          // No route wants member changes, so no record is kept: drop any
+          // existing row the next time the member is seen (ADR 0123 decision 8).
+          ports.deleteMemberSnapshot(event.userId);
         }
       }
       if (firstError !== undefined) throw firstError;

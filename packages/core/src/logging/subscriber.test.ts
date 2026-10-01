@@ -322,6 +322,26 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
 
+  it('an update with no member-change route deletes an existing snapshot', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(
+      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
+    );
+    expect(fake.snapshots.has(MEMBER)).toBe(true);
+
+    // The owner turns every member-change action off: the next sighting of
+    // the member drops the record instead of refreshing it.
+    fake.setRouteKinds('n', ['member_join']);
+    await subscriber.handle(
+      memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('Nick') }),
+    );
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
+
   it('a join saves the baseline when a member-change route exists', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
