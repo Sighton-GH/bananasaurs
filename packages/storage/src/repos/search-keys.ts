@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../db.js';
 import { assistantSearchCalls, assistantSearchKeys } from '../schema.js';
 import type { InstanceScope } from '../scope.js';
@@ -122,7 +122,7 @@ export const addSearchKey = (
       .select({ position: assistantSearchKeys.position })
       .from(assistantSearchKeys)
       .where(eq(assistantSearchKeys.source, input.source))
-      .orderBy(sql`${assistantSearchKeys.position} DESC`)
+      .orderBy(desc(assistantSearchKeys.position))
       .limit(1)
       .get();
     db.insert(assistantSearchKeys)
