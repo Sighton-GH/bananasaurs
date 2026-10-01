@@ -63,3 +63,9 @@ CREATE TABLE `mcp_role_policy` (
 	CONSTRAINT "mcp_role_policy_grant_mode" CHECK("mcp_role_policy"."grant_mode" IN ('below-bot','allowlist')),
 	CONSTRAINT "mcp_role_policy_ping_mode" CHECK("mcp_role_policy"."ping_mode" IN ('below-bot','allowlist'))
 ) STRICT;
+--> statement-breakpoint
+INSERT INTO `mcp_actions` (`guild_id`, `action_id`, `idempotency_key`, `kind`, `cap_group`, `args_hash`, `status`, `token_id`, `target_channel_id`, `result_message_id`, `created_at`, `completed_at`)
+SELECT `guild_id`, 'legacy:' || `idempotency_key`, `idempotency_key`, 'message.send', 'message', `content_hash`,
+	CASE `outcome` WHEN 'dry_run' THEN 'dry_run' ELSE 'done' END,
+	`token_id`, `channel_id`, `message_id`, `sent_at`, `sent_at`
+FROM `mcp_sends`;
