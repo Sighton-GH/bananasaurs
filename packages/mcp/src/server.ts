@@ -291,17 +291,22 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       }
     },
   );
-  server.tool(GET_MESSAGE_TOOL_NAME, GET_MESSAGE_TOOL_DESCRIPTION, getMessageParams, (args) => {
-    try {
-      const outcome = getMessageText(deps.principal, archive, args);
-      if (!outcome.ok) {
-        return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+  server.tool(
+    GET_MESSAGE_TOOL_NAME,
+    GET_MESSAGE_TOOL_DESCRIPTION,
+    getMessageParams,
+    async (args) => {
+      try {
+        const outcome = await getMessageText(deps.principal, archive, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
       }
-      return okReadResult(readAudit, outcome);
-    } catch {
-      return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
-    }
-  });
+    },
+  );
   const guild = deps.guild;
   registerThreadTools({ server, principal: deps.principal, readAudit }, deps.threads);
   registerDigestTools({ server, principal: deps.principal, readAudit }, deps.archive, deps.guild);

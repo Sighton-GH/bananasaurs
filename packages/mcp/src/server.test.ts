@@ -96,6 +96,7 @@ const stubArchive = (): McpArchivePort => ({
   listChannelHistory: () => [],
   listMessagesSince: () => [],
   listUnansweredRoleMentions: () => [],
+  messageMeta: () => Promise.resolve(undefined),
   botUserId: () => undefined,
 });
 

@@ -215,7 +215,7 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
  * A fault leaves one allowlisted-fields error line via `loggedCall` above,
  * never message content (rule 4).
  */
-const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
+const archivePortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpArchivePort => ({
   listArchiveChannelIds: (guildId) =>
     loggedCall(deps.logger, 'listArchiveChannelIds', () =>
       archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
@@ -284,6 +284,17 @@ const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
       archiveRepo
         .listUnansweredRoleMentions(deps.scopes.forGuild(guildId), { ...input })
         .map(toMcpArchiveMessage),
+    ),
+  /**
+   * Slice 2, Task 6: one message's live pin state and reaction counts over
+   * REST. `undefined` when Discord no longer has it (the adapter's 404/403
+   * fold); a throw stays a throw here — the tool layer fails soft, this port
+   * only logs. A fault leaves one allowlisted-fields error line via
+   * `loggedCallAsync` above, never message content (rule 4).
+   */
+  messageMeta: (guildId, channelId, messageId) =>
+    loggedCallAsync(deps.logger, 'messageMeta', () =>
+      discord.fetchMessageMeta(guildId, { channelId, messageId }),
     ),
   botUserId: () => client.user?.id ?? undefined,
 });
@@ -1333,7 +1344,7 @@ export const registerMcpRoutes = (
     const server = createMcpServer({
       principal,
       health: healthPortFor(principal, deps),
-      archive: archivePortFor(deps, client),
+      archive: archivePortFor(deps, client, discord),
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),

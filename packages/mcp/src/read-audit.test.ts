@@ -116,6 +116,7 @@ const archivePort = (): McpArchivePort => ({
     },
   ],
   listUnansweredRoleMentions: () => [],
+  messageMeta: () => Promise.resolve(undefined),
   botUserId: () => undefined,
 });
 
@@ -236,8 +237,8 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
     });
   });
 
-  it('get_message records the message id, found or not — the read happened either way', () => {
-    const found = getMessageText(principalWith(GUILD_A), archivePort(), {
+  it('get_message records the message id, found or not — the read happened either way', async () => {
+    const found = await getMessageText(principalWith(GUILD_A), archivePort(), {
       guildId: String(GUILD_A),
       messageId: MESSAGE,
     });

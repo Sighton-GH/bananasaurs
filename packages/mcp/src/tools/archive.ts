@@ -10,6 +10,7 @@ import {
 import { resolveChannelRef } from '../resolve.js';
 import type { McpGuildChannel, McpGuildPort } from './guild.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
+import { safeName } from '../structured.js';
 import {
   MCP_READ_GET_MESSAGE,
   MCP_READ_READ_CHANNEL_HISTORY,
@@ -195,6 +196,23 @@ export interface McpArchivePort {
     guildId: GuildId,
     input: McpUnansweredInput,
   ) => readonly McpArchiveMessage[];
+  /**
+   * Slice 2, Task 6: one message's live pin state and reaction counts, or
+   * `undefined` when Discord no longer has it. The tool layer calls this
+   * fail-soft — `undefined` or any throw omits the metadata line, never the
+   * archive answer — so a fault here is routine, not a refusal.
+   */
+  readonly messageMeta: (
+    guildId: GuildId,
+    channelId: string,
+    messageId: string,
+  ) => Promise<
+    | {
+        readonly pinned: boolean;
+        readonly reactions: readonly { readonly emoji: string; readonly count: number }[];
+      }
+    | undefined
+  >;
   /** The bot's own user id, or undefined before the gateway is ready. */
   readonly botUserId: () => string | undefined;
 }
@@ -490,11 +508,11 @@ const readChannelHistoryInner = (
   };
 };
 
-const getMessageInner = (
+const getMessageInner = async (
   principal: McpPrincipal,
   port: McpArchivePort,
   rawArgs: unknown,
-): ArchiveOutcome => {
+): Promise<ArchiveOutcome> => {
   const parsed = messageArgsSchema.safeParse(rawArgs);
   if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
@@ -523,7 +541,34 @@ const getMessageInner = (
       read,
     };
   }
-  return { ok: true, text: envelope([toEvidenceItem(message)]), read };
+  // Slice 2, Task 6: live pin state and reaction counts, fail-soft. A thread
+  // message lives under its thread id on Discord, so the live read follows
+  // the same `threadId ?? channelId` addressing the evidence item uses. An
+  // `undefined` (Discord no longer has it) or any throw omits the metadata
+  // line — the archive answer stands on its own, never a refusal.
+  let meta: Awaited<ReturnType<McpArchivePort['messageMeta']>> | undefined;
+  try {
+    meta = await port.messageMeta(
+      gate.guildId,
+      message.threadId ?? message.channelId,
+      message.messageId,
+    );
+  } catch {
+    meta = undefined;
+  }
+  const evidence = envelope([toEvidenceItem(message)]);
+  if (meta === undefined) return { ok: true, text: evidence, read };
+  // A `structuredText`-style JSON line after the envelope: structural counts
+  // and pin state, not member prose — but emoji are member-chosen names, so
+  // they pass through `safeName` like every other structured string.
+  const metaLine = JSON.stringify({
+    pinned: meta.pinned,
+    reactions: meta.reactions.map((reaction) => ({
+      emoji: safeName(reaction.emoji),
+      count: reaction.count,
+    })),
+  });
+  return { ok: true, text: `${evidence}\n${metaLine}`, read };
 };
 
 /**
@@ -561,14 +606,14 @@ export const readChannelHistoryText = (
   }
 };
 
-/** Never throws; see `searchMessagesText`. */
-export const getMessageText = (
+/** Never throws; see `searchMessagesText`. Now async: the live metadata read is a promise. */
+export const getMessageText = async (
   principal: McpPrincipal,
   port: McpArchivePort,
   rawArgs: unknown,
-): ArchiveOutcome => {
+): Promise<ArchiveOutcome> => {
   try {
-    return getMessageInner(principal, port, rawArgs);
+    return await getMessageInner(principal, port, rawArgs);
   } catch {
     return refuse();
   }

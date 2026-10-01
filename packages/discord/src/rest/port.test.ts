@@ -749,9 +749,18 @@ describe('message metadata (slice 2 task 6)', () => {
   });
 
   it('reports no reactions field as an empty list', async () => {
-    const body = metaBody();
-    const { reactions: _dropped, ...withoutReactions } = body;
-    const { port } = harness([{ status: 200, body: withoutReactions }]);
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'sam' },
+          content: 'no one reacted to this',
+          pinned: true,
+        },
+      },
+    ]);
     await expect(
       port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
     ).resolves.toEqual({ pinned: true, reactions: [] });

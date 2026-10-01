@@ -68,6 +68,7 @@ const fakeArchive = (options: FakeDigestOptions = {}) => {
       seen.unanswered.push(input);
       return options.unanswered ?? [];
     },
+    messageMeta: () => Promise.resolve(undefined),
     botUserId: () => undefined,
   };
 };

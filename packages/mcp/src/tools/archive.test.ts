@@ -200,6 +200,10 @@ beforeEach(() => {
       }),
     listUnansweredRoleMentions: (guildId, input) =>
       archiveRepo.listUnansweredRoleMentions(scopes.forGuild(guildId), { ...input }),
+    // Slice 2, Task 6: no live Discord here — the storage-backed port answers
+    // no metadata, so `get_message` renders the archive answer alone. Tests
+    // that pin the metadata line stub `messageMeta` themselves below.
+    messageMeta: () => Promise.resolve(undefined),
     botUserId: () => BOT_ID,
   };
 
@@ -249,21 +253,21 @@ describe('archive tools refuse without a reachable guild', () => {
     name: string,
     principal: McpPrincipal,
     args: unknown,
-  ): { readonly ok: boolean; readonly message?: string; readonly text?: string } => {
+  ): Promise<{ readonly ok: boolean; readonly message?: string; readonly text?: string }> => {
     if (name === SEARCH_MESSAGES_TOOL_NAME)
-      return searchMessagesText(principal, port, emptyGuild(), args);
+      return Promise.resolve(searchMessagesText(principal, port, emptyGuild(), args));
     if (name === READ_CHANNEL_HISTORY_TOOL_NAME)
-      return readChannelHistoryText(principal, port, emptyGuild(), args);
+      return Promise.resolve(readChannelHistoryText(principal, port, emptyGuild(), args));
     return getMessageText(principal, port, args);
   };
 
   it.each([[SEARCH_MESSAGES_TOOL_NAME], [READ_CHANNEL_HISTORY_TOOL_NAME], [GET_MESSAGE_TOOL_NAME]])(
     '%s refuses an unreachable guild with the shared refusal',
-    (name) => {
+    async (name) => {
       const call = calls.find((c) => c.name === name);
       if (call === undefined) throw new Error('unknown tool');
       // Reachable set holds the *other* guild: well-formed, simply not ours.
-      expect(run(name, principalWith(GUILD_B), call.args)).toEqual({
+      expect(await run(name, principalWith(GUILD_B), call.args)).toEqual({
         ok: false,
         message: GUILD_REFUSAL_MESSAGE,
       });
@@ -272,10 +276,10 @@ describe('archive tools refuse without a reachable guild', () => {
 
   it.each([[SEARCH_MESSAGES_TOOL_NAME], [READ_CHANNEL_HISTORY_TOOL_NAME], [GET_MESSAGE_TOOL_NAME]])(
     '%s refuses an empty reachable set with the same refusal',
-    (name) => {
+    async (name) => {
       const call = calls.find((c) => c.name === name);
       if (call === undefined) throw new Error('unknown tool');
-      expect(run(name, principalWith(), call.args)).toEqual({
+      expect(await run(name, principalWith(), call.args)).toEqual({
         ok: false,
         message: GUILD_REFUSAL_MESSAGE,
       });
@@ -302,7 +306,7 @@ describe('archive tools refuse without a reachable guild', () => {
     expect(unreachable).toEqual(empty);
   });
 
-  it('malformed arguments are argument faults, never throws (ruling M4-D18)', () => {
+  it('malformed arguments are argument faults, never throws (ruling M4-D18)', async () => {
     const principal = principalWith(GUILD_A);
     const bad: readonly unknown[] = [
       { guildId: Number('111111111111111111'), query: 'banana' },
@@ -328,15 +332,12 @@ describe('archive tools refuse without a reachable guild', () => {
         channelId: 'nope',
       }),
     ).toEqual({ ok: false, message: 'No channel named "nope" in this guild.' });
-    expect(() =>
+    await expect(
       getMessageText(principal, port, { guildId: '111111111111111111', messageId: 'nope' }),
-    ).not.toThrow();
-    expect(
-      getMessageText(principal, port, { guildId: '111111111111111111', messageId: 'nope' }),
-    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    ).resolves.toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
   });
 
-  it('a throwing port is still the shared refusal, never the argument message', () => {
+  it('a throwing port is still the shared refusal, never the argument message', async () => {
     const throwing: McpArchivePort = {
       ...port,
       searchMessages: () => {
@@ -363,7 +364,7 @@ describe('archive tools refuse without a reachable guild', () => {
       }),
     ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
     expect(
-      getMessageText(principal, throwing, {
+      await getMessageText(principal, throwing, {
         guildId: '111111111111111111',
         messageId: '666666666666666661',
       }),
@@ -409,9 +410,9 @@ describe('every content-bearing result carries the envelope preamble', () => {
     expect(text.indexOf(EVIDENCE_PREAMBLE)).toBeLessThan(text.indexOf(EVIDENCE_OPEN));
   });
 
-  it('get_message frames the message', () => {
+  it('get_message frames the message', async () => {
     const text = textOf(
-      getMessageText(principal(), port, {
+      await getMessageText(principal(), port, {
         guildId: '111111111111111111',
         messageId: '666666666666666661',
       }),
@@ -450,9 +451,9 @@ describe('purged content returns a tombstone (ruling M4-D8)', () => {
     ).toBe(1);
   });
 
-  it('get_message returns metadata with the content-gone marker', () => {
+  it('get_message returns metadata with the content-gone marker', async () => {
     const text = textOf(
-      getMessageText(principalWith(GUILD_A), port, {
+      await getMessageText(principalWith(GUILD_A), port, {
         guildId: '111111111111111111',
         messageId: PURGED_ID,
       }),
@@ -494,9 +495,9 @@ describe('a reply names the message it answers (slice 2 task 3)', () => {
     });
   });
 
-  it('get_message shows the reply link as the first content line', () => {
+  it('get_message shows the reply link as the first content line', async () => {
     const text = textOf(
-      getMessageText(principalWith(GUILD_A), port, {
+      await getMessageText(principalWith(GUILD_A), port, {
         guildId: '111111111111111111',
         messageId: REPLY_ID,
       }),
@@ -515,6 +516,128 @@ describe('a reply names the message it answers (slice 2 task 3)', () => {
     // The seeded non-reply ('banana bread recipe') renders its body with no
     // reply line: the only `reply to:` in the output belongs to the reply.
     expect(text.match(/reply to: /g)).toHaveLength(1);
+  });
+});
+
+describe('get_message appends live pin state and reaction counts, fail-soft (slice 2 task 6)', () => {
+  const MESSAGE_ID = '666666666666666661';
+  const THREAD_ID = '777777777777777772';
+
+  const metaPort = (
+    meta: McpArchivePort['messageMeta'],
+    seen?: { channelId: string; messageId: string }[],
+  ): McpArchivePort => ({
+    ...port,
+    messageMeta: async (guildId, channelId, messageId) => {
+      seen?.push({ channelId, messageId });
+      return meta(guildId, channelId, messageId);
+    },
+  });
+
+  it('appends a metadata JSON line after the envelope when Discord has the message', async () => {
+    const text = textOf(
+      await getMessageText(
+        principalWith(GUILD_A),
+        metaPort(() =>
+          Promise.resolve({
+            pinned: true,
+            reactions: [
+              { emoji: '👍', count: 2 },
+              { emoji: '<:party:666666666666666666>', count: 1 },
+            ],
+          }),
+        ),
+        { guildId: '111111111111111111', messageId: MESSAGE_ID },
+      ),
+    );
+    expect(text).toContain(EVIDENCE_PREAMBLE);
+    expect(text).toContain('banana bread recipe');
+    const metaLine = JSON.stringify({
+      pinned: true,
+      reactions: [
+        { emoji: '👍', count: 2 },
+        { emoji: '<:party:666666666666666666>', count: 1 },
+      ],
+    });
+    expect(text).toContain(metaLine);
+    // The envelope comes first; the metadata is structural, after it.
+    expect(text.indexOf(EVIDENCE_CLOSE)).toBeLessThan(text.indexOf(metaLine));
+  });
+
+  it('answers the archive alone when the live fetch throws', async () => {
+    const text = textOf(
+      await getMessageText(
+        principalWith(GUILD_A),
+        metaPort(() => Promise.reject(new Error('discord 500'))),
+        { guildId: '111111111111111111', messageId: MESSAGE_ID },
+      ),
+    );
+    expect(text).toContain(EVIDENCE_PREAMBLE);
+    expect(text).toContain('banana bread recipe');
+    expect(text).not.toContain('"pinned"');
+  });
+
+  it('answers the archive alone when Discord no longer has the message', async () => {
+    const text = textOf(
+      await getMessageText(
+        principalWith(GUILD_A),
+        metaPort(() => Promise.resolve(undefined)),
+        {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_ID,
+        },
+      ),
+    );
+    expect(text).toContain(EVIDENCE_PREAMBLE);
+    expect(text).toContain('banana bread recipe');
+    expect(text).not.toContain('"pinned"');
+  });
+
+  it('reads a thread message under its thread id, a channel message under its channel id', async () => {
+    const REPLY_IN_THREAD = '666666666666666666';
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: REPLY_IN_THREAD,
+      channelId: CHANNEL_1,
+      threadId: THREAD_ID,
+      authorId: MEMBER,
+      content: 'a thought inside the thread',
+      createdAt: 1_700_000_000_700,
+      editedAt: undefined,
+      attachments: [],
+    });
+    const seen: { channelId: string; messageId: string }[] = [];
+    const withMeta = metaPort(() => Promise.resolve({ pinned: false, reactions: [] }), seen);
+    const threadText = textOf(
+      await getMessageText(principalWith(GUILD_A), withMeta, {
+        guildId: '111111111111111111',
+        messageId: REPLY_IN_THREAD,
+      }),
+    );
+    expect(threadText).toContain('"pinned":false');
+    expect(seen).toEqual([{ channelId: THREAD_ID, messageId: REPLY_IN_THREAD }]);
+
+    seen.length = 0;
+    await getMessageText(principalWith(GUILD_A), withMeta, {
+      guildId: '111111111111111111',
+      messageId: MESSAGE_ID,
+    });
+    expect(seen).toEqual([{ channelId: CHANNEL_1, messageId: MESSAGE_ID }]);
+  });
+
+  it('never calls the live read for a message the archive does not have', async () => {
+    let calls = 0;
+    const text = textOf(
+      await getMessageText(
+        principalWith(GUILD_A),
+        metaPort(() => {
+          calls += 1;
+          return Promise.resolve({ pinned: true, reactions: [] });
+        }),
+        { guildId: '111111111111111111', messageId: '666666666666666669' },
+      ),
+    );
+    expect(text).toContain('No archived message 666666666666666669 in guild');
+    expect(calls).toBe(0);
   });
 });
 
@@ -644,6 +767,7 @@ describe('channel names resolve after the guild gate; authorId "bot" reads the b
       },
       listMessagesSince: () => [],
       listUnansweredRoleMentions: () => [],
+      messageMeta: () => Promise.resolve(undefined),
       botUserId: () => botId,
     };
   };

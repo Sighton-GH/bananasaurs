@@ -1238,6 +1238,91 @@ describe('/mcp archive tools across two guilds', () => {
     expect(found.isError).not.toBe(true);
     expect(found.text).toContain(`reply to: ${MESSAGE_B}\nseconding the beta plans`);
   });
+
+  it('(slice 2 task 6) get_message appends live pin state and reaction counts', async () => {
+    // Through the real composition: the daemon's `messageMeta` port reads
+    // Discord live (the fake here), and the tool appends the metadata JSON
+    // line after the envelope. The archived row and the live message share
+    // ids, the way a real archived message matches its Discord original.
+    seedArchive();
+    fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A, pinned: true });
+    fakeDiscord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE_A,
+      userId: MEMBER,
+      emoji: 'u:1f44d',
+    });
+    fakeDiscord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE_A,
+      userId: MEMBER,
+      emoji: 'c:777777777777777777',
+    });
+    fakeDiscord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE_A,
+      userId: '999999999999999999',
+      emoji: 'c:777777777777777777',
+    });
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).toContain(
+      '{"pinned":true,"reactions":[{"emoji":"👍","count":1},{"emoji":"<:unknown:777777777777777777>","count":2}]}',
+    );
+  });
+
+  it('(slice 2 task 6) get_message answers the archive alone when Discord no longer has it', async () => {
+    // The review-focus case: the message is archived but gone live (the
+    // fake was never told about it, mirroring the adapter's 404 fold), and
+    // the call still returns the archive answer — metadata omitted, no
+    // refusal.
+    seedArchive();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).not.toContain('"pinned"');
+  });
+
+  it('(slice 2 task 6) get_message answers the archive alone when the live read throws', async () => {
+    // A Discord fault (here a 429) behind `messageMeta` is routine, not a
+    // refusal: one operator trace line, and the archive answer without the
+    // metadata line.
+    seedArchive();
+    fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A });
+    fakeDiscord.failNext('fetchMessageMeta', FakeDiscord.rateLimited());
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).not.toContain('"pinned"');
+  });
 });
 
 describe('/mcp jobs tools across two guilds', () => {

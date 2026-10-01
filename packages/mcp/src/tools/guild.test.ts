@@ -511,6 +511,7 @@ describe('guild tools on the MCP server', () => {
         listChannelHistory: () => [],
         listMessagesSince: () => [],
         listUnansweredRoleMentions: () => [],
+        messageMeta: () => Promise.resolve(undefined),
         botUserId: () => undefined,
       },
       guild: port,
