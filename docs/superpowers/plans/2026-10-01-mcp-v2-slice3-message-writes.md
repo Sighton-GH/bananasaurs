@@ -64,7 +64,7 @@ Every one of these goes through one guarded, idempotent, audited pipeline.
 // schema
 mcp_actions(
   guild_id snowflake FK guilds NOT NULL, action_id text NOT NULL (ulid-like, unique per guild),
-  idempotency_key text NOT NULL, kind text NOT NULL, cap_group text NOT NULL CHECK IN ('message','edit','thread','pin_react'),
+  idempotency_key text NOT NULL, kind text NOT NULL, cap_group text NOT NULL CHECK IN ('message','edit','member_role','structure','pin_react'),
   args_hash text NOT NULL, status text NOT NULL CHECK IN ('claimed','done','dry_run','failed'),
   token_id text NOT NULL, target_channel_id snowflake NULL, result_message_id snowflake NULL, result_thread_id snowflake NULL,
   undo_json text NULL, undone_by_action_id text NULL, created_at int NOT NULL, completed_at int NULL,
@@ -126,8 +126,8 @@ export const isMcpPrivateThread: (scope, threadId) => boolean;
 
 **Interfaces:**
 ```ts
-export type McpCapGroup = 'message' | 'edit' | 'thread' | 'pin_react';
-export const MCP_ACTION_CAPS: Readonly<Record<McpCapGroup, number>> = { message: 300, edit: 300, thread: 100, pin_react: 300 };
+export type McpCapGroup = 'message' | 'edit' | 'member_role' | 'structure' | 'pin_react';
+export const MCP_ACTION_CAPS: Readonly<Record<McpCapGroup, number>> = { message: 300, edit: 300, member_role: 1000, structure: 100, pin_react: 300 };
 export const MCP_ACTION_WINDOW_MS = 60 * 60 * 1000;
 export const argsHashFor: (kind: string, args: unknown) => string; // sha256 of canonical JSON (sorted keys) of {kind,args}
 export interface McpActionIntent {
@@ -261,16 +261,16 @@ export const resolvePings: (client, scope, guildId, input: { roles: readonly str
 
 **Tools** (all `send` scope; each takes `guildId`, `idempotencyKey`, `dryRun?`):
 - `create_thread {channel (id|name), name ≤100, type: 'public'|'private', autoArchiveMinutes? (default 1440), invitable? (private only, default false), fromMessageId? (public only), firstMessage? {content?, embeds?}}`
-  - kind `thread.create`, cap group `thread`.
+  - kind `thread.create`, cap group `structure`.
   - A private thread: in the same transaction as completing the action, write `mcp_private_threads` and an `mcp_send_allowlist` channel row for the thread (`addedByAccountId` = the principal's account).
   - `firstMessage` is a second action, key `<idempotencyKey>:first`, through the `message.send` path into the new thread.
 - `add_thread_members` / `remove_thread_members {threadId, userIds ≤25}`
-  - One action per call (kind `thread.members.add|remove`, cap group `thread`). Members are resolved live; a non-member of the guild is refused.
+  - One action per call (kind `thread.members.add|remove`, cap group `structure`). Members are resolved live; a non-member of the guild is refused.
   - Undo for add = remove of the same list.
 - `create_forum_post {forum (id|name), title ≤100, content?, embeds?, tags?: string[] (names or ids, ≤5, matched against the forum's available tags case-insensitively; unknown → refusal listing the available names)}`
   - kind `forum.post`, cap group `message`. Always public.
 - `archive_thread` / `lock_thread {threadId, archived|locked: boolean}`
-  - kind `thread.state`, cap group `thread`. Undo restores the previous state.
+  - kind `thread.state`, cap group `structure`. Undo restores the previous state.
 - Extend ADR 0115's daemon readability check: `privateThreadReadableFor` also returns true when `isMcpPrivateThread(scope, threadId)` is true (and this guild's cache or REST still knows the thread).
 - Tests:
   - **private thread created via MCP is readable** with only the bot as a member;
