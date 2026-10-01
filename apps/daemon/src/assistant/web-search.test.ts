@@ -242,6 +242,33 @@ describe('createWebSearchRun (ADR 0120)', () => {
     expect(client).toHaveBeenCalledWith('api-second', 'q');
   });
 
+  it('a refused key logs one warn with the key id, source and status — never the key', async () => {
+    const first = addKey('first');
+    const second = addKey('second');
+    const client = vi
+      .fn()
+      .mockRejectedValueOnce(new SearchHttpError(429))
+      .mockResolvedValueOnce([...RESULTS]);
+    const warn = vi.fn();
+    const run = createWebSearchRun({
+      instance: t.scopes.instance(),
+      guildId: GUILD,
+      source: 'brave',
+      keys: keysFor([first, second], ['api-first-secret', 'api-second-secret']),
+      now: () => NOW,
+      client,
+      logger: { warn },
+    });
+    await expect(run('q')).resolves.toEqual({ results: [...RESULTS], source: 'brave' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      { component: 'web-search', keyId: first, source: 'brave', status: 429 },
+      'web search key refused',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('api-first-secret');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('api-second-secret');
+  });
+
   it("all keys refused throws Error('every web search key was refused')", async () => {
     const first = addKey('first');
     const second = addKey('second');

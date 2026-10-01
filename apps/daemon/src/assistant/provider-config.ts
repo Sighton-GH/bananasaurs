@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { listGeminiModels, type Config, type GeminiModelInfo } from '@bananasaurs/core';
+import { listGeminiModels, type Config, type GeminiModelInfo, type Logger } from '@bananasaurs/core';
 import {
   assistantProviderRepo,
   assistantProvidersRepo,
@@ -242,7 +242,11 @@ export const createProviderConfigStore = (
   envBase?: Config,
   geminiModels: (apiKey: string) => Promise<readonly GeminiModelInfo[]> = (apiKey) =>
     listGeminiModels({ apiKey }),
-  options: { readonly providerTimeoutMs?: () => number; readonly now?: () => number } = {},
+  options: {
+    readonly providerTimeoutMs?: () => number;
+    readonly now?: () => number;
+    readonly logger?: Pick<Logger, 'warn'> | undefined;
+  } = {},
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
   const clock = options.now ?? Date.now;
@@ -598,7 +602,15 @@ export const createProviderConfigStore = (
         (source === 'brave'
           ? ((apiKey: string, q: string) => braveWebSearch({ apiKey }, q))
           : ((apiKey: string, q: string) => tavilyWebSearch({ apiKey }, q)));
-      return createWebSearchRun({ instance, guildId, source, keys, now: clock, client });
+      return createWebSearchRun({
+        instance,
+        guildId,
+        source,
+        keys,
+        now: clock,
+        client,
+        logger: options.logger,
+      });
     },
   };
 };

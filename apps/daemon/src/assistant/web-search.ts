@@ -1,4 +1,5 @@
 import { searchKeysRepo, type InstanceScope } from '@bananasaurs/storage';
+import type { Logger } from '@bananasaurs/core';
 import type { WebResult } from './tools.js';
 
 export type WebSearchSource = 'brave' | 'tavily';
@@ -49,8 +50,9 @@ export const createWebSearchRun = (deps: {
   readonly keys: readonly WebSearchKey[];
   readonly now: () => number;
   readonly client: SearchClient;
+  readonly logger?: Pick<Logger, 'warn'> | undefined;
 }): WebSearchRun => {
-  const { instance, guildId, source, keys, now, client } = deps;
+  const { instance, guildId, source, keys, now, client, logger } = deps;
   return async (query: string): Promise<WebSearchOutcome> => {
     const limitedAt: number[] = [];
     for (const key of keys) {
@@ -75,6 +77,11 @@ export const createWebSearchRun = (deps: {
         results = await client(key.apiKey, query);
       } catch (err) {
         if (err instanceof SearchHttpError && REFUSED_STATUSES.has(err.status)) {
+          // The key id, source and status only — never the key itself.
+          logger?.warn(
+            { component: 'web-search', keyId: key.keyId, source, status: err.status },
+            'web search key refused',
+          );
           continue;
         }
         throw err;

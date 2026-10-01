@@ -198,7 +198,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           providerSecret.source,
           config,
           undefined,
-          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs') },
+          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs'), logger },
         );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
   // ADR 0080: the connect fallback wait applies to new connections at once —
@@ -241,8 +241,16 @@ export function createDaemon(deps: DaemonDeps): Daemon {
             instance: scopes.instance(),
             guildId,
             source: 'brave',
-            keys: [{ keyId: null, apiKey: config.BRAVE_SEARCH_API_KEY, monthlyLimit: null, dailyLimit: null }],
+            keys: [
+              {
+                keyId: null,
+                apiKey: config.BRAVE_SEARCH_API_KEY,
+                monthlyLimit: null,
+                dailyLimit: null,
+              },
+            ],
             now,
+            logger,
             client: (apiKey, query) => braveWebSearch({ apiKey }, query),
           });
 
