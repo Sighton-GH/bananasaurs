@@ -52,7 +52,7 @@ import type { SafetyStateForSend } from './message-gateway.js';
  * only the action kind, ids, the outcome and the action id.
  */
 
-export type McpCapGroup = 'message' | 'edit' | 'thread' | 'pin_react';
+export type McpCapGroup = 'message' | 'edit' | 'member_role' | 'structure' | 'pin_react';
 
 /**
  * Caps per guild per rolling hour, counted from `mcp_actions` rows by cap
@@ -64,7 +64,10 @@ export type McpCapGroup = 'message' | 'edit' | 'thread' | 'pin_react';
 export const MCP_ACTION_CAPS: Readonly<Record<McpCapGroup, number>> = {
   message: 300,
   edit: 300,
-  thread: 100,
+  /** Each member counts; a bulk job of 100 members uses 100 (ADR 0118 §8). */
+  member_role: 1000,
+  /** Threads, polls, events, panels, role create/edit (ADR 0118 §8). */
+  structure: 100,
   pin_react: 300,
 };
 

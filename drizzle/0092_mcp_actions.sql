@@ -19,7 +19,7 @@ CREATE TABLE `mcp_actions` (
 	CONSTRAINT "mcp_actions_target_channel_id_snowflake" CHECK(("mcp_actions"."target_channel_id" IS NULL OR ("mcp_actions"."target_channel_id" NOT GLOB '*[^0-9]*' AND length("mcp_actions"."target_channel_id") BETWEEN 17 AND 20))),
 	CONSTRAINT "mcp_actions_result_message_id_snowflake" CHECK(("mcp_actions"."result_message_id" IS NULL OR ("mcp_actions"."result_message_id" NOT GLOB '*[^0-9]*' AND length("mcp_actions"."result_message_id") BETWEEN 17 AND 20))),
 	CONSTRAINT "mcp_actions_result_thread_id_snowflake" CHECK(("mcp_actions"."result_thread_id" IS NULL OR ("mcp_actions"."result_thread_id" NOT GLOB '*[^0-9]*' AND length("mcp_actions"."result_thread_id") BETWEEN 17 AND 20))),
-	CONSTRAINT "mcp_actions_cap_group" CHECK("mcp_actions"."cap_group" IN ('message','edit','thread','pin_react')),
+	CONSTRAINT "mcp_actions_cap_group" CHECK("mcp_actions"."cap_group" IN ('message','edit','member_role','structure','pin_react')),
 	CONSTRAINT "mcp_actions_status" CHECK("mcp_actions"."status" IN ('claimed','done','dry_run','failed'))
 ) STRICT;
 --> statement-breakpoint

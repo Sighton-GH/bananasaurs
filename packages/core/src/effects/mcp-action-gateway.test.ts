@@ -37,7 +37,7 @@ interface StoredRow {
   actionId: string;
   idempotencyKey: string;
   kind: string;
-  capGroup: 'message' | 'edit' | 'thread' | 'pin_react';
+  capGroup: 'message' | 'edit' | 'member_role' | 'structure' | 'pin_react';
   argsHash: string;
   status: StoredStatus;
   tokenId: string;

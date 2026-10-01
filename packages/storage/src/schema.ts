@@ -1799,7 +1799,10 @@ export const mcpActions = sqliteTable(
     check('mcp_actions_target_channel_id_snowflake', nullableSnowflakeCheck(t.targetChannelId)),
     check('mcp_actions_result_message_id_snowflake', nullableSnowflakeCheck(t.resultMessageId)),
     check('mcp_actions_result_thread_id_snowflake', nullableSnowflakeCheck(t.resultThreadId)),
-    check('mcp_actions_cap_group', sql`${t.capGroup} IN ('message','edit','thread','pin_react')`),
+    check(
+      'mcp_actions_cap_group',
+      sql`${t.capGroup} IN ('message','edit','member_role','structure','pin_react')`,
+    ),
     check('mcp_actions_status', sql`${t.status} IN ('claimed','done','dry_run','failed')`),
   ],
 );

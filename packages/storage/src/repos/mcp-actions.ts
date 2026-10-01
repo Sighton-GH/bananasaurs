@@ -9,7 +9,7 @@ import { mcpActions } from '../schema.js';
  * through `scope.only`, like every repository here.
  */
 
-export type McpCapGroup = 'message' | 'edit' | 'thread' | 'pin_react';
+export type McpCapGroup = 'message' | 'edit' | 'member_role' | 'structure' | 'pin_react';
 export type McpActionStatus = 'claimed' | 'done' | 'dry_run' | 'failed';
 
 export interface McpActionRow {

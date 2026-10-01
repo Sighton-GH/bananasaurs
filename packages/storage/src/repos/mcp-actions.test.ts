@@ -39,7 +39,7 @@ const claim = (
     actionId?: string;
     idempotencyKey?: string;
     kind?: string;
-    capGroup?: 'message' | 'edit' | 'thread' | 'pin_react';
+    capGroup?: 'message' | 'edit' | 'member_role' | 'structure' | 'pin_react';
     argsHash?: string;
     tokenId?: string;
     targetChannelId?: string;
@@ -185,7 +185,7 @@ describe('countActionsSince', () => {
     claim(b, { idempotencyKey: 'm', actionId: 'act-m', capGroup: 'message' });
     expect(countActionsSince(a, 'message', 0)).toBe(1);
     expect(countActionsSince(a, 'edit', 0)).toBe(1);
-    expect(countActionsSince(a, 'thread', 0)).toBe(0);
+    expect(countActionsSince(a, 'structure', 0)).toBe(0);
     expect(countActionsSince(b, 'message', 0)).toBe(1);
     expect(countActionsSince(b, 'edit', 0)).toBe(0);
   });

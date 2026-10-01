@@ -5219,7 +5219,7 @@
         },
         "mcp_actions_cap_group": {
           "name": "mcp_actions_cap_group",
-          "value": "\"mcp_actions\".\"cap_group\" IN ('message','edit','thread','pin_react')"
+          "value": "\"mcp_actions\".\"cap_group\" IN ('message','edit','member_role','structure','pin_react')"
         },
         "mcp_actions_status": {
           "name": "mcp_actions_status",
