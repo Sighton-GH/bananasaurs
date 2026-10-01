@@ -6,6 +6,7 @@ import {
   findGuild,
   readSafetyState,
   resetBreaker,
+  setAutomodState,
   setLimits,
   tripBreaker,
   upsertGuild,
@@ -138,5 +139,27 @@ describe('automod_testing_mode (ADR 0042)', () => {
     expect(readSafetyState(a)?.automodTestingMode).toBe(true);
     // Guild-scoped like every other field on this row.
     expect(readSafetyState(b)?.automodTestingMode).toBe(false);
+  });
+});
+
+describe('automod state (ADR 0121)', () => {
+  it('defaults to off for a newly seen guild', () => {
+    expect(readSafetyState(a)?.automodState).toBe('off');
+  });
+
+  it('sets one guild without touching another', () => {
+    setAutomodState(a, 'on', 1_000);
+    expect(readSafetyState(a)?.automodState).toBe('on');
+    expect(readSafetyState(b)?.automodState).toBe('off');
+  });
+
+  it('round-trips watch', () => {
+    setAutomodState(a, 'watch', 1_000);
+    expect(readSafetyState(a)?.automodState).toBe('watch');
+  });
+
+  it('bumps updated_at', () => {
+    setAutomodState(a, 'watch', 5_000);
+    expect(findGuild(a)?.updatedAt).toBe(5_000);
   });
 });
