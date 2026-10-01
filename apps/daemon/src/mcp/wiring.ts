@@ -397,18 +397,24 @@ export const guildPortFor = (
       const guild = requireGuild(guildId);
       // Private threads under the channel that are shared with the MCP —
       // bot AND owner both members, checked live per thread. Unshared ones
-      // never reach the tool, which renders but never filters.
-      const sharedPrivate = async (): Promise<readonly McpGuildThread[]> => {
+      // never reach the tool, which renders but never filters. Archived ones
+      // list only when the caller asked for archived threads, the way
+      // archived public threads do.
+      const sharedPrivate = async (
+        includeArchived: boolean,
+      ): Promise<readonly McpGuildThread[]> => {
         const found: McpGuildThread[] = [];
         for (const channel of guild.channels.cache.values()) {
           if (!channel.isThread() || channel.parentId !== channelId) continue;
           if (channel.type !== ChannelType.PrivateThread) continue;
+          const archived = channel.archived ?? false;
+          if (archived && !includeArchived) continue;
           if (await readable(guildId, channel.id)) {
             found.push({
               id: channel.id,
               name: channel.name,
               parentId: channelId,
-              archived: channel.archived ?? false,
+              archived,
               isPrivate: true,
             });
           }
@@ -430,7 +436,7 @@ export const guildPortFor = (
               archived: thread.archived,
               isPrivate: false as const,
             })),
-            ...(await sharedPrivate()),
+            ...(await sharedPrivate(true)),
           ]),
         );
       }
@@ -457,7 +463,7 @@ export const guildPortFor = (
       });
       return (async (): Promise<readonly McpGuildThread[]> => [
         ...active.filter((thread) => !thread.archived),
-        ...(await sharedPrivate()),
+        ...(await sharedPrivate(false)),
       ])();
     },
     listRoles: (guildId) =>

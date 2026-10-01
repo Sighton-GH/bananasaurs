@@ -2595,6 +2595,7 @@ describe('/mcp read_thread and shared private threads', () => {
   const SHARED_PRIVATE = '399999999999999999';
   const BOT_ONLY_PRIVATE = '400000000000000001';
   const OWNER_ONLY_PRIVATE = '400000000000000002';
+  const ARCHIVED_SHARED_PRIVATE = '400000000000000003';
   const LIVE_MESSAGE = '911111111111111111';
   const ARCHIVE_MESSAGE = '922222222222222222';
   const B_PUBLIC_THREAD = '411111111111111111';
@@ -2613,6 +2614,7 @@ describe('/mcp read_thread and shared private threads', () => {
     name: string,
     guildId: GuildId = GUILD_A,
     parentId: string = PLANNING,
+    archived = false,
   ): object => ({
     id,
     guild_id: guildId,
@@ -2620,7 +2622,7 @@ describe('/mcp read_thread and shared private threads', () => {
     name,
     parent_id: parentId,
     thread_metadata: {
-      archived: false,
+      archived,
       auto_archive_duration: 60,
       archive_timestamp: '2026-09-01T00:00:00.000Z',
       locked: false,
@@ -2649,6 +2651,14 @@ describe('/mcp read_thread and shared private threads', () => {
         threadChannel(SHARED_PRIVATE, ChannelType.GuildPrivateThread, 'shared-private'),
         threadChannel(BOT_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'bot-only-private'),
         threadChannel(OWNER_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'owner-only-private'),
+        threadChannel(
+          ARCHIVED_SHARED_PRIVATE,
+          ChannelType.GuildPrivateThread,
+          'archived-shared-private',
+          GUILD_A,
+          PLANNING,
+          true,
+        ),
       ],
       roles: [],
       members: [],
@@ -2729,6 +2739,8 @@ describe('/mcp read_thread and shared private threads', () => {
     discord.addThreadMember(SHARED_PRIVATE, OWNER);
     discord.addThreadMember(BOT_ONLY_PRIVATE, BOT);
     discord.addThreadMember(OWNER_ONLY_PRIVATE, OWNER);
+    discord.addThreadMember(ARCHIVED_SHARED_PRIVATE, BOT);
+    discord.addThreadMember(ARCHIVED_SHARED_PRIVATE, OWNER);
   };
 
   const threadCall = (
@@ -2956,6 +2968,44 @@ describe('/mcp read_thread and shared private threads', () => {
       expect(byId.has(BOT_ONLY_PRIVATE)).toBe(false);
       expect(byId.has(OWNER_ONLY_PRIVATE)).toBe(false);
       expect(found.text).not.toContain('bot-only-private');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an archived shared private thread lists only with includeArchived', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // Default listing hides it, the way archived public threads hide.
+      const active = listedPrivateById(
+        (
+          await listThreadsCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(active.has(ARCHIVED_SHARED_PRIVATE)).toBe(false);
+      expect(active.get(SHARED_PRIVATE)).toBe(true);
+      // Asked for archived threads, it lists marked archived and private.
+      const archived = callText(
+        (
+          await listThreadsCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+            includeArchived: true,
+          })
+        ).body,
+      );
+      expect(archived.isError).not.toBe(true);
+      const data = JSON.parse(archived.text.split('\n')[2] ?? '') as {
+        threads: Array<{ id: string; archived: boolean; private: boolean }>;
+      };
+      const row = data.threads.find((thread) => thread.id === ARCHIVED_SHARED_PRIVATE);
+      expect(row).toMatchObject({ archived: true, private: true });
     } finally {
       await threadApp.close();
     }
