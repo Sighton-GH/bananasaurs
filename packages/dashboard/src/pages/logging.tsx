@@ -1,25 +1,265 @@
 import { useCallback, useState } from 'react';
-import { LOG_EVENT_KINDS, type GuildChannelInfo, type LogRoutesResponse } from '../api/ops.js';
+import { Link } from 'wouter';
+import { LOG_ACTION_CATALOG, LOG_ACTION_GROUPS, logActionInfo } from '@bananasaurs/core';
+import type { GuildChannelInfo, LogRoute, LogRoutesResponse } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ChannelPicker } from '../ui/ChannelPicker.js';
-import { Checkbox, Field } from '../ui/Field.js';
+import { Checkbox, Field, Input } from '../ui/Field.js';
+import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
-import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
 /**
- * `/logging`: `log routing list` and `log routing set` as a page, plus the
- * per-channel log exclusions the same route group owns. A route on an event
- * kind nothing emits is an inert module that looks configured (WP4 §5), so
- * the form offers only the kinds the subscriber actually routes. Content
- * routing is a member-privacy decision: the table says "included" or
- * "redacted" for every route, never hides it.
+ * `/logging`: named log routes as cards, each posting its ticked actions to
+ * one channel. A route is the actions you tick (with Select all) + one
+ * destination + channels it skips of its own. Routes can be created, edited,
+ * turned on/off and deleted. The guild-wide "No access" list lives on the
+ * Permissions page; this page only notes how many channels it holds.
  */
+
+function actionSummary(eventKinds: readonly string[]): string {
+  const wanted = new Set(eventKinds);
+  const parts: string[] = [];
+  for (const group of LOG_ACTION_GROUPS) {
+    const labels = LOG_ACTION_CATALOG.filter((a) => a.group === group && wanted.has(a.kind)).map(
+      (a) => a.label,
+    );
+    if (labels.length > 0) parts.push(`${group}: ${labels.join(', ')}`);
+  }
+  const unknown = eventKinds.filter((k) => logActionInfo(k) === undefined);
+  if (unknown.length > 0) parts.push(unknown.join(', '));
+  return parts.length > 0 ? parts.join(' · ') : 'No actions';
+}
+
+/** A checkbox that renders the indeterminate state while partly selected. */
+function TriCheckbox({
+  label,
+  checked,
+  indeterminate,
+  onChange,
+}: {
+  readonly label: string;
+  readonly checked: boolean;
+  readonly indeterminate: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="inline-flex items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        checked={checked}
+        ref={(el) => {
+          if (el !== null) el.indeterminate = indeterminate;
+        }}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      {label}
+    </label>
+  );
+}
+
+function RouteForm({
+  route,
+  channelName,
+  onClose,
+  onSaved,
+}: {
+  readonly route?: LogRoute | undefined;
+  readonly channelName: (id: string) => string;
+  readonly onClose: () => void;
+  readonly onSaved: (message: string) => void;
+}) {
+  const session = useSession();
+  const [selected, setSelected] = useState<readonly string[]>(route?.eventKinds ?? []);
+  const [destination, setDestination] = useState(route?.channelId ?? '');
+  const [skips, setSkips] = useState<readonly string[]>(route?.excludedChannelIds ?? []);
+  const [skipPick, setSkipPick] = useState('');
+  const [includeContent, setIncludeContent] = useState(route?.includeContent ?? true);
+  const [name, setName] = useState(route?.name ?? '');
+  const [actionsError, setActionsError] = useState<string | undefined>(undefined);
+  const [destinationError, setDestinationError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+
+  const allKinds = LOG_ACTION_CATALOG.map((a) => a.kind);
+  const allSelected = allKinds.every((k) => selected.includes(k));
+  const someSelected = allKinds.some((k) => selected.includes(k));
+
+  const setGroup = (kinds: readonly string[], checked: boolean) => {
+    setSelected((prev) =>
+      checked
+        ? [...prev, ...kinds.filter((k) => !prev.includes(k))]
+        : prev.filter((k) => !kinds.includes(k)),
+    );
+  };
+
+  const displayOf = (id: string): string => {
+    const resolved = channelName(id);
+    return resolved.startsWith('#') ? resolved : `#${id}`;
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const dest = destination.trim();
+    const nextActionsError = selected.length === 0 ? 'Pick at least one action.' : undefined;
+    const nextDestinationError =
+      dest === ''
+        ? 'Pick a channel to post to.'
+        : skips.includes(dest)
+          ? "The channel you post to can't also be skipped."
+          : undefined;
+    setActionsError(nextActionsError);
+    setDestinationError(nextDestinationError);
+    if (nextActionsError !== undefined || nextDestinationError !== undefined) return;
+    setBusy(true);
+    try {
+      const trimmedName = name.trim();
+      const body = {
+        name: trimmedName === '' ? `→ ${displayOf(dest)}` : trimmedName,
+        channelId: dest,
+        includeContent,
+        enabled: route?.enabled ?? true,
+        eventKinds: [...selected],
+        excludedChannelIds: [...skips],
+      };
+      const result =
+        route === undefined
+          ? await session.write<{ ok: boolean; route: LogRoute }>('/api/log-routes', body)
+          : await session.write<{ ok: boolean; route: LogRoute }>(
+              `/api/log-routes/${encodeURIComponent(route.routeId)}`,
+              body,
+              'PUT',
+            );
+      if (result !== undefined) {
+        onSaved(route === undefined ? 'Route created' : 'Route saved');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => void submit(e)} className="grid max-w-md gap-3">
+      <Field
+        label="Actions"
+        {...(actionsError !== undefined ? { error: actionsError } : {})}
+      >
+        <div className="grid gap-2">
+          <TriCheckbox
+            label="Select all"
+            checked={allSelected}
+            indeterminate={!allSelected && someSelected}
+            onChange={(checked) => setSelected(checked ? allKinds : [])}
+          />
+          {LOG_ACTION_GROUPS.map((group) => {
+            const actions = LOG_ACTION_CATALOG.filter((a) => a.group === group);
+            if (actions.length === 0) return null;
+            const kinds = actions.map((a) => a.kind);
+            const groupChecked = kinds.every((k) => selected.includes(k));
+            const groupSome = kinds.some((k) => selected.includes(k));
+            return (
+              <div key={group} className="grid gap-1">
+                <TriCheckbox
+                  label={group}
+                  checked={groupChecked}
+                  indeterminate={!groupChecked && groupSome}
+                  onChange={(checked) => setGroup(kinds, checked)}
+                />
+                <div className="ml-6 grid gap-1">
+                  {actions.map((action) => (
+                    <Checkbox
+                      key={action.kind}
+                      label={action.label}
+                      checked={selected.includes(action.kind)}
+                      onChange={(e) =>
+                        setGroup([action.kind], (e.target as HTMLInputElement).checked)
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Field>
+      <ChannelPicker
+        label="Post to"
+        kinds={['text', 'announcement']}
+        value={destination}
+        onChange={(id) => {
+          setDestination(id);
+          setDestinationError(undefined);
+        }}
+        {...(destinationError !== undefined ? { error: destinationError } : {})}
+      />
+      <div className="grid gap-2">
+        <ChannelPicker
+          label="Don't log from"
+          hint="Threads in these channels are skipped too. This only applies to actions that happen in a channel (messages)."
+          kinds={['text', 'announcement', 'forum', 'voice', 'stage']}
+          value={skipPick}
+          onChange={setSkipPick}
+        />
+        <div>
+          <Button
+            onClick={() => {
+              const id = skipPick.trim();
+              if (id !== '' && !skips.includes(id)) setSkips([...skips, id]);
+              setSkipPick('');
+            }}
+            disabled={skipPick.trim() === ''}
+          >
+            Add
+          </Button>
+        </div>
+        {skips.length > 0 && (
+          <ul className="flex flex-wrap gap-2">
+            {skips.map((id) => (
+              <li
+                key={id}
+                className="inline-flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1 text-sm"
+              >
+                <span>{displayOf(id)}</span>
+                <Button
+                  aria-label={`Remove ${displayOf(id)}`}
+                  onClick={() => setSkips(skips.filter((s) => s !== id))}
+                >
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <Checkbox
+          label="Include message content"
+          checked={includeContent}
+          onChange={(e) => setIncludeContent((e.target as HTMLInputElement).checked)}
+        />
+      </div>
+      <Field label="Name" hint="Optional. Left empty, the route is named after its destination channel.">
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. mod log"
+          autoComplete="off"
+        />
+      </Field>
+      <div className="flex gap-2">
+        <Button type="submit" variant="primary" busy={busy}>
+          {route === undefined ? 'Create route' : 'Save route'}
+        </Button>
+        <Button onClick={onClose}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
 export function LoggingPage() {
   const session = useSession();
   const toast = useToast();
@@ -36,63 +276,41 @@ export function LoggingPage() {
     return found === undefined ? id : `#${found.name}`;
   };
 
-  const [eventKind, setEventKind] = useState(LOG_EVENT_KINDS[0] ?? '');
-  const [channelId, setChannelId] = useState('');
-  // On by default (owner decision 2026-09-21): a route exists so the log is
-  // useful, and the checkbox + the table's included/redacted column keep the
-  // privacy choice visible either way.
-  const [includeContent, setIncludeContent] = useState(true);
-  const [excludeId, setExcludeId] = useState('');
+  const [form, setForm] = useState<{ mode: 'new' } | { mode: 'edit'; route: LogRoute } | undefined>(
+    undefined,
+  );
+  const [deleting, setDeleting] = useState<LogRoute | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const result = await session.write<{ ok: boolean }>('/api/log-routes', {
-        eventKind,
-        channelId: channelId.trim(),
-        includeContent,
-      });
-      if (result !== undefined) {
-        toast({ tone: 'ok', title: `Route set for ${eventKind}` });
-        setChannelId('');
-        routes.reload();
-      }
-    } finally {
-      setBusy(false);
-    }
+  const closeSaved = (message: string) => {
+    toast({ tone: 'ok', title: message });
+    setForm(undefined);
+    routes.reload();
   };
 
-  const setEnabled = async (kind: string, enabled: boolean) => {
+  const setEnabled = async (route: LogRoute, enabled: boolean) => {
     const result = await session.write<{ ok: boolean }>(
-      `/api/log-routes/${encodeURIComponent(kind)}/enabled`,
+      `/api/log-routes/${encodeURIComponent(route.routeId)}/enabled`,
       { enabled },
     );
     if (result !== undefined) {
-      toast({
-        tone: 'ok',
-        title: `${kind} route ${enabled ? 'enabled' : 'disabled'}`,
-      });
+      toast({ tone: 'ok', title: `Route "${route.name}" turned ${enabled ? 'on' : 'off'}` });
       routes.reload();
     }
   };
 
-  const exclude = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const confirmDelete = async () => {
+    if (deleting === undefined) return;
     setBusy(true);
     try {
-      const result = await session.write<{ ok: boolean; added: boolean }>('/api/log-exclusions', {
-        channelId: excludeId.trim(),
-      });
+      const result = await session.write<{ ok: boolean }>(
+        `/api/log-routes/${encodeURIComponent(deleting.routeId)}`,
+        undefined,
+        'DELETE',
+      );
       if (result !== undefined) {
-        toast({
-          tone: result.added ? 'ok' : 'neutral',
-          title: result.added
-            ? 'Channel excluded from logging'
-            : 'That channel was already excluded',
-        });
-        setExcludeId('');
+        toast({ tone: 'ok', title: 'Route deleted' });
+        setDeleting(undefined);
         routes.reload();
       }
     } finally {
@@ -100,177 +318,97 @@ export function LoggingPage() {
     }
   };
 
-  const unexclude = async (id: string) => {
-    const result = await session.write<{ ok: boolean; removed: boolean }>(
-      `/api/log-exclusions/${encodeURIComponent(id)}`,
-      undefined,
-      'DELETE',
-    );
-    if (result !== undefined) {
-      toast({
-        tone: result.removed ? 'ok' : 'neutral',
-        title: result.removed ? 'Exclusion removed' : 'That channel was not excluded',
-      });
-      routes.reload();
-    }
-  };
+  const excludedCount =
+    routes.resource.state === 'ready' ? (routes.resource.data.excludedChannels ?? []).length : 0;
 
   return (
     <>
       <PageHeader
         title="Logging"
-        purpose="Which Discord events are posted to which channel, whether message content goes with them, and the channels logging never touches."
+        purpose="Routes post chosen actions to a channel. Each route can skip channels of its own."
       />
       <div className="grid max-w-4xl gap-3">
-        <Card title="Routes">
-          <DataState
-            resource={routes.resource}
-            isEmpty={(data) => data.routes.length === 0}
-            empty={
-              <p className="text-sm text-ink-muted">
-                No routes yet. Set one below to start logging an event kind to a channel.
-              </p>
-            }
-          >
-            {(data) => (
-              <DataTable
-                caption="Log routes"
-                rows={data.routes}
-                rowKey={(r) => r.eventKind}
-                columns={[
-                  { key: 'event', header: 'Event', cell: (r) => r.eventKind },
-                  {
-                    key: 'channel',
-                    header: 'Channel',
-                    cell: (r) => (
-                      <span title={r.channelId}>
-                        {channelName(r.channelId)}
-                        {channelName(r.channelId) === r.channelId ? (
-                          ''
-                        ) : (
-                          <span className="text-xs text-ink-muted"> {r.channelId}</span>
-                        )}
+        <DataState
+          resource={routes.resource}
+          isEmpty={(data) => data.routes.length === 0}
+          empty={
+            <p className="text-sm text-ink-muted">
+              No routes yet. Create one to start posting actions to a channel.
+            </p>
+          }
+        >
+          {(data) => (
+            <div className="grid gap-3">
+              {data.routes.map((route) => (
+                <Card key={route.routeId} title={route.name}>
+                  <div className="grid gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm text-ink-muted">{`→ ${channelName(route.channelId)}`}</span>
+                      {!route.enabled && <Badge tone="neutral">Off</Badge>}
+                      <span className="ml-auto flex flex-wrap items-center gap-2">
+                        <Checkbox
+                          label={`${route.name} on`}
+                          checked={route.enabled}
+                          onChange={(e) =>
+                            void setEnabled(route, (e.target as HTMLInputElement).checked)
+                          }
+                        />
+                        <Button onClick={() => setForm({ mode: 'edit', route })}>Edit</Button>
+                        <Button onClick={() => setDeleting(route)}>Delete</Button>
                       </span>
-                    ),
-                  },
-                  {
-                    key: 'content',
-                    header: 'Content',
-                    cell: (r) =>
-                      r.includeContent ? <Badge tone="hold">included</Badge> : 'redacted',
-                  },
-                  {
-                    key: 'state',
-                    header: 'State',
-                    cell: (r) => (r.enabled ? 'enabled' : <Badge tone="neutral">disabled</Badge>),
-                  },
-                  {
-                    key: 'actions',
-                    header: '',
-                    cell: (r) => (
-                      <Button onClick={() => void setEnabled(r.eventKind, !r.enabled)}>
-                        {r.enabled ? 'Disable' : 'Enable'}
-                      </Button>
-                    ),
-                  },
-                ]}
-              />
-            )}
-          </DataState>
-          <form onSubmit={(e) => void submit(e)} className="mt-3 grid max-w-md gap-3">
-            <Field
-              label="Event kind"
-              hint="Only the kinds the subscriber actually routes — anything else would be an inert route that looks configured."
-            >
-              <select
-                aria-label="Event kind"
-                value={eventKind}
-                onChange={(e) => setEventKind(e.target.value)}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                {LOG_EVENT_KINDS.map((kind) => (
-                  <option key={kind} value={kind}>
-                    {kind}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <ChannelPicker label="Channel" value={channelId} onChange={setChannelId} />
-            <div>
-              <Checkbox
-                label="Include message content"
-                checked={includeContent}
-                onChange={(e) => setIncludeContent(e.target.checked)}
-              />
-              <p className="mt-1 text-xs text-ink-muted">
-                On by default so the log is useful. Unticked, the route posts the event with the
-                message text redacted.
-              </p>
+                    </div>
+                    <p className="text-sm">{actionSummary(route.eventKinds)}</p>
+                    <p className="text-sm text-ink-muted">
+                      {route.excludedChannelIds.length === 0
+                        ? 'Skips: nothing'
+                        : `Skips: ${route.excludedChannelIds.map(channelName).join(', ')} (and their threads)`}
+                    </p>
+                    <p className="text-sm text-ink-muted">
+                      {`Message content: ${route.includeContent ? 'included' : 'not included'}`}
+                    </p>
+                  </div>
+                </Card>
+              ))}
             </div>
-            <div>
-              <Button
-                type="submit"
-                variant="primary"
-                busy={busy}
-                disabled={channelId.trim() === ''}
-              >
-                Set route
-              </Button>
-            </div>
-          </form>
-        </Card>
-        <Card title="Log exclusions">
-          <DataState resource={routes.resource}>
-            {(data) =>
-              (data.excludedChannels ?? []).length === 0 ? (
-                <p className="text-sm text-ink-muted">
-                  No exclusions — every channel the routes match is logged.
-                </p>
-              ) : (
-                <DataTable
-                  caption="Channels excluded from logging"
-                  rows={data.excludedChannels ?? []}
-                  rowKey={(id) => id}
-                  columns={[
-                    {
-                      key: 'channel',
-                      header: 'Channel',
-                      cell: (id) => (
-                        <span title={id}>
-                          {channelName(id)}
-                          {channelName(id) === id ? (
-                            ''
-                          ) : (
-                            <span className="text-xs text-ink-muted"> {id}</span>
-                          )}
-                        </span>
-                      ),
-                    },
-                    {
-                      key: 'actions',
-                      header: '',
-                      cell: (id) => <Button onClick={() => void unexclude(id)}>Remove</Button>,
-                    },
-                  ]}
-                />
-              )
-            }
-          </DataState>
-          <form onSubmit={(e) => void exclude(e)} className="mt-3 grid max-w-md gap-3">
-            <ChannelPicker
-              label="Exclude a channel"
-              hint="Search for the channel logging never touches."
-              value={excludeId}
-              onChange={setExcludeId}
+          )}
+        </DataState>
+        {form === undefined && (
+          <div>
+            <Button variant="primary" onClick={() => setForm({ mode: 'new' })}>
+              New route
+            </Button>
+          </div>
+        )}
+        {form !== undefined && (
+          <Card title={form.mode === 'new' ? 'New route' : 'Edit route'}>
+            <RouteForm
+              key={form.mode === 'new' ? 'new' : form.route.routeId}
+              {...(form.mode === 'edit' ? { route: form.route } : {})}
+              channelName={channelName}
+              onClose={() => setForm(undefined)}
+              onSaved={closeSaved}
             />
-            <div>
-              <Button type="submit" busy={busy} disabled={excludeId.trim() === ''}>
-                Exclude channel
-              </Button>
-            </div>
-          </form>
-        </Card>
+          </Card>
+        )}
+        {excludedCount > 0 && (
+          <p className="text-sm text-ink-muted">
+            {excludedCount} channel(s) have No access and are never logged, whatever a route says.{' '}
+            <Link href="/permissions" className="underline">
+              Manage on Permissions
+            </Link>
+          </p>
+        )}
       </div>
+      <ConfirmDialog
+        open={deleting !== undefined}
+        title={`Delete route "${deleting?.name ?? ''}"?`}
+        scope={<p>It stops posting immediately. This can&apos;t be undone.</p>}
+        confirmLabel="Delete route"
+        danger
+        busy={busy}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setDeleting(undefined)}
+      />
     </>
   );
 }
