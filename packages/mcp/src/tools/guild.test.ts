@@ -609,8 +609,20 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
   const threadPort = (): McpGuildPort => ({
     ...fakePort(),
     listThreads: async () => [
-      { id: '800000000000000001', name: 'weekly build night', parentId: CHANNEL, archived: false },
-      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: false,
+      },
+      {
+        id: '800000000000000002',
+        name: 'archived plans',
+        parentId: CHANNEL,
+        archived: true,
+        isPrivate: false,
+      },
     ],
   });
 
@@ -626,8 +638,8 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     // `list_channels` puts the name and the parent where it puts the id.
     const [head] = result.text.split('\n');
     expect(head).toBe(
-      `Public threads under channel ${CHANNEL}: 2 threads (1 archived). ` +
-        'Private threads are never listed.',
+      `Threads under channel ${CHANNEL}: 2 threads (1 archived, 0 private). ` +
+        'Private threads listed here are shared with the MCP and read live.',
     );
     const data = jsonOf(result.text);
     expect(data['threads']).toEqual([
@@ -636,8 +648,15 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
         name: 'weekly build night',
         parentId: CHANNEL,
         archived: false,
+        private: false,
       },
-      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+      {
+        id: '800000000000000002',
+        name: 'archived plans',
+        parentId: CHANNEL,
+        archived: true,
+        private: false,
+      },
     ]);
   });
 
@@ -652,6 +671,65 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     expect(result.text).not.toContain(EVIDENCE_CLOSE);
     const data = jsonOf(result.text);
     expect(data['threads']).toHaveLength(2);
+  });
+});
+
+describe('list_threads marks the shared private threads the port returns', () => {
+  const CHANNEL = '777777777777777777';
+  const SHARED_PRIVATE = '800000000000000003';
+
+  const mixedPort = (): McpGuildPort => ({
+    ...fakePort(),
+    listThreads: async () => [
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: false,
+      },
+      {
+        id: SHARED_PRIVATE,
+        name: 'secret plans',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: true,
+      },
+    ],
+  });
+
+  it('lists every thread the port returns, private ones flagged', async () => {
+    // The tool renders but never filters: the port lists no unshared private
+    // thread (the daemon checks bot-AND-owner membership live), so whatever
+    // arrives flagged private is shared by construction.
+    const result = await listThreadsText(principalWith(GUILD_A), mixedPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [head] = result.text.split('\n');
+    expect(head).toBe(
+      `Threads under channel ${CHANNEL}: 2 threads (0 archived, 1 private). ` +
+        'Private threads listed here are shared with the MCP and read live.',
+    );
+    const data = jsonOf(result.text);
+    expect(data['threads']).toEqual([
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        private: false,
+      },
+      {
+        id: SHARED_PRIVATE,
+        name: 'secret plans',
+        parentId: CHANNEL,
+        archived: false,
+        private: true,
+      },
+    ]);
   });
 });
 

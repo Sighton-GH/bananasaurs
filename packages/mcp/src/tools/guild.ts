@@ -68,8 +68,10 @@ export const LIST_CHANNELS_TOOL_DESCRIPTION =
 
 export const LIST_THREADS_TOOL_NAME = 'list_threads';
 export const LIST_THREADS_TOOL_DESCRIPTION =
-  'Lists public threads under one channel or forum, given by id or by name ' +
-  '(e.g. "help" or "#help"). Private threads are never returned. ' +
+  'Lists threads under one channel or forum, given by id or by name ' +
+  '(e.g. "help" or "#help"). Public threads are always listed; private threads ' +
+  'only when shared with the MCP (both the bot and the owner are members), ' +
+  'marked "private": true and read live by read_thread. ' +
   'Refuses when the guild is unreachable.';
 
 export const LIST_ROLES_TOOL_NAME = 'list_roles';
@@ -121,6 +123,13 @@ export interface McpGuildThread {
   readonly name: string;
   readonly parentId: string;
   readonly archived: boolean;
+  /**
+   * True for a private thread shared with the MCP (bot and owner are both
+   * members, checked live by the port). The port lists no other private
+   * thread: unshared ones never reach this tool, which renders but never
+   * filters.
+   */
+  readonly isPrivate: boolean;
 }
 
 export interface McpGuildRole {
@@ -460,17 +469,20 @@ const listThreadsInner = async (
     parsed.data.includeArchived ?? false,
   );
   const archived = threads.filter((thread) => thread.archived).length;
+  const sharedPrivate = threads.filter((thread) => thread.isPrivate).length;
   const noun = threads.length === 1 ? 'thread' : 'threads';
   const head =
-    `Public threads under channel ${channelId}: ` +
-    `${String(threads.length)} ${noun} (${String(archived)} archived). ` +
-    'Private threads are never listed.';
+    `Threads under channel ${channelId}: ` +
+    `${String(threads.length)} ${noun} ` +
+    `(${String(archived)} archived, ${String(sharedPrivate)} private). ` +
+    'Private threads listed here are shared with the MCP and read live.';
   const data = {
     threads: threads.map((t) => ({
       id: t.id,
       name: safeName(t.name),
       parentId: t.parentId,
       archived: t.archived,
+      private: t.isPrivate,
     })),
   };
   return {
