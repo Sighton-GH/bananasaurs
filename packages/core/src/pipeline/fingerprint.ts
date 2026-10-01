@@ -144,6 +144,10 @@ export function fingerprintOf(event: DomainEvent): string | undefined {
       );
     }
 
+    case 'auditLogEntry':
+      // An entry is created once; its id is its identity.
+      return digest(event.entryId);
+
     case 'reactionAdd':
     case 'reactionRemove':
     case 'memberUpdate':

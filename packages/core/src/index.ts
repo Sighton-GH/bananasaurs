@@ -40,6 +40,9 @@ export type {
 } from './discord/port.js';
 export type {
   AutoModerationEvent,
+  AuditChangeValue,
+  AuditLogChange,
+  AuditLogEntryEvent,
   ConnectionEvent,
   DomainEvent,
   DomainEventKind,
