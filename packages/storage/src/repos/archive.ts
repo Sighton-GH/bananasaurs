@@ -999,3 +999,131 @@ export const listChannelHistory = (
       .all()
       .map(toArchiveMessage);
   });
+
+/** `read_digest` reads bigger pages than the search/history tools (plan Task 5). */
+export const DIGEST_LIMIT_MAX = 1000;
+const DIGEST_LIMIT_DEFAULT = 500;
+
+const sanitizeDigestLimit = (limit: number, fallback: number, max: number): number => {
+  if (!Number.isFinite(limit)) return fallback;
+  return Math.min(Math.max(Math.floor(limit), 1), max);
+};
+
+/**
+ * Every archived message in these channels (and threads under them — a
+ * thread message carries its parent as `channel_id`, so the channel
+ * predicate covers both) created at/after `since`, oldest first.
+ *
+ * The page cursor is the last row's `(createdAt, messageId)`: pass it as
+ * `after` and the next page starts strictly past it (`createdAt` first, the
+ * snowflake's numeric length-then-value order breaking ties, the same
+ * comparison `listChannelHistory` uses). An empty channel list answers `[]`.
+ */
+export const listMessagesSince = (
+  scope: GuildScope,
+  input: {
+    readonly channelIds: readonly string[];
+    readonly since: number;
+    readonly after?: { readonly createdAt: number; readonly messageId: string } | undefined;
+    readonly limit: number;
+  },
+): ArchiveMessage[] =>
+  read(scope, (db) => {
+    if (input.channelIds.length === 0) return [];
+    const limit = sanitizeDigestLimit(input.limit, DIGEST_LIMIT_DEFAULT, DIGEST_LIMIT_MAX);
+    return db
+      .select()
+      .from(archiveMessages)
+      .where(
+        scope.only(
+          archiveMessages,
+          inArray(archiveMessages.channelId, [...input.channelIds]),
+          sql`${archiveMessages.createdAt} >= ${input.since}`,
+          input.after === undefined
+            ? undefined
+            : sql`(${archiveMessages.createdAt} > ${input.after.createdAt} OR (${archiveMessages.createdAt} = ${input.after.createdAt} AND (length(${archiveMessages.messageId}) > length(${input.after.messageId}) OR (length(${archiveMessages.messageId}) = length(${input.after.messageId}) AND ${archiveMessages.messageId} > ${input.after.messageId}))))`,
+        ),
+      )
+      .orderBy(
+        asc(archiveMessages.createdAt),
+        sql`length(${archiveMessages.messageId}) ASC`,
+        asc(archiveMessages.messageId),
+      )
+      .limit(limit)
+      .all()
+      .map(toArchiveMessage);
+  });
+
+/**
+ * `list_unanswered`'s candidates (plan Task 5; the owner's rule is "should
+ * just check for replies to an @help tag"): messages mentioning `roleId`
+ * created in `[since, olderThan]`, newest first, minus any with an answer —
+ * a reply (`reply_to_message_id`) or a message in the thread started from it
+ * (a thread started from a message carries that message's id as `thread_id`)
+ * from anyone other than the asker. A self-reply answers nothing.
+ *
+ * The role predicate walks `mentioned_role_ids` with `json_each` so two ids
+ * sharing a prefix never cross-match (a `LIKE` on the JSON text would). The
+ * answering check runs as one query over the candidate ids, then filters in
+ * JS — the window bounds the candidate set, so no `LIMIT` runs before the
+ * filter and `limit` slices the unanswered remainder.
+ */
+export const listUnansweredRoleMentions = (
+  scope: GuildScope,
+  input: {
+    readonly roleId: string;
+    readonly since: number;
+    readonly olderThan: number;
+    readonly limit: number;
+  },
+): ArchiveMessage[] =>
+  read(scope, (db) => {
+    const limit = sanitizeDigestLimit(input.limit, 50, 100);
+    const candidates = db
+      .select()
+      .from(archiveMessages)
+      .where(
+        scope.only(
+          archiveMessages,
+          sql`${archiveMessages.createdAt} >= ${input.since}`,
+          sql`${archiveMessages.createdAt} <= ${input.olderThan}`,
+          sql`EXISTS (SELECT 1 FROM json_each(${archiveMessages.mentionedRoleIds}) WHERE value = ${input.roleId})`,
+        ),
+      )
+      .orderBy(
+        desc(archiveMessages.createdAt),
+        sql`length(${archiveMessages.messageId}) DESC`,
+        desc(archiveMessages.messageId),
+      )
+      .all()
+      .map(toArchiveMessage);
+    if (candidates.length === 0) return [];
+    const authorById = new Map(candidates.map((c) => [c.messageId, c.authorId ?? null] as const));
+    const answered = new Set<string>();
+    for (let i = 0; i < candidates.length; i += 500) {
+      const ids = candidates.slice(i, i + 500).map((c) => c.messageId);
+      const replies = db
+        .select({
+          replyTo: archiveMessages.replyToMessageId,
+          thread: archiveMessages.threadId,
+          author: archiveMessages.authorId,
+        })
+        .from(archiveMessages)
+        .where(
+          scope.only(
+            archiveMessages,
+            sql`(${archiveMessages.replyToMessageId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}) OR ${archiveMessages.threadId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}))`,
+          ),
+        )
+        .all();
+      for (const reply of replies) {
+        for (const target of [reply.replyTo, reply.thread]) {
+          if (target === null) continue;
+          const asker = authorById.get(target);
+          if (asker === undefined) continue;
+          if ((reply.author ?? null) !== asker) answered.add(target);
+        }
+      }
+    }
+    return candidates.filter((c) => !answered.has(c.messageId)).slice(0, limit);
+  });
