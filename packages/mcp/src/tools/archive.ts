@@ -299,7 +299,13 @@ const resolveAuthorId = (port: McpArchivePort, raw: string | undefined): AuthorR
   return { ok: true, authorId: raw };
 };
 
-const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => {
+/**
+ * One archived message as evidence. Shared with `read_thread`
+ * (`./threads.js`), which renders the same rows from the archive and from
+ * live REST reads: tombstones for purged or textless messages, and a
+ * `reply to:` first line naming the answered message.
+ */
+export const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => {
   const body =
     message.content ??
     (message.contentPurgedAt !== undefined ? ARCHIVE_PURGED_MARKER : ARCHIVE_NO_TEXT_MARKER);

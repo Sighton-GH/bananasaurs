@@ -7,14 +7,10 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { safeName } from '../structured.js';
-import { envelope, type EvidenceItem } from '../envelope.js';
+import { envelope } from '../envelope.js';
 import { MCP_READ_READ_THREAD } from '../read-audit.js';
 import { registerReadTool, type ReadOutcome, type RegisterContext } from '../register.js';
-import {
-  ARCHIVE_NO_TEXT_MARKER,
-  ARCHIVE_PURGED_MARKER,
-  type McpArchiveMessage,
-} from './archive.js';
+import { toEvidenceItem, type McpArchiveMessage } from './archive.js';
 
 /**
  * `read_thread` — archive reads for public threads, live reads for private
@@ -129,30 +125,6 @@ const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
   } catch {
     return false;
   }
-};
-
-/**
- * The same evidence projection `read_channel_history` renders
- * (`packages/mcp/src/tools/archive.ts` owns the original; this package's
- * boundary keeps one projection per tool module rather than sharing a
- * renderer across them): tombstones for purged or textless messages, and a
- * `reply to:` first line naming the answered message. The envelope frames
- * the whole content, so the id stays data, never instruction.
- */
-const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => {
-  const body =
-    message.content ??
-    (message.contentPurgedAt !== undefined ? ARCHIVE_PURGED_MARKER : ARCHIVE_NO_TEXT_MARKER);
-  return {
-    authorId: message.authorId ?? '(unknown author)',
-    channelId: message.threadId ?? message.channelId,
-    messageId: message.messageId,
-    timestamp: new Date(message.createdAt).toISOString(),
-    content:
-      message.replyToMessageId === undefined
-        ? body
-        : `reply to: ${message.replyToMessageId}\n${body}`,
-  };
 };
 
 const readThreadInner = async (
