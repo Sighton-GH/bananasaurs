@@ -4,7 +4,14 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { ChannelType, Client, Collection, type Guild, type GuildMember } from 'discord.js';
+import {
+  ChannelType,
+  Client,
+  Collection,
+  PermissionsBitField,
+  type Guild,
+  type GuildMember,
+} from 'discord.js';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
   openMigratedTestDatabase,
@@ -20,13 +27,14 @@ import {
   guildRepo,
   jobRepo,
   loggingRepo,
+  mcpActionsRepo,
   mcpSendRepo,
   resourceCacheRepo,
   roleRepo,
   taskNudgeRepo,
   taskRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId, DiscordApiError } from '@bananasaurs/core';
+import { parseGuildId, DiscordApiError, contentHashFor } from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -538,6 +546,12 @@ describe('/mcp send_message through the real composition', () => {
   const PRIVATE_THREAD = '499999999999999999';
   /** Allowlisted but in no guild's channel cache: the stale-row shape C2 is about. */
   const OUTSIDE_CHANNEL = '477777777777777777';
+  /** Allowlisted, but the bot role is denied SendMessages here by overwrite. */
+  const NO_SEND_CHANNEL = '477777777777777779';
+  const BOT_ID = '123456789012345678';
+  const BOT_ROLE = '511111111111111111';
+  const LOW_ROLE = '522222222222222222';
+  const MEMBER_USER = '633333333333333333';
   /** Distinctive text: must reach Discord, must never reach the audit row. */
   const CONTENT = 'picnic-probe-send-content-that-must-never-reach-audit-zz9';
 
@@ -553,6 +567,20 @@ describe('/mcp send_message through the real composition', () => {
    */
   const seedSendGuild = (): void => {
     const internals = deps.client as unknown as SendDiscordInternals;
+    // Target resolution reads the bot's live permissions, so the composed
+    // app's client needs a bot user, a bot role that can post, and a bot
+    // member — the same shape `ops/wiring.test.ts` injects. Deliberately not
+    // Administrator: it would bypass the channel overwrite the
+    // no-permission test below depends on.
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_ID, username: 'bananasaurs', discriminator: '0' });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel |
+      PermissionsBitField.Flags.SendMessages |
+      PermissionsBitField.Flags.SendMessagesInThreads
+    ).toString();
     internals.guilds._add({
       id: GUILD_A,
       name: 'guild a',
@@ -616,9 +644,37 @@ describe('/mcp send_message through the real composition', () => {
           position: 1,
           permission_overwrites: [],
         },
+        {
+          id: NO_SEND_CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'quiet',
+          position: 2,
+          permission_overwrites: [
+            {
+              id: BOT_ROLE,
+              type: 0,
+              allow: '0',
+              deny: String(PermissionsBitField.Flags.SendMessages),
+            },
+          ],
+        },
       ],
-      roles: [],
-      members: [],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions,
+          managed: true,
+        },
+        { id: LOW_ROLE, name: 'helpers', position: 3, permissions: '0', managed: false },
+      ],
+      members: [
+        { user: { id: BOT_ID, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        { user: { id: MEMBER_USER, username: 'member', discriminator: '0' }, roles: [] },
+      ],
       emojis: [],
       unavailable: false,
     });
@@ -677,18 +733,24 @@ describe('/mcp send_message through the real composition', () => {
 
     // Exactly one Discord call, carrying the forced-empty mentions: nothing
     // else in the tree sets `allowedMentions`, so absent would mean Discord's
-    // default of parsing everything, including @everyone.
+    // default of parsing everything, including @everyone. The reply ping is
+    // off by default (ADR 0117 §5), and only policy-approved pings ride
+    // along — here, none.
     const calls = fakeDiscord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[0]).toBe(GUILD_A);
     expect(calls[0]?.args[1]).toBe(CHANNEL);
-    expect(calls[0]?.args[2]).toEqual({ content: CONTENT, allowedMentions: { parse: [] } });
+    expect(calls[0]?.args[2]).toEqual({
+      content: CONTENT,
+      pingReplyAuthor: false,
+      allowedMentions: { parse: [], roles: [], users: [] },
+    });
 
     // The ledger row lands with the Discord message id.
-    const row = mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-k1');
-    expect(row?.outcome).toBe('sent');
-    expect(row?.channelId).toBe(CHANNEL);
-    expect(row?.messageId).toBeDefined();
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'send-k1');
+    expect(row?.status).toBe('done');
+    expect(row?.targetChannelId).toBe(CHANNEL);
+    expect(row?.resultMessageId).toBeDefined();
 
     // The audit row carries the channel, the credential and the outcome —
     // never the content (rule 4).
@@ -705,6 +767,8 @@ describe('/mcp send_message through the real composition', () => {
     expect(after['outcome']).toBe('sent');
     expect(after['clientId']).toMatch(/^cli_/);
     expect(after['tokenId']).toMatch(/^tok_/);
+    expect(typeof after['actionId']).toBe('string');
+    expect(found.text).toContain(after['actionId']);
     expect(audit?.actorId).toBe(after['tokenId']);
     // The absence assertion, not only the presence one.
     expect(JSON.stringify(trail)).not.toContain(CONTENT);
@@ -769,7 +833,7 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('not on the send allowlist');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
-    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'excluded-send')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'excluded-send')).toBeUndefined();
   });
 
   it('a non-allowlisted channel is refused and Discord is never called', async () => {
@@ -787,7 +851,7 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('not on the send allowlist');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
-    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-k2')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'send-k2')).toBeUndefined();
   });
 
   it('the same idempotency key twice sends once and answers the second as a replay', async () => {
@@ -830,7 +894,187 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.text).toContain('will not help');
     expect(refused.text).not.toContain('not on the send allowlist');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
-    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-outside')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'send-outside')).toBeUndefined();
+  });
+
+  it('@everyone in content never pings, while a policy-approved role and member do', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({
+            content: '@everyone hello @here',
+            pingRoles: ['helpers'],
+            pingUsers: [MEMBER_USER],
+            idempotencyKey: 'ping-send',
+          }),
+        )
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    const calls = fakeDiscord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[2]).toMatchObject({
+      allowedMentions: { parse: [], roles: [LOW_ROLE], users: [MEMBER_USER] },
+    });
+  });
+
+  it('a reply without pingReplyAuthor records the reply with the ping off', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({
+            content: `${CONTENT}-reply`,
+            replyTo: '400000000000000000',
+            idempotencyKey: 'reply-send',
+          }),
+        )
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    const calls = fakeDiscord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[2]).toMatchObject({
+      replyTo: '400000000000000000',
+      pingReplyAuthor: false,
+    });
+  });
+
+  it('embeds post with the footer mapped and mentions still suppressed', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (
+        await sendCall(accessToken, {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          embeds: [{ title: 'plan', description: 'picnic', footer: 'club' }],
+          idempotencyKey: 'embed-send',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    const calls = fakeDiscord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[2]).toMatchObject({
+      embeds: [{ title: 'plan', description: 'picnic', footer: { text: 'club' } }],
+      allowedMentions: { parse: [], roles: [], users: [] },
+    });
+  });
+
+  it('a channel the bot cannot send in is refused naming the permission', async () => {
+    seedSendGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: NO_SEND_CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: NO_SEND_CHANNEL, idempotencyKey: 'no-send' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('SendMessages');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'no-send')).toBeUndefined();
+  });
+
+  it('a pre-migration key with the old content hash replays instead of posting twice', async () => {
+    allow();
+    const scope = t.scopes.forGuild(GUILD_A);
+    mcpActionsRepo.claimAction(scope, {
+      actionId: 'legacy:send-legacy',
+      idempotencyKey: 'send-legacy',
+      kind: 'message.send',
+      capGroup: 'message',
+      argsHash: contentHashFor(CHANNEL, CONTENT),
+      tokenId: 'tok_legacy',
+      targetChannelId: CHANNEL,
+      now: clock,
+      dryRun: false,
+    });
+    mcpActionsRepo.completeAction(scope, 'legacy:send-legacy', {
+      status: 'done',
+      resultMessageId: '466666666666666667',
+      now: clock,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'send-legacy' }))).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('466666666666666667');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('a replay of a failed earlier attempt says the outcome is unknown, never "sent"', async () => {
+    allow();
+    const scope = t.scopes.forGuild(GUILD_A);
+    mcpActionsRepo.claimAction(scope, {
+      actionId: 'act-failed',
+      idempotencyKey: 'send-failed',
+      kind: 'message.send',
+      capGroup: 'message',
+      argsHash: contentHashFor(CHANNEL, CONTENT),
+      tokenId: 'tok_failed',
+      targetChannelId: CHANNEL,
+      now: clock,
+      dryRun: false,
+    });
+    mcpActionsRepo.completeAction(scope, 'act-failed', { status: 'failed', now: clock });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'send-failed' }))).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('outcome is unknown');
+    expect(found.text).toContain('may or may not be in channel');
+    expect(found.text.toLowerCase()).not.toContain('sent');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('a dry run reports what would be sent and makes no Discord call', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ content: `${CONTENT}-dry`, dryRun: true, idempotencyKey: 'dry-send' }),
+        )
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('nothing was posted');
+    expect(found.text).toContain('would post');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'dry-send')?.status).toBe(
+      'dry_run',
+    );
+  });
+
+  it('the kill switch refuses the send with no Discord call', async () => {
+    allow();
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'kill-send' }))).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('kill switch');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'kill-send')).toBeUndefined();
   });
 });
 

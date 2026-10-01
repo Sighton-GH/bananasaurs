@@ -574,7 +574,7 @@ const contentfulArchivePort = (): McpArchivePort => ({
 });
 
 const stubSendPort = (): McpSendPort => ({
-  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
 });
 
 /** Minimal jobs port: this file pins read logging, never the jobs tools. */

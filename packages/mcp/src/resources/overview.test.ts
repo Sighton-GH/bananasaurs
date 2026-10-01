@@ -158,7 +158,10 @@ const connectPair = async (
     guild: stubGuild(),
     records: stubRecords(),
     // Required since M5 Task 4; never called by the resource pinned here.
-    send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+    send: {
+      send: () =>
+        Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
+    },
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),

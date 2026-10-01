@@ -1,16 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  GuildId,
-  Logger,
-  McpActionAuditInput,
-  McpActionDeps,
-} from '@bananasaurs/core';
-import {
-  effectRepo,
-  guildRepo,
-  mcpActionsRepo,
-  type GuildScope,
-} from '@bananasaurs/storage';
+import type { GuildId, Logger, McpActionAuditInput, McpActionDeps } from '@bananasaurs/core';
+import { effectRepo, guildRepo, mcpActionsRepo, type GuildScope } from '@bananasaurs/storage';
 
 /**
  * The `McpActionDeps` factory (Task 4 Step 2): core's `runMcpAction` pipeline

@@ -525,7 +525,10 @@ describe('guild tools on the MCP server', () => {
         listPanels: () => [],
       },
       // Required since M5 Task 4; never called by the guild tools pinned here.
-      send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+      send: {
+        send: () =>
+          Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
+      },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),

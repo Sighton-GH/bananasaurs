@@ -186,6 +186,8 @@ export {
   type McpSendOutcome,
   type McpSendPort,
   type McpSendRefusal,
+  type SendEmbed,
+  type SendEmbedField,
   type SendOutcomeText,
 } from './tools/send.js';
 export { MCP_SERVER_INSTRUCTIONS } from './instructions.js';

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ChannelType, Client, PermissionsBitField } from 'discord.js';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import { guildRepo, loggingRepo, mcpSendRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { resolvePings, resolveSendTarget } from './targets.js';
@@ -98,9 +101,9 @@ const makeClient = (options: TestClientOptions = {}): Client => {
   mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
   const botPermissions =
     options.botPermissions ??
-    (PermissionsBitField.Flags.ViewChannel |
+    PermissionsBitField.Flags.ViewChannel |
       PermissionsBitField.Flags.SendMessages |
-      PermissionsBitField.Flags.SendMessagesInThreads);
+      PermissionsBitField.Flags.SendMessagesInThreads;
   const denySet = new Set(options.denySendOn ?? []);
   internals.guilds._add({
     id: GUILD_A,
@@ -142,7 +145,7 @@ const makeClient = (options: TestClientOptions = {}): Client => {
   return client;
 };
 
-const defaultRoles = (): TestClientOptions['roles'] => [
+const defaultRoles = (): NonNullable<TestClientOptions['roles']> => [
   { id: LOW_ROLE, name: 'helpers', position: 3, permissions: '0' },
   { id: HIGH_ROLE, name: 'admins', position: 9, permissions: '0' },
   { id: MANAGED_ROLE, name: 'integration', position: 2, permissions: '0', managed: true },
@@ -171,7 +174,13 @@ const allow = (channelId: string): void => {
 describe('resolveSendTarget', () => {
   it('an in-scope channel passes with need post', async () => {
     allow(CHANNEL);
-    const resolved = await resolveSendTarget(makeClient(), t.scopes.forGuild(GUILD_A), GUILD_A, CHANNEL, 'post');
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      CHANNEL,
+      'post',
+    );
     expect(resolved).toMatchObject({ ok: true, channelId: CHANNEL, isThread: false });
   });
 
@@ -215,7 +224,13 @@ describe('resolveSendTarget', () => {
   it('an excluded channel is refused as not-in-send-scope', async () => {
     allow(CHANNEL);
     loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), CHANNEL);
-    const resolved = await resolveSendTarget(makeClient(), t.scopes.forGuild(GUILD_A), GUILD_A, CHANNEL, 'post');
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      CHANNEL,
+      'post',
+    );
     expect(resolved).toEqual({ ok: false, reason: 'not-in-send-scope' });
   });
 
@@ -232,7 +247,13 @@ describe('resolveSendTarget', () => {
 
   it('a channel of another guild is refused as not-in-guild', async () => {
     allow(CHANNEL);
-    const resolved = await resolveSendTarget(makeClient(), t.scopes.forGuild(GUILD_B), GUILD_B, CHANNEL, 'post');
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_B),
+      GUILD_B,
+      CHANNEL,
+      'post',
+    );
     expect(resolved).toEqual({ ok: false, reason: 'not-in-guild' });
   });
 
@@ -256,7 +277,11 @@ describe('resolveSendTarget', () => {
       NO_SEND_CHANNEL,
       'post',
     );
-    expect(resolved).toEqual({ ok: false, reason: 'bot-lacks-permission', missing: 'SendMessages' });
+    expect(resolved).toEqual({
+      ok: false,
+      reason: 'bot-lacks-permission',
+      missing: 'SendMessages',
+    });
   });
 
   it('pin passes with PinMessages alone', async () => {
@@ -267,7 +292,13 @@ describe('resolveSendTarget', () => {
         PermissionsBitField.Flags.SendMessages |
         PermissionsBitField.Flags.PinMessages,
     });
-    const resolved = await resolveSendTarget(client, t.scopes.forGuild(GUILD_A), GUILD_A, CHANNEL, 'pin');
+    const resolved = await resolveSendTarget(
+      client,
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      CHANNEL,
+      'pin',
+    );
     expect(resolved).toMatchObject({ ok: true, channelId: CHANNEL });
   });
 
@@ -279,7 +310,13 @@ describe('resolveSendTarget', () => {
         PermissionsBitField.Flags.SendMessages |
         PermissionsBitField.Flags.ManageMessages,
     });
-    const resolved = await resolveSendTarget(client, t.scopes.forGuild(GUILD_A), GUILD_A, CHANNEL, 'pin');
+    const resolved = await resolveSendTarget(
+      client,
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      CHANNEL,
+      'pin',
+    );
     expect(resolved).toMatchObject({ ok: true, channelId: CHANNEL });
   });
 });
@@ -311,7 +348,9 @@ describe('resolvePings', () => {
   it('the floor is live: a role below the bot passes, then gains ManageRoles in the cache and is refused', async () => {
     const client = makeClient({ roles: defaultRoles() });
     const scope = t.scopes.forGuild(GUILD_A);
-    expect(await resolvePings(client, scope, GUILD_A, { roles: [LOW_ROLE], users: [] })).toMatchObject({
+    expect(
+      await resolvePings(client, scope, GUILD_A, { roles: [LOW_ROLE], users: [] }),
+    ).toMatchObject({
       ok: true,
     });
     const guild = client.guilds.cache.get(GUILD_A);
@@ -336,15 +375,18 @@ describe('resolvePings', () => {
     expect(resolved).toEqual({ ok: false, reason: 'role-above-bot', ref: HIGH_ROLE });
   });
 
-  it.each([[MANAGED_ROLE], [GUILD_A]])('managed and @everyone roles are refused (%s)', async (id) => {
-    const resolved = await resolvePings(
-      makeClient({ roles: defaultRoles() }),
-      t.scopes.forGuild(GUILD_A),
-      GUILD_A,
-      { roles: [id], users: [] },
-    );
-    expect(resolved).toEqual({ ok: false, reason: 'role-managed-or-everyone', ref: id });
-  });
+  it.each([[MANAGED_ROLE], [GUILD_A]])(
+    'managed and @everyone roles are refused (%s)',
+    async (id) => {
+      const resolved = await resolvePings(
+        makeClient({ roles: defaultRoles() }),
+        t.scopes.forGuild(GUILD_A),
+        GUILD_A,
+        { roles: [id], users: [] },
+      );
+      expect(resolved).toEqual({ ok: false, reason: 'role-managed-or-everyone', ref: id });
+    },
+  );
 
   it('an unknown role is refused', async () => {
     const resolved = await resolvePings(
@@ -393,7 +435,8 @@ describe('resolvePings', () => {
     if (guild === undefined) throw new Error('guild missing from test client cache');
     // The membership probe must stay in the cache: a logged-out client has no
     // REST to fall back on, so fail the fetch loudly if it is ever reached.
-    guild.members.fetch = (() => Promise.reject(new Error('network fetch in unit test'))) as typeof guild.members.fetch;
+    guild.members.fetch = (() =>
+      Promise.reject(new Error('network fetch in unit test'))) as typeof guild.members.fetch;
     const resolved = await resolvePings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
       roles: [],
       users: [STRANGER_USER],

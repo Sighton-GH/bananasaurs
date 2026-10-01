@@ -122,7 +122,7 @@ const stubRecords = (): McpRecordsPort => ({
 
 /** Minimal send port: this file pins registration, never the send itself. */
 const stubSend = (): McpSendPort => ({
-  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
 });
 
 /** Minimal jobs port: this file pins registration, never the jobs tools. */

@@ -3,19 +3,20 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
 import {
   CLUB_ASSISTANT_SKILLS,
+  argsHashFor,
+  contentHashFor,
   effectiveSkillScope,
-  isInScope,
-  parseSnowflakeId,
+  runMcpAction,
   safeLogFields,
-  sendMessageEffect,
   skillScopeAllows,
   type DiscordPort,
   type GuildId,
   type Logger,
   type OpsJobRow,
 } from '@bananasaurs/core';
-import { resolveChannel } from '../channels/resolver.js';
 import { taskAdminPortFor } from './task-admin-port.js';
+import { resolvePings, resolveSendTarget } from './targets.js';
+import { mcpActionDepsFor } from './actions.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
@@ -39,6 +40,7 @@ import {
   type McpResourcesPort,
   type McpResourceSummary,
   type McpSendPort,
+  type SendEmbed,
   type McpThreadsPort,
   type McpTaskDetailPort,
   type McpTaskPort,
@@ -49,9 +51,6 @@ import {
   assistantRepo,
   automodAdminRepo,
   effectRepo,
-  guildRepo,
-  loggingRepo,
-  mcpSendRepo,
   modCaseRepo,
   panelRepo,
   resourceCacheRepo,
@@ -1022,19 +1021,40 @@ const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): M
 };
 
 /**
- * The `McpSendPort` behind `send_message` (slice M5), field by field like
- * `healthPortFor` above. It builds the `MessageGatewayDeps` the
- * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
- * needs — safety state and the allowlist, the `mcp_sends` ledger, and the
- * audit write — over the real repositories, and calls the effect. The
- * gateway's `MessageOutcome` is mapped onto the tool's `McpSendOutcome`
- * explicitly: `guild-unknown` throws the shared refusal (the tool layer turns
- * every port throw into it, and a missing guild row reads as "not yours"),
- * and the `failed` code stays in the daemon's logs rather than reaching the
- * model. A fault leaves one allowlisted-fields error line via
- * `loggedCallAsync` above — never message content (rule 4): the channel id
- * and the outcome name what happened, and the content lives only in
- * `mcp_sends` and in Discord.
+ * The tool's embed vocabulary to Discord's: every field passes through, and
+ * the footer string becomes Discord's `{ text }` object. The tool layer
+ * already rejected unknown fields (strict Zod), so nothing here is dropped.
+ */
+const toDiscordEmbed = (embed: SendEmbed): unknown => ({
+  ...(embed.title !== undefined ? { title: embed.title } : {}),
+  ...(embed.description !== undefined ? { description: embed.description } : {}),
+  ...(embed.fields !== undefined
+    ? {
+        fields: embed.fields.map((field) => ({
+          name: field.name,
+          value: field.value,
+          ...(field.inline !== undefined ? { inline: field.inline } : {}),
+        })),
+      }
+    : {}),
+  ...(embed.color !== undefined ? { color: embed.color } : {}),
+  ...(embed.footer !== undefined ? { footer: { text: embed.footer } } : {}),
+});
+
+/**
+ * The `McpSendPort` behind `send_message` (slice M5, re-routed in v2 slice 3
+ * onto `runMcpAction`), field by field like `healthPortFor` above. It
+ * resolves the target against send scope and the bot's live permissions,
+ * resolves explicit pings under the role policy, builds the `McpActionDeps`
+ * over the storage repos, and runs the one pipeline — kind `message.send`,
+ * cap group `message`, with the duplicate-content guard. The pipeline's
+ * `McpActionOutcome` is mapped onto the tool's `McpSendOutcome` explicitly:
+ * `guild-unknown` throws the shared refusal (the tool layer turns every port
+ * throw into it, and a missing guild row reads as "not yours"), and the
+ * `failed` code stays in the daemon's logs rather than reaching the model. A
+ * fault leaves one allowlisted-fields error line via `loggedCallAsync` above
+ * — never message content (rule 4): the channel id and the outcome name what
+ * happened, and the content lives only in the ledger's hash and in Discord.
  */
 const sendPortFor = (
   principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
@@ -1042,7 +1062,7 @@ const sendPortFor = (
   discord: DiscordPort,
   /**
    * The same live client the guild tools read (C2 send-time defence in
-   * depth): the gateway's `isChannelInGuild` is answered from
+   * depth): target resolution answers guild membership from
    * `client.guilds.cache`, so a stale allowlist row for a channel outside
    * the guild is refused before any Discord call.
    */
@@ -1051,113 +1071,139 @@ const sendPortFor = (
   send: (guildId, input) =>
     loggedCallAsync(deps.logger, 'sendMessage', async () => {
       const scope = deps.scopes.forGuild(guildId);
-      const resolved = await resolveChannel(client, guildId, parseSnowflakeId(input.channelId));
-      if (resolved === undefined || !resolved.postable) {
-        return { status: 'refused', reason: 'channel-not-in-guild' };
+      // The target becomes the thread when one is named, with the
+      // post-in-thread permission to match.
+      const targetId = input.threadId ?? input.channelId;
+      const target = await resolveSendTarget(
+        client,
+        scope,
+        guildId,
+        targetId,
+        input.threadId !== undefined ? 'post-in-thread' : 'post',
+      );
+      if (!target.ok) {
+        // The target layer's reasons map onto this package's
+        // `McpSendRefusal` — including `channel-not-in-guild`, which keeps
+        // its own text (N3) rather than borrowing the allowlist text, so the
+        // model is not pointed at a command that would refuse the same id.
+        // Never the content, never a throw.
+        switch (target.reason) {
+          case 'not-in-guild':
+            return { status: 'refused', reason: 'channel-not-in-guild' };
+          case 'not-in-send-scope':
+            return { status: 'refused', reason: 'channel-not-allowlisted' };
+          case 'private-thread-not-allowed':
+            return { status: 'refused', reason: 'private-thread' };
+          case 'bot-lacks-permission':
+            return {
+              status: 'refused',
+              reason: 'bot-lacks-permission',
+              ...(target.missing !== undefined ? { detail: target.missing } : {}),
+            };
+        }
       }
-      if (resolved.isPrivateThread && !mcpSendRepo.isChannelAllowed(scope, input.channelId)) {
-        return { status: 'refused', reason: 'private-thread' };
-      }
-      // Review M3: the granting row's id comes from the one predicate that
-      // owns the precedence — the nested ternary this replaces was a second,
-      // driftable copy of it (and missed the private-thread rule).
-      const grantId = isInScope('send', {
-        channelId: resolved.channelId,
-        parentChannelId: resolved.parentChannelId,
-        categoryId: resolved.categoryId,
-        isPrivateThread: resolved.isPrivateThread,
-        hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
-        hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
-        isExcluded: (id) => loggingRepo.isChannelExcluded(scope, id),
-        parentIncludesThreads: () => true,
+      const pings = await resolvePings(client, scope, guildId, {
+        roles: input.pingRoles,
+        users: input.pingUsers,
       });
-      const derivedGrant = grantId !== undefined && grantId !== input.channelId;
-      const authorized = grantId !== undefined;
-      const outcome = await sendMessageEffect(
-        {
+      if (!pings.ok) return { status: 'refused', reason: pings.reason, detail: pings.ref };
+      // Plain-text sends keep `contentHashFor(channelId, content)` so a
+      // retry that straddles the migration-0092 deploy replays rather than
+      // posting twice (ADR 0116 §2). Any richer shape hashes a canonical
+      // JSON of the arguments. Neither hash covers the dry-run flag: a dry
+      // run claims the key, so a live retry under it replays.
+      const plainText =
+        input.embeds === undefined &&
+        input.pingRoles.length === 0 &&
+        input.pingUsers.length === 0 &&
+        input.replyTo === undefined;
+      const argsHash =
+        plainText && input.content !== undefined
+          ? contentHashFor(target.channelId, input.content)
+          : argsHashFor('message.send', {
+              channel: target.channelId,
+              content: input.content,
+              embeds: input.embeds,
+              replyTo: input.replyTo,
+              pingReplyAuthor: input.pingReplyAuthor,
+              pingRoles: input.pingRoles,
+              pingUsers: input.pingUsers,
+            });
+      const outcome = await runMcpAction(
+        mcpActionDepsFor(
+          deps,
           guildId,
-          discord,
-          logger: deps.logger,
-          now: deps.now,
-          state: {
-            // `readSafetyState` carries more than the send needs; the gateway
-            // declares the narrow shape it reads, so extra columns cannot
-            // leak across this boundary the way they did before the archive
-            // port's projection.
-            read: () => guildRepo.readSafetyState(scope),
-            isChannelAllowed: () => authorized,
-            isChannelInGuild: () => true,
-          },
-          sends: {
-            find: (idempotencyKey) => mcpSendRepo.findSend(scope, idempotencyKey),
-            claim: (claim) => mcpSendRepo.claimSend(scope, claim),
-            recordMessageId: (record) => {
-              mcpSendRepo.recordSentMessageId(scope, record);
-            },
-            countSince: (sinceMs) => mcpSendRepo.countSendsSince(scope, sinceMs),
-            // No repository function (Task 1 needed none): the window is
-            // sixty seconds, so the bounded `listSends({ sinceMs })` read
-            // plus an in-memory match is the whole query.
-            findRecentByContent: (contentHash, channelId, sinceMs) =>
-              mcpSendRepo
-                .listSends(scope, { sinceMs })
-                .some((row) => row.contentHash === contentHash && row.channelId === channelId),
-          },
-          audit: {
-            record: (record) => {
-              effectRepo.recordAudit(scope, {
-                at: record.atMs,
-                actorType: 'mcp_operator',
-                actorId: record.tokenId,
-                // Ruling M5-D10: `via` is the transport vocabulary — this
-                // call arrived over HTTP on the dashboard's own Fastify app
-                // — and `actor_type` is the identity. Do not "fix" this to
-                // `'mcp'`: the CHECK forbids it, and the actor type already
-                // answers who made the call.
-                via: 'http',
-                action: 'mcp.message.sent',
-                subjectType: 'channel',
-                subjectId: record.channelId,
-                before: undefined,
-                // The channel, the credential and the outcome — never the
-                // content (rule 4). Content lives in `mcp_sends` and in
-                // Discord.
-                after: {
-                  clientId: principal.clientId,
-                  tokenId: record.tokenId,
-                  outcome: record.outcome,
-                  ...(record.messageId !== undefined ? { messageId: record.messageId } : {}),
-                  ...(derivedGrant
-                    ? { authorization: 'derived', grantedByChannelId: grantId }
-                    : {}),
-                },
-                dryRun: record.dryRun,
-              });
-            },
-          },
-        },
+          principal,
+          target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+        ),
         {
-          channelId: parseSnowflakeId(input.channelId),
-          content: input.content,
+          kind: 'message.send',
+          capGroup: 'message',
           idempotencyKey: input.idempotencyKey,
           tokenId: principal.tokenId,
+          argsHash,
+          targetChannelId: target.channelId,
+          dryRun: input.dryRun,
+          duplicateContentGuard: true,
+        },
+        true,
+        async () => {
+          const ref = await discord.sendMessage(guildId, target.channelId, {
+            ...(input.content !== undefined ? { content: input.content } : {}),
+            ...(input.embeds !== undefined ? { embeds: input.embeds.map(toDiscordEmbed) } : {}),
+            ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}),
+            // ADR 0117 §5: the tool layer already defaulted this to false,
+            // so a reply never pings its author unless asked.
+            pingReplyAuthor: input.pingReplyAuthor,
+            // Always `{ parse: [] }` plus only policy-approved roles/users
+            // (ADR 0117 §1): a mention typed into the content that is not in
+            // these lists renders but notifies nobody. Never `'everyone'`.
+            allowedMentions: { parse: [], roles: pings.roleIds, users: pings.userIds },
+          });
+          return { resultMessageId: ref.messageId };
         },
       );
       switch (outcome.status) {
-        case 'sent':
-          return { status: 'sent', messageId: outcome.messageId };
+        case 'done': {
+          if (outcome.result.resultMessageId === undefined) return { status: 'failed' };
+          return {
+            status: 'sent',
+            messageId: outcome.result.resultMessageId,
+            actionId: outcome.actionId,
+          };
+        }
         case 'dry-run':
-          return { status: 'dry-run' };
+          return { status: 'dry-run', actionId: outcome.actionId };
         case 'replayed':
-          return { status: 'replayed', messageId: outcome.messageId };
+          return {
+            status: 'replayed',
+            messageId: outcome.resultMessageId,
+            actionId: outcome.actionId,
+          };
         case 'refused':
-          if (outcome.reason === 'guild-unknown') throw new Error(GUILD_REFUSAL_MESSAGE);
-          // The gateway's reasons map one to one onto this package's
-          // `McpSendRefusal` — including `channel-not-in-guild`, which keeps
-          // its own text (N3) rather than borrowing the allowlist text, so the
-          // model is not pointed at a command that would refuse the same id.
-          // Never the content, never a throw.
-          return { status: 'refused', reason: outcome.reason };
+          switch (outcome.reason) {
+            case 'killswitch':
+              return { status: 'refused', reason: 'killswitch' };
+            case 'breaker-open':
+              return { status: 'refused', reason: 'breaker-open' };
+            case 'rate-cap':
+              return {
+                status: 'refused',
+                reason: 'rate-cap',
+                ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+              };
+            case 'key-reused-with-other-args':
+              return { status: 'refused', reason: 'duplicate-key-different-content' };
+            case 'duplicate-content-recently':
+              return { status: 'refused', reason: 'duplicate-content-recently' };
+            case 'guild-unknown':
+              throw new Error(GUILD_REFUSAL_MESSAGE);
+            case 'target':
+              // Unreachable: every target refusal above returned before the
+              // pipeline ran, so `targetCheck` is always `true` here.
+              throw new Error(GUILD_REFUSAL_MESSAGE);
+          }
+          break;
         case 'failed':
           return { status: 'failed' };
       }

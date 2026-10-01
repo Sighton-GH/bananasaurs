@@ -1,11 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
-  effectRepo,
-  guildRepo,
-  mcpActionsRepo,
-  type GuildScope,
-} from '@bananasaurs/storage';
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
+import { effectRepo, guildRepo, mcpActionsRepo, type GuildScope } from '@bananasaurs/storage';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import { mcpActionDepsFor } from './actions.js';
 
@@ -27,7 +25,14 @@ const NOW = 1_700_000_000_000;
 let t: MigratedTestDatabase;
 let clock: number;
 
-const silentLogger = { info() {}, warn() {}, error() {}, debug() {}, fatal() {}, trace() {} } as never;
+const silentLogger = {
+  info() {},
+  warn() {},
+  error() {},
+  debug() {},
+  fatal() {},
+  trace() {},
+} as never;
 
 const env = (): {
   scopes: { forGuild(guildId: GuildId): GuildScope };

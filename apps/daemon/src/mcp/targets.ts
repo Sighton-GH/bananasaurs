@@ -1,16 +1,6 @@
 import { PermissionFlagsBits, type Client, type GuildMember } from 'discord.js';
-import {
-  isInScope,
-  rolePingAllowed,
-  type GuildId,
-  type Snowflake,
-} from '@bananasaurs/core';
-import {
-  loggingRepo,
-  mcpSendRepo,
-  mcpRolePolicyRepo,
-  type GuildScope,
-} from '@bananasaurs/storage';
+import { isInScope, rolePingAllowed, type GuildId } from '@bananasaurs/core';
+import { loggingRepo, mcpSendRepo, mcpRolePolicyRepo, type GuildScope } from '@bananasaurs/storage';
 import { resolveRoleRef } from '@bananasaurs/mcp';
 import { resolveChannel } from '../channels/resolver.js';
 
@@ -35,10 +25,7 @@ export type TargetNeed =
   | 'react';
 
 export type SendTargetRefusal =
-  | 'not-in-guild'
-  | 'not-in-send-scope'
-  | 'private-thread-not-allowed'
-  | 'bot-lacks-permission';
+  'not-in-guild' | 'not-in-send-scope' | 'private-thread-not-allowed' | 'bot-lacks-permission';
 
 export type SendTarget =
   | {
@@ -67,7 +54,10 @@ const BIT = (bit: bigint, name: string): NeedBit => ({ bit, name });
 const NEED_BITS: Record<TargetNeed, readonly NeedBit[]> = {
   // Posting needs sight as well as voice: without ViewChannel the bot cannot
   // see the channel it would speak in.
-  post: [BIT(PermissionFlagsBits.ViewChannel, 'ViewChannel'), BIT(PermissionFlagsBits.SendMessages, 'SendMessages')],
+  post: [
+    BIT(PermissionFlagsBits.ViewChannel, 'ViewChannel'),
+    BIT(PermissionFlagsBits.SendMessages, 'SendMessages'),
+  ],
   'post-in-thread': [BIT(PermissionFlagsBits.SendMessagesInThreads, 'SendMessagesInThreads')],
   'create-public-thread': [BIT(PermissionFlagsBits.CreatePublicThreads, 'CreatePublicThreads')],
   'create-private-thread': [BIT(PermissionFlagsBits.CreatePrivateThreads, 'CreatePrivateThreads')],
@@ -91,8 +81,7 @@ const permissionsOf = (
   const me = guild?.members.me ?? null;
   if (guild === undefined || me === null) return undefined;
   const channel = client.channels.cache.get(channelId) as
-    | { permissionsFor(member: GuildMember): ChannelPermissions | null }
-    | undefined;
+    { permissionsFor(member: GuildMember): ChannelPermissions | null } | undefined;
   const perms = channel?.permissionsFor(me) ?? null;
   if (perms === null) return undefined;
   return { me, perms };
@@ -110,7 +99,7 @@ export const resolveSendTarget = async (
   if (client.guilds.cache.get(guildId) === undefined) {
     return { ok: false, reason: 'not-in-guild' };
   }
-  const resolved = await resolveChannel(client, guildId, channelId as Snowflake);
+  const resolved = await resolveChannel(client, guildId, channelId);
   if (resolved === undefined || !resolved.postable) {
     return { ok: false, reason: 'not-in-guild' };
   }
@@ -143,7 +132,8 @@ export const resolveSendTarget = async (
         live.perms.has(PermissionFlagsBits.ManageMessages));
     if (!pinned) return { ok: false, reason: 'bot-lacks-permission', missing: 'PinMessages' };
   } else {
-    const missing = live === undefined ? bits[0]?.name : bits.find((bit) => !live.perms.has(bit.bit))?.name;
+    const missing =
+      live === undefined ? bits[0]?.name : bits.find((bit) => !live.perms.has(bit.bit))?.name;
     if (missing !== undefined) return { ok: false, reason: 'bot-lacks-permission', missing };
   }
   return {
@@ -201,7 +191,15 @@ export const resolvePings = async (
   }
   const roleIds: string[] = [];
   if (input.roles.length > 0) {
-    const names = [...guild.roles.cache.values()].map((role) => ({ id: role.id, name: role.name }));
+    // Full `McpGuildRole` rows for `resolveRoleRef` (it reads id and name;
+    // the rest rides along because the resolver owns its input shape, not us).
+    const names = [...guild.roles.cache.values()].map((role) => ({
+      id: role.id,
+      name: role.name,
+      position: role.position,
+      color: role.color,
+      managedByBananasaurs: false,
+    }));
     const policy = mcpRolePolicyRepo.readRolePolicy(scope);
     const botTopPosition = guild.members.me?.roles.highest.position ?? 0;
     for (const ref of input.roles) {
