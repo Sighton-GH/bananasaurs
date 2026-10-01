@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { pino } from 'pino';
-import { createLoggingSubscriber, type LoggingPorts } from './subscriber.js';
+import { createLoggingSubscriber, createLogPoster, type LoggingPorts } from './subscriber.js';
 import type { LogRoute } from './routing.js';
 import type { MemberSnapshotLike } from './member-changes.js';
-import type { MemberEvent, MessageEvent } from '../discord/events.js';
+import type {
+  AuditLogEntryEvent,
+  MemberEvent,
+  MessageBulkDeleteEvent,
+  MessageEvent,
+} from '../discord/events.js';
 
 const GUILD = '111111111111111111';
 const SOURCE = '222222222222222222';
@@ -489,5 +494,143 @@ describe('member snapshots and change lines', () => {
     fake.failing.add(DEST_A);
     await expect(subscriber.handle(memberLeave({ receivedAtMs: 2_000 }))).rejects.toThrow();
     expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
+});
+
+const auditEntry = (over: Partial<AuditLogEntryEvent> & { action: number }): AuditLogEntryEvent => ({
+  kind: 'auditLogEntry',
+  guildId: GUILD,
+  receivedAtMs: 1,
+  entryId: '999999999999999999',
+  actorId: '666666666666666666',
+  targetId: '777777777777777777',
+  reason: undefined,
+  changes: [],
+  count: undefined,
+  channelId: undefined,
+  ...over,
+});
+
+const bulkDelete = (over: Partial<MessageBulkDeleteEvent> = {}): MessageBulkDeleteEvent => ({
+  kind: 'messageDeleteBulk',
+  guildId: GUILD,
+  receivedAtMs: 1,
+  channelId: SOURCE,
+  parentChannelId: undefined,
+  categoryId: undefined,
+  isPrivateThread: false,
+  messageIds: ['555555555555555555', '666666666666666666', '777777777777777777'],
+  ...over,
+});
+
+describe('audit-log entries and bulk deletes', () => {
+  it('posts one kick line to a member_kick route', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.setRouteKinds('a', ['member_kick']);
+    await createLoggingSubscriber(fake.ports).handle(auditEntry({ action: 20 }));
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.channelId).toBe(DEST_A);
+    expect(fake.sent[0]?.content).toContain('Kicked: <@777777777777777777>');
+    expect(fake.sent[0]?.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it('replaying the same entry posts nothing', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.setRouteKinds('a', ['member_kick']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    const event = auditEntry({ action: 20 });
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+    expect(fake.sent).toHaveLength(1);
+  });
+
+  it('an entry with no handled kind posts nothing', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    await createLoggingSubscriber(fake.ports).handle(auditEntry({ action: 26 }));
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  it('a purge posts one line per matching route', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    fake.setRouteKinds('a', ['message_bulk_delete']);
+    fake.setRouteKinds('b', ['message_bulk_delete']);
+    await createLoggingSubscriber(fake.ports).handle(bulkDelete());
+    expect(fake.sent).toHaveLength(2);
+    for (const line of fake.sent) {
+      expect(line.content).toBe(`Messages bulk-deleted in <#${SOURCE}>: 3 messages`);
+      expect(line.allowedMentions).toEqual({ parse: [] });
+    }
+  });
+
+  it('a purge in a route-excluded channel is skipped for that route', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A, excludedChannelIds: [SOURCE] }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    fake.setRouteKinds('a', ['message_bulk_delete']);
+    fake.setRouteKinds('b', ['message_bulk_delete']);
+    await createLoggingSubscriber(fake.ports).handle(bulkDelete());
+    expect(fake.sent.map((s) => s.channelId)).toEqual([DEST_B]);
+  });
+
+  it('replaying the same purge posts nothing', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.setRouteKinds('a', ['message_bulk_delete']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    const event = bulkDelete();
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+    expect(fake.sent).toHaveLength(1);
+  });
+});
+
+describe('createLogPoster', () => {
+  const warnItem = () => ({
+    eventKind: 'member_warn',
+    fingerprint: 'interaction-1',
+    source: undefined,
+    render: () => 'Warned: <@777777777777777777> by <@666666666666666666>',
+  });
+
+  it('posts through every matching route and dedupes the replay', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    const poster = createLogPoster(fake.ports);
+    await poster.post(warnItem());
+    expect(fake.sent.map((s) => s.channelId).sort()).toEqual([DEST_A, DEST_B].sort());
+    expect(fake.sent[0]?.allowedMentions).toEqual({ parse: [] });
+
+    // The same warn id replays (a retried hook call): nothing new posts.
+    await poster.post(warnItem());
+    expect(fake.sent).toHaveLength(2);
+  });
+
+  it('claims per route, so a retry after a failure posts only to the failed route', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    fake.failing.add(DEST_A);
+    const poster = createLogPoster(fake.ports);
+    await expect(poster.post(warnItem())).rejects.toThrow();
+    expect(fake.sent).toHaveLength(2);
+
+    fake.failing.clear();
+    await poster.post(warnItem());
+    expect(fake.sent).toHaveLength(3);
+    expect(fake.sent[2]?.channelId).toBe(DEST_A);
   });
 });

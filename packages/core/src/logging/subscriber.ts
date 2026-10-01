@@ -24,13 +24,16 @@ import {
   formatRoleUpdate,
 } from './format.js';
 import { MEMBER_CHANGE_KINDS, baselineFor, memberChanges } from './member-changes.js';
+import { AUDIT_EVENT_KINDS, auditItemsFor } from './audit-items.js';
 import type { MemberSnapshotLike } from './member-changes.js';
 
 export type { LogRoute } from './routing.js';
 
 /**
  * The logging module (ADR 0123): message edits and deletes, member
- * joins/leaves, and role create/update/delete. A deletion is not formatted
+ * joins/leaves, role create/update/delete, live audit-log entries (kicks,
+ * bans, timeouts, channel/thread/server changes, invites, emoji, stickers),
+ * and bulk deletes (purges). A deletion is not formatted
  * or sent here — it is enqueued as a delayed job, because ADR 0019 fact 3
  * says the audit log has not caught up yet at the moment the dispatch
  * arrives. `attribute-deletion.ts` is the job's body.
@@ -98,9 +101,12 @@ const ROUTE_KIND = {
  *
  * Derived from `ROUTE_KIND` rather than written out a second time, plus the
  * four member-change kinds (diffed from the last-seen record in `handle`,
- * not mapped from one gateway kind) and `message_delete`, which is routed
+ * not mapped from one gateway kind), `message_delete`, which is routed
  * here but handled by a delayed job rather than by the switch below
- * (ADR 0019 fact 3).
+ * (ADR 0019 fact 3), the eighteen audit-log kinds (one item per live
+ * `auditLogEntry`, via `audit-items.ts`), `message_bulk_delete` (the
+ * gateway bulk-delete event), and `member_warn` (posted by the logging
+ * side of `/mod warn` through `createLogPoster`, not by this subscriber).
  *
  * Exported for `bananasaurs log routing create`, which validates against it. A
  * route on an event kind nothing emits is the exact failure WP4's report §5
@@ -110,7 +116,10 @@ const ROUTE_KIND = {
 export const LOG_EVENT_KINDS: readonly string[] = [
   ...Object.values(ROUTE_KIND),
   ...MEMBER_CHANGE_KINDS,
+  ...AUDIT_EVENT_KINDS,
   'message_delete',
+  'message_bulk_delete',
+  'member_warn',
 ].sort();
 
 /**
@@ -136,9 +145,41 @@ interface LogItem {
   render(includeContent: boolean): string;
 }
 
+export type { LogItem };
+
 type HandleEvent = Parameters<Subscriber['handle']>[0];
 
 function logItemsFor(event: HandleEvent): LogItem[] {
+  if (event.kind === 'auditLogEntry') {
+    // One item per handled audit action, each under the entry's own id so a
+    // replayed entry posts nothing new. An entry for an unhandled action
+    // yields no items.
+    return auditItemsFor(event).map((item) => ({
+      eventKind: item.eventKind,
+      fingerprint: event.entryId,
+      source: undefined,
+      render: () => item.render(),
+    }));
+  }
+
+  if (event.kind === 'messageDeleteBulk') {
+    const fingerprint =
+      fingerprintOf(event) ?? `${event.kind}:${event.receivedAtMs}:${event.channelId}`;
+    const source: LogSource = {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+    };
+    return [
+      {
+        eventKind: 'message_bulk_delete',
+        fingerprint,
+        source,
+        render: () =>
+          `Messages bulk-deleted in <#${event.channelId}>: ${event.messageIds.length} messages`,
+      },
+    ];
+  }
+
   const routeKind = ROUTE_KIND[event.kind as keyof typeof ROUTE_KIND] as string | undefined;
   if (routeKind === undefined) return []; // everything else: not this module's job
 
@@ -279,9 +320,6 @@ function logItemsFor(event: HandleEvent): LogItem[] {
 export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
   name: 'logging',
   async handle(event) {
-    // Bulk deletes are not a logging-module event; ignore before the switch below.
-    if (event.kind === 'messageDeleteBulk') return;
-
     if (event.kind === 'connection') {
       if (event.resumed) return; // nothing lost — the session replayed the gap
       await postGapMarkers(ports, event);
@@ -377,6 +415,23 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
     if (firstError !== undefined) throw firstError;
   },
 });
+
+/**
+ * Posts one item through the same fan-out the subscriber uses (route
+ * matching, per-route claims, no pings). Throws the first send error, if
+ * any, after trying every route — the caller decides what that means.
+ *
+ * The `/mod warn` logging hook posts through this: a warning is the bot's
+ * own action, not a gateway event, so there is no dispatch to handle.
+ */
+export function createLogPoster(ports: LoggingPorts): { post(item: LogItem): Promise<void> } {
+  return {
+    async post(item: LogItem): Promise<void> {
+      const firstError = await postItems(ports, [item], item.eventKind);
+      if (firstError !== undefined) throw firstError;
+    },
+  };
+}
 
 /**
  * `docs/19` §6.7's restated gate, generalised (ADR 0123 decision 5): a gap
