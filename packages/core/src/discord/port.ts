@@ -267,7 +267,8 @@ export interface DiscordPort {
   ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
   /**
    * Channel context for the assistant (ADR 0089): up to `limit` messages sent
-   * before `before` in one channel, oldest first. `undefined` on 404 (gone)
+   * before `before` in one channel, oldest first — or, when `before` is
+   * absent, the channel's newest `limit` messages. `undefined` on 404 (gone)
    * or 403 (no access) — both routine, reported the same way rather than
    * thrown, so the caller answers without the block instead of failing.
    *
@@ -279,7 +280,7 @@ export interface DiscordPort {
   fetchChannelMessages(
     guildId: Snowflake,
     channelId: Snowflake,
-    opts: { before: Snowflake; limit: number },
+    opts: { before?: Snowflake | undefined; limit: number },
   ): Promise<readonly RecentMessage[] | undefined>;
   /** The "is typing…" indicator, shown for about ten seconds or until the next message. */
   sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void>;

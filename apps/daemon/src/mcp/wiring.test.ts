@@ -2979,6 +2979,56 @@ describe('/mcp read_thread and shared private threads', () => {
     }
   });
 
+  it('a shared private thread reads newest-first and pages backwards without overlap', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    // Two older live messages under the newest seed: oldest, middle, newest.
+    const OLDER = '900000000000000010';
+    const MIDDLE = '900000000000000011';
+    const OLDER_TEXT = 'older live plans in the shared private thread';
+    const MIDDLE_TEXT = 'middle live plans in the shared private thread';
+    discord.defineMessage({ channelId: SHARED_PRIVATE, messageId: OLDER, authorId: MEMBER, content: OLDER_TEXT });
+    discord.defineMessage({ channelId: SHARED_PRIVATE, messageId: MIDDLE, authorId: MEMBER, content: MIDDLE_TEXT });
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const page1 = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+            limit: 2,
+          })
+        ).body,
+      );
+      expect(page1.isError).not.toBe(true);
+      expect(page1.text).toContain('(newest first)');
+      // Newest first: the newest id renders before the middle one, and the
+      // oldest page is not on this page.
+      expect(page1.text.indexOf(LIVE_MESSAGE)).toBeLessThan(page1.text.indexOf(MIDDLE));
+      expect(page1.text).toContain(LIVE_TEXT);
+      expect(page1.text).toContain(MIDDLE_TEXT);
+      expect(page1.text).not.toContain(OLDER_TEXT);
+      // Paging with the last shown id reads the next older page, no overlap.
+      const page2 = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+            beforeMessageId: MIDDLE,
+            limit: 2,
+          })
+        ).body,
+      );
+      expect(page2.isError).not.toBe(true);
+      expect(page2.text).toContain(OLDER_TEXT);
+      expect(page2.text).not.toContain(LIVE_TEXT);
+      expect(page2.text).not.toContain(MIDDLE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
   it('bot-only membership is not enough, and neither is owner-only', async () => {
     const discord = new FakeDiscord({ guildId: GUILD_A });
     seedThreads(discord);

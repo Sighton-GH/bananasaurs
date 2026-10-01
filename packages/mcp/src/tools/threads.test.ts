@@ -306,6 +306,19 @@ describe('read_thread on a private thread needs bot AND owner', () => {
     });
   });
 
+  it('a private-thread page is capped at 50 even when the caller asks for 100', async () => {
+    const seen: FakeThreadsOptions['seen'] = { archive: [], live: [] };
+    const outcome = await readThreadText(
+      principalWith(GUILD_A),
+      fakePort({ infos: [privateInfo], readable: true, live: [liveMessage], seen }),
+      { guildId: '111111111111111111', threadId: PRIVATE_THREAD, limit: 100 },
+    );
+    expect(outcome.ok).toBe(true);
+    // Private-only: the live Discord read clamps to 50, so the tool caps the
+    // port call there rather than silently short-paging.
+    expect(seen.live).toEqual([{ threadId: PRIVATE_THREAD, before: undefined, limit: 50 }]);
+  });
+
   it('a forged marker in live content cannot break out of the envelope', async () => {
     const outcome = await readThreadText(
       principalWith(GUILD_A),

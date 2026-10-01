@@ -1354,8 +1354,9 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
-   * Channel context for the assistant (ADR 0089): messages before `before`,
-   * oldest first, excluding deleted ones. Unlike `fetchRecentMessages` this
+   * Channel context for the assistant (ADR 0089): messages before `before`
+   * — or the newest messages when `before` is absent — oldest first,
+   * excluding deleted ones. Unlike `fetchRecentMessages` this
    * carries display names, the bot flag and the reply target instead of edit
    * metadata. A 403/404 has no model here — the REST adapter folds those to
    * `undefined`; callers that need the failure path inject it with
@@ -1365,14 +1366,14 @@ export class FakeDiscord implements DiscordPort {
   async fetchChannelMessages(
     guildId: Snowflake,
     channelId: Snowflake,
-    opts: { before: Snowflake; limit: number },
+    opts: { before?: Snowflake | undefined; limit: number },
   ): Promise<readonly RecentMessage[] | undefined> {
     this.record('fetchChannelMessages', [guildId, channelId, opts]);
     this.check('fetchChannelMessages', guildId);
     const limit = Math.min(Math.max(opts.limit, 1), 50);
     return [...this.messages.values()]
       .filter((m) => m.channelId === channelId && !m.deleted)
-      .filter((m) => BigInt(m.messageId) < BigInt(opts.before))
+      .filter((m) => opts.before === undefined || BigInt(m.messageId) < BigInt(opts.before))
       .sort((a, b) => (BigInt(a.messageId) > BigInt(b.messageId) ? 1 : -1))
       .slice(-limit)
       .map((m) => ({

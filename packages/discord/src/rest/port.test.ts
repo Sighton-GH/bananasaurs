@@ -675,6 +675,15 @@ describe('messages and reactions', () => {
     expect(last(low.requests).query).toContain('limit=1');
   });
 
+  it('omits before from the channel messages query when absent', async () => {
+    const { port, requests } = harness([{ status: 200, body: [] }]);
+    await port.fetchChannelMessages(GUILD, CHANNEL, { limit: 15 });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages`);
+    expect(last(requests).query).toContain('limit=15');
+    expect(last(requests).query).not.toContain('before');
+  });
+
   it('reports undefined rather than throwing on 404 or 403', async () => {
     const gone = harness([
       { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },

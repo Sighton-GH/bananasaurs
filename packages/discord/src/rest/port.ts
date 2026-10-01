@@ -310,11 +310,17 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     ): Promise<readonly RecentMessage[] | undefined> {
       // Discord caps a channel page at 100; the assistant's window setting
       // caps lower still. Clamped, never defaulted: the caller names N.
+      // `before` is omitted when absent — a first page reads from the
+      // newest — rather than sent as a sentinel id Discord never promised
+      // to accept.
       const limit = Math.min(Math.max(opts.limit, 1), 50);
       try {
         const messages = (await mapErrors(() =>
           rest.get(Routes.channelMessages(channelId), {
-            query: new URLSearchParams({ before: opts.before, limit: String(limit) }),
+            query: makeURLSearchParams({
+              limit,
+              ...(opts.before !== undefined ? { before: opts.before } : {}),
+            }),
           }),
         )) as APIMessageWithMember[];
         // Discord returns newest first; channel context reads oldest first.

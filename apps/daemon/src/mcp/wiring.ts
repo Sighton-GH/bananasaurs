@@ -922,15 +922,6 @@ const resourcesPortFor = (deps: HttpDeps): McpResourcesPort => {
 };
 
 /**
- * A page cursor larger than any Discord id: `fetchChannelMessages` reads the
- * messages *before* a cursor, and a `read_thread` without `beforeMessageId`
- * means "from the newest". Discord snowflakes stay below 2^63, so this
- * remains above every real message while staying a well-formed id the
- * `BigInt` comparisons on both sides of the port accept.
- */
-const THREAD_READ_NEWEST_BEFORE = '9223372036854775807';
-
-/**
  * The `McpThreadsPort` behind `read_thread` (slice 2, Task 4; ADR 0112),
  * field by field like `healthPortFor` above. A public thread reads the
  * archive (`archiveThread` is the same `listChannelHistory` call with the
@@ -986,10 +977,13 @@ const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): M
     liveThreadMessages: (guildId, threadId, beforeMessageId, limit) =>
       loggedCallAsync(deps.logger, 'liveThreadMessages', async () => {
         const messages = await discord.fetchChannelMessages(guildId, threadId, {
-          before: beforeMessageId ?? THREAD_READ_NEWEST_BEFORE,
+          ...(beforeMessageId !== undefined ? { before: beforeMessageId } : {}),
           limit,
         });
-        return (messages ?? []).map((message) => ({
+        // `fetchChannelMessages` reports oldest first; `read_thread` promises
+        // newest first on both paths, so the live page is reversed here —
+        // paging with `beforeMessageId` takes the last shown id backwards.
+        return [...(messages ?? [])].reverse().map((message) => ({
           messageId: message.messageId,
           channelId: threadId,
           threadId,
