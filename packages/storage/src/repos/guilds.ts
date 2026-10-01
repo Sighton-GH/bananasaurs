@@ -32,6 +32,7 @@ export interface GuildRow {
    * booleans are converted at the point of use, not here.
    */
   automodTestingMode: number;
+  automodState: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -95,6 +96,21 @@ export const setKillswitch = (scope: GuildScope, on: boolean, now: number): void
       .run();
   });
 
+/** ADR 0121's three positions. Validated at the HTTP boundary by Zod. */
+export type AutomodState = 'off' | 'watch' | 'on';
+export const AUTOMOD_STATES: readonly AutomodState[] = ['off', 'watch', 'on'];
+
+// Fail closed: anything unrecognised reads as off. A later migration adds a
+// CHECK that makes this unreachable; until then it is the guard.
+const toAutomodState = (raw: string): AutomodState =>
+  raw === 'watch' || raw === 'on' ? raw : 'off';
+
+/** ADR 0121: sets the guild's automod switch. Guild-scoped by signature. */
+export const setAutomodState = (scope: GuildScope, state: AutomodState, now: number): void =>
+  write(scope, ({ db }) => {
+    db.update(guilds).set({ automodState: state, updatedAt: now }).where(scope.only(guilds)).run();
+  });
+
 export interface SafetyState {
   killswitch: boolean;
   dryRun: boolean;
@@ -112,6 +128,8 @@ export interface SafetyState {
    * declares this field — so it is the only caller that can actually read it.
    */
   automodTestingMode: boolean;
+  /** ADR 0121's guild-wide automod switch. */
+  automodState: AutomodState;
 }
 
 /**
@@ -132,6 +150,7 @@ export const readSafetyState = (scope: GuildScope): SafetyState | undefined => {
     reconcileBudget: row.reconcileBudget,
     breakerThreshold: row.breakerThreshold,
     automodTestingMode: row.automodTestingMode === 1,
+    automodState: toAutomodState(row.automodState),
   };
 };
 

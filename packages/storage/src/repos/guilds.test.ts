@@ -162,4 +162,9 @@ describe('automod state (ADR 0121)', () => {
     setAutomodState(a, 'watch', 5_000);
     expect(findGuild(a)?.updatedAt).toBe(5_000);
   });
+
+  it('reads an unexpected stored value as off', () => {
+    t.raw.prepare("UPDATE guilds SET automod_state = 'bogus' WHERE guild_id = ?").run(GUILD_A);
+    expect(readSafetyState(a)?.automodState).toBe('off');
+  });
 });
