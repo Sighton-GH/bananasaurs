@@ -181,7 +181,7 @@ beforeEach(async () => {
     readonly: false,
     portsFor: (scope) => testPortsFor(scope, () => clock),
     instance: testInstanceFor(t.scopes.instance(), () => clock),
-    assistantProviderConfig: fakeStore() as HttpDeps['assistantProviderConfig'],
+    assistantProviderConfig: fakeStore(),
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'guild', now: clock });
   accountRepo.createAccount(t.scopes.instance(), {
