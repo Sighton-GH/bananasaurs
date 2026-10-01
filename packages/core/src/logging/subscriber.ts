@@ -52,7 +52,10 @@ export interface LoggingPorts {
   claim(input: { eventKind: string; fingerprint: string }): boolean;
   /** Released when a send throws, so a later delivery of the same event can retry. */
   release(input: { eventKind: string; fingerprint: string }): void;
-  sendMessage(channelId: Snowflake, message: { content: string }): Promise<unknown>;
+  sendMessage(
+    channelId: Snowflake,
+    message: { content: string; allowedMentions: { parse: readonly [] } },
+  ): Promise<unknown>;
   /** One job per deletion; a no-op if the same messageId is already queued. */
   enqueueDeletionAttribution(input: { dedupeKey: string; payload: string; runAfter: number }): {
     enqueued: boolean;
@@ -286,6 +289,9 @@ async function postGapMarkers(
     try {
       await ports.sendMessage(channelId, {
         content: formatGapMarker(event.disconnectedAtMs, event.receivedAtMs),
+        // Log lines quote member-controlled text; mentions in the content
+        // must never ping anyone in the log channel.
+        allowedMentions: { parse: [] },
       });
     } catch (err) {
       ports.release({ eventKind: dedupeKind, fingerprint });
@@ -354,7 +360,10 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
         const dedupeKind = routeDedupeKind(route.routeId, item.eventKind);
         if (!ports.claim({ eventKind: dedupeKind, fingerprint: item.fingerprint })) continue;
         try {
-          await ports.sendMessage(route.channelId, { content: item.render(route.includeContent) });
+          await ports.sendMessage(route.channelId, {
+            content: item.render(route.includeContent),
+            allowedMentions: { parse: [] },
+          });
         } catch (err) {
           // A transient send failure must not blackhole this line forever —
           // this module has no reconciliation to fall back on (ADR 0123

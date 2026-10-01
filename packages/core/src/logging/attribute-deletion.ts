@@ -47,7 +47,10 @@ export interface MessageDeleteAttributionPorts {
   ): void;
   claim(input: { eventKind: string; fingerprint: string }): boolean;
   release(input: { eventKind: string; fingerprint: string }): void;
-  sendMessage(channelId: Snowflake, message: { content: string }): Promise<unknown>;
+  sendMessage(
+    channelId: Snowflake,
+    message: { content: string; allowedMentions: { parse: readonly [] } },
+  ): Promise<unknown>;
   readonly logger: Logger;
   now(): number;
 }
@@ -108,6 +111,7 @@ export async function attributeAndLogDeletion(
           route.includeContent ? payload : { ...payload, content: undefined },
           actorId,
         ),
+        allowedMentions: { parse: [] },
       });
     } catch (err) {
       // The send failing must not blackhole this line forever (ADR 0123

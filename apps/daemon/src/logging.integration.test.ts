@@ -465,6 +465,20 @@ describe('gap markers (ADR 0023 decision 5)', () => {
     expect(content).toContain('<t:2:t>'); // receivedAtMs 2_000 -> 2s
   });
 
+  it('every log post disables mention parsing, so logged text never pings', async () => {
+    seedRoute('message_edit', { channelId: CHANNEL });
+    seedRoute('message_delete', { channelId: OTHER_CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageEdit({ content: 'hello @everyone' }));
+    await subscriber.handle(connectionEvent());
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.args[2]).toMatchObject({ allowedMentions: { parse: [] } });
+    }
+  });
+
   it('posts once per distinct channel, not once per route sharing a channel', async () => {
     seedRoute('message_delete', { channelId: CHANNEL });
     seedRoute('message_edit', { channelId: CHANNEL });

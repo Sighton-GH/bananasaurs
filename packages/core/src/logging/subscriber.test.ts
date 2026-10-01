@@ -13,6 +13,7 @@ const logger = pino({ level: 'silent' });
 interface SentLine {
   channelId: string;
   content: string;
+  allowedMentions: { parse: readonly [] };
 }
 
 const makeRoute = (over: Partial<LogRoute> & { routeId: string }): LogRoute => ({
@@ -45,7 +46,11 @@ function makeFake() {
       claims.delete(`${eventKind}:${fingerprint}`);
     },
     sendMessage: async (channelId, message) => {
-      sent.push({ channelId, content: message.content });
+      sent.push({
+        channelId,
+        content: message.content,
+        allowedMentions: message.allowedMentions,
+      });
       if (failing.has(channelId)) throw new Error(`send failed: ${channelId}`);
       return undefined;
     },
@@ -106,6 +111,21 @@ describe('logging subscriber fan-out', () => {
     ]);
     await createLoggingSubscriber(fake.ports).handle(editEvent());
     expect(fake.sent.map((s) => s.channelId).sort()).toEqual([DEST_A, DEST_B].sort());
+  });
+
+  it('every log post disables mention parsing, so logged text never pings', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    await createLoggingSubscriber(fake.ports).handle(
+      editEvent({ content: 'hello @everyone <@&123> <@456>' }),
+    );
+    expect(fake.sent.length).toBeGreaterThan(0);
+    for (const line of fake.sent) {
+      expect(line.allowedMentions).toEqual({ parse: [] });
+    }
   });
 
   it('skips a disabled route', async () => {

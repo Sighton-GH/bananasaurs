@@ -32,7 +32,8 @@ const payload = (over: Partial<LogMessageDeletePayload> = {}): LogMessageDeleteP
 
 function makeFake() {
   const claims = new Set<string>();
-  const sent: { channelId: string; content: string }[] = [];
+  const sent: { channelId: string; content: string; allowedMentions: { parse: readonly [] } }[] =
+    [];
   const failing = new Set<string>();
   let routes: LogRoute[] = [];
   let fetchCount = 0;
@@ -65,7 +66,11 @@ function makeFake() {
       claims.delete(`${eventKind}:${fingerprint}`);
     },
     sendMessage: async (channelId, message) => {
-      sent.push({ channelId, content: message.content });
+      sent.push({
+        channelId,
+        content: message.content,
+        allowedMentions: message.allowedMentions,
+      });
       if (failing.has(channelId)) throw new Error(`send failed: ${channelId}`);
       return undefined;
     },
@@ -104,6 +109,19 @@ describe('attributeAndLogDeletion fan-out', () => {
     expect(fake.counts().fetchCount).toBe(1);
     expect(fake.counts().recordCount).toBe(1);
     expect(fake.sent.map((s) => s.channelId).sort()).toEqual([DEST_A, DEST_B].sort());
+  });
+
+  it('every deletion log post disables mention parsing, so quoted text never pings', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    await attributeAndLogDeletion(fake.ports, payload({ content: 'hello @everyone' }));
+    expect(fake.sent.length).toBeGreaterThan(0);
+    for (const line of fake.sent) {
+      expect(line.allowedMentions).toEqual({ parse: [] });
+    }
   });
 
   it('strips content for the route with content off', async () => {
