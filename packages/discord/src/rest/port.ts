@@ -1,6 +1,9 @@
 import {
   AuditLogEvent,
   ChannelType,
+  GuildScheduledEventEntityType,
+  GuildScheduledEventPrivacyLevel,
+  GuildScheduledEventStatus,
   InteractionResponseType,
   MessageFlags,
   Routes,
@@ -706,6 +709,97 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       }
     },
 
+    /**
+     * Guild scheduled event writes (MCP slice 5): voice and stage events are
+     * hosted in a channel, external ones at a `location` with a required end
+     * time. The external-without-`endAt` refusal mirrors `createThread`'s
+     * `TypeError`, thrown before any call — Discord would reject it, so the
+     * combination is a caller bug, not a Discord refusal.
+     */
+    async createScheduledEvent(guildId, input) {
+      if (input.location.kind === 'external' && input.endAt === undefined) {
+        throw new TypeError('createScheduledEvent: external events require endAt');
+      }
+      const created = (await mapErrors(() =>
+        rest.post(Routes.guildScheduledEvents(guildId), {
+          body: {
+            name: input.name,
+            // The only privacy level Discord accepts for a guild event;
+            // always sent, never a caller choice.
+            privacy_level: GuildScheduledEventPrivacyLevel.GuildOnly,
+            scheduled_start_time: new Date(input.startAt).toISOString(),
+            ...(input.endAt === undefined
+              ? {}
+              : { scheduled_end_time: new Date(input.endAt).toISOString() }),
+            ...(input.description === undefined ? {} : { description: input.description }),
+            entity_type:
+              input.location.kind === 'voice'
+                ? GuildScheduledEventEntityType.Voice
+                : input.location.kind === 'stage'
+                  ? GuildScheduledEventEntityType.StageInstance
+                  : GuildScheduledEventEntityType.External,
+            ...(input.location.kind === 'external'
+              ? { entity_metadata: { location: input.location.place } }
+              : { channel_id: input.location.channelId }),
+          },
+        }),
+      )) as APIGuildScheduledEvent;
+      return { eventId: created.id };
+    },
+
+    /**
+     * Scheduled-event edits (MCP slice 5): PATCH with only the fields given,
+     * the way `setThreadState` carries only its fields. A location change
+     * carries the entity type with it, and an external location clears the
+     * channel — Discord hosts an external event at a `location`, not in a
+     * channel.
+     */
+    async editScheduledEvent(guildId, eventId, patch) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildScheduledEvent(guildId, eventId), {
+          body: {
+            ...(patch.name === undefined ? {} : { name: patch.name }),
+            ...(patch.description === undefined ? {} : { description: patch.description }),
+            ...(patch.startAt === undefined
+              ? {}
+              : { scheduled_start_time: new Date(patch.startAt).toISOString() }),
+            ...(patch.endAt === undefined
+              ? {}
+              : { scheduled_end_time: new Date(patch.endAt).toISOString() }),
+            ...(patch.location === undefined
+              ? {}
+              : patch.location.kind === 'external'
+                ? {
+                    entity_type: GuildScheduledEventEntityType.External,
+                    channel_id: null,
+                    entity_metadata: { location: patch.location.place },
+                  }
+                : {
+                    entity_type:
+                      patch.location.kind === 'voice'
+                        ? GuildScheduledEventEntityType.Voice
+                        : GuildScheduledEventEntityType.StageInstance,
+                    channel_id: patch.location.channelId,
+                  }),
+          },
+        }),
+      );
+    },
+
+    /**
+     * Scheduled-event cancellation (MCP slice 5): PATCH with `status:
+     * Canceled`. Discord deletes nothing — a cancelled event stays listed —
+     * and only cancels events still `Scheduled`; anything else is a
+     * server-side refusal.
+     */
+    async cancelScheduledEvent(guildId, eventId) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildScheduledEvent(guildId, eventId), {
+          body: { status: GuildScheduledEventStatus.Canceled },
+        }),
+      );
+    },
+
     // --- interactions ----------------------------------------------------
     async deferInteraction(_guildId, ref, options) {
       await mapErrors(() =>
@@ -875,6 +969,20 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     ...(message.replyTo === undefined
       ? {}
       : { message_reference: { message_id: message.replyTo, fail_if_not_exists: false } }),
+    // A native poll (MCP slice 5): `question.text`, one `poll_media.text`
+    // answer each, `duration` in hours and `allow_multiselect`. Opt-in only —
+    // the MCP send path is the sole caller that sets it, and a default here
+    // would change what panel posts and log messages send.
+    ...(message.poll === undefined
+      ? {}
+      : {
+          poll: {
+            question: { text: message.poll.question },
+            answers: message.poll.answers.map((answer) => ({ poll_media: { text: answer } })),
+            duration: message.poll.durationHours,
+            allow_multiselect: message.poll.allowMultiselect,
+          },
+        }),
   };
 }
 

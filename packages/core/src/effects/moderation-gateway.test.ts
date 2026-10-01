@@ -154,6 +154,15 @@ class MinimalModerationDiscord implements DiscordPort {
   async listScheduledEvents(): Promise<never> {
     this.notUsed('listScheduledEvents');
   }
+  async createScheduledEvent(): Promise<never> {
+    this.notUsed('createScheduledEvent');
+  }
+  async editScheduledEvent(): Promise<void> {
+    this.notUsed('editScheduledEvent');
+  }
+  async cancelScheduledEvent(): Promise<void> {
+    this.notUsed('cancelScheduledEvent');
+  }
   async createReaction(): Promise<void> {
     this.notUsed('createReaction');
   }

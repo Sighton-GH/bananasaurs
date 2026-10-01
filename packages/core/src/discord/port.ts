@@ -121,6 +121,21 @@ export interface OutgoingMessage {
    * `replied_user: true`.
    */
   pingReplyAuthor?: boolean | undefined;
+  /**
+   * A native poll attached to the message (MCP slice 5). When set, the REST
+   * adapter emits Discord's `poll` object — `question.text`, `answers[].poll_media.text`,
+   * `duration` in hours and `allow_multiselect`. Absent, the wire output is
+   * byte-identical to a message with no poll at all.
+   */
+  poll?:
+    | {
+        readonly question: string;
+        readonly answers: readonly string[];
+        /** Hours the poll stays open. */
+        readonly durationHours: number;
+        readonly allowMultiselect: boolean;
+      }
+    | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */
@@ -443,6 +458,54 @@ export interface DiscordPort {
    * not see them (403).
    */
   listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]>;
+
+  /**
+   * Creates a guild scheduled event (MCP slice 5): `POST
+   * /guilds/{id}/scheduled-events`. Privacy is always guild-only; times are
+   * epoch ms on the port and ISO strings on the wire. A voice or stage event
+   * is hosted in `channelId`; an external event is hosted at `place` and
+   * requires `endAt` — Discord rejects an external event without one, so the
+   * adapters throw a `TypeError` before any call when it is missing.
+   */
+  createScheduledEvent(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly description?: string | undefined;
+      readonly startAt: number;
+      readonly endAt?: number | undefined;
+      readonly location:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string };
+    },
+  ): Promise<{ eventId: string }>;
+  /**
+   * Edits a guild scheduled event (MCP slice 5): `PATCH
+   * /guilds/{id}/scheduled-events/{event}` with only the fields given, so a
+   * rename never disturbs the time and vice versa. Times are epoch ms on the
+   * port and ISO strings on the wire, like `createScheduledEvent`.
+   */
+  editScheduledEvent(
+    guildId: Snowflake,
+    eventId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly description?: string | undefined;
+      readonly startAt?: number | undefined;
+      readonly endAt?: number | undefined;
+      readonly location?:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string }
+        | undefined;
+    },
+  ): Promise<void>;
+  /**
+   * Cancels a guild scheduled event (MCP slice 5): `PATCH
+   * /guilds/{id}/scheduled-events/{event}` with `status: Canceled`. Discord
+   * only cancels events still in `Scheduled` status; anything else is a
+   * server-side refusal, not a caller-side check.
+   */
+  cancelScheduledEvent(guildId: Snowflake, eventId: Snowflake): Promise<void>;
 
   // --- interactions ------------------------------------------------------
   /**
