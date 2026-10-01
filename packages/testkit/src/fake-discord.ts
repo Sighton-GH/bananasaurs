@@ -334,10 +334,6 @@ export class FakeDiscord implements DiscordPort {
   setMessageCached(ref: DiscordMessageRef, cached: boolean): void {
     this.mustMessage(ref).cached = cached;
   }
-  /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). */
-  setMessagePinned(ref: DiscordMessageRef, pinned: boolean): void {
-    this.mustMessage(ref).pinned = pinned;
-  }
   /**
    * Marks a message gone without going through the `DiscordPort` method or
    * emitting anything — for tests setting up "this message is already
@@ -1033,7 +1029,7 @@ export class FakeDiscord implements DiscordPort {
 
   /**
    * Live pin state and reaction counts (slice 2, Task 6): `pinned` is what
-   * `defineMessage`/`setMessagePinned` recorded, and each reaction bucket
+   * `defineMessage` recorded, and each reaction bucket
    * reports its reactor count with the display form the REST adapter
    * projects — unicode characters for `u:` keys, `<:unknown:id>` for custom
    * ones, whose names an `EmojiKey` deliberately does not carry. `undefined`
