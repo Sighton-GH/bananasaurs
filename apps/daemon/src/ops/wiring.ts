@@ -218,11 +218,30 @@ export const opsPortsFor = (
 
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
-      eventKind: route.eventKind,
+      routeId: route.routeId,
+      name: route.name,
       channelId: route.channelId,
       enabled: route.enabled,
       includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
     })),
+
+  getRoute: (routeId) => {
+    const route = loggingRepo.getRoute(scope, routeId);
+    if (route === undefined) return undefined;
+    return {
+      routeId: route.routeId,
+      name: route.name,
+      channelId: route.channelId,
+      enabled: route.enabled,
+      includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
+    };
+  },
 
   listExcludedChannels: () => loggingRepo.listExcludedChannels(scope),
 
@@ -478,13 +497,35 @@ export const opsPortsFor = (
     return 'added';
   },
 
-  setRoute: (input) =>
-    loggingRepo.setRoute(scope, {
-      eventKind: input.eventKind,
-      channelId: input.channelId,
-      includeContent: input.includeContent,
-    }),
-  setRouteEnabled: (eventKind, enabled) => loggingRepo.setRouteEnabled(scope, eventKind, enabled),
+  createRoute: (input) => {
+    const route = loggingRepo.createRoute(scope, { ...input, nowMs: now() });
+    return {
+      routeId: route.routeId,
+      name: route.name,
+      channelId: route.channelId,
+      enabled: route.enabled,
+      includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
+    };
+  },
+  updateRoute: (routeId, input) => {
+    const route = loggingRepo.updateRoute(scope, routeId, input);
+    if (route === undefined) return undefined;
+    return {
+      routeId: route.routeId,
+      name: route.name,
+      channelId: route.channelId,
+      enabled: route.enabled,
+      includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
+    };
+  },
+  setRouteEnabled: (routeId, enabled) => loggingRepo.setRouteEnabled(scope, routeId, enabled),
+  deleteRoute: (routeId) => loggingRepo.deleteRoute(scope, routeId),
   excludeChannel: (channelId) => loggingRepo.excludeChannel(scope, channelId),
   unexcludeChannel: (channelId) => loggingRepo.unexcludeChannel(scope, channelId),
 
