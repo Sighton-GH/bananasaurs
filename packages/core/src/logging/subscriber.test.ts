@@ -334,6 +334,20 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.get(MEMBER)?.nickname).toBe('Nick');
   });
 
+  it('a join whose send fails saves no snapshot', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'j', channelId: DEST_A })]);
+    fake.setRouteKinds('j', ['member_join', 'member_nickname_changed']);
+    fake.failing.add(DEST_A);
+    await expect(
+      createLoggingSubscriber(fake.ports).handle(
+        memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
+      ),
+    ).rejects.toThrow();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
+
   it('a later update with a new nickname posts one line and updates the snapshot', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);

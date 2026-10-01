@@ -318,9 +318,13 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
 
     if (event.kind === 'memberAdd') {
       const firstError = await postItems(ports, logItemsFor(event), event.kind);
-      const snapshot = snapshotOf(event);
-      if (snapshot !== undefined && wantsMemberChanges(ports)) {
-        ports.saveMemberSnapshot(snapshot);
+      if (firstError === undefined) {
+        // Like the update path below: a failed send must not advance the
+        // snapshot — the replay must see the same baseline.
+        const snapshot = snapshotOf(event);
+        if (snapshot !== undefined && wantsMemberChanges(ports)) {
+          ports.saveMemberSnapshot(snapshot);
+        }
       }
       if (firstError !== undefined) throw firstError;
       return;
