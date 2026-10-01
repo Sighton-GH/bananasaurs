@@ -80,7 +80,7 @@ export type AutomodActionTaken =
 
 /**
  * Everything the automod subscriber needs from the guild's safety row —
- * `ModerationSafetyState`'s three fields, plus ADR 0042 §5's third lever.
+ * `ModerationSafetyState`'s three fields, plus ADR 0121's guild-wide switch.
  *
  * A distinct interface that *extends* `ModerationSafetyState` rather than a
  * field added to `ModerationSafetyState` itself (ruling PR-33, coordinator
@@ -88,16 +88,19 @@ export type AutomodActionTaken =
  * `readSafetyState` returns", which read literally would mean widening
  * `ModerationSafetyState`). `ModerationGatewayDeps.state.read()` and
  * `purge.ts`'s `classifyRefusal` both take a bare `ModerationSafetyState`,
- * and both must never be gated by whether one automod rule is under test —
- * widening the shared type would hand them a field only this module may
- * read, and a comment saying "don't read this" is caller discipline, which
- * CLAUDE.md rule 2 treats as the bug, not the guard. Storage's `SafetyState`
- * (`guilds.ts`) already carries `automodTestingMode` and is structurally
- * assignable to this interface without a second read — `automod/wiring.ts`
- * passes the same `guildRepo.readSafetyState(scope)` call through unchanged.
+ * and both must never be gated by whether automod is switched on for the
+ * guild — widening the shared type would hand them a field only this module
+ * may read, and a comment saying "don't read this" is caller discipline,
+ * which CLAUDE.md rule 2 treats as the bug, not the guard. Storage's
+ * `SafetyState` (`guilds.ts`) already carries `automodState` and is
+ * structurally assignable to this interface without a second read —
+ * `automod/wiring.ts` passes the same `guildRepo.readSafetyState(scope)`
+ * call through unchanged.
  */
+/** ADR 0121: re-declared here because core may not import storage. */
+export type AutomodSwitchState = 'off' | 'watch' | 'on';
 export interface AutomodSafetyState extends ModerationSafetyState {
-  readonly automodTestingMode: boolean;
+  readonly automodState: AutomodSwitchState;
 }
 
 export interface AutomodSubscriberDeps {
@@ -126,24 +129,7 @@ export interface AutomodSubscriberDeps {
     },
   ): boolean;
   deleteMessage(channelId: string, messageId: string, reason: string): Promise<void>;
-  /**
-   * Records this message as review evidence, and returns the fixture id — or
-   * `undefined` if nothing was captured.
-   *
-   * Called only for a match by a rule in `test` or `observe` mode (ADR 0041
-   * §2, plan ruling PR-2). Three boundaries meet here and all three are
-   * deliberate:
-   *
-   * - **Only matched messages.** Capturing traffic that matched nothing would
-   *   build a message archive by the back door, under a decision the owner
-   *   made about a *review corpus* — and Release 3 gates archive ingestion
-   *   behind a default-deny channel scope (ADR 0009).
-   * - **Not in `enforce` mode.** `PRIVACY.md` promises deleted-message
-   *   content is kept 30 days; a fixture has no expiry, so capturing the
-   *   content of a message the bot just deleted would make the policy untrue.
-   * - **Never fatal.** The call site wraps this in a `try`/`catch`: a corpus
-   *   write failing must not stop a deletion or an escalation.
-   */
+  /** @deprecated ADR 0121: no longer called; removed with the fixture tables. */
   captureFixture(input: {
     messageId: string;
     /** Zero-width stripped — what the predicate matched against. */
@@ -246,7 +232,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
       if (event.kind !== 'messageCreate' && event.kind !== 'messageUpdate') return;
       // Never moderate a bot — this one included. discord.js emits
       // `MessageCreate` for our own messages, and the `message_delete` logging
-      // route quotes the deleted content, so an enforce-mode rule that deletes
+      // route quotes the deleted content, so a rule that deletes
       // a message would then match the log entry about that deletion, delete
       // that, and loop — opening a case against the bot's own user id every
       // lap. Every bot and webhook is skipped, not only this bot's own id:
@@ -255,6 +241,12 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
       const input = predicateInputFrom({ from: 'message', event });
       if (input === undefined) return;
       const authorId = input.authorId;
+
+      // ADR 0121: one switch for the guild. Off — and an unknown guild,
+      // which fails closed — means automod does nothing at all: no rule is
+      // listed, no member fetched, nothing recorded.
+      const state = deps.readSafetyState();
+      if (state === undefined || state.automodState === 'off') return;
 
       // Before anything else that costs something: a guild with no enabled
       // keyword-filter rule has nothing to check and nothing to fetch.
@@ -343,41 +335,6 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         if (evaluation.kind === 'no-match') continue;
         const hit = evaluation.match;
 
-        // Evidence for the observe window, captured before anything is done
-        // about the match — so a review is possible even if the moderation
-        // action below fails or is refused. Not in `enforce` mode (ADR 0041
-        // §2, plan ruling PR-2): `PRIVACY.md` promises deleted-message
-        // content is kept 30 days, and a fixture has no expiry, so capturing
-        // what the bot is about to delete would make that policy untrue in
-        // the same release that added the row claiming it is true.
-        //
-        // The corpus is evidence, not enforcement (plan ruling PR-8): a
-        // capture failure must never stop a deletion or an escalation, so the
-        // call is wrapped here, at its one call site, rather than trusted to
-        // every port implementation to swallow its own errors.
-        let fixtureId: string | undefined;
-        if (rule.mode !== 'enforce') {
-          try {
-            fixtureId = deps.captureFixture({
-              messageId: input.messageId,
-              content: input.content,
-              authorId,
-              atMs: input.atMs,
-              attachments: input.attachments,
-            });
-          } catch (err) {
-            deps.logger.error(
-              safeLogFields({
-                component: 'automod',
-                guildId: event.guildId,
-                ruleId: rule.ruleId,
-                err,
-              }),
-              'capturing the matched message as review evidence failed; continuing without a fixture',
-            );
-          }
-        }
-
         const record = (
           caseId: string,
           actionTaken: AutomodActionTaken,
@@ -395,15 +352,13 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
             escalationAction,
             refusalReason,
             trace: hit.trace,
-            fixtureId,
+            fixtureId: undefined,
           });
         };
 
-        // Non-enforce modes never touch Discord at all: test/observe record
-        // what *would* have happened. `'would_delete'`, not `'deleted'` — the
-        // old vocabulary reused the deletion value here, so case history could
-        // not tell an observation apart from a real removal.
-        if (rule.mode !== 'enforce') {
+        // Watch records what automod would have done and touches no one.
+        // `would_delete`, never `deleted` (ADR 0036).
+        if (state.automodState === 'watch') {
           record(
             deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
             'would_delete',
@@ -415,36 +370,13 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // and a message deletion is a Discord side effect. Checked here rather
         // than only inside `ModerationActionGateway` because the deletion does
         // not go through that gateway — it is a direct `DiscordPort` call.
-        const state = deps.readSafetyState();
-
-        // ADR 0042 §5's third lever: unlike killswitch/breaker/dry-run below,
-        // this is not "a safety layer stopped an action that was attempted" —
-        // it is "record this exactly as `test` mode would", so it reuses that
-        // recording verbatim rather than one of the `delete_blocked_*` values.
-        // Every *other* subsystem stays live (spec F3): this branch is
-        // reached only for automod's own enforce-mode deletion, and nothing
-        // else in the process reads `automodTestingMode` (`AutomodSafetyState`
-        // is a distinct type from `ModerationSafetyState`, ruling PR-33) — a
-        // role-panel effect or a manual `/mod` action cannot be gated by it
-        // even by accident.
-        if (state !== undefined && state.automodTestingMode) {
-          record(
-            deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
-            'would_delete',
-          );
-          continue;
-        }
-
-        const blocked: AutomodActionTaken | undefined =
-          state === undefined
-            ? 'delete_blocked_guild_unknown'
-            : state.killswitch
-              ? 'delete_blocked_killswitch'
-              : state.breakerOpen
-                ? 'delete_blocked_breaker'
-                : state.dryRun
-                  ? 'delete_blocked_dry_run'
-                  : undefined;
+        const blocked: AutomodActionTaken | undefined = state.killswitch
+          ? 'delete_blocked_killswitch'
+          : state.breakerOpen
+            ? 'delete_blocked_breaker'
+            : state.dryRun
+              ? 'delete_blocked_dry_run'
+              : undefined;
 
         if (blocked !== undefined) {
           // Durably recorded, not merely logged — the same requirement ADR 0035

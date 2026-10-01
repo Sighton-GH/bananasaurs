@@ -60,7 +60,7 @@ const LIVE: AutomodSafetyState = {
   killswitch: false,
   breakerOpen: false,
   dryRun: false,
-  automodTestingMode: false,
+  automodState: 'on',
 };
 
 /** A minimal, fully-wired `AutomodSubscriberDeps` fake. Every port is inert. */

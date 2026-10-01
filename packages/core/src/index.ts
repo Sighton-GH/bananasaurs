@@ -245,6 +245,7 @@ export {
   createAutomodSubscriber,
   type AutomodSafetyState,
   type AutomodSubscriberDeps,
+  type AutomodSwitchState,
   type ModerationGatewayPort,
 } from './automod/subscriber.js';
 export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
