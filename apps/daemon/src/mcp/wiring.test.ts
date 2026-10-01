@@ -25,7 +25,7 @@ import {
   roleRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId, DiscordApiError } from '@bananasaurs/core';
-import type { Chunk } from '@bananasaurs/core';
+import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
   ARCHIVE_NO_TEXT_MARKER,
@@ -2597,6 +2597,8 @@ describe('/mcp read_thread and shared private threads', () => {
   const OWNER_ONLY_PRIVATE = '400000000000000002';
   const LIVE_MESSAGE = '911111111111111111';
   const ARCHIVE_MESSAGE = '922222222222222222';
+  const B_PUBLIC_THREAD = '411111111111111111';
+  const B_PARENT = '422222222222222222';
   const LIVE_TEXT = 'live secret plans discussed in the shared private thread alpha';
   const ARCHIVE_TEXT = 'archived public thread plans beta';
 
@@ -2605,12 +2607,18 @@ describe('/mcp read_thread and shared private threads', () => {
     users: { _add: (data: object) => unknown };
   }
 
-  const threadChannel = (id: string, type: ChannelType, name: string): object => ({
+  const threadChannel = (
+    id: string,
+    type: ChannelType,
+    name: string,
+    guildId: GuildId = GUILD_A,
+    parentId: string = PLANNING,
+  ): object => ({
     id,
-    guild_id: GUILD_A,
+    guild_id: guildId,
     type,
     name,
-    parent_id: PLANNING,
+    parent_id: parentId,
     thread_metadata: {
       archived: false,
       auto_archive_duration: 60,
@@ -2641,6 +2649,34 @@ describe('/mcp read_thread and shared private threads', () => {
         threadChannel(SHARED_PRIVATE, ChannelType.GuildPrivateThread, 'shared-private'),
         threadChannel(BOT_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'bot-only-private'),
         threadChannel(OWNER_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'owner-only-private'),
+      ],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    // A second guild in the same cache with its own real thread: a thread id
+    // from here must never answer through guild A.
+    internals.guilds._add({
+      id: GUILD_B,
+      name: 'guild b',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: B_PARENT,
+          guild_id: GUILD_B,
+          type: ChannelType.GuildText,
+          name: 'planning-b',
+          position: 1,
+          permission_overwrites: [],
+        },
+        threadChannel(
+          B_PUBLIC_THREAD,
+          ChannelType.GuildPublicThread,
+          'b-public-thread',
+          GUILD_B,
+          B_PARENT,
+        ),
       ],
       roles: [],
       members: [],
@@ -2768,6 +2804,32 @@ describe('/mcp read_thread and shared private threads', () => {
       );
       expect(found.isError).not.toBe(true);
       expect(found.text).toBe('No thread 800000000000000099 in this guild.');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it("a guild B thread id through guild A answers not-found with no membership or message calls", async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // B's thread is real and in the same cache — but the call names guild
+      // A, so it answers exactly like an unknown id: no cross-guild oracle,
+      // and the live membership/message endpoints are never reached.
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: B_PUBLIC_THREAD,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe(`No thread ${B_PUBLIC_THREAD} in this guild.`);
+      expect(discord.restCalls('isThreadMember')).toEqual([]);
+      expect(discord.restCalls('fetchChannelMessages')).toEqual([]);
     } finally {
       await threadApp.close();
     }
