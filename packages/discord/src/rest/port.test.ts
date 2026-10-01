@@ -675,6 +675,15 @@ describe('messages and reactions', () => {
     expect(last(low.requests).query).toContain('limit=1');
   });
 
+  it('omits before from the channel messages query when absent', async () => {
+    const { port, requests } = harness([{ status: 200, body: [] }]);
+    await port.fetchChannelMessages(GUILD, CHANNEL, { limit: 15 });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages`);
+    expect(last(requests).query).toContain('limit=15');
+    expect(last(requests).query).not.toContain('before');
+  });
+
   it('reports undefined rather than throwing on 404 or 403', async () => {
     const gone = harness([
       { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },
@@ -703,6 +712,90 @@ describe('messages and reactions', () => {
     await port.sendTyping(GUILD, CHANNEL);
     expect(last(requests).method).toBe('POST');
     expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/typing`);
+  });
+});
+
+describe('message metadata (slice 2 task 6)', () => {
+  const metaBody = (over: Record<string, unknown> = {}) => ({
+    id: MESSAGE,
+    channel_id: CHANNEL,
+    author: { id: USER, username: 'sam' },
+    content: 'the handbook is pinned in #welcome',
+    pinned: true,
+    reactions: [
+      { count: 2, emoji: { id: null, name: '👍' } },
+      { count: 1, emoji: { id: '666666666666666666', name: 'party' } },
+    ],
+    ...over,
+  });
+
+  it('projects pinned and reactions off the channel-message route', async () => {
+    const { port, requests } = harness([{ status: 200, body: metaBody() }]);
+    await expect(
+      port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toEqual({
+      pinned: true,
+      reactions: [
+        { emoji: '👍', count: 2 },
+        { emoji: '<:party:666666666666666666>', count: 1 },
+      ],
+    });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
+  });
+
+  it('reports an unpinned message with no reactions as empty rather than absent', async () => {
+    const { port } = harness([{ status: 200, body: metaBody({ pinned: false }) }]);
+    await expect(
+      port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toEqual({
+      pinned: false,
+      reactions: [
+        { emoji: '👍', count: 2 },
+        { emoji: '<:party:666666666666666666>', count: 1 },
+      ],
+    });
+  });
+
+  it('reports no reactions field as an empty list', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'sam' },
+          content: 'no one reacted to this',
+          pinned: true,
+        },
+      },
+    ]);
+    await expect(
+      port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toEqual({ pinned: true, reactions: [] });
+  });
+
+  it('answers undefined rather than throwing on 404 or 403', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },
+    ]);
+    await expect(
+      gone.port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(
+      forbidden.port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else (e.g. a server error)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(
+      port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).rejects.toBeInstanceOf(DiscordApiError);
   });
 });
 
@@ -1119,6 +1212,100 @@ describe('archived thread pagination (S3)', () => {
     expect(requests.filter((request) => request.path.includes('/threads/archived')).length).toBe(
       50,
     );
+  });
+});
+
+describe('thread membership (ADR 0112)', () => {
+  const THREAD = '666666666666666666';
+
+  it('answers true on 200, on the thread-member route', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { user_id: USER, thread_id: THREAD } },
+    ]);
+    await expect(port.isThreadMember(GUILD, THREAD, USER)).resolves.toBe(true);
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}/thread-members/${USER}`);
+  });
+
+  it('answers false on 404, never a throw', async () => {
+    const { port } = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMember, message: 'Unknown Member' } },
+    ]);
+    await expect(port.isThreadMember(GUILD, THREAD, USER)).resolves.toBe(false);
+  });
+
+  it('still raises anything else (e.g. 403 or a server error)', async () => {
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(forbidden.port.isThreadMember(GUILD, THREAD, USER)).rejects.toBeInstanceOf(
+      DiscordApiError,
+    );
+    const broken = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(broken.port.isThreadMember(GUILD, THREAD, USER)).rejects.toBeInstanceOf(
+      DiscordApiError,
+    );
+  });
+});
+
+describe('thread info (ADR 0112 sweeper fallback)', () => {
+  const THREAD = '666666666666666666';
+  const PARENT = '777777777777777777';
+
+  const channel = (over: Record<string, unknown>) => ({
+    id: THREAD,
+    guild_id: GUILD,
+    type: 11,
+    name: 'weekly build night',
+    parent_id: PARENT,
+    ...over,
+  });
+
+  it('reads public thread facts off the channel route', async () => {
+    const { port, requests } = harness([{ status: 200, body: channel({}) }]);
+    await expect(port.fetchThreadInfo(GUILD, THREAD)).resolves.toEqual({
+      id: THREAD,
+      name: 'weekly build night',
+      parentId: PARENT,
+      isPrivate: false,
+    });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}`);
+  });
+
+  it('marks a private thread private', async () => {
+    const { port } = harness([{ status: 200, body: channel({ type: 12 }) }]);
+    await expect(port.fetchThreadInfo(GUILD, THREAD)).resolves.toMatchObject({
+      isPrivate: true,
+    });
+  });
+
+  it('answers undefined rather than throwing on 404 or 403', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Channel' } },
+    ]);
+    await expect(gone.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(forbidden.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+
+  it('answers undefined for another guild\u2019s channel, a non-thread, or a missing parent', async () => {
+    const foreign = harness([{ status: 200, body: channel({ guild_id: OTHER_GUILD }) }]);
+    await expect(foreign.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+
+    const text = harness([{ status: 200, body: channel({ type: 0, parent_id: null }) }]);
+    await expect(text.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+
+    const parentless = harness([{ status: 200, body: channel({ parent_id: null }) }]);
+    await expect(parentless.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else (e.g. a server error)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(port.fetchThreadInfo(GUILD, THREAD)).rejects.toBeInstanceOf(DiscordApiError);
   });
 });
 

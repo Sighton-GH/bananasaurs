@@ -13,20 +13,25 @@ import {
 import {
   accountRepo,
   archiveRepo,
+  assistantRepo,
   authzRepo,
+  computeDocId,
   effectRepo,
   guildRepo,
   jobRepo,
   loggingRepo,
   mcpSendRepo,
+  resourceCacheRepo,
   roleRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId } from '@bananasaurs/core';
+import { parseGuildId, DiscordApiError } from '@bananasaurs/core';
+import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
   ARCHIVE_NO_TEXT_MARKER,
   ARCHIVE_PURGED_MARKER,
   GUILD_REFUSAL_MESSAGE,
+  PRIVATE_THREAD_REFUSAL,
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
@@ -284,7 +289,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all sixteen tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty-two tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -292,12 +297,15 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(16);
+    expect(names).toHaveLength(22);
     expect(names).toEqual([
       'get_health',
       'search_messages',
       'read_channel_history',
       'get_message',
+      'read_thread',
+      'read_digest',
+      'list_unanswered',
       'list_channels',
       'list_threads',
       'list_roles',
@@ -310,6 +318,9 @@ describe('/mcp behind the bearer guard', () => {
       'get_job',
       'get_member',
       'search_members',
+      'get_server_context',
+      'search_resources',
+      'open_resource',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -1191,6 +1202,127 @@ describe('/mcp archive tools across two guilds', () => {
     expect(noText.text).toContain(ARCHIVE_NO_TEXT_MARKER);
     expect(noText.text).not.toContain(ARCHIVE_PURGED_MARKER);
   });
+
+  it('(slice 2 task 3) a reply stored through the repo renders its reply link', async () => {
+    // Through the real composition: the daemon's `toMcpArchiveMessage`
+    // projection must carry `replyToMessageId` for the tool layer to render
+    // it — a dropped field here would read as a non-reply, never an error.
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    seedArchive();
+    const REPLY = '999999999999999991';
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_B), {
+      messageId: REPLY,
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: 'seconding the beta plans',
+      createdAt: clock + 1,
+      editedAt: undefined,
+      attachments: [],
+      replyToMessageId: MESSAGE_B,
+    });
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '222222222222222222',
+          messageId: REPLY,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain(`reply to: ${MESSAGE_B}\nseconding the beta plans`);
+  });
+
+  it('(slice 2 task 6) get_message appends live pin state and reaction counts', async () => {
+    // Through the real composition: the daemon's `messageMeta` port reads
+    // Discord live (the fake here), and the tool appends the metadata JSON
+    // line after the envelope. The archived row and the live message share
+    // ids, the way a real archived message matches its Discord original.
+    seedArchive();
+    fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A, pinned: true });
+    fakeDiscord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE_A,
+      userId: MEMBER,
+      emoji: 'u:1f44d',
+    });
+    fakeDiscord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE_A,
+      userId: MEMBER,
+      emoji: 'c:777777777777777777',
+    });
+    fakeDiscord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE_A,
+      userId: '999999999999999999',
+      emoji: 'c:777777777777777777',
+    });
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).toContain(
+      '{"pinned":true,"reactions":[{"emoji":"👍","count":1},{"emoji":"<:unknown:777777777777777777>","count":2}]}',
+    );
+  });
+
+  it('(slice 2 task 6) get_message answers the archive alone when Discord no longer has it', async () => {
+    // The review-focus case: the message is archived but gone live (the
+    // fake was never told about it, mirroring the adapter's 404 fold), and
+    // the call still returns the archive answer — metadata omitted, no
+    // refusal.
+    seedArchive();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).not.toContain('"pinned"');
+  });
+
+  it('(slice 2 task 6) get_message answers the archive alone when the live read throws', async () => {
+    // A Discord fault (here a 429) behind `messageMeta` is routine, not a
+    // refusal: one operator trace line, and the archive answer without the
+    // metadata line.
+    seedArchive();
+    fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A });
+    fakeDiscord.failNext('fetchMessageMeta', FakeDiscord.rateLimited());
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).not.toContain('"pinned"');
+  });
 });
 
 describe('/mcp jobs tools across two guilds', () => {
@@ -1281,6 +1413,356 @@ describe('/mcp jobs tools across two guilds', () => {
     expect(cross.isError).not.toBe(true);
     expect(cross.text).toContain('not found');
     expect(cross.text).not.toContain('beta failure marker');
+  });
+});
+
+describe('/mcp get_server_context across two guilds', () => {
+  /**
+   * Slice 2 Task 1, daemon side: `get_server_context` through the real stack
+   * — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+   * `contextPortFor` over the real repositories — with a token minted through
+   * the real OAuth flow. The load-bearing assertion is guild isolation: the
+   * stored card for A never answers for B, and vice versa.
+   *
+   * The app is rebuilt with the instance's redacted config carrying the club
+   * time zone (`testInstanceFor` redacts to `{}`), the way production's
+   * `redactedConfig` carries the real `BANANASAURS_TIME_ZONE`.
+   */
+  const zonedApp = (): FastifyInstance =>
+    buildDashboardApp({
+      ...deps,
+      instance: {
+        ...deps.instance,
+        redactedConfig: () => ({ BANANASAURS_TIME_ZONE: 'America/Vancouver' }),
+      },
+    });
+
+  const mcpCallOn = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    mcpPost(
+      target,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('returns the stored server card for guild A only', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    assistantRepo.putServerCard(
+      t.scopes.forGuild(GUILD_A),
+      'Guild A server card: alpha clubhouse rules.',
+      clock,
+    );
+    assistantRepo.putServerCard(
+      t.scopes.forGuild(GUILD_B),
+      'Guild B server card: beta clubhouse rules.',
+      clock,
+    );
+    const zoned = zonedApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:read', zoned);
+
+      const own = callText(
+        (
+          await mcpCallOn(zoned, accessToken, 'get_server_context', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(own.isError).not.toBe(true);
+      expect(own.text).toContain('time zone America/Vancouver');
+      expect(own.text).toContain('alpha clubhouse rules');
+      expect(own.text).not.toContain('beta clubhouse rules');
+      expect(own.text).toContain('Enabled assistant skills:');
+
+      // B's card through B answers B's text — never A's.
+      const other = callText(
+        (
+          await mcpCallOn(zoned, accessToken, 'get_server_context', {
+            guildId: '222222222222222222',
+          })
+        ).body,
+      );
+      expect(other.isError).not.toBe(true);
+      expect(other.text).toContain('beta clubhouse rules');
+      expect(other.text).not.toContain('alpha clubhouse rules');
+    } finally {
+      await zoned.close();
+    }
+  });
+});
+
+/**
+ * Slice 2 Task 2, daemon side: `search_resources` and `open_resource`
+ * through the real stack — Fastify + `registerMcpRoutes` + `createMcpServer`
+ * + the real `resourcesPortFor` over the real repositories — with a token
+ * minted through the real OAuth flow.
+ *
+ * Seeded through the storage repositories, never a fake port: an enabled
+ * resource with cached chunks, a disabled resource with cached chunks (its
+ * text must stay invisible even to an exact query), an enabled resource
+ * with no cache (the dashboard pointer, never a fetch), and a second
+ * guild's cache proving cross-guild isolation.
+ */
+describe('/mcp resource tools across two guilds', () => {
+  const seedResource = (
+    guild: typeof GUILD_A,
+    input: {
+      readonly id: string;
+      readonly title: string;
+      readonly url: string;
+      readonly enabled: boolean;
+    },
+  ): void => {
+    assistantRepo.putResource(t.scopes.forGuild(guild), {
+      id: input.id,
+      guildId: guild,
+      title: input.title,
+      url: input.url,
+      kind: 'website',
+      enabled: input.enabled,
+      reviewedAt: new Date(clock).toISOString(),
+    });
+  };
+
+  const seedCached = (
+    guild: typeof GUILD_A,
+    resourceId: string,
+    url: string,
+    chunks: readonly Chunk[],
+  ): void => {
+    const scope = t.scopes.forGuild(guild);
+    const docId = computeDocId(url);
+    resourceCacheRepo.upsertDocument(scope, {
+      resourceId,
+      docId,
+      url,
+      path: '/guide',
+      title: `${resourceId} doc`,
+      contentHash: `hash-${resourceId}`,
+      fetchedAt: clock,
+      bytes: 100,
+      status: 'ok',
+    });
+    resourceCacheRepo.replaceChunks(scope, docId, resourceId, chunks);
+  };
+
+  const chunk = (ordinal: number, text: string): Chunk => ({
+    ordinal,
+    headingPath: `Guide › Part ${String(ordinal)}`,
+    lineStart: ordinal + 1,
+    lineEnd: ordinal + 1,
+    text,
+  });
+
+  const seedAll = (): void => {
+    seedResource(GUILD_A, {
+      id: 'handbook',
+      title: 'Alpha handbook',
+      url: 'https://example.com/alpha-handbook',
+      enabled: true,
+    });
+    seedCached(GUILD_A, 'handbook', 'https://example.com/alpha-handbook', [
+      chunk(0, 'the alphahandbookword rota for the alpha clubhouse'),
+    ]);
+    // Disabled but cached: search must not find it, open must not see it.
+    seedResource(GUILD_A, {
+      id: 'off',
+      title: 'Disabled notes',
+      url: 'https://example.com/off-notes',
+      enabled: false,
+    });
+    seedCached(GUILD_A, 'off', 'https://example.com/off-notes', [
+      chunk(0, 'the offkeywordword rota nobody should read over mcp'),
+    ]);
+    // Enabled but never fetched: the dashboard pointer, never a refresh.
+    seedResource(GUILD_A, {
+      id: 'empty',
+      title: 'Empty guide',
+      url: 'https://example.com/empty-guide',
+      enabled: true,
+    });
+    seedResource(GUILD_B, {
+      id: 'beta-guide',
+      title: 'Beta guide',
+      url: 'https://example.com/beta-guide',
+      enabled: true,
+    });
+    seedCached(GUILD_B, 'beta-guide', 'https://example.com/beta-guide', [
+      chunk(0, 'the betaguideword rota for the beta clubhouse'),
+    ]);
+  };
+
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const grantB = (): void => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+  };
+
+  it('search_resources finds the enabled cache but never the disabled one', async () => {
+    grantB();
+    seedAll();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '111111111111111111',
+          query: 'alphahandbookword',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alphahandbookword');
+    expect(found.text).toContain('Alpha handbook');
+
+    // An exact query for the disabled resource's distinctive word finds
+    // nothing: the daemon scopes the search to the enabled ids.
+    const hidden = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '111111111111111111',
+          query: 'offkeywordword',
+        })
+      ).body,
+    );
+    expect(hidden.isError).not.toBe(true);
+    expect(hidden.text).toContain('0 matches');
+    expect(hidden.text).not.toContain('offkeywordword');
+  });
+
+  it('open_resource refuses a disabled id without reading chunks, and points at the dashboard when unfetched (never fetching)', async () => {
+    grantB();
+    seedAll();
+    const accessToken = await mintToken();
+
+    const refused = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'off',
+        })
+      ).body,
+    );
+    expect(refused.isError).not.toBe(true);
+    expect(refused.text).toContain('No enabled resource with id "off".');
+    expect(refused.text).not.toContain('offkeywordword');
+
+    const pending = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'empty',
+        })
+      ).body,
+    );
+    expect(pending.isError).not.toBe(true);
+    expect(pending.text).toContain(
+      'This resource has not been fetched yet; the owner can refresh it in the dashboard.',
+    );
+    // Cache only: nothing was fetched, so nothing new is cached afterwards.
+    expect(resourceCacheRepo.listDocuments(t.scopes.forGuild(GUILD_A), 'empty')).toHaveLength(0);
+  });
+
+  it("open_resource reads the enabled cache, and guild B's cache is invisible to guild A", async () => {
+    grantB();
+    seedAll();
+    const accessToken = await mintToken();
+
+    const own = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'handbook',
+        })
+      ).body,
+    );
+    expect(own.isError).not.toBe(true);
+    expect(own.text).toContain('Alpha handbook');
+    expect(own.text).toContain('https://example.com/alpha-handbook');
+    expect(own.text).toContain('alphahandbookword');
+    expect(own.text).not.toContain('betaguideword');
+
+    // Guild B's resource id through guild A is unknown — never B's text.
+    const cross = callText(
+      (
+        await mcpCall(accessToken, 'open_resource', {
+          guildId: '111111111111111111',
+          resourceId: 'beta-guide',
+        })
+      ).body,
+    );
+    expect(cross.isError).not.toBe(true);
+    expect(cross.text).toContain('No enabled resource with id "beta-guide".');
+    expect(cross.text).not.toContain('betaguideword');
+
+    // Same channel of proof for search: B's distinctive word finds nothing
+    // through A, but answers through B.
+    const crossSearch = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '111111111111111111',
+          query: 'betaguideword',
+        })
+      ).body,
+    );
+    expect(crossSearch.isError).not.toBe(true);
+    expect(crossSearch.text).toContain('0 matches');
+    expect(crossSearch.text).not.toContain('betaguideword');
+
+    const home = callText(
+      (
+        await mcpCall(accessToken, 'search_resources', {
+          guildId: '222222222222222222',
+          query: 'betaguideword',
+        })
+      ).body,
+    );
+    expect(home.isError).not.toBe(true);
+    expect(home.text).toContain('betaguideword');
+    expect(home.text).not.toContain('alphahandbookword');
   });
 });
 
@@ -2168,6 +2650,1105 @@ describe('/mcp read logging (ADR 0050)', () => {
       expect(dump).not.toContain(MEMBER);
     } finally {
       await logged.close();
+    }
+  });
+});
+
+/**
+ * Slice 2 Task 4, daemon side: `read_thread` and shared private threads
+ * through the real stack — Fastify + `registerMcpRoutes` + `createMcpServer`
+ * + the real `threadsPortFor` and `guildPortFor` — with a token minted
+ * through the real OAuth flow.
+ *
+ * The app is rebuilt with the instance's redacted config carrying the owner
+ * id (`testInstanceFor` redacts to `{}`), the way production's
+ * `redactedConfig` carries the real `BANANASAURS_OWNER_USER_ID`, and with a
+ * discord.js client whose user is the bot and whose guild cache holds one
+ * public and three private threads. Live thread content comes from the
+ * `FakeDiscord` behind the daemon's `DiscordPort`, exactly as production's
+ * REST port serves it.
+ *
+ * The load-bearing assertions are ADR 0112's two rules: a private thread
+ * reads live only when bot AND owner are both members (bot-only and
+ * owner-only both refuse with the exact text), and a private read never
+ * writes an `archive_messages` row.
+ */
+describe('/mcp read_thread and shared private threads', () => {
+  const BOT = '123456789012345678';
+  const OWNER = '345678901234567890';
+  const MEMBER = '666666666666666666';
+  const PLANNING = '322222222222222222';
+  const PUBLIC_THREAD = '388888888888888888';
+  const SHARED_PRIVATE = '399999999999999999';
+  const BOT_ONLY_PRIVATE = '400000000000000001';
+  const OWNER_ONLY_PRIVATE = '400000000000000002';
+  const ARCHIVED_SHARED_PRIVATE = '400000000000000003';
+  const LIVE_MESSAGE = '911111111111111111';
+  const ARCHIVE_MESSAGE = '922222222222222222';
+  const B_PUBLIC_THREAD = '411111111111111111';
+  const B_PARENT = '422222222222222222';
+  const SWEPT_PUBLIC = '433333333333333333';
+  const B_SWEPT = '444444444444444444';
+  const SWEPT_TEXT = 'swept archived thread plans gamma';
+  const LIVE_TEXT = 'live secret plans discussed in the shared private thread alpha';
+  const ARCHIVE_TEXT = 'archived public thread plans beta';
+
+  interface ThreadDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const threadChannel = (
+    id: string,
+    type: ChannelType,
+    name: string,
+    guildId: GuildId = GUILD_A,
+    parentId: string = PLANNING,
+    archived = false,
+  ): object => ({
+    id,
+    guild_id: guildId,
+    type,
+    name,
+    parent_id: parentId,
+    thread_metadata: {
+      archived,
+      auto_archive_duration: 60,
+      archive_timestamp: '2026-09-01T00:00:00.000Z',
+      locked: false,
+    },
+  });
+
+  const buildThreadClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT));
+    const internals = client as unknown as ThreadDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: PLANNING,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 1,
+          permission_overwrites: [],
+        },
+        threadChannel(PUBLIC_THREAD, ChannelType.GuildPublicThread, 'public-thread'),
+        threadChannel(SHARED_PRIVATE, ChannelType.GuildPrivateThread, 'shared-private'),
+        threadChannel(BOT_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'bot-only-private'),
+        threadChannel(OWNER_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'owner-only-private'),
+        threadChannel(
+          ARCHIVED_SHARED_PRIVATE,
+          ChannelType.GuildPrivateThread,
+          'archived-shared-private',
+          GUILD_A,
+          PLANNING,
+          true,
+        ),
+      ],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    // A second guild in the same cache with its own real thread: a thread id
+    // from here must never answer through guild A.
+    internals.guilds._add({
+      id: GUILD_B,
+      name: 'guild b',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: B_PARENT,
+          guild_id: GUILD_B,
+          type: ChannelType.GuildText,
+          name: 'planning-b',
+          position: 1,
+          permission_overwrites: [],
+        },
+        threadChannel(
+          B_PUBLIC_THREAD,
+          ChannelType.GuildPublicThread,
+          'b-public-thread',
+          GUILD_B,
+          B_PARENT,
+        ),
+      ],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  /** The composed app with the owner id configured and thread memberships set. */
+  const buildThreadApp = (discord: FakeDiscord): FastifyInstance => {
+    const client = buildThreadClient();
+    return createServer({
+      deps: {
+        ...deps,
+        instance: {
+          ...deps.instance,
+          redactedConfig: () => ({ BANANASAURS_OWNER_USER_ID: OWNER }),
+        },
+      },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+  };
+
+  const seedThreads = (discord: FakeDiscord): void => {
+    archiveRepo.enableChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: PLANNING,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: ARCHIVE_MESSAGE,
+      channelId: PLANNING,
+      threadId: PUBLIC_THREAD,
+      authorId: MEMBER,
+      content: ARCHIVE_TEXT,
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    discord.defineMessage({
+      channelId: SHARED_PRIVATE,
+      messageId: LIVE_MESSAGE,
+      authorId: MEMBER,
+      content: LIVE_TEXT,
+    });
+    discord.addThreadMember(SHARED_PRIVATE, BOT);
+    discord.addThreadMember(SHARED_PRIVATE, OWNER);
+    discord.addThreadMember(BOT_ONLY_PRIVATE, BOT);
+    discord.addThreadMember(OWNER_ONLY_PRIVATE, OWNER);
+    discord.addThreadMember(ARCHIVED_SHARED_PRIVATE, BOT);
+    discord.addThreadMember(ARCHIVED_SHARED_PRIVATE, OWNER);
+    // Swept from the gateway cache (not in `buildThreadClient`), but known
+    // to the discord double: the REST fallback resolves these.
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: '933333333333333333',
+      channelId: PLANNING,
+      threadId: SWEPT_PUBLIC,
+      authorId: MEMBER,
+      content: SWEPT_TEXT,
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    discord.defineThread({ threadId: SWEPT_PUBLIC, name: 'swept-plans', parentId: PLANNING });
+    discord.defineThread({
+      threadId: B_SWEPT,
+      name: 'b-swept-thread',
+      parentId: B_PARENT,
+      guildId: GUILD_B,
+    });
+  };
+
+  const threadCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_thread', arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('reads a public thread from the archive', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: PUBLIC_THREAD,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(ARCHIVE_TEXT);
+      expect(found.text).toContain('public-thread');
+      expect(found.text).not.toContain('private, read live');
+      expect(found.text).not.toContain(LIVE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('answers an unknown thread id as not-a-thread', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: '800000000000000099',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe('No thread 800000000000000099 in this guild.');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a guild B thread id through guild A answers not-found with no membership or message calls', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // B's thread is real and in the same cache — but the call names guild
+      // A, so it answers exactly like an unknown id: no cross-guild oracle,
+      // and the live membership/message endpoints are never reached.
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: B_PUBLIC_THREAD,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe(`No thread ${B_PUBLIC_THREAD} in this guild.`);
+      expect(discord.restCalls('isThreadMember')).toEqual([]);
+      expect(discord.restCalls('fetchChannelMessages')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('reads a shared private thread live', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(LIVE_TEXT);
+      expect(found.text).toContain('private, read live');
+      expect(found.text).not.toContain(ARCHIVE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a shared private thread reads newest-first and pages backwards without overlap', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    // Two older live messages under the newest seed: oldest, middle, newest.
+    const OLDER = '900000000000000010';
+    const MIDDLE = '900000000000000011';
+    const OLDER_TEXT = 'older live plans in the shared private thread';
+    const MIDDLE_TEXT = 'middle live plans in the shared private thread';
+    discord.defineMessage({
+      channelId: SHARED_PRIVATE,
+      messageId: OLDER,
+      authorId: MEMBER,
+      content: OLDER_TEXT,
+    });
+    discord.defineMessage({
+      channelId: SHARED_PRIVATE,
+      messageId: MIDDLE,
+      authorId: MEMBER,
+      content: MIDDLE_TEXT,
+    });
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const page1 = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+            limit: 2,
+          })
+        ).body,
+      );
+      expect(page1.isError).not.toBe(true);
+      expect(page1.text).toContain('(newest first)');
+      // Newest first: the newest id renders before the middle one, and the
+      // oldest page is not on this page.
+      expect(page1.text.indexOf(LIVE_MESSAGE)).toBeLessThan(page1.text.indexOf(MIDDLE));
+      expect(page1.text).toContain(LIVE_TEXT);
+      expect(page1.text).toContain(MIDDLE_TEXT);
+      expect(page1.text).not.toContain(OLDER_TEXT);
+      // Paging with the last shown id reads the next older page, no overlap.
+      const page2 = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+            beforeMessageId: MIDDLE,
+            limit: 2,
+          })
+        ).body,
+      );
+      expect(page2.isError).not.toBe(true);
+      expect(page2.text).toContain(OLDER_TEXT);
+      expect(page2.text).not.toContain(LIVE_TEXT);
+      expect(page2.text).not.toContain(MIDDLE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('bot-only membership is not enough, and neither is owner-only', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // The bot sits in the thread but the owner does not: refused, and the
+      // refusal names the fix rather than the membership state.
+      const botOnly = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: BOT_ONLY_PRIVATE,
+          })
+        ).body,
+      );
+      expect(botOnly.isError).toBe(true);
+      expect(botOnly.text).toBe(PRIVATE_THREAD_REFUSAL);
+      // The mirror: the owner sits in the thread but the bot does not.
+      const ownerOnly = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: OWNER_ONLY_PRIVATE,
+          })
+        ).body,
+      );
+      expect(ownerOnly.isError).toBe(true);
+      expect(ownerOnly.text).toBe(PRIVATE_THREAD_REFUSAL);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a private read writes no archive rows', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(LIVE_TEXT);
+      // The live message was served but never stored: no row by its id, and
+      // no rows under the private thread at all.
+      const scope = t.scopes.forGuild(GUILD_A);
+      expect(archiveRepo.findMessage(scope, LIVE_MESSAGE)).toBeUndefined();
+      expect(archiveRepo.listChannelHistory(scope, { channelId: SHARED_PRIVATE })).toEqual([]);
+      // The archive itself is untouched: the public thread still reads one row.
+      expect(archiveRepo.listChannelHistory(scope, { channelId: PUBLIC_THREAD })).toHaveLength(1);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('list_threads includes the shared private thread marked private, not the bot-only one', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const response = await threadApp.inject({
+        method: 'POST',
+        url: '/mcp',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${accessToken}`,
+        },
+        payload: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'list_threads',
+            arguments: { guildId: '111111111111111111', channelId: PLANNING },
+          },
+        }),
+      });
+      const found = callText(response.body);
+      expect(found.isError).not.toBe(true);
+      const data = JSON.parse(found.text.split('\n')[2] ?? '') as {
+        threads: Array<{ id: string; private: boolean }>;
+      };
+      const byId = new Map(data.threads.map((thread) => [thread.id, thread.private] as const));
+      expect(byId.get(PUBLIC_THREAD)).toBe(false);
+      expect(byId.get(SHARED_PRIVATE)).toBe(true);
+      // A private thread with only the bot is not listed at all.
+      expect(byId.has(BOT_ONLY_PRIVATE)).toBe(false);
+      expect(byId.has(OWNER_ONLY_PRIVATE)).toBe(false);
+      expect(found.text).not.toContain('bot-only-private');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an archived shared private thread lists only with includeArchived', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // Default listing hides it, the way archived public threads hide.
+      const active = listedPrivateById(
+        (
+          await listThreadsCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(active.has(ARCHIVED_SHARED_PRIVATE)).toBe(false);
+      expect(active.get(SHARED_PRIVATE)).toBe(true);
+      // Asked for archived threads, it lists marked archived and private.
+      const archived = callText(
+        (
+          await listThreadsCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+            includeArchived: true,
+          })
+        ).body,
+      );
+      expect(archived.isError).not.toBe(true);
+      const data = JSON.parse(archived.text.split('\n')[2] ?? '') as {
+        threads: Array<{ id: string; archived: boolean; private: boolean }>;
+      };
+      const row = data.threads.find((thread) => thread.id === ARCHIVED_SHARED_PRIVATE);
+      expect(row).toMatchObject({ archived: true, private: true });
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('reads a swept archived thread from the archive via the REST fallback', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // SWEPT_PUBLIC is in no cache — the sweeper evicted it — but the
+      // discord double knows it, so the fallback resolves the thread and
+      // the archive rows still read.
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SWEPT_PUBLIC,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(SWEPT_TEXT);
+      expect(found.text).toContain('swept-plans');
+      expect(discord.restCalls('fetchThreadInfo')).toHaveLength(1);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a swept guild B thread id through guild A answers not-found via the fallback', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // The fallback ran — one fetchThreadInfo call — but the fetched
+      // channel belongs to guild B, so the answer is not-found and the
+      // membership/message endpoints are never reached.
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: B_SWEPT,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe(`No thread ${B_SWEPT} in this guild.`);
+      expect(discord.restCalls('fetchThreadInfo')).toHaveLength(1);
+      expect(discord.restCalls('isThreadMember')).toEqual([]);
+      expect(discord.restCalls('fetchChannelMessages')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('refuses a private thread when no owner id is configured', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    // `testInstanceFor` redacts to `{}`: without the owner id the check
+    // fails closed, even with both memberships present.
+    const client = buildThreadClient();
+    const unconfigured = createServer({
+      deps,
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+    try {
+      // The token is minted on the dashboard app (this one registers no
+      // OAuth routes); bearer validation is app-independent, the way the
+      // guild-tools tests reuse a token across apps.
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(unconfigured, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).toBe(true);
+      expect(found.text).toBe(PRIVATE_THREAD_REFUSAL);
+    } finally {
+      await unconfigured.close();
+    }
+  });
+
+  const listThreadsCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'list_threads', arguments: args },
+      }),
+    });
+
+  const listedPrivateById = (body: string): Map<string, boolean> => {
+    const found = callText(body);
+    expect(found.isError).not.toBe(true);
+    const data = JSON.parse(found.text.split('\n')[2] ?? '') as {
+      threads: Array<{ id: string; private: boolean }>;
+    };
+    return new Map(data.threads.map((thread) => [thread.id, thread.private] as const));
+  };
+
+  it('a throwing membership check refuses the read and unlists the thread (fail closed)', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    // The membership endpoint is down: both memberships are recorded, but
+    // the check cannot confirm them — so the thread refuses and unlists
+    // rather than serving on a guess.
+    discord.failAlways('isThreadMember', new DiscordApiError(500, undefined, 'discord is on fire'));
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).toBe(true);
+      expect(found.text).toBe(PRIVATE_THREAD_REFUSAL);
+      const byId = listedPrivateById(
+        (
+          await listThreadsCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(byId.has(SHARED_PRIVATE)).toBe(false);
+      expect(byId.get(PUBLIC_THREAD)).toBe(false);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an unset owner id unlists the shared thread too', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const client = buildThreadClient();
+    const unconfigured = createServer({
+      deps,
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+    try {
+      const accessToken = await mintToken();
+      const byId = listedPrivateById(
+        (
+          await listThreadsCall(unconfigured, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(byId.has(SHARED_PRIVATE)).toBe(false);
+      expect(byId.get(PUBLIC_THREAD)).toBe(false);
+    } finally {
+      await unconfigured.close();
+    }
+  });
+});
+
+/**
+ * Slice 2, Task 5, daemon side: `read_digest` and `list_unanswered` through
+ * the real composition — the real repositories over a migrated test database
+ * and a fake discord.js guild for channel/role names. The token is minted on
+ * the dashboard app; bearer validation is app-independent, the way the
+ * guild-tools tests reuse a token across apps.
+ */
+describe('/mcp digest tools over real storage', () => {
+  const CATEGORY = '411111111111111111';
+  const HELP_CHANNEL = '422222222222222222';
+  const GENERAL = '433333333333333333';
+  const NOT_ENABLED = '444444444444444444';
+  const HELP_ROLE = '455555555555555555';
+  const ASKER = '466666666666666666';
+  const HELPER = '477777777777777777';
+  const THREAD = '488888888888888888';
+
+  interface DigestDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+  const digestInternals = (c: Client): DigestDiscordInternals =>
+    c as unknown as DigestDiscordInternals;
+
+  const buildDigestClient = (): Client => {
+    const client = new Client(buildClientOptions(() => '123456789012345678'));
+    digestInternals(client).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'club',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: HELP_CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'help',
+          position: 1,
+          parent_id: CATEGORY,
+          permission_overwrites: [],
+        },
+        {
+          id: GENERAL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'general',
+          position: 2,
+          parent_id: CATEGORY,
+          permission_overwrites: [],
+        },
+        {
+          id: NOT_ENABLED,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'offtopic',
+          position: 3,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: HELP_ROLE, name: 'help', position: 1, permissions: '0', managed: false, color: 0 },
+      ],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  const buildDigestApp = (discordClient: Client): FastifyInstance =>
+    createServer({
+      deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(
+          instance,
+          routeDeps,
+          discordClient,
+          new FakeDiscord({ guildId: GUILD_A }),
+        );
+      },
+    });
+
+  const digestCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const seedDigest = (now: number): void => {
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    for (const channelId of [HELP_CHANNEL, GENERAL] as const) {
+      archiveRepo.enableChannel(scopeA, { channelId, attachmentPolicy: 'none', now: clock });
+    }
+    const seed = (input: {
+      messageId: string;
+      channelId: string;
+      authorId?: string;
+      content: string;
+      createdAt: number;
+      mentionedRoleIds?: readonly string[];
+      replyToMessageId?: string;
+      threadId?: string;
+    }): void => {
+      archiveRepo.upsertMessage(scopeA, {
+        messageId: input.messageId,
+        channelId: input.channelId,
+        ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+        authorId: input.authorId ?? ASKER,
+        content: input.content,
+        createdAt: input.createdAt,
+        editedAt: undefined,
+        attachments: [],
+        ...(input.replyToMessageId !== undefined
+          ? { replyToMessageId: input.replyToMessageId }
+          : {}),
+        ...(input.mentionedRoleIds !== undefined
+          ? { mentionedRoleIds: input.mentionedRoleIds }
+          : {}),
+      });
+    };
+    seed({
+      messageId: '511111111111111111',
+      channelId: HELP_CHANNEL,
+      content: 'first digest message in help',
+      createdAt: now - 30 * 60_000,
+    });
+    seed({
+      messageId: '522222222222222222',
+      channelId: GENERAL,
+      content: 'second digest message in general',
+      createdAt: now - 20 * 60_000,
+    });
+    seed({
+      messageId: '533333333333333333',
+      channelId: HELP_CHANNEL,
+      content: 'thread follow-up under help',
+      createdAt: now - 10 * 60_000,
+      threadId: THREAD,
+    });
+    seed({
+      messageId: '544444444444444444',
+      channelId: HELP_CHANNEL,
+      content: 'open help question about wiring',
+      createdAt: now - 13 * 3_600_000,
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    seed({
+      messageId: '555555555555555555',
+      channelId: HELP_CHANNEL,
+      content: 'answered help question about wiring',
+      createdAt: now - 14 * 3_600_000,
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    seed({
+      messageId: '566666666666666666',
+      channelId: HELP_CHANNEL,
+      authorId: HELPER,
+      content: 'the answer to the answered question',
+      createdAt: now - 13 * 3_600_000 + 60_000,
+      replyToMessageId: '555555555555555555',
+    });
+    seed({
+      messageId: '577777777777777777',
+      channelId: HELP_CHANNEL,
+      content: 'thread-answered help question about wiring',
+      createdAt: now - 15 * 3_600_000,
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    seed({
+      messageId: '588888888888888888',
+      channelId: HELP_CHANNEL,
+      authorId: HELPER,
+      content: 'the answer inside the thread',
+      createdAt: now - 14 * 3_600_000 + 60_000,
+      threadId: '577777777777777777',
+    });
+    // Same channel id, other guild: invisible to guild A's digest either way.
+    const scopeB = t.scopes.forGuild(GUILD_B);
+    archiveRepo.enableChannel(scopeB, {
+      channelId: HELP_CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(scopeB, {
+      messageId: '599999999999999999',
+      channelId: HELP_CHANNEL,
+      authorId: ASKER,
+      content: 'guild B digest secret',
+      createdAt: now - 5 * 60_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  it('read_digest by channel ids returns guild A rows only, oldest first', async () => {
+    const now = clock;
+    seedDigest(now);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('first digest message in help');
+      expect(found.text).toContain('thread follow-up under help');
+      expect(found.text).not.toContain('guild B digest secret');
+      const [head] = found.text.split('\n');
+      expect(head).toContain('1 channels');
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('read_digest by category name covers its archive-enabled channels, and a cursor continues', async () => {
+    const now = clock;
+    seedDigest(now);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      // A channel outside the archive reads as dropped, never as an error.
+      const narrowed = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL, NOT_ENABLED],
+            since: 0,
+          })
+        ).body,
+      );
+      expect(narrowed.isError).not.toBe(true);
+      expect(narrowed.text).toContain('first digest message in help');
+      expect(narrowed.text).not.toContain('guild B digest secret');
+
+      const page1 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            category: 'club',
+            since: 0,
+            limit: 1,
+          })
+        ).body,
+      );
+      expect(page1.isError).not.toBe(true);
+      expect(page1.text).toContain('2 channels');
+      const cursor = page1.text.match(/Next cursor: (\S+)/)?.[1];
+      expect(cursor).toBeDefined();
+      const page2 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            category: 'club',
+            since: 0,
+            limit: 1,
+            cursor,
+          })
+        ).body,
+      );
+      expect(page2.isError).not.toBe(true);
+      expect(page2.text).not.toBe(page1.text);
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('list_unanswered returns the open @help question with a link, nothing answered', async () => {
+    const now = clock;
+    seedDigest(now);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'list_unanswered', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('open help question about wiring');
+      expect(found.text).toContain(
+        `https://discord.com/channels/111111111111111111/${HELP_CHANNEL}/544444444444444444`,
+      );
+      expect(found.text).not.toContain('answered help question');
+      expect(found.text).not.toContain('thread-answered help question');
+      expect(found.text).not.toContain('guild B digest secret');
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('read_digest at limit 1000 over 1001 rows emits a cursor that reaches the last row', async () => {
+    // The probe row: the tool asks storage for limit + 1, so storage must
+    // answer 1001 rows here — clamping the probe away would silently drop
+    // the cursor at exactly the public max.
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    archiveRepo.enableChannel(scopeA, {
+      channelId: HELP_CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    const base = 700000000000000000n;
+    for (let i = 1; i <= 1001; i += 1) {
+      archiveRepo.upsertMessage(scopeA, {
+        messageId: String(base + BigInt(i)),
+        channelId: HELP_CHANNEL,
+        authorId: ASKER,
+        content: `bulk message ${String(i)}`,
+        createdAt: clock + i,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const page1 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+            limit: 1000,
+          })
+        ).body,
+      );
+      expect(page1.isError).not.toBe(true);
+      const [head1] = page1.text.split('\n');
+      expect(head1).toContain('showing 1000 messages');
+      const cursor = page1.text.match(/Next cursor: (\S+)/)?.[1];
+      expect(cursor).toBeDefined();
+      const page2 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+            limit: 1000,
+            cursor,
+          })
+        ).body,
+      );
+      expect(page2.isError).not.toBe(true);
+      const [head2] = page2.text.split('\n');
+      expect(head2).toContain('showing 1 message');
+      expect(page2.text).not.toContain('Next cursor');
+      expect(page2.text).toContain('bulk message 1001');
+    } finally {
+      await digestApp.close();
     }
   });
 });

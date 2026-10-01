@@ -713,3 +713,52 @@ describe('the audit log, per ADR 0019', () => {
     expect(await d.fetchAuditLog(GUILD, { actionType: 'message_delete', limit: 0 })).toEqual([]);
   });
 });
+
+describe('thread membership (ADR 0112)', () => {
+  const THREAD = '666666666666666666';
+  const OWNER = '777777777777777777';
+
+  it('answers true for an added member and false for anyone else', async () => {
+    d.addThreadMember(THREAD, USER);
+    await expect(d.isThreadMember(GUILD, THREAD, USER)).resolves.toBe(true);
+    await expect(d.isThreadMember(GUILD, THREAD, OWNER)).resolves.toBe(false);
+  });
+
+  it('answers false for a thread the fake was never told about, like a 404', async () => {
+    await expect(d.isThreadMember(GUILD, THREAD, USER)).resolves.toBe(false);
+  });
+
+  it('keeps membership per thread, not per guild', async () => {
+    d.addThreadMember(THREAD, USER);
+    await expect(d.isThreadMember(GUILD, '888888888888888888', USER)).resolves.toBe(false);
+  });
+});
+
+describe('thread info (ADR 0112 sweeper fallback)', () => {
+  const THREAD = '666666666666666666';
+  const PARENT = '777777777777777777';
+  const OTHER_GUILD = '999999999999999999';
+
+  it('answers what defineThread recorded', async () => {
+    d.defineThread({ threadId: THREAD, name: 'weekly build night', parentId: PARENT });
+    await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toEqual({
+      id: THREAD,
+      name: 'weekly build night',
+      parentId: PARENT,
+      isPrivate: false,
+    });
+    d.defineThread({ threadId: '888888888888888888', parentId: PARENT, isPrivate: true });
+    await expect(d.fetchThreadInfo(GUILD, '888888888888888888')).resolves.toMatchObject({
+      isPrivate: true,
+    });
+  });
+
+  it('answers undefined for an unknown thread, like a 404', async () => {
+    await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+
+  it('answers undefined for another guild\u2019s thread, not a scope error', async () => {
+    d.defineThread({ threadId: THREAD, parentId: PARENT, guildId: OTHER_GUILD });
+    await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+});

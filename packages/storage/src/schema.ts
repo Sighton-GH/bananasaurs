@@ -942,6 +942,17 @@ export const archiveMessages = sqliteTable(
     createdAt: integer('created_at').notNull(),
     editedAt: integer('edited_at'),
     deletedAt: integer('deleted_at'),
+    /**
+     * The message this one replies to (slice 2 task 3). Nullable snowflake,
+     * same CHECK shape as `thread_id` above.
+     */
+    replyToMessageId: snowflake('reply_to_message_id'),
+    /**
+     * Mentioned roles as a JSON array of snowflakes (slice 2 task 3). NULL
+     * when the message mentioned none — never `'[]'` — so "mentions a role"
+     * and "mentions no role" stay distinguishable in SQL.
+     */
+    mentionedRoleIds: text('mentioned_role_ids'),
     retentionClass: text('retention_class').notNull().default('default'),
     /** PR-69; no FK. */
     caseId: text('case_id'),
@@ -956,10 +967,15 @@ export const archiveMessages = sqliteTable(
     index('archive_messages_channel_created').on(t.guildId, t.channelId, t.createdAt),
     index('archive_messages_thread_created').on(t.guildId, t.threadId, t.createdAt),
     index('archive_messages_deleted').on(t.guildId, t.deletedAt),
+    index('archive_messages_author_created').on(t.guildId, t.authorId, t.createdAt),
     check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
     check('archive_messages_channel_id_snowflake', snowflakeCheck(t.channelId)),
     check('archive_messages_thread_id_snowflake', nullableSnowflakeCheck(t.threadId)),
+    check(
+      'archive_messages_reply_to_message_id_snowflake',
+      nullableSnowflakeCheck(t.replyToMessageId),
+    ),
     check(
       'archive_messages_retention_class',
       sql`${t.retentionClass} IN ('default','case','preserve')`,

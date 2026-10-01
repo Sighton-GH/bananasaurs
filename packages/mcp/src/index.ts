@@ -68,6 +68,7 @@ export {
   MCP_READ_GET_MEMBER,
   MCP_READ_GET_MESSAGE,
   MCP_READ_GET_MOD_CASE,
+  MCP_READ_GET_SERVER_CONTEXT,
   MCP_READ_GET_SERVER_OVERVIEW,
   MCP_READ_LIST_AUDIT_EVENTS,
   MCP_READ_LIST_CHANNELS,
@@ -75,9 +76,14 @@ export {
   MCP_READ_LIST_MEMBERS,
   MCP_READ_LIST_MOD_CASES,
   MCP_READ_LIST_ROLES,
+  MCP_READ_LIST_UNANSWERED,
+  MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_READ_DIGEST,
+  MCP_READ_READ_THREAD,
   MCP_READ_SEARCH_MEMBERS,
   MCP_READ_SEARCH_MESSAGES,
+  MCP_READ_SEARCH_RESOURCES,
   performReadRecord,
   type McpContentReadRecord,
   type McpReadAuditPort,
@@ -111,6 +117,8 @@ export {
   type McpArchiveSearchInput,
   type McpArchiveSearchResult,
   type McpChannelHistoryInput,
+  type McpDigestInput,
+  type McpUnansweredInput,
 } from './tools/archive.js';
 export {
   LIST_CHANNELS_TOOL_DESCRIPTION,
@@ -180,6 +188,56 @@ export {
   type McpSendRefusal,
   type SendOutcomeText,
 } from './tools/send.js';
+export { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
+export {
+  GET_SERVER_CONTEXT_TOOL_DESCRIPTION,
+  GET_SERVER_CONTEXT_TOOL_NAME,
+  getServerContextParams,
+  getServerContextText,
+  NO_SERVER_CARD_MARKER,
+  registerContextTools,
+  type McpContextPort,
+  type McpContextSkill,
+} from './tools/context.js';
+export {
+  PRIVATE_THREAD_REFUSAL,
+  READ_THREAD_DEFAULT_LIMIT,
+  READ_THREAD_LIMIT_MAX,
+  READ_THREAD_TOOL_DESCRIPTION,
+  READ_THREAD_TOOL_NAME,
+  readThreadParams,
+  readThreadText,
+  registerThreadTools,
+  type McpThreadInfo,
+  type McpThreadsPort,
+} from './tools/threads.js';
+export {
+  OPEN_RESOURCE_CHUNK_LIMIT,
+  OPEN_RESOURCE_TEXT_MAX,
+  OPEN_RESOURCE_TOOL_DESCRIPTION,
+  OPEN_RESOURCE_TOOL_NAME,
+  openResourceParams,
+  openResourceText,
+  registerResourceTools,
+  SEARCH_RESOURCES_TOOL_DESCRIPTION,
+  SEARCH_RESOURCES_TOOL_NAME,
+  searchResourcesParams,
+  searchResourcesText,
+  type McpResourceChunk,
+  type McpResourcesPort,
+  type McpResourceSummary,
+} from './tools/resources.js';
+export {
+  LIST_UNANSWERED_TOOL_DESCRIPTION,
+  LIST_UNANSWERED_TOOL_NAME,
+  listUnansweredParams,
+  listUnansweredText,
+  READ_DIGEST_TOOL_DESCRIPTION,
+  READ_DIGEST_TOOL_NAME,
+  readDigestParams,
+  readDigestText,
+  registerDigestTools,
+} from './tools/digest.js';
 export { STRUCTURED_NOTE, safeName, structuredText } from './structured.js';
 export {
   isSnowflake,
@@ -188,3 +246,4 @@ export {
   resolveRoleRef,
   type Resolved,
 } from './resolve.js';
+export { idsAreWellFormed } from './ids.js';

@@ -1,6 +1,7 @@
 import {
   DiscordApiError,
   DiscordErrorCode,
+  unicodeEmojiChars,
   type AuditLogEntry,
   type DiscordMember,
   type DiscordMessageRef,
@@ -56,6 +57,8 @@ interface FakeMessage {
   authorName: string;
   /** emojiKey -> ordered user ids, mirroring Discord's insertion order. */
   reactions: Map<EmojiKey, Snowflake[]>;
+  /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). */
+  pinned: boolean;
   cached: boolean;
   deleted: boolean;
   /** Last-known content, for `fetchRecentMessages` (ADR 0037). */
@@ -122,6 +125,13 @@ interface FakeMember {
   isGuildOwner: boolean;
 }
 
+interface FakeThreadInfo {
+  name: string;
+  parentId: Snowflake;
+  isPrivate: boolean;
+  guildId: Snowflake;
+}
+
 export interface RestCall {
   method: PortMethod;
   args: readonly unknown[];
@@ -172,6 +182,10 @@ export class FakeDiscord implements DiscordPort {
    */
   private moderationState = new Map<Snowflake, { until: number } | 'kicked'>();
   private messages = new Map<string, FakeMessage>();
+  /** Thread memberships (`threadId` -> member user ids), for `isThreadMember` (ADR 0112). */
+  private threadMembers = new Map<Snowflake, Set<Snowflake>>();
+  /** Thread facts (`threadId` -> info), for `fetchThreadInfo` (ADR 0112). */
+  private threadInfos = new Map<Snowflake, FakeThreadInfo>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
@@ -233,6 +247,37 @@ export class FakeDiscord implements DiscordPort {
   defineMember(userId: Snowflake, roleIds: Snowflake[] = [], isGuildOwner = false): void {
     this.members.set(userId, { userId, roleIds: new Set(roleIds), isGuildOwner });
   }
+  /**
+   * Adds a user to a thread's membership, for `isThreadMember` (ADR 0112).
+   * Absent unless added: a thread the fake was never told about has no
+   * members, the way an unknown thread answers 404 on the real endpoint.
+   */
+  addThreadMember(threadId: Snowflake, userId: Snowflake): void {
+    const members = this.threadMembers.get(threadId) ?? new Set<Snowflake>();
+    members.add(userId);
+    this.threadMembers.set(threadId, members);
+  }
+  /**
+   * Describes a thread for `fetchThreadInfo` (ADR 0112's sweeper fallback).
+   * `guildId` defaults to this fake's guild; pass another guild's id to
+   * model a cross-guild thread, which answers `undefined` for this guild —
+   * the way the REST adapter folds a foreign `guild_id` — rather than
+   * throwing a scope error.
+   */
+  defineThread(info: {
+    threadId: Snowflake;
+    name?: string;
+    parentId: Snowflake;
+    isPrivate?: boolean;
+    guildId?: Snowflake;
+  }): void {
+    this.threadInfos.set(info.threadId, {
+      name: info.name ?? `thread-${info.threadId}`,
+      parentId: info.parentId,
+      isPrivate: info.isPrivate ?? false,
+      guildId: info.guildId ?? this.guildId,
+    });
+  }
   memberRoles(userId: Snowflake): Snowflake[] {
     return [...(this.members.get(userId)?.roleIds ?? [])].sort();
   }
@@ -253,6 +298,8 @@ export class FakeDiscord implements DiscordPort {
     cached?: boolean;
     content?: string | undefined;
     editedTimestampMs?: number | undefined;
+    /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). Defaults to unpinned. */
+    pinned?: boolean;
     attachments?: ReadonlyArray<{
       attachmentId: Snowflake;
       fileName: string;
@@ -273,6 +320,7 @@ export class FakeDiscord implements DiscordPort {
       deleted: false,
       content: msg.content,
       editedTimestampMs: msg.editedTimestampMs,
+      pinned: msg.pinned ?? false,
       attachments: (msg.attachments ?? []).map((a) => ({
         attachmentId: a.attachmentId,
         fileName: a.fileName,
@@ -979,6 +1027,31 @@ export class FakeDiscord implements DiscordPort {
     return { exists: true };
   }
 
+  /**
+   * Live pin state and reaction counts (slice 2, Task 6): `pinned` is what
+   * `defineMessage` recorded, and each reaction bucket
+   * reports its reactor count with the display form the REST adapter
+   * projects — unicode characters for `u:` keys, `<:unknown:id>` for custom
+   * ones, whose names an `EmojiKey` deliberately does not carry. `undefined`
+   * for a message this fake was never told about or that was deleted —
+   * mirroring the REST adapter's 404/403 fold, not a thrown error.
+   */
+  async fetchMessageMeta(guildId: Snowflake, ref: DiscordMessageRef) {
+    this.record('fetchMessageMeta', [guildId, ref]);
+    this.check('fetchMessageMeta', guildId);
+    const m = this.messages.get(key(ref.channelId, ref.messageId));
+    if (!m || m.deleted) return undefined;
+    return {
+      pinned: m.pinned,
+      reactions: [...m.reactions.entries()]
+        .filter(([, users]) => users.length > 0)
+        .map(([emoji, users]) => ({
+          emoji: emoji.startsWith('c:') ? `<:unknown:${emoji.slice(2)}>` : unicodeEmojiChars(emoji),
+          count: users.length,
+        })),
+    };
+  }
+
   async createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void> {
     this.record('createReaction', [guildId, ref, emoji]);
     this.check('createReaction', guildId);
@@ -1234,6 +1307,39 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
+   * Thread membership (ADR 0112): what `addThreadMember` recorded. The real
+   * endpoint folds an unknown thread into 404 (false); the fake answers the
+   * same — absence is false, never a throw — so a caller under test sees the
+   * same refusal it would against real Discord.
+   */
+  async isThreadMember(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    userId: Snowflake,
+  ): Promise<boolean> {
+    this.record('isThreadMember', [guildId, threadId, userId]);
+    this.check('isThreadMember', guildId);
+    return this.threadMembers.get(threadId)?.has(userId) ?? false;
+  }
+
+  /**
+   * Thread facts (ADR 0112's sweeper fallback): what `defineThread`
+   * recorded. An unknown thread answers `undefined` — mirroring the REST
+   * adapter's 404/403 fold, not a thrown error — as does a thread from
+   * another guild, mirroring its foreign-`guild_id` fold. The guild id is
+   * compared, not enforced as scope (unlike every other method here): the
+   * caller legitimately names its own guild while Discord answers with the
+   * channel's actual one.
+   */
+  async fetchThreadInfo(guildId: Snowflake, threadId: Snowflake) {
+    this.record('fetchThreadInfo', [guildId, threadId]);
+    this.check('fetchThreadInfo', guildId, { allowForeignGuild: true });
+    const info = this.threadInfos.get(threadId);
+    if (info === undefined || info.guildId !== guildId) return undefined;
+    return { id: threadId, name: info.name, parentId: info.parentId, isPrivate: info.isPrivate };
+  }
+
+  /**
    * Guild scheduled events (ADR 0092): nothing is seeded, so the fake
    * answers no events — the same `[]` the REST adapter reports on a 403.
    */
@@ -1244,8 +1350,9 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
-   * Channel context for the assistant (ADR 0089): messages before `before`,
-   * oldest first, excluding deleted ones. Unlike `fetchRecentMessages` this
+   * Channel context for the assistant (ADR 0089): messages before `before`
+   * — or the newest messages when `before` is absent — oldest first,
+   * excluding deleted ones. Unlike `fetchRecentMessages` this
    * carries display names, the bot flag and the reply target instead of edit
    * metadata. A 403/404 has no model here — the REST adapter folds those to
    * `undefined`; callers that need the failure path inject it with
@@ -1255,14 +1362,14 @@ export class FakeDiscord implements DiscordPort {
   async fetchChannelMessages(
     guildId: Snowflake,
     channelId: Snowflake,
-    opts: { before: Snowflake; limit: number },
+    opts: { before?: Snowflake | undefined; limit: number },
   ): Promise<readonly RecentMessage[] | undefined> {
     this.record('fetchChannelMessages', [guildId, channelId, opts]);
     this.check('fetchChannelMessages', guildId);
     const limit = Math.min(Math.max(opts.limit, 1), 50);
     return [...this.messages.values()]
       .filter((m) => m.channelId === channelId && !m.deleted)
-      .filter((m) => BigInt(m.messageId) < BigInt(opts.before))
+      .filter((m) => opts.before === undefined || BigInt(m.messageId) < BigInt(opts.before))
       .sort((a, b) => (BigInt(a.messageId) > BigInt(b.messageId) ? 1 : -1))
       .slice(-limit)
       .map((m) => ({

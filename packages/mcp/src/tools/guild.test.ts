@@ -30,6 +30,13 @@ import {
 import type { McpPrincipal } from '../scope.js';
 import type { McpJobsPort } from './jobs.js';
 import type { McpMembersPort } from './members.js';
+import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './context.js';
+import {
+  OPEN_RESOURCE_TOOL_NAME,
+  SEARCH_RESOURCES_TOOL_NAME,
+  type McpResourcesPort,
+} from './resources.js';
+import type { McpThreadsPort } from './threads.js';
 
 /** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -42,6 +49,29 @@ const stubMembers = (): McpMembersPort => ({
   listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
   lastMessageAt: () => new Map(),
   now: () => 1_700_000_000_000,
+});
+
+/** Minimal context port: this file pins the guild tools, never the context tool. */
+const stubContext = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
+/** Minimal resources port: this file pins the guild tools, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins the guild tools, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
 });
 
 /**
@@ -475,10 +505,14 @@ describe('guild tools on the MCP server', () => {
       principal,
       health: stubHealth(),
       archive: {
+        now: () => 1_700_000_000_000,
         listArchiveChannelIds: () => [],
         searchMessages: () => ({ total: 0, hits: [] }),
         findMessage: () => undefined,
         listChannelHistory: () => [],
+        listMessagesSince: () => [],
+        listUnansweredRoleMentions: () => [],
+        messageMeta: () => Promise.resolve(undefined),
         botUserId: () => undefined,
       },
       guild: port,
@@ -495,6 +529,9 @@ describe('guild tools on the MCP server', () => {
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),
+      context: stubContext(),
+      resources: stubResources(),
+      threads: stubThreads(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -507,7 +544,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all sixteen tools and still no send_message', async () => {
+  it('lists all twenty-two tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -516,6 +553,9 @@ describe('guild tools on the MCP server', () => {
         'search_messages',
         'read_channel_history',
         'get_message',
+        'read_thread',
+        'read_digest',
+        'list_unanswered',
         LIST_CHANNELS_TOOL_NAME,
         LIST_THREADS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
@@ -528,6 +568,9 @@ describe('guild tools on the MCP server', () => {
         'get_job',
         'get_member',
         'search_members',
+        GET_SERVER_CONTEXT_TOOL_NAME,
+        SEARCH_RESOURCES_TOOL_NAME,
+        OPEN_RESOURCE_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {
@@ -573,8 +616,20 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
   const threadPort = (): McpGuildPort => ({
     ...fakePort(),
     listThreads: async () => [
-      { id: '800000000000000001', name: 'weekly build night', parentId: CHANNEL, archived: false },
-      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: false,
+      },
+      {
+        id: '800000000000000002',
+        name: 'archived plans',
+        parentId: CHANNEL,
+        archived: true,
+        isPrivate: false,
+      },
     ],
   });
 
@@ -590,8 +645,8 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     // `list_channels` puts the name and the parent where it puts the id.
     const [head] = result.text.split('\n');
     expect(head).toBe(
-      `Public threads under channel ${CHANNEL}: 2 threads (1 archived). ` +
-        'Private threads are never listed.',
+      `Threads under channel ${CHANNEL}: 2 threads (1 archived, 0 private). ` +
+        'Private threads listed here are shared with the MCP and read live.',
     );
     const data = jsonOf(result.text);
     expect(data['threads']).toEqual([
@@ -600,8 +655,15 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
         name: 'weekly build night',
         parentId: CHANNEL,
         archived: false,
+        private: false,
       },
-      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+      {
+        id: '800000000000000002',
+        name: 'archived plans',
+        parentId: CHANNEL,
+        archived: true,
+        private: false,
+      },
     ]);
   });
 
@@ -616,6 +678,65 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     expect(result.text).not.toContain(EVIDENCE_CLOSE);
     const data = jsonOf(result.text);
     expect(data['threads']).toHaveLength(2);
+  });
+});
+
+describe('list_threads marks the shared private threads the port returns', () => {
+  const CHANNEL = '777777777777777777';
+  const SHARED_PRIVATE = '800000000000000003';
+
+  const mixedPort = (): McpGuildPort => ({
+    ...fakePort(),
+    listThreads: async () => [
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: false,
+      },
+      {
+        id: SHARED_PRIVATE,
+        name: 'secret plans',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: true,
+      },
+    ],
+  });
+
+  it('lists every thread the port returns, private ones flagged', async () => {
+    // The tool renders but never filters: the port lists no unshared private
+    // thread (the daemon checks bot-AND-owner membership live), so whatever
+    // arrives flagged private is shared by construction.
+    const result = await listThreadsText(principalWith(GUILD_A), mixedPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [head] = result.text.split('\n');
+    expect(head).toBe(
+      `Threads under channel ${CHANNEL}: 2 threads (0 archived, 1 private). ` +
+        'Private threads listed here are shared with the MCP and read live.',
+    );
+    const data = jsonOf(result.text);
+    expect(data['threads']).toEqual([
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        private: false,
+      },
+      {
+        id: SHARED_PRIVATE,
+        name: 'secret plans',
+        parentId: CHANNEL,
+        archived: false,
+        private: true,
+      },
+    ]);
   });
 });
 

@@ -1,11 +1,12 @@
 import { z } from 'zod';
-import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
+import type { GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
+import { idsAreWellFormed } from '../ids.js';
 
 /**
  * `send_message` — the one write tool (slice M5, Task 3), and the first tool
@@ -147,16 +148,6 @@ const refuseInvalidArgs = (): SendOutcomeText => ({
   ok: false,
   message: INVALID_ARGUMENTS_MESSAGE,
 });
-
-/** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
-const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
-  try {
-    for (const id of ids) parseSnowflakeId(id);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 /**
  * Every refusal renders distinctly and actionably: the operator reading it

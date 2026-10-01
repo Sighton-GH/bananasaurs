@@ -74,6 +74,9 @@ const fakePorts = (over: FakeOptions = {}) => {
         ...current,
         content: input.content,
         editedAt: input.editedAt,
+        // Mirrors the repository: an absent key leaves the stored roles
+        // untouched, a present one replaces them.
+        ...('mentionedRoleIds' in input ? { mentionedRoleIds: input.mentionedRoleIds } : {}),
       });
       return 'recorded';
     },
@@ -256,6 +259,9 @@ describe('archive subscriber ingestion', () => {
           size: 1234,
         },
       ],
+      // Slice 2 task 3: not a reply, no roles mentioned.
+      replyToMessageId: undefined,
+      mentionedRoleIds: [],
     });
   });
 
@@ -298,7 +304,45 @@ describe('archive subscriber ingestion', () => {
     );
 
     const edit = f.calls.find((c) => c.method === 'recordEdit');
-    expect(edit?.input).toEqual({ messageId: MESSAGE, content: 'after', editedAt: NOW_MS });
+    expect(edit?.input).toEqual({
+      messageId: MESSAGE,
+      content: 'after',
+      editedAt: NOW_MS,
+      mentionedRoleIds: [],
+    });
+  });
+
+  it('a partial update without content leaves the stored mentioned roles untouched', async () => {
+    // A partial messageUpdate carries mentionedRoleIds: [] because nothing is
+    // known (MessageEvent), not because no role was mentioned — passing it
+    // through would wipe the roles the create stored.
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+    await subscriber.handle(messageCreate({ mentionedRoleIds: ['888888888888888888'] }));
+
+    await subscriber.handle(
+      messageCreate({ kind: 'messageUpdate', content: undefined, mentionedRoleIds: [] }),
+    );
+
+    const edit = f.calls.find((c) => c.method === 'recordEdit');
+    expect(edit?.input).not.toHaveProperty('mentionedRoleIds');
+    expect(f.messages.get(MESSAGE)?.mentionedRoleIds).toEqual(['888888888888888888']);
+  });
+
+  it('a content-bearing update with no roles replaces the stored mentioned roles', async () => {
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+    await subscriber.handle(messageCreate({ mentionedRoleIds: ['888888888888888888'] }));
+
+    await subscriber.handle(
+      messageCreate({ kind: 'messageUpdate', content: 'after', mentionedRoleIds: [] }),
+    );
+
+    const edit = f.calls.find((c) => c.method === 'recordEdit');
+    expect(edit?.input).toHaveProperty('mentionedRoleIds', []);
+    // The repository stores an empty list as NULL (proved in storage); here
+    // the fake mirrors the replacement itself.
+    expect(f.messages.get(MESSAGE)?.mentionedRoleIds).toEqual([]);
   });
 
   it('inserts on an edit to an unknown message — it predates enablement', async () => {
@@ -393,5 +437,42 @@ describe('archive subscriber ingestion', () => {
       messageIds: [MESSAGE, second],
       deletedAt: NOW_MS + 3_000,
     });
+  });
+});
+
+describe('archive subscriber reply links and mentioned roles (slice 2 task 3)', () => {
+  it('passes the reply link and mentioned roles to upsertMessage on create', async () => {
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+
+    await subscriber.handle(
+      messageCreate({
+        referencedMessageId: '777777777777777777',
+        mentionedRoleIds: ['888888888888888888'],
+      }),
+    );
+
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]?.input).toMatchObject({
+      replyToMessageId: '777777777777777777',
+      mentionedRoleIds: ['888888888888888888'],
+    });
+  });
+
+  it('passes the updated mentioned roles to recordEdit on update', async () => {
+    const f = fakePorts();
+    const subscriber = createArchiveSubscriber(f.ports);
+    await subscriber.handle(messageCreate({ content: 'before' }));
+
+    await subscriber.handle(
+      messageCreate({
+        kind: 'messageUpdate',
+        content: 'after',
+        mentionedRoleIds: ['999999999999999999'],
+      }),
+    );
+
+    const edit = f.calls.find((c) => c.method === 'recordEdit');
+    expect(edit?.input).toMatchObject({ mentionedRoleIds: ['999999999999999999'] });
   });
 });

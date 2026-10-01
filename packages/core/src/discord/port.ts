@@ -212,6 +212,28 @@ export interface DiscordPort {
 
   // --- messages and reactions -------------------------------------------
   fetchMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<{ exists: true }>;
+  /**
+   * One message's live pin state and reaction counts (slice 2, Task 6): `GET
+   * /channels/{channel}/messages/{message}` — the same route `fetchMessage`
+   * already reads — projected to `pinned` and `reactions[].{emoji, count}`
+   * (`emoji` is `<:name:id>` for custom emoji, the unicode characters
+   * otherwise). `undefined` on 404 (gone) or 403 (no access) — both routine
+   * here, reported the same way rather than thrown, so the caller answers
+   * without the metadata instead of failing. Any other error propagates.
+   *
+   * The return shape is inline, like `fetchMessage`'s `{ exists: true }`:
+   * one method's two fields need no named type.
+   */
+  fetchMessageMeta(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<
+    | {
+        readonly pinned: boolean;
+        readonly reactions: readonly { readonly emoji: string; readonly count: number }[];
+      }
+    | undefined
+  >;
   createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void>;
   /**
    * Paginated at 100. An adopted panel with many reactors needs several calls,
@@ -245,7 +267,8 @@ export interface DiscordPort {
   ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
   /**
    * Channel context for the assistant (ADR 0089): up to `limit` messages sent
-   * before `before` in one channel, oldest first. `undefined` on 404 (gone)
+   * before `before` in one channel, oldest first — or, when `before` is
+   * absent, the channel's newest `limit` messages. `undefined` on 404 (gone)
    * or 403 (no access) — both routine, reported the same way rather than
    * thrown, so the caller answers without the block instead of failing.
    *
@@ -257,7 +280,7 @@ export interface DiscordPort {
   fetchChannelMessages(
     guildId: Snowflake,
     channelId: Snowflake,
-    opts: { before: Snowflake; limit: number },
+    opts: { before?: Snowflake | undefined; limit: number },
   ): Promise<readonly RecentMessage[] | undefined>;
   /** The "is typing…" indicator, shown for about ten seconds or until the next message. */
   sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void>;
@@ -315,6 +338,37 @@ export interface DiscordPort {
    * an empty list, which read as "no threads" rather than "not wired".
    */
   listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
+  /**
+   * Whether a user is a member of a thread (ADR 0112): `GET
+   * /channels/{thread}/thread-members/{user}` — 200 answers true, 404
+   * answers false. Checked live on every private-thread read, never cached;
+   * any other error propagates.
+   */
+  isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean>;
+  /**
+   * One thread's facts over REST (ADR 0112's sweeper fallback): `GET
+   * /channels/{thread}` — `undefined` on 404 (gone) or 403 (no access),
+   * when the channel is not in this guild, when it is not a thread, or when
+   * it has no parent. Any other error propagates. The MCP daemon calls this
+   * only on a gateway-cache miss, so a swept archived thread still resolves
+   * and its archive rows still read.
+   *
+   * The return shape is inline, like `fetchMessage`'s `{ exists: true }`:
+   * the package index names no thread-info type, and none is needed for one
+   * method's four fields.
+   */
+  fetchThreadInfo(
+    guildId: Snowflake,
+    threadId: Snowflake,
+  ): Promise<
+    | {
+        readonly id: Snowflake;
+        readonly name: string;
+        readonly parentId: Snowflake;
+        readonly isPrivate: boolean;
+      }
+    | undefined
+  >;
   /**
    * Guild scheduled events for the assistant's `upcoming_events` tool
    * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway

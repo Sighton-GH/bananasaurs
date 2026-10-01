@@ -2,10 +2,13 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
 import {
+  CLUB_ASSISTANT_SKILLS,
+  effectiveSkillScope,
   isInScope,
   parseSnowflakeId,
   safeLogFields,
   sendMessageEffect,
+  skillScopeAllows,
   type DiscordPort,
   type GuildId,
   type Logger,
@@ -20,8 +23,10 @@ import {
   MEMBER_LISTING_CAP,
   type McpArchiveMessage,
   type McpArchivePort,
+  type McpContextPort,
   type McpGuildHealth,
   type McpGuildPort,
+  type McpGuildThread,
   type McpHealthPort,
   type McpJob,
   type McpJobsPort,
@@ -30,11 +35,15 @@ import {
   type McpPrincipal,
   type McpReadAuditPort,
   type McpRecordsPort,
+  type McpResourcesPort,
+  type McpResourceSummary,
   type McpSendPort,
+  type McpThreadsPort,
 } from '@bananasaurs/mcp';
 import {
   archiveRepo,
   archiveSearchRepo,
+  assistantRepo,
   automodAdminRepo,
   effectRepo,
   guildRepo,
@@ -42,6 +51,7 @@ import {
   mcpSendRepo,
   modCaseRepo,
   panelRepo,
+  resourceCacheRepo,
   roleRepo,
 } from '@bananasaurs/storage';
 
@@ -179,9 +189,9 @@ const loggedCallAsync = async <T>(
 };
 
 /**
- * Projects the archive row to the six fields `packages/mcp` reads, field by
- * field like every other port here. `retentionClass`, `caseId`, `deletedAt`
- * and `editedAt` stop at this boundary: they were crossing it and being read
+ * Projects the archive row to the seven fields `packages/mcp` reads, field by
+ * field like every other port here. `retentionClass`, `caseId`, `deletedAt`,
+ * `editedAt` and `mentionedRoleIds` stop at this boundary: they were crossing it and being read
  * by nothing, and the point of naming each field is that a column added to
  * `archive_messages` later cannot arrive in the MCP package for free.
  */
@@ -193,6 +203,7 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
   content: row.content,
   createdAt: row.createdAt,
   contentPurgedAt: row.contentPurgedAt,
+  replyToMessageId: row.replyToMessageId,
 });
 
 /**
@@ -205,7 +216,8 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
  * A fault leaves one allowlisted-fields error line via `loggedCall` above,
  * never message content (rule 4).
  */
-const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
+const archivePortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpArchivePort => ({
+  now: deps.now,
   listArchiveChannelIds: (guildId) =>
     loggedCall(deps.logger, 'listArchiveChannelIds', () =>
       archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
@@ -258,8 +270,76 @@ const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
         })
         .map(toMcpArchiveMessage),
     ),
+  listMessagesSince: (guildId, input) =>
+    loggedCall(deps.logger, 'listMessagesSince', () =>
+      archiveRepo
+        .listMessagesSince(deps.scopes.forGuild(guildId), {
+          channelIds: [...input.channelIds],
+          since: input.since,
+          ...(input.after !== undefined ? { after: input.after } : {}),
+          limit: input.limit,
+        })
+        .map(toMcpArchiveMessage),
+    ),
+  listUnansweredRoleMentions: (guildId, input) =>
+    loggedCall(deps.logger, 'listUnansweredRoleMentions', () =>
+      archiveRepo
+        .listUnansweredRoleMentions(deps.scopes.forGuild(guildId), { ...input })
+        .map(toMcpArchiveMessage),
+    ),
+  /**
+   * Slice 2, Task 6: one message's live pin state and reaction counts over
+   * REST. `undefined` when Discord no longer has it (the adapter's 404/403
+   * fold); a throw stays a throw here — the tool layer fails soft, this port
+   * only logs. A fault leaves one allowlisted-fields error line via
+   * `loggedCallAsync` above, never message content (rule 4).
+   */
+  messageMeta: (guildId, channelId, messageId) =>
+    loggedCallAsync(deps.logger, 'messageMeta', () =>
+      discord.fetchMessageMeta(guildId, { channelId, messageId }),
+    ),
   botUserId: () => client.user?.id ?? undefined,
 });
+
+/**
+ * The owner's Discord user id behind ADR 0112's private-thread reads:
+ * `BANANASAURS_OWNER_USER_ID` from the instance's redacted config — the only
+ * config surface `HttpDeps` carries. Absent or empty reads as no owner, and
+ * every private-thread check below answers false (fail closed).
+ */
+const ownerUserId = (deps: HttpDeps): string | undefined => {
+  const raw = deps.instance.redactedConfig()['BANANASAURS_OWNER_USER_ID'];
+  return typeof raw === 'string' && raw !== '' ? raw : undefined;
+};
+
+/**
+ * ADR 0112's readability check, shared by the guild port's private-thread
+ * listing and the threads port below: true only when a live check shows
+ * **both the bot and the owner are members of the thread**. Membership is
+ * never cached — two live `isThreadMember` calls per check — and any error,
+ * or either id unknown, answers false. A non-member's 404 is routine, not a
+ * fault, so failures leave no error line: refusing loudly here would log
+ * every unshared thread as a failure.
+ */
+const privateThreadReadableFor = (
+  deps: HttpDeps,
+  client: Client,
+  discord: DiscordPort,
+): ((guildId: GuildId, threadId: string) => Promise<boolean>) => {
+  return async (guildId, threadId) => {
+    const botUserId = client.user?.id;
+    const ownerId = ownerUserId(deps);
+    if (botUserId === undefined || ownerId === undefined) return false;
+    try {
+      return (
+        (await discord.isThreadMember(guildId, threadId, botUserId)) &&
+        (await discord.isThreadMember(guildId, threadId, ownerId))
+      );
+    } catch {
+      return false;
+    }
+  };
+};
 
 /**
  * The `McpGuildPort` behind the three Discord-cache tools, field by field
@@ -293,6 +373,9 @@ export const guildPortFor = (
     if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
     return guild;
   };
+  // ADR 0112's readability check, shared with the threads port: the guild
+  // port lists a private thread only when it is shared with the MCP.
+  const readable = privateThreadReadableFor(deps, client, discord);
   return {
     listChannels: (guildId) =>
       loggedCall(deps.logger, 'listChannels', () => {
@@ -342,6 +425,40 @@ export const guildPortFor = (
       }),
     listThreads: (guildId, channelId, includeArchived) => {
       const guild = requireGuild(guildId);
+      // Private threads under the channel that are shared with the MCP —
+      // bot AND owner both members, checked live per thread. Unshared ones
+      // never reach the tool, which renders but never filters. Archived ones
+      // list only when the caller asked for archived threads, the way
+      // archived public threads do.
+      //
+      // Limits, stated rather than implied. This walks the gateway cache
+      // only: an archived private thread the sweeper has evicted is not
+      // listed even with `includeArchived`, although `read_thread` still
+      // reaches it by id through the REST fallback. Each cached private
+      // thread costs two sequential REST calls (bot, then owner), and any
+      // failure — rate limit, unknown member, owner unconfigured — unlists
+      // the thread rather than listing it unreadable (fail closed).
+      const sharedPrivate = async (
+        includeArchived: boolean,
+      ): Promise<readonly McpGuildThread[]> => {
+        const found: McpGuildThread[] = [];
+        for (const channel of guild.channels.cache.values()) {
+          if (!channel.isThread() || channel.parentId !== channelId) continue;
+          if (channel.type !== ChannelType.PrivateThread) continue;
+          const archived = channel.archived ?? false;
+          if (archived && !includeArchived) continue;
+          if (await readable(guildId, channel.id)) {
+            found.push({
+              id: channel.id,
+              name: channel.name,
+              parentId: channelId,
+              archived,
+              isPrivate: true,
+            });
+          }
+        }
+        return found;
+      };
       if (includeArchived) {
         // Review S4: the cache cannot answer this — the default sweeper
         // evicts archived threads (node_modules discord.js Options.js), so
@@ -349,14 +466,16 @@ export const guildPortFor = (
         // REST listing pages active + archived and never returns private
         // threads (review B4 lives in the port's filter too).
         return loggedCall(deps.logger, 'listThreads', () =>
-          discord.listPublicThreads(guildId, channelId).then((threads) =>
-            threads.map((thread) => ({
+          discord.listPublicThreads(guildId, channelId).then(async (threads) => [
+            ...threads.map((thread) => ({
               id: thread.id,
               name: thread.name,
               parentId: channelId,
               archived: thread.archived,
+              isPrivate: false as const,
             })),
-          ),
+            ...(await sharedPrivate(true)),
+          ]),
         );
       }
       // Review B4: exclude private threads explicitly — the clause this
@@ -376,10 +495,14 @@ export const guildPortFor = (
             name: channel.name,
             parentId: channelId,
             archived: channel.archived ?? false,
+            isPrivate: false as const,
           },
         ];
       });
-      return Promise.resolve(active.filter((thread) => !thread.archived));
+      return (async (): Promise<readonly McpGuildThread[]> => [
+        ...active.filter((thread) => !thread.archived),
+        ...(await sharedPrivate(false)),
+      ])();
     },
     listRoles: (guildId) =>
       loggedCall(deps.logger, 'listRoles', () => {
@@ -668,6 +791,228 @@ const membersPortFor = (deps: HttpDeps, client: Client): McpMembersPort => ({
     ),
   now: deps.now,
 });
+
+/**
+ * The club time zone behind `get_server_context`: `BANANASAURS_TIME_ZONE`
+ * from the instance's redacted config — the only config surface `HttpDeps`
+ * carries (there is no `deps.config` on this wiring). A missing or empty
+ * value throws, which the tool layer answers as its shared refusal.
+ */
+const contextTimeZone = (deps: HttpDeps): string => {
+  const raw = deps.instance.redactedConfig()['BANANASAURS_TIME_ZONE'];
+  if (typeof raw !== 'string' || raw === '') throw new Error('BANANASAURS_TIME_ZONE unavailable');
+  return raw;
+};
+
+/**
+ * The `McpContextPort` behind `get_server_context` (slice 2, Task 1), field
+ * by field like `healthPortFor` above. The card is the same owner-written
+ * text the assistant's `server_info` sees (`assistantRepo.getServerCard`,
+ * per-guild like every other port here). The skills are the guild's allowed
+ * skills computed the way the assistant service computes them — the stored
+ * grants through `effectiveSkillScope`/`skillScopeAllows` for the owner, who
+ * is this tool's caller — projected to `{ id, name, description }`.
+ *
+ * `timeZone` is a getter, not a value: the daemon builds one port per
+ * request before it knows which tool the request will call, so an eager read
+ * would fail every `tools/list` when the key is absent; read at call time it
+ * fails inside the tool layer's try/catch as the shared refusal instead. A
+ * fault leaves one allowlisted-fields error line via the logged calls above,
+ * never the card text (rule 4).
+ */
+const contextPortFor = (deps: HttpDeps): McpContextPort => ({
+  serverCard: (guildId) =>
+    loggedCall(deps.logger, 'serverCard', () =>
+      assistantRepo.getServerCard(deps.scopes.forGuild(guildId)),
+    ),
+  get timeZone(): string {
+    return contextTimeZone(deps);
+  },
+  now: deps.now,
+  skills: (guildId) =>
+    loggedCall(deps.logger, 'contextSkills', () => {
+      const scope = deps.scopes.forGuild(guildId);
+      const grants = new Map(
+        assistantRepo.listSkillGrants(scope).map((grant) => [grant.skillId, grant] as const),
+      );
+      return CLUB_ASSISTANT_SKILLS.filter((skill) =>
+        skillScopeAllows(effectiveSkillScope(skill, grants.get(skill.id)), {
+          owner: true,
+          roleIds: [],
+        }),
+      ).map((skill) => ({ id: skill.id, name: skill.name, description: skill.description }));
+    }),
+});
+
+/**
+ * The `McpResourcesPort` behind `search_resources` and `open_resource`
+ * (slice 2, Task 2), field by field like `healthPortFor` above. Each method
+ * turns the already-resolved `GuildId` into a `GuildScope` per call and reads
+ * through the assistant resource catalogue and the resource cache — nothing
+ * here writes, and M4 is read-only.
+ *
+ * Enabled resources only: the catalogue rows are filtered to `enabled`
+ * exactly the way the assistant service filters them (`service.ts` keeps
+ * `listResources(scope).filter((r) => r.enabled)`), and the chunk search is
+ * scoped to those ids, so a disabled resource's chunks are invisible even to
+ * an exact query. Guild isolation comes from the scope: guild B's cache rows
+ * are invisible to a call for guild A.
+ *
+ * Cache only, by construction: the port's three members are reads
+ * (`listResources`, `searchChunks`, `listDocuments`/`outline`/`getChunk`).
+ * There is no refresh member — `enqueueAssistantRefresh` and the fetcher are
+ * never referenced here, let alone called — so an unfetched resource answers
+ * with the dashboard pointer and no fetch is ever enqueued. A fault leaves
+ * one allowlisted-fields error line via `loggedCall` above, never a title, a
+ * snippet or chunk text (rule 4).
+ */
+const resourcesPortFor = (deps: HttpDeps): McpResourcesPort => {
+  // One `search_resources` call reads `listResources` then `searchChunks`:
+  // the enabled catalogue is memoized per port instance so the search does
+  // not read the table twice. The instance lives for one request (the route
+  // builds a stateless server per request) and every port here is read-only,
+  // so the snapshot cannot go stale mid-use. The port shape is unchanged —
+  // the reuse stays inside this implementation.
+  const enabledCache = new Map<GuildId, readonly McpResourceSummary[]>();
+  const enabledResources = (guildId: GuildId): readonly McpResourceSummary[] => {
+    const cached = enabledCache.get(guildId);
+    if (cached !== undefined) return cached;
+    const rows = assistantRepo
+      .listResources(deps.scopes.forGuild(guildId))
+      .filter((resource) => resource.enabled)
+      .map((resource): McpResourceSummary => ({
+        id: resource.id,
+        title: resource.title,
+        kind: resource.kind,
+        url: resource.url,
+      }));
+    enabledCache.set(guildId, rows);
+    return rows;
+  };
+  return {
+    listResources: (guildId) =>
+      loggedCall(deps.logger, 'listResources', () => enabledResources(guildId)),
+    searchChunks: (guildId, input) =>
+      loggedCall(deps.logger, 'resourceSearchChunks', () =>
+        resourceCacheRepo
+          .searchChunks(deps.scopes.forGuild(guildId), {
+            query: input.query,
+            resourceIds: enabledResources(guildId).map((resource) => resource.id),
+            limit: input.limit,
+          })
+          .map((hit) => ({
+            chunkId: hit.chunkId,
+            docId: hit.docId,
+            resourceId: hit.resourceId,
+            headingPath: hit.headingPath,
+            text: hit.snippet,
+          })),
+      ),
+    resourceChunks: (guildId, resourceId, limit) =>
+      loggedCall(deps.logger, 'resourceChunks', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const docs = resourceCacheRepo.listDocuments(scope, resourceId);
+        const first = docs[0];
+        if (first === undefined) return [];
+        // The first document's chunks in outline order — the same
+        // outline-then-getChunk walk the assistant's `cacheResourceChunks`
+        // makes, projected field by field.
+        return resourceCacheRepo
+          .outline(scope, first.docId)
+          .slice(0, limit)
+          .flatMap((row) => {
+            const found = resourceCacheRepo.getChunk(scope, row.chunkId);
+            return found === undefined
+              ? []
+              : [
+                  {
+                    chunkId: found.chunkId,
+                    docId: found.docId,
+                    resourceId: found.resourceId,
+                    headingPath: found.headingPath,
+                    text: found.text,
+                  },
+                ];
+          });
+      }),
+  };
+};
+
+/**
+ * The `McpThreadsPort` behind `read_thread` (slice 2, Task 4; ADR 0112),
+ * field by field like `healthPortFor` above. A public thread reads the
+ * archive (`archiveThread` is the same `listChannelHistory` call with the
+ * thread id, which the repository answers from the thread's rows); a
+ * private thread reads live over REST (`liveThreadMessages` projects
+ * `fetchChannelMessages`) and nothing here writes — the port has no write
+ * member, so a private read cannot leave an `archive_messages` row by
+ * construction, not by discipline. A fault leaves one allowlisted-fields
+ * error line via the logged calls below, never message content (rule 4).
+ */
+const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpThreadsPort => {
+  const readable = privateThreadReadableFor(deps, client, discord);
+  return {
+    archiveThread: (guildId, threadId, beforeMessageId, limit) =>
+      loggedCall(deps.logger, 'archiveThread', () =>
+        archiveRepo
+          .listChannelHistory(deps.scopes.forGuild(guildId), {
+            channelId: threadId,
+            ...(beforeMessageId !== undefined ? { beforeMessageId } : {}),
+            limit,
+          })
+          .map(toMcpArchiveMessage),
+      ),
+    threadInfo: (guildId, threadId) =>
+      loggedCallAsync(deps.logger, 'threadInfo', async () => {
+        const cached = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+        if (cached !== undefined) {
+          // In the cache under this guild: it is what it is — a non-thread
+          // id answers not-a-thread without a REST call.
+          if (!cached.isThread() || cached.parentId === null) return undefined;
+          return {
+            id: cached.id,
+            name: cached.name,
+            parentId: cached.parentId,
+            isPrivate: cached.type === ChannelType.PrivateThread,
+          };
+        }
+        // Cache miss: the default sweeper evicts archived threads after 4
+        // hours (`Options.DefaultSweeperSettings`), so an older archived
+        // thread is absent here even though the archive holds its messages.
+        // One REST read resolves it; the membership check below still runs,
+        // unchanged, after either path.
+        const fetched = await discord.fetchThreadInfo(guildId, threadId);
+        if (fetched === undefined) return undefined;
+        return {
+          id: fetched.id,
+          name: fetched.name,
+          parentId: fetched.parentId,
+          isPrivate: fetched.isPrivate,
+        };
+      }),
+    privateThreadReadable: (guildId, threadId) => readable(guildId, threadId),
+    liveThreadMessages: (guildId, threadId, beforeMessageId, limit) =>
+      loggedCallAsync(deps.logger, 'liveThreadMessages', async () => {
+        const messages = await discord.fetchChannelMessages(guildId, threadId, {
+          ...(beforeMessageId !== undefined ? { before: beforeMessageId } : {}),
+          limit,
+        });
+        // `fetchChannelMessages` reports oldest first; `read_thread` promises
+        // newest first on both paths, so the live page is reversed here —
+        // paging with `beforeMessageId` takes the last shown id backwards.
+        return [...(messages ?? [])].reverse().map((message) => ({
+          messageId: message.messageId,
+          channelId: threadId,
+          threadId,
+          authorId: message.authorId,
+          content: message.content === '' ? null : message.content,
+          createdAt: message.at,
+          contentPurgedAt: undefined,
+          replyToMessageId: undefined,
+        }));
+      }),
+  };
+};
 
 /**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
@@ -1010,13 +1355,16 @@ export const registerMcpRoutes = (
     const server = createMcpServer({
       principal,
       health: healthPortFor(principal, deps),
-      archive: archivePortFor(deps, client),
+      archive: archivePortFor(deps, client, discord),
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),
+      context: contextPortFor(deps),
+      resources: resourcesPortFor(deps),
+      threads: threadsPortFor(deps, client, discord),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

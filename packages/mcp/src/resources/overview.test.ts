@@ -23,6 +23,9 @@ import {
 import type { McpGuildChannel, McpGuildPort } from '../tools/guild.js';
 import type { McpJobsPort } from '../tools/jobs.js';
 import type { McpMembersPort } from '../tools/members.js';
+import type { McpContextPort } from '../tools/context.js';
+import type { McpResourcesPort } from '../tools/resources.js';
+import type { McpThreadsPort } from '../tools/threads.js';
 import {
   buildOverviewCard,
   OVERVIEW_RESOURCE_URI_TEMPLATE,
@@ -58,10 +61,14 @@ const stubHealth = (): McpHealthPort => ({
 });
 
 const stubArchive = (): McpArchivePort => ({
+  now: () => 1_700_000_000_000,
   listArchiveChannelIds: () => [],
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  listMessagesSince: () => [],
+  listUnansweredRoleMentions: () => [],
+  messageMeta: () => Promise.resolve(undefined),
   botUserId: () => undefined,
 });
 
@@ -116,6 +123,29 @@ const stubMembers = (): McpMembersPort => ({
   now: () => 1_700_000_000_000,
 });
 
+/** Minimal context port: this file pins the overview resource, never the context tool. */
+const stubContext = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
+/** Minimal resources port: this file pins the overview resource, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins the overview resource, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -132,6 +162,9 @@ const connectPair = async (
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
+    context: stubContext(),
+    resources: stubResources(),
+    threads: stubThreads(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

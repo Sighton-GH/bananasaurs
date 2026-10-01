@@ -73,6 +73,11 @@ import {
 } from './tools/send.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
+import { registerContextTools, type McpContextPort } from './tools/context.js';
+import { registerResourceTools, type McpResourcesPort } from './tools/resources.js';
+import { registerThreadTools, type McpThreadsPort } from './tools/threads.js';
+import { registerDigestTools } from './tools/digest.js';
+import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
@@ -149,6 +154,31 @@ export interface McpServerDeps {
    * dressed as a working toolset.
    */
   readonly members: McpMembersPort;
+  /**
+   * The daemon's per-request context port (slice 2, Task 1): the
+   * owner-written server card, the club time zone, the clock and the
+   * guild's enabled skills behind `get_server_context`. Required like the
+   * ports above: a missing port must fail at construction, not serve a
+   * context tool that always refuses.
+   */
+  readonly context: McpContextPort;
+  /**
+   * The daemon's per-request threads port (slice 2, Task 4): the archive
+   * read of a public thread and the live read of a private thread the owner
+   * shares, behind `read_thread`. Required like the ports above: a missing
+   * port must fail at construction, not serve a thread tool that always
+   * refuses. Private-thread content is never written to storage — the port
+   * has no write member.
+   */
+  readonly threads: McpThreadsPort;
+  /**
+   * The daemon's per-request resources port (slice 2, Task 2): the enabled
+   * club resources and their cached chunks behind `search_resources` and
+   * `open_resource`. Required like the ports above: a missing port must fail
+   * at construction, not serve resource tools that always refuse. Cache
+   * only — the port has no refresh member, so MCP can never trigger a fetch.
+   */
+  readonly resources: McpResourcesPort;
 }
 
 /** The ok-outcome shape every read tool returns (ADR 0050). */
@@ -169,7 +199,10 @@ const okReadResult = (
 };
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
-  const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
+  const server = new McpServer(
+    { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
+    { instructions: MCP_SERVER_INSTRUCTIONS },
+  );
   // Ruling M4-D17: the scope check happens at registration, not at call
   // time. A token without `bananasaurs:read` gets a server without any of the
   // read tools or the resource — it cannot see them in `tools/list`
@@ -258,18 +291,25 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       }
     },
   );
-  server.tool(GET_MESSAGE_TOOL_NAME, GET_MESSAGE_TOOL_DESCRIPTION, getMessageParams, (args) => {
-    try {
-      const outcome = getMessageText(deps.principal, archive, args);
-      if (!outcome.ok) {
-        return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+  server.tool(
+    GET_MESSAGE_TOOL_NAME,
+    GET_MESSAGE_TOOL_DESCRIPTION,
+    getMessageParams,
+    async (args) => {
+      try {
+        const outcome = await getMessageText(deps.principal, archive, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
       }
-      return okReadResult(readAudit, outcome);
-    } catch {
-      return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
-    }
-  });
+    },
+  );
   const guild = deps.guild;
+  registerThreadTools({ server, principal: deps.principal, readAudit }, deps.threads);
+  registerDigestTools({ server, principal: deps.principal, readAudit }, deps.archive, deps.guild);
   server.tool(
     LIST_CHANNELS_TOOL_NAME,
     LIST_CHANNELS_TOOL_DESCRIPTION,
@@ -406,6 +446,8 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   );
   registerJobTools({ server, principal: deps.principal, readAudit }, deps.jobs);
   registerMemberTools({ server, principal: deps.principal, readAudit }, deps.members, deps.guild);
+  registerContextTools({ server, principal: deps.principal, readAudit }, deps.context);
+  registerResourceTools({ server, principal: deps.principal, readAudit }, deps.resources);
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

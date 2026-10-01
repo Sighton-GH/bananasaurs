@@ -7,6 +7,7 @@ import {
   makeURLSearchParams,
   type APIAuditLog,
   type APIAuditLogEntry,
+  type APIChannel,
   type APIGuild,
   type APIGuildMember,
   type APIGuildScheduledEvent,
@@ -205,6 +206,39 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       return { exists: true };
     },
 
+    /**
+     * Live pin state and reaction counts (slice 2, Task 6): the same
+     * `GET channelMessage` route `fetchMessage` already reads, projected to
+     * `pinned` and `reactions[].{emoji, count}`. A custom emoji renders as
+     * `<:name:id>` — the name Discord reports on the reaction, which is
+     * display text, not identity — and a unicode one as its characters.
+     * `undefined` on 404 (gone) or 403 (no access), so the caller answers
+     * without the metadata instead of failing; anything else still throws.
+     */
+    async fetchMessageMeta(_guildId, ref) {
+      let message: APIMessage;
+      try {
+        message = (await mapErrors(() =>
+          rest.get(Routes.channelMessage(ref.channelId, ref.messageId)),
+        )) as APIMessage;
+      } catch (err) {
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+      return {
+        pinned: message.pinned,
+        reactions: (message.reactions ?? []).map((reaction) => ({
+          emoji:
+            reaction.emoji.id != null
+              ? `<:${reaction.emoji.name ?? 'unknown'}:${reaction.emoji.id}>`
+              : (reaction.emoji.name ?? ''),
+          count: reaction.count,
+        })),
+      };
+    },
+
     async createReaction(_guildId, ref, emoji) {
       await mapErrors(() =>
         rest.put(Routes.channelMessageOwnReaction(ref.channelId, ref.messageId, restEmoji(emoji))),
@@ -276,11 +310,17 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     ): Promise<readonly RecentMessage[] | undefined> {
       // Discord caps a channel page at 100; the assistant's window setting
       // caps lower still. Clamped, never defaulted: the caller names N.
+      // `before` is omitted when absent — a first page reads from the
+      // newest — rather than sent as a sentinel id Discord never promised
+      // to accept.
       const limit = Math.min(Math.max(opts.limit, 1), 50);
       try {
         const messages = (await mapErrors(() =>
           rest.get(Routes.channelMessages(channelId), {
-            query: new URLSearchParams({ before: opts.before, limit: String(limit) }),
+            query: makeURLSearchParams({
+              limit,
+              ...(opts.before !== undefined ? { before: opts.before } : {}),
+            }),
           }),
         )) as APIMessageWithMember[];
         // Discord returns newest first; channel context reads oldest first.
@@ -466,6 +506,58 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         before = metadata.archive_timestamp;
       }
       return [...found.values()];
+    },
+
+    /**
+     * Thread membership for ADR 0112's private-thread reads: 200 answers
+     * true, 404 answers false; anything else still throws. `_guildId` is
+     * the mandatory scope key with nothing to address — the thread-member
+     * route carries no guild id, like the other channel routes above.
+     */
+    async isThreadMember(_guildId, threadId, userId) {
+      try {
+        await mapErrors(() => rest.get(Routes.threadMembers(threadId, userId)));
+        return true;
+      } catch (err) {
+        if (err instanceof DiscordApiError && err.status === 404) return false;
+        throw err;
+      }
+    },
+
+    /**
+     * Thread facts over REST for threads the gateway cache has swept
+     * (ADR 0112): `GET /channels/{thread}`. `undefined` on 404 (gone) or 403
+     * (no access), on a channel outside this guild, on a non-thread, or on a
+     * thread with no parent — all routine here, reported the same way rather
+     * than thrown, so the caller answers "no thread" instead of failing.
+     * Anything else still throws.
+     */
+    async fetchThreadInfo(guildId, threadId) {
+      let channel: APIChannel;
+      try {
+        channel = (await mapErrors(() => rest.get(Routes.channel(threadId)))) as APIChannel;
+      } catch (err) {
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+      if (
+        channel.type !== ChannelType.PublicThread &&
+        channel.type !== ChannelType.PrivateThread &&
+        channel.type !== ChannelType.AnnouncementThread
+      ) {
+        return undefined;
+      }
+      if (channel.guild_id !== guildId || channel.parent_id == null) return undefined;
+      return {
+        id: channel.id,
+        // A thread always has a title in practice; the API type allows
+        // null, so name it rather than letting `null` reach the caller.
+        name: channel.name ?? '(unnamed thread)',
+        parentId: channel.parent_id,
+        isPrivate: channel.type === ChannelType.PrivateThread,
+      };
     },
 
     /**

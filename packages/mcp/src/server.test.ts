@@ -33,9 +33,18 @@ import {
   type McpGuildPort,
 } from './tools/guild.js';
 import { MCP_READ_LIST_THREADS } from './read-audit.js';
+import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
+import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './tools/context.js';
+import {
+  OPEN_RESOURCE_TOOL_NAME,
+  SEARCH_RESOURCES_TOOL_NAME,
+  type McpResourcesPort,
+} from './tools/resources.js';
+import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './tools/threads.js';
+import { LIST_UNANSWERED_TOOL_NAME, READ_DIGEST_TOOL_NAME } from './tools/digest.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -81,10 +90,14 @@ const principalWith = (
 
 /** Minimal archive port: this file pins `get_health`, never the archive tools. */
 const stubArchive = (): McpArchivePort => ({
+  now: () => 1_700_000_000_000,
   listArchiveChannelIds: () => [],
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  listMessagesSince: () => [],
+  listUnansweredRoleMentions: () => [],
+  messageMeta: () => Promise.resolve(undefined),
   botUserId: () => undefined,
 });
 
@@ -125,6 +138,29 @@ const stubMembers = (): McpMembersPort => ({
   now: () => 1_700_000_000_000,
 });
 
+/** Minimal context port: this file pins registration, never the context tool. */
+const stubContext = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
+/** Minimal resources port: this file pins registration, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins registration, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -141,6 +177,9 @@ const connectPair = async (
     readAudit: overrides.readAudit ?? noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
+    context: stubContext(),
+    resources: stubResources(),
+    threads: stubThreads(),
     send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -182,19 +221,31 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists send_message first, alongside the sixteen read tools', async () => {
+  it('sends MCP_SERVER_INSTRUCTIONS at initialize, exactly', async () => {
+    const { client, close } = await connectPair(principalWith([GUILD]));
+    try {
+      expect(client.getInstructions()).toBe(MCP_SERVER_INSTRUCTIONS);
+    } finally {
+      await close();
+    }
+  });
+
+  it('lists send_message first, alongside the twenty-two read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(17);
+      expect(list.tools).toHaveLength(23);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
+        READ_THREAD_TOOL_NAME,
+        READ_DIGEST_TOOL_NAME,
+        LIST_UNANSWERED_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
         'list_threads',
         LIST_ROLES_TOOL_NAME,
@@ -207,6 +258,9 @@ describe('createMcpServer', () => {
         'get_job',
         'get_member',
         'search_members',
+        GET_SERVER_CONTEXT_TOOL_NAME,
+        SEARCH_RESOURCES_TOOL_NAME,
+        OPEN_RESOURCE_TOOL_NAME,
       ]);
       const resources = await client.listResourceTemplates();
       expect(resources.resourceTemplates).toHaveLength(1);

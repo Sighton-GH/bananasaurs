@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
+import type { GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
@@ -7,6 +7,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { safeName, structuredText } from '../structured.js';
+import { idsAreWellFormed } from '../ids.js';
 import { resolveChannelRef } from '../resolve.js';
 import {
   MCP_READ_LIST_THREADS,
@@ -68,8 +69,11 @@ export const LIST_CHANNELS_TOOL_DESCRIPTION =
 
 export const LIST_THREADS_TOOL_NAME = 'list_threads';
 export const LIST_THREADS_TOOL_DESCRIPTION =
-  'Lists public threads under one channel or forum, given by id or by name ' +
-  '(e.g. "help" or "#help"). Private threads are never returned. ' +
+  'Lists threads under one channel or forum, given by id or by name ' +
+  '(e.g. "help" or "#help"). Public threads are always listed; private threads ' +
+  'only when shared with the MCP (both the bot and the owner are members), ' +
+  'marked "private": true and read live by read_thread. ' +
+  'Private threads swept from the gateway cache are not listed, but read_thread still reaches them by id. ' +
   'Refuses when the guild is unreachable.';
 
 export const LIST_ROLES_TOOL_NAME = 'list_roles';
@@ -121,6 +125,13 @@ export interface McpGuildThread {
   readonly name: string;
   readonly parentId: string;
   readonly archived: boolean;
+  /**
+   * True for a private thread shared with the MCP (bot and owner are both
+   * members, checked live by the port). The port lists no other private
+   * thread: unshared ones never reach this tool, which renders but never
+   * filters.
+   */
+  readonly isPrivate: boolean;
 }
 
 export interface McpGuildRole {
@@ -256,16 +267,6 @@ const refuseInvalidArgs = (): GuildToolOutcome => ({
   ok: false,
   message: INVALID_ARGUMENTS_MESSAGE,
 });
-
-/** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
-const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
-  try {
-    for (const id of ids) parseSnowflakeId(id);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
 
@@ -460,17 +461,20 @@ const listThreadsInner = async (
     parsed.data.includeArchived ?? false,
   );
   const archived = threads.filter((thread) => thread.archived).length;
+  const sharedPrivate = threads.filter((thread) => thread.isPrivate).length;
   const noun = threads.length === 1 ? 'thread' : 'threads';
   const head =
-    `Public threads under channel ${channelId}: ` +
-    `${String(threads.length)} ${noun} (${String(archived)} archived). ` +
-    'Private threads are never listed.';
+    `Threads under channel ${channelId}: ` +
+    `${String(threads.length)} ${noun} ` +
+    `(${String(archived)} archived, ${String(sharedPrivate)} private). ` +
+    'Private threads listed here are shared with the MCP and read live.';
   const data = {
     threads: threads.map((t) => ({
       id: t.id,
       name: safeName(t.name),
       parentId: t.parentId,
       archived: t.archived,
+      private: t.isPrivate,
     })),
   };
   return {
