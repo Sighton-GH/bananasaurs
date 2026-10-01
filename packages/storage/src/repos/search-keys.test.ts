@@ -175,6 +175,36 @@ describe('removeSearchKey', () => {
   });
 });
 
+describe('reserveSearchCall for a removed key', () => {
+  it('returns missing instead of inserting, so the runner skips the key', () => {
+    const keyId = addSearchKey(scope, {
+      source: 'brave',
+      label: 'Gone',
+      apiKeyEnc: 'sealed',
+      now: 0,
+    });
+    expect(removeSearchKey(scope, keyId)).toBe(true);
+    expect(
+      reserveSearchCall(scope, {
+        keyId,
+        guildId: GUILD_ID,
+        now: 1000,
+        monthlyLimit: null,
+        dailyLimit: null,
+      }),
+    ).toEqual({ ok: false, limit: 'missing', availableAt: 1000 });
+    expect(
+      reserveSearchCall(scope, {
+        keyId: 'skey_never-existed',
+        guildId: GUILD_ID,
+        now: 1000,
+        monthlyLimit: 1,
+        dailyLimit: 1,
+      }),
+    ).toEqual({ ok: false, limit: 'missing', availableAt: 1000 });
+  });
+});
+
 describe('reserveSearchCall with no limits', () => {
   it('always succeeds and records the guild id', () => {
     const keyId = addSearchKey(scope, {

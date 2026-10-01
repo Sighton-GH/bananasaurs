@@ -226,7 +226,7 @@ export const removeSearchKey = (scope: InstanceScope, keyId: string): boolean =>
 
 export type SearchReserveResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly limit: 'daily' | 'monthly'; readonly availableAt: number };
+  | { readonly ok: false; readonly limit: 'daily' | 'monthly' | 'missing'; readonly availableAt: number };
 
 /** A row counts toward a window while `at` is strictly after its start. */
 const windowAts = (db: Db, keyId: string, windowStart: number): number[] =>
@@ -267,11 +267,21 @@ export const reserveSearchCall = (
   },
 ): SearchReserveResult =>
   writeInstance(scope, ({ db }) => {
-    // 1. Prune rows older than 32 days.
+    // 1. The key may have been deleted mid-request: skip it rather than
+    // inserting a ledger row its foreign key would reject.
+    const stored = db
+      .select({ keyId: assistantSearchKeys.keyId })
+      .from(assistantSearchKeys)
+      .where(eq(assistantSearchKeys.keyId, input.keyId))
+      .get();
+    if (stored === undefined) {
+      return { ok: false as const, limit: 'missing' as const, availableAt: input.now };
+    }
+    // 2. Prune rows older than 32 days.
     db.delete(assistantSearchCalls)
       .where(sql`${assistantSearchCalls.at} < ${input.now - PRUNE_AFTER_MS}`)
       .run();
-    // 2. Sliding 24-hour window.
+    // 3. Sliding 24-hour window.
     if (input.dailyLimit !== null) {
       const ats = windowAts(db, input.keyId, input.now - DAY_MS);
       if (ats.length >= input.dailyLimit) {
@@ -282,7 +292,7 @@ export const reserveSearchCall = (
         };
       }
     }
-    // 3. Sliding 31-day window.
+    // 4. Sliding 31-day window.
     if (input.monthlyLimit !== null) {
       const ats = windowAts(db, input.keyId, input.now - MONTH_WINDOW_MS);
       if (ats.length >= input.monthlyLimit) {
@@ -293,7 +303,7 @@ export const reserveSearchCall = (
         };
       }
     }
-    // 4. The reservation itself.
+    // 5. The reservation itself.
     db.insert(assistantSearchCalls)
       .values({ keyId: input.keyId, guildId: input.guildId, at: input.now })
       .run();

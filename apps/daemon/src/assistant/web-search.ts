@@ -63,6 +63,9 @@ export const createWebSearchRun = (deps: {
           dailyLimit: key.dailyLimit,
         });
         if (!reserved.ok) {
+          // A key deleted mid-request is skipped like a refused one, but it
+          // is not a limit: it must not count toward the all-limited case.
+          if (reserved.limit === 'missing') continue;
           limitedAt.push(reserved.availableAt);
           continue;
         }

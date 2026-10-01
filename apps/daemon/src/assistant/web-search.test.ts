@@ -224,6 +224,24 @@ describe('createWebSearchRun (ADR 0120)', () => {
     expect(row.n).toBe(0);
   });
 
+  it('skips a key deleted after the run was built and uses the second key', async () => {
+    const first = addKey('first');
+    const second = addKey('second');
+    const client = vi.fn().mockResolvedValue([...RESULTS]);
+    const run = createWebSearchRun({
+      instance: t.scopes.instance(),
+      guildId: GUILD,
+      source: 'brave',
+      keys: keysFor([first, second], ['api-first', 'api-second']),
+      now: () => NOW,
+      client,
+    });
+    expect(searchKeysRepo.removeSearchKey(t.scopes.instance(), first)).toBe(true);
+    await expect(run('q')).resolves.toEqual({ results: [...RESULTS], source: 'brave' });
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(client).toHaveBeenCalledWith('api-second', 'q');
+  });
+
   it("all keys refused throws Error('every web search key was refused')", async () => {
     const first = addKey('first');
     const second = addKey('second');
