@@ -35,6 +35,7 @@ import {
   SEARCH_RESOURCES_TOOL_NAME,
   type McpResourcesPort,
 } from './resources.js';
+import type { McpThreadsPort } from './threads.js';
 
 /**
  * Task 3, tool layer: `send_message` against a fake `McpSendPort` — the same
@@ -409,11 +410,20 @@ const stubResources = (): McpResourcesPort => ({
   resourceChunks: () => [],
 });
 
+/** Minimal threads port: this file pins `send_message`, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
 const READ_TOOL_NAMES = [
   'get_health',
   'search_messages',
   'read_channel_history',
   'get_message',
+  'read_thread',
   'list_channels',
   'list_threads',
   'list_roles',
@@ -447,6 +457,7 @@ const connectPair = async (
     members: stubMembers(),
     context: stubContext(),
     resources: stubResources(),
+    threads: stubThreads(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -470,9 +481,9 @@ const toolNamesOf = async (principal: McpPrincipal): Promise<string[]> => {
 };
 
 describe('send_message scope filtering (ruling M4-D17)', () => {
-  it('a read-only token sees the nineteen read tools and not send_message', async () => {
+  it('a read-only token sees the twenty read tools and not send_message', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A, GUILD_B], ['bananasaurs:read']));
-    expect(names).toHaveLength(19);
+    expect(names).toHaveLength(20);
     expect(names).toEqual(READ_TOOL_NAMES);
     expect(names).not.toContain(SEND_MESSAGE_TOOL_NAME);
   });
@@ -483,11 +494,11 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
     expect(names).toEqual([SEND_MESSAGE_TOOL_NAME]);
   });
 
-  it('a token with both scopes sees twenty tools', async () => {
+  it('a token with both scopes sees twenty-one tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(20);
+    expect(names).toHaveLength(21);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

@@ -36,6 +36,7 @@ import {
   SEARCH_RESOURCES_TOOL_NAME,
   type McpResourcesPort,
 } from './resources.js';
+import type { McpThreadsPort } from './threads.js';
 
 /** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -63,6 +64,14 @@ const stubResources = (): McpResourcesPort => ({
   listResources: () => [],
   searchChunks: () => [],
   resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins the guild tools, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
 });
 
 /**
@@ -518,8 +527,8 @@ describe('guild tools on the MCP server', () => {
       members: stubMembers(),
       context: stubContext(),
       resources: stubResources(),
-    });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      threads: stubThreads(),
+    });    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
     return {
       client,
@@ -530,7 +539,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all nineteen tools and still no send_message', async () => {
+  it('lists all twenty tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -539,6 +548,7 @@ describe('guild tools on the MCP server', () => {
         'search_messages',
         'read_channel_history',
         'get_message',
+        'read_thread',
         LIST_CHANNELS_TOOL_NAME,
         LIST_THREADS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,

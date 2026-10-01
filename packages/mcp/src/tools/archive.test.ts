@@ -48,6 +48,7 @@ import type { McpJobsPort } from './jobs.js';
 import type { McpMembersPort } from './members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './context.js';
 import type { McpResourcesPort } from './resources.js';
+import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './threads.js';
 
 /** Minimal jobs port: this file pins the archive tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -75,6 +76,14 @@ const stubResources = (): McpResourcesPort => ({
   listResources: () => [],
   searchChunks: () => [],
   resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins the archive tools, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
 });
 
 /**
@@ -787,6 +796,7 @@ describe('archive tools on the MCP server', () => {
       members: stubMembers(),
       context: stubContext(),
       resources: stubResources(),
+      threads: stubThreads(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -803,9 +813,9 @@ describe('archive tools on the MCP server', () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
       const list = await client.listTools();
-      // Fourteen since the jobs tools, fifteen since the context tool: the
-      // records, jobs, members and context tools register alongside the
-      // archive and guild ones (the guild, records, jobs, members and context
+      // Twenty with read_thread: the records, jobs, members, context,
+      // threads and resources tools register alongside the archive and guild
+      // ones (the guild, records, jobs, members, context, threads and
       // stubs above answer empty, which is all this file needs — their own
       // behaviour is pinned in guild.test.ts, records.test.ts, jobs.test.ts,
       // members.test.ts and context.test.ts).
@@ -826,6 +836,7 @@ describe('archive tools on the MCP server', () => {
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
+        READ_THREAD_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
         'list_threads',
         LIST_ROLES_TOOL_NAME,

@@ -78,6 +78,7 @@ export {
   MCP_READ_LIST_ROLES,
   MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_READ_THREAD,
   MCP_READ_SEARCH_MEMBERS,
   MCP_READ_SEARCH_MESSAGES,
   MCP_READ_SEARCH_RESOURCES,
@@ -194,6 +195,18 @@ export {
   type McpContextPort,
   type McpContextSkill,
 } from './tools/context.js';
+export {
+  PRIVATE_THREAD_REFUSAL,
+  READ_THREAD_DEFAULT_LIMIT,
+  READ_THREAD_LIMIT_MAX,
+  READ_THREAD_TOOL_DESCRIPTION,
+  READ_THREAD_TOOL_NAME,
+  readThreadParams,
+  readThreadText,
+  registerThreadTools,
+  type McpThreadInfo,
+  type McpThreadsPort,
+} from './tools/threads.js';
 export {
   OPEN_RESOURCE_CHUNK_LIMIT,
   OPEN_RESOURCE_TEXT_MAX,

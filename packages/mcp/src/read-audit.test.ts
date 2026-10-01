@@ -16,6 +16,7 @@ import {
   MCP_READ_LIST_MOD_CASES,
   MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_READ_THREAD,
   MCP_READ_SEARCH_MESSAGES,
   MCP_READ_SEARCH_RESOURCES,
   type McpContentReadRecord,
@@ -50,6 +51,7 @@ import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
 import { openResourceText, searchResourcesText, type McpResourcesPort } from './tools/resources.js';
+import { readThreadText, type McpThreadsPort } from './tools/threads.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -334,6 +336,63 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
       resultCount: 1,
     });
   });
+
+  it('read_thread records a public thread read and a live private read by subject', async () => {
+    const THREAD = '800000000000000001';
+    const PRIVATE = '800000000000000002';
+    const port: McpThreadsPort = {
+      archiveThread: () => [
+        {
+          messageId: MESSAGE,
+          channelId: CHANNEL,
+          threadId: THREAD,
+          authorId: undefined,
+          content: null,
+          createdAt: 1,
+          contentPurgedAt: undefined,
+          replyToMessageId: undefined,
+        },
+      ],
+      threadInfo: (guildId, threadId) => {
+        void guildId;
+        return Promise.resolve(
+          threadId === THREAD
+            ? { id: THREAD, name: 'build night', parentId: CHANNEL, isPrivate: false }
+            : threadId === PRIVATE
+              ? { id: PRIVATE, name: 'secret', parentId: CHANNEL, isPrivate: true }
+              : undefined,
+        );
+      },
+      privateThreadReadable: () => Promise.resolve(true),
+      liveThreadMessages: () => Promise.resolve([]),
+    };
+    const pub = await readThreadText(principalWith(GUILD_A), port, {
+      guildId: String(GUILD_A),
+      threadId: THREAD,
+    });
+    expect(pub.ok).toBe(true);
+    if (!pub.ok) throw new Error('expected ok');
+    expect(pub.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_READ_THREAD,
+      guildId: GUILD_A,
+      subjectType: 'thread',
+      subjectId: THREAD,
+      resultCount: 1,
+    });
+    const priv = await readThreadText(principalWith(GUILD_A), port, {
+      guildId: String(GUILD_A),
+      threadId: PRIVATE,
+    });
+    expect(priv.ok).toBe(true);
+    if (!priv.ok) throw new Error('expected ok');
+    expect(priv.read).toMatchObject({
+      kind: 'content',
+      action: MCP_READ_READ_THREAD,
+      subjectType: 'private_thread',
+      subjectId: PRIVATE,
+    });
+  });
 });
 
 describe('ADR 0050: structural reads annotate a log record, never an audit row', () => {
@@ -484,6 +543,14 @@ const stubResourcesPort = (): McpResourcesPort => ({
   resourceChunks: () => [],
 });
 
+/** Minimal threads port: this file pins read logging, never the thread tool. */
+const stubThreadsPort = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -500,6 +567,7 @@ const connectWithReadAudit = async (
     members: stubMembersPort(),
     context: stubContextPort(),
     resources: stubResourcesPort(),
+    threads: stubThreadsPort(),
     send: stubSendPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

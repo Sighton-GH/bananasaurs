@@ -25,6 +25,7 @@ import type { GuildId } from '@bananasaurs/core';
 export const MCP_READ_SEARCH_MESSAGES = 'mcp.read.search_messages';
 export const MCP_READ_READ_CHANNEL_HISTORY = 'mcp.read.read_channel_history';
 export const MCP_READ_GET_MESSAGE = 'mcp.read.get_message';
+export const MCP_READ_READ_THREAD = 'mcp.read.read_thread';
 export const MCP_READ_LIST_MOD_CASES = 'mcp.read.list_mod_cases';
 export const MCP_READ_GET_MOD_CASE = 'mcp.read.get_mod_case';
 export const MCP_READ_LIST_AUDIT_EVENTS = 'mcp.read.list_audit_events';

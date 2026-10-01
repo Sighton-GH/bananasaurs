@@ -75,6 +75,7 @@ import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { registerContextTools, type McpContextPort } from './tools/context.js';
 import { registerResourceTools, type McpResourcesPort } from './tools/resources.js';
+import { registerThreadTools, type McpThreadsPort } from './tools/threads.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
@@ -160,6 +161,15 @@ export interface McpServerDeps {
    * context tool that always refuses.
    */
   readonly context: McpContextPort;
+  /**
+   * The daemon's per-request threads port (slice 2, Task 4): the archive
+   * read of a public thread and the live read of a private thread the owner
+   * shares, behind `read_thread`. Required like the ports above: a missing
+   * port must fail at construction, not serve a thread tool that always
+   * refuses. Private-thread content is never written to storage — the port
+   * has no write member.
+   */
+  readonly threads: McpThreadsPort;
   /**
    * The daemon's per-request resources port (slice 2, Task 2): the enabled
    * club resources and their cached chunks behind `search_resources` and
@@ -292,6 +302,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     }
   });
   const guild = deps.guild;
+  registerThreadTools({ server, principal: deps.principal, readAudit }, deps.threads);
   server.tool(
     LIST_CHANNELS_TOOL_NAME,
     LIST_CHANNELS_TOOL_DESCRIPTION,

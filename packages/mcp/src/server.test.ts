@@ -43,6 +43,7 @@ import {
   SEARCH_RESOURCES_TOOL_NAME,
   type McpResourcesPort,
 } from './tools/resources.js';
+import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './tools/threads.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -147,6 +148,14 @@ const stubResources = (): McpResourcesPort => ({
   resourceChunks: () => [],
 });
 
+/** Minimal threads port: this file pins registration, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -165,9 +174,9 @@ const connectPair = async (
     members: stubMembers(),
     context: stubContext(),
     resources: stubResources(),
+    threads: stubThreads(),
     send,
-  });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  });  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   return {
     client,
@@ -215,19 +224,20 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message first, alongside the nineteen read tools', async () => {
+  it('lists send_message first, alongside the twenty read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(20);
+      expect(list.tools).toHaveLength(21);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
+        READ_THREAD_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
         'list_threads',
         LIST_ROLES_TOOL_NAME,
