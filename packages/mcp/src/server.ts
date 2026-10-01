@@ -71,6 +71,33 @@ import {
   sendMessageText,
   type McpSendPort,
 } from './tools/send.js';
+import {
+  ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
+  ADD_THREAD_MEMBERS_TOOL_NAME,
+  ARCHIVE_THREAD_TOOL_DESCRIPTION,
+  ARCHIVE_THREAD_TOOL_NAME,
+  CREATE_FORUM_POST_TOOL_DESCRIPTION,
+  CREATE_FORUM_POST_TOOL_NAME,
+  CREATE_THREAD_TOOL_DESCRIPTION,
+  CREATE_THREAD_TOOL_NAME,
+  LOCK_THREAD_TOOL_DESCRIPTION,
+  LOCK_THREAD_TOOL_NAME,
+  REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
+  REMOVE_THREAD_MEMBERS_TOOL_NAME,
+  addThreadMembersParams,
+  addThreadMembersText,
+  archiveThreadParams,
+  archiveThreadText,
+  createForumPostParams,
+  createForumPostText,
+  createThreadParams,
+  createThreadText,
+  lockThreadParams,
+  lockThreadText,
+  removeThreadMembersParams,
+  removeThreadMembersText,
+  type McpThreadWritesPort,
+} from './tools/thread-writes.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { registerContextTools, type McpContextPort } from './tools/context.js';
@@ -155,6 +182,14 @@ export interface McpServerDeps {
    * still registers only when the principal carries the send scope.
    */
   readonly send: McpSendPort;
+  /**
+   * The daemon's per-request thread-writes port (slice 3, Task 5): thread
+   * creation, membership, forum posts and thread state behind the six write
+   * tools. Required like `send`: a missing port must fail at construction,
+   * not serve thread tools that always refuse. The tools still register only
+   * when the principal carries the send scope.
+   */
+  readonly threadWrites: McpThreadWritesPort;
   readonly tasks?: McpTaskPort | undefined;
   readonly taskDetail?: McpTaskDetailPort | undefined;
   readonly taskAdmin?: TaskAdminPort | undefined;
@@ -255,6 +290,49 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
+    // The six thread/forum write tools (slice 3, Task 5): same scope, same
+    // handler shape — the text function answers every outcome and the
+    // try/catch only fires on something it did not foresee.
+    const threadWrites = deps.threadWrites;
+    const writeTools = [
+      [CREATE_THREAD_TOOL_NAME, CREATE_THREAD_TOOL_DESCRIPTION, createThreadParams, createThreadText],
+      [
+        ADD_THREAD_MEMBERS_TOOL_NAME,
+        ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
+        addThreadMembersParams,
+        addThreadMembersText,
+      ],
+      [
+        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
+        removeThreadMembersParams,
+        removeThreadMembersText,
+      ],
+      [
+        CREATE_FORUM_POST_TOOL_NAME,
+        CREATE_FORUM_POST_TOOL_DESCRIPTION,
+        createForumPostParams,
+        createForumPostText,
+      ],
+      [ARCHIVE_THREAD_TOOL_NAME, ARCHIVE_THREAD_TOOL_DESCRIPTION, archiveThreadParams, archiveThreadText],
+      [LOCK_THREAD_TOOL_NAME, LOCK_THREAD_TOOL_DESCRIPTION, lockThreadParams, lockThreadText],
+    ] as const;
+    for (const [name, description, params, text] of writeTools) {
+      server.tool(name, description, params, async (args) => {
+        try {
+          const outcome = await text(deps.principal, threadWrites, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
   }
   if (hasSendScope(deps.principal) && deps.taskAdmin) {
     const taskAdmin = deps.taskAdmin;

@@ -35,6 +35,15 @@ import {
 import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
+import {
+  ADD_THREAD_MEMBERS_TOOL_NAME,
+  ARCHIVE_THREAD_TOOL_NAME,
+  CREATE_FORUM_POST_TOOL_NAME,
+  CREATE_THREAD_TOOL_NAME,
+  LOCK_THREAD_TOOL_NAME,
+  REMOVE_THREAD_MEMBERS_TOOL_NAME,
+  type McpThreadWritesPort,
+} from './tools/thread-writes.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './tools/context.js';
@@ -125,6 +134,17 @@ const stubSend = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
 });
 
+/** Minimal thread-writes port: this file pins registration, never the writes themselves. */
+const stubThreadWrites = (): McpThreadWritesPort => ({
+  createThread: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', threadId: 'thread-test' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createForumPost: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', threadId: 'thread-test' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+});
+
 /** Minimal jobs port: this file pins registration, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
@@ -181,6 +201,7 @@ const connectPair = async (
     resources: stubResources(),
     threads: stubThreads(),
     send,
+    threadWrites: stubThreadWrites(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -236,9 +257,15 @@ describe('createMcpServer', () => {
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(23);
+      expect(list.tools).toHaveLength(29);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
+        CREATE_THREAD_TOOL_NAME,
+        ADD_THREAD_MEMBERS_TOOL_NAME,
+        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        CREATE_FORUM_POST_TOOL_NAME,
+        ARCHIVE_THREAD_TOOL_NAME,
+        LOCK_THREAD_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
@@ -307,14 +334,23 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ruling M4-D17) a send-only principal gets send_message and nothing else', async () => {
+  it('(ruling M4-D17) a send-only principal gets send_message and the six thread-write tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
     try {
-      // `send_message` registers under the send scope independently of the
-      // read-scope block, so a send-only server lists exactly one tool — and
-      // still no resource, which stays behind the read scope.
+      // `send_message` and the thread-write tools register under the send
+      // scope independently of the read-scope block, so a send-only server
+      // lists exactly seven tools — and still no resource, which stays behind
+      // the read scope.
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual([SEND_MESSAGE_TOOL_NAME]);
+      expect(list.tools.map((tool) => tool.name)).toEqual([
+        SEND_MESSAGE_TOOL_NAME,
+        CREATE_THREAD_TOOL_NAME,
+        ADD_THREAD_MEMBERS_TOOL_NAME,
+        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        CREATE_FORUM_POST_TOOL_NAME,
+        ARCHIVE_THREAD_TOOL_NAME,
+        LOCK_THREAD_TOOL_NAME,
+      ]);
       // The SDK installs its `resources/templates/list` handler lazily on the
       // first `registerResource()` call, so a server with no resource answers
       // Method-not-found rather than an empty array.
