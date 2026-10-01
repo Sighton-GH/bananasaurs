@@ -214,6 +214,8 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
       roleIds: roleIdsOf(member),
       previousRoleIds: undefined,
       joinedAtMs: member.joinedTimestamp ?? undefined,
+      profile: profileOf(member),
+      previousMember: undefined,
     }));
   });
 
@@ -250,7 +252,56 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
        */
       previousRoleIds: before.partial ? undefined : roleIdsOf(before),
       joinedAtMs: after.joinedTimestamp ?? undefined,
+      profile: profileOf(after),
+      // discord.js hands `before.user` and `after.user` as the SAME object, so
+      // a previous username or avatar is never observable here — only
+      // member-level fields (nickname, guild avatar) have a real "before", and
+      // only when `before` was not built from the dispatch alone.
+      previousMember: before.partial
+        ? undefined
+        : {
+            nickname: before.nickname ?? undefined,
+            guildAvatarHash: before.avatar ?? undefined,
+          },
     }));
+  });
+
+  /**
+   * Account-level changes (username, display name, avatar) never reach
+   * `GuildMemberUpdate`: for a cached member discord.js compares with
+   * `GuildMember.equals`, which ignores user fields, and emits only
+   * `UserUpdate(oldUser, newUser)`. So a rename with no member-level change
+   * would be invisible to the logging module without this listener, which
+   * re-emits one `memberUpdate` per guild holding the member — roles
+   * unchanged, so `previousRoleIds` is the member's current set and
+   * `previousMember` is read from that same member.
+   */
+  client.on(Events.UserUpdate, (oldUser: AnyUser, newUser: AnyUser) => {
+    void oldUser;
+    for (const guild of client.guilds.cache.values()) {
+      const member = guild.members.cache.get(newUser.id);
+      if (member === undefined) continue;
+      translate('memberUpdate', () => ({
+        kind: 'memberUpdate',
+        guildId: guild.id,
+        receivedAtMs: now(),
+        userId: newUser.id,
+        roleIds: roleIdsOf(member),
+        previousRoleIds: roleIdsOf(member),
+        joinedAtMs: member.joinedTimestamp ?? undefined,
+        profile: {
+          username: newUser.username,
+          globalName: newUser.globalName ?? undefined,
+          nickname: member.nickname ?? undefined,
+          avatarHash: newUser.avatar ?? undefined,
+          guildAvatarHash: member.avatar ?? undefined,
+        },
+        previousMember: {
+          nickname: member.nickname ?? undefined,
+          guildAvatarHash: member.avatar ?? undefined,
+        },
+      }));
+    }
   });
 
   // --- roles --------------------------------------------------------------
@@ -414,6 +465,26 @@ function flattenOptions(data: readonly CommandInteractionOption[]): {
 function roleIdsOf(member: AnyMember): string[] {
   const everyone = member.guild.id;
   return [...member.roles.cache.keys()].filter((roleId) => roleId !== everyone);
+}
+
+/**
+ * The member as of this dispatch, for the logging module's last-seen record.
+ * Hashes only — nothing is downloaded or stored beyond the hash Discord sent.
+ */
+function profileOf(member: GuildMember): {
+  username: string;
+  globalName: string | undefined;
+  nickname: string | undefined;
+  avatarHash: string | undefined;
+  guildAvatarHash: string | undefined;
+} {
+  return {
+    username: member.user.username,
+    globalName: member.user.globalName ?? undefined,
+    nickname: member.nickname ?? undefined,
+    avatarHash: member.user.avatar ?? undefined,
+    guildAvatarHash: member.avatar ?? undefined,
+  };
 }
 
 function toMessageEvent(

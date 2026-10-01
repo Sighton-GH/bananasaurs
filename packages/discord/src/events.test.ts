@@ -311,6 +311,99 @@ describe('members', () => {
     expect(h.events[0]).toMatchObject({ kind: 'memberUpdate', roleIds: [ROLE] });
     expect((h.events[0] as { previousRoleIds?: readonly string[] }).previousRoleIds).toEqual([]);
   });
+
+  it('carries the profile on join', () => {
+    const h = harness();
+    h.client.emit(
+      Events.GuildMemberAdd,
+      membersOf(h.guild)._add(
+        memberPacket({
+          user: { id: USER, username: 'member', global_name: 'Global', discriminator: '0' },
+          nick: 'Nick',
+        }),
+      ),
+    );
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberAdd',
+      userId: USER,
+      profile: {
+        username: 'member',
+        globalName: 'Global',
+        nickname: 'Nick',
+      },
+    });
+  });
+
+  it('carries the profile and no previousMember when the old member was not cached', () => {
+    const h = harness();
+    h.packet(
+      'GuildMemberUpdate',
+      memberPacket({
+        user: { id: USER, username: 'member', discriminator: '0' },
+        nick: 'Nick',
+      }),
+    );
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberUpdate',
+      profile: { username: 'member', nickname: 'Nick' },
+    });
+    expect((h.events[0] as { previousMember?: unknown }).previousMember).toBeUndefined();
+  });
+
+  it('carries the previous nickname and guild avatar when the old member was resident', () => {
+    const h = harness();
+    membersOf(h.guild)._add(memberPacket({ nick: 'Old' }));
+
+    h.packet('GuildMemberUpdate', memberPacket({ nick: 'New' }));
+
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberUpdate',
+      profile: { nickname: 'New' },
+      previousMember: { nickname: 'Old' },
+    });
+  });
+
+  /**
+   * Account-level changes never reach `GuildMemberUpdate` (`GuildMember.equals`
+   * ignores user fields), so without this listener a rename would be invisible.
+   * The cached user is mutated the way the gateway would mutate it, then the
+   * update is emitted for it.
+   */
+  it('a UserUpdate for a cached member yields one memberUpdate with the new username', () => {
+    const h = harness();
+    membersOf(h.guild)._add(memberPacket());
+    const user = h.client.users.cache.get(USER);
+    expect(user).toBeDefined();
+    if (user === undefined) return;
+    user.username = 'renamed';
+    h.client.emit(Events.UserUpdate, user, user);
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberUpdate',
+      guildId: GUILD,
+      userId: USER,
+      profile: { username: 'renamed' },
+    });
+    // Roles did not change: previous roles are the member's current set.
+    expect((h.events[0] as { previousRoleIds?: readonly string[] }).previousRoleIds).toEqual([
+      ROLE,
+    ]);
+  });
+
+  it('a UserUpdate for a user with no cached member yields nothing', () => {
+    const h = harness();
+    internals(h.client).users._add({
+      id: '777777777777777771',
+      username: 'stranger',
+      discriminator: '0',
+    });
+    const stranger = h.client.users.cache.get('777777777777777771');
+    expect(stranger).toBeDefined();
+    if (stranger === undefined) return;
+    h.client.emit(Events.UserUpdate, stranger, stranger);
+    expect(h.events).toEqual([]);
+  });
 });
 
 describe('roles and guild lifecycle', () => {
