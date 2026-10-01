@@ -1048,6 +1048,24 @@ describe('listMessagesSince (slice 2 task 5: read_digest)', () => {
     expect(rest.map((m) => m.messageId)).toEqual([M2]);
   });
 
+  it('equal createdAt breaks ties by message id, and the cursor continues to the third', () => {
+    // Inserted out of id order: the page must still read lowest-id first.
+    seedAt(a, { messageId: '740000000000000003', channelId: CHANNEL_A, createdAt: 3000 });
+    seedAt(a, { messageId: '740000000000000001', channelId: CHANNEL_A, createdAt: 3000 });
+    seedAt(a, { messageId: '740000000000000002', channelId: CHANNEL_A, createdAt: 3000 });
+    const first = listMessagesSince(a, { channelIds: [CHANNEL_A], since: 3000, limit: 2 });
+    expect(first.map((m) => m.messageId)).toEqual(['740000000000000001', '740000000000000002']);
+    const last = first[first.length - 1];
+    if (last === undefined) throw new Error('expected a first page');
+    const rest = listMessagesSince(a, {
+      channelIds: [CHANNEL_A],
+      since: 3000,
+      after: { createdAt: last.createdAt, messageId: last.messageId },
+      limit: 2,
+    });
+    expect(rest.map((m) => m.messageId)).toEqual(['740000000000000003']);
+  });
+
   it('includes thread messages under an included channel, not under an excluded one', () => {
     seedAt(a, {
       messageId: '710000000000000011',
