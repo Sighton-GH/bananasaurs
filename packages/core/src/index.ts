@@ -223,7 +223,7 @@ export {
   MCP_ACTION_DUPLICATE_WINDOW_MS,
   MCP_ACTION_WINDOW_MS,
   runMcpAction,
-  type LedgerRow,
+  type McpActionLedgerRow,
   type McpActionAuditInput,
   type McpActionClaim,
   type McpActionCompletion,

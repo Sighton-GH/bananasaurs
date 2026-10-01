@@ -140,7 +140,7 @@ export type McpActionOutcome<R> =
   | { status: 'failed'; actionId: string; code: string };
 
 /** One claimed row of the `mcp_actions` ledger, as the pipeline sees it. */
-export interface LedgerRow {
+export interface McpActionLedgerRow {
   readonly actionId: string;
   readonly argsHash: string;
   readonly resultMessageId?: string;
@@ -204,7 +204,7 @@ export interface McpActionDeps {
     read(): SafetyStateForSend | undefined;
   };
   readonly ledger: {
-    find(key: string): LedgerRow | undefined;
+    find(key: string): McpActionLedgerRow | undefined;
     claim(row: McpActionClaim): { claimed: boolean };
     complete(actionId: string, result: McpActionCompletion): void;
     countSince(capGroup: McpCapGroup, sinceMs: number): number;

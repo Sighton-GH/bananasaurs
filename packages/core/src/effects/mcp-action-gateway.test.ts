@@ -7,7 +7,7 @@ import {
   MCP_ACTION_CAPS,
   MCP_ACTION_WINDOW_MS,
   runMcpAction,
-  type LedgerRow,
+  type McpActionLedgerRow,
   type McpActionAuditInput,
   type McpActionClaim,
   type McpActionCompletion,
@@ -53,10 +53,10 @@ class FakeLedger {
   /** When set, the next claim loses the race: a rival row lands first. */
   rivalOnNextClaim: StoredRow | undefined;
 
-  find(key: string): LedgerRow | undefined {
+  find(key: string): McpActionLedgerRow | undefined {
     const row = this.rows.get(key);
     if (row === undefined) return undefined;
-    const out: LedgerRow = { actionId: row.actionId, argsHash: row.argsHash };
+    const out: McpActionLedgerRow = { actionId: row.actionId, argsHash: row.argsHash };
     return {
       ...out,
       ...(row.resultMessageId !== undefined ? { resultMessageId: row.resultMessageId } : {}),
@@ -306,6 +306,11 @@ describe('runMcpAction layer order', () => {
     const replayed = await runMcpAction(h.deps, intent(), true, failing);
     expect(replayed).toEqual({ status: 'replayed', actionId: failedActionId });
     expect(calls).toBe(1);
+    expect(h.audits[0]?.outcome).toBe('failed');
+    for (const row of h.audits) {
+      expect(JSON.stringify(row)).not.toContain(CONTENT);
+    }
+    expect(h.logText()).not.toContain(CONTENT);
   });
 
   it('refuses when the kill switch is on and never calls execute', async () => {
@@ -428,6 +433,10 @@ describe('runMcpAction layer order', () => {
       expect(h.audits).toHaveLength(1);
       expect(h.audits[0]?.outcome).toBe('dry-run');
       expect(h.audits[0]?.dryRun).toBe(true);
+      for (const row of h.audits) {
+        expect(JSON.stringify(row)).not.toContain(CONTENT);
+      }
+      expect(h.logText()).not.toContain(CONTENT);
     }
   });
 
