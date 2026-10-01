@@ -130,7 +130,7 @@ export type McpCapGroup = 'message' | 'edit' | 'thread' | 'pin_react';
 export const MCP_ACTION_CAPS: Readonly<Record<McpCapGroup, number>> = { message: 300, edit: 300, thread: 100, pin_react: 300 };
 export const MCP_ACTION_WINDOW_MS = 60 * 60 * 1000;
 export const argsHashFor: (kind: string, args: unknown) => string; // sha256 of canonical JSON (sorted keys) of {kind,args}
-export interface McpActionIntent<A> {
+export interface McpActionIntent {
   readonly kind: string; readonly capGroup: McpCapGroup; readonly idempotencyKey: string; readonly tokenId: string;
   readonly argsHash: string; readonly targetChannelId: string | undefined; readonly dryRun: boolean;
   /** M5-D8 layer B: message posts only. */ readonly duplicateContentGuard: boolean;
@@ -145,11 +145,11 @@ export type McpActionOutcome<R> =
 export interface McpActionDeps {
   readonly guildId: GuildId; readonly logger: Logger; now(): number; newActionId(): string;
   readonly state: { read(): SafetyStateForSend | undefined };
-  readonly ledger: { find(key): LedgerRow | undefined; claim(row): { claimed: boolean }; complete(actionId, result): void; countSince(capGroup, sinceMs): number; recentSameContent(argsHash, channelId, sinceMs): boolean };
+  readonly ledger: { find(key): McpActionLedgerRow | undefined; claim(row): { claimed: boolean }; complete(actionId, result): void; countSince(capGroup, sinceMs): number; recentSameContent(argsHash, channelId, sinceMs): boolean };
   readonly audit: { record(input: { kind; actionId; outcome: 'done'|'dry-run'|'failed'; targetChannelId?; resultMessageId?; resultThreadId?; tokenId; dryRun; atMs }): void };
 }
 export const runMcpAction: <R extends { resultMessageId?: string; resultThreadId?: string; undo?: unknown }>(
-  deps: McpActionDeps, intent: McpActionIntent<unknown>,
+  deps: McpActionDeps, intent: McpActionIntent,
   /** Policy result computed by the caller from live state BEFORE calling; a string is the refusal detail. */
   targetCheck: true | string,
   execute: () => Promise<R>,
@@ -160,6 +160,7 @@ export const isDangerousRole: (permissions: bigint) => boolean;
 export interface RoleFacts { id; position; permissions: bigint; managed: boolean; isEveryone: boolean }
 export const rolePingAllowed: (role: RoleFacts, botTopPosition: number, mode: 'below-bot'|'allowlist', allowlisted: boolean) => true | 'dangerous' | 'managed-or-everyone' | 'above-bot' | 'not-allowlisted';
 ```
+- *As built (Task 2, 2026-10-01):* `McpActionIntent` is not generic. The module also exports `MCP_ACTION_DUPLICATE_WINDOW_MS` (60 s) and the port shapes `McpActionClaim`, `McpActionCompletion` and `McpActionAuditInput`, which Task 4's deps factory implements. The ledger row type is `McpActionLedgerRow`.
 - The pipeline order is ADR 0116 §1:
   1. target refusal;
   2. state (unknown → `guild-unknown`, kill switch, breaker);
