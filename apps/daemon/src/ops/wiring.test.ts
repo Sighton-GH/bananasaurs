@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChannelType, Client, PermissionsBitField, Status, type Guild } from 'discord.js';
 import { JOB_KINDS, parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
@@ -1538,5 +1538,79 @@ describe('fetchInHundredIdChunks', () => {
     });
     expect(call).toBe(2);
     expect(result).toEqual(ids.slice(0, 100));
+  });
+});
+
+describe('task destinations exclude private threads', () => {
+  const CATEGORY = '711111111111111111';
+  const TEXT = '722222222222222222';
+  const PUBLIC_THREAD = '733333333333333333';
+  const PRIVATE_THREAD = '744444444444444444';
+
+  const channelFake = (id: string, name: string, type: ChannelType, parentId: string | null) => ({
+    id,
+    name,
+    type,
+    parentId,
+    isTextBased: () => type === ChannelType.GuildText || type === ChannelType.GuildAnnouncement,
+    isThread: () => false,
+  });
+  const threadFake = (id: string, name: string, type: ChannelType) => ({
+    id,
+    name,
+    type,
+    parentId: TEXT,
+    archived: false,
+    locked: false,
+    isTextBased: () => true,
+    isThread: () => true,
+  });
+
+  const destinationPorts = () => {
+    const guild = client.guilds.cache.get(GUILD);
+    if (!guild) throw new Error('guild missing in test');
+    const textChannel = channelFake(TEXT, 'tech-tasks', ChannelType.GuildText, CATEGORY);
+    const publicThread = threadFake(PUBLIC_THREAD, 'open-thread', ChannelType.PublicThread);
+    const privateThread = threadFake(PRIVATE_THREAD, 'secret-thread', ChannelType.PrivateThread);
+    const byId = new Map([
+      [TEXT, textChannel],
+      [PUBLIC_THREAD, publicThread],
+      [PRIVATE_THREAD, privateThread],
+    ]);
+    // inspectTaskChannel and listTaskDestinations fetch over REST; stub the
+    // manager so the test reaches the thread-kind branches, not the network.
+    vi.spyOn(guild.channels, 'fetch').mockImplementation((async (id?: unknown) => {
+      if (typeof id === 'string') return byId.get(id) ?? null;
+      return new Map([
+        [CATEGORY, channelFake(CATEGORY, 'Tech', ChannelType.GuildCategory, null)],
+        [TEXT, textChannel],
+      ]);
+    }) as never);
+    vi.spyOn(guild.channels, 'fetchActiveThreads').mockResolvedValue({
+      threads: new Map([
+        [PUBLIC_THREAD, publicThread],
+        [PRIVATE_THREAD, privateThread],
+      ]),
+    } as never);
+    return opsPortsFor(scope, t.scopes.instance(), operations, () => NOW, client, true);
+  };
+
+  it('inspectTaskChannel answers undefined for a private thread but describes a public one', async () => {
+    const ports = destinationPorts();
+    expect(await ports.inspectTaskChannel(PRIVATE_THREAD)).toBeUndefined();
+    expect(await ports.inspectTaskChannel(PUBLIC_THREAD)).toEqual({
+      channelId: PUBLIC_THREAD,
+      kind: 'thread',
+      parentId: TEXT,
+      categoryId: CATEGORY,
+    });
+  });
+
+  it('listTaskDestinations lists the channel and the public thread but not the private thread', async () => {
+    const destinations = await destinationPorts().listTaskDestinations(CATEGORY);
+    const ids = destinations.map((d) => d.channelId);
+    expect(ids).toContain(TEXT);
+    expect(ids).toContain(PUBLIC_THREAD);
+    expect(ids).not.toContain(PRIVATE_THREAD);
   });
 });

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { boundedTaskContext, type TaskContextPort } from './task-context.js';
 import {
   assertProviderEligible,
   clipHeading,
@@ -221,6 +222,8 @@ export interface AssistantDiscordPorts {
    * Absent, every `from` search refuses.
    */
   readonly findMember?: ((nameOrId: string) => Promise<readonly FoundMember[]>) | undefined;
+  /** Task context for the assistant's task answers; absent, task questions refuse. */
+  readonly taskContext?: TaskContextPort | undefined;
   /**
    * B2b: resolves a reminder's channel and mentions against live Discord
    * permissions. Optional so existing callers keep compiling — production
@@ -727,6 +730,17 @@ export const createAssistantService = (
           }),
         };
       });
+      const taskSection =
+        opts.skipActions === true || !discord.taskContext
+          ? undefined
+          : await boundedTaskContext(scope, discord.taskContext, {
+              actorId: input.userId,
+              ...(input.channelId === undefined ? {} : { channelId: input.channelId }),
+              text: textOf(input.input).slice(0, 500),
+              ...(input.referencedMessageId === undefined
+                ? {}
+                : { referencedMessageId: input.referencedMessageId }),
+            });
       const context = compileAssistantContext({
         behaviour: input.behaviour,
         serverCard:
@@ -750,6 +764,7 @@ export const createAssistantService = (
         unavailableSkills,
         toolsAvailable,
         catalogueLines,
+        taskSection,
       });
       const isIt = input.behaviour.surface === 'it-services';
       const enqueueAssistantRefresh = (resourceId: string): boolean => {

@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
+import { TaskCreatePage } from '../pages/task-create.js';
+import { TaskDetailPage } from '../pages/task-detail.js';
+import { TaskTeamsPage } from '../pages/task-teams.js';
+import { TasksPage } from '../pages/tasks.js';
+import { DocsPage } from '../pages/docs.js';
 import { AccountEditPage } from '../pages/account-edit.js';
 import { AccountNewPage } from '../pages/account-new.js';
 import { AccountsPage } from '../pages/accounts.js';
@@ -155,6 +160,11 @@ function Pages() {
   return (
     <Switch>
       <Route path="/" component={OverviewPage} />
+      <Route path="/tasks/new" component={TaskCreatePage} />
+      <Route path="/tasks/teams" component={TaskTeamsPage} />
+      <Route path="/tasks/:taskId" component={TaskDetailPage} />
+      <Route path="/tasks" component={TasksPage} />
+      <Route path="/docs" component={DocsPage} />
       <Route path="/safety" component={SafetyPage} />
       <Route path="/permissions" component={PermissionsPage} />
       <Route path="/logging" component={LoggingPage} />

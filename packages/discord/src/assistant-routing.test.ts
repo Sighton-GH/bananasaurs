@@ -322,4 +322,52 @@ describe('routeAssistantMention', () => {
       ).toEqual({ kind: 'not-addressed' });
     });
   });
+
+  describe('a pinged reply to a task post (ADR 0112 decision 4)', () => {
+    const taskPost = '777777777777777777';
+    const botAnswer = '567890123456789099';
+    const flagged = behaviours.map((b) => (b.id === 'club' ? { ...b, answersBotTag: true } : b));
+    // discord.js puts the replied-to user into mentions.users on a reply
+    // ping, so the reply alone looks tagged.
+    const pingedReply = (over: Partial<MessageEvent> = {}): MessageEvent =>
+      event({
+        content: 'finished the left panel',
+        mentionedRoleIds: [],
+        mentionedUserIds: [botUserId],
+        referencedMessageId: taskPost,
+        referencedAuthorId: botUserId,
+        ...over,
+      });
+    const isTaskPost = (messageId: string): boolean => messageId === taskPost;
+
+    it('is not addressed when the only tag is the reply ping', () => {
+      expect(
+        routeAssistantMention(pingedReply(), flagged, botUserId, undefined, isTaskPost),
+      ).toEqual({ kind: 'not-addressed' });
+    });
+
+    it('routes when the reply text itself tags the bot', () => {
+      expect(
+        routeAssistantMention(
+          pingedReply({ content: `<@${botUserId}> is this clear?` }),
+          flagged,
+          botUserId,
+          undefined,
+          isTaskPost,
+        ),
+      ).toMatchObject({ kind: 'routed', behaviour: { id: 'club' } });
+    });
+
+    it('still routes a pinged reply to an ordinary bot answer', () => {
+      expect(
+        routeAssistantMention(
+          pingedReply({ referencedMessageId: botAnswer }),
+          flagged,
+          botUserId,
+          undefined,
+          isTaskPost,
+        ),
+      ).toMatchObject({ kind: 'routed', behaviour: { id: 'club' } });
+    });
+  });
 });

@@ -601,6 +601,11 @@ const runEntry = async (deps: {
     };
     try {
       const response = await provider.generateText(request);
+      // An adapter or injected provider may violate its TypeScript contract at runtime.
+      // Never let an invalid model response reach the output guard or tool runner.
+      if (!response || typeof response.text !== 'string' || typeof response.model !== 'string') {
+        throw new ProviderError('invalid-response', 'Provider returned an invalid response', false);
+      }
       deps.recordUsage(response.usage);
       return response;
     } catch (err) {

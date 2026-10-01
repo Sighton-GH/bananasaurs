@@ -625,6 +625,31 @@ export {
   type SpendPolicy,
 } from './providers/spend-policy.js';
 export * from './assistant/index.js';
+
+export {
+  createTaskCommandSubscriber,
+  type TaskCommandDeps,
+  type TaskCommandRow,
+} from './task/commands.js';
+export { isValidTimeZone, timeZoneSchema } from './task/timezone.js';
+export { ACK_PHRASES, isProgressUpdate } from './task/progress.js';
+export {
+  buildTaskEvaluationInput,
+  parseTaskEvaluation,
+  TASK_EVALUATION_INSTRUCTION,
+  taskEvaluationSchema,
+  type TaskEvaluation,
+} from './task/evaluate.js';
+export {
+  buildCompleteSelect,
+  buildPickComponents,
+  buildReviewComponents,
+  buildTaskCustomId,
+  parseTaskCustomId,
+  TASK_CUSTOM_ID_PREFIX,
+  TASK_REPLY_NOTICE,
+  type ParsedTaskCustomId,
+} from './task/components.js';
 export {
   cleanSummary,
   conversationSummarySchema,

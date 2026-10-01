@@ -59,6 +59,7 @@ const harness = (
   behaviours: readonly AssistantBehaviour[] = [direct, club],
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
   reportEnqueued = true,
+  isTaskPost?: (messageId: string) => boolean,
 ) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
@@ -115,11 +116,37 @@ const harness = (
       logger: pino({ level: 'silent' }),
       sendTyping,
       ...(lookupMessage === undefined ? {} : { lookupMessage }),
+      ...(isTaskPost === undefined ? {} : { isTaskPost }),
     }),
   };
 };
 
 describe('assistant command subscriber', () => {
+  it('enqueues nothing for an untagged task-keyword message', async () => {
+    const h = harness([direct, { ...club, answersBotTag: true }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: '333333333333333333',
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      authorDisplayName: undefined,
+      content: 'Task update: blocked',
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      authorRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(0);
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
   it.each(['ask', 'remind'])('ignores the removed /%s command', async (name) => {
     const h = harness();
     const event: DomainEvent = {
@@ -504,6 +531,39 @@ describe('assistant command subscriber', () => {
         source: 'mention',
       }),
     ]);
+  });
+
+  it('enqueues nothing for a pinged reply to a task post, unless the text tags the bot (ADR 0112)', async () => {
+    const taskPost = '777777777777777777';
+    const isTaskPost = (id: string): boolean => id === taskPost;
+    const h = harness([direct, { ...club, answersBotTag: true }], undefined, true, isTaskPost);
+    const pinged = (content: string) => ({
+      kind: 'messageCreate' as const,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012347',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content,
+      editedTimestampMs: undefined,
+      mentionedUserIds: ['901234567890123456'],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+      referencedMessageId: taskPost,
+      referencedAuthorId: '901234567890123456',
+    });
+    await h.subscriber.handle(pinged('finished the left panel'));
+    expect(h.queued).toHaveLength(0);
+    expect(h.invoke).not.toHaveBeenCalled();
+    await h.subscriber.handle(pinged('<@901234567890123456> is this clear?'));
+    expect(h.queued).toHaveLength(1);
   });
 
   it('fails closed on an ambiguous mention without calling the service', async () => {
