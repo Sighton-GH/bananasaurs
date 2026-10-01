@@ -513,13 +513,11 @@ describe('thread writes (MCP slice 3)', () => {
       parentId: FORUM,
       isPrivate: false,
     });
-    await expect(d.fetchMessageAuthor(GUILD, { channelId: threadId, messageId })).resolves.toEqual(
-      {
-        authorId: BOT_USER_ID,
-        content: 'friday night?',
-        embeds: [],
-      },
-    );
+    await expect(d.fetchMessageAuthor(GUILD, { channelId: threadId, messageId })).resolves.toEqual({
+      authorId: BOT_USER_ID,
+      content: 'friday night?',
+      embeds: [],
+    });
     expect(d.forumPost(threadId)).toEqual({
       messageId,
       appliedTagIds: ['888888888888888888'],

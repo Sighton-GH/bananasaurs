@@ -327,9 +327,7 @@ export class FakeDiscord implements DiscordPort {
    * A thread's live archive/lock state, for `setThreadState` assertions
    * (MCP slice 3). `undefined` for a thread the fake was never told about.
    */
-  threadState(
-    threadId: Snowflake,
-  ): { archived: boolean; locked: boolean } | undefined {
+  threadState(threadId: Snowflake): { archived: boolean; locked: boolean } | undefined {
     const info = this.threadInfos.get(threadId);
     if (!info) return undefined;
     return { archived: info.archived, locked: info.locked };
