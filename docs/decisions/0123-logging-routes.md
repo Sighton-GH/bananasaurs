@@ -57,11 +57,14 @@ shows it as **Excluded**, and the archive and MCP sending both obey it.
     `member_warn`, `channel_create`, `channel_update`, `channel_delete`, `thread_create`,
     `thread_delete`, `guild_update`, `invite_create`, `invite_delete`, `emoji_create`,
     `emoji_update`, `emoji_delete`, `sticker_create`, `sticker_update`, `sticker_delete`.
-    When the audit log names who did something, the line says "by @x (inferred)".
-11. **Two new non-privileged intents**: `GuildInvites` and `GuildExpressions`. This is the owner's
-    instruction under hard rule 8. Neither adds an outbound destination. The
-    `GuildStickerManager` cache limit goes from 0 to unlimited (a guild has a few dozen stickers
-    at most), so discord.js can tell a created sticker from an updated one.
+    These come from the live audit-log stream (`GUILD_AUDIT_LOG_ENTRY_CREATE` — the
+    GuildModeration intent is already held, and View Audit Log is already required),
+    except purges (the gateway bulk-delete event) and warnings (the bot's own `/mod warn`).
+    Audit-log lines name the moderator directly; only message-delete attribution, which is
+    correlated after the fact, says "(inferred)".
+11. **No new intents and no cache changes**: invites, emoji and stickers also arrive as
+    audit-log entries. Changes Discord does not audit-log (an invite expiring on its own)
+    are not logged.
 
 ## Consequences
 

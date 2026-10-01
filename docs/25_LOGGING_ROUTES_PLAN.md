@@ -183,37 +183,34 @@ Avatar changed: @alex  (new avatar link)
 
 ### 8.2 The action list, as the form will group it
 
-| Group      | Action                                        | Source                                                      | New?     |
-| ---------- | --------------------------------------------- | ----------------------------------------------------------- | -------- |
-| Messages   | Message created / edited / deleted            | already logged                                              |          |
-| Messages   | **Messages bulk-deleted (purge)**             | `messageDeleteBulk`, already received and currently dropped | new      |
-| Members    | Member joined / left                          | already logged                                              |          |
-| Members    | **Kicked**                                    | audit log (GuildModeration, held)                           | new      |
-| Members    | **Banned / unbanned**                         | `GuildBanAdd/Remove` (GuildModeration, held)                | new      |
-| Members    | **Timed out / timeout removed**               | `memberUpdate` + audit log for "by @mod"                    | new (D3) |
-| Members    | **Roles changed**                             | `memberUpdate` + last-seen record (D5)                      | new (D3) |
-| Members    | **Nickname changed**                          | `memberUpdate` + last-seen record                           | new (D3) |
-| Members    | **Username / display name changed**           | `memberUpdate` + last-seen record                           | new (D3) |
-| Members    | **Avatar changed** (account or server avatar) | `memberUpdate` + last-seen record                           | new (D3) |
-| Members    | **Warning issued** (`/mod warn`)              | our own mod module                                          | new      |
-| Roles      | Role created / updated / deleted              | already logged                                              |          |
-| Channels   | **Channel created / updated / deleted**       | Guilds intent (held)                                        | new      |
-| Channels   | **Thread created / deleted**                  | Guilds intent (held)                                        | new      |
-| Server     | **Server settings changed**                   | `guildUpdate` (Guilds, held)                                | new      |
-| Server     | **Invite created / deleted**                  | **GuildInvites intent (new)**                               | new      |
-| Server     | **Emoji created / updated / deleted**         | **GuildExpressions intent (new)**                           | new      |
-| Server     | **Sticker created / updated / deleted**       | GuildExpressions; sticker cache raised from 0               | new      |
-| Server     | Server available / unavailable                | already logged                                              |          |
-| Moderation | AutoMod action                                | already logged                                              |          |
+| Group      | Action                                        | Source                 | New?     |
+| ---------- | --------------------------------------------- | ---------------------- | -------- |
+| Messages   | Message created / edited / deleted            | already logged         |          |
+| Messages   | **Messages bulk-deleted (purge)**             | bulk-delete event      | new      |
+| Members    | Member joined / left                          | already logged         |          |
+| Members    | **Kicked**                                    | audit log              | new      |
+| Members    | **Banned / unbanned**                         | audit log              | new      |
+| Members    | **Roles changed**                             | `memberUpdate` + last-seen record (D5) | new (D3) |
+| Members    | **Nickname changed**                          | `memberUpdate` + last-seen record | new (D3) |
+| Members    | **Username / display name changed**           | `memberUpdate` + last-seen record | new (D3) |
+| Members    | **Avatar changed** (account or server avatar) | `memberUpdate` + last-seen record | new (D3) |
+| Members    | **Warning issued** (`/mod warn`)              | our `/mod warn`        | new      |
+| Roles      | Role created / updated / deleted              | already logged         |          |
+| Channels   | **Channel created / updated / deleted**       | audit log              | new      |
+| Channels   | **Thread created / deleted**                  | audit log              | new      |
+| Server     | **Server settings changed**                   | audit log              | new      |
+| Server     | **Invite created / deleted**                  | audit log              | new      |
+| Server     | **Emoji created / updated / deleted**         | audit log              | new      |
+| Server     | **Sticker created / updated / deleted**       | audit log              | new      |
+| Server     | Server available / unavailable                | already logged         |          |
+| Moderation | **Timed out / timeout removed**               | audit log              | new (D3) |
+| Moderation | AutoMod action                                | already logged         |          |
 
-Where the audit log names who did it (kick, ban, timeout, channel/emoji/invite changes), the line
-says "by @mod (inferred)", the same wording the deletion log uses.
+Audit-log lines name the moderator directly; only message-delete attribution, which is
+correlated after the fact, says "(inferred)", the same wording the deletion log uses.
 
-**Intents and cache.** Two new non-privileged intents: GuildInvites and GuildExpressions. They
-let Discord send the bot invite events and emoji/sticker events. Neither adds an outbound network
-destination. `GuildStickerManager` goes from 0 to unlimited, which is a few dozen objects at most;
-otherwise discord.js can't tell a created sticker from an updated one. `npm run doctor` will list
-both intents, and the cache-limit assertion test will be updated to match.
+No new intents and no cache changes: invites, emoji and stickers also arrive as audit-log
+entries. Changes Discord does not audit-log (an invite expiring on its own) are not logged.
 
 **Not doing:** voice join/leave/move (owner skipped it) and scheduled events. Invite links posted
 in chat belong to automod, not logging.
@@ -236,10 +233,8 @@ Tests come first wherever permissions, idempotency or guild scope are involved.
 6. **Member changes** (D3 + D5): the last-seen table, then roles / nickname / username / avatar /
    timeout lines. Tests: no record yet → "changed" without a before; the record is deleted on
    leave; a replayed update posts nothing.
-7. **Moderation and structure**: purge, kick, ban/unban, warn, channel, thread and server lines.
-   Each line has a formatter test, and the audit-log actions have an attribution test.
-8. **Invites and expressions**: the two intents, the sticker cache change, doctor output, and
-   invite/emoji/sticker lines.
+7. Audit-log event (Task 6).
+8. Audit-log, purge and warn lines (Task 7).
 
 Gates: `npm run typecheck && npm run lint && npm run test` in the main checkout (worktree typecheck
 resolves packages to main).
