@@ -344,7 +344,7 @@ function buildModWiring(): {
   // suite is proving. No log route is seeded, so it no-ops.
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     fetchAuditLog: () =>
       discord.fetchAuditLog(guildId, { actionType: 'message_delete', limit: 25 }),
     claimedCountFor: (input) => loggingRepo.claimedCountFor(scope, input),
