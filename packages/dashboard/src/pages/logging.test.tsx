@@ -26,7 +26,10 @@ const ROUTE = {
   excludedChannelIds: ['77'],
 };
 
-const stubPage = (routesBody: unknown, extra: { method?: string; url: string; body: unknown }[] = []) =>
+const stubPage = (
+  routesBody: unknown,
+  extra: { method?: string; url: string; body: unknown }[] = [],
+) =>
   stubFetch([
     { url: '/api/log-routes', body: routesBody },
     { url: '/api/guild/channels', body: CHANNELS },
@@ -79,10 +82,9 @@ describe('LoggingPage routes', () => {
   });
 
   it('the On/Off control posts { enabled: false } to /enabled', async () => {
-    const mock = stubPage(
-      { routes: [ROUTE], excludedChannels: [] },
-      [{ method: 'POST', url: '/api/log-routes/r1/enabled', body: { ok: true } }],
-    );
+    const mock = stubPage({ routes: [ROUTE], excludedChannels: [] }, [
+      { method: 'POST', url: '/api/log-routes/r1/enabled', body: { ok: true } },
+    ]);
     renderWithSession(<LoggingPage />);
     await screen.findByText('mod log');
     await act(async () => {
@@ -93,10 +95,9 @@ describe('LoggingPage routes', () => {
   });
 
   it('Delete asks for confirmation; Cancel sends nothing, confirming sends DELETE', async () => {
-    const mock = stubPage(
-      { routes: [ROUTE], excludedChannels: [] },
-      [{ method: 'DELETE', url: '/api/log-routes/r1', body: { ok: true } }],
-    );
+    const mock = stubPage({ routes: [ROUTE], excludedChannels: [] }, [
+      { method: 'DELETE', url: '/api/log-routes/r1', body: { ok: true } },
+    ]);
     renderWithSession(<LoggingPage />);
     await screen.findByText('mod log');
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
@@ -106,26 +107,23 @@ describe('LoggingPage routes', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     });
-    expect(
-      mock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'DELETE'),
-    ).toBe(false);
+    expect(mock.mock.calls.some((c) => (c[1] as RequestInit)?.method === 'DELETE')).toBe(false);
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await screen.findByRole('dialog');
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Delete route' }));
     });
-    const del = mock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'DELETE');
+    const del = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === 'DELETE');
     expect(del?.[0]).toBe('/api/log-routes/r1');
   });
 });
 
 describe('LoggingPage route form', () => {
   it('Select all checks every action and the submit POSTs the full catalogue with defaults', async () => {
-    const mock = stubPage(
-      { routes: [], excludedChannels: [] },
-      [{ method: 'POST', url: '/api/log-routes', body: { ok: true, route: ROUTE } }],
-    );
+    const mock = stubPage({ routes: [], excludedChannels: [] }, [
+      { method: 'POST', url: '/api/log-routes', body: { ok: true, route: ROUTE } },
+    ]);
     renderWithSession(<LoggingPage />);
     await openNewRoute();
     fireEvent.click(checkOf('Select all'));
@@ -221,17 +219,14 @@ describe('LoggingPage route form', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create route' }));
     });
-    expect(
-      await screen.findByText("The channel you post to can't also be skipped."),
-    ).toBeTruthy();
+    expect(await screen.findByText("The channel you post to can't also be skipped.")).toBeTruthy();
     expect(mock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'POST')).toHaveLength(0);
   });
 
   it('Edit pre-fills the route and PUTs the edited body, keeping it enabled', async () => {
-    const mock = stubPage(
-      { routes: [ROUTE], excludedChannels: [] },
-      [{ method: 'PUT', url: '/api/log-routes/r1', body: { ok: true, route: ROUTE } }],
-    );
+    const mock = stubPage({ routes: [ROUTE], excludedChannels: [] }, [
+      { method: 'PUT', url: '/api/log-routes/r1', body: { ok: true, route: ROUTE } },
+    ]);
     renderWithSession(<LoggingPage />);
     await screen.findByText('mod log');
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
@@ -269,9 +264,9 @@ describe('LoggingPage No access line', () => {
     expect(
       screen.getByText(/2 channel\(s\) have No access and are never logged, whatever a route says/),
     ).toBeTruthy();
-    expect(
-      screen.getByRole('link', { name: 'Manage on Permissions' }).getAttribute('href'),
-    ).toBe('/permissions');
+    expect(screen.getByRole('link', { name: 'Manage on Permissions' }).getAttribute('href')).toBe(
+      '/permissions',
+    );
     cleanup();
     stubPage({ routes: [], excludedChannels: [] });
     renderWithSession(<LoggingPage />);

@@ -119,7 +119,7 @@ function RouteForm({
     try {
       const trimmedName = name.trim();
       const body = {
-        name: trimmedName === '' ? `→ ${displayOf(dest)}` : trimmedName,
+        name: trimmedName === '' ? `→ ${channelName(dest)}` : trimmedName,
         channelId: dest,
         includeContent,
         enabled: route?.enabled ?? true,
@@ -144,10 +144,7 @@ function RouteForm({
 
   return (
     <form onSubmit={(e) => void submit(e)} className="grid max-w-md gap-3">
-      <Field
-        label="Actions"
-        {...(actionsError !== undefined ? { error: actionsError } : {})}
-      >
+      <Field label="Actions" {...(actionsError !== undefined ? { error: actionsError } : {})}>
         <div className="grid gap-2">
           <TriCheckbox
             label="Select all"
@@ -175,9 +172,7 @@ function RouteForm({
                       key={action.kind}
                       label={action.label}
                       checked={selected.includes(action.kind)}
-                      onChange={(e) =>
-                        setGroup([action.kind], (e.target as HTMLInputElement).checked)
-                      }
+                      onChange={(e) => setGroup([action.kind], e.target.checked)}
                     />
                   ))}
                 </div>
@@ -239,10 +234,13 @@ function RouteForm({
         <Checkbox
           label="Include message content"
           checked={includeContent}
-          onChange={(e) => setIncludeContent((e.target as HTMLInputElement).checked)}
+          onChange={(e) => setIncludeContent(e.target.checked)}
         />
       </div>
-      <Field label="Name" hint="Optional. Left empty, the route is named after its destination channel.">
+      <Field
+        label="Name"
+        hint="Optional. Left empty, the route is named after its destination channel."
+      >
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -349,9 +347,7 @@ export function LoggingPage() {
                         <Checkbox
                           label={`${route.name} on`}
                           checked={route.enabled}
-                          onChange={(e) =>
-                            void setEnabled(route, (e.target as HTMLInputElement).checked)
-                          }
+                          onChange={(e) => void setEnabled(route, e.target.checked)}
                         />
                         <Button onClick={() => setForm({ mode: 'edit', route })}>Edit</Button>
                         <Button onClick={() => setDeleting(route)}>Delete</Button>
