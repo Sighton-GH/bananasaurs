@@ -31,6 +31,7 @@ import {
   ARCHIVE_NO_TEXT_MARKER,
   ARCHIVE_PURGED_MARKER,
   GUILD_REFUSAL_MESSAGE,
+  PRIVATE_THREAD_REFUSAL,
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
@@ -288,7 +289,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all nineteen tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -296,12 +297,13 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(19);
+    expect(names).toHaveLength(20);
     expect(names).toEqual([
       'get_health',
       'search_messages',
       'read_channel_history',
       'get_message',
+      'read_thread',
       'list_channels',
       'list_threads',
       'list_roles',
@@ -2561,6 +2563,371 @@ describe('/mcp read logging (ADR 0050)', () => {
       expect(dump).not.toContain(MEMBER);
     } finally {
       await logged.close();
+    }
+  });
+});
+
+/**
+ * Slice 2 Task 4, daemon side: `read_thread` and shared private threads
+ * through the real stack — Fastify + `registerMcpRoutes` + `createMcpServer`
+ * + the real `threadsPortFor` and `guildPortFor` — with a token minted
+ * through the real OAuth flow.
+ *
+ * The app is rebuilt with the instance's redacted config carrying the owner
+ * id (`testInstanceFor` redacts to `{}`), the way production's
+ * `redactedConfig` carries the real `BANANASAURS_OWNER_USER_ID`, and with a
+ * discord.js client whose user is the bot and whose guild cache holds one
+ * public and three private threads. Live thread content comes from the
+ * `FakeDiscord` behind the daemon's `DiscordPort`, exactly as production's
+ * REST port serves it.
+ *
+ * The load-bearing assertions are ADR 0112's two rules: a private thread
+ * reads live only when bot AND owner are both members (bot-only and
+ * owner-only both refuse with the exact text), and a private read never
+ * writes an `archive_messages` row.
+ */
+describe('/mcp read_thread and shared private threads', () => {
+  const BOT = '123456789012345678';
+  const OWNER = '345678901234567890';
+  const MEMBER = '666666666666666666';
+  const PLANNING = '322222222222222222';
+  const PUBLIC_THREAD = '388888888888888888';
+  const SHARED_PRIVATE = '399999999999999999';
+  const BOT_ONLY_PRIVATE = '400000000000000001';
+  const OWNER_ONLY_PRIVATE = '400000000000000002';
+  const LIVE_MESSAGE = '911111111111111111';
+  const ARCHIVE_MESSAGE = '922222222222222222';
+  const LIVE_TEXT = 'live secret plans discussed in the shared private thread alpha';
+  const ARCHIVE_TEXT = 'archived public thread plans beta';
+
+  interface ThreadDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const threadChannel = (id: string, type: ChannelType, name: string): object => ({
+    id,
+    guild_id: GUILD_A,
+    type,
+    name,
+    parent_id: PLANNING,
+    thread_metadata: {
+      archived: false,
+      auto_archive_duration: 60,
+      archive_timestamp: '2026-09-01T00:00:00.000Z',
+      locked: false,
+    },
+  });
+
+  const buildThreadClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT));
+    const internals = client as unknown as ThreadDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: PLANNING,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 1,
+          permission_overwrites: [],
+        },
+        threadChannel(PUBLIC_THREAD, ChannelType.GuildPublicThread, 'public-thread'),
+        threadChannel(SHARED_PRIVATE, ChannelType.GuildPrivateThread, 'shared-private'),
+        threadChannel(BOT_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'bot-only-private'),
+        threadChannel(OWNER_ONLY_PRIVATE, ChannelType.GuildPrivateThread, 'owner-only-private'),
+      ],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  /** The composed app with the owner id configured and thread memberships set. */
+  const buildThreadApp = (discord: FakeDiscord): FastifyInstance => {
+    const client = buildThreadClient();
+    return createServer({
+      deps: {
+        ...deps,
+        instance: {
+          ...deps.instance,
+          redactedConfig: () => ({ BANANASAURS_OWNER_USER_ID: OWNER }),
+        },
+      },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+  };
+
+  const seedThreads = (discord: FakeDiscord): void => {
+    archiveRepo.enableChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: PLANNING,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: ARCHIVE_MESSAGE,
+      channelId: PLANNING,
+      threadId: PUBLIC_THREAD,
+      authorId: MEMBER,
+      content: ARCHIVE_TEXT,
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    discord.defineMessage({
+      channelId: SHARED_PRIVATE,
+      messageId: LIVE_MESSAGE,
+      authorId: MEMBER,
+      content: LIVE_TEXT,
+    });
+    discord.addThreadMember(SHARED_PRIVATE, BOT);
+    discord.addThreadMember(SHARED_PRIVATE, OWNER);
+    discord.addThreadMember(BOT_ONLY_PRIVATE, BOT);
+    discord.addThreadMember(OWNER_ONLY_PRIVATE, OWNER);
+  };
+
+  const threadCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_thread', arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('reads a public thread from the archive', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: PUBLIC_THREAD,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(ARCHIVE_TEXT);
+      expect(found.text).toContain('public-thread');
+      expect(found.text).not.toContain('private, read live');
+      expect(found.text).not.toContain(LIVE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('answers an unknown thread id as not-a-thread', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: '800000000000000099',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe('No thread 800000000000000099 in this guild.');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('reads a shared private thread live', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(LIVE_TEXT);
+      expect(found.text).toContain('private, read live');
+      expect(found.text).not.toContain(ARCHIVE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('bot-only membership is not enough, and neither is owner-only', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // The bot sits in the thread but the owner does not: refused, and the
+      // refusal names the fix rather than the membership state.
+      const botOnly = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: BOT_ONLY_PRIVATE,
+          })
+        ).body,
+      );
+      expect(botOnly.isError).toBe(true);
+      expect(botOnly.text).toBe(PRIVATE_THREAD_REFUSAL);
+      // The mirror: the owner sits in the thread but the bot does not.
+      const ownerOnly = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: OWNER_ONLY_PRIVATE,
+          })
+        ).body,
+      );
+      expect(ownerOnly.isError).toBe(true);
+      expect(ownerOnly.text).toBe(PRIVATE_THREAD_REFUSAL);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a private read writes no archive rows', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(LIVE_TEXT);
+      // The live message was served but never stored: no row by its id, and
+      // no rows under the private thread at all.
+      const scope = t.scopes.forGuild(GUILD_A);
+      expect(archiveRepo.findMessage(scope, LIVE_MESSAGE)).toBeUndefined();
+      expect(archiveRepo.listChannelHistory(scope, { channelId: SHARED_PRIVATE })).toEqual([]);
+      // The archive itself is untouched: the public thread still reads one row.
+      expect(archiveRepo.listChannelHistory(scope, { channelId: PUBLIC_THREAD })).toHaveLength(1);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('list_threads includes the shared private thread marked private, not the bot-only one', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const response = await threadApp.inject({
+        method: 'POST',
+        url: '/mcp',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${accessToken}`,
+        },
+        payload: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'list_threads',
+            arguments: { guildId: '111111111111111111', channelId: PLANNING },
+          },
+        }),
+      });
+      const found = callText(response.body);
+      expect(found.isError).not.toBe(true);
+      const data = JSON.parse(found.text.split('\n')[2] ?? '') as {
+        threads: Array<{ id: string; private: boolean }>;
+      };
+      const byId = new Map(data.threads.map((thread) => [thread.id, thread.private] as const));
+      expect(byId.get(PUBLIC_THREAD)).toBe(false);
+      expect(byId.get(SHARED_PRIVATE)).toBe(true);
+      // A private thread with only the bot is not listed at all.
+      expect(byId.has(BOT_ONLY_PRIVATE)).toBe(false);
+      expect(byId.has(OWNER_ONLY_PRIVATE)).toBe(false);
+      expect(found.text).not.toContain('bot-only-private');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('refuses a private thread when no owner id is configured', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    // `testInstanceFor` redacts to `{}`: without the owner id the check
+    // fails closed, even with both memberships present.
+    const client = buildThreadClient();
+    const unconfigured = createServer({
+      deps,
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+    try {
+      // The token is minted on the dashboard app (this one registers no
+      // OAuth routes); bearer validation is app-independent, the way the
+      // guild-tools tests reuse a token across apps.
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(unconfigured, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).toBe(true);
+      expect(found.text).toBe(PRIVATE_THREAD_REFUSAL);
+    } finally {
+      await unconfigured.close();
     }
   });
 });

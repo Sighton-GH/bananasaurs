@@ -528,7 +528,8 @@ describe('guild tools on the MCP server', () => {
       context: stubContext(),
       resources: stubResources(),
       threads: stubThreads(),
-    });    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
     return {
       client,

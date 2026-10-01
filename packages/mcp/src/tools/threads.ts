@@ -108,7 +108,9 @@ export const readThreadParams = {
   beforeMessageId: z.string().describe('Page backwards from this message id.').optional(),
   limit: z
     .number()
-    .describe(`Max messages, 1..${String(READ_THREAD_LIMIT_MAX)}, default ${String(READ_THREAD_DEFAULT_LIMIT)}.`)
+    .describe(
+      `Max messages, 1..${String(READ_THREAD_LIMIT_MAX)}, default ${String(READ_THREAD_DEFAULT_LIMIT)}.`,
+    )
     .optional(),
 };
 

@@ -1251,7 +1251,11 @@ export class FakeDiscord implements DiscordPort {
    * same — absence is false, never a throw — so a caller under test sees the
    * same refusal it would against real Discord.
    */
-  async isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean> {
+  async isThreadMember(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    userId: Snowflake,
+  ): Promise<boolean> {
     this.record('isThreadMember', [guildId, threadId, userId]);
     this.check('isThreadMember', guildId);
     return this.threadMembers.get(threadId)?.has(userId) ?? false;

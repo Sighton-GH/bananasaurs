@@ -26,6 +26,7 @@ import {
   type McpContextPort,
   type McpGuildHealth,
   type McpGuildPort,
+  type McpGuildThread,
   type McpHealthPort,
   type McpJob,
   type McpJobsPort,
@@ -36,6 +37,7 @@ import {
   type McpRecordsPort,
   type McpResourcesPort,
   type McpSendPort,
+  type McpThreadsPort,
 } from '@bananasaurs/mcp';
 import {
   archiveRepo,
@@ -270,6 +272,46 @@ const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
 });
 
 /**
+ * The owner's Discord user id behind ADR 0112's private-thread reads:
+ * `BANANASAURS_OWNER_USER_ID` from the instance's redacted config — the only
+ * config surface `HttpDeps` carries. Absent or empty reads as no owner, and
+ * every private-thread check below answers false (fail closed).
+ */
+const ownerUserId = (deps: HttpDeps): string | undefined => {
+  const raw = deps.instance.redactedConfig()['BANANASAURS_OWNER_USER_ID'];
+  return typeof raw === 'string' && raw !== '' ? raw : undefined;
+};
+
+/**
+ * ADR 0112's readability check, shared by the guild port's private-thread
+ * listing and the threads port below: true only when a live check shows
+ * **both the bot and the owner are members of the thread**. Membership is
+ * never cached — two live `isThreadMember` calls per check — and any error,
+ * or either id unknown, answers false. A non-member's 404 is routine, not a
+ * fault, so failures leave no error line: refusing loudly here would log
+ * every unshared thread as a failure.
+ */
+const privateThreadReadableFor = (
+  deps: HttpDeps,
+  client: Client,
+  discord: DiscordPort,
+): ((guildId: GuildId, threadId: string) => Promise<boolean>) => {
+  return async (guildId, threadId) => {
+    const botUserId = client.user?.id;
+    const ownerId = ownerUserId(deps);
+    if (botUserId === undefined || ownerId === undefined) return false;
+    try {
+      return (
+        (await discord.isThreadMember(guildId, threadId, botUserId)) &&
+        (await discord.isThreadMember(guildId, threadId, ownerId))
+      );
+    } catch {
+      return false;
+    }
+  };
+};
+
+/**
  * The `McpGuildPort` behind the three Discord-cache tools, field by field
  * like `healthPortFor` above. Channels and roles are projected out of the
  * gateway cache (`ChannelManager`/`RoleManager` have no size limit, so the
@@ -301,6 +343,9 @@ export const guildPortFor = (
     if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
     return guild;
   };
+  // ADR 0112's readability check, shared with the threads port: the guild
+  // port lists a private thread only when it is shared with the MCP.
+  const readable = privateThreadReadableFor(deps, client, discord);
   return {
     listChannels: (guildId) =>
       loggedCall(deps.logger, 'listChannels', () => {
@@ -350,6 +395,26 @@ export const guildPortFor = (
       }),
     listThreads: (guildId, channelId, includeArchived) => {
       const guild = requireGuild(guildId);
+      // Private threads under the channel that are shared with the MCP —
+      // bot AND owner both members, checked live per thread. Unshared ones
+      // never reach the tool, which renders but never filters.
+      const sharedPrivate = async (): Promise<readonly McpGuildThread[]> => {
+        const found: McpGuildThread[] = [];
+        for (const channel of guild.channels.cache.values()) {
+          if (!channel.isThread() || channel.parentId !== channelId) continue;
+          if (channel.type !== ChannelType.PrivateThread) continue;
+          if (await readable(guildId, channel.id)) {
+            found.push({
+              id: channel.id,
+              name: channel.name,
+              parentId: channelId,
+              archived: channel.archived ?? false,
+              isPrivate: true,
+            });
+          }
+        }
+        return found;
+      };
       if (includeArchived) {
         // Review S4: the cache cannot answer this — the default sweeper
         // evicts archived threads (node_modules discord.js Options.js), so
@@ -357,14 +422,16 @@ export const guildPortFor = (
         // REST listing pages active + archived and never returns private
         // threads (review B4 lives in the port's filter too).
         return loggedCall(deps.logger, 'listThreads', () =>
-          discord.listPublicThreads(guildId, channelId).then((threads) =>
-            threads.map((thread) => ({
+          discord.listPublicThreads(guildId, channelId).then(async (threads) => [
+            ...threads.map((thread) => ({
               id: thread.id,
               name: thread.name,
               parentId: channelId,
               archived: thread.archived,
+              isPrivate: false as const,
             })),
-          ),
+            ...(await sharedPrivate()),
+          ]),
         );
       }
       // Review B4: exclude private threads explicitly — the clause this
@@ -384,10 +451,14 @@ export const guildPortFor = (
             name: channel.name,
             parentId: channelId,
             archived: channel.archived ?? false,
+            isPrivate: false as const,
           },
         ];
       });
-      return Promise.resolve(active.filter((thread) => !thread.archived));
+      return (async (): Promise<readonly McpGuildThread[]> => [
+        ...active.filter((thread) => !thread.archived),
+        ...(await sharedPrivate()),
+      ])();
     },
     listRoles: (guildId) =>
       loggedCall(deps.logger, 'listRoles', () => {
@@ -817,6 +888,75 @@ const resourcesPortFor = (deps: HttpDeps): McpResourcesPort => {
 };
 
 /**
+ * A page cursor larger than any Discord id: `fetchChannelMessages` reads the
+ * messages *before* a cursor, and a `read_thread` without `beforeMessageId`
+ * means "from the newest". Discord snowflakes stay below 2^63, so this
+ * remains above every real message while staying a well-formed id the
+ * `BigInt` comparisons on both sides of the port accept.
+ */
+const THREAD_READ_NEWEST_BEFORE = '9223372036854775807';
+
+/**
+ * The `McpThreadsPort` behind `read_thread` (slice 2, Task 4; ADR 0112),
+ * field by field like `healthPortFor` above. A public thread reads the
+ * archive (`archiveThread` is the same `listChannelHistory` call with the
+ * thread id, which the repository answers from the thread's rows); a
+ * private thread reads live over REST (`liveThreadMessages` projects
+ * `fetchChannelMessages`) and nothing here writes — the port has no write
+ * member, so a private read cannot leave an `archive_messages` row by
+ * construction, not by discipline. A fault leaves one allowlisted-fields
+ * error line via the logged calls below, never message content (rule 4).
+ */
+const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpThreadsPort => {
+  const readable = privateThreadReadableFor(deps, client, discord);
+  return {
+    archiveThread: (guildId, threadId, beforeMessageId, limit) =>
+      loggedCall(deps.logger, 'archiveThread', () =>
+        archiveRepo
+          .listChannelHistory(deps.scopes.forGuild(guildId), {
+            channelId: threadId,
+            ...(beforeMessageId !== undefined ? { beforeMessageId } : {}),
+            limit,
+          })
+          .map(toMcpArchiveMessage),
+      ),
+    threadInfo: (guildId, threadId) =>
+      Promise.resolve(
+        loggedCall(deps.logger, 'threadInfo', () => {
+          const channel = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+          if (channel === undefined || !channel.isThread() || channel.parentId === null) {
+            return undefined;
+          }
+          return {
+            id: channel.id,
+            name: channel.name,
+            parentId: channel.parentId,
+            isPrivate: channel.type === ChannelType.PrivateThread,
+          };
+        }),
+      ),
+    privateThreadReadable: (guildId, threadId) => readable(guildId, threadId),
+    liveThreadMessages: (guildId, threadId, beforeMessageId, limit) =>
+      loggedCallAsync(deps.logger, 'liveThreadMessages', async () => {
+        const messages = await discord.fetchChannelMessages(guildId, threadId, {
+          before: beforeMessageId ?? THREAD_READ_NEWEST_BEFORE,
+          limit,
+        });
+        return (messages ?? []).map((message) => ({
+          messageId: message.messageId,
+          channelId: threadId,
+          threadId,
+          authorId: message.authorId,
+          content: message.content === '' ? null : message.content,
+          createdAt: message.at,
+          contentPurgedAt: undefined,
+          replyToMessageId: undefined,
+        }));
+      }),
+  };
+};
+
+/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -1166,6 +1306,7 @@ export const registerMcpRoutes = (
       members: membersPortFor(deps, client),
       context: contextPortFor(deps),
       resources: resourcesPortFor(deps),
+      threads: threadsPortFor(deps, client, discord),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

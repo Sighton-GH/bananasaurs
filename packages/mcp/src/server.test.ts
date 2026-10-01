@@ -176,7 +176,8 @@ const connectPair = async (
     resources: stubResources(),
     threads: stubThreads(),
     send,
-  });  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   return {
     client,

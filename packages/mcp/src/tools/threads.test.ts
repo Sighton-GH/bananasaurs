@@ -172,7 +172,11 @@ describe('read_thread on a public thread reads the archive', () => {
     const seen: FakeThreadsOptions['seen'] = { archive: [], live: [] };
     const outcome = await readThreadText(
       principalWith(GUILD_A),
-      fakePort({ infos: [publicInfo], archive: [message({ messageId: '900000000000000001' })], seen }),
+      fakePort({
+        infos: [publicInfo],
+        archive: [message({ messageId: '900000000000000001' })],
+        seen,
+      }),
       { guildId: '111111111111111111', threadId: PUBLIC_THREAD },
     );
     expect(outcome.ok).toBe(true);
