@@ -93,7 +93,7 @@ function changeNumber(value: AuditChangeValue | undefined): number | undefined {
   return typeof value === 'number' ? value : undefined;
 }
 
-function changeLinesFor(changes: readonly AuditLogEntryEvent['changes']): string[] {
+function changeLinesFor(changes: AuditLogEntryEvent['changes']): string[] {
   const visible = changes.filter((c) => c.key !== 'permission_overwrites');
   const shown = visible.slice(0, MAX_CHANGE_LINES);
   const lines = shown.map(
