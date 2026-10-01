@@ -69,6 +69,8 @@ interface FakeMessage {
   attachments: FakeAttachment[];
   /** Reply target's display name, for `fetchChannelMessages` (ADR 0089). */
   referencedAuthorName: string | undefined;
+  /** The poll `sendMessage` attached, for the `pollOf` inspector (MCP slice 5). */
+  poll: OutgoingMessage['poll'];
 }
 
 /**
@@ -135,6 +137,16 @@ interface FakeThreadInfo {
   locked: boolean;
 }
 
+/** A guild scheduled event `createScheduledEvent` minted (MCP slice 5). */
+interface FakeScheduledEvent {
+  id: Snowflake;
+  name: string;
+  description: string | undefined;
+  scheduledStartAt: number;
+  channelId: Snowflake | undefined;
+  location: string | undefined;
+}
+
 /** A forum post `createForumPost` minted, keyed by its thread id (MCP slice 3). */
 interface FakeForumPost {
   messageId: Snowflake;
@@ -197,6 +209,8 @@ export class FakeDiscord implements DiscordPort {
   private threadInfos = new Map<Snowflake, FakeThreadInfo>();
   /** Forum posts (`threadId` -> starter), for `createForumPost` (MCP slice 3). */
   private forumPosts = new Map<Snowflake, FakeForumPost>();
+  /** Guild scheduled events (`eventId` -> event), for the MCP slice 5 writes. */
+  private scheduledEvents = new Map<Snowflake, FakeScheduledEvent>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
@@ -381,6 +395,7 @@ export class FakeDiscord implements DiscordPort {
         sizeBytes: a.sizeBytes,
       })),
       referencedAuthorName: msg.referencedAuthorName,
+      poll: undefined,
     });
   }
   /** A message outside the client cache. Its events arrive partial. */
@@ -1193,6 +1208,7 @@ export class FakeDiscord implements DiscordPort {
     this.check('sendMessage', guildId);
     const messageId = this.nextId();
     this.defineMessage({ channelId, messageId, authorId: BOT_USER_ID });
+    this.mustMessage({ channelId, messageId }).poll = message.poll;
     return { channelId, messageId };
   }
 
@@ -1535,13 +1551,114 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
-   * Guild scheduled events (ADR 0092): nothing is seeded, so the fake
-   * answers no events — the same `[]` the REST adapter reports on a 403.
+   * Guild scheduled events (ADR 0092, MCP slice 5): what
+   * `createScheduledEvent` minted, with edits applied and cancelled events
+   * removed — the same `ScheduledEvent` shape the REST adapter reports.
    */
   async listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]> {
     this.record('listScheduledEvents', [guildId]);
     this.check('listScheduledEvents', guildId);
-    return [];
+    return [...this.scheduledEvents.values()].map((event) => ({
+      id: event.id,
+      name: event.name,
+      ...(event.description === undefined ? {} : { description: event.description }),
+      scheduledStartAt: event.scheduledStartAt,
+      ...(event.channelId === undefined ? {} : { channelId: event.channelId }),
+      ...(event.location === undefined ? {} : { location: event.location }),
+    }));
+  }
+
+  /**
+   * Creates a guild scheduled event (MCP slice 5): mints the id and records
+   * what `listScheduledEvents` reads. The external-without-`endAt` refusal
+   * mirrors the REST adapter's `TypeError`, thrown before anything is
+   * recorded.
+   */
+  async createScheduledEvent(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly description?: string | undefined;
+      readonly startAt: number;
+      readonly endAt?: number | undefined;
+      readonly location:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string };
+    },
+  ): Promise<{ eventId: string }> {
+    if (input.location.kind === 'external' && input.endAt === undefined) {
+      throw new TypeError('createScheduledEvent: external events require endAt');
+    }
+    this.record('createScheduledEvent', [guildId, input]);
+    this.check('createScheduledEvent', guildId);
+    const eventId = this.nextId();
+    this.scheduledEvents.set(eventId, {
+      id: eventId,
+      name: input.name,
+      description: input.description,
+      scheduledStartAt: input.startAt,
+      channelId: input.location.kind === 'external' ? undefined : input.location.channelId,
+      location: input.location.kind === 'external' ? input.location.place : undefined,
+    });
+    return { eventId };
+  }
+
+  /**
+   * Edits a guild scheduled event (MCP slice 5): only the fields given move,
+   * the way `setThreadState` carries only its fields. An unknown event throws
+   * a 404, mirroring the adapter's mapped error — not `undefined`, which is
+   * what the *reads* answer.
+   */
+  async editScheduledEvent(
+    guildId: Snowflake,
+    eventId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly description?: string | undefined;
+      readonly startAt?: number | undefined;
+      readonly endAt?: number | undefined;
+      readonly location?:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string }
+        | undefined;
+    },
+  ): Promise<void> {
+    this.record('editScheduledEvent', [guildId, eventId, patch]);
+    this.check('editScheduledEvent', guildId);
+    const event = this.scheduledEvents.get(eventId);
+    if (!event)
+      throw new DiscordApiError(404, undefined, `Unknown Guild Scheduled Event: ${eventId}`);
+    if (patch.name !== undefined) event.name = patch.name;
+    if (patch.description !== undefined) event.description = patch.description;
+    if (patch.startAt !== undefined) event.scheduledStartAt = patch.startAt;
+    if (patch.location !== undefined) {
+      event.channelId =
+        patch.location.kind === 'external' ? undefined : patch.location.channelId;
+      event.location =
+        patch.location.kind === 'external' ? patch.location.place : undefined;
+    }
+  }
+
+  /**
+   * Cancels a guild scheduled event (MCP slice 5): removes it from what
+   * `listScheduledEvents` reads. An unknown event throws a 404, mirroring
+   * the adapter's mapped error.
+   */
+  async cancelScheduledEvent(guildId: Snowflake, eventId: Snowflake): Promise<void> {
+    this.record('cancelScheduledEvent', [guildId, eventId]);
+    this.check('cancelScheduledEvent', guildId);
+    if (!this.scheduledEvents.delete(eventId)) {
+      throw new DiscordApiError(404, undefined, `Unknown Guild Scheduled Event: ${eventId}`);
+    }
+  }
+
+  /**
+   * The poll a `sendMessage` attached to the message (MCP slice 5).
+   * `undefined` for a message sent without one — or for a message this fake
+   * was never told about — so assertions read absence the same way.
+   */
+  pollOf(channelId: Snowflake, messageId: Snowflake): OutgoingMessage['poll'] {
+    return this.messages.get(key(channelId, messageId))?.poll;
   }
 
   /**
