@@ -164,6 +164,22 @@ export interface ModCommandDeps {
   readonly cases: ModCommandCasePorts;
   /** Passed straight through to `issueWarn` for the `warn` subcommand. */
   readonly warnRepo: WarnCasePorts;
+  /**
+   * Called after a warning is recorded, for the logging module (ADR 0123).
+   * Must not throw into the command — `handleWarn` awaits it inside a
+   * try/catch that logs and swallows, so a logging failure never fails or
+   * delays the moderator's reply beyond the existing flow.
+   */
+  readonly onWarned?:
+    | ((info: {
+        memberId: Snowflake;
+        actorId: Snowflake;
+        warnId: Snowflake;
+        reason: string;
+        caseId: string;
+        violationCount: number;
+      }) => Promise<void>)
+    | undefined;
   /** Backs `note` and `evidence` (Task 8) — see `NoteEvidenceCasePorts`'s own docstring for why this is a third, separate port rather than a widening of `cases`. */
   readonly noteEvidenceCases: NoteEvidenceCasePorts;
   /**
@@ -491,6 +507,28 @@ const handleWarn = async (
       auth: authResult.value,
     },
   );
+
+  // The logging module's hook (ADR 0123): the warning is the bot's own
+  // action, so it cannot arrive as a gateway event — it is posted from here,
+  // after the record exists and before the reply. A logging failure must
+  // never fail the command: the warning itself is already recorded.
+  if (deps.onWarned !== undefined) {
+    try {
+      await deps.onWarned({
+        memberId: targetId,
+        actorId: event.userId,
+        warnId: event.interactionId,
+        reason,
+        caseId: result.caseId,
+        violationCount: result.violationCount,
+      });
+    } catch (err) {
+      deps.logger.error(
+        safeLogFields({ component: 'mod', guildId: deps.guildId, err }),
+        'failed to log a warning; the warning itself is recorded',
+      );
+    }
+  }
 
   const lines = [`Warning recorded for <@${targetId}>. Violation count: ${result.violationCount}.`];
   if (result.escalation !== undefined) {

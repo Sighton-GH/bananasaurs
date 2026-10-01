@@ -74,6 +74,7 @@ function buildHarness(
     tier?: { tier: number; action: 'timeout' | 'kick' | undefined; timeoutMs: number | undefined };
     historyCases?: readonly HistoryCase[];
     historyEventsByCase?: Record<string, readonly HistoryCaseEvent[]>;
+    onWarned?: ModCommandDeps['onWarned'];
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -186,6 +187,7 @@ function buildHarness(
     cases,
     warnRepo,
     noteEvidenceCases,
+    ...(opts.onWarned !== undefined ? { onWarned: opts.onWarned } : {}),
     history: {
       guildId: GUILD,
       authz,
@@ -477,6 +479,68 @@ describe('mod command subscriber', () => {
       expect(calls.respond[0]?.message.content).toMatch(/Violation count: 3/);
       expect(calls.respond[0]?.message.content).toMatch(/escalation tier/i);
       expect(calls.respond[0]?.message.content).toMatch(/applied/);
+    });
+
+    it('calls onWarned once with the warn info after a successful warn', async () => {
+      const seen: {
+        memberId: string;
+        actorId: string;
+        warnId: string;
+        reason: string;
+        caseId: string;
+        violationCount: number;
+      }[] = [];
+      const { deps, calls } = buildHarness({
+        violationCount: 2,
+        onWarned: async (info) => {
+          seen.push({ ...info });
+        },
+      });
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          interactionId: 'interaction-9',
+          subcommandPath: ['warn'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'reason', value: 'first offense' },
+          ],
+        }),
+      );
+
+      expect(seen).toEqual([
+        {
+          memberId: TARGET,
+          actorId: MODERATOR,
+          warnId: 'interaction-9',
+          reason: 'first offense',
+          caseId: 'case-1',
+          violationCount: 2,
+        },
+      ]);
+      expect(calls.respond).toHaveLength(1);
+    });
+
+    it('a throwing onWarned does not stop the reply', async () => {
+      const { deps, calls } = buildHarness({
+        onWarned: async () => {
+          throw new Error('log is down');
+        },
+      });
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(slashCommandEvent({ subcommandPath: ['warn'] }));
+
+      expect(calls.respond).toHaveLength(1);
+      expect(calls.respond[0]?.message.content).toMatch(/Warning recorded/);
+    });
+
+    it('an absent onWarned replies normally', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(slashCommandEvent({ subcommandPath: ['warn'] }));
+
+      expect(calls.respond).toHaveLength(1);
+      expect(calls.respond[0]?.message.content).toMatch(/Warning recorded/);
     });
   });
 
