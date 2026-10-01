@@ -268,6 +268,23 @@ const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
         })
         .map(toMcpArchiveMessage),
     ),
+  listMessagesSince: (guildId, input) =>
+    loggedCall(deps.logger, 'listMessagesSince', () =>
+      archiveRepo
+        .listMessagesSince(deps.scopes.forGuild(guildId), {
+          channelIds: [...input.channelIds],
+          since: input.since,
+          ...(input.after !== undefined ? { after: input.after } : {}),
+          limit: input.limit,
+        })
+        .map(toMcpArchiveMessage),
+    ),
+  listUnansweredRoleMentions: (guildId, input) =>
+    loggedCall(deps.logger, 'listUnansweredRoleMentions', () =>
+      archiveRepo
+        .listUnansweredRoleMentions(deps.scopes.forGuild(guildId), { ...input })
+        .map(toMcpArchiveMessage),
+    ),
   botUserId: () => client.user?.id ?? undefined,
 });
 

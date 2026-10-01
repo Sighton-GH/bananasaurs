@@ -1112,7 +1112,13 @@ export const listUnansweredRoleMentions = (
         .where(
           scope.only(
             archiveMessages,
-            sql`(${archiveMessages.replyToMessageId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}) OR ${archiveMessages.threadId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}))`,
+            sql`(${archiveMessages.replyToMessageId} IN (${sql.join(
+              ids.map((id) => sql`${id}`),
+              sql`, `,
+            )}) OR ${archiveMessages.threadId} IN (${sql.join(
+              ids.map((id) => sql`${id}`),
+              sql`, `,
+            )}))`,
           ),
         )
         .all();

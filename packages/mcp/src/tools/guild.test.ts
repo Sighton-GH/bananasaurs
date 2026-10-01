@@ -509,6 +509,8 @@ describe('guild tools on the MCP server', () => {
         searchMessages: () => ({ total: 0, hits: [] }),
         findMessage: () => undefined,
         listChannelHistory: () => [],
+        listMessagesSince: () => [],
+        listUnansweredRoleMentions: () => [],
         botUserId: () => undefined,
       },
       guild: port,
@@ -540,7 +542,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all twenty tools and still no send_message', async () => {
+  it('lists all twenty-two tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -550,6 +552,8 @@ describe('guild tools on the MCP server', () => {
         'read_channel_history',
         'get_message',
         'read_thread',
+        'read_digest',
+        'list_unanswered',
         LIST_CHANNELS_TOOL_NAME,
         LIST_THREADS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,

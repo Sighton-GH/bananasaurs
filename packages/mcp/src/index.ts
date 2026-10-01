@@ -76,8 +76,10 @@ export {
   MCP_READ_LIST_MEMBERS,
   MCP_READ_LIST_MOD_CASES,
   MCP_READ_LIST_ROLES,
+  MCP_READ_LIST_UNANSWERED,
   MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_READ_DIGEST,
   MCP_READ_READ_THREAD,
   MCP_READ_SEARCH_MEMBERS,
   MCP_READ_SEARCH_MESSAGES,
@@ -115,6 +117,8 @@ export {
   type McpArchiveSearchInput,
   type McpArchiveSearchResult,
   type McpChannelHistoryInput,
+  type McpDigestInput,
+  type McpUnansweredInput,
 } from './tools/archive.js';
 export {
   LIST_CHANNELS_TOOL_DESCRIPTION,
@@ -223,6 +227,17 @@ export {
   type McpResourcesPort,
   type McpResourceSummary,
 } from './tools/resources.js';
+export {
+  LIST_UNANSWERED_TOOL_DESCRIPTION,
+  LIST_UNANSWERED_TOOL_NAME,
+  listUnansweredParams,
+  listUnansweredText,
+  READ_DIGEST_TOOL_DESCRIPTION,
+  READ_DIGEST_TOOL_NAME,
+  readDigestParams,
+  readDigestText,
+  registerDigestTools,
+} from './tools/digest.js';
 export { STRUCTURED_NOTE, safeName, structuredText } from './structured.js';
 export {
   isSnowflake,

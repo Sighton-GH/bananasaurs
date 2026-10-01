@@ -76,6 +76,7 @@ import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { registerContextTools, type McpContextPort } from './tools/context.js';
 import { registerResourceTools, type McpResourcesPort } from './tools/resources.js';
 import { registerThreadTools, type McpThreadsPort } from './tools/threads.js';
+import { registerDigestTools } from './tools/digest.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
@@ -303,6 +304,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   });
   const guild = deps.guild;
   registerThreadTools({ server, principal: deps.principal, readAudit }, deps.threads);
+  registerDigestTools({ server, principal: deps.principal, readAudit }, deps.archive, deps.guild);
   server.tool(
     LIST_CHANNELS_TOOL_NAME,
     LIST_CHANNELS_TOOL_DESCRIPTION,

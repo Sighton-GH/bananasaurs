@@ -1017,7 +1017,11 @@ describe('listMessagesSince (slice 2 task 5: read_digest)', () => {
   });
 
   it('returns messages at/after since across the given channels, oldest first', () => {
-    const found = listMessagesSince(a, { channelIds: [CHANNEL_A, CHANNEL_B], since: 1000, limit: 10 });
+    const found = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      limit: 10,
+    });
     expect(found.map((m) => m.messageId)).toEqual([M1, M3, M2]);
   });
 
@@ -1027,7 +1031,11 @@ describe('listMessagesSince (slice 2 task 5: read_digest)', () => {
   });
 
   it('a cursor continues past the limit', () => {
-    const first = listMessagesSince(a, { channelIds: [CHANNEL_A, CHANNEL_B], since: 1000, limit: 2 });
+    const first = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      limit: 2,
+    });
     expect(first.map((m) => m.messageId)).toEqual([M1, M3]);
     const last = first[first.length - 1];
     if (last === undefined) throw new Error('expected a first page');
@@ -1041,8 +1049,18 @@ describe('listMessagesSince (slice 2 task 5: read_digest)', () => {
   });
 
   it('includes thread messages under an included channel, not under an excluded one', () => {
-    seedAt(a, { messageId: '710000000000000011', channelId: CHANNEL_A, createdAt: 1200, threadId: THREAD });
-    seedAt(a, { messageId: '710000000000000012', channelId: CHANNEL_B, createdAt: 1300, threadId: '710000000000000019' });
+    seedAt(a, {
+      messageId: '710000000000000011',
+      channelId: CHANNEL_A,
+      createdAt: 1200,
+      threadId: THREAD,
+    });
+    seedAt(a, {
+      messageId: '710000000000000012',
+      channelId: CHANNEL_B,
+      createdAt: 1300,
+      threadId: '710000000000000019',
+    });
     const found = listMessagesSince(a, { channelIds: [CHANNEL_A], since: 1000, limit: 10 });
     expect(found.map((m) => m.messageId)).toEqual([M1, '710000000000000011', M2]);
     expect(found.find((m) => m.messageId === '710000000000000011')?.threadId).toBe(THREAD);
@@ -1050,7 +1068,11 @@ describe('listMessagesSince (slice 2 task 5: read_digest)', () => {
 
   it('excludes another guild rows and answers [] for no channels', () => {
     seedAt(b, { messageId: '720000000000000001', channelId: CHANNEL_A, createdAt: 1100 });
-    const found = listMessagesSince(a, { channelIds: [CHANNEL_A, CHANNEL_B], since: 1000, limit: 10 });
+    const found = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      limit: 10,
+    });
     expect(found.map((m) => m.messageId)).toEqual([M1, M3, M2]);
     expect(listMessagesSince(a, { channelIds: [], since: 1000, limit: 10 })).toEqual([]);
   });
@@ -1086,9 +1108,7 @@ describe('listUnansweredRoleMentions (slice 2 task 5: list_unanswered)', () => {
       createdAt: input.createdAt,
       editedAt: undefined,
       attachments: [],
-      ...(input.replyToMessageId !== undefined
-        ? { replyToMessageId: input.replyToMessageId }
-        : {}),
+      ...(input.replyToMessageId !== undefined ? { replyToMessageId: input.replyToMessageId } : {}),
       mentionedRoleIds: input.mentionedRoleIds ?? [HELP],
     });
   };
@@ -1149,7 +1169,11 @@ describe('listUnansweredRoleMentions (slice 2 task 5: list_unanswered)', () => {
 
   it('prefix-sharing role ids do not cross-match', () => {
     seedQuestion(a, { messageId: '730000000000000041', createdAt: 2000, mentionedRoleIds: [HELP] });
-    seedQuestion(a, { messageId: '730000000000000042', createdAt: 3000, mentionedRoleIds: [HELP_LONG] });
+    seedQuestion(a, {
+      messageId: '730000000000000042',
+      createdAt: 3000,
+      mentionedRoleIds: [HELP_LONG],
+    });
     expect(unanswered(a)).toEqual(['730000000000000041']);
     expect(unanswered(a, HELP_LONG)).toEqual(['730000000000000042']);
   });

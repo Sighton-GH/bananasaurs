@@ -12,10 +12,12 @@ import {
   MCP_READ_LIST_AUDIT_EVENTS,
   MCP_READ_LIST_CHANNELS,
   MCP_READ_LIST_MEMBERS,
-  MCP_READ_LIST_ROLES,
   MCP_READ_LIST_MOD_CASES,
+  MCP_READ_LIST_ROLES,
+  MCP_READ_LIST_UNANSWERED,
   MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_READ_DIGEST,
   MCP_READ_READ_THREAD,
   MCP_READ_SEARCH_MESSAGES,
   MCP_READ_SEARCH_RESOURCES,
@@ -52,6 +54,7 @@ import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
 import { openResourceText, searchResourcesText, type McpResourcesPort } from './tools/resources.js';
 import { readThreadText, type McpThreadsPort } from './tools/threads.js';
+import { listUnansweredText, readDigestText } from './tools/digest.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -100,6 +103,19 @@ const archivePort = (): McpArchivePort => ({
       replyToMessageId: undefined,
     },
   ],
+  listMessagesSince: () => [
+    {
+      messageId: MESSAGE,
+      channelId: CHANNEL,
+      threadId: undefined,
+      authorId: undefined,
+      content: null,
+      createdAt: 1,
+      contentPurgedAt: undefined,
+      replyToMessageId: undefined,
+    },
+  ],
+  listUnansweredRoleMentions: () => [],
   botUserId: () => undefined,
 });
 
@@ -334,6 +350,50 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
       subjectType: 'resource',
       subjectId: 'handbook',
       resultCount: 1,
+    });
+  });
+
+  it('read_digest and list_unanswered record guild content reads', () => {
+    const digestGuild: McpGuildPort = {
+      ...guildPort(),
+      listRoles: () => [
+        {
+          id: '777777777777777777',
+          name: 'help',
+          position: 1,
+          color: 0,
+          managedByBananasaurs: false,
+        },
+      ],
+    };
+    const digest = readDigestText(principalWith(GUILD_A), archivePort(), digestGuild, {
+      guildId: String(GUILD_A),
+      channels: [CHANNEL],
+      since: 0,
+    });
+    expect(digest.ok).toBe(true);
+    if (!digest.ok) throw new Error('expected ok');
+    expect(digest.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_READ_DIGEST,
+      guildId: GUILD_A,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: 1,
+    });
+    const unanswered = listUnansweredText(principalWith(GUILD_A), archivePort(), digestGuild, {
+      guildId: String(GUILD_A),
+      helpRole: 'help',
+    });
+    expect(unanswered.ok).toBe(true);
+    if (!unanswered.ok) throw new Error('expected ok');
+    expect(unanswered.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_LIST_UNANSWERED,
+      guildId: GUILD_A,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: 0,
     });
   });
 

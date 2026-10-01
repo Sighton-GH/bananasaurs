@@ -191,6 +191,15 @@ beforeEach(() => {
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
         ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
       }),
+    listMessagesSince: (guildId, input) =>
+      archiveRepo.listMessagesSince(scopes.forGuild(guildId), {
+        channelIds: [...input.channelIds],
+        since: input.since,
+        ...(input.after !== undefined ? { after: input.after } : {}),
+        limit: input.limit,
+      }),
+    listUnansweredRoleMentions: (guildId, input) =>
+      archiveRepo.listUnansweredRoleMentions(scopes.forGuild(guildId), { ...input }),
     botUserId: () => BOT_ID,
   };
 
@@ -633,6 +642,8 @@ describe('channel names resolve after the guild gate; authorId "bot" reads the b
         seenHistory.push(input);
         return [];
       },
+      listMessagesSince: () => [],
+      listUnansweredRoleMentions: () => [],
       botUserId: () => botId,
     };
   };
@@ -813,7 +824,7 @@ describe('archive tools on the MCP server', () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
       const list = await client.listTools();
-      // Twenty with read_thread: the records, jobs, members, context,
+      // Twenty-two with read_thread and the digest tools: the records, jobs,
       // threads and resources tools register alongside the archive and guild
       // ones (the guild, records, jobs, members, context, threads and
       // stubs above answer empty, which is all this file needs — their own
@@ -831,12 +842,15 @@ describe('archive tools on the MCP server', () => {
       const { GET_MEMBER_TOOL_NAME, SEARCH_MEMBERS_TOOL_NAME } = await import('./members.js');
       const { SEARCH_RESOURCES_TOOL_NAME, OPEN_RESOURCE_TOOL_NAME } =
         await import('./resources.js');
+      const { READ_DIGEST_TOOL_NAME, LIST_UNANSWERED_TOOL_NAME } = await import('./digest.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
         READ_THREAD_TOOL_NAME,
+        READ_DIGEST_TOOL_NAME,
+        LIST_UNANSWERED_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
         'list_threads',
         LIST_ROLES_TOOL_NAME,

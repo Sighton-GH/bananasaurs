@@ -44,6 +44,7 @@ import {
   type McpResourcesPort,
 } from './tools/resources.js';
 import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './tools/threads.js';
+import { LIST_UNANSWERED_TOOL_NAME, READ_DIGEST_TOOL_NAME } from './tools/digest.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -93,6 +94,8 @@ const stubArchive = (): McpArchivePort => ({
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  listMessagesSince: () => [],
+  listUnansweredRoleMentions: () => [],
   botUserId: () => undefined,
 });
 
@@ -225,13 +228,13 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message first, alongside the twenty read tools', async () => {
+  it('lists send_message first, alongside the twenty-two read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(21);
+      expect(list.tools).toHaveLength(23);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
@@ -239,6 +242,8 @@ describe('createMcpServer', () => {
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
         READ_THREAD_TOOL_NAME,
+        READ_DIGEST_TOOL_NAME,
+        LIST_UNANSWERED_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
         'list_threads',
         LIST_ROLES_TOOL_NAME,

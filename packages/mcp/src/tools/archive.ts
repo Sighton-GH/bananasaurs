@@ -140,6 +140,31 @@ export interface McpChannelHistoryInput {
 }
 
 /**
+ * Slice 2, Task 5: the `read_digest` read. `after` is the opaque cursor's
+ * decoded form — the last row's `(createdAt, messageId)` — so the next page
+ * starts strictly past it in the repository's oldest-first order.
+ */
+export interface McpDigestInput {
+  readonly channelIds: readonly string[];
+  readonly since: number;
+  readonly after?: { readonly createdAt: number; readonly messageId: string } | undefined;
+  readonly limit: number;
+}
+
+/**
+ * Slice 2, Task 5: the `list_unanswered` read. Absolute unix-ms bounds —
+ * the tool turns `olderThanHours`/`sinceDays` into them — over messages
+ * mentioning `roleId`, answered by any other author's reply or thread
+ * message (the repository owns that rule).
+ */
+export interface McpUnansweredInput {
+  readonly roleId: string;
+  readonly since: number;
+  readonly olderThan: number;
+  readonly limit: number;
+}
+
+/**
  * The narrow port the archive tools need — the Task 3 `McpHealthPort` shape
  * applied to reads. Every method takes the already-resolved `GuildId` (this
  * module resolved it through `requireReachableGuild` first) and the daemon
@@ -159,6 +184,16 @@ export interface McpArchivePort {
   readonly listChannelHistory: (
     guildId: GuildId,
     input: McpChannelHistoryInput,
+  ) => readonly McpArchiveMessage[];
+  /** Slice 2, Task 5: every archived message in these channels since a time, oldest first. */
+  readonly listMessagesSince: (
+    guildId: GuildId,
+    input: McpDigestInput,
+  ) => readonly McpArchiveMessage[];
+  /** Slice 2, Task 5: @help-role mentions with no other-author answer, newest first. */
+  readonly listUnansweredRoleMentions: (
+    guildId: GuildId,
+    input: McpUnansweredInput,
   ) => readonly McpArchiveMessage[];
   /** The bot's own user id, or undefined before the gateway is ready. */
   readonly botUserId: () => string | undefined;
