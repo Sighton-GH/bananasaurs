@@ -166,6 +166,12 @@ export {
   type LogSource,
 } from './logging/routing.js';
 export {
+  logEventKindSchema,
+  logRouteIdSchema,
+  logRouteInputSchema,
+  type LogRouteInput,
+} from './logging/route-input.js';
+export {
   correlateDeletion,
   MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
   type CorrelationCandidate,
