@@ -36,6 +36,22 @@ export const providerKeyFrom = (secret: string): Buffer =>
 const keyFrom = providerKeyFrom;
 export type ProviderSecretSource = 'env' | 'file' | 'missing';
 export type ProviderCostClass = 'free' | 'paid' | 'unknown';
+/**
+ * ADR 0120: one stored search key as the dashboard sees it — a projection
+ * without `apiKeyEnc`, so the sealed value cannot be reached, let alone
+ * returned.
+ */
+export interface ProviderSearchKey {
+  readonly keyId: string;
+  readonly source: 'brave' | 'tavily';
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly position: number;
+  readonly monthlyLimit: number | null;
+  readonly dailyLimit: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
 export interface ProviderConfigStatus {
   readonly provider: string;
   /** The model name is configuration, not a secret; the key never appears here. */
@@ -148,7 +164,7 @@ export interface ProviderConfigStore {
    */
   githubToken(): string | undefined;
   /** ADR 0120: the stored search keys, sealed values never opened. */
-  searchKeys(): readonly searchKeysRepo.StoredSearchKey[];
+  searchKeys(): readonly ProviderSearchKey[];
   /** Seals `apiKey`; returns the new key id. */
   addSearchKey(
     input: {
@@ -500,7 +516,18 @@ export const createProviderConfigStore = (
       return opened === undefined || opened === '' ? undefined : opened;
     },
     searchKeys() {
-      return searchKeysRepo.listSearchKeys(instance);
+      // A projection without `apiKeyEnc`: the sealed value never leaves the store.
+      return searchKeysRepo.listSearchKeys(instance).map((stored) => ({
+        keyId: stored.keyId,
+        source: stored.source,
+        label: stored.label,
+        enabled: stored.enabled,
+        position: stored.position,
+        monthlyLimit: stored.monthlyLimit,
+        dailyLimit: stored.dailyLimit,
+        createdAt: stored.createdAt,
+        updatedAt: stored.updatedAt,
+      }));
     },
     addSearchKey(input, now) {
       return searchKeysRepo.addSearchKey(instance, {

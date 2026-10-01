@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseConfig } from '@bananasaurs/core';
-import { assistantProviderRepo, assistantProvidersRepo } from '@bananasaurs/storage';
+import { assistantProviderRepo, assistantProvidersRepo, searchKeysRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -340,7 +340,9 @@ describe('web search keys (ADR 0120)', () => {
       { source: 'brave', label: 'Brave key', apiKey: 'brave-raw-key' },
       10,
     );
-    expect(store.searchKeys()[0]?.apiKeyEnc).not.toContain('brave-raw-key');
+    expect('apiKeyEnc' in store.searchKeys()[0]!).toBe(false);
+    const sealed = searchKeysRepo.listSearchKeys(t.scopes.instance())[0]?.apiKeyEnc;
+    expect(sealed).not.toContain('brave-raw-key');
     expect(JSON.stringify(store.searchKeys())).not.toContain('brave-raw-key');
     expect(JSON.stringify(store.status())).not.toContain('brave-raw-key');
     expect(store.isSearchKeyReadable(keyId)).toBe(true);
@@ -484,11 +486,13 @@ describe('web search keys (ADR 0120)', () => {
       { source: 'brave', label: 'B', apiKey: 'alpha-secret' },
       10,
     );
-    const before = store.searchKeys().find((k) => k.keyId === keyId)?.apiKeyEnc;
+    const sealedOf = (): string | undefined =>
+      searchKeysRepo.listSearchKeys(t.scopes.instance()).find((k) => k.keyId === keyId)?.apiKeyEnc;
+    const before = sealedOf();
     expect(store.updateSearchKey(keyId, { label: 'B renamed' }, 11)).toBe(true);
-    expect(store.searchKeys().find((k) => k.keyId === keyId)?.apiKeyEnc).toBe(before);
+    expect(sealedOf()).toBe(before);
     expect(store.updateSearchKey(keyId, { apiKey: 'beta-secret' }, 12)).toBe(true);
-    const after = store.searchKeys().find((k) => k.keyId === keyId)?.apiKeyEnc;
+    const after = sealedOf();
     expect(after).not.toBe(before);
     expect(after).not.toContain('beta-secret');
     expect(store.updateSearchKey('skey_does-not-exist', { label: 'x' }, 13)).toBe(false);
