@@ -287,6 +287,18 @@ describe('bananasaurs jobs list', () => {
 describe('bananasaurs log routing list', () => {
   const noRoutes = { listRoutes: () => [], listExcludedChannels: () => [] };
 
+  const route = (over: Record<string, unknown> = {}) => ({
+    routeId: '123e4567-e89b-12d3-a456-426614174000',
+    name: '→ 999',
+    channelId: '999999999999999999',
+    enabled: true,
+    includeContent: true,
+    createdAtMs: NOW,
+    eventKinds: ['member_join'],
+    excludedChannelIds: [],
+    ...over,
+  });
+
   it('says outright that nothing is being logged when no route exists', async () => {
     // WP4's logging module is fully built and inert without a route. An empty
     // table would look identical to "working but quiet".
@@ -294,27 +306,43 @@ describe('bananasaurs log routing list', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toMatch(/nothing is being logged/i);
-    expect(res.text).toContain('log routing set');
+    expect(res.text).toContain('log routing create');
   });
 
-  it('lists a route with its channel', async () => {
+  it('lists a route with its name, channel, events and excludes', async () => {
     const res = await drive(logRoutingListCommand, {
       listRoutes: () => [
-        { eventKind: 'message_delete', channelId: '999', enabled: true, includeContent: true },
+        route({
+          name: 'mod log',
+          channelId: '999999999999999999',
+          eventKinds: ['member_join', 'member_leave'],
+          excludedChannelIds: ['555555555555555555'],
+        }),
       ],
       listExcludedChannels: () => [],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('message_delete');
-    expect(res.text).toContain('999');
+    expect(res.text).toContain('123e4567');
+    expect(res.text).toContain('mod log');
+    expect(res.text).toContain('<#999999999999999999>');
+    expect(res.text).toContain('member_join, member_leave');
+    expect(res.text).toContain('<#555555555555555555>');
+  });
+
+  it('says excludes none when the route excludes nothing', async () => {
+    const res = await drive(logRoutingListCommand, {
+      listRoutes: () => [route()],
+      listExcludedChannels: () => [],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('excludes: none');
   });
 
   it('marks a disabled route, which otherwise reads as working', async () => {
     const res = await drive(logRoutingListCommand, {
-      listRoutes: () => [
-        { eventKind: 'message_edit', channelId: '999', enabled: false, includeContent: true },
-      ],
+      listRoutes: () => [route({ enabled: false })],
       listExcludedChannels: () => [],
     });
     expect(res.ok).toBe(true);
@@ -324,9 +352,7 @@ describe('bananasaurs log routing list', () => {
 
   it('marks a metadata-only route', async () => {
     const res = await drive(logRoutingListCommand, {
-      listRoutes: () => [
-        { eventKind: 'message_edit', channelId: '999', enabled: true, includeContent: false },
-      ],
+      listRoutes: () => [route({ includeContent: false })],
       listExcludedChannels: () => [],
     });
     expect(res.ok).toBe(true);
@@ -334,14 +360,20 @@ describe('bananasaurs log routing list', () => {
     expect(res.text).toContain('metadata only');
   });
 
-  it('lists excluded channels', async () => {
-    const res = await drive(logRoutingListCommand, {
+  it('lists the guild-wide exclusion list, or none', async () => {
+    const excluded = await drive(logRoutingListCommand, {
       listRoutes: () => [],
-      listExcludedChannels: () => ['555'],
+      listExcludedChannels: () => ['555555555555555555'],
     });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain('555');
+    expect(excluded.ok).toBe(true);
+    if (!excluded.ok) return;
+    expect(excluded.text).toContain('555555555555555555');
+    expect(excluded.text).toContain('No access');
+
+    const none = await drive(logRoutingListCommand, noRoutes);
+    expect(none.ok).toBe(true);
+    if (!none.ok) return;
+    expect(none.text).toContain('none');
   });
 });
 

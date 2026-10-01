@@ -1,6 +1,7 @@
 import type { DryRunReport } from '../automod/dry-run.js';
 import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { Capability } from '../authz.js';
+import type { LogRouteInput } from '../logging/route-input.js';
 import type { PanelDefinition } from '../panels/model.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
@@ -218,10 +219,14 @@ export interface OpsReviewableMatch {
 }
 
 export interface OpsLogRoute {
-  readonly eventKind: string;
+  readonly routeId: string;
+  readonly name: string;
   readonly channelId: string;
   readonly enabled: boolean;
   readonly includeContent: boolean;
+  readonly createdAtMs: number;
+  readonly eventKinds: readonly string[];
+  readonly excludedChannelIds: readonly string[];
 }
 
 /** The guild's row in `guilds`, as the effect gateway reads it. */
@@ -822,6 +827,7 @@ export interface OpsPorts {
     nowMs: number,
   ): readonly OpsAutomodObserveWindowBacklog[];
   listRoutes(): readonly OpsLogRoute[];
+  getRoute(routeId: string): OpsLogRoute | undefined;
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
   findJob(jobId: number): OpsJobRow | undefined;
@@ -1098,10 +1104,14 @@ export interface OpsPorts {
     readonly exemptType: 'role' | 'channel';
     readonly exemptId: string;
   }): 'removed' | 'not-present';
-  /** Points an event kind at a channel, creating or re-pointing the route. */
-  setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
+  /** Creates a route; the port supplies the creation timestamp. */
+  createRoute(input: LogRouteInput): OpsLogRoute;
+  /** Replaces a route; `undefined` when no route carries that id in this guild. */
+  updateRoute(routeId: string, input: LogRouteInput): OpsLogRoute | undefined;
   /** Returns whether there was a route to change. False is a real answer. */
-  setRouteEnabled(eventKind: string, enabled: boolean): boolean;
+  setRouteEnabled(routeId: string, enabled: boolean): boolean;
+  /** Deletes a route. Returns whether there was one. */
+  deleteRoute(routeId: string): boolean;
   /** Returns whether the exclusion is new. */
   excludeChannel(channelId: string): boolean;
   /** Returns whether there was an exclusion to remove. */

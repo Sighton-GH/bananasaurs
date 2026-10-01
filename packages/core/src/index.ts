@@ -560,10 +560,13 @@ export { adoptionAllowCommand, panelSyncCommand, undoCommand } from './ops/comma
 export {
   configSetCommand,
   jobsRetryCommand,
+  logRoutingCreateCommand,
+  logRoutingDeleteCommand,
   logRoutingExcludeCommand,
   logRoutingOffCommand,
-  logRoutingSetCommand,
+  logRoutingOnCommand,
   logRoutingUnexcludeCommand,
+  logRoutingUpdateCommand,
 } from './ops/commands/writes.js';
 export {
   auditTailCommand,

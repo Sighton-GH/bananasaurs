@@ -67,10 +67,13 @@ import { panelCreateCommand } from './commands/panel-create.js';
 import {
   configSetCommand,
   jobsRetryCommand,
+  logRoutingCreateCommand,
+  logRoutingDeleteCommand,
   logRoutingExcludeCommand,
   logRoutingOffCommand,
-  logRoutingSetCommand,
+  logRoutingOnCommand,
   logRoutingUnexcludeCommand,
+  logRoutingUpdateCommand,
 } from './commands/writes.js';
 
 /**
@@ -109,8 +112,11 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   automodInviteDenyCommand,
   automodDomainAddCommand,
   automodDomainRmCommand,
-  logRoutingSetCommand,
+  logRoutingCreateCommand,
+  logRoutingUpdateCommand,
+  logRoutingOnCommand,
   logRoutingOffCommand,
+  logRoutingDeleteCommand,
   logRoutingExcludeCommand,
   logRoutingUnexcludeCommand,
   jobsRetryCommand,

@@ -1,12 +1,18 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../../ids.js';
 import { LOG_EVENT_KINDS } from '../../logging/subscriber.js';
+import {
+  logRouteIdSchema,
+  logRouteInputSchema,
+  type LogRouteInput,
+} from '../../logging/route-input.js';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
+import type { OpsLogRoute } from '../ports.js';
 import { findSetting, OPS_SETTINGS, parseSettingValue } from '../settings.js';
 
 /**
  * The write half of the Release 1 surface that stays inside the database:
- * `config set`, `log routing set|off|exclude|unexclude`, `jobs retry`.
+ * `config set`, `log routing create|update|on|off|delete|exclude|unexclude`, `jobs retry`.
  *
  * None of these reaches Discord. That is the line the slice is cut on — the
  * commands that do (`panel sync`, `undo`, `adoption allow`) go through the
@@ -29,17 +35,6 @@ import { findSetting, OPS_SETTINGS, parseSettingValue } from '../settings.js';
  * catch, and the reason `ids.ts` exists.
  */
 const channelIdArg = snowflakeIdSchema;
-
-const eventKindArg = z.string().refine(
-  (k) => LOG_EVENT_KINDS.includes(k),
-  (k) => ({
-    // Named, not just refused. WP4's report §5 is that a logging module with no
-    // routes is indistinguishable from a working one, and a route on an event
-    // kind nothing emits reproduces that exactly: the command succeeds, the
-    // listing looks configured, and nothing is ever logged.
-    message: `no such log event kind: ${k}\n\n` + `  Known kinds: ${LOG_EVENT_KINDS.join(', ')}`,
-  }),
-);
 
 // --- config set --------------------------------------------------------------
 
@@ -171,110 +166,298 @@ export const currentValue = (
 const render = (value: boolean | number | string): string =>
   typeof value === 'boolean' ? (value ? 'on' : 'off') : String(value);
 
-// --- log routing set / off ---------------------------------------------------
+// --- log routing create / update / on / off / delete -------------------------
 
-const logRoutingSetArgs = z.object({
-  event: eventKindArg,
-  channel: channelIdArg,
+const routeIdArg = logRouteIdSchema;
+
+const routeFlagsArgs = z.object({
+  events: z.string().min(1),
+  exclude: z.string().min(1).optional(),
+  name: z.string().min(1).max(100).optional(),
   'no-content': z.boolean().default(false),
 });
 
-export const logRoutingSetCommand = defineCommand<z.infer<typeof logRoutingSetArgs>>({
-  name: 'log routing set',
+const routeFlags: { name: string; kind: 'string' | 'boolean'; describe: string }[] = [
+  {
+    name: 'events',
+    kind: 'string',
+    describe: `comma-separated kinds, or 'all': ${LOG_EVENT_KINDS.join(', ')}`,
+  },
+  {
+    name: 'exclude',
+    kind: 'string',
+    describe: 'comma-separated channel ids to exclude from this route only',
+  },
+  { name: 'name', kind: 'string', describe: 'a name for the route (defaults to the channel)' },
+  {
+    name: 'no-content',
+    kind: 'boolean',
+    describe: 'log that it happened without reproducing the message text',
+  },
+];
+
+/** `'all'` expands to every kind; anything else is a comma-separated list. */
+const parseEventsFlag = (raw: string): string[] => {
+  if (raw.trim() === 'all') return [...LOG_EVENT_KINDS];
+  return raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+};
+
+const parseExcludeFlag = (raw: string | undefined): string[] => {
+  if (raw === undefined) return [];
+  return raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+};
+
+/**
+ * The CLI's flags through the shared schema, so the CLI and the HTTP API
+ * cannot disagree about what a route is. Throws a plain Error naming the
+ * refusal — the dispatcher reports it as a usage failure, the way it does
+ * for an unknown route id below.
+ */
+const parseRouteInput = (
+  args: z.infer<typeof routeFlagsArgs> & { channel: z.infer<typeof channelIdArg> },
+  enabled?: boolean,
+): LogRouteInput => {
+  const parsed = logRouteInputSchema.safeParse({
+    ...(args.name !== undefined && { name: args.name }),
+    channelId: args.channel,
+    includeContent: !(args['no-content'] ?? false),
+    ...(enabled !== undefined && { enabled }),
+    eventKinds: parseEventsFlag(args.events),
+    excludedChannelIds: parseExcludeFlag(args.exclude),
+  });
+  if (!parsed.success) {
+    throw new Error(
+      parsed.error.issues
+        .map((issue) => (issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
+        .join('; '),
+    );
+  }
+  return parsed.data;
+};
+
+/**
+ * The audited shape of a route: the same projection the HTTP API writes into
+ * its `before`/`after`, so the two trails read the same.
+ */
+const routeAuditShape = (route: OpsLogRoute): Record<string, unknown> => ({
+  name: route.name,
+  channelId: route.channelId,
+  includeContent: route.includeContent,
+  enabled: route.enabled,
+  eventKinds: [...route.eventKinds],
+  excludedChannelIds: [...route.excludedChannelIds],
+});
+
+const routeData = (route: OpsLogRoute): Record<string, unknown> => ({
+  routeId: route.routeId,
+  ...routeAuditShape(route),
+  createdAtMs: route.createdAtMs,
+});
+
+/**
+ * Stated every time, not only when it changes. Whether a log line quotes
+ * the message is the privacy-relevant half of this command, and an operator
+ * who is told only the channel has been told the less important half.
+ */
+const contentNoteFor = (includeContent: boolean): string =>
+  includeContent
+    ? 'Message content is included in the log line.'
+    : 'Message content is NOT included; the log records that it happened.';
+
+const logRoutingCreateArgs = z.object({
+  channel: channelIdArg,
+  ...routeFlagsArgs.shape,
+});
+
+export const logRoutingCreateCommand = defineCommand<z.infer<typeof logRoutingCreateArgs>>({
+  name: 'log routing create',
   write: true,
-  summary: 'send one kind of event to a channel',
-  positional: [
-    { name: 'event', required: true, describe: `one of: ${LOG_EVENT_KINDS.join(', ')}` },
-    { name: 'channel', required: true, describe: 'the destination channel id' },
-  ],
-  flags: [
-    {
-      name: 'no-content',
-      kind: 'boolean',
-      describe: 'log that it happened without reproducing the message text',
-    },
-  ],
-  args: logRoutingSetArgs,
+  summary: 'log event kinds to a channel as a named route',
+  positional: [{ name: 'channel', required: true, describe: 'the destination channel id' }],
+  flags: routeFlags,
+  args: logRoutingCreateArgs,
 
   run(ctx: OpsContext, args): OpsWriteResult {
-    const includeContent = !args['no-content'];
-    const before = ctx.ports.listRoutes().find((r) => r.eventKind === args.event);
-
-    ctx.ports.setRoute({
-      eventKind: args.event,
-      channelId: args.channel,
-      includeContent,
-    });
-
-    // Stated every time, not only when it changes. Whether a log line quotes
-    // the message is the privacy-relevant half of this command, and an operator
-    // who is told only the channel has been told the less important half.
-    const contentNote = includeContent
-      ? 'Message content is included in the log line.'
-      : 'Message content is NOT included; the log records that it happened.';
+    const input = parseRouteInput(args);
+    const route = ctx.ports.createRoute(input);
 
     return {
       text:
-        (before === undefined
-          ? `${args.event} now logs to <#${args.channel}>.`
-          : before.channelId === args.channel && before.enabled
-            ? `${args.event} still logs to <#${args.channel}>.`
-            : `${args.event} now logs to <#${args.channel}> (was ` +
-              `<#${before.channelId}>${before.enabled ? '' : ', disabled'}).`) +
-        `\n  ${contentNote}`,
-      data: { eventKind: args.event, channelId: args.channel, includeContent, enabled: true },
+        `Created route ${route.routeId.slice(0, 8)} "${route.name}": ` +
+        `${String(route.eventKinds.length)} event kinds -> <#${route.channelId}>.` +
+        `\n  ${contentNoteFor(route.includeContent)}`,
+      data: { route: routeData(route) },
       audit: {
-        action: 'log_route.set',
+        action: 'log_route.created',
         subjectType: 'log_route',
-        subjectId: args.event,
-        before:
-          before === undefined
-            ? null
-            : {
-                channelId: before.channelId,
-                includeContent: before.includeContent,
-                enabled: before.enabled,
-              },
-        after: { channelId: args.channel, includeContent, enabled: true },
+        subjectId: route.routeId,
+        before: undefined,
+        after: routeAuditShape(route),
       },
     };
   },
 });
 
-const logRoutingOffArgs = z.object({ event: eventKindArg });
+const logRoutingUpdateArgs = z.object({
+  route: routeIdArg,
+  channel: channelIdArg,
+  ...routeFlagsArgs.shape,
+});
 
-export const logRoutingOffCommand = defineCommand<z.infer<typeof logRoutingOffArgs>>({
-  name: 'log routing off',
+export const logRoutingUpdateCommand = defineCommand<z.infer<typeof logRoutingUpdateArgs>>({
+  name: 'log routing update',
   write: true,
-  summary: 'stop logging one kind of event, keeping the channel',
-  positional: [{ name: 'event', required: true, describe: 'the event kind to stop logging' }],
-  args: logRoutingOffArgs,
+  summary: "replace a route's channel, events, exclusions, name and content flag",
+  positional: [
+    { name: 'route', required: true, describe: 'the route id from `log routing list`' },
+    { name: 'channel', required: true, describe: 'the new destination channel id' },
+  ],
+  flags: routeFlags,
+  args: logRoutingUpdateArgs,
 
   run(ctx: OpsContext, args): OpsWriteResult {
-    const before = ctx.ports.listRoutes().find((r) => r.eventKind === args.event);
-    const changed = ctx.ports.setRouteEnabled(args.event, false);
-    if (!changed) {
-      // Refused rather than reported as success. An operator who mistyped an
-      // event kind must not be told that the logging they asked to stop has
-      // stopped, because they will believe it.
+    const before = ctx.ports.getRoute(args.route);
+    if (before === undefined) {
+      // Refused rather than reported as success. An operator who mistyped a
+      // route id must not be told that the route they named has been replaced,
+      // because they will believe it.
       throw new Error(
-        `${args.event} has no route in guild ${ctx.guildId}, so there was nothing to turn off.\n` +
+        `${args.route} names no log route in guild ${ctx.guildId}, so there was nothing to update.\n` +
+          `  Run \`bananasaurs log routing list\` to see what is configured.`,
+      );
+    }
+    // The enabled state is the route's own, not a flag: update replaces the
+    // content, `on`/`off` flips the switch.
+    const updated = ctx.ports.updateRoute(args.route, parseRouteInput(args, before.enabled));
+    if (updated === undefined) {
+      throw new Error(
+        `${args.route} names no log route in guild ${ctx.guildId}, so there was nothing to update.\n` +
           `  Run \`bananasaurs log routing list\` to see what is configured.`,
       );
     }
 
     return {
       text:
-        `${args.event} no longer logs to Discord.\n` +
-        `  The route is kept, so \`log routing set ${args.event} ` +
-        `${before?.channelId ?? '<channel>'}\` turns it back on.`,
-      data: { eventKind: args.event, enabled: false },
+        `Updated route ${updated.routeId.slice(0, 8)} "${updated.name}": ` +
+        `${String(updated.eventKinds.length)} event kinds -> <#${updated.channelId}>.` +
+        `\n  ${contentNoteFor(updated.includeContent)}`,
+      data: { route: routeData(updated) },
+      audit: {
+        action: 'log_route.updated',
+        subjectType: 'log_route',
+        subjectId: updated.routeId,
+        before: routeAuditShape(before),
+        after: routeAuditShape(updated),
+      },
+    };
+  },
+});
+
+const logRoutingOnArgs = z.object({ route: routeIdArg });
+
+export const logRoutingOnCommand = defineCommand<z.infer<typeof logRoutingOnArgs>>({
+  name: 'log routing on',
+  write: true,
+  summary: 'turn a route back on, keeping its channel',
+  positional: [{ name: 'route', required: true, describe: 'the route id from `log routing list`' }],
+  args: logRoutingOnArgs,
+
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const before = ctx.ports.getRoute(args.route);
+    if (before === undefined) {
+      throw new Error(
+        `${args.route} names no log route in guild ${ctx.guildId}, so there was nothing to turn on.\n` +
+          `  Run \`bananasaurs log routing list\` to see what is configured.`,
+      );
+    }
+    ctx.ports.setRouteEnabled(args.route, true);
+
+    return {
+      text: `Route ${args.route.slice(0, 8)} "${before.name}" logs to <#${before.channelId}> again.`,
+      data: { routeId: args.route, enabled: true },
+      audit: {
+        action: 'log_route.enabled',
+        subjectType: 'log_route',
+        subjectId: args.route,
+        before: { enabled: before.enabled },
+        after: { enabled: true },
+      },
+    };
+  },
+});
+
+const logRoutingOffArgs = z.object({ route: routeIdArg });
+
+export const logRoutingOffCommand = defineCommand<z.infer<typeof logRoutingOffArgs>>({
+  name: 'log routing off',
+  write: true,
+  summary: 'stop a route logging, keeping its channel',
+  positional: [{ name: 'route', required: true, describe: 'the route id from `log routing list`' }],
+  args: logRoutingOffArgs,
+
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const before = ctx.ports.getRoute(args.route);
+    if (before === undefined) {
+      // Refused rather than reported as success. An operator who mistyped a
+      // route id must not be told that the logging they asked to stop has
+      // stopped, because they will believe it.
+      throw new Error(
+        `${args.route} names no log route in guild ${ctx.guildId}, so there was nothing to turn off.\n` +
+          `  Run \`bananasaurs log routing list\` to see what is configured.`,
+      );
+    }
+    ctx.ports.setRouteEnabled(args.route, false);
+
+    return {
+      text:
+        `Route ${args.route.slice(0, 8)} "${before.name}" no longer logs to Discord.\n` +
+          `  The route is kept, so \`log routing on ${args.route}\` turns it back on.`,
+      data: { routeId: args.route, enabled: false },
       audit: {
         action: 'log_route.disabled',
         subjectType: 'log_route',
-        subjectId: args.event,
-        before: { enabled: true, channelId: before?.channelId ?? null },
-        after: { enabled: false, channelId: before?.channelId ?? null },
+        subjectId: args.route,
+        before: { enabled: before.enabled },
+        after: { enabled: false },
+      },
+    };
+  },
+});
+
+const logRoutingDeleteArgs = z.object({ route: routeIdArg });
+
+export const logRoutingDeleteCommand = defineCommand<z.infer<typeof logRoutingDeleteArgs>>({
+  name: 'log routing delete',
+  write: true,
+  summary: 'delete a route; its id is never reused',
+  positional: [{ name: 'route', required: true, describe: 'the route id from `log routing list`' }],
+  args: logRoutingDeleteArgs,
+
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const before = ctx.ports.getRoute(args.route);
+    if (before === undefined) {
+      throw new Error(
+        `${args.route} names no log route in guild ${ctx.guildId}, so there was nothing to delete.\n` +
+          `  Run \`bananasaurs log routing list\` to see what is configured.`,
+      );
+    }
+    ctx.ports.deleteRoute(args.route);
+
+    return {
+      text: `Deleted route ${args.route.slice(0, 8)} "${before.name}".`,
+      data: { routeId: args.route, deleted: true },
+      audit: {
+        action: 'log_route.deleted',
+        subjectType: 'log_route',
+        subjectId: args.route,
+        before: routeAuditShape(before),
+        after: undefined,
       },
     };
   },
@@ -287,7 +470,7 @@ const channelArgs = z.object({ channel: channelIdArg });
 export const logRoutingExcludeCommand = defineCommand<z.infer<typeof channelArgs>>({
   name: 'log routing exclude',
   write: true,
-  summary: 'never log anything from this source channel',
+  summary: 'exclude a source channel from every route (the guild-wide No access list)',
   positional: [{ name: 'channel', required: true, describe: 'the channel to stop logging from' }],
   args: channelArgs,
 
@@ -295,8 +478,8 @@ export const logRoutingExcludeCommand = defineCommand<z.infer<typeof channelArgs
     const added = ctx.ports.excludeChannel(args.channel);
     return {
       text:
-        `<#${args.channel}> is excluded from logging${added ? '' : ' (it already was)'}.\n` +
-        `  This wins over every route: nothing from that channel is logged, whatever\n` +
+        `<#${args.channel}> is excluded from every route${added ? '' : ' (it already was)'}.\n` +
+        `  This is the guild-wide No access list: nothing from that channel is logged, whatever\n` +
         `  \`log routing list\` shows.`,
       data: { channelId: args.channel, excluded: true, changed: added },
       audit: {
@@ -313,14 +496,15 @@ export const logRoutingExcludeCommand = defineCommand<z.infer<typeof channelArgs
 export const logRoutingUnexcludeCommand = defineCommand<z.infer<typeof channelArgs>>({
   name: 'log routing unexclude',
   write: true,
-  summary: 'let this source channel be logged again',
+  summary: 'let a source channel be logged again (the guild-wide No access list)',
   positional: [{ name: 'channel', required: true, describe: 'the channel to log from again' }],
   args: channelArgs,
 
   run(ctx: OpsContext, args): OpsWriteResult {
     const removed = ctx.ports.unexcludeChannel(args.channel);
     return {
-      text: `<#${args.channel}> is no longer excluded${removed ? '' : ' (it was not)'}.`,
+      text: `<#${args.channel}> is no longer excluded from every route${removed ? '' : ' (it was not)'}.\n` +
+        `  That was the guild-wide No access list; a route that excludes the channel itself still skips it.`,
       data: { channelId: args.channel, excluded: false, changed: removed },
       audit: {
         action: 'log_exclusion.removed',
