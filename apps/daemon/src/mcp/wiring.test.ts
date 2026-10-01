@@ -24,7 +24,7 @@ import {
   resourceCacheRepo,
   roleRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId } from '@bananasaurs/core';
+import { parseGuildId, DiscordApiError } from '@bananasaurs/core';
 import type { Chunk } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -2926,6 +2926,101 @@ describe('/mcp read_thread and shared private threads', () => {
       );
       expect(found.isError).toBe(true);
       expect(found.text).toBe(PRIVATE_THREAD_REFUSAL);
+    } finally {
+      await unconfigured.close();
+    }
+  });
+
+  const listThreadsCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'list_threads', arguments: args },
+      }),
+    });
+
+  const listedPrivateById = (body: string): Map<string, boolean> => {
+    const found = callText(body);
+    expect(found.isError).not.toBe(true);
+    const data = JSON.parse(found.text.split('\n')[2] ?? '') as {
+      threads: Array<{ id: string; private: boolean }>;
+    };
+    return new Map(data.threads.map((thread) => [thread.id, thread.private] as const));
+  };
+
+  it('a throwing membership check refuses the read and unlists the thread (fail closed)', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    // The membership endpoint is down: both memberships are recorded, but
+    // the check cannot confirm them — so the thread refuses and unlists
+    // rather than serving on a guess.
+    discord.failAlways(
+      'isThreadMember',
+      new DiscordApiError(500, undefined, 'discord is on fire'),
+    );
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).toBe(true);
+      expect(found.text).toBe(PRIVATE_THREAD_REFUSAL);
+      const byId = listedPrivateById(
+        (
+          await listThreadsCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(byId.has(SHARED_PRIVATE)).toBe(false);
+      expect(byId.get(PUBLIC_THREAD)).toBe(false);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an unset owner id unlists the shared thread too', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const client = buildThreadClient();
+    const unconfigured = createServer({
+      deps,
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+    try {
+      const accessToken = await mintToken();
+      const byId = listedPrivateById(
+        (
+          await listThreadsCall(unconfigured, accessToken, {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(byId.has(SHARED_PRIVATE)).toBe(false);
+      expect(byId.get(PUBLIC_THREAD)).toBe(false);
     } finally {
       await unconfigured.close();
     }
