@@ -126,12 +126,12 @@ describe('formatMemberRolesChanged', () => {
     expect(text).toContain(`<@${AUTHOR}>`);
     expect(text).toContain('+<@&111>');
     expect(text).toContain('+<@&222>');
-    expect(text).toContain('-<@&333>');
-    expect(text.indexOf('+<@&111>')).toBeLessThan(text.indexOf('-<@&333>'));
+    expect(text).toContain('−<@&333>');
+    expect(text.indexOf('+<@&111>')).toBeLessThan(text.indexOf('−<@&333>'));
   });
 
   it('omits an empty side', () => {
-    expect(formatMemberRolesChanged(AUTHOR, ['111'], [])).not.toContain('-<@&');
+    expect(formatMemberRolesChanged(AUTHOR, ['111'], [])).not.toContain('−<@&');
     expect(formatMemberRolesChanged(AUTHOR, [], ['333'])).not.toContain('+<@&');
   });
 });

@@ -76,7 +76,7 @@ export function formatMemberRolesChanged(
 ): string {
   const parts = [`Roles changed: <@${userId}>`];
   if (added.length > 0) parts.push(added.map((id) => `+<@&${id}>`).join(' '));
-  if (removed.length > 0) parts.push(removed.map((id) => `-<@&${id}>`).join(' '));
+  if (removed.length > 0) parts.push(removed.map((id) => `−<@&${id}>`).join(' '));
   return parts.join('  ');
 }
 

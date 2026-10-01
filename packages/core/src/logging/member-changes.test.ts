@@ -278,7 +278,7 @@ describe('memberChanges with a snapshot', () => {
     );
     expect(changes.map((c) => c.eventKind)).toEqual(['member_roles_changed']);
     expect(changes[0]?.render()).toBe(
-      `Roles changed: <@${USER}>  +<@&${ROLE_B}>  -<@&${ROLE_C}>`,
+      `Roles changed: <@${USER}>  +<@&${ROLE_B}>  −<@&${ROLE_C}>`,
     );
   });
 
