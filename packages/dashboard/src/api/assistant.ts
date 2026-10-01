@@ -197,7 +197,7 @@ export interface AiStatus {
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
   /** ADR 0068: up to two more models, tried in order when the one before is busy. */
   readonly fallbackModels?: readonly string[];
-  /** ADR 0066, amended by ADR 0120. Absent while no search key is saved and search is off. */
+  /** ADR 0120: absent only when no search settings row exists, no search key is stored, and search is off. */
   readonly webSearch?: {
     readonly keyConfigured: boolean;
     readonly enabled: boolean;
