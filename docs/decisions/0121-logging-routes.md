@@ -19,11 +19,11 @@ shows it as **Excluded**, and the archive and MCP sending both obey it.
 ## Decision
 
 1. **A route is a row with its own ID.** `log_routes` is dropped and recreated (it held no rows)
-   with `route_id INTEGER PRIMARY KEY AUTOINCREMENT`, plus `guild_id`, `name`, `channel_id`,
-   `include_content` (default 1) and `enabled` (default 1). AUTOINCREMENT means a deleted
-   route's ID is never reused, so a replayed event's claim can never be confused with a
-   different route's claim (rule 6). `UNIQUE (guild_id, route_id)` gives the child tables a
-   composite foreign key, so a child row cannot point across guilds (rule 2).
+   with `PRIMARY KEY (guild_id, route_id)`, where `route_id` is a random UUID, as task IDs are.
+   It also has `name`, `channel_id`, `include_content` (default 1), `enabled` (default 1) and
+   `created_at_ms`. A UUID is never reused after a delete, so a replayed event's claim can never
+   be confused with a different route's claim (rule 6). The child tables reference the parent
+   through the composite key, so a child row cannot point across guilds (rule 2).
 2. **Its actions and exclusions are child rows**: `log_route_events (guild_id, route_id,
    event_kind)` and `log_route_exclusions (guild_id, route_id, channel_id)`. Both have a
    composite FK with `ON DELETE CASCADE`, so deleting a route is a single statement.
