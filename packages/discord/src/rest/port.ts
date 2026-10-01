@@ -624,9 +624,9 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
               name: input.name,
               auto_archive_duration: input.autoArchiveMinutes,
               type: input.type === 'public' ? ChannelType.PublicThread : ChannelType.PrivateThread,
-              ...(input.type === 'private' && input.invitable !== undefined
-                ? { invitable: input.invitable }
-                : {}),
+              // ADR 0116 §3: a private thread is not invitable unless the
+              // caller says so — Discord's own default is true.
+              ...(input.type === 'private' ? { invitable: input.invitable ?? false } : {}),
             };
       const thread = (await mapErrors(() => rest.post(route, { body }))) as APIChannel;
       return { threadId: thread.id };
@@ -645,10 +645,10 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     /**
      * Forum posts (slice 3): the starter message is built by the same
      * `toRestMessage` the channel sends use, so embeds and mention policy
-     * behave identically. The response is the thread channel; its
-     * `last_message_id` is the starter message (the thread's only one).
-     * Absent, the port throws rather than inventing an id — but flag for
-     * live smoke: this projection has never been observed against Discord.
+     * behave identically. Discord answers with the thread channel plus the
+     * starter `message` nested in it; a forum post's starter message shares
+     * the thread's id, which is the fallback when `message` is absent. Listed
+     * for the live smoke run: not yet observed against Discord.
      */
     async createForumPost(_guildId, forumChannelId, input) {
       const thread = (await mapErrors(() =>
@@ -659,11 +659,8 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
             applied_tags: [...input.appliedTagIds],
           },
         }),
-      )) as APIChannel & { last_message_id?: string | null };
-      if (thread.last_message_id == null) {
-        throw new Error('createForumPost: the forum-create response carried no last_message_id');
-      }
-      return { threadId: thread.id, messageId: thread.last_message_id };
+      )) as APIChannel & { message?: { id: string } | null };
+      return { threadId: thread.id, messageId: thread.message?.id ?? thread.id };
     },
 
     /**

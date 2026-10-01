@@ -1455,14 +1455,14 @@ describe('thread writes (MCP slice 3)', () => {
     });
   });
 
-  it('omits invitable when not given, and never for public threads', async () => {
+  it('defaults a private thread to not invitable, and never sends it for public threads', async () => {
     const noFlag = harness([{ status: 200, body: { id: THREAD } }]);
     await noFlag.port.createThread(GUILD, CHANNEL, {
       name: 'mod huddle',
       type: 'private',
       autoArchiveMinutes: 60,
     });
-    expect(last(noFlag.requests).body).not.toHaveProperty('invitable');
+    expect(last(noFlag.requests).body).toHaveProperty('invitable', false);
 
     const publicThread = harness([{ status: 200, body: { id: THREAD } }]);
     await publicThread.port.createThread(GUILD, CHANNEL, {
@@ -1519,7 +1519,7 @@ describe('thread writes (MCP slice 3)', () => {
 
   it('starts a forum post with the starter message built as sendMessage builds it', async () => {
     const { port, requests } = harness([
-      { status: 200, body: { id: THREAD, last_message_id: MESSAGE } },
+      { status: 200, body: { id: THREAD, message: { id: MESSAGE } } },
     ]);
     await expect(
       port.createForumPost(GUILD, FORUM, {
@@ -1545,7 +1545,7 @@ describe('thread writes (MCP slice 3)', () => {
     });
   });
 
-  it('throws rather than inventing a message id when the forum response carries none', async () => {
+  it('falls back to the thread id, which a forum starter message shares, when no message is nested', async () => {
     const { port } = harness([{ status: 200, body: { id: THREAD } }]);
     await expect(
       port.createForumPost(GUILD, FORUM, {
@@ -1553,7 +1553,7 @@ describe('thread writes (MCP slice 3)', () => {
         message: { content: 'friday night?' },
         appliedTagIds: [],
       }),
-    ).rejects.toThrow(/last_message_id/);
+    ).resolves.toEqual({ threadId: THREAD, messageId: THREAD });
   });
 
   it('patches only the thread fields given', async () => {
