@@ -35,6 +35,7 @@ import { FakeDiscord } from '@bananasaurs/testkit';
 
 const GUILD = parseGuildId('111111111111111111');
 const CHANNEL = '222222222222222222';
+const LOG = '777777777777777777';
 const EXCLUDED_CHANNEL = '999999999999999999';
 const OTHER_CHANNEL = '888888888888888888';
 const USER = '333333333333333333';
@@ -49,18 +50,22 @@ let ports: LoggingPorts;
 
 const seedRoute = (
   eventKind: string,
-  over: { channelId?: string; includeContent?: boolean; enabled?: boolean } = {},
+  over: {
+    name?: string;
+    channelId?: string;
+    includeContent?: boolean;
+    enabled?: boolean;
+    excludedChannelIds?: string[];
+  } = {},
 ) =>
-  write(scope, ({ db }) => {
-    db.insert(schema.logRoutes)
-      .values({
-        guildId: scope.guildId,
-        eventKind,
-        channelId: over.channelId ?? CHANNEL,
-        includeContent: (over.includeContent ?? true) ? 1 : 0,
-        enabled: (over.enabled ?? true) ? 1 : 0,
-      })
-      .run();
+  loggingRepo.createRoute(scope, {
+    name: over.name ?? `route-${eventKind}`,
+    channelId: over.channelId ?? LOG,
+    includeContent: over.includeContent ?? true,
+    enabled: over.enabled ?? true,
+    eventKinds: [eventKind],
+    excludedChannelIds: over.excludedChannelIds ?? [],
+    nowMs: 0,
   });
 
 const excludeChannel = (channelId: string) =>
@@ -76,7 +81,7 @@ beforeEach(() => {
 
   ports = {
     guildId: GUILD,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: 0 }),
@@ -163,13 +168,13 @@ describe('message edits', () => {
   });
 
   it('posts to the configured channel when enabled', async () => {
-    seedRoute('message_edit', { channelId: CHANNEL });
+    seedRoute('message_edit', { channelId: OTHER_CHANNEL });
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageEdit());
 
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.args[1]).toBe(CHANNEL);
+    expect(calls[0]?.args[1]).toBe(OTHER_CHANNEL);
     expect((calls[0]?.args[2] as { content: string }).content).toContain('edited text');
   });
 
@@ -183,7 +188,7 @@ describe('message edits', () => {
   });
 
   it('does not log an edit from an excluded source channel', async () => {
-    seedRoute('message_edit', { channelId: CHANNEL });
+    seedRoute('message_edit');
     excludeChannel(EXCLUDED_CHANNEL);
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageEdit({ channelId: EXCLUDED_CHANNEL }));
@@ -192,7 +197,7 @@ describe('message edits', () => {
   });
 
   it('still logs an edit from a channel that is not excluded', async () => {
-    seedRoute('message_edit', { channelId: CHANNEL });
+    seedRoute('message_edit');
     excludeChannel(EXCLUDED_CHANNEL);
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageEdit({ channelId: OTHER_CHANNEL }));
@@ -201,7 +206,7 @@ describe('message edits', () => {
   });
 
   it('does not double-post the same edit delivered twice', async () => {
-    seedRoute('message_edit', { channelId: CHANNEL });
+    seedRoute('message_edit');
     const subscriber = createLoggingSubscriber(ports);
     const event = messageEdit();
     await subscriber.handle(event);
@@ -211,7 +216,7 @@ describe('message edits', () => {
   });
 
   it('releases its claim on a failed send, so a later delivery can retry', async () => {
-    seedRoute('message_edit', { channelId: CHANNEL });
+    seedRoute('message_edit');
     discord.failNext('sendMessage', FakeDiscord.missingPermissions());
     const subscriber = createLoggingSubscriber(ports);
     const event = messageEdit();
@@ -222,6 +227,48 @@ describe('message edits', () => {
     // No further failure queued: a retry should succeed and actually post.
     await subscriber.handle(event);
     expect(discord.restCalls('sendMessage')).toHaveLength(2);
+  });
+});
+
+describe('route fan-out', () => {
+  it('posts an edit to two routes with the same kind, exactly once each, and a redelivery posts nothing', async () => {
+    seedRoute('message_edit', { name: 'route-a', channelId: LOG });
+    seedRoute('message_edit', { name: 'route-b', channelId: OTHER_CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    const event = messageEdit();
+
+    await subscriber.handle(event);
+    const channels = discord.restCalls('sendMessage').map((c) => c.args[1]);
+    expect(channels.sort()).toEqual([LOG, OTHER_CHANNEL].sort());
+
+    await subscriber.handle(event);
+    expect(discord.restCalls('sendMessage')).toHaveLength(2);
+  });
+
+  it('a route with an excluded channel skips it while another route without that exclusion logs it', async () => {
+    seedRoute('message_edit', {
+      name: 'route-a',
+      channelId: LOG,
+      excludedChannelIds: [EXCLUDED_CHANNEL],
+    });
+    seedRoute('message_edit', { name: 'route-b', channelId: OTHER_CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageEdit({ channelId: EXCLUDED_CHANNEL }));
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[1]).toBe(OTHER_CHANNEL);
+  });
+
+  it('deleting a route stops its posts', async () => {
+    const route = seedRoute('message_edit', { name: 'route-a', channelId: LOG });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageEdit());
+    expect(discord.restCalls('sendMessage')).toHaveLength(1);
+
+    expect(loggingRepo.deleteRoute(scope, route.routeId)).toBe(true);
+    await subscriber.handle(messageEdit({ messageId: '555555555555555555' }));
+    expect(discord.restCalls('sendMessage')).toHaveLength(1);
   });
 });
 
@@ -261,7 +308,7 @@ describe('message deletes — enqueueing the attribution job', () => {
   });
 
   it('enqueues a job scheduled for after the attribution delay', async () => {
-    seedRoute('message_delete', { channelId: CHANNEL });
+    seedRoute('message_delete');
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageDelete({ receivedAtMs: 1_000 }));
 
@@ -272,7 +319,7 @@ describe('message deletes — enqueueing the attribution job', () => {
   });
 
   it('does not log a delete from an excluded source channel', async () => {
-    seedRoute('message_delete', { channelId: CHANNEL });
+    seedRoute('message_delete');
     excludeChannel(EXCLUDED_CHANNEL);
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageDelete({ channelId: EXCLUDED_CHANNEL }));
@@ -281,7 +328,7 @@ describe('message deletes — enqueueing the attribution job', () => {
   });
 
   it('does not persist content in the job payload when the route has content off', async () => {
-    seedRoute('message_delete', { channelId: CHANNEL, includeContent: false });
+    seedRoute('message_delete', { includeContent: false });
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageDelete({ content: 'secret' }));
 
@@ -290,7 +337,7 @@ describe('message deletes — enqueueing the attribution job', () => {
   });
 
   it('does persist content in the job payload when the route has content on', async () => {
-    seedRoute('message_delete', { channelId: CHANNEL, includeContent: true });
+    seedRoute('message_delete', { includeContent: true });
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(messageDelete({ content: 'visible' }));
 
@@ -299,7 +346,7 @@ describe('message deletes — enqueueing the attribution job', () => {
   });
 
   it('enqueues one job per deletion, not one per redelivery of the same event', async () => {
-    seedRoute('message_delete', { channelId: CHANNEL });
+    seedRoute('message_delete');
     const subscriber = createLoggingSubscriber(ports);
     const event = messageDelete();
     await subscriber.handle(event);
