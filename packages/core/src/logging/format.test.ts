@@ -13,6 +13,7 @@ import {
   formatRoleCreate,
   formatRoleDelete,
   formatRoleUpdate,
+  formatWarn,
 } from './format.js';
 
 const CHANNEL = '111111111111111111';
@@ -264,6 +265,37 @@ describe('formatRoleDelete', () => {
   it('names the role by its last-known name, not a bare id', () => {
     const text = formatRoleDelete(roleEvent('roleDelete', { name: 'old-name' }));
     expect(text).toContain('old-name');
+  });
+});
+
+describe('formatWarn', () => {
+  it('names the member, the moderator, the reason, the case and the count', () => {
+    const text = formatWarn({
+      memberId: '333333333333333333',
+      actorId: '222222222222222222',
+      reason: 'spam',
+      caseId: 'case-1',
+      violationCount: 2,
+    });
+    expect(text).toBe(
+      [
+        'Warned: <@333333333333333333> by <@222222222222222222>',
+        'Reason: spam',
+        'Case case-1, warning 2',
+      ].join('\n'),
+    );
+  });
+
+  it('caps a long reason at 300 characters', () => {
+    const text = formatWarn({
+      memberId: '333333333333333333',
+      actorId: '222222222222222222',
+      reason: 'r'.repeat(400),
+      caseId: 'case-1',
+      violationCount: 1,
+    });
+    const reasonLine = text.split('\n')[1] ?? '';
+    expect(reasonLine).toBe(`Reason: ${'r'.repeat(300)}`);
   });
 });
 

@@ -12,12 +12,14 @@ import {
   createAutomodSubscriber,
   createInteractionSubscriber,
   createLoggingSubscriber,
+  createLogPoster,
   createMemberUpdateSubscriber,
   createModCommandSubscriber,
   createTaskCommandSubscriber,
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
+  formatWarn,
   EffectGateway,
   JobWorker,
   JOB_KINDS,
@@ -620,12 +622,26 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  const logPoster = createLogPoster(loggingPorts);
+
   const modCommandDeps: ModCommandDeps = {
     guildId,
     authz: authzStoreFor(scope),
     fetchInvokerRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
     moderationGateway: modCommandGateway,
     confirmations: modConfirmationDeps,
+    // ADR 0123 (logging routes): a warning is the bot's own action, so it
+    // never arrives as a gateway event — `/mod warn` hands it to the logging
+    // module here, posted under the warn's interaction id so a retried hook
+    // call replays to nothing. `onWarned` is `readonly`, so it is set in the
+    // literal rather than assigned afterwards.
+    onWarned: (info) =>
+      logPoster.post({
+        eventKind: 'member_warn',
+        fingerprint: info.warnId,
+        source: undefined,
+        render: () => formatWarn(info),
+      }),
     cases: {
       openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
       recordCaseEvent: (input) =>

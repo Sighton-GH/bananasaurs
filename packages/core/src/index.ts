@@ -155,11 +155,14 @@ export {
   formatRoleCreate,
   formatRoleDelete,
   formatRoleUpdate,
+  formatWarn,
 } from './logging/format.js';
 export {
   createLoggingSubscriber,
+  createLogPoster,
   LOG_EVENT_KINDS,
   type LoggingPorts,
+  type LogItem,
   type LogRoute,
 } from './logging/subscriber.js';
 export {

@@ -4,6 +4,7 @@ import {
   createLoggingSubscriber,
   JOB_KINDS,
   parseGuildId,
+  type AuditLogEntryEvent,
   type ConnectionEvent,
   type LoggingPorts,
   type MemberEvent,
@@ -606,5 +607,37 @@ describe('message creates', () => {
     seedRoute('message_create');
     await createLoggingSubscriber(ports).handle(create());
     expect(discord.restCalls('sendMessage')).toHaveLength(1);
+  });
+});
+
+const MOD = '666666666666666666';
+
+const auditEntry = (over: Partial<AuditLogEntryEvent> = {}): AuditLogEntryEvent => ({
+  kind: 'auditLogEntry',
+  guildId: GUILD,
+  receivedAtMs: 1,
+  entryId: '999999999999999999',
+  action: 22,
+  actorId: MOD,
+  targetId: USER,
+  reason: undefined,
+  changes: [],
+  count: undefined,
+  channelId: undefined,
+  ...over,
+});
+
+describe('audit-log entries', () => {
+  it('posts a ban line to a member_ban route exactly once across a replay', async () => {
+    seedRoute('member_ban');
+    const subscriber = createLoggingSubscriber(ports);
+    const event = auditEntry();
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[1]).toBe(LOG);
+    expect((calls[0]?.args[2] as { content: string }).content).toContain(`Banned: <@${USER}>`);
   });
 });

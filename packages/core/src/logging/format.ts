@@ -166,6 +166,27 @@ export function formatRoleDelete(event: RoleEvent): string {
 }
 
 /**
+ * The logging side of `/mod warn` (ADR 0123): the warning is the bot's own
+ * action, so there is no gateway event to format — the daemon posts this
+ * through `createLogPoster` with the warn's interaction id as fingerprint.
+ * The reason is moderator-written and untrusted, so it is capped at 300
+ * characters like an audit-log reason.
+ */
+export function formatWarn(input: {
+  memberId: string;
+  actorId: string;
+  reason: string;
+  caseId: string;
+  violationCount: number;
+}): string {
+  return [
+    `Warned: <@${input.memberId}> by <@${input.actorId}>`,
+    `Reason: ${input.reason.slice(0, 300)}`,
+    `Case ${input.caseId}, warning ${input.violationCount}`,
+  ].join('\n');
+}
+
+/**
  * `docs/19` §6.7's restated gate: a gap must be a visible marker, never a
  * silent hole. `<t:unix:t>` is Discord's own timestamp markup — it renders in
  * each reader's local time, so the channel never has to guess whose
