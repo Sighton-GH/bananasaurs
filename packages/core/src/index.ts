@@ -169,6 +169,13 @@ export {
   type LogSource,
 } from './logging/routing.js';
 export {
+  LOG_ACTION_CATALOG,
+  LOG_ACTION_GROUPS,
+  logActionInfo,
+  type LogActionGroup,
+  type LogActionInfo,
+} from './logging/catalog.js';
+export {
   logEventKindSchema,
   logRouteIdSchema,
   logRouteInputSchema,
