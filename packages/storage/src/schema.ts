@@ -1757,6 +1757,126 @@ export const mcpSends = sqliteTable(
 );
 
 /**
+ * The ledger for every MCP write (ADR 0116 §2, slice M5 follow-up).
+ *
+ * Keyed `(guild_id, idempotency_key)` and unique per `(guild_id, action_id`):
+ * a retried key with a matching `args_hash` is a replay, with a differing
+ * hash a refusal. `status` is `claimed` between the claim and the single
+ * Discord call, `dry_run` for a claim that never calls, and `done`/`failed`
+ * once `completeAction` records the outcome. `undo_json` holds the inverse of
+ * a reversible action (the bot's own previous content for edits, never the
+ * posted content itself); `undone_by_action_id` names the undo action.
+ * `cap_group` carries the rolling-hour cap bucket the count reads. Migration
+ * 0092 copies every `mcp_sends` row in; `mcp_sends` stays as history that
+ * nothing new writes.
+ */
+export const mcpActions = sqliteTable(
+  'mcp_actions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    actionId: text('action_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    kind: text('kind').notNull(),
+    capGroup: text('cap_group').notNull(),
+    argsHash: text('args_hash').notNull(),
+    status: text('status').notNull(),
+    tokenId: text('token_id').notNull(),
+    targetChannelId: snowflake('target_channel_id'),
+    resultMessageId: snowflake('result_message_id'),
+    resultThreadId: snowflake('result_thread_id'),
+    undoJson: text('undo_json'),
+    undoneByActionId: text('undone_by_action_id'),
+    createdAt: integer('created_at').notNull(),
+    completedAt: integer('completed_at'),
+  },
+  (t) => [
+    unique('mcp_actions_idempotency_once').on(t.guildId, t.idempotencyKey),
+    unique('mcp_actions_action_once').on(t.guildId, t.actionId),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    index('mcp_actions_cap_created').on(t.guildId, t.capGroup, t.createdAt),
+    index('mcp_actions_target_created').on(t.guildId, t.targetChannelId, t.createdAt),
+    check('mcp_actions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_actions_target_channel_id_snowflake', nullableSnowflakeCheck(t.targetChannelId)),
+    check('mcp_actions_result_message_id_snowflake', nullableSnowflakeCheck(t.resultMessageId)),
+    check('mcp_actions_result_thread_id_snowflake', nullableSnowflakeCheck(t.resultThreadId)),
+    check('mcp_actions_cap_group', sql`${t.capGroup} IN ('message','edit','thread','pin_react')`),
+    check('mcp_actions_status', sql`${t.status} IN ('claimed','done','dry_run','failed')`),
+  ],
+);
+
+/**
+ * The per-guild MCP role policy (ADR 0117 §2).
+ *
+ * One row per guild; absent means both modes are `below-bot`. `grant_mode`
+ * and the `grant` allowlist rows are stored now and used by slice 4.
+ */
+export const mcpRolePolicy = sqliteTable(
+  'mcp_role_policy',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    grantMode: text('grant_mode').notNull().default('below-bot'),
+    pingMode: text('ping_mode').notNull().default('below-bot'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_role_policy_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_role_policy_grant_mode', sql`${t.grantMode} IN ('below-bot','allowlist')`),
+    check('mcp_role_policy_ping_mode', sql`${t.pingMode} IN ('below-bot','allowlist')`),
+  ],
+);
+
+/**
+ * The roles the MCP may ping or (slice 4) grant in `allowlist` mode
+ * (ADR 0117 §2). A row names one purpose; a role allowed for both has two.
+ * The dangerous-permission floor is checked live at the call, never stored.
+ */
+export const mcpRoleAllowlist = sqliteTable(
+  'mcp_role_allowlist',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    roleId: snowflake('role_id').notNull(),
+    purpose: text('purpose').notNull(),
+    /** The dashboard account that allowed it — an account id, not a snowflake. */
+    addedByAccountId: text('added_by_account_id').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    unique('mcp_role_allowlist_once').on(t.guildId, t.roleId, t.purpose),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_role_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_role_allowlist_role_id_snowflake', snowflakeCheck(t.roleId)),
+    check('mcp_role_allowlist_purpose', sql`${t.purpose} IN ('grant','ping')`),
+  ],
+);
+
+/**
+ * The private threads the MCP created (ADR 0116 §3, ADR 0115 §1).
+ *
+ * A row here is what makes the thread readable to later MCP reads without
+ * the owner being a member. One row per thread per guild, written in the same
+ * transaction as the creating action's completion.
+ */
+export const mcpPrivateThreads = sqliteTable(
+  'mcp_private_threads',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    threadId: snowflake('thread_id').notNull(),
+    parentChannelId: snowflake('parent_channel_id').notNull(),
+    createdActionId: text('created_action_id').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    unique('mcp_private_threads_once').on(t.guildId, t.threadId),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_private_threads_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_private_threads_thread_id_snowflake', snowflakeCheck(t.threadId)),
+    check('mcp_private_threads_parent_channel_id_snowflake', snowflakeCheck(t.parentChannelId)),
+  ],
+);
+
+/**
  * Training-eligibility record (ADR 0044 §7, ADR 0010 §1). Instance-level
  * (ADR 0027): a provider is a fact about the daemon, not a guild — the same
  * reason `bootstrap_tokens` and `oauth_clients` carry no `guild_id`.
