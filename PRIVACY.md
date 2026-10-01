@@ -37,6 +37,13 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 - Join and leave events
 - Commands run against the bot, and the answers it gave
 
+To log what changed when a member's roles, nickname, username, display name
+or avatar change, Bananasaurs keeps a last-seen record for each member:
+username, display name, nickname, avatar IDs, and role IDs. It holds IDs and
+hashes only — no images are downloaded or stored. The record is kept only
+while some logging route includes a member-change action, and it is deleted
+when the member leaves.
+
 **Not stored:**
 
 - Voice calls or anything spoken in them

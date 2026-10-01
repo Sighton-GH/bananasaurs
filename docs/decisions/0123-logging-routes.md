@@ -44,11 +44,13 @@ shows it as **Excluded**, and the archive and MCP sending both obey it.
 8. **Member last-seen record** (D5). `log_member_snapshots (guild_id, user_id, username,
    global_name, nickname, avatar_hash, guild_avatar_hash, role_ids, updated_at)` is written on
    member events and compared against to log old → new. It stores avatar hashes, never images,
-   and the row is deleted once the member leaves. The first change seen for a member with no
-   record yet is logged without a "before" value. PRIVACY.md says this.
+   and the row is deleted once the member leaves. With no record yet, the first update
+   establishes the baseline silently, because without a previous value the bot cannot tell
+   whether a name or avatar changed at all (discord.js shares the user object between before
+   and after). The record is only kept while some enabled route includes a member-change
+   action. PRIVACY.md says this.
 9. **"Member updated" is replaced** (D3) by `member_roles_changed`, `member_nickname_changed`,
-   `member_username_changed`, `member_avatar_changed`, `member_timeout` and
-   `member_timeout_removed`.
+   `member_username_changed` and `member_avatar_changed`.
 10. **New actions** (D2): `message_bulk_delete`, `member_kick`, `member_ban`, `member_unban`,
     `member_warn`, `channel_create`, `channel_update`, `channel_delete`, `thread_create`,
     `thread_delete`, `guild_update`, `invite_create`, `invite_delete`, `emoji_create`,
