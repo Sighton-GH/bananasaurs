@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
+import type { GuildId } from '@bananasaurs/core';
 import { archiveSearchRepo } from '@bananasaurs/storage';
 import {
   GUILD_REFUSAL_MESSAGE,
@@ -8,6 +8,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { resolveChannelRef } from '../resolve.js';
+import { idsAreWellFormed } from '../ids.js';
 import type { McpGuildChannel, McpGuildPort } from './guild.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 import { safeName } from '../structured.js';
@@ -300,16 +301,6 @@ const refuseInvalidArgs = (): ArchiveOutcome => ({
   ok: false,
   message: INVALID_ARGUMENTS_MESSAGE,
 });
-
-/** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
-const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
-  try {
-    for (const id of ids) parseSnowflakeId(id);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 type ChannelResolution =
   | { readonly ok: true; readonly ids: readonly string[] }

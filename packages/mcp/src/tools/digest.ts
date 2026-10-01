@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { parseSnowflakeId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
+import { idsAreWellFormed } from '../ids.js';
 import { resolveChannelRef, resolveRoleRef } from '../resolve.js';
 import { safeName } from '../structured.js';
 import { envelope } from '../envelope.js';
@@ -123,16 +123,6 @@ const refuseInvalidArgs = (): ReadOutcome => ({
   ok: false,
   message: INVALID_ARGUMENTS_MESSAGE,
 });
-
-/** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
-const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
-  try {
-    for (const id of ids) parseSnowflakeId(id);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 /** Opaque page cursor: base64url("createdAt:messageId"). */
 const encodeDigestCursor = (after: {

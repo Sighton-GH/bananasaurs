@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
+import type { GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
@@ -7,6 +7,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { safeName, structuredText } from '../structured.js';
+import { idsAreWellFormed } from '../ids.js';
 import { resolveChannelRef } from '../resolve.js';
 import {
   MCP_READ_LIST_THREADS,
@@ -266,16 +267,6 @@ const refuseInvalidArgs = (): GuildToolOutcome => ({
   ok: false,
   message: INVALID_ARGUMENTS_MESSAGE,
 });
-
-/** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
-const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
-  try {
-    for (const id of ids) parseSnowflakeId(id);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
 

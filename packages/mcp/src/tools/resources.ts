@@ -129,7 +129,15 @@ const summarize = (resource: McpResourceSummary): McpResourceSummary => ({
   url: safeName(resource.url),
 });
 
-const toEvidenceItem = (chunk: McpResourceChunk): Parameters<typeof envelope>[0][number] => ({
+/**
+ * One cached chunk as evidence. Named apart from `archive.ts`'s
+ * `toEvidenceItem` on purpose: it projects a different type (a resource
+ * chunk, not an archive message), so sharing the name would merge two
+ * shapes that only look alike.
+ */
+const toResourceEvidenceItem = (
+  chunk: McpResourceChunk,
+): Parameters<typeof envelope>[0][number] => ({
   authorId: chunk.resourceId,
   channelId: chunk.docId,
   messageId: chunk.chunkId,
@@ -163,7 +171,7 @@ const searchResourcesInner = (
       : `Resource search in guild ${safeName(gate.guildId)}: ${String(hits.length)} matches across ${String(enabled.length)} enabled resources.`;
   return {
     ok: true,
-    text: `${structuredText(head, { resources: enabled.map(summarize) })}\n\n${envelope(hits.map(toEvidenceItem))}`,
+    text: `${structuredText(head, { resources: enabled.map(summarize) })}\n\n${envelope(hits.map(toResourceEvidenceItem))}`,
     read: {
       kind: 'content',
       action: MCP_READ_SEARCH_RESOURCES,
@@ -256,7 +264,7 @@ const openResourceInner = (
     `${safeName(found.url)} — showing ${String(shown.length)} chunks.`;
   return {
     ok: true,
-    text: `${structuredText(head, { resource: summarize(found) })}\n\n${envelope(shown.map(toEvidenceItem))}`,
+    text: `${structuredText(head, { resource: summarize(found) })}\n\n${envelope(shown.map(toResourceEvidenceItem))}`,
     read: {
       kind: 'content',
       action: MCP_READ_OPEN_RESOURCE,

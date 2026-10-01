@@ -1,11 +1,12 @@
 import { z } from 'zod';
-import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
+import type { GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
+import { idsAreWellFormed } from '../ids.js';
 import { safeName } from '../structured.js';
 import { envelope } from '../envelope.js';
 import { MCP_READ_READ_THREAD } from '../read-audit.js';
@@ -124,16 +125,6 @@ const refuseInvalidArgs = (): ReadOutcome => ({
   ok: false,
   message: INVALID_ARGUMENTS_MESSAGE,
 });
-
-/** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
-const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
-  try {
-    for (const id of ids) parseSnowflakeId(id);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const readThreadInner = async (
   principal: McpPrincipal,

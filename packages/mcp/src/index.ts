@@ -246,3 +246,4 @@ export {
   resolveRoleRef,
   type Resolved,
 } from './resolve.js';
+export { idsAreWellFormed } from './ids.js';
