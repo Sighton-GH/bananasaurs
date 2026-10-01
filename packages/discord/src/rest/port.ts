@@ -245,6 +245,25 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       );
     },
 
+    /** Removes the bot's own reaction with DELETE on the same `@me` route. */
+    async deleteOwnReaction(_guildId, ref, emoji) {
+      await mapErrors(() =>
+        rest.delete(
+          Routes.channelMessageOwnReaction(ref.channelId, ref.messageId, restEmoji(emoji)),
+        ),
+      );
+    },
+
+    /** Pins a message with PUT on Discord's non-deprecated pin route. */
+    async pinMessage(_guildId, ref) {
+      await mapErrors(() => rest.put(Routes.channelMessagesPin(ref.channelId, ref.messageId)));
+    },
+
+    /** Unpins a message with DELETE on the same route. */
+    async unpinMessage(_guildId, ref) {
+      await mapErrors(() => rest.delete(Routes.channelMessagesPin(ref.channelId, ref.messageId)));
+    },
+
     async fetchReactionUsers(_guildId, ref, emoji, options = {}) {
       const limit = Math.min(options.limit ?? MAX_REACTION_PAGE, MAX_REACTION_PAGE);
       const users = (await mapErrors(() =>
@@ -296,6 +315,28 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         // Gone or no access is routine here — a member quoting an old or
         // now-hidden message — and is reported as "no quote available"
         // rather than failing the whole turn.
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+    },
+
+    /** One message's author, content and embeds: edit/delete eligibility and undo (ADR 0116 §4). */
+    async fetchMessageAuthor(_guildId, ref) {
+      try {
+        const message = (await mapErrors(() =>
+          rest.get(Routes.channelMessage(ref.channelId, ref.messageId)),
+        )) as APIMessage;
+        return {
+          authorId: message.author.id,
+          content: message.content,
+          embeds: message.embeds ?? [],
+        };
+      } catch (err) {
+        // Gone or no access is routine — the same fold `fetchMessageContent`
+        // makes, so a reply context resolves without the block instead of
+        // failing the turn.
         if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
           return undefined;
         }
@@ -738,7 +779,9 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     // panel posts and log messages send. `replyTo` (ADR 0072) forces
     // `replied_user: true` in on top of whatever `allowedMentions` already
     // says, without disturbing `parse`, so replying still pings the member
-    // being replied to even when nothing else set `allowedMentions` at all.
+    // being replied to even when nothing else set `allowedMentions` at all —
+    // and `pingReplyAuthor: false` is the only thing that turns that ping
+    // off; undefined keeps today's behaviour exactly.
     ...(allowedMentions === undefined && message.replyTo === undefined
       ? {}
       : {
@@ -746,7 +789,9 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
             parse: allowedMentions?.parse ?? [],
             ...(allowedMentions?.roles === undefined ? {} : { roles: allowedMentions.roles }),
             ...(allowedMentions?.users === undefined ? {} : { users: allowedMentions.users }),
-            ...(message.replyTo === undefined ? {} : { replied_user: true }),
+            ...(message.replyTo === undefined
+              ? {}
+              : { replied_user: message.pingReplyAuthor === false ? false : true }),
           },
         }),
     ...(message.replyTo === undefined

@@ -1062,6 +1062,41 @@ export class FakeDiscord implements DiscordPort {
     m.reactions.set(emoji, users);
   }
 
+  /** Removes the bot's reaction from the same bucket `createReaction` seeds. */
+  async deleteOwnReaction(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+    emoji: EmojiKey,
+  ): Promise<void> {
+    this.record('deleteOwnReaction', [guildId, ref, emoji]);
+    this.check('deleteOwnReaction', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    const users = m.reactions.get(emoji);
+    if (users !== undefined) {
+      const at = users.indexOf(BOT_USER_ID);
+      if (at !== -1) users.splice(at, 1);
+    }
+  }
+
+  /** Sets the message's pinned flag; visible through `fetchMessageMeta`. */
+  async pinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void> {
+    this.record('pinMessage', [guildId, ref]);
+    this.check('pinMessage', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    m.pinned = true;
+  }
+
+  /** Clears the message's pinned flag; unpinning an unpinned message is a no-op. */
+  async unpinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void> {
+    this.record('unpinMessage', [guildId, ref]);
+    this.check('unpinMessage', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    m.pinned = false;
+  }
+
   async fetchReactionUsers(
     guildId: Snowflake,
     ref: DiscordMessageRef,
@@ -1456,6 +1491,24 @@ export class FakeDiscord implements DiscordPort {
   async sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void> {
     this.record('sendTyping', [guildId, channelId]);
     this.check('sendTyping', guildId);
+  }
+
+  /**
+   * One message's author, content and embeds, for reply context: what
+   * `defineMessage` recorded, plus the empty embed list a text-only fake
+   * message carries. `undefined` for a message the fake was never told
+   * about or that was deleted — mirroring the REST adapter's 404/403 fold,
+   * not a thrown error, the way `fetchMessageContent` answers.
+   */
+  async fetchMessageAuthor(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<{ authorId: Snowflake; content: string; embeds: readonly unknown[] } | undefined> {
+    this.record('fetchMessageAuthor', [guildId, ref]);
+    this.check('fetchMessageAuthor', guildId);
+    const m = this.messages.get(key(ref.channelId, ref.messageId));
+    if (!m || m.deleted) return undefined;
+    return { authorId: m.authorId, content: m.content ?? '', embeds: [] };
   }
 
   async fetchAuditLog(

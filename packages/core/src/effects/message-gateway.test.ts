@@ -151,6 +151,18 @@ class MinimalSendDiscord implements DiscordPort {
   async fetchMessageMeta(): Promise<never> {
     this.notUsed('fetchMessageMeta');
   }
+  async pinMessage(): Promise<void> {
+    this.notUsed('pinMessage');
+  }
+  async unpinMessage(): Promise<void> {
+    this.notUsed('unpinMessage');
+  }
+  async deleteOwnReaction(): Promise<void> {
+    this.notUsed('deleteOwnReaction');
+  }
+  async fetchMessageAuthor(): Promise<never> {
+    this.notUsed('fetchMessageAuthor');
+  }
   async listScheduledEvents(): Promise<never> {
     this.notUsed('listScheduledEvents');
   }

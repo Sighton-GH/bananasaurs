@@ -391,6 +391,48 @@ describe('fetchMessageContent and sendTyping (ADR 0072)', () => {
   });
 });
 
+describe('pins, reactions and reply context', () => {
+  it('pin then unpin records the call and flips the flag fetchMessageMeta reports', async () => {
+    await d.pinMessage(GUILD, ref);
+    expect((await d.fetchMessageMeta(GUILD, ref))?.pinned).toBe(true);
+    expect(d.restCalls('pinMessage')).toHaveLength(1);
+
+    await d.unpinMessage(GUILD, ref);
+    expect((await d.fetchMessageMeta(GUILD, ref))?.pinned).toBe(false);
+    expect(d.restCalls('unpinMessage')).toHaveLength(1);
+  });
+
+  it('deleteOwnReaction removes the bot reaction from the bucket, others untouched', async () => {
+    await d.createReaction(GUILD, ref, BRAIN);
+    d.offlineReactionAdd({ ...ref, userId: USER, emoji: BRAIN });
+
+    await d.deleteOwnReaction(GUILD, ref, BRAIN);
+
+    const page = await d.fetchReactionUsers(GUILD, ref, BRAIN);
+    expect(page.userIds).toEqual([USER]);
+    expect(d.restCalls('deleteOwnReaction')).toHaveLength(1);
+  });
+
+  it("fetchMessageAuthor returns a known message's author and content, undefined when unknown", async () => {
+    d.defineMessage({
+      channelId: CHANNEL,
+      messageId: '777777777777777777',
+      authorId: USER,
+      content: 'the handbook is pinned in #welcome',
+    });
+    await expect(
+      d.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: '777777777777777777' }),
+    ).resolves.toEqual({
+      authorId: USER,
+      content: 'the handbook is pinned in #welcome',
+      embeds: [],
+    });
+    await expect(
+      d.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: '888888888888888888' }),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe('message emitters (PR-66, PR-68, PR-71)', () => {
   it('emitMessageCreate carries attachment ids and shows up in fetchRecentMessages', async () => {
     const attachmentMessageId = '333333333333333335';
