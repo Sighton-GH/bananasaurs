@@ -406,24 +406,18 @@ describe('the gateway still governs every panel change', () => {
   });
 
   /**
-   * ADR 0042 §5 (spec F3/F4): `automod_testing_mode` is a third lever,
-   * distinct from `dry_run`, precisely so an operator watching a newly
-   * flipped automod rule does not have to disable every role panel in the
-   * guild to do it. The guard this test exists for (plan Task 5, ruling
-   * PR-33): the role-panel path runs through `EffectGateway`, whose own
-   * `state.read()` reads the *same* `guildRepo.readSafetyState(scope)` row
-   * the automod subscriber does — so if `automod_testing_mode` were ever
-   * read as a synonym for `dryRun` (the shortcut this ADR explicitly
-   * rejects), this assignment would silently stop applying the moment an
-   * operator turned testing mode on. It must not.
+   * ADR 0121 (spec F3/F4): the automod switch is guild-wide, and role panels
+   * are not automod — so an owner watching matches on watch must not have
+   * to disable every role panel in the guild to do it. The guard this test
+   * exists for (plan Task 5, ruling PR-33): the role-panel path runs through
+   * `EffectGateway`, whose own `state.read()` reads the *same*
+   * `guildRepo.readSafetyState(scope)` row the automod subscriber does — so
+   * if the switch were ever read as a synonym for `dryRun`, this assignment
+   * would silently stop applying the moment the owner switched automod to
+   * watch. It must not.
    */
-  it('still grants the role when automod_testing_mode is on — not dry_run by another name', async () => {
-    write(scope, ({ db }) => {
-      db.update(schema.guilds)
-        .set({ automodTestingMode: 1 })
-        .where(scope.only(schema.guilds))
-        .run();
-    });
+  it('still grants the role while automod is on watch — not dry_run by another name', async () => {
+    guildRepo.setAutomodState(scope, 'watch', 0);
     await react(MEMBER, BRAIN, 'add');
 
     expect(discord.memberRoles(MEMBER)).toEqual([ROLE_A]);

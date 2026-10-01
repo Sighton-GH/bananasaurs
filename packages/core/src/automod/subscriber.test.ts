@@ -330,7 +330,7 @@ describe('automod subscriber', () => {
     expect(calls.recordCaseEvent).toHaveLength(0);
   });
 
-  it('deletes a message that matches an enforce-mode rule', async () => {
+  it('deletes a message that matches a rule', async () => {
     const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-2', mode: 'enforce' })] });
     const subscriber = createAutomodSubscriber(deps);
 
@@ -374,7 +374,7 @@ describe('automod subscriber', () => {
    * satisfy an assertion on the flag alone without actually enforcing
    * anything.
    */
-  it('honours countsAsViolation: false on the enforce path — deletes, but does not feed the counter', async () => {
+  it('honours countsAsViolation: false — deletes, but does not feed the counter', async () => {
     const { deps, calls } = buildHarness({
       rules: [rule({ ruleId: 'rule-delete-only', mode: 'enforce', countsAsViolation: false })],
     });
@@ -438,8 +438,11 @@ describe('automod subscriber', () => {
     ]);
   });
 
-  it('does not call Discord in test mode, but still records what would have happened', async () => {
-    const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-3', mode: 'test' })] });
+  it('does not call Discord under watch, but still records what would have happened', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-3', mode: 'test' })],
+      safetyState: WATCH,
+    });
     const subscriber = createAutomodSubscriber(deps);
 
     await subscriber.handle(messageCreate());
@@ -452,72 +455,30 @@ describe('automod subscriber', () => {
     ]);
   });
 
-  it('does not call Discord in observe mode either', async () => {
-    const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-4', mode: 'observe' })] });
+  it('does not call Discord under watch either, whatever the rule mode', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-4', mode: 'observe' })],
+      safetyState: WATCH,
+    });
     const subscriber = createAutomodSubscriber(deps);
 
     await subscriber.handle(messageCreate());
 
     expect(calls.deleteMessage).toHaveLength(0);
     expect(calls.applyAction).toHaveLength(0);
-    // Distinguishable from the test-mode case by which rule triggered it.
+    // Distinguishable from the previous watch case by which rule triggered it.
     expect(calls.recordCaseEvent).toEqual([
       expect.objectContaining({ ruleId: 'rule-4', actionTaken: 'would_delete' }),
     ]);
   });
 
   /**
-   * ADR 0041 §2 / plan ruling PR-2: the review corpus captures a matched
-   * message only for a rule in `test` or `observe` mode, never `enforce` —
-   * `PRIVACY.md` promises deleted-message content is kept 30 days, and a
-   * fixture has no expiry, so capturing what the bot just deleted would make
-   * that policy untrue. Plan ruling PR-8: the capture is best-effort and must
-   * never cost a moderation record.
+   * ADR 0121 removed review-evidence capture: the subscriber never calls
+   * `captureFixture`, so a match is recorded with `fixtureId: undefined`
+   * and a message no rule matched records nothing at all.
    */
-  describe('capturing review evidence', () => {
-    it('captures a matched message as review evidence in test mode', async () => {
-      const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-capture', mode: 'test' })],
-        captureFixtureResult: 'fixture-1',
-      });
-      const subscriber = createAutomodSubscriber(deps);
-
-      await subscriber.handle(messageCreate());
-
-      expect(calls.captureFixture).toEqual([
-        {
-          messageId: MESSAGE,
-          content: 'this message has badword in it',
-          authorId: AUTHOR,
-          atMs: NOW_MS,
-          attachments: [],
-        },
-      ]);
-    });
-
-    it('carries the message’s attachments into the corpus', async () => {
-      // The ambiguity that makes this non-decorative: the message has an
-      // attachment AND content, so an implementation that passed `[]`
-      // through would still capture the fixture and still pass every other
-      // assertion in this file. Only this expectation goes red.
-      const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-capture-attachments', mode: 'test' })],
-        captureFixtureResult: 'fixture-1',
-      });
-      const subscriber = createAutomodSubscriber(deps);
-
-      await subscriber.handle(
-        messageCreate({
-          attachments: [{ fileName: 'a.exe', contentType: undefined, sizeBytes: 7 }],
-        }),
-      );
-
-      expect(calls.captureFixture[0]?.attachments).toEqual([
-        { fileName: 'a.exe', contentType: undefined, sizeBytes: 7 },
-      ]);
-    });
-
-    it('does not capture in enforce mode', async () => {
+  describe('review evidence', () => {
+    it('does not capture a message it deletes', async () => {
       const { deps, calls } = buildHarness({
         rules: [rule({ ruleId: 'rule-enforce-no-capture', mode: 'enforce' })],
       });
@@ -539,63 +500,6 @@ describe('automod subscriber', () => {
 
       expect(calls.captureFixture).toHaveLength(0);
       expect(calls.recordCaseEvent).toHaveLength(0);
-    });
-
-    it('records the fixture id and the trace on the case event', async () => {
-      const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-fixture-id', mode: 'observe' })],
-        captureFixtureResult: 'fixture-xyz',
-      });
-      const subscriber = createAutomodSubscriber(deps);
-
-      await subscriber.handle(messageCreate());
-
-      expect(calls.recordCaseEvent).toEqual([
-        expect.objectContaining({
-          fixtureId: 'fixture-xyz',
-          trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
-        }),
-      ]);
-    });
-
-    /**
-     * A message matching two rules — an `observe`-mode rule whose capture
-     * fails, followed by an `enforce`-mode rule. Deliberately not a
-     * single-rule enforce-mode case: `captureFixture` is never called for an
-     * `enforce`-mode match (PR-2), so a single enforce-mode rule could never
-     * exercise a capture throw at all. This proves what the try/catch is
-     * actually for — a capture failure on one rule must not abort the loop
-     * and skip every rule after it, deletion and escalation included.
-     */
-    it('still deletes and escalates when capture throws', async () => {
-      const observeRule = rule({ ruleId: 'rule-observe-throws', mode: 'observe' });
-      const enforceRule = rule({ ruleId: 'rule-enforce-after', mode: 'enforce' });
-      const { deps, calls } = buildHarness({
-        rules: [observeRule, enforceRule],
-        captureFixtureError: new Error('disk full'),
-        violationCount: 3,
-        tier: { action: 'timeout', timeoutMs: 600_000 },
-      });
-      const subscriber = createAutomodSubscriber(deps);
-
-      await expect(subscriber.handle(messageCreate())).resolves.toBeUndefined();
-
-      expect(calls.captureFixture).toHaveLength(1);
-      expect(calls.deleteMessage).toEqual([
-        { channelId: CHANNEL, messageId: MESSAGE, reason: `automod: ${enforceRule.ruleId}` },
-      ]);
-      expect(calls.applyAction).toHaveLength(1);
-      expect(calls.recordCaseEvent).toEqual([
-        expect.objectContaining({
-          ruleId: 'rule-observe-throws',
-          actionTaken: 'would_delete',
-          fixtureId: undefined,
-        }),
-        expect.objectContaining({
-          ruleId: 'rule-enforce-after',
-          actionTaken: 'deleted_and_escalated',
-        }),
-      ]);
     });
   });
 
@@ -918,11 +822,10 @@ describe('automod subscriber', () => {
    * member's message.
    */
   describe('safety gates on the deletion path', () => {
-    const blocked: [string, AutomodSafetyState | null, string][] = [
+    const blocked: [string, AutomodSafetyState, string][] = [
       ['the kill switch is on', { ...LIVE, killswitch: true }, 'delete_blocked_killswitch'],
       ['the circuit breaker is open', { ...LIVE, breakerOpen: true }, 'delete_blocked_breaker'],
       ['the guild is in dry run', { ...LIVE, dryRun: true }, 'delete_blocked_dry_run'],
-      ['the guild is not in the database', null, 'delete_blocked_guild_unknown'],
     ];
 
     for (const [name, safetyState, actionTaken] of blocked) {
@@ -947,7 +850,25 @@ describe('automod subscriber', () => {
       });
     }
 
-    it('reads the safety state before every enforce-mode deletion', async () => {
+    it('an unknown guild fails closed: nothing is evaluated or recorded', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-safety-unknown', mode: 'enforce' })],
+        safetyState: null,
+        violationCount: 6,
+        tier: { action: 'kick', timeoutMs: undefined },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.listRules).toBe(0);
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.openOrResolveCase).toHaveLength(0);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+    });
+
+    it('reads the safety state before deleting', async () => {
       const { deps, calls } = buildHarness({
         rules: [rule({ ruleId: 'rule-live', mode: 'enforce' })],
       });
@@ -959,32 +880,32 @@ describe('automod subscriber', () => {
       expect(calls.deleteMessage).toHaveLength(1);
     });
 
-    it('does not read the safety state for a non-enforce rule', async () => {
+    it('reads the safety state even when the switch is off', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-observe', mode: 'observe' })],
+        rules: [rule({ ruleId: 'rule-off', mode: 'enforce' })],
+        safetyState: OFF,
       });
       const subscriber = createAutomodSubscriber(deps);
 
       await subscriber.handle(messageCreate());
 
-      expect(calls.readSafetyState).toBe(0);
+      expect(calls.readSafetyState).toBe(1);
+      expect(calls.listRules).toBe(0);
     });
   });
 
   /**
-   * ADR 0042 §5's third lever: an operator watching a newly-flipped enforce
-   * rule should not have to disable role panels to do it (F3/F4). Distinct
-   * from the safety-gate tests above — those record a `delete_blocked_*`
-   * action because a layer *stopped* an attempted enforcement; testing mode
-   * is not "stopped", it is "record this exactly as `test` mode would",
-   * which is why the assertion below expects `would_delete`, matching the
-   * non-enforce recording verbatim rather than a new blocked value.
+   * Watch is not "stopped", it is "record what automod would have done" —
+   * which is why the assertions below expect `would_delete` rather than a
+   * `delete_blocked_*` value. Distinct from the safety-gate tests above,
+   * which record a blocked action because a layer *stopped* an attempted
+   * enforcement.
    */
-  describe('automod_testing_mode (ADR 0042 §5)', () => {
-    it('does not delete or count a violation, but records the match exactly as test mode would', async () => {
+  describe('watch mode (ADR 0121)', () => {
+    it('does not delete or count a violation, but records the match', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-testing-mode', mode: 'enforce' })],
-        safetyState: { ...LIVE, automodTestingMode: true },
+        rules: [rule({ ruleId: 'rule-watch', mode: 'enforce' })],
+        safetyState: WATCH,
       });
       const subscriber = createAutomodSubscriber(deps);
 
@@ -994,31 +915,23 @@ describe('automod subscriber', () => {
       expect(calls.applyAction).toHaveLength(0);
       expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
       expect(calls.recordCaseEvent).toEqual([
-        expect.objectContaining({ ruleId: 'rule-testing-mode', actionTaken: 'would_delete' }),
+        expect.objectContaining({ ruleId: 'rule-watch', actionTaken: 'would_delete' }),
       ]);
     });
 
     it('takes precedence over the killswitch in what gets recorded', async () => {
-      // The check sits *ahead* of the `if (blocked !== undefined)` block, and
-      // that order is a decision with an observable consequence, so it gets a
-      // guard: move the testing-mode branch below the block that *acts* on
-      // `blocked` and this test goes red while the one above stays green.
+      // The watch branch sits *ahead* of the `if (blocked !== undefined)`
+      // block, and that order is a decision with an observable consequence,
+      // so it gets a guard: move the watch branch below the block that
+      // *acts* on `blocked` and this test goes red while the one above stays
+      // green.
       //
-      // Below the *computation* of `blocked` is not the same mutation and
-      // proves nothing — `blocked` is only assigned there, and the
-      // testing-mode branch still `continue`s before anything reads it. That
-      // was the first mutation tried here, it left all 47 green, and the
-      // conclusion to draw was "the mutation was too weak", not "the test is
-      // decorative". Worth writing down: a mutation that stays green means
-      // either an unfalsifiable test or a mutation that changed no behaviour,
-      // and telling those apart is the whole job.
-      //
-      // Why this way round. `delete_blocked_killswitch` means "automod tried to
-      // act and an emergency lever stopped it". Under testing mode automod
-      // never tried — an operator has said "observe only" for this subsystem.
-      // Recording a blocked value would misattribute a deliberate
-      // configuration choice to an emergency, and make the killswitch look
-      // load-bearing for a rule that was not going to act either way.
+      // Why this way round. `delete_blocked_killswitch` means "automod tried
+      // to act and an emergency lever stopped it". Under watch automod never
+      // tried — the owner has said "record only" for this guild. Recording a
+      // blocked value would misattribute a deliberate configuration choice to
+      // an emergency, and make the killswitch look load-bearing for a guild
+      // that was not going to act either way.
       //
       // What it costs, stated so nobody discovers it as a surprise: the event
       // row does not show that the killswitch was also engaged. That is
@@ -1026,7 +939,7 @@ describe('automod subscriber', () => {
       // it — it was never per-event information.
       const { deps, calls } = buildHarness({
         rules: [rule({ ruleId: 'rule-both-levers', mode: 'enforce' })],
-        safetyState: { ...LIVE, automodTestingMode: true, killswitch: true },
+        safetyState: { ...WATCH, killswitch: true },
       });
       const subscriber = createAutomodSubscriber(deps);
 
@@ -1174,30 +1087,26 @@ describe('automod subscriber', () => {
   });
 
   /**
-   * I5: the documented rollout (spec §8) is "ship in test mode, the operator
-   * reviews and tunes, then flips to enforce". `openOrResolveCase` used to
-   * increment the per-member violation counter for *every* mode, so ordinary
-   * members' counts climbed silently throughout the observation period — and
-   * the very first real match after the flip could read an already-high count
-   * and go straight to a kick, defeating the entire point of the staged
-   * rollout.
+   * I5: `openOrResolveCase` must only move the per-member violation counter
+   * when automod actually enforced something. Watch matches record without
+   * counting, so flipping the switch to on starts every member at one —
+   * not at whatever their count silently climbed to during the watch period,
+   * which could otherwise send the first real match straight to a kick.
    */
   describe('the violation counter', () => {
-    it('does not move for a test-mode match, so flipping to enforce starts at one', async () => {
-      const rules: AutomodRule[] = [rule({ ruleId: 'rule-rollout', mode: 'test' })];
-      const { deps, calls } = buildHarness({ rules });
+    it('watch matches do not move the counter', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-rollout' })],
+        safetyState: WATCH,
+      });
       const subscriber = createAutomodSubscriber(deps);
 
-      // A long observation period: five matches while the operator tunes.
+      // A long watch period: five matches while the owner reviews.
       for (let i = 0; i < 5; i += 1) await subscriber.handle(messageCreate());
       expect(calls.openOrResolveCase.every((c) => !c.countsAsViolation)).toBe(true);
 
-      rules[0] = rule({ ruleId: 'rule-rollout', mode: 'enforce' });
-      await subscriber.handle(messageCreate());
-
-      // The first *real* violation is violation number one — not number six,
-      // which `nextEscalationTier` would have answered with a kick.
-      expect(calls.nextEscalationTier).toEqual([1]);
+      // Nothing accrued towards an escalation.
+      expect(calls.nextEscalationTier).toEqual([]);
       expect(calls.applyAction).toHaveLength(0);
     });
 
@@ -1210,7 +1119,7 @@ describe('automod subscriber', () => {
 
       await subscriber.handle(messageCreate());
 
-      // Same reasoning as test mode: no enforcement happened, so nothing
+      // Same reasoning as watch: no enforcement happened, so nothing
       // should accrue towards a kick the moment dry run is turned off.
       expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
     });

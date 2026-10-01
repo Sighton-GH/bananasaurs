@@ -146,6 +146,10 @@ beforeEach(() => {
   write(scope, ({ db }) => {
     db.update(schema.guilds).set({ dryRun: 0 }).where(scope.only(schema.guilds)).run();
   });
+  // ADR 0121: automod runs only when the guild-wide switch is on. Most tests
+  // here exercise real calls, so they switch it on deliberately; the watch
+  // tests below set it back.
+  guildRepo.setAutomodState(scope, 'on', 0);
 
   discord = new FakeDiscord({ guildId: GUILD, botHighestRolePosition: 100 });
   discord.defineRole({ id: EXEMPT_ROLE, name: 'exempt', position: 5 });
@@ -166,7 +170,7 @@ afterEach(() => {
 });
 
 describe('automod, end to end on the fake gateway', () => {
-  it('deletes a matching message and opens a case, in enforce mode', async () => {
+  it('deletes a matching message and opens a case when the switch is on', async () => {
     seedRule('enforce');
 
     await sendMessage(MEMBER, 'badword here');
@@ -202,7 +206,8 @@ describe('automod, end to end on the fake gateway', () => {
     expect(findCase(EXEMPT_MEMBER)).toBeUndefined();
   });
 
-  it('makes no Discord call in test mode', async () => {
+  it('makes no Discord call when the switch is on watch', async () => {
+    guildRepo.setAutomodState(scope, 'watch', discord.now());
     seedRule('test');
 
     await sendMessage(MEMBER, 'badword here');
@@ -219,11 +224,11 @@ describe('automod, end to end on the fake gateway', () => {
 
   /**
    * docs/18 Layer 4/6, end to end: dry run is the DEFAULT for an unconfigured
-   * guild, so an enforce-mode rule in a guild whose owner has not turned dry
+   * guild, so a rule in a guild whose owner has not turned dry
    * run off must delete nothing. `beforeEach` clears the flag for every other
    * test here; this one puts it back deliberately.
    */
-  it('deletes nothing in an enforce-mode rule while the guild is in dry run', async () => {
+  it('deletes nothing while the guild is in dry run', async () => {
     write(scope, ({ db }) => {
       db.update(schema.guilds).set({ dryRun: 1 }).where(scope.only(schema.guilds)).run();
     });
@@ -279,13 +284,14 @@ describe('automod, end to end on the fake gateway', () => {
   });
 
   /**
-   * Spec §8's rollout, end to end: a rule ships in test mode, an operator
-   * watches it for a while, then flips it to enforce. The violation counter
-   * must reflect only what was actually enforced — otherwise the first real
-   * match after the flip reads a count of seven and kicks a member for their
-   * first enforced violation.
+   * ADR 0121's rollout, end to end: the switch sits on watch while the owner
+   * reviews, then flips to on. The violation counter must reflect only what
+   * was actually enforced — otherwise the first real match after the flip
+   * reads a count of seven and kicks a member for their first enforced
+   * violation.
    */
-  it('does not carry test-mode matches into the escalation ladder', async () => {
+  it('does not carry watch matches into the escalation ladder', async () => {
+    guildRepo.setAutomodState(scope, 'watch', discord.now());
     seedRule('test');
 
     for (let i = 0; i < 6; i += 1) {
@@ -294,8 +300,7 @@ describe('automod, end to end on the fake gateway', () => {
     expect(discord.restCalls('deleteMessage')).toHaveLength(0);
     expect(findCase(MEMBER)?.violationCount).toBe(0);
 
-    makeRuleEnforceableForTest(scope, RULE_ID, discord.now()); // PR-31.
-    automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
+    guildRepo.setAutomodState(scope, 'on', discord.now());
     await sendMessage(MEMBER, 'badword here');
 
     // One real violation, not seven — so no kick (the tier at 6).
