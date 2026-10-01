@@ -365,6 +365,7 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
     if (firstError !== undefined) throw firstError;
   },
 });
+
 /**
  * `docs/19` §6.7's restated gate, generalised (ADR 0123 decision 5): a gap
  * during which nothing was captured must be a visible marker, never a
