@@ -8,6 +8,7 @@ import {
 } from '../../logging/route-input.js';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
 import type { OpsLogRoute } from '../ports.js';
+import type { JsonValue } from '../protocol.js';
 import { findSetting, OPS_SETTINGS, parseSettingValue } from '../settings.js';
 
 /**
@@ -245,7 +246,7 @@ const parseRouteInput = (
  * The audited shape of a route: the same projection the HTTP API writes into
  * its `before`/`after`, so the two trails read the same.
  */
-const routeAuditShape = (route: OpsLogRoute): Record<string, unknown> => ({
+const routeAuditShape = (route: OpsLogRoute): { [k: string]: JsonValue } => ({
   name: route.name,
   channelId: route.channelId,
   includeContent: route.includeContent,
@@ -254,7 +255,7 @@ const routeAuditShape = (route: OpsLogRoute): Record<string, unknown> => ({
   excludedChannelIds: [...route.excludedChannelIds],
 });
 
-const routeData = (route: OpsLogRoute): Record<string, unknown> => ({
+const routeData = (route: OpsLogRoute): { [k: string]: JsonValue } => ({
   routeId: route.routeId,
   ...routeAuditShape(route),
   createdAtMs: route.createdAtMs,
