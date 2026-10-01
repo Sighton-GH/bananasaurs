@@ -35,7 +35,7 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
   'log routing list': {
     kind: 'covered',
     page: 'Logging',
-    control: 'routes table plus excluded channels',
+    control: 'route cards',
   },
   'audit tail': { kind: 'covered', page: 'Audit', control: 'audit table, newest first' },
   'jobs list': { kind: 'covered', page: 'Jobs', control: 'queue table with state filters' },
