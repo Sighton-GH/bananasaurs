@@ -130,6 +130,15 @@ interface FakeThreadInfo {
   parentId: Snowflake;
   isPrivate: boolean;
   guildId: Snowflake;
+  /** Live archive/lock state, for `setThreadState` (MCP slice 3). */
+  archived: boolean;
+  locked: boolean;
+}
+
+/** A forum post `createForumPost` minted, keyed by its thread id (MCP slice 3). */
+interface FakeForumPost {
+  messageId: Snowflake;
+  appliedTagIds: readonly string[];
 }
 
 export interface RestCall {
@@ -186,6 +195,8 @@ export class FakeDiscord implements DiscordPort {
   private threadMembers = new Map<Snowflake, Set<Snowflake>>();
   /** Thread facts (`threadId` -> info), for `fetchThreadInfo` (ADR 0115). */
   private threadInfos = new Map<Snowflake, FakeThreadInfo>();
+  /** Forum posts (`threadId` -> starter), for `createForumPost` (MCP slice 3). */
+  private forumPosts = new Map<Snowflake, FakeForumPost>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
@@ -251,11 +262,28 @@ export class FakeDiscord implements DiscordPort {
    * Adds a user to a thread's membership, for `isThreadMember` (ADR 0115).
    * Absent unless added: a thread the fake was never told about has no
    * members, the way an unknown thread answers 404 on the real endpoint.
+   *
+   * Two-arg form is world-building: it seeds membership without recording
+   * a call or checking scope, so fixtures stay silent in `restCalls`.
+   * Three-arg form is the `DiscordPort.addThreadMember` write (MCP slice
+   * 3): it records, checks scope, then mutates the same set.
    */
-  addThreadMember(threadId: Snowflake, userId: Snowflake): void {
-    const members = this.threadMembers.get(threadId) ?? new Set<Snowflake>();
-    members.add(userId);
-    this.threadMembers.set(threadId, members);
+  addThreadMember(threadId: Snowflake, userId: Snowflake): void;
+  addThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<void>;
+  addThreadMember(a: Snowflake, b: Snowflake, c?: Snowflake): void | Promise<void> {
+    if (c === undefined) {
+      const members = this.threadMembers.get(a) ?? new Set<Snowflake>();
+      members.add(b);
+      this.threadMembers.set(a, members);
+      return;
+    }
+    return (async () => {
+      this.record('addThreadMember', [a, b, c]);
+      this.check('addThreadMember', a);
+      const members = this.threadMembers.get(b) ?? new Set<Snowflake>();
+      members.add(c);
+      this.threadMembers.set(b, members);
+    })();
   }
   /**
    * Describes a thread for `fetchThreadInfo` (ADR 0115's sweeper fallback).
@@ -270,12 +298,18 @@ export class FakeDiscord implements DiscordPort {
     parentId: Snowflake;
     isPrivate?: boolean;
     guildId?: Snowflake;
+    /** Live archive state to seed, for `setThreadState` tests (MCP slice 3). */
+    archived?: boolean;
+    /** Live lock state to seed, for `setThreadState` tests (MCP slice 3). */
+    locked?: boolean;
   }): void {
     this.threadInfos.set(info.threadId, {
       name: info.name ?? `thread-${info.threadId}`,
       parentId: info.parentId,
       isPrivate: info.isPrivate ?? false,
       guildId: info.guildId ?? this.guildId,
+      archived: info.archived ?? false,
+      locked: info.locked ?? false,
     });
   }
   memberRoles(userId: Snowflake): Snowflake[] {
@@ -288,6 +322,27 @@ export class FakeDiscord implements DiscordPort {
   /** Whether `banMember` has banned this user and `unbanMember` not lifted it. */
   isBanned(userId: Snowflake): boolean {
     return this.bans.has(userId);
+  }
+  /**
+   * A thread's live archive/lock state, for `setThreadState` assertions
+   * (MCP slice 3). `undefined` for a thread the fake was never told about.
+   */
+  threadState(
+    threadId: Snowflake,
+  ): { archived: boolean; locked: boolean } | undefined {
+    const info = this.threadInfos.get(threadId);
+    if (!info) return undefined;
+    return { archived: info.archived, locked: info.locked };
+  }
+  /**
+   * A forum post `createForumPost` minted (MCP slice 3). `undefined` for
+   * anything else — including threads `createThread` made, which carry no
+   * starter message or tags.
+   */
+  forumPost(
+    threadId: Snowflake,
+  ): { messageId: Snowflake; appliedTagIds: readonly string[] } | undefined {
+    return this.forumPosts.get(threadId);
   }
 
   defineMessage(msg: {
@@ -1372,6 +1427,112 @@ export class FakeDiscord implements DiscordPort {
     const info = this.threadInfos.get(threadId);
     if (info === undefined || info.guildId !== guildId) return undefined;
     return { id: threadId, name: info.name, parentId: info.parentId, isPrivate: info.isPrivate };
+  }
+
+  /**
+   * Starts a thread (MCP slice 3): mints the id, records the facts
+   * `fetchThreadInfo` reads, and joins the bot — Discord adds the creator
+   * to its own thread. The private-from-message refusal mirrors the REST
+   * adapter's `TypeError`, thrown before anything is recorded.
+   */
+  async createThread(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly type: 'public' | 'private';
+      readonly autoArchiveMinutes: 60 | 1440 | 4320 | 10080;
+      readonly invitable?: boolean | undefined;
+      readonly fromMessageId?: string | undefined;
+    },
+  ): Promise<{ threadId: string }> {
+    if (input.fromMessageId !== undefined && input.type === 'private') {
+      throw new TypeError('createThread: fromMessageId is only valid for public threads');
+    }
+    this.record('createThread', [guildId, channelId, input]);
+    this.check('createThread', guildId);
+    const threadId = this.nextId();
+    this.threadInfos.set(threadId, {
+      name: input.name,
+      parentId: channelId,
+      isPrivate: input.type === 'private',
+      guildId,
+      archived: false,
+      locked: false,
+    });
+    this.addThreadMember(threadId, BOT_USER_ID);
+    return { threadId };
+  }
+
+  /**
+   * Removes a user from a thread's membership (MCP slice 3). Removing a
+   * non-member is a no-op, the way Discord treats it.
+   */
+  async removeThreadMember(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    userId: Snowflake,
+  ): Promise<void> {
+    this.record('removeThreadMember', [guildId, threadId, userId]);
+    this.check('removeThreadMember', guildId);
+    this.threadMembers.get(threadId)?.delete(userId);
+  }
+
+  /**
+   * Starts a forum post (MCP slice 3): mints the thread and its starter
+   * message — the bot authors it, as Discord does — records the facts
+   * `fetchThreadInfo`/`fetchMessageAuthor` read, and keeps the tags for
+   * the `forumPost` inspector, since no port reader reports them.
+   */
+  async createForumPost(
+    guildId: Snowflake,
+    forumChannelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly message: OutgoingMessage;
+      readonly appliedTagIds: readonly string[];
+    },
+  ): Promise<{ threadId: string; messageId: string }> {
+    this.record('createForumPost', [guildId, forumChannelId, input]);
+    this.check('createForumPost', guildId);
+    const threadId = this.nextId();
+    const messageId = this.nextId();
+    this.threadInfos.set(threadId, {
+      name: input.name,
+      parentId: forumChannelId,
+      isPrivate: false,
+      guildId,
+      archived: false,
+      locked: false,
+    });
+    this.defineMessage({
+      channelId: threadId,
+      messageId,
+      authorId: BOT_USER_ID,
+      content: input.message.content,
+    });
+    this.addThreadMember(threadId, BOT_USER_ID);
+    this.forumPosts.set(threadId, { messageId, appliedTagIds: [...input.appliedTagIds] });
+    return { threadId, messageId };
+  }
+
+  /**
+   * Archives/locks a thread (MCP slice 3): only the fields given move,
+   * the way the REST adapter's PATCH carries only them. An unknown thread
+   * throws a 404, mirroring the adapter's mapped error — not `undefined`,
+   * which is what the *reads* answer.
+   */
+  async setThreadState(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    state: { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined },
+  ): Promise<void> {
+    this.record('setThreadState', [guildId, threadId, state]);
+    this.check('setThreadState', guildId);
+    const info = this.threadInfos.get(threadId);
+    if (!info) throw new DiscordApiError(404, undefined, `Unknown Channel: ${threadId}`);
+    if (state.archived !== undefined) info.archived = state.archived;
+    if (state.locked !== undefined) info.locked = state.locked;
   }
 
   /**

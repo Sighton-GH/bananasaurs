@@ -433,6 +433,121 @@ describe('pins, reactions and reply context', () => {
   });
 });
 
+describe('thread writes (MCP slice 3)', () => {
+  const FORUM = '666666666666666666';
+  const UNKNOWN_THREAD = '777777777777777776';
+
+  it('createThread mints a thread fetchThreadInfo can see, with the bot as a member', async () => {
+    const { threadId } = await d.createThread(GUILD, CHANNEL, {
+      name: 'build night',
+      type: 'public',
+      autoArchiveMinutes: 1440,
+    });
+    expect(threadId).toBeDefined();
+    await expect(d.fetchThreadInfo(GUILD, threadId)).resolves.toMatchObject({
+      id: threadId,
+      name: 'build night',
+      parentId: CHANNEL,
+      isPrivate: false,
+    });
+    await expect(d.isThreadMember(GUILD, threadId, BOT_USER_ID)).resolves.toBe(true);
+    expect(d.restCalls('createThread')).toHaveLength(1);
+  });
+
+  it('createThread marks private threads private', async () => {
+    const { threadId } = await d.createThread(GUILD, CHANNEL, {
+      name: 'mod huddle',
+      type: 'private',
+      autoArchiveMinutes: 60,
+      invitable: true,
+    });
+    await expect(d.fetchThreadInfo(GUILD, threadId)).resolves.toMatchObject({
+      isPrivate: true,
+    });
+  });
+
+  it('createThread refuses a private thread from a message before recording anything', async () => {
+    await expect(
+      d.createThread(GUILD, CHANNEL, {
+        name: 'side discussion',
+        type: 'private',
+        autoArchiveMinutes: 60,
+        fromMessageId: MESSAGE,
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(d.restCalls('createThread')).toHaveLength(0);
+  });
+
+  it('thread membership round-trips through the port methods', async () => {
+    const { threadId } = await d.createThread(GUILD, CHANNEL, {
+      name: 'build night',
+      type: 'public',
+      autoArchiveMinutes: 1440,
+    });
+    await d.addThreadMember(GUILD, threadId, USER);
+    await expect(d.isThreadMember(GUILD, threadId, USER)).resolves.toBe(true);
+
+    await d.removeThreadMember(GUILD, threadId, USER);
+    await expect(d.isThreadMember(GUILD, threadId, USER)).resolves.toBe(false);
+
+    expect(d.restCalls('addThreadMember')).toHaveLength(1);
+    expect(d.restCalls('removeThreadMember')).toHaveLength(1);
+  });
+
+  it('the two-arg seeder still seeds without recording a call', async () => {
+    d.defineThread({ threadId: UNKNOWN_THREAD, parentId: CHANNEL });
+    d.addThreadMember(UNKNOWN_THREAD, USER);
+    await expect(d.isThreadMember(GUILD, UNKNOWN_THREAD, USER)).resolves.toBe(true);
+    expect(d.restCalls('addThreadMember')).toHaveLength(0);
+  });
+
+  it('createForumPost mints a thread and a bot-authored starter message with tags', async () => {
+    const { threadId, messageId } = await d.createForumPost(GUILD, FORUM, {
+      name: 'looking for players',
+      message: { content: 'friday night?' },
+      appliedTagIds: ['888888888888888888'],
+    });
+    expect(threadId).not.toBe(messageId);
+    await expect(d.fetchThreadInfo(GUILD, threadId)).resolves.toMatchObject({
+      name: 'looking for players',
+      parentId: FORUM,
+      isPrivate: false,
+    });
+    await expect(d.fetchMessageAuthor(GUILD, { channelId: threadId, messageId })).resolves.toEqual(
+      {
+        authorId: BOT_USER_ID,
+        content: 'friday night?',
+        embeds: [],
+      },
+    );
+    expect(d.forumPost(threadId)).toEqual({
+      messageId,
+      appliedTagIds: ['888888888888888888'],
+    });
+    expect(d.forumPost(UNKNOWN_THREAD)).toBeUndefined();
+  });
+
+  it('setThreadState flips only the fields given, and 404s an unknown thread', async () => {
+    const { threadId } = await d.createThread(GUILD, CHANNEL, {
+      name: 'build night',
+      type: 'public',
+      autoArchiveMinutes: 1440,
+    });
+    expect(d.threadState(threadId)).toEqual({ archived: false, locked: false });
+
+    await d.setThreadState(GUILD, threadId, { archived: true });
+    expect(d.threadState(threadId)).toEqual({ archived: true, locked: false });
+
+    await d.setThreadState(GUILD, threadId, { locked: true });
+    expect(d.threadState(threadId)).toEqual({ archived: true, locked: true });
+    expect(d.restCalls('setThreadState')).toHaveLength(2);
+
+    await expect(d.setThreadState(GUILD, UNKNOWN_THREAD, { archived: true })).rejects.toMatchObject(
+      { status: 404 },
+    );
+  });
+});
+
 describe('message emitters (PR-66, PR-68, PR-71)', () => {
   it('emitMessageCreate carries attachment ids and shows up in fetchRecentMessages', async () => {
     const attachmentMessageId = '333333333333333335';
