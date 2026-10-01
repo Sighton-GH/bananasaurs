@@ -542,6 +542,111 @@ export const auditEvents = sqliteTable(
 
 // --- log routing ------------------------------------------------------------
 
+/**
+ * A named logging route (ADR 0121 decisions 1-2).
+ *
+ * One row per route, keyed by its own random-UUID `route_id` (like task ids):
+ * a UUID is never reused after a delete, so a replayed event's claim can
+ * never be confused with a different route's claim. The route's event kinds
+ * and per-route excluded source channels are child rows in
+ * `log_route_events` and `log_route_exclusions`.
+ */
+export const logRoutes = sqliteTable(
+  'log_routes',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    routeId: text('route_id').notNull(),
+    name: text('name').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    includeContent: integer('include_content').notNull().default(1),
+    enabled: integer('enabled').notNull().default(1),
+    createdAtMs: integer('created_at_ms').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.routeId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('log_routes_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('log_routes_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('log_routes_include_content_bool', boolCheck(t.includeContent)),
+    check('log_routes_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+/**
+ * The event kinds a route logs (ADR 0121 decision 2).
+ *
+ * `event_kind` is validated in code against core's `LOG_EVENT_KINDS`, not by
+ * a SQL CHECK. The composite foreign key carries `guild_id`, so a child row
+ * cannot point at a route in another guild; deleting the route cascades.
+ */
+export const logRouteEvents = sqliteTable(
+  'log_route_events',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    routeId: text('route_id').notNull(),
+    eventKind: text('event_kind').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.routeId, t.eventKind] }),
+    foreignKey(
+      { columns: [t.guildId, t.routeId], foreignColumns: [logRoutes.guildId, logRoutes.routeId] },
+    ).onDelete('cascade'),
+    check('log_route_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/**
+ * Per-route excluded source channels (ADR 0121 decisions 2 and 4).
+ *
+ * Distinct from the guild-wide `log_excluded_channels` list below, which
+ * still wins over every route. An event is skipped for a route when its
+ * channel, or its thread parent, is in this route's exclusions.
+ */
+export const logRouteExclusions = sqliteTable(
+  'log_route_exclusions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    routeId: text('route_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.routeId, t.channelId] }),
+    foreignKey(
+      { columns: [t.guildId, t.routeId], foreignColumns: [logRoutes.guildId, logRoutes.routeId] },
+    ).onDelete('cascade'),
+    check('log_route_exclusions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('log_route_exclusions_channel_id_snowflake', snowflakeCheck(t.channelId)),
+  ],
+);
+
+/**
+ * A member's last-seen record, for old → new logging (ADR 0121 decision 8).
+ *
+ * Written on member events and compared against; the row is deleted once the
+ * member leaves. Stores avatar hashes, never images. `role_ids` is a JSON
+ * array of snowflake strings, sorted — parsed defensively on read.
+ */
+export const logMemberSnapshots = sqliteTable(
+  'log_member_snapshots',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    userId: snowflake('user_id').notNull(),
+    username: text('username').notNull(),
+    globalName: text('global_name'),
+    nickname: text('nickname'),
+    avatarHash: text('avatar_hash'),
+    guildAvatarHash: text('guild_avatar_hash'),
+    roleIds: text('role_ids').notNull().default('[]'),
+    updatedAtMs: integer('updated_at_ms').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.userId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('log_member_snapshots_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('log_member_snapshots_user_id_snowflake', snowflakeCheck(t.userId)),
+  ],
+);
+
 /** Channels never logged from, whatever the routes say. */
 export const logExcludedChannels = sqliteTable(
   'log_excluded_channels',
