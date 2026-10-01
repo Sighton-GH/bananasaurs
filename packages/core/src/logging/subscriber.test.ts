@@ -334,6 +334,18 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.get(MEMBER)?.nickname).toBe('Nick');
   });
 
+  it('a join saves no snapshot when no route wants member changes', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'j', channelId: DEST_A })]);
+    fake.setRouteKinds('j', ['member_join']);
+    await createLoggingSubscriber(fake.ports).handle(
+      memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
+    );
+    // The join line still posts to its own route — only the snapshot is skipped.
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
+
   it('a join whose send fails saves no snapshot', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'j', channelId: DEST_A })]);
