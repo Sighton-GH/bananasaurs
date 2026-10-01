@@ -477,4 +477,17 @@ describe('member snapshots and change lines', () => {
     expect(fake.sent.map((s) => s.content)).toContain(`Member left: <@${MEMBER}>`);
     expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
+
+  it('a leave whose send fails still deletes the snapshot, and the handler still rejects', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'l', channelId: DEST_A })]);
+    fake.setRouteKinds('l', ['member_leave', 'member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Nick') }));
+    expect(fake.snapshots.has(MEMBER)).toBe(true);
+
+    fake.failing.add(DEST_A);
+    await expect(subscriber.handle(memberLeave({ receivedAtMs: 2_000 }))).rejects.toThrow();
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
 });

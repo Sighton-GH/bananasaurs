@@ -365,10 +365,10 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
 
     if (event.kind === 'memberRemove') {
       const firstError = await postItems(ports, logItemsFor(event), event.kind);
-      if (firstError === undefined) {
-        // Deletion is always allowed, regardless of routes.
-        ports.deleteMemberSnapshot(event.userId);
-      }
+      // Unconditional: the leave line does not depend on the snapshot, so
+      // deletion must not wait for the send — PRIVACY.md promises the record
+      // is always deleted when the member leaves.
+      ports.deleteMemberSnapshot(event.userId);
       if (firstError !== undefined) throw firstError;
       return;
     }
