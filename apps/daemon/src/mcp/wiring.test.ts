@@ -3588,7 +3588,7 @@ describe('/mcp digest tools over real storage', () => {
   };
 
   it('read_digest by channel ids returns guild A rows only, oldest first', async () => {
-    const now = Date.now();
+    const now = clock;
     seedDigest(now);
     const digestApp = buildDigestApp(buildDigestClient());
     try {
@@ -3614,7 +3614,7 @@ describe('/mcp digest tools over real storage', () => {
   });
 
   it('read_digest by category name covers its archive-enabled channels, and a cursor continues', async () => {
-    const now = Date.now();
+    const now = clock;
     seedDigest(now);
     const digestApp = buildDigestApp(buildDigestClient());
     try {
@@ -3666,7 +3666,7 @@ describe('/mcp digest tools over real storage', () => {
   });
 
   it('list_unanswered returns the open @help question with a link, nothing answered', async () => {
-    const now = Date.now();
+    const now = clock;
     seedDigest(now);
     const digestApp = buildDigestApp(buildDigestClient());
     try {
