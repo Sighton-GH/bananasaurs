@@ -132,6 +132,8 @@ beforeEach(() => {
   scope = t.scopes.forGuild(GUILD);
 
   guildRepo.upsertGuild(scope, { name: 'test guild', now: 0 });
+  // ADR 0121: automod is off by default; these tests exercise it acting.
+  guildRepo.setAutomodState(scope, 'on', 0);
   // docs/18 Layer 4: an unconfigured guild is dry-run. The native subscriber
   // makes no Discord calls, so this is world-building parity with
   // `automod.integration.test.ts`, not a precondition this subscriber reads.
