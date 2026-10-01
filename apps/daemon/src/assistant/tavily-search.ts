@@ -49,7 +49,13 @@ export const tavilyWebSearch = async (
     signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
   });
   if (!response.ok) throw new SearchHttpError(response.status);
-  const parsed = tavilyResponse.safeParse(await response.json());
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error('Tavily returned an invalid response');
+  }
+  const parsed = tavilyResponse.safeParse(body);
   if (!parsed.success) throw new Error('Tavily returned an invalid response');
   return parsed.data.results.flatMap((result) =>
     result.url === undefined || !/^https?:\/\//.test(result.url)

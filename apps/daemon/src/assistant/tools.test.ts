@@ -8,7 +8,7 @@ import {
 } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 import { createCitationRegistry } from './citations.js';
-import { WebSearchLimitError } from './web-search.js';
+import { WebSearchLimitError, SearchHttpError } from './web-search.js';
 import type { assistantRepo } from '@bananasaurs/storage';
 
 type StoredReminder = assistantRepo.StoredReminder;
@@ -418,11 +418,23 @@ describe('runAssistantTool', () => {
       { name: 'web_search', args: { query: 'lipo' } },
       ports({
         webSearch: vi.fn(async () => {
-          throw new Error('HTTP 429');
+          throw new Error('secret body text');
         }),
       }),
     );
-    expect(result).toMatchObject({ ok: false, text: 'Web search failed: HTTP 429' });
+    expect(result).toMatchObject({ ok: false, text: 'Web search failed.' });
+  });
+
+  it('reports a web search HTTP failure with the status only', async () => {
+    const result = await runAssistantTool(
+      { name: 'web_search', args: { query: 'lipo' } },
+      ports({
+        webSearch: vi.fn(async () => {
+          throw new SearchHttpError(503);
+        }),
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, text: 'Web search failed (HTTP 503).' });
   });
 
   it('gives the time in the club time zone', async () => {

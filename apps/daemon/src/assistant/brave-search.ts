@@ -45,7 +45,13 @@ export const braveWebSearch = async (
     signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
   });
   if (!response.ok) throw new SearchHttpError(response.status);
-  const parsed = braveResponse.safeParse(await response.json());
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error('Brave returned an invalid response');
+  }
+  const parsed = braveResponse.safeParse(body);
   if (!parsed.success) throw new Error('Brave returned an invalid response');
   return (parsed.data.web?.results ?? []).flatMap((result) =>
     result.url === undefined || !/^https?:\/\//.test(result.url)

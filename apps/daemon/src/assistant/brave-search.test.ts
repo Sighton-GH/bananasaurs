@@ -49,6 +49,14 @@ describe('braveWebSearch (ADR 0066)', () => {
     expect(textSpy).not.toHaveBeenCalled();
   });
 
+  it('a 200 with a non-JSON body throws the fixed message', async () => {
+    const response = new Response('You have exceeded your plan limit', { status: 200 });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    await expect(braveWebSearch({ apiKey: 'k', fetch }, 'q')).rejects.toThrow(
+      'Brave returned an invalid response',
+    );
+  });
+
   it('treats a response without web results as no results', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ query: {} }));
     await expect(braveWebSearch({ apiKey: 'k', fetch }, 'q')).resolves.toEqual([]);

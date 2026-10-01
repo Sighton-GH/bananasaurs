@@ -27,8 +27,7 @@ import type {
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 import type { CitationRegistry } from './citations.js';
-import type { WebSearchOutcome, WebSearchRun } from './web-search.js';
-import { WebSearchLimitError } from './web-search.js';
+import { WebSearchLimitError, SearchHttpError, type WebSearchOutcome, type WebSearchRun } from './web-search.js';
 
 /**
  * The read-only tools the model may call (ADR 0067, Task 16).
@@ -773,7 +772,7 @@ export const runAssistantTool = async (
       case 'web_search': {
         const { query: q } = parsed.data as z.infer<typeof query>;
         if (ports.webSearch === undefined) return refused(name, 'Web search is off.');
-        // The query leaves for Brave: the same local scan as member input.
+        // The query leaves for the search provider: the same local scan as member input.
         if (
           !scanOutboundRequest({ model: 'web-search', messages: [{ role: 'user', text: q }] }).safe
         )
@@ -784,7 +783,11 @@ export const runAssistantTool = async (
         } catch (err) {
           if (err instanceof WebSearchLimitError)
             return refused(name, 'Web search has reached its limit for now. Answer without it.');
-          throw err;
+          // Fixed text only: a provider body or driver message must never
+          // reach the model (ADR 0120 §6).
+          if (err instanceof SearchHttpError)
+            return refused(name, `Web search failed (HTTP ${String(err.status)}).`);
+          return refused(name, 'Web search failed.');
         }
         const results = outcome.results;
         if (results.length === 0)
@@ -1333,9 +1336,6 @@ export const runAssistantTool = async (
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
-    return refused(
-      name,
-      name === 'web_search' ? `Web search failed: ${message}` : `The tool failed: ${message}`,
-    );
+    return refused(name, `The tool failed: ${message}`);
   }
 };

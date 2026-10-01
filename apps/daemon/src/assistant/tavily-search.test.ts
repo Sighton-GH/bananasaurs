@@ -75,6 +75,14 @@ describe('tavilyWebSearch (ADR 0120)', () => {
     expect(textSpy).not.toHaveBeenCalled();
   });
 
+  it('a 200 with a non-JSON body throws the fixed message', async () => {
+    const response = new Response('You have exceeded your plan limit', { status: 200 });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    await expect(tavilyWebSearch({ apiKey: 'k', fetch }, 'q')).rejects.toThrow(
+      'Tavily returned an invalid response',
+    );
+  });
+
   it('an invalid JSON shape throws without the provider body', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ results: 'nope' }));
     await expect(tavilyWebSearch({ apiKey: 'k', fetch }, 'q')).rejects.toThrow(
