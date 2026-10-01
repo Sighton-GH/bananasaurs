@@ -336,7 +336,13 @@ export const logRoutingUpdateCommand = defineCommand<z.infer<typeof logRoutingUp
     }
     // The enabled state is the route's own, not a flag: update replaces the
     // content, `on`/`off` flips the switch.
-    const updated = ctx.ports.updateRoute(args.route, parseRouteInput(args, before.enabled));
+    const input = parseRouteInput(args, before.enabled);
+    // The stored state was handed to the parser, so `enabled` is resolved;
+    // the `??` is the type-level proof the ports require, never taken.
+    const updated = ctx.ports.updateRoute(args.route, {
+      ...input,
+      enabled: input.enabled ?? before.enabled,
+    });
     if (updated === undefined) {
       throw new Error(
         `${args.route} names no log route in guild ${ctx.guildId}, so there was nothing to update.\n` +

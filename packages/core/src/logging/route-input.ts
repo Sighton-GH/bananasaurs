@@ -37,4 +37,12 @@ export const logRouteInputSchema = z
 
 export type LogRouteInput = z.output<typeof logRouteInputSchema>;
 
+/**
+ * A route input with `enabled` resolved to a definite boolean. The schema
+ * leaves `enabled` undefined when omitted; create resolves it to true and
+ * update to the stored route's own state. The ops ports take this, so nothing
+ * can pass `enabled: undefined` down to storage (whose `enabled` is boolean).
+ */
+export type ResolvedLogRouteInput = Omit<LogRouteInput, 'enabled'> & { enabled: boolean };
+
 export const logRouteIdSchema = z.string().uuid();

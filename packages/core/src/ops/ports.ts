@@ -1,7 +1,7 @@
 import type { DryRunReport } from '../automod/dry-run.js';
 import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { Capability } from '../authz.js';
-import type { LogRouteInput } from '../logging/route-input.js';
+import type { ResolvedLogRouteInput } from '../logging/route-input.js';
 import type { PanelDefinition } from '../panels/model.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
@@ -1105,9 +1105,9 @@ export interface OpsPorts {
     readonly exemptId: string;
   }): 'removed' | 'not-present';
   /** Creates a route; the port supplies the creation timestamp. */
-  createRoute(input: LogRouteInput): OpsLogRoute;
+  createRoute(input: ResolvedLogRouteInput): OpsLogRoute;
   /** Replaces a route; `undefined` when no route carries that id in this guild. */
-  updateRoute(routeId: string, input: LogRouteInput): OpsLogRoute | undefined;
+  updateRoute(routeId: string, input: ResolvedLogRouteInput): OpsLogRoute | undefined;
   /** Returns whether there was a route to change. False is a real answer. */
   setRouteEnabled(routeId: string, enabled: boolean): boolean;
   /** Deletes a route. Returns whether there was one. */

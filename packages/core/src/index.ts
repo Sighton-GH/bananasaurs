@@ -170,6 +170,7 @@ export {
   logRouteIdSchema,
   logRouteInputSchema,
   type LogRouteInput,
+  type ResolvedLogRouteInput,
 } from './logging/route-input.js';
 export {
   correlateDeletion,
