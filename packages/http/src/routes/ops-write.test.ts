@@ -437,6 +437,33 @@ describe('ops-write routes', () => {
     }
   });
 
+  it('records the real before-state when toggling an already-enabled route to enabled', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['logging.manage']);
+    const routeId = loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+      name: 'mod log',
+      channelId: '333333333333333333',
+      includeContent: true,
+      enabled: true,
+      eventKinds: ['member_join'],
+      excludedChannelIds: [],
+      nowMs: clock,
+    }).routeId;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/log-routes/${routeId}/enabled`,
+      headers: { cookie, [CSRF]: csrf },
+      payload: { enabled: true },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
+    const row = rows.find((r) => r.action === 'log_route.enabled');
+    expect(JSON.parse(row?.before ?? 'null')).toEqual({ enabled: true });
+    expect(JSON.parse(row?.after ?? 'null')).toEqual({ enabled: true });
+  });
+
   it('answers 404 for an unknown route id and 400 for a bad one', async () => {
     const { cookie, csrf } = await signIn();
     grant(['logging.manage']);

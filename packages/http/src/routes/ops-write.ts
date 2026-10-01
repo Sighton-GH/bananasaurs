@@ -397,6 +397,8 @@ export const registerOpsWriteRoutes = (
       }
 
       const ports = deps.portsFor(session.scope);
+      const before = ports.getRoute(idParsed.data);
+      if (before === undefined) return reply.status(404).send({ error: 'not-found' });
       const existed = ports.setRouteEnabled(idParsed.data, bodyParsed.data.enabled);
       if (!existed) return reply.status(404).send({ error: 'not-found' });
       ports.recordAudit({
@@ -404,7 +406,7 @@ export const registerOpsWriteRoutes = (
         action: bodyParsed.data.enabled ? 'log_route.enabled' : 'log_route.disabled',
         subjectType: 'log_route',
         subjectId: idParsed.data,
-        before: { enabled: !bodyParsed.data.enabled },
+        before: { enabled: before.enabled },
         after: { enabled: bodyParsed.data.enabled },
       });
       return reply.status(200).send({ ok: true });
