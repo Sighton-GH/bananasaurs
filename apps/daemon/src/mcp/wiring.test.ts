@@ -2987,8 +2987,18 @@ describe('/mcp read_thread and shared private threads', () => {
     const MIDDLE = '900000000000000011';
     const OLDER_TEXT = 'older live plans in the shared private thread';
     const MIDDLE_TEXT = 'middle live plans in the shared private thread';
-    discord.defineMessage({ channelId: SHARED_PRIVATE, messageId: OLDER, authorId: MEMBER, content: OLDER_TEXT });
-    discord.defineMessage({ channelId: SHARED_PRIVATE, messageId: MIDDLE, authorId: MEMBER, content: MIDDLE_TEXT });
+    discord.defineMessage({
+      channelId: SHARED_PRIVATE,
+      messageId: OLDER,
+      authorId: MEMBER,
+      content: OLDER_TEXT,
+    });
+    discord.defineMessage({
+      channelId: SHARED_PRIVATE,
+      messageId: MIDDLE,
+      authorId: MEMBER,
+      content: MIDDLE_TEXT,
+    });
     const threadApp = buildThreadApp(discord);
     try {
       const accessToken = await mintToken();

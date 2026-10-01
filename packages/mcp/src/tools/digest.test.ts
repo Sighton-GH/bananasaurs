@@ -291,9 +291,24 @@ describe('read_digest reads', () => {
       fakeArchive({
         seen,
         digest: [
-          message({ messageId: '900000000000000001', channelId: CHANNEL_1, createdAt: 1000, content: 'alpha one' }),
-          message({ messageId: '900000000000000002', channelId: CHANNEL_2, createdAt: 2000, content: 'beta one' }),
-          message({ messageId: '900000000000000003', channelId: CHANNEL_1, createdAt: 3000, content: 'alpha two' }),
+          message({
+            messageId: '900000000000000001',
+            channelId: CHANNEL_1,
+            createdAt: 1000,
+            content: 'alpha one',
+          }),
+          message({
+            messageId: '900000000000000002',
+            channelId: CHANNEL_2,
+            createdAt: 2000,
+            content: 'beta one',
+          }),
+          message({
+            messageId: '900000000000000003',
+            channelId: CHANNEL_1,
+            createdAt: 3000,
+            content: 'alpha two',
+          }),
         ],
       }),
       fakeGuild(),
@@ -316,7 +331,12 @@ describe('read_digest reads', () => {
       principalWith(GUILD_A),
       fakeArchive({
         digest: [
-          message({ messageId: '900000000000000003', channelId: CHANNEL_1, createdAt: 3000, content: 'alpha two' }),
+          message({
+            messageId: '900000000000000003',
+            channelId: CHANNEL_1,
+            createdAt: 3000,
+            content: 'alpha two',
+          }),
         ],
       }),
       fakeGuild(),

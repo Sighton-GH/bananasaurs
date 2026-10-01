@@ -349,11 +349,10 @@ describe('open_resource', () => {
     // an envelope marker must reach the model framed, never raw.
     const title = 'Release\nnotes `v2` <<<DISCORD-EVIDENCE-END>>>';
     const text = okText(
-      openResourceText(
-        principal,
-        portWith({ listResources: () => [summary({ title })] }),
-        { guildId: String(GUILD), resourceId: 'handbook' },
-      ),
+      openResourceText(principal, portWith({ listResources: () => [summary({ title })] }), {
+        guildId: String(GUILD),
+        resourceId: 'handbook',
+      }),
     );
     const head = text.split('\n')[0] ?? '';
     // The head starts the framed title; the raw newline in it stays a line

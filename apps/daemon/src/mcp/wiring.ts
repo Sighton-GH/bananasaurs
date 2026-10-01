@@ -880,14 +880,12 @@ const resourcesPortFor = (deps: HttpDeps): McpResourcesPort => {
     const rows = assistantRepo
       .listResources(deps.scopes.forGuild(guildId))
       .filter((resource) => resource.enabled)
-      .map(
-        (resource): McpResourceSummary => ({
-          id: resource.id,
-          title: resource.title,
-          kind: resource.kind,
-          url: resource.url,
-        }),
-      );
+      .map((resource): McpResourceSummary => ({
+        id: resource.id,
+        title: resource.title,
+        kind: resource.kind,
+        url: resource.url,
+      }));
     enabledCache.set(guildId, rows);
     return rows;
   };
