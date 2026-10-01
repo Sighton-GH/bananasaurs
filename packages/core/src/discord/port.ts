@@ -387,6 +387,57 @@ export interface DiscordPort {
     | undefined
   >;
   /**
+   * Starts a thread under a text channel (MCP slice 3): `POST
+   * /channels/{channel}/threads`, or `POST
+   * /channels/{channel}/messages/{message}/threads` when `fromMessageId`
+   * is set. A private thread with `fromMessageId` is refused with a
+   * `TypeError` before any call — Discord derives the kind from the
+   * message route, so the combination is a caller bug, not a Discord
+   * refusal. `invitable` is sent only for private threads.
+   */
+  createThread(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly type: 'public' | 'private';
+      readonly autoArchiveMinutes: 60 | 1440 | 4320 | 10080;
+      readonly invitable?: boolean | undefined;
+      readonly fromMessageId?: string | undefined;
+    },
+  ): Promise<{ threadId: string }>;
+  /** Adds a user to a thread: `PUT /channels/{thread}/thread-members/{user}`. */
+  addThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<void>;
+  /** Removes a user from a thread: `DELETE` on the same route. */
+  removeThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<void>;
+  /**
+   * Starts a public forum post (MCP slice 3): `POST
+   * /channels/{forum}/threads` with `name`, the starter `message` built
+   * exactly as `sendMessage` builds it, and `applied_tags`. The returned
+   * `messageId` is the response thread's `last_message_id` — the starter
+   * message is the thread's only message — and its absence is a throw,
+   * never an invented id.
+   */
+  createForumPost(
+    guildId: Snowflake,
+    forumChannelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly message: OutgoingMessage;
+      readonly appliedTagIds: readonly string[];
+    },
+  ): Promise<{ threadId: string; messageId: string }>;
+  /**
+   * Archives/locks a thread (MCP slice 3): `PATCH /channels/{thread}`
+   * with only the fields given, so an archive never disturbs the lock
+   * and vice versa.
+   */
+  setThreadState(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    state: { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined },
+  ): Promise<void>;
+  /**
    * Guild scheduled events for the assistant's `upcoming_events` tool
    * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway
    * intent needed. An empty list when there are none — or when the bot may

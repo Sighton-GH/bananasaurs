@@ -602,6 +602,87 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     },
 
     /**
+     * Thread starts for the MCP (slice 3): standalone threads POST to
+     * `threads(channel)`, from-message threads to
+     * `threads(channel, message)` — whose body takes no `type`, Discord
+     * deriving the kind from the message. The standalone default is
+     * private (API v9/v10), so `type` is always sent there; `invitable`
+     * is a private-thread field and is sent only for private threads.
+     */
+    async createThread(_guildId, channelId, input) {
+      if (input.fromMessageId !== undefined && input.type === 'private') {
+        throw new TypeError('createThread: fromMessageId is only valid for public threads');
+      }
+      const route =
+        input.fromMessageId !== undefined
+          ? Routes.threads(channelId, input.fromMessageId)
+          : Routes.threads(channelId);
+      const body =
+        input.fromMessageId !== undefined
+          ? { name: input.name, auto_archive_duration: input.autoArchiveMinutes }
+          : {
+              name: input.name,
+              auto_archive_duration: input.autoArchiveMinutes,
+              type: input.type === 'public' ? ChannelType.PublicThread : ChannelType.PrivateThread,
+              ...(input.type === 'private' && input.invitable !== undefined
+                ? { invitable: input.invitable }
+                : {}),
+            };
+      const thread = (await mapErrors(() => rest.post(route, { body }))) as APIChannel;
+      return { threadId: thread.id };
+    },
+
+    /** Adds a member with PUT on the thread-member route (no body). */
+    async addThreadMember(_guildId, threadId, userId) {
+      await mapErrors(() => rest.put(Routes.threadMembers(threadId, userId)));
+    },
+
+    /** Removes a member with DELETE on the same route. */
+    async removeThreadMember(_guildId, threadId, userId) {
+      await mapErrors(() => rest.delete(Routes.threadMembers(threadId, userId)));
+    },
+
+    /**
+     * Forum posts (slice 3): the starter message is built by the same
+     * `toRestMessage` the channel sends use, so embeds and mention policy
+     * behave identically. The response is the thread channel; its
+     * `last_message_id` is the starter message (the thread's only one).
+     * Absent, the port throws rather than inventing an id — but flag for
+     * live smoke: this projection has never been observed against Discord.
+     */
+    async createForumPost(_guildId, forumChannelId, input) {
+      const thread = (await mapErrors(() =>
+        rest.post(Routes.threads(forumChannelId), {
+          body: {
+            name: input.name,
+            message: toRestMessage(input.message),
+            applied_tags: [...input.appliedTagIds],
+          },
+        }),
+      )) as APIChannel & { last_message_id?: string | null };
+      if (thread.last_message_id == null) {
+        throw new Error('createForumPost: the forum-create response carried no last_message_id');
+      }
+      return { threadId: thread.id, messageId: thread.last_message_id };
+    },
+
+    /**
+     * Archive/lock (slice 3): PATCH on the channel route with only the
+     * fields given — `RESTPatchAPIChannelJSONBody`'s `archived`/`locked` —
+     * so an archive never disturbs the lock and vice versa.
+     */
+    async setThreadState(_guildId, threadId, state) {
+      await mapErrors(() =>
+        rest.patch(Routes.channel(threadId), {
+          body: {
+            ...(state.archived !== undefined ? { archived: state.archived } : {}),
+            ...(state.locked !== undefined ? { locked: state.locked } : {}),
+          },
+        }),
+      );
+    },
+
+    /**
      * Guild scheduled events for the assistant (ADR 0092 decision 1): no
      * gateway intent is needed for the REST read. A 403 (the bot may not
      * see them) answers `[]` rather than failing the turn; anything else

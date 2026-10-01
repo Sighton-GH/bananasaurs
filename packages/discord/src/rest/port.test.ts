@@ -1414,6 +1414,160 @@ describe('thread info (ADR 0115 sweeper fallback)', () => {
   });
 });
 
+describe('thread writes (MCP slice 3)', () => {
+  const THREAD = '666666666666666666';
+  const FORUM = '777777777777777777';
+
+  it('starts a public thread with the type explicit (the API defaults to private)', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: THREAD } }]);
+    await expect(
+      port.createThread(GUILD, CHANNEL, {
+        name: 'build night',
+        type: 'public',
+        autoArchiveMinutes: 1440,
+      }),
+    ).resolves.toEqual({ threadId: THREAD });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/threads`);
+    // `type: 11` is ChannelType.PublicThread; asserted as the number the
+    // existing thread-info tests use rather than importing the enum.
+    expect(last(requests).body).toEqual({
+      name: 'build night',
+      auto_archive_duration: 1440,
+      type: 11,
+    });
+  });
+
+  it('starts a private thread, sending invitable only for private', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: THREAD } }]);
+    await port.createThread(GUILD, CHANNEL, {
+      name: 'mod huddle',
+      type: 'private',
+      autoArchiveMinutes: 60,
+      invitable: true,
+    });
+    // `type: 12` is ChannelType.PrivateThread.
+    expect(last(requests).body).toEqual({
+      name: 'mod huddle',
+      auto_archive_duration: 60,
+      type: 12,
+      invitable: true,
+    });
+  });
+
+  it('omits invitable when not given, and never for public threads', async () => {
+    const noFlag = harness([{ status: 200, body: { id: THREAD } }]);
+    await noFlag.port.createThread(GUILD, CHANNEL, {
+      name: 'mod huddle',
+      type: 'private',
+      autoArchiveMinutes: 60,
+    });
+    expect(last(noFlag.requests).body).not.toHaveProperty('invitable');
+
+    const publicThread = harness([{ status: 200, body: { id: THREAD } }]);
+    await publicThread.port.createThread(GUILD, CHANNEL, {
+      name: 'build night',
+      type: 'public',
+      autoArchiveMinutes: 1440,
+      invitable: true,
+    });
+    expect(last(publicThread.requests).body).not.toHaveProperty('invitable');
+  });
+
+  it('starts a thread from a message on the from-message route, with no type', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: THREAD } }]);
+    await port.createThread(GUILD, CHANNEL, {
+      name: 'side discussion',
+      type: 'public',
+      autoArchiveMinutes: 4320,
+      fromMessageId: MESSAGE,
+    });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}/threads`);
+    // The from-message endpoint derives the kind from the message: no
+    // `type`, no `invitable` — both would be rejected or meaningless.
+    expect(last(requests).body).toEqual({ name: 'side discussion', auto_archive_duration: 4320 });
+  });
+
+  it('refuses a private thread from a message with a TypeError before any call', async () => {
+    const { port, requests } = harness();
+    await expect(
+      port.createThread(GUILD, CHANNEL, {
+        name: 'side discussion',
+        type: 'private',
+        autoArchiveMinutes: 1440,
+        fromMessageId: MESSAGE,
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('adds a thread member with PUT and no body', async () => {
+    const { port, requests } = harness();
+    await port.addThreadMember(GUILD, THREAD, USER);
+    expect(last(requests).method).toBe('PUT');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}/thread-members/${USER}`);
+    expect(last(requests).body).toBeUndefined();
+  });
+
+  it('removes a thread member with DELETE on the same route', async () => {
+    const { port, requests } = harness();
+    await port.removeThreadMember(GUILD, THREAD, USER);
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}/thread-members/${USER}`);
+  });
+
+  it('starts a forum post with the starter message built as sendMessage builds it', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: THREAD, last_message_id: MESSAGE } },
+    ]);
+    await expect(
+      port.createForumPost(GUILD, FORUM, {
+        name: 'looking for players',
+        message: {
+          content: 'friday night?',
+          embeds: [{ title: 'details' }],
+          allowedMentions: { parse: [] },
+        },
+        appliedTagIds: ['888888888888888888', '999999999999999999'],
+      }),
+    ).resolves.toEqual({ threadId: THREAD, messageId: MESSAGE });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${FORUM}/threads`);
+    expect(last(requests).body).toEqual({
+      name: 'looking for players',
+      message: {
+        content: 'friday night?',
+        embeds: [{ title: 'details' }],
+        allowed_mentions: { parse: [] },
+      },
+      applied_tags: ['888888888888888888', '999999999999999999'],
+    });
+  });
+
+  it('throws rather than inventing a message id when the forum response carries none', async () => {
+    const { port } = harness([{ status: 200, body: { id: THREAD } }]);
+    await expect(
+      port.createForumPost(GUILD, FORUM, {
+        name: 'looking for players',
+        message: { content: 'friday night?' },
+        appliedTagIds: [],
+      }),
+    ).rejects.toThrow(/last_message_id/);
+  });
+
+  it('patches only the thread fields given', async () => {
+    const { port, requests } = harness();
+    await port.setThreadState(GUILD, THREAD, { archived: true });
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}`);
+    expect(last(requests).body).toEqual({ archived: true });
+
+    await port.setThreadState(GUILD, THREAD, { locked: false, archived: false });
+    expect(last(requests).body).toEqual({ locked: false, archived: false });
+  });
+});
+
 describe('guild lifecycle', () => {
   it('leaves a guild on the @me route', async () => {
     const { port, requests } = harness();

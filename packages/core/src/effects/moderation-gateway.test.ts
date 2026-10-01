@@ -133,6 +133,21 @@ class MinimalModerationDiscord implements DiscordPort {
   async deleteOwnReaction(): Promise<void> {
     this.notUsed('deleteOwnReaction');
   }
+  async createThread(): Promise<never> {
+    this.notUsed('createThread');
+  }
+  async addThreadMember(): Promise<void> {
+    this.notUsed('addThreadMember');
+  }
+  async removeThreadMember(): Promise<void> {
+    this.notUsed('removeThreadMember');
+  }
+  async createForumPost(): Promise<never> {
+    this.notUsed('createForumPost');
+  }
+  async setThreadState(): Promise<void> {
+    this.notUsed('setThreadState');
+  }
   async fetchMessageAuthor(): Promise<never> {
     this.notUsed('fetchMessageAuthor');
   }
