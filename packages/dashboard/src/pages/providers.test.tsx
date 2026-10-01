@@ -105,6 +105,11 @@ const selectOf = (element: HTMLElement): HTMLSelectElement => {
   return element;
 };
 
+const buttonOf = (element: HTMLElement): HTMLButtonElement => {
+  if (!(element instanceof HTMLButtonElement)) throw new Error('expected a <button>');
+  return element;
+};
+
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
@@ -955,10 +960,10 @@ describe('ProvidersPage terms and web search', () => {
     const card = await webCard();
     expect(await within(card).findByText('No Tavily keys yet.')).toBeTruthy();
     fireEvent.change(within(card).getByLabelText('Label'), { target: { value: 'Spare' } });
-    const keyInput = within(card).getByLabelText('Key') as HTMLInputElement;
+    const keyInput = inputOf(within(card).getByLabelText('Key'));
     expect(keyInput.type).toBe('password');
     fireEvent.change(keyInput, { target: { value: 'tvly-secret' } });
-    expect((within(card).getByLabelText('Monthly limit') as HTMLInputElement).value).toBe('1000');
+    expect(inputOf(within(card).getByLabelText('Monthly limit')).value).toBe('1000');
     await act(async () => {
       fireEvent.click(within(card).getByRole('button', { name: 'Add key' }));
     });
@@ -975,7 +980,7 @@ describe('ProvidersPage terms and web search', () => {
     // Saving reloads the page data, which replaces the card's DOM node, so
     // re-query it before asserting the write-only key field was cleared.
     const freshCard = await webCard();
-    expect((within(freshCard).getByLabelText('Key') as HTMLInputElement).value).toBe('');
+    expect(inputOf(within(freshCard).getByLabelText('Key')).value).toBe('');
   });
 
   it('a blank monthly limit posts null and zero shows an inline error without posting', async () => {
@@ -1115,10 +1120,9 @@ describe('ProvidersPage terms and web search', () => {
     renderWithSession(<ProvidersPage />);
     const card = await webCard();
     await within(card).findByText('First key');
-    expect(
-      (within(card).getByRole('button', { name: 'Move First key up' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    expect(buttonOf(within(card).getByRole('button', { name: 'Move First key up' })).disabled).toBe(
+      true,
+    );
     await act(async () => {
       fireEvent.click(within(card).getByRole('button', { name: 'Move Second key up' }));
     });
@@ -1196,15 +1200,11 @@ describe('ProvidersPage terms and web search', () => {
     expect(
       within(card).getByText('Only the server owner can change web search.'),
     ).toBeTruthy();
+    expect(inputOf(within(card).getByRole('radio', { name: 'Tavily' })).checked).toBe(true);
+    expect(inputOf(within(card).getByRole('radio', { name: 'Brave Search' })).disabled).toBe(true);
     expect(
-      (within(card).getByRole('radio', { name: 'Tavily' }) as HTMLInputElement).checked,
-    ).toBe(true);
-    expect(
-      (within(card).getByRole('radio', { name: 'Brave Search' }) as HTMLInputElement).disabled,
-    ).toBe(true);
-    expect(mock.mock.calls.some((c) => String(c[0]).includes('/api/assistant/search-keys'))).toBe(
-      false,
-    );
+      mock.mock.calls.some((c) => (c[0] as string).includes('/api/assistant/search-keys')),
+    ).toBe(false);
   });
 });
 

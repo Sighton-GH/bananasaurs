@@ -1154,7 +1154,7 @@ function WebSearchCard({
 
   const loadKeys = useCallback((): Promise<SearchKeysData> => {
     if (!isOwner)
-      return Promise.resolve({ enabled: false, source: 'brave' as SearchSource, keys: [] });
+      return Promise.resolve({ enabled: false, source: 'brave', keys: [] });
     return session.read<SearchKeysData>(SEARCH_KEYS_URL);
   }, [session, isOwner]);
   const keysResource = useResource('web search keys', loadKeys);

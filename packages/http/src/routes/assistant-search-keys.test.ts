@@ -161,7 +161,7 @@ const fakeStore = (
 const rebuild = async (store: unknown): Promise<void> => {
   deps = {
     ...deps,
-    assistantProviderConfig: store as unknown as HttpDeps['assistantProviderConfig'],
+    assistantProviderConfig: store as HttpDeps['assistantProviderConfig'],
   };
   await app.close();
   app = createServer({ deps, registerRoutes: registerAssistantSearchKeyRoutes });
@@ -180,7 +180,7 @@ beforeEach(async () => {
     readonly: false,
     portsFor: (scope) => testPortsFor(scope, () => clock),
     instance: testInstanceFor(t.scopes.instance(), () => clock),
-    assistantProviderConfig: fakeStore() as unknown as HttpDeps['assistantProviderConfig'],
+    assistantProviderConfig: fakeStore() as HttpDeps['assistantProviderConfig'],
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'guild', now: clock });
   accountRepo.createAccount(t.scopes.instance(), {
