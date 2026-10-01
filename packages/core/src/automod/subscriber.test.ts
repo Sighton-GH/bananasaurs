@@ -157,13 +157,16 @@ interface Harness {
   };
 }
 
-/** Everything live: not read-only, not stopped, not dry-run. */
+/** Everything live: not read-only, not stopped, not dry-run; the switch is on. */
 const LIVE: AutomodSafetyState = {
   killswitch: false,
   breakerOpen: false,
   dryRun: false,
-  automodTestingMode: false,
+  automodState: 'on',
 };
+
+const WATCH: AutomodSafetyState = { ...LIVE, automodState: 'watch' };
+const OFF: AutomodSafetyState = { ...LIVE, automodState: 'off' };
 
 function buildHarness(
   opts: {
@@ -777,6 +780,133 @@ describe('automod subscriber', () => {
     // ...and the converse: guild 1's word is not a violation in guild 2.
     await subscriber2.handle(messageCreate({ guildId: GUILD_2, content: 'an alpha message' }));
     expect(second.calls.deleteMessage).toHaveLength(1);
+  });
+
+  describe('the automod switch (ADR 0121)', () => {
+    it('off: evaluates nothing and records nothing', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-switch-off', mode: 'enforce' })],
+        safetyState: OFF,
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.listRules).toBe(0);
+      expect(calls.authorRoleIds).toEqual([]);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+      expect(calls.openOrResolveCase).toHaveLength(0);
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.captureFixture).toHaveLength(0);
+    });
+
+    it('unknown guild: fails closed — evaluates nothing and records nothing', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-switch-unknown', mode: 'enforce' })],
+        safetyState: null,
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.listRules).toBe(0);
+      expect(calls.authorRoleIds).toEqual([]);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+      expect(calls.openOrResolveCase).toHaveLength(0);
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.captureFixture).toHaveLength(0);
+    });
+
+    it('watch: records would_delete without counting a violation or touching Discord', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-switch-watch', mode: 'enforce' })],
+        safetyState: WATCH,
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-switch-watch', actionTaken: 'would_delete' }),
+      ]);
+      expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.captureFixture).toHaveLength(0);
+      expect(calls.applyAction).toHaveLength(0);
+    });
+
+    it.each([
+      [{ killswitch: true }, 'delete_blocked_killswitch'],
+      [{ breakerOpen: true }, 'delete_blocked_breaker'],
+      [{ dryRun: true }, 'delete_blocked_dry_run'],
+    ] as const)(
+      'on blocked (%s): records %s and does not delete',
+      async (over, actionTaken) => {
+        const { deps, calls } = buildHarness({
+          rules: [rule({ ruleId: 'rule-switch-blocked', mode: 'enforce' })],
+          safetyState: { ...LIVE, ...over },
+        });
+        const subscriber = createAutomodSubscriber(deps);
+
+        await subscriber.handle(messageCreate());
+
+        expect(calls.recordCaseEvent).toEqual([
+          expect.objectContaining({ ruleId: 'rule-switch-blocked', actionTaken }),
+        ]);
+        expect(calls.deleteMessage).toHaveLength(0);
+      },
+    );
+
+    it('on clear: deletes the message', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-switch-on', mode: 'enforce' })],
+        safetyState: LIVE,
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.deleteMessage).toHaveLength(1);
+      expect(calls.captureFixture).toHaveLength(0);
+    });
+
+    it('ignores per-rule mode: enforce under watch only records, test under on deletes', async () => {
+      const watchHarness = buildHarness({
+        rules: [rule({ ruleId: 'rule-mode-enforce', mode: 'enforce' })],
+        safetyState: WATCH,
+      });
+      await createAutomodSubscriber(watchHarness.deps).handle(messageCreate());
+      expect(watchHarness.calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-mode-enforce', actionTaken: 'would_delete' }),
+      ]);
+      expect(watchHarness.calls.deleteMessage).toHaveLength(0);
+
+      const onHarness = buildHarness({
+        rules: [rule({ ruleId: 'rule-mode-test', mode: 'test' })],
+        safetyState: LIVE,
+      });
+      await createAutomodSubscriber(onHarness.deps).handle(messageCreate());
+      expect(onHarness.calls.deleteMessage).toHaveLength(1);
+    });
+
+    it('never captures a fixture under watch or on', async () => {
+      const watchHarness = buildHarness({
+        rules: [rule({ ruleId: 'rule-no-fixture-watch', mode: 'test' })],
+        safetyState: WATCH,
+        captureFixtureResult: 'fixture-1',
+      });
+      await createAutomodSubscriber(watchHarness.deps).handle(messageCreate());
+      expect(watchHarness.calls.captureFixture).toHaveLength(0);
+
+      const onHarness = buildHarness({
+        rules: [rule({ ruleId: 'rule-no-fixture-on', mode: 'test' })],
+        safetyState: LIVE,
+        captureFixtureResult: 'fixture-1',
+      });
+      await createAutomodSubscriber(onHarness.deps).handle(messageCreate());
+      expect(onHarness.calls.captureFixture).toHaveLength(0);
+      expect(onHarness.calls.deleteMessage).toHaveLength(1);
+    });
   });
 
   /**
