@@ -507,7 +507,8 @@ describe('thread writes (MCP slice 3)', () => {
       message: { content: 'friday night?' },
       appliedTagIds: ['888888888888888888'],
     });
-    expect(threadId).not.toBe(messageId);
+    // Like Discord, the starter message shares the thread's id.
+    expect(messageId).toBe(threadId);
     await expect(d.fetchThreadInfo(GUILD, threadId)).resolves.toMatchObject({
       name: 'looking for players',
       parentId: FORUM,

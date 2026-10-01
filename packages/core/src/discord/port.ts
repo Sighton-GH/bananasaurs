@@ -414,9 +414,8 @@ export interface DiscordPort {
    * Starts a public forum post (MCP slice 3): `POST
    * /channels/{forum}/threads` with `name`, the starter `message` built
    * exactly as `sendMessage` builds it, and `applied_tags`. The returned
-   * `messageId` is the response thread's `last_message_id` — the starter
-   * message is the thread's only message — and its absence is a throw,
-   * never an invented id.
+   * `messageId` is the starter `message.id` nested in Discord's response,
+   * falling back to the thread id, which a forum starter message shares.
    */
   createForumPost(
     guildId: Snowflake,

@@ -1494,7 +1494,8 @@ export class FakeDiscord implements DiscordPort {
     this.record('createForumPost', [guildId, forumChannelId, input]);
     this.check('createForumPost', guildId);
     const threadId = this.nextId();
-    const messageId = this.nextId();
+    // A real forum post's starter message shares the thread's id.
+    const messageId = threadId;
     this.threadInfos.set(threadId, {
       name: input.name,
       parentId: forumChannelId,
