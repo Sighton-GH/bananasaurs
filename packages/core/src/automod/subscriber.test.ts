@@ -743,23 +743,20 @@ describe('automod subscriber', () => {
       [{ killswitch: true }, 'delete_blocked_killswitch'],
       [{ breakerOpen: true }, 'delete_blocked_breaker'],
       [{ dryRun: true }, 'delete_blocked_dry_run'],
-    ] as const)(
-      'on blocked (%s): records %s and does not delete',
-      async (over, actionTaken) => {
-        const { deps, calls } = buildHarness({
-          rules: [rule({ ruleId: 'rule-switch-blocked', mode: 'enforce' })],
-          safetyState: { ...LIVE, ...over },
-        });
-        const subscriber = createAutomodSubscriber(deps);
+    ] as const)('on blocked (%s): records %s and does not delete', async (over, actionTaken) => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-switch-blocked', mode: 'enforce' })],
+        safetyState: { ...LIVE, ...over },
+      });
+      const subscriber = createAutomodSubscriber(deps);
 
-        await subscriber.handle(messageCreate());
+      await subscriber.handle(messageCreate());
 
-        expect(calls.recordCaseEvent).toEqual([
-          expect.objectContaining({ ruleId: 'rule-switch-blocked', actionTaken }),
-        ]);
-        expect(calls.deleteMessage).toHaveLength(0);
-      },
-    );
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-switch-blocked', actionTaken }),
+      ]);
+      expect(calls.deleteMessage).toHaveLength(0);
+    });
 
     it('on clear: deletes the message', async () => {
       const { deps, calls } = buildHarness({
