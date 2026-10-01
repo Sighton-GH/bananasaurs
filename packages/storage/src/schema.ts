@@ -61,6 +61,10 @@ export const guilds = sqliteTable(
     // too (add `config` in 0010; widen `kind`'s existing CHECK in 0011).
     automodTestingMode: integer('automod_testing_mode').notNull().default(0),
 
+    // ADR 0121: the guild-wide automod switch. Off by default; its CHECK
+    // lands in a separate db:generate run (see automodTestingMode above).
+    automodState: text('automod_state').notNull().default('off'),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },

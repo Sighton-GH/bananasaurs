@@ -1,0 +1,1 @@
+ALTER TABLE `guilds` ADD `automod_state` text DEFAULT 'off' NOT NULL;
