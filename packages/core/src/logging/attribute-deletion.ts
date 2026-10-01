@@ -4,12 +4,13 @@ import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import { correlateDeletion } from './attribution.js';
 import { formatMessageDelete } from './format.js';
-import type { LogRoute } from './subscriber.js';
+import { routeAccepts, routeDedupeKind, type LogRoute, type LogSource } from './routing.js';
 
 /**
- * The delayed job's body (ADR 0023 decision 3): consult the audit log,
- * decide an actor or refuse to guess, record the audit trail, and post the
- * log line. Runs `MESSAGE_DELETE_ATTRIBUTION_DELAY_MS` after the dispatch.
+ * The delayed job's body (ADR 0123 decision 7): consult the audit log,
+ * decide an actor or refuse to guess, record the audit trail once, and post
+ * the log line to every matching route, each under its own claim. Runs
+ * `MESSAGE_DELETE_ATTRIBUTION_DELAY_MS` after the dispatch.
  */
 
 export interface MessageDeleteAttribution {
@@ -19,7 +20,8 @@ export interface MessageDeleteAttribution {
 
 export interface MessageDeleteAttributionPorts {
   readonly guildId: Snowflake;
-  findRoute(eventKind: string): LogRoute | undefined;
+  /** Enabled routes that include this event kind (ADR 0123). */
+  listEnabledRoutesFor(eventKind: string): readonly LogRoute[];
   fetchAuditLog(): Promise<readonly AuditLogEntry[]>;
   claimedCountFor(input: {
     actorUserId: Snowflake;
@@ -50,47 +52,85 @@ export interface MessageDeleteAttributionPorts {
   now(): number;
 }
 
-const DEDUPE_KIND = 'log:message_delete';
-
 export async function attributeAndLogDeletion(
   ports: MessageDeleteAttributionPorts,
   payload: LogMessageDeletePayload,
 ): Promise<void> {
-  const route = ports.findRoute('message_delete');
-  if (route === undefined || !route.enabled) return; // config changed since enqueue
+  const source: LogSource = {
+    channelId: payload.channelId,
+    parentChannelId: payload.parentChannelId,
+  };
+  const routes = ports
+    .listEnabledRoutesFor('message_delete')
+    .filter((r) => routeAccepts(r, source));
+  if (routes.length === 0) return; // config changed since enqueue
 
   const fingerprint = payload.messageId;
-  if (!ports.claim({ eventKind: DEDUPE_KIND, fingerprint })) return;
+  const pending = routes.filter((r) =>
+    ports.claim({ eventKind: routeDedupeKind(r.routeId, 'message_delete'), fingerprint }),
+  );
+  if (pending.length === 0) return;
 
+  let actorId: Snowflake | undefined;
   try {
     const existing = ports.findExistingAttribution(payload.messageId);
-    const actorId = existing !== undefined ? existing.actorId : await resolveActor(ports, payload);
+    actorId = existing !== undefined ? existing.actorId : await resolveActor(ports, payload);
     if (existing === undefined) {
       ports.recordAudit({ actorId, inferred: actorId !== undefined, at: ports.now(), payload });
     }
-
-    await ports.sendMessage(route.channelId, {
-      content: formatMessageDelete(payload, actorId),
-    });
   } catch (err) {
-    // The send failing must not blackhole this line forever (ADR 0023 decision
-    // 4) — but the resolution above is durable and idempotent via
-    // `findExistingAttribution`, so releasing here only ever retries the part
-    // that still needs it.
-    ports.release({ eventKind: DEDUPE_KIND, fingerprint });
+    for (const route of pending) {
+      ports.release({
+        eventKind: routeDedupeKind(route.routeId, 'message_delete'),
+        fingerprint,
+      });
+    }
     ports.logger.error(
       safeLogFields({
         component: 'logging',
         guildId: ports.guildId,
         eventKind: 'messageDelete',
         messageId: payload.messageId,
-        channelId: route.channelId,
+        channelId: payload.channelId,
         err,
       }),
-      'failed to post a deletion log line; released the claim for a future retry',
+      'failed to resolve a deletion attribution; released the claims for a future retry',
     );
     throw err;
   }
+
+  let firstError: unknown;
+  for (const route of pending) {
+    const dedupeKind = routeDedupeKind(route.routeId, 'message_delete');
+    try {
+      await ports.sendMessage(route.channelId, {
+        content: formatMessageDelete(
+          route.includeContent ? payload : { ...payload, content: undefined },
+          actorId,
+        ),
+      });
+    } catch (err) {
+      // The send failing must not blackhole this line forever (ADR 0123
+      // decision 6) — but the resolution above is durable and idempotent via
+      // `findExistingAttribution`, so releasing here only ever retries the part
+      // that still needs it.
+      ports.release({ eventKind: dedupeKind, fingerprint });
+      ports.logger.error(
+        safeLogFields({
+          component: 'logging',
+          guildId: ports.guildId,
+          eventKind: 'messageDelete',
+          messageId: payload.messageId,
+          channelId: route.channelId,
+          routeId: route.routeId,
+          err,
+        }),
+        'failed to post a deletion log line; released the claim for a future retry',
+      );
+      if (firstError === undefined) firstError = err;
+    }
+  }
+  if (firstError !== undefined) throw firstError;
 }
 
 async function resolveActor(
