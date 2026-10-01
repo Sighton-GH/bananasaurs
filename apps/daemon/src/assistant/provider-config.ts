@@ -545,20 +545,10 @@ export const createProviderConfigStore = (
     },
     webSearch(guildId, clients) {
       const row = assistantProviderRepo.get(instance);
-      // No saved row: the `.env` Brave seed runs as before, never limited
-      // and never recorded (ADR 0120 §9).
-      if (row === undefined) {
-        const envKey = envBase?.BRAVE_SEARCH_API_KEY;
-        if (envKey === undefined) return undefined;
-        return createWebSearchRun({
-          instance,
-          guildId,
-          source: 'brave',
-          keys: [{ keyId: null, apiKey: envKey, monthlyLimit: null, dailyLimit: null }],
-          now: clock,
-          client: clients?.brave ?? ((apiKey, q) => braveWebSearch({ apiKey }, q)),
-        });
-      }
+      // With a key store, search keys come only from the dashboard (ADR 0120
+      // §9): the `.env` Brave seed is dead here, even with no saved row. It
+      // runs only in the daemon's no-store branch.
+      if (row === undefined) return undefined;
       if (row.searchEnabled !== true) return undefined;
       const source = row.searchSource ?? 'brave';
       const keys: WebSearchKey[] = [];

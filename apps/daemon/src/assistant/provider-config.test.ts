@@ -401,19 +401,11 @@ describe('web search keys (ADR 0120)', () => {
     expect(tavilySeen).toEqual(['tavily-one', 'tavily-two']);
   });
 
-  it('webSearch() falls back to the .env Brave seed only while nothing is saved', async () => {
+  it('webSearch() ignores the .env Brave seed once a key store exists', async () => {
     const envBase = { ...base, BRAVE_SEARCH_API_KEY: 'env-key' };
     const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32), 'env', envBase);
-    const seen: string[] = [];
-    const run = store.webSearch(GUILD, {
-      brave: async (apiKey: string, _q: string) => {
-        seen.push(apiKey);
-        return [];
-      },
-    });
-    expect(run).not.toBeUndefined();
-    await run!('q');
-    expect(seen).toEqual(['env-key']);
+    // No row and an env key: still undefined — the seed is dead here.
+    expect(store.webSearch(GUILD)).toBeUndefined();
     store.save({ provider: 'gemini', enabled: true, searchEnabled: false }, 10);
     expect(store.webSearch(GUILD)).toBeUndefined();
   });
