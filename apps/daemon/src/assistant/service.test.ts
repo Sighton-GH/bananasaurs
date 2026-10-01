@@ -587,6 +587,53 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     expect(result).toMatchObject({ ok: true, content: 'Store them half charged.' });
   });
 
+  it('warns once when the answer used Tavily results, never for Brave', async () => {
+    eligibilityRepo.recordEligibilityClaim(t.scopes.instance(), {
+      provider: 'fake',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/terms',
+      evidenceClause: 'For production.',
+      productionUseAllowed: true,
+      now: NOW,
+    });
+    const invokeWithSource = async (source: 'brave' | 'tavily', invocationId: string) => {
+      const web = fakeProvider([
+        { text: '', model: 'm', toolCalls: [{ name: 'web_search', args: { query: 'lipo' } }] },
+        { text: 'Store them half charged.', model: 'm' },
+      ]);
+      const warn = vi.fn();
+      const service = createAssistantService(
+        t.scopes.forGuild(GUILD),
+        t.scopes.instance(),
+        config,
+        () => NOW,
+        {
+          provider: web.provider,
+          webSearch: async () => ({
+            results: [{ title: 'Guide', url: 'https://a.example/', description: 'LiPo care.' }],
+            source,
+          }),
+        },
+        undefined,
+        { warn },
+      );
+      const result = await service.invoke({ ...ask, invocationId });
+      expect(result).toMatchObject({ ok: true });
+      return warn;
+    };
+    const tavilyWarn = await invokeWithSource('tavily', 'int-search-may-train-tavily');
+    expect(tavilyWarn).toHaveBeenCalledTimes(1);
+    expect(tavilyWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: GUILD, reason: 'search-provider-may-train' }),
+      'web search provider may train on queries',
+    );
+    const braveWarn = await invokeWithSource('brave', 'int-search-may-train-brave');
+    expect(braveWarn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'search-provider-may-train' }),
+      expect.anything(),
+    );
+  });
+
   it('uses the webSearch constructor parameter when no test port is given', async () => {
     eligibilityRepo.recordEligibilityClaim(t.scopes.instance(), {
       provider: 'fake',

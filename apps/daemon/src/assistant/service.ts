@@ -1272,6 +1272,19 @@ export const createAssistantService = (
       });
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
+      // ADR 0120: Tavily's terms allow training on queries, so an answer that
+      // used Tavily results warns once per request, next to the AI-provider
+      // warning above.
+      if (loop.webSources.includes('tavily')) {
+        logger.warn(
+          safeLogFields({
+            component: 'assistant',
+            guildId: input.guildId,
+            reason: 'search-provider-may-train',
+          }),
+          'web search provider may train on queries',
+        );
+      }
       const { text: citedText, cited } = applyCitations(loop.text, citations);
       const braveUsed = loop.webSources.includes('brave');
       // B2b: code-written action summaries travel verbatim — after the answer
