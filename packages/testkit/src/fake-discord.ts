@@ -122,6 +122,13 @@ interface FakeMember {
   isGuildOwner: boolean;
 }
 
+interface FakeThreadInfo {
+  name: string;
+  parentId: Snowflake;
+  isPrivate: boolean;
+  guildId: Snowflake;
+}
+
 export interface RestCall {
   method: PortMethod;
   args: readonly unknown[];
@@ -174,6 +181,8 @@ export class FakeDiscord implements DiscordPort {
   private messages = new Map<string, FakeMessage>();
   /** Thread memberships (`threadId` -> member user ids), for `isThreadMember` (ADR 0112). */
   private threadMembers = new Map<Snowflake, Set<Snowflake>>();
+  /** Thread facts (`threadId` -> info), for `fetchThreadInfo` (ADR 0112). */
+  private threadInfos = new Map<Snowflake, FakeThreadInfo>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
@@ -244,6 +253,27 @@ export class FakeDiscord implements DiscordPort {
     const members = this.threadMembers.get(threadId) ?? new Set<Snowflake>();
     members.add(userId);
     this.threadMembers.set(threadId, members);
+  }
+  /**
+   * Describes a thread for `fetchThreadInfo` (ADR 0112's sweeper fallback).
+   * `guildId` defaults to this fake's guild; pass another guild's id to
+   * model a cross-guild thread, which answers `undefined` for this guild —
+   * the way the REST adapter folds a foreign `guild_id` — rather than
+   * throwing a scope error.
+   */
+  defineThread(info: {
+    threadId: Snowflake;
+    name?: string;
+    parentId: Snowflake;
+    isPrivate?: boolean;
+    guildId?: Snowflake;
+  }): void {
+    this.threadInfos.set(info.threadId, {
+      name: info.name ?? `thread-${info.threadId}`,
+      parentId: info.parentId,
+      isPrivate: info.isPrivate ?? false,
+      guildId: info.guildId ?? this.guildId,
+    });
   }
   memberRoles(userId: Snowflake): Snowflake[] {
     return [...(this.members.get(userId)?.roleIds ?? [])].sort();
@@ -1259,6 +1289,23 @@ export class FakeDiscord implements DiscordPort {
     this.record('isThreadMember', [guildId, threadId, userId]);
     this.check('isThreadMember', guildId);
     return this.threadMembers.get(threadId)?.has(userId) ?? false;
+  }
+
+  /**
+   * Thread facts (ADR 0112's sweeper fallback): what `defineThread`
+   * recorded. An unknown thread answers `undefined` — mirroring the REST
+   * adapter's 404/403 fold, not a thrown error — as does a thread from
+   * another guild, mirroring its foreign-`guild_id` fold. The guild id is
+   * compared, not enforced as scope (unlike every other method here): the
+   * caller legitimately names its own guild while Discord answers with the
+   * channel's actual one.
+   */
+  async fetchThreadInfo(guildId: Snowflake, threadId: Snowflake) {
+    this.record('fetchThreadInfo', [guildId, threadId]);
+    this.check('fetchThreadInfo', guildId, { allowForeignGuild: true });
+    const info = this.threadInfos.get(threadId);
+    if (info === undefined || info.guildId !== guildId) return undefined;
+    return { id: threadId, name: info.name, parentId: info.parentId, isPrivate: info.isPrivate };
   }
 
   /**

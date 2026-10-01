@@ -927,20 +927,33 @@ const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): M
           .map(toMcpArchiveMessage),
       ),
     threadInfo: (guildId, threadId) =>
-      Promise.resolve(
-        loggedCall(deps.logger, 'threadInfo', () => {
-          const channel = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
-          if (channel === undefined || !channel.isThread() || channel.parentId === null) {
-            return undefined;
-          }
+      loggedCallAsync(deps.logger, 'threadInfo', async () => {
+        const cached = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+        if (cached !== undefined) {
+          // In the cache under this guild: it is what it is — a non-thread
+          // id answers not-a-thread without a REST call.
+          if (!cached.isThread() || cached.parentId === null) return undefined;
           return {
-            id: channel.id,
-            name: channel.name,
-            parentId: channel.parentId,
-            isPrivate: channel.type === ChannelType.PrivateThread,
+            id: cached.id,
+            name: cached.name,
+            parentId: cached.parentId,
+            isPrivate: cached.type === ChannelType.PrivateThread,
           };
-        }),
-      ),
+        }
+        // Cache miss: the default sweeper evicts archived threads after 4
+        // hours (`Options.DefaultSweeperSettings`), so an older archived
+        // thread is absent here even though the archive holds its messages.
+        // One REST read resolves it; the membership check below still runs,
+        // unchanged, after either path.
+        const fetched = await discord.fetchThreadInfo(guildId, threadId);
+        if (fetched === undefined) return undefined;
+        return {
+          id: fetched.id,
+          name: fetched.name,
+          parentId: fetched.parentId,
+          isPrivate: fetched.isPrivate,
+        };
+      }),
     privateThreadReadable: (guildId, threadId) => readable(guildId, threadId),
     liveThreadMessages: (guildId, threadId, beforeMessageId, limit) =>
       loggedCallAsync(deps.logger, 'liveThreadMessages', async () => {

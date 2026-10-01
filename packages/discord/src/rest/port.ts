@@ -7,6 +7,7 @@ import {
   makeURLSearchParams,
   type APIAuditLog,
   type APIAuditLogEntry,
+  type APIChannel,
   type APIGuild,
   type APIGuildMember,
   type APIGuildScheduledEvent,
@@ -482,6 +483,42 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         if (err instanceof DiscordApiError && err.status === 404) return false;
         throw err;
       }
+    },
+
+    /**
+     * Thread facts over REST for threads the gateway cache has swept
+     * (ADR 0112): `GET /channels/{thread}`. `undefined` on 404 (gone) or 403
+     * (no access), on a channel outside this guild, on a non-thread, or on a
+     * thread with no parent — all routine here, reported the same way rather
+     * than thrown, so the caller answers "no thread" instead of failing.
+     * Anything else still throws.
+     */
+    async fetchThreadInfo(guildId, threadId) {
+      let channel: APIChannel;
+      try {
+        channel = (await mapErrors(() => rest.get(Routes.channel(threadId)))) as APIChannel;
+      } catch (err) {
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+      if (
+        channel.type !== ChannelType.PublicThread &&
+        channel.type !== ChannelType.PrivateThread &&
+        channel.type !== ChannelType.AnnouncementThread
+      ) {
+        return undefined;
+      }
+      if (channel.guild_id !== guildId || channel.parent_id == null) return undefined;
+      return {
+        id: channel.id,
+        // A thread always has a title in practice; the API type allows
+        // null, so name it rather than letting `null` reach the caller.
+        name: channel.name ?? '(unnamed thread)',
+        parentId: channel.parent_id,
+        isPrivate: channel.type === ChannelType.PrivateThread,
+      };
     },
 
     /**

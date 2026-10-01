@@ -323,6 +323,30 @@ export interface DiscordPort {
    */
   isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean>;
   /**
+   * One thread's facts over REST (ADR 0112's sweeper fallback): `GET
+   * /channels/{thread}` — `undefined` on 404 (gone) or 403 (no access),
+   * when the channel is not in this guild, when it is not a thread, or when
+   * it has no parent. Any other error propagates. The MCP daemon calls this
+   * only on a gateway-cache miss, so a swept archived thread still resolves
+   * and its archive rows still read.
+   *
+   * The return shape is inline, like `fetchMessage`'s `{ exists: true }`:
+   * the package index names no thread-info type, and none is needed for one
+   * method's four fields.
+   */
+  fetchThreadInfo(
+    guildId: Snowflake,
+    threadId: Snowflake,
+  ): Promise<
+    | {
+        readonly id: Snowflake;
+        readonly name: string;
+        readonly parentId: Snowflake;
+        readonly isPrivate: boolean;
+      }
+    | undefined
+  >;
+  /**
    * Guild scheduled events for the assistant's `upcoming_events` tool
    * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway
    * intent needed. An empty list when there are none — or when the bot may

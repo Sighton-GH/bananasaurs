@@ -1155,6 +1155,67 @@ describe('thread membership (ADR 0112)', () => {
   });
 });
 
+describe('thread info (ADR 0112 sweeper fallback)', () => {
+  const THREAD = '666666666666666666';
+  const PARENT = '777777777777777777';
+
+  const channel = (over: Record<string, unknown>) => ({
+    id: THREAD,
+    guild_id: GUILD,
+    type: 11,
+    name: 'weekly build night',
+    parent_id: PARENT,
+    ...over,
+  });
+
+  it('reads public thread facts off the channel route', async () => {
+    const { port, requests } = harness([{ status: 200, body: channel({}) }]);
+    await expect(port.fetchThreadInfo(GUILD, THREAD)).resolves.toEqual({
+      id: THREAD,
+      name: 'weekly build night',
+      parentId: PARENT,
+      isPrivate: false,
+    });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}`);
+  });
+
+  it('marks a private thread private', async () => {
+    const { port } = harness([{ status: 200, body: channel({ type: 12 }) }]);
+    await expect(port.fetchThreadInfo(GUILD, THREAD)).resolves.toMatchObject({
+      isPrivate: true,
+    });
+  });
+
+  it('answers undefined rather than throwing on 404 or 403', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Channel' } },
+    ]);
+    await expect(gone.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(forbidden.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+
+  it('answers undefined for another guild\u2019s channel, a non-thread, or a missing parent', async () => {
+    const foreign = harness([{ status: 200, body: channel({ guild_id: OTHER_GUILD }) }]);
+    await expect(foreign.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+
+    const text = harness([{ status: 200, body: channel({ type: 0, parent_id: null }) }]);
+    await expect(text.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+
+    const parentless = harness([{ status: 200, body: channel({ parent_id: null }) }]);
+    await expect(parentless.port.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else (e.g. a server error)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(port.fetchThreadInfo(GUILD, THREAD)).rejects.toBeInstanceOf(DiscordApiError);
+  });
+});
+
 describe('guild lifecycle', () => {
   it('leaves a guild on the @me route', async () => {
     const { port, requests } = harness();

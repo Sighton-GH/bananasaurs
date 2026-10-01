@@ -2600,6 +2600,9 @@ describe('/mcp read_thread and shared private threads', () => {
   const ARCHIVE_MESSAGE = '922222222222222222';
   const B_PUBLIC_THREAD = '411111111111111111';
   const B_PARENT = '422222222222222222';
+  const SWEPT_PUBLIC = '433333333333333333';
+  const B_SWEPT = '444444444444444444';
+  const SWEPT_TEXT = 'swept archived thread plans gamma';
   const LIVE_TEXT = 'live secret plans discussed in the shared private thread alpha';
   const ARCHIVE_TEXT = 'archived public thread plans beta';
 
@@ -2741,6 +2744,25 @@ describe('/mcp read_thread and shared private threads', () => {
     discord.addThreadMember(OWNER_ONLY_PRIVATE, OWNER);
     discord.addThreadMember(ARCHIVED_SHARED_PRIVATE, BOT);
     discord.addThreadMember(ARCHIVED_SHARED_PRIVATE, OWNER);
+    // Swept from the gateway cache (not in `buildThreadClient`), but known
+    // to the discord double: the REST fallback resolves these.
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: '933333333333333333',
+      channelId: PLANNING,
+      threadId: SWEPT_PUBLIC,
+      authorId: MEMBER,
+      content: SWEPT_TEXT,
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    discord.defineThread({ threadId: SWEPT_PUBLIC, name: 'swept-plans', parentId: PLANNING });
+    discord.defineThread({
+      threadId: B_SWEPT,
+      name: 'b-swept-thread',
+      parentId: B_PARENT,
+      guildId: GUILD_B,
+    });
   };
 
   const threadCall = (
@@ -2821,7 +2843,7 @@ describe('/mcp read_thread and shared private threads', () => {
     }
   });
 
-  it("a guild B thread id through guild A answers not-found with no membership or message calls", async () => {
+  it('a guild B thread id through guild A answers not-found with no membership or message calls', async () => {
     const discord = new FakeDiscord({ guildId: GUILD_A });
     seedThreads(discord);
     const threadApp = buildThreadApp(discord);
@@ -3011,6 +3033,59 @@ describe('/mcp read_thread and shared private threads', () => {
     }
   });
 
+  it('reads a swept archived thread from the archive via the REST fallback', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // SWEPT_PUBLIC is in no cache — the sweeper evicted it — but the
+      // discord double knows it, so the fallback resolves the thread and
+      // the archive rows still read.
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SWEPT_PUBLIC,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(SWEPT_TEXT);
+      expect(found.text).toContain('swept-plans');
+      expect(discord.restCalls('fetchThreadInfo')).toHaveLength(1);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a swept guild B thread id through guild A answers not-found via the fallback', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      // The fallback ran — one fetchThreadInfo call — but the fetched
+      // channel belongs to guild B, so the answer is not-found and the
+      // membership/message endpoints are never reached.
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: B_SWEPT,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe(`No thread ${B_SWEPT} in this guild.`);
+      expect(discord.restCalls('fetchThreadInfo')).toHaveLength(1);
+      expect(discord.restCalls('isThreadMember')).toEqual([]);
+      expect(discord.restCalls('fetchChannelMessages')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
   it('refuses a private thread when no owner id is configured', async () => {
     const discord = new FakeDiscord({ guildId: GUILD_A });
     seedThreads(discord);
@@ -3079,10 +3154,7 @@ describe('/mcp read_thread and shared private threads', () => {
     // The membership endpoint is down: both memberships are recorded, but
     // the check cannot confirm them — so the thread refuses and unlists
     // rather than serving on a guess.
-    discord.failAlways(
-      'isThreadMember',
-      new DiscordApiError(500, undefined, 'discord is on fire'),
-    );
+    discord.failAlways('isThreadMember', new DiscordApiError(500, undefined, 'discord is on fire'));
     const threadApp = buildThreadApp(discord);
     try {
       const accessToken = await mintToken();

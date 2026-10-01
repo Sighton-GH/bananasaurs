@@ -733,3 +733,32 @@ describe('thread membership (ADR 0112)', () => {
     await expect(d.isThreadMember(GUILD, '888888888888888888', USER)).resolves.toBe(false);
   });
 });
+
+describe('thread info (ADR 0112 sweeper fallback)', () => {
+  const THREAD = '666666666666666666';
+  const PARENT = '777777777777777777';
+  const OTHER_GUILD = '999999999999999999';
+
+  it('answers what defineThread recorded', async () => {
+    d.defineThread({ threadId: THREAD, name: 'weekly build night', parentId: PARENT });
+    await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toEqual({
+      id: THREAD,
+      name: 'weekly build night',
+      parentId: PARENT,
+      isPrivate: false,
+    });
+    d.defineThread({ threadId: '888888888888888888', parentId: PARENT, isPrivate: true });
+    await expect(d.fetchThreadInfo(GUILD, '888888888888888888')).resolves.toMatchObject({
+      isPrivate: true,
+    });
+  });
+
+  it('answers undefined for an unknown thread, like a 404', async () => {
+    await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+
+  it('answers undefined for another guild\u2019s thread, not a scope error', async () => {
+    d.defineThread({ threadId: THREAD, parentId: PARENT, guildId: OTHER_GUILD });
+    await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
+  });
+});

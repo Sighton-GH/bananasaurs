@@ -145,6 +145,9 @@ class MinimalSendDiscord implements DiscordPort {
   async isThreadMember(): Promise<never> {
     this.notUsed('isThreadMember');
   }
+  async fetchThreadInfo(): Promise<never> {
+    this.notUsed('fetchThreadInfo');
+  }
   async listScheduledEvents(): Promise<never> {
     this.notUsed('listScheduledEvents');
   }
