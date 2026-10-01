@@ -289,7 +289,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all twenty tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty-two tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -297,13 +297,15 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(20);
+    expect(names).toHaveLength(22);
     expect(names).toEqual([
       'get_health',
       'search_messages',
       'read_channel_history',
       'get_message',
       'read_thread',
+      'read_digest',
+      'list_unanswered',
       'list_channels',
       'list_threads',
       'list_roles',
@@ -3207,6 +3209,340 @@ describe('/mcp read_thread and shared private threads', () => {
       expect(byId.get(PUBLIC_THREAD)).toBe(false);
     } finally {
       await unconfigured.close();
+    }
+  });
+});
+
+/**
+ * Slice 2, Task 5, daemon side: `read_digest` and `list_unanswered` through
+ * the real composition — the real repositories over a migrated test database
+ * and a fake discord.js guild for channel/role names. The token is minted on
+ * the dashboard app; bearer validation is app-independent, the way the
+ * guild-tools tests reuse a token across apps.
+ */
+describe('/mcp digest tools over real storage', () => {
+  const CATEGORY = '411111111111111111';
+  const HELP_CHANNEL = '422222222222222222';
+  const GENERAL = '433333333333333333';
+  const NOT_ENABLED = '444444444444444444';
+  const HELP_ROLE = '455555555555555555';
+  const ASKER = '466666666666666666';
+  const HELPER = '477777777777777777';
+  const THREAD = '488888888888888888';
+
+  interface DigestDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+  const digestInternals = (c: Client): DigestDiscordInternals =>
+    c as unknown as DigestDiscordInternals;
+
+  const buildDigestClient = (): Client => {
+    const client = new Client(buildClientOptions(() => '123456789012345678'));
+    digestInternals(client).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'club',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: HELP_CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'help',
+          position: 1,
+          parent_id: CATEGORY,
+          permission_overwrites: [],
+        },
+        {
+          id: GENERAL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'general',
+          position: 2,
+          parent_id: CATEGORY,
+          permission_overwrites: [],
+        },
+        {
+          id: NOT_ENABLED,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'offtopic',
+          position: 3,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: HELP_ROLE, name: 'help', position: 1, permissions: '0', managed: false, color: 0 },
+      ],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  const buildDigestApp = (discordClient: Client): FastifyInstance =>
+    createServer({
+      deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(
+          instance,
+          routeDeps,
+          discordClient,
+          new FakeDiscord({ guildId: GUILD_A }),
+        );
+      },
+    });
+
+  const digestCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const seedDigest = (now: number): void => {
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    for (const channelId of [HELP_CHANNEL, GENERAL] as const) {
+      archiveRepo.enableChannel(scopeA, { channelId, attachmentPolicy: 'none', now: clock });
+    }
+    const seed = (input: {
+      messageId: string;
+      channelId: string;
+      authorId?: string;
+      content: string;
+      createdAt: number;
+      mentionedRoleIds?: readonly string[];
+      replyToMessageId?: string;
+      threadId?: string;
+    }): void => {
+      archiveRepo.upsertMessage(scopeA, {
+        messageId: input.messageId,
+        channelId: input.channelId,
+        ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+        authorId: input.authorId ?? ASKER,
+        content: input.content,
+        createdAt: input.createdAt,
+        editedAt: undefined,
+        attachments: [],
+        ...(input.replyToMessageId !== undefined
+          ? { replyToMessageId: input.replyToMessageId }
+          : {}),
+        ...(input.mentionedRoleIds !== undefined
+          ? { mentionedRoleIds: input.mentionedRoleIds }
+          : {}),
+      });
+    };
+    seed({
+      messageId: '511111111111111111',
+      channelId: HELP_CHANNEL,
+      content: 'first digest message in help',
+      createdAt: now - 30 * 60_000,
+    });
+    seed({
+      messageId: '522222222222222222',
+      channelId: GENERAL,
+      content: 'second digest message in general',
+      createdAt: now - 20 * 60_000,
+    });
+    seed({
+      messageId: '533333333333333333',
+      channelId: HELP_CHANNEL,
+      content: 'thread follow-up under help',
+      createdAt: now - 10 * 60_000,
+      threadId: THREAD,
+    });
+    seed({
+      messageId: '544444444444444444',
+      channelId: HELP_CHANNEL,
+      content: 'open help question about wiring',
+      createdAt: now - 13 * 3_600_000,
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    seed({
+      messageId: '555555555555555555',
+      channelId: HELP_CHANNEL,
+      content: 'answered help question about wiring',
+      createdAt: now - 14 * 3_600_000,
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    seed({
+      messageId: '566666666666666666',
+      channelId: HELP_CHANNEL,
+      authorId: HELPER,
+      content: 'the answer to the answered question',
+      createdAt: now - 13 * 3_600_000 + 60_000,
+      replyToMessageId: '555555555555555555',
+    });
+    seed({
+      messageId: '577777777777777777',
+      channelId: HELP_CHANNEL,
+      content: 'thread-answered help question about wiring',
+      createdAt: now - 15 * 3_600_000,
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    seed({
+      messageId: '588888888888888888',
+      channelId: HELP_CHANNEL,
+      authorId: HELPER,
+      content: 'the answer inside the thread',
+      createdAt: now - 14 * 3_600_000 + 60_000,
+      threadId: '577777777777777777',
+    });
+    // Same channel id, other guild: invisible to guild A's digest either way.
+    const scopeB = t.scopes.forGuild(GUILD_B);
+    archiveRepo.enableChannel(scopeB, {
+      channelId: HELP_CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(scopeB, {
+      messageId: '599999999999999999',
+      channelId: HELP_CHANNEL,
+      authorId: ASKER,
+      content: 'guild B digest secret',
+      createdAt: now - 5 * 60_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  it('read_digest by channel ids returns guild A rows only, oldest first', async () => {
+    const now = Date.now();
+    seedDigest(now);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('first digest message in help');
+      expect(found.text).toContain('thread follow-up under help');
+      expect(found.text).not.toContain('guild B digest secret');
+      const [head] = found.text.split('\n');
+      expect(head).toContain('1 channels');
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('read_digest by category name covers its archive-enabled channels, and a cursor continues', async () => {
+    const now = Date.now();
+    seedDigest(now);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      // A channel outside the archive reads as dropped, never as an error.
+      const narrowed = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL, NOT_ENABLED],
+            since: 0,
+          })
+        ).body,
+      );
+      expect(narrowed.isError).not.toBe(true);
+      expect(narrowed.text).toContain('first digest message in help');
+      expect(narrowed.text).not.toContain('guild B digest secret');
+
+      const page1 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            category: 'club',
+            since: 0,
+            limit: 1,
+          })
+        ).body,
+      );
+      expect(page1.isError).not.toBe(true);
+      expect(page1.text).toContain('2 channels');
+      const cursor = page1.text.match(/Next cursor: (\S+)/)?.[1];
+      expect(cursor).toBeDefined();
+      const page2 = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            category: 'club',
+            since: 0,
+            limit: 1,
+            cursor,
+          })
+        ).body,
+      );
+      expect(page2.isError).not.toBe(true);
+      expect(page2.text).not.toBe(page1.text);
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('list_unanswered returns the open @help question with a link, nothing answered', async () => {
+    const now = Date.now();
+    seedDigest(now);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'list_unanswered', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('open help question about wiring');
+      expect(found.text).toContain(
+        `https://discord.com/channels/111111111111111111/${HELP_CHANNEL}/544444444444444444`,
+      );
+      expect(found.text).not.toContain('answered help question');
+      expect(found.text).not.toContain('thread-answered help question');
+      expect(found.text).not.toContain('guild B digest secret');
+    } finally {
+      await digestApp.close();
     }
   });
 });
