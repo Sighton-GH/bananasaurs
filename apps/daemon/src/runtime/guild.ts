@@ -342,7 +342,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
 
   const loggingPorts: LoggingPorts = {
     guildId,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: now() }),
@@ -436,7 +436,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
 
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     fetchAuditLog: () =>
       discord.fetchAuditLog(guildId, { actionType: 'message_delete', limit: 25 }),
     claimedCountFor: (input) => loggingRepo.claimedCountFor(scope, input),
