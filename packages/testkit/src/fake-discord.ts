@@ -1632,10 +1632,8 @@ export class FakeDiscord implements DiscordPort {
     if (patch.description !== undefined) event.description = patch.description;
     if (patch.startAt !== undefined) event.scheduledStartAt = patch.startAt;
     if (patch.location !== undefined) {
-      event.channelId =
-        patch.location.kind === 'external' ? undefined : patch.location.channelId;
-      event.location =
-        patch.location.kind === 'external' ? patch.location.place : undefined;
+      event.channelId = patch.location.kind === 'external' ? undefined : patch.location.channelId;
+      event.location = patch.location.kind === 'external' ? patch.location.place : undefined;
     }
   }
 

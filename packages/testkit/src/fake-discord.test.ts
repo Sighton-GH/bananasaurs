@@ -643,9 +643,9 @@ describe('scheduled event writes (MCP slice 5)', () => {
   });
 
   it('editing or cancelling an unknown event throws a 404', async () => {
-    await expect(d.editScheduledEvent(GUILD, UNKNOWN_EVENT, { name: 'x' })).rejects.toMatchObject(
-      { status: 404 },
-    );
+    await expect(d.editScheduledEvent(GUILD, UNKNOWN_EVENT, { name: 'x' })).rejects.toMatchObject({
+      status: 404,
+    });
     await expect(d.cancelScheduledEvent(GUILD, UNKNOWN_EVENT)).rejects.toMatchObject({
       status: 404,
     });
