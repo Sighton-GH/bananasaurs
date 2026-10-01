@@ -281,6 +281,53 @@ describe('read_digest reads', () => {
     expect(page2.text).toContain('body 900000000000000002');
   });
 
+  it('groups an interleaved page by channel with the global cursor intact', () => {
+    // Global oldest-first order interleaves the channels; the render
+    // collects each channel's messages under one group header while the
+    // cursor still names the globally last shown row.
+    const seen: FakeDigestOptions['seen'] = { digest: [], unanswered: [] };
+    const page1 = readDigestText(
+      principalWith(GUILD_A),
+      fakeArchive({
+        seen,
+        digest: [
+          message({ messageId: '900000000000000001', channelId: CHANNEL_1, createdAt: 1000, content: 'alpha one' }),
+          message({ messageId: '900000000000000002', channelId: CHANNEL_2, createdAt: 2000, content: 'beta one' }),
+          message({ messageId: '900000000000000003', channelId: CHANNEL_1, createdAt: 3000, content: 'alpha two' }),
+        ],
+      }),
+      fakeGuild(),
+      { guildId: '111111111111111111', channels: [CHANNEL_1, CHANNEL_2], since: 0, limit: 2 },
+    );
+    expect(page1.ok).toBe(true);
+    if (!page1.ok) return;
+    // Two groups, in first-message order; the channel-1 pair sits together
+    // even though channel 2's message falls between them globally.
+    expect(page1.text).toContain(`Channel/thread ${CHANNEL_1} (1 message, oldest first)`);
+    expect(page1.text).toContain(`Channel/thread ${CHANNEL_2} (1 message, oldest first)`);
+    expect(page1.text.indexOf('alpha one')).toBeLessThan(page1.text.indexOf('beta one'));
+    expect(page1.text).not.toContain('alpha two');
+    // The cursor names the globally last shown row (beta one), and the next
+    // page continues past it.
+    const cursor = cursorOf(page1.text);
+    expect(cursor).toBeDefined();
+    expect(seen.digest[0]).toMatchObject({ limit: 3 });
+    const page2 = readDigestText(
+      principalWith(GUILD_A),
+      fakeArchive({
+        digest: [
+          message({ messageId: '900000000000000003', channelId: CHANNEL_1, createdAt: 3000, content: 'alpha two' }),
+        ],
+      }),
+      fakeGuild(),
+      { guildId: '111111111111111111', channels: [CHANNEL_1, CHANNEL_2], since: 0, cursor },
+    );
+    expect(page2.ok).toBe(true);
+    if (!page2.ok) return;
+    expect(page2.text).toContain('alpha two');
+    expect(page2.text).not.toContain('Next cursor');
+  });
+
   it('renders thread messages under the thread id and escapes forged markers', () => {
     const outcome = readDigestText(
       principalWith(GUILD_A),
