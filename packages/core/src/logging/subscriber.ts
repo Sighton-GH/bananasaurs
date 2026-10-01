@@ -21,6 +21,7 @@ import {
   formatRoleDelete,
   formatRoleUpdate,
 } from './format.js';
+import { MEMBER_CHANGE_KINDS } from './member-changes.js';
 
 export type { LogRoute } from './routing.js';
 
@@ -72,7 +73,8 @@ const ROUTE_KIND = {
   roleCreate: 'role_create',
   roleUpdate: 'role_update',
   roleDelete: 'role_delete',
-  memberUpdate: 'member_update',
+  // `memberUpdate` is deliberately absent: it fans out to the four
+  // MEMBER_CHANGE_KINDS via the snapshot diff in `handle`, not to one kind.
   messageCreate: 'message_create',
   guildCreate: 'guild_available',
   guildDelete: 'guild_unavailable',
@@ -82,9 +84,11 @@ const ROUTE_KIND = {
 /**
  * Every event kind a route may usefully include.
  *
- * Derived from `ROUTE_KIND` rather than written out a second time, plus
- * `message_delete`, which is routed here but handled by a delayed job rather
- * than by the switch below (ADR 0019 fact 3).
+ * Derived from `ROUTE_KIND` rather than written out a second time, plus the
+ * four member-change kinds (diffed from the last-seen record in `handle`,
+ * not mapped from one gateway kind) and `message_delete`, which is routed
+ * here but handled by a delayed job rather than by the switch below
+ * (ADR 0019 fact 3).
  *
  * Exported for `bananasaurs log routing create`, which validates against it. A
  * route on an event kind nothing emits is the exact failure WP4's report §5
@@ -93,6 +97,7 @@ const ROUTE_KIND = {
  */
 export const LOG_EVENT_KINDS: readonly string[] = [
   ...Object.values(ROUTE_KIND),
+  ...MEMBER_CHANGE_KINDS,
   'message_delete',
 ].sort();
 
@@ -153,19 +158,6 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         fingerprint,
         source,
         render: (includeContent) => formatMessageEdit(event, includeContent),
-      },
-    ];
-  }
-
-  if (event.kind === 'memberUpdate') {
-    const fingerprint =
-      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.userId}`;
-    return [
-      {
-        eventKind: routeKind,
-        fingerprint,
-        source: undefined,
-        render: () => `Member updated: <@${event.userId}>`,
       },
     ];
   }
