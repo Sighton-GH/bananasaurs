@@ -410,6 +410,19 @@ describe('web search keys (ADR 0120)', () => {
     expect(store.webSearch(GUILD)).toBeUndefined();
   });
 
+  it('status().webSearch reports the stored source even while search is off with no keys', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: false, searchSource: 'tavily' },
+      10,
+    );
+    expect(store.status().webSearch).toEqual({
+      keyConfigured: false,
+      enabled: false,
+      source: 'tavily',
+    });
+  });
+
   it("status().webSearch carries keyConfigured/enabled/source, absent when unused", () => {
     const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
     expect(store.status().webSearch).toBeUndefined();

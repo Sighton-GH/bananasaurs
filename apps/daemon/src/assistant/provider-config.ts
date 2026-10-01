@@ -49,7 +49,7 @@ export interface ProviderConfigStatus {
   readonly secretSource: ProviderSecretSource;
   /** ADR 0068: up to two more models, tried in order when the one before is busy. */
   readonly fallbackModels?: readonly string[];
-  /** ADR 0120. Absent while no search key is stored and search is off. */
+  /** ADR 0120. Absent while no config row exists, no search key is stored, and search is off. */
   readonly webSearch?: {
     readonly keyConfigured: boolean;
     readonly enabled: boolean;
@@ -236,12 +236,13 @@ export const createProviderConfigStore = (
       const chainRows = assistantProvidersRepo.getModelChain(instance);
       const searchRow = assistantProviderRepo.get(instance);
       const storedSearchKeys = searchKeysRepo.listSearchKeys(instance);
-      // ADR 0120: present when any search key is stored or search is on.
-      // keyConfigured counts only enabled keys of the current source.
+      // ADR 0120: present whenever a config row exists, any search key is
+      // stored, or search is on. keyConfigured counts only enabled keys of
+      // the current source.
       const searchSource = searchRow?.searchSource ?? 'brave';
       const searchEnabled = searchRow?.searchEnabled === true;
       const webSearch =
-        storedSearchKeys.length === 0 && !searchEnabled
+        searchRow === undefined && storedSearchKeys.length === 0 && !searchEnabled
           ? {}
           : {
               webSearch: {
