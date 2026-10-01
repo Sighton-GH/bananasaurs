@@ -160,6 +160,12 @@ export {
   type LogRoute,
 } from './logging/subscriber.js';
 export {
+  isSourceExcluded,
+  routeAccepts,
+  routeDedupeKind,
+  type LogSource,
+} from './logging/routing.js';
+export {
   correlateDeletion,
   MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
   type CorrelationCandidate,

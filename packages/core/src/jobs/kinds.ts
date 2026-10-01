@@ -125,6 +125,7 @@ export const logMessageDeletePayload = z.object({
   channelId: snowflakeIdSchema,
   messageId: snowflakeIdSchema,
   authorId: snowflakeIdSchema.optional(),
+  parentChannelId: snowflakeIdSchema.optional(),
   content: z.string().optional(),
   deletedAtMs: z.number().int().nonnegative(),
 });
