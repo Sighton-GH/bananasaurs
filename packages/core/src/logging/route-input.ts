@@ -17,7 +17,10 @@ export const logRouteInputSchema = z
     name: z.string().trim().min(1).max(100).optional(),
     channelId: snowflakeIdSchema,
     includeContent: z.boolean().default(true),
-    enabled: z.boolean().default(true),
+    // No default: create resolves an omission to true, update resolves it to
+    // the stored route's own enabled state (a default here would silently
+    // re-enable a disabled route on update).
+    enabled: z.boolean().optional(),
     eventKinds: z.array(logEventKindSchema).min(1),
     excludedChannelIds: z.array(snowflakeIdSchema).max(500).default([]),
   })

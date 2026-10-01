@@ -6,7 +6,7 @@ const CHANNEL = '333333333333333333';
 const OTHER_CHANNEL = '444444444444444444';
 
 describe('logRouteInputSchema', () => {
-  it('defaults the name, includeContent and enabled, and sorts and de-duplicates', async () => {
+  it('defaults the name and includeContent, leaves enabled undefined, and sorts and de-duplicates', async () => {
     const parsed = await logRouteInputSchema.parseAsync({
       channelId: CHANNEL,
       eventKinds: ['member_join', 'member_join', 'member_leave'],
@@ -14,7 +14,10 @@ describe('logRouteInputSchema', () => {
     });
     expect(parsed.name).toBe(`→ ${CHANNEL}`);
     expect(parsed.includeContent).toBe(true);
-    expect(parsed.enabled).toBe(true);
+    // Create resolves this to true; update resolves it to the stored route's
+    // own state. A schema default here would silently re-enable a disabled
+    // route on update.
+    expect(parsed.enabled).toBe(undefined);
     expect(parsed.eventKinds).toEqual(['member_join', 'member_leave']);
     expect(parsed.excludedChannelIds).toEqual([OTHER_CHANNEL]);
   });

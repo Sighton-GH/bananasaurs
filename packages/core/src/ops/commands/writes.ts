@@ -285,7 +285,9 @@ export const logRoutingCreateCommand = defineCommand<z.infer<typeof logRoutingCr
 
   run(ctx: OpsContext, args): OpsWriteResult {
     const input = parseRouteInput(args);
-    const route = ctx.ports.createRoute(input);
+    // The schema leaves `enabled` undefined when omitted; a create defaults
+    // it to on (`update` keeps the stored route's own state instead).
+    const route = ctx.ports.createRoute({ ...input, enabled: input.enabled ?? true });
 
     return {
       text:

@@ -83,7 +83,7 @@ export const registerWriteRoutes = (
     if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
-    const route = ports.createRoute(parsed.data);
+    const route = ports.createRoute({ ...parsed.data, enabled: parsed.data.enabled ?? true });
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'log_route.created',
@@ -109,7 +109,10 @@ export const registerWriteRoutes = (
     const ports = deps.portsFor(session.scope);
     const before = ports.getRoute(id.data);
     if (before === undefined) return reply.status(404).send({ error: 'not-found' });
-    const route = ports.updateRoute(id.data, parsed.data);
+    const route = ports.updateRoute(id.data, {
+      ...parsed.data,
+      enabled: parsed.data.enabled ?? before.enabled,
+    });
     if (route === undefined) return reply.status(404).send({ error: 'not-found' });
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),

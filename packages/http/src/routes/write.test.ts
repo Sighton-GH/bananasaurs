@@ -422,6 +422,61 @@ describe('POST /api/log-routes', () => {
       expect(JSON.parse(row?.before ?? 'null')).toMatchObject({ name: 'old' });
       expect(JSON.parse(row?.after ?? 'null')).toMatchObject({ name: 'new' });
     });
+
+    it('keeps a disabled route disabled when the body omits enabled', async () => {
+      grant(['logging.manage']);
+      const routeId = loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+        name: 'old',
+        channelId: CHANNEL,
+        includeContent: true,
+        enabled: false,
+        eventKinds: ['message_delete'],
+        excludedChannelIds: [],
+        nowMs: clock,
+      }).routeId;
+      const { cookie, csrf } = await signIn();
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: { channelId: '444444444444444444', eventKinds: ['member_join'], name: 'new' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)).toMatchObject({
+        enabled: false,
+      });
+    });
+
+    it('enables a disabled route when the body says enabled: true', async () => {
+      grant(['logging.manage']);
+      const routeId = loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+        name: 'old',
+        channelId: CHANNEL,
+        includeContent: true,
+        enabled: false,
+        eventKinds: ['message_delete'],
+        excludedChannelIds: [],
+        nowMs: clock,
+      }).routeId;
+      const { cookie, csrf } = await signIn();
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/log-routes/${routeId}`,
+        headers: { cookie, [CSRF_HEADER]: csrf },
+        payload: {
+          channelId: '444444444444444444',
+          eventKinds: ['member_join'],
+          name: 'new',
+          enabled: true,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(loggingRepo.getRoute(t.scopes.forGuild(GUILD), routeId)).toMatchObject({
+        enabled: true,
+      });
+    });
   });
 
   describe('DELETE /api/log-routes/:routeId', () => {
