@@ -547,6 +547,127 @@ describe('thread writes (MCP slice 3)', () => {
   });
 });
 
+describe('scheduled event writes (MCP slice 5)', () => {
+  const START_AT = Date.parse('2026-09-25T19:00:00.000Z');
+  const UNKNOWN_EVENT = '777777777777777775';
+
+  it('createScheduledEvent is listed with its channel, and records the call', async () => {
+    const { eventId } = await d.createScheduledEvent(GUILD, {
+      name: 'Build night',
+      description: 'Bring tools.',
+      startAt: START_AT,
+      location: { kind: 'voice', channelId: CHANNEL },
+    });
+    expect(eventId).toBeDefined();
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([
+      {
+        id: eventId,
+        name: 'Build night',
+        description: 'Bring tools.',
+        scheduledStartAt: START_AT,
+        channelId: CHANNEL,
+      },
+    ]);
+    expect(d.restCalls('createScheduledEvent')).toHaveLength(1);
+  });
+
+  it('creates an external event at a location with no channel', async () => {
+    const { eventId } = await d.createScheduledEvent(GUILD, {
+      name: 'Track day',
+      startAt: START_AT,
+      endAt: START_AT + 2 * 60 * 60_000,
+      location: { kind: 'external', place: 'Mission Raceway' },
+    });
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([
+      {
+        id: eventId,
+        name: 'Track day',
+        scheduledStartAt: START_AT,
+        location: 'Mission Raceway',
+      },
+    ]);
+  });
+
+  it('refuses an external event without endAt before recording anything', async () => {
+    await expect(
+      d.createScheduledEvent(GUILD, {
+        name: 'Track day',
+        startAt: START_AT,
+        location: { kind: 'external', place: 'Mission Raceway' },
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(d.restCalls('createScheduledEvent')).toHaveLength(0);
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([]);
+  });
+
+  it('editScheduledEvent applies edits to the listed event', async () => {
+    const { eventId } = await d.createScheduledEvent(GUILD, {
+      name: 'Build night',
+      startAt: START_AT,
+      location: { kind: 'voice', channelId: CHANNEL },
+    });
+    const movedAt = START_AT + 60_000;
+    await d.editScheduledEvent(GUILD, eventId, { name: 'Build night 2', startAt: movedAt });
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([
+      {
+        id: eventId,
+        name: 'Build night 2',
+        scheduledStartAt: movedAt,
+        channelId: CHANNEL,
+      },
+    ]);
+    expect(d.restCalls('editScheduledEvent')).toHaveLength(1);
+  });
+
+  it('cancelScheduledEvent removes the event from the listing and keeps the rest', async () => {
+    const first = await d.createScheduledEvent(GUILD, {
+      name: 'Build night',
+      startAt: START_AT,
+      location: { kind: 'voice', channelId: CHANNEL },
+    });
+    const second = await d.createScheduledEvent(GUILD, {
+      name: 'Town hall',
+      startAt: START_AT,
+      location: { kind: 'stage', channelId: CHANNEL },
+    });
+    await d.cancelScheduledEvent(GUILD, first.eventId);
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([
+      {
+        id: second.eventId,
+        name: 'Town hall',
+        scheduledStartAt: START_AT,
+        channelId: CHANNEL,
+      },
+    ]);
+    expect(d.restCalls('cancelScheduledEvent')).toHaveLength(1);
+  });
+
+  it('editing or cancelling an unknown event throws a 404', async () => {
+    await expect(d.editScheduledEvent(GUILD, UNKNOWN_EVENT, { name: 'x' })).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(d.cancelScheduledEvent(GUILD, UNKNOWN_EVENT)).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('sendMessage stores the poll on the message for pollOf', async () => {
+    const poll = {
+      question: 'Where for lunch?',
+      answers: ['Tacos', 'Sushi'],
+      durationHours: 24,
+      allowMultiselect: false,
+    };
+    const ref = await d.sendMessage(GUILD, CHANNEL, { content: 'lunch?', poll });
+    expect(d.pollOf(ref.channelId, ref.messageId)).toEqual(poll);
+  });
+
+  it('pollOf is undefined for a message sent without a poll', async () => {
+    const ref = await d.sendMessage(GUILD, CHANNEL, { content: 'hello' });
+    expect(d.pollOf(ref.channelId, ref.messageId)).toBeUndefined();
+  });
+});
+
 describe('message emitters (PR-66, PR-68, PR-71)', () => {
   it('emitMessageCreate carries attachment ids and shows up in fetchRecentMessages', async () => {
     const attachmentMessageId = '333333333333333335';
