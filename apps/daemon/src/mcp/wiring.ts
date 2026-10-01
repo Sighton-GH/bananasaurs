@@ -36,6 +36,7 @@ import {
   type McpReadAuditPort,
   type McpRecordsPort,
   type McpResourcesPort,
+  type McpResourceSummary,
   type McpSendPort,
   type McpThreadsPort,
 } from '@bananasaurs/mcp';
@@ -866,30 +867,39 @@ const contextPortFor = (deps: HttpDeps): McpContextPort => ({
  * snippet or chunk text (rule 4).
  */
 const resourcesPortFor = (deps: HttpDeps): McpResourcesPort => {
-  const enabledIds = (guildId: GuildId): readonly string[] =>
-    assistantRepo
+  // One `search_resources` call reads `listResources` then `searchChunks`:
+  // the enabled catalogue is memoized per port instance so the search does
+  // not read the table twice. The instance lives for one request (the route
+  // builds a stateless server per request) and every port here is read-only,
+  // so the snapshot cannot go stale mid-use. The port shape is unchanged —
+  // the reuse stays inside this implementation.
+  const enabledCache = new Map<GuildId, readonly McpResourceSummary[]>();
+  const enabledResources = (guildId: GuildId): readonly McpResourceSummary[] => {
+    const cached = enabledCache.get(guildId);
+    if (cached !== undefined) return cached;
+    const rows = assistantRepo
       .listResources(deps.scopes.forGuild(guildId))
       .filter((resource) => resource.enabled)
-      .map((resource) => resource.id);
+      .map(
+        (resource): McpResourceSummary => ({
+          id: resource.id,
+          title: resource.title,
+          kind: resource.kind,
+          url: resource.url,
+        }),
+      );
+    enabledCache.set(guildId, rows);
+    return rows;
+  };
   return {
     listResources: (guildId) =>
-      loggedCall(deps.logger, 'listResources', () =>
-        assistantRepo
-          .listResources(deps.scopes.forGuild(guildId))
-          .filter((resource) => resource.enabled)
-          .map((resource) => ({
-            id: resource.id,
-            title: resource.title,
-            kind: resource.kind,
-            url: resource.url,
-          })),
-      ),
+      loggedCall(deps.logger, 'listResources', () => enabledResources(guildId)),
     searchChunks: (guildId, input) =>
       loggedCall(deps.logger, 'resourceSearchChunks', () =>
         resourceCacheRepo
           .searchChunks(deps.scopes.forGuild(guildId), {
             query: input.query,
-            resourceIds: enabledIds(guildId),
+            resourceIds: enabledResources(guildId).map((resource) => resource.id),
             limit: input.limit,
           })
           .map((hit) => ({
