@@ -1,6 +1,7 @@
 import {
   DiscordApiError,
   DiscordErrorCode,
+  unicodeEmojiChars,
   type AuditLogEntry,
   type DiscordMember,
   type DiscordMessageRef,
@@ -56,6 +57,8 @@ interface FakeMessage {
   authorName: string;
   /** emojiKey -> ordered user ids, mirroring Discord's insertion order. */
   reactions: Map<EmojiKey, Snowflake[]>;
+  /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). */
+  pinned: boolean;
   cached: boolean;
   deleted: boolean;
   /** Last-known content, for `fetchRecentMessages` (ADR 0037). */
@@ -295,6 +298,8 @@ export class FakeDiscord implements DiscordPort {
     cached?: boolean;
     content?: string | undefined;
     editedTimestampMs?: number | undefined;
+    /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). Defaults to unpinned. */
+    pinned?: boolean;
     attachments?: ReadonlyArray<{
       attachmentId: Snowflake;
       fileName: string;
@@ -315,6 +320,7 @@ export class FakeDiscord implements DiscordPort {
       deleted: false,
       content: msg.content,
       editedTimestampMs: msg.editedTimestampMs,
+      pinned: msg.pinned ?? false,
       attachments: (msg.attachments ?? []).map((a) => ({
         attachmentId: a.attachmentId,
         fileName: a.fileName,
@@ -327,6 +333,10 @@ export class FakeDiscord implements DiscordPort {
   /** A message outside the client cache. Its events arrive partial. */
   setMessageCached(ref: DiscordMessageRef, cached: boolean): void {
     this.mustMessage(ref).cached = cached;
+  }
+  /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). */
+  setMessagePinned(ref: DiscordMessageRef, pinned: boolean): void {
+    this.mustMessage(ref).pinned = pinned;
   }
   /**
    * Marks a message gone without going through the `DiscordPort` method or
@@ -1019,6 +1029,31 @@ export class FakeDiscord implements DiscordPort {
     if (!m || m.deleted) throw FakeDiscord.unknownMessage();
     m.cached = true; // fetching a partial hydrates it, as discord.js does
     return { exists: true };
+  }
+
+  /**
+   * Live pin state and reaction counts (slice 2, Task 6): `pinned` is what
+   * `defineMessage`/`setMessagePinned` recorded, and each reaction bucket
+   * reports its reactor count with the display form the REST adapter
+   * projects — unicode characters for `u:` keys, `<:unknown:id>` for custom
+   * ones, whose names an `EmojiKey` deliberately does not carry. `undefined`
+   * for a message this fake was never told about or that was deleted —
+   * mirroring the REST adapter's 404/403 fold, not a thrown error.
+   */
+  async fetchMessageMeta(guildId: Snowflake, ref: DiscordMessageRef) {
+    this.record('fetchMessageMeta', [guildId, ref]);
+    this.check('fetchMessageMeta', guildId);
+    const m = this.messages.get(key(ref.channelId, ref.messageId));
+    if (!m || m.deleted) return undefined;
+    return {
+      pinned: m.pinned,
+      reactions: [...m.reactions.entries()]
+        .filter(([, users]) => users.length > 0)
+        .map(([emoji, users]) => ({
+          emoji: emoji.startsWith('c:') ? `<:unknown:${emoji.slice(2)}>` : unicodeEmojiChars(emoji),
+          count: users.length,
+        })),
+    };
   }
 
   async createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void> {

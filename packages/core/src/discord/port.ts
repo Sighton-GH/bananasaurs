@@ -212,6 +212,28 @@ export interface DiscordPort {
 
   // --- messages and reactions -------------------------------------------
   fetchMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<{ exists: true }>;
+  /**
+   * One message's live pin state and reaction counts (slice 2, Task 6): `GET
+   * /channels/{channel}/messages/{message}` — the same route `fetchMessage`
+   * already reads — projected to `pinned` and `reactions[].{emoji, count}`
+   * (`emoji` is `<:name:id>` for custom emoji, the unicode characters
+   * otherwise). `undefined` on 404 (gone) or 403 (no access) — both routine
+   * here, reported the same way rather than thrown, so the caller answers
+   * without the metadata instead of failing. Any other error propagates.
+   *
+   * The return shape is inline, like `fetchMessage`'s `{ exists: true }`:
+   * one method's two fields need no named type.
+   */
+  fetchMessageMeta(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<
+    | {
+        readonly pinned: boolean;
+        readonly reactions: readonly { readonly emoji: string; readonly count: number }[];
+      }
+    | undefined
+  >;
   createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void>;
   /**
    * Paginated at 100. An adopted panel with many reactors needs several calls,

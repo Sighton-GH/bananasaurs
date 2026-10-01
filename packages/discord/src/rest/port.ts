@@ -206,6 +206,39 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       return { exists: true };
     },
 
+    /**
+     * Live pin state and reaction counts (slice 2, Task 6): the same
+     * `GET channelMessage` route `fetchMessage` already reads, projected to
+     * `pinned` and `reactions[].{emoji, count}`. A custom emoji renders as
+     * `<:name:id>` — the name Discord reports on the reaction, which is
+     * display text, not identity — and a unicode one as its characters.
+     * `undefined` on 404 (gone) or 403 (no access), so the caller answers
+     * without the metadata instead of failing; anything else still throws.
+     */
+    async fetchMessageMeta(_guildId, ref) {
+      let message: APIMessage;
+      try {
+        message = (await mapErrors(() =>
+          rest.get(Routes.channelMessage(ref.channelId, ref.messageId)),
+        )) as APIMessage;
+      } catch (err) {
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+      return {
+        pinned: message.pinned,
+        reactions: (message.reactions ?? []).map((reaction) => ({
+          emoji:
+            reaction.emoji.id != null
+              ? `<:${reaction.emoji.name ?? 'unknown'}:${reaction.emoji.id}>`
+              : (reaction.emoji.name ?? ''),
+          count: reaction.count,
+        })),
+      };
+    },
+
     async createReaction(_guildId, ref, emoji) {
       await mapErrors(() =>
         rest.put(Routes.channelMessageOwnReaction(ref.channelId, ref.messageId, restEmoji(emoji))),
