@@ -98,18 +98,33 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     control: 'add domain to allow/deny list',
   },
   'automod domain-rm': { kind: 'covered', page: 'Automod rule', control: 'remove domain' },
-  'log routing set': {
+  'log routing create': {
     kind: 'covered',
     page: 'Logging',
-    control: 'destination channel per event kind',
+    control: 'New route form',
+  },
+  'log routing update': {
+    kind: 'covered',
+    page: 'Logging',
+    control: 'Edit route form',
+  },
+  'log routing on': {
+    kind: 'covered',
+    page: 'Logging',
+    control: 'route On switch',
   },
   'log routing off': {
     kind: 'covered',
     page: 'Logging',
-    control: 'disable one event kind, keeping its channel',
+    control: 'route Off switch',
   },
-  'log routing exclude': { kind: 'covered', page: 'Logging', control: 'exclude a source channel' },
-  'log routing unexclude': { kind: 'covered', page: 'Logging', control: 'remove an exclusion' },
+  'log routing delete': {
+    kind: 'covered',
+    page: 'Logging',
+    control: 'route Delete button',
+  },
+  'log routing exclude': { kind: 'covered', page: 'Permissions', control: 'No access toggle' },
+  'log routing unexclude': { kind: 'covered', page: 'Permissions', control: 'No access toggle' },
   'jobs retry': { kind: 'covered', page: 'Jobs', control: 'retry a failed job, confirmed' },
   'backup now': { kind: 'covered', page: 'Backups', control: 'take a backup now, confirmed' },
   'archive enable-channel': {
