@@ -542,33 +542,6 @@ export const auditEvents = sqliteTable(
 
 // --- log routing ------------------------------------------------------------
 
-/**
- * Where each logged event kind goes.
- *
- * `include_content` defaults on for `message_delete` and `message_edit`
- * (decision 3, reversed on owner review: Carl-bot already logs content to a
- * log channel, so metadata-only would be a regression members never asked
- * for). Any route can be turned off individually.
- */
-export const logRoutes = sqliteTable(
-  'log_routes',
-  {
-    guildId: snowflake('guild_id').notNull(),
-    eventKind: text('event_kind').notNull(),
-    channelId: snowflake('channel_id').notNull(),
-    includeContent: integer('include_content').notNull().default(1),
-    enabled: integer('enabled').notNull().default(1),
-  },
-  (t) => [
-    primaryKey({ columns: [t.guildId, t.eventKind] }),
-    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
-    check('log_routes_guild_id_snowflake', snowflakeCheck(t.guildId)),
-    check('log_routes_channel_id_snowflake', snowflakeCheck(t.channelId)),
-    check('log_routes_include_content_bool', boolCheck(t.includeContent)),
-    check('log_routes_enabled_bool', boolCheck(t.enabled)),
-  ],
-);
-
 /** Channels never logged from, whatever the routes say. */
 export const logExcludedChannels = sqliteTable(
   'log_excluded_channels',
