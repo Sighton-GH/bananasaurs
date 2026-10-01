@@ -83,6 +83,7 @@ const principalWith = (...guilds: readonly GuildId[]): McpPrincipal => ({
 });
 
 const archivePort = (): McpArchivePort => ({
+  now: () => 1,
   listArchiveChannelIds: () => [CHANNEL],
   searchMessages: () => ({
     total: 3,

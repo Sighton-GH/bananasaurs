@@ -50,12 +50,15 @@ interface FakeDigestOptions {
   readonly digest?: readonly McpArchiveMessage[];
   readonly unanswered?: readonly McpArchiveMessage[];
   readonly seen?: { digest: McpDigestInput[]; unanswered: McpUnansweredInput[] };
+  /** Injected clock behind `list_unanswered`'s window; defaults to the real clock. */
+  readonly now?: number;
 }
 
 const fakeArchive = (options: FakeDigestOptions = {}) => {
   const seen = options.seen ?? { digest: [], unanswered: [] as McpUnansweredInput[] };
   return {
     seen,
+    now: () => options.now ?? Date.now(),
     listArchiveChannelIds: () => [CHANNEL_1, CHANNEL_2],
     searchMessages: () => ({ total: 0, hits: [] }),
     findMessage: () => undefined,
@@ -352,12 +355,13 @@ describe('list_unanswered refuses before reading', () => {
 });
 
 describe('list_unanswered reads', () => {
-  it('resolves the default help role and links each message', () => {
-    const now = Date.now();
+  it('windows the fixed clock with the default 12h age floor and 14d window', () => {
+    const now = 1_800_000_000_000;
     const seen: FakeDigestOptions['seen'] = { digest: [], unanswered: [] };
     const outcome = listUnansweredText(
       principalWith(GUILD_A),
       fakeArchive({
+        now,
         seen,
         unanswered: [message({ messageId: '900000000000000001', createdAt: now - 13 * 3_600_000 })],
       }),
@@ -370,9 +374,9 @@ describe('list_unanswered reads', () => {
     const input = seen.unanswered[0];
     expect(input?.roleId).toBe(HELP_ROLE);
     expect(input?.limit).toBe(50);
-    // Defaults: 12h age floor, 14d window (within a minute of the test's clock).
-    expect(Math.abs((input?.olderThan ?? 0) - (now - 12 * 3_600_000))).toBeLessThan(60_000);
-    expect(Math.abs((input?.since ?? 0) - (now - 14 * 86_400_000))).toBeLessThan(60_000);
+    // Exact: the window comes from the injected clock, not Date.now().
+    expect(input?.olderThan).toBe(now - 12 * 3_600_000);
+    expect(input?.since).toBe(now - 14 * 86_400_000);
     const [head] = outcome.text.split('\n');
     expect(head).toContain('1 message');
     expect(outcome.text).toContain(

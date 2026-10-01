@@ -175,6 +175,8 @@ export interface McpUnansweredInput {
  * best-first) and carries only what the envelope renders.
  */
 export interface McpArchivePort {
+  /** The clock the time-windowed reads use — injected, like `McpContextPort.now`, never `Date.now()`. */
+  readonly now: () => number;
   /** Every archive-enabled channel id in the guild — the visibility set, never caller input. */
   readonly listArchiveChannelIds: (guildId: GuildId) => readonly string[];
   readonly searchMessages: (

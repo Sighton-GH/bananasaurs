@@ -90,6 +90,7 @@ const principalWith = (
 
 /** Minimal archive port: this file pins `get_health`, never the archive tools. */
 const stubArchive = (): McpArchivePort => ({
+  now: () => 1_700_000_000_000,
   listArchiveChannelIds: () => [],
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,

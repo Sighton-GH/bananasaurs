@@ -354,6 +354,7 @@ const stubHealth = (): McpHealthPort => ({
 });
 
 const stubArchive = (): McpArchivePort => ({
+  now: () => 1_700_000_000_000,
   listArchiveChannelIds: () => [],
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,

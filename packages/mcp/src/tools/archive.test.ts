@@ -158,6 +158,7 @@ beforeEach(() => {
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD_B), { name: 'guild b', now: 1000 });
   const scopes: ScopeFactory = t.scopes;
   port = {
+    now: () => 1_700_000_000_000,
     listArchiveChannelIds: (guildId) =>
       archiveRepo.listChannels(scopes.forGuild(guildId)).map((c) => c.channelId),
     searchMessages: (guildId, input) => {
@@ -755,6 +756,7 @@ describe('channel names resolve after the guild gate; authorId "bot" reads the b
     return {
       seenHistory,
       seenSearch,
+      now: () => 1,
       listArchiveChannelIds: () => [HELP_ID],
       searchMessages: (_guildId, input) => {
         seenSearch.push(input);

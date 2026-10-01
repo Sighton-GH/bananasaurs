@@ -216,6 +216,7 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
  * never message content (rule 4).
  */
 const archivePortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpArchivePort => ({
+  now: deps.now,
   listArchiveChannelIds: (guildId) =>
     loggedCall(deps.logger, 'listArchiveChannelIds', () =>
       archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),

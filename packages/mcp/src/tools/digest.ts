@@ -263,7 +263,7 @@ const listUnansweredInner = (
   const resolved = resolveRoleRef(roles, input.helpRole ?? 'help');
   if (!resolved.ok) return { ok: false, message: resolved.message };
   const roleName = roles.find((role) => role.id === resolved.id)?.name ?? resolved.id;
-  const now = Date.now();
+  const now = archive.now();
   const olderThan = now - (input.olderThanHours ?? 12) * HOUR_MS;
   const since = now - (input.sinceDays ?? 14) * DAY_MS;
   const limit = input.limit ?? 50;
