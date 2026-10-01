@@ -138,6 +138,20 @@ describe('auditItemsFor channel and thread actions', () => {
     expect(items[0]?.render()).toBe(`Channel created: <#${CHANNEL}> (general) by <@${ACTOR}>`);
   });
 
+  it('truncates a 150-character channel name to 100 characters', () => {
+    const long = 'n'.repeat(150);
+    const items = auditItemsFor(
+      entry({
+        action: 10,
+        targetId: CHANNEL,
+        changes: [{ key: 'name', old: undefined, new: long }],
+      }),
+    );
+    const text = items[0]?.render() ?? '';
+    expect(text).toContain(`(${'n'.repeat(99)}…)`);
+    expect(text).not.toContain(long);
+  });
+
   it('maps 11 to channel_update with one line per change', () => {
     const items = auditItemsFor(
       entry({

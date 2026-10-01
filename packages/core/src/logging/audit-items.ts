@@ -112,6 +112,18 @@ function truncateReason(reason: string): string {
   return reason;
 }
 
+/**
+ * Raw channel/thread/emoji/sticker names and invite codes are interpolated
+ * into the line without quoting, so they bypass `formatAuditValue` — cap
+ * them at the same 100 characters. Values from Discord are untrusted.
+ */
+function truncateInline(value: string): string {
+  if (value.length > MAX_VALUE_CHARS) {
+    return `${value.slice(0, MAX_VALUE_CHARS - 1)}…`;
+  }
+  return value;
+}
+
 function makeItem(
   event: AuditLogEntryEvent,
   eventKind: string,
@@ -169,7 +181,7 @@ function inviteCreateItem(event: AuditLogEntryEvent): AuditItem {
   return makeItem(
     event,
     'invite_create',
-    `Invite created: discord.gg/${code} for ${channelPart} (expires: ${expiry}, uses: ${uses})`,
+    `Invite created: discord.gg/${truncateInline(code)} for ${channelPart} (expires: ${expiry}, uses: ${uses})`,
     [],
   );
 }
@@ -186,7 +198,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
       return memberTimeoutItems(event);
     case AUDIT_ACTION_CHANNEL_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'channel_create', `Channel created: ${channelTarget(event)} (${name})`, [])];
+      return [makeItem(event, 'channel_create', `Channel created: ${channelTarget(event)} (${truncateInline(name)})`, [])];
     }
     case AUDIT_ACTION_CHANNEL_UPDATE:
       return [
@@ -197,18 +209,18 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'channel_delete', `Channel deleted: #${name}`, [])];
+      return [makeItem(event, 'channel_delete', `Channel deleted: #${truncateInline(name)}`, [])];
     }
     case AUDIT_ACTION_THREAD_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'thread_create', `Thread created: ${channelTarget(event)} (${name})`, [])];
+      return [makeItem(event, 'thread_create', `Thread created: ${channelTarget(event)} (${truncateInline(name)})`, [])];
     }
     case AUDIT_ACTION_THREAD_DELETE: {
       const name =
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'thread_delete', `Thread deleted: ${name}`, [])];
+      return [makeItem(event, 'thread_delete', `Thread deleted: ${truncateInline(name)}`, [])];
     }
     case AUDIT_ACTION_GUILD_UPDATE:
       return [makeItem(event, 'guild_update', 'Server settings changed', changeLinesFor(event.changes))];
@@ -218,44 +230,44 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
       const codeChange = findChange(event, 'code');
       const code =
         changeString(codeChange?.old) ?? changeString(codeChange?.new) ?? 'unknown';
-      return [makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${code}`, [])];
+      return [makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${truncateInline(code)}`, [])];
     }
     case AUDIT_ACTION_EMOJI_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'emoji_create', `Emoji added: :${name}:`, [])];
+      return [makeItem(event, 'emoji_create', `Emoji added: :${truncateInline(name)}:`, [])];
     }
     case AUDIT_ACTION_EMOJI_UPDATE: {
       const oldName = changeString(findChange(event, 'name')?.old) ?? 'unknown';
       const newName = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'emoji_update', `Emoji renamed: :${oldName}: → :${newName}:`, [])];
+      return [makeItem(event, 'emoji_update', `Emoji renamed: :${truncateInline(oldName)}: → :${truncateInline(newName)}:`, [])];
     }
     case AUDIT_ACTION_EMOJI_DELETE: {
       const oldName =
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'emoji_delete', `Emoji removed: :${oldName}:`, [])];
+      return [makeItem(event, 'emoji_delete', `Emoji removed: :${truncateInline(oldName)}:`, [])];
     }
     case AUDIT_ACTION_STICKER_CREATE: {
       const name =
         changeString(findChange(event, 'name')?.new) ??
         changeString(findChange(event, 'name')?.old) ??
         'unknown';
-      return [makeItem(event, 'sticker_create', `Sticker added: ${name}`, [])];
+      return [makeItem(event, 'sticker_create', `Sticker added: ${truncateInline(name)}`, [])];
     }
     case AUDIT_ACTION_STICKER_UPDATE: {
       const name =
         changeString(findChange(event, 'name')?.new) ??
         changeString(findChange(event, 'name')?.old) ??
         'unknown';
-      return [makeItem(event, 'sticker_update', `Sticker changed: ${name}`, changeLinesFor(event.changes))];
+      return [makeItem(event, 'sticker_update', `Sticker changed: ${truncateInline(name)}`, changeLinesFor(event.changes))];
     }
     case AUDIT_ACTION_STICKER_DELETE: {
       const name =
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'sticker_delete', `Sticker removed: ${name}`, [])];
+      return [makeItem(event, 'sticker_delete', `Sticker removed: ${truncateInline(name)}`, [])];
     }
     default:
       return [];
