@@ -1197,9 +1197,7 @@ describe('ProvidersPage terms and web search', () => {
     ]);
     renderWithSession(<ProvidersPage />);
     const card = await webCard();
-    expect(
-      within(card).getByText('Only the server owner can change web search.'),
-    ).toBeTruthy();
+    expect(within(card).getByText('Only the server owner can change web search.')).toBeTruthy();
     expect(inputOf(within(card).getByRole('radio', { name: 'Tavily' })).checked).toBe(true);
     expect(inputOf(within(card).getByRole('radio', { name: 'Brave Search' })).disabled).toBe(true);
     expect(

@@ -1796,10 +1796,7 @@ export const assistantProviderConfig = sqliteTable(
   (t) => [
     check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
     check('assistant_provider_config_search_enabled_bool', boolCheck(t.searchEnabled)),
-    check(
-      'assistant_provider_config_search_source',
-      sql`${t.searchSource} IN ('brave','tavily')`,
-    ),
+    check('assistant_provider_config_search_source', sql`${t.searchSource} IN ('brave','tavily')`),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,

@@ -27,7 +27,12 @@ import type {
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 import type { CitationRegistry } from './citations.js';
-import { WebSearchLimitError, SearchHttpError, type WebSearchOutcome, type WebSearchRun } from './web-search.js';
+import {
+  WebSearchLimitError,
+  SearchHttpError,
+  type WebSearchOutcome,
+  type WebSearchRun,
+} from './web-search.js';
 
 /**
  * The read-only tools the model may call (ADR 0067, Task 16).

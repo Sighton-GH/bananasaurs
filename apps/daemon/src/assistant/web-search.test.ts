@@ -91,34 +91,37 @@ describe('createWebSearchRun (ADR 0120)', () => {
     expect(client).toHaveBeenCalledWith('api-second', 'q');
   });
 
-  it.each([429, 432, 401])('status %i from the first key falls through to the second key', async (status) => {
-    const first = addKey('first');
-    const second = addKey('second');
-    const client = vi
-      .fn()
-      .mockRejectedValueOnce(new SearchHttpError(status))
-      .mockResolvedValueOnce([...RESULTS]);
-    const run = createWebSearchRun({
-      instance: t.scopes.instance(),
-      guildId: GUILD,
-      source: 'brave',
-      keys: keysFor([first, second], ['api-first', 'api-second']),
-      now: () => NOW,
-      client,
-    });
-    await expect(run('q')).resolves.toEqual({ results: [...RESULTS], source: 'brave' });
-    expect(client).toHaveBeenCalledTimes(2);
-    expect(client.mock.calls[1]?.[0]).toBe('api-second');
-    // The refused call still counts.
-    expect(
-      searchKeysRepo.searchKeyUsage(t.scopes.instance(), {
-        keyId: first,
-        now: NOW,
-        monthlyLimit: null,
-        dailyLimit: null,
-      }).last24h,
-    ).toBe(1);
-  });
+  it.each([429, 432, 401])(
+    'status %i from the first key falls through to the second key',
+    async (status) => {
+      const first = addKey('first');
+      const second = addKey('second');
+      const client = vi
+        .fn()
+        .mockRejectedValueOnce(new SearchHttpError(status))
+        .mockResolvedValueOnce([...RESULTS]);
+      const run = createWebSearchRun({
+        instance: t.scopes.instance(),
+        guildId: GUILD,
+        source: 'brave',
+        keys: keysFor([first, second], ['api-first', 'api-second']),
+        now: () => NOW,
+        client,
+      });
+      await expect(run('q')).resolves.toEqual({ results: [...RESULTS], source: 'brave' });
+      expect(client).toHaveBeenCalledTimes(2);
+      expect(client.mock.calls[1]?.[0]).toBe('api-second');
+      // The refused call still counts.
+      expect(
+        searchKeysRepo.searchKeyUsage(t.scopes.instance(), {
+          keyId: first,
+          now: NOW,
+          monthlyLimit: null,
+          dailyLimit: null,
+        }).last24h,
+      ).toBe(1);
+    },
+  );
 
   it('status 500 rethrows and the second key is NOT called', async () => {
     const first = addKey('first');
@@ -199,9 +202,7 @@ describe('createWebSearchRun (ADR 0120)', () => {
     });
     const err = await run('q').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WebSearchLimitError);
-    expect((err as WebSearchLimitError).availableAt).toBe(
-      NOW - 2000 + searchKeysRepo.DAY_MS,
-    );
+    expect((err as WebSearchLimitError).availableAt).toBe(NOW - 2000 + searchKeysRepo.DAY_MS);
     expect(client).not.toHaveBeenCalled();
   });
 

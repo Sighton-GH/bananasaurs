@@ -2022,7 +2022,9 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     };
     const service = serviceWith(provider, {
       webSearch: async () => ({
-        results: [{ title: 'Web Guide', url: 'https://web.example/guide', description: 'Web care.' }],
+        results: [
+          { title: 'Web Guide', url: 'https://web.example/guide', description: 'Web care.' },
+        ],
         source: 'brave' as const,
       }),
     });

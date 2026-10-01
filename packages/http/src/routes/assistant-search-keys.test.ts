@@ -67,7 +67,9 @@ const fakeStore = (
     keys?: FakeSearchKey[];
     enabled?: boolean;
     source?: 'brave' | 'tavily';
-    usage?: (keyId: string) =>
+    usage?: (
+      keyId: string,
+    ) =>
       | { readonly last24h: number; readonly last31d: number; readonly availableAt?: number }
       | undefined;
   } = {},
@@ -153,8 +155,7 @@ const fakeStore = (
       return true;
     },
     isSearchKeyReadable: () => true,
-    searchKeyUsage: (keyId: string) =>
-      usage?.(keyId) ?? { last24h: 0, last31d: 0 },
+    searchKeyUsage: (keyId: string) => usage?.(keyId) ?? { last24h: 0, last31d: 0 },
   };
 };
 

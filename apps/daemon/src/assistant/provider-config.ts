@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { listGeminiModels, type Config, type GeminiModelInfo, type Logger } from '@bananasaurs/core';
+import {
+  listGeminiModels,
+  type Config,
+  type GeminiModelInfo,
+  type Logger,
+} from '@bananasaurs/core';
 import {
   assistantProviderRepo,
   assistantProvidersRepo,
@@ -266,9 +271,7 @@ export const createProviderConfigStore = (
           ? {}
           : {
               webSearch: {
-                keyConfigured: storedSearchKeys.some(
-                  (k) => k.source === searchSource && k.enabled,
-                ),
+                keyConfigured: storedSearchKeys.some((k) => k.source === searchSource && k.enabled),
                 enabled: searchEnabled,
                 source: searchSource,
               },
@@ -600,8 +603,8 @@ export const createProviderConfigStore = (
       const client =
         clients?.[source] ??
         (source === 'brave'
-          ? ((apiKey: string, q: string) => braveWebSearch({ apiKey }, q))
-          : ((apiKey: string, q: string) => tavilyWebSearch({ apiKey }, q)));
+          ? (apiKey: string, q: string) => braveWebSearch({ apiKey }, q)
+          : (apiKey: string, q: string) => tavilyWebSearch({ apiKey }, q));
       return createWebSearchRun({
         instance,
         guildId,

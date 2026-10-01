@@ -58,9 +58,7 @@ describe('tavilyWebSearch (ADR 0120)', () => {
       }),
     );
     const results = await tavilyWebSearch({ apiKey: 'k', fetch }, 'q');
-    expect(results).toEqual([
-      { title: 'Good', url: 'http://d.example/', description: 'text' },
-    ]);
+    expect(results).toEqual([{ title: 'Good', url: 'http://d.example/', description: 'text' }]);
   });
 
   it('non-ok throws SearchHttpError without reading the body', async () => {

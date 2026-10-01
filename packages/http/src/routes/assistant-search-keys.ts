@@ -101,7 +101,9 @@ export const registerAssistantSearchKeyRoutes = (
         source: parsed.data.source,
         label: parsed.data.label,
         apiKey: parsed.data.apiKey,
-        ...(parsed.data.monthlyLimit === undefined ? {} : { monthlyLimit: parsed.data.monthlyLimit }),
+        ...(parsed.data.monthlyLimit === undefined
+          ? {}
+          : { monthlyLimit: parsed.data.monthlyLimit }),
         ...(parsed.data.dailyLimit === undefined ? {} : { dailyLimit: parsed.data.dailyLimit }),
       },
       deps.now(),

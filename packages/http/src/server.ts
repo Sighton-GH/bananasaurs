@@ -244,7 +244,9 @@ export interface HttpDeps extends AuthDeps {
         isSearchKeyReadable?(keyId: string): boolean;
         searchKeyUsage?(
           keyId: string,
-        ): { readonly last24h: number; readonly last31d: number; readonly availableAt?: number } | undefined;
+        ):
+          | { readonly last24h: number; readonly last31d: number; readonly availableAt?: number }
+          | undefined;
         /**
          * Task 10: the chain test reserves its call against the entry's
          * owner-set RPM/RPD limits first (wired by a later task). Absent in

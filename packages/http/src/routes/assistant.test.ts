@@ -684,8 +684,7 @@ describe('provider fallback model and web search (ADR 0066, ADR 0120)', () => {
           ...(saved.at(-1)?.fallbackModels
             ? { fallbackModels: [...saved.at(-1)!.fallbackModels!] }
             : {}),
-          ...(saved.at(-1)?.searchEnabled !== undefined ||
-          saved.at(-1)?.searchSource !== undefined
+          ...(saved.at(-1)?.searchEnabled !== undefined || saved.at(-1)?.searchSource !== undefined
             ? {
                 webSearch: {
                   keyConfigured: true,

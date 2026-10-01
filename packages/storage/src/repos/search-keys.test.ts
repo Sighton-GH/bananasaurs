@@ -224,9 +224,7 @@ describe('reserveSearchCall with no limits', () => {
         }),
       ).toEqual({ ok: true });
     }
-    expect(
-      t.raw.prepare('SELECT key_id, guild_id, at FROM assistant_search_calls').all(),
-    ).toEqual([
+    expect(t.raw.prepare('SELECT key_id, guild_id, at FROM assistant_search_calls').all()).toEqual([
       { key_id: keyId, guild_id: GUILD_ID, at: 0 },
       { key_id: keyId, guild_id: GUILD_ID, at: 1000 },
       { key_id: keyId, guild_id: GUILD_ID, at: 2000 },
@@ -336,9 +334,7 @@ describe('reserveSearchCall pruning', () => {
     expect(reserve(0)).toEqual({ ok: true });
     const later = 33 * DAY_MS;
     expect(reserve(later)).toEqual({ ok: true });
-    expect(t.raw.prepare('SELECT at FROM assistant_search_calls').all()).toEqual([
-      { at: later },
-    ]);
+    expect(t.raw.prepare('SELECT at FROM assistant_search_calls').all()).toEqual([{ at: later }]);
   });
 });
 

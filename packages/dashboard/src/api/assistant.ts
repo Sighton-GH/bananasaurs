@@ -198,7 +198,11 @@ export interface AiStatus {
   /** ADR 0068: up to two more models, tried in order when the one before is busy. */
   readonly fallbackModels?: readonly string[];
   /** ADR 0066, amended by ADR 0120. Absent while no search key is saved and search is off. */
-  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean; readonly source: SearchSource };
+  readonly webSearch?: {
+    readonly keyConfigured: boolean;
+    readonly enabled: boolean;
+    readonly source: SearchSource;
+  };
 }
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
@@ -356,7 +360,11 @@ export interface SearchKeyRow {
   readonly monthlyLimit: number | null;
   readonly dailyLimit: number | null;
   readonly readable: boolean;
-  readonly usage: { readonly last24h: number; readonly last31d: number; readonly availableAt?: number };
+  readonly usage: {
+    readonly last24h: number;
+    readonly last31d: number;
+    readonly availableAt?: number;
+  };
 }
 export interface SearchKeysData {
   readonly enabled: boolean;

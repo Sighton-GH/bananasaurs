@@ -217,16 +217,17 @@ export const moveSearchKey = (
 /** Cascades its ledger rows. Returns false when the key does not exist. */
 export const removeSearchKey = (scope: InstanceScope, keyId: string): boolean =>
   writeInstance(scope, ({ db }) => {
-    const result = db
-      .delete(assistantSearchKeys)
-      .where(eq(assistantSearchKeys.keyId, keyId))
-      .run();
+    const result = db.delete(assistantSearchKeys).where(eq(assistantSearchKeys.keyId, keyId)).run();
     return result.changes === 1;
   });
 
 export type SearchReserveResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly limit: 'daily' | 'monthly' | 'missing'; readonly availableAt: number };
+  | {
+      readonly ok: false;
+      readonly limit: 'daily' | 'monthly' | 'missing';
+      readonly availableAt: number;
+    };
 
 /** How many rows for `keyId` fall in the window starting at `windowStart`. */
 const windowCount = (db: Db, keyId: string, windowStart: number): number =>
@@ -234,10 +235,7 @@ const windowCount = (db: Db, keyId: string, windowStart: number): number =>
     .select({ n: sql<number>`count(*)` })
     .from(assistantSearchCalls)
     .where(
-      and(
-        eq(assistantSearchCalls.keyId, keyId),
-        sql`${assistantSearchCalls.at} > ${windowStart}`,
-      ),
+      and(eq(assistantSearchCalls.keyId, keyId), sql`${assistantSearchCalls.at} > ${windowStart}`),
     )
     .get()?.n ?? 0;
 
@@ -259,10 +257,7 @@ const windowAvailableAt = (
     .select({ at: assistantSearchCalls.at })
     .from(assistantSearchCalls)
     .where(
-      and(
-        eq(assistantSearchCalls.keyId, keyId),
-        sql`${assistantSearchCalls.at} > ${windowStart}`,
-      ),
+      and(eq(assistantSearchCalls.keyId, keyId), sql`${assistantSearchCalls.at} > ${windowStart}`),
     )
     .orderBy(asc(assistantSearchCalls.at))
     .limit(1)

@@ -947,8 +947,7 @@ function SearchKeyItem({
       return;
     }
     const body: Record<string, unknown> = {};
-    if (editLabel.trim() !== '' && editLabel.trim() !== keyRow.label)
-      body.label = editLabel.trim();
+    if (editLabel.trim() !== '' && editLabel.trim() !== keyRow.label) body.label = editLabel.trim();
     if (editKey !== '') body.apiKey = editKey;
     if (editEnabled !== keyRow.enabled) body.enabled = editEnabled;
     const monthly = editMonthly === '' ? null : Number(editMonthly);
@@ -962,7 +961,10 @@ function SearchKeyItem({
     setEditError(undefined);
     setBusy(true);
     try {
-      if ((await session.write<{ ok: boolean }>(searchKeyUrl(keyRow.keyId), body, 'PATCH')) === undefined)
+      if (
+        (await session.write<{ ok: boolean }>(searchKeyUrl(keyRow.keyId), body, 'PATCH')) ===
+        undefined
+      )
         return;
       setEditKey('');
       setEditing(false);
@@ -1032,7 +1034,11 @@ function SearchKeyItem({
       {editing ? (
         <div className="grid gap-2">
           <Field label="Label">
-            <Input value={editLabel} onChange={(e) => setEditLabel(e.target.value)} maxLength={60} />
+            <Input
+              value={editLabel}
+              onChange={(e) => setEditLabel(e.target.value)}
+              maxLength={60}
+            />
           </Field>
           <Field label="Replace key" hint="Leave blank to keep the saved key">
             <Input
@@ -1153,8 +1159,7 @@ function WebSearchCard({
   const [adding, setAdding] = useState(false);
 
   const loadKeys = useCallback((): Promise<SearchKeysData> => {
-    if (!isOwner)
-      return Promise.resolve({ enabled: false, source: 'brave', keys: [] });
+    if (!isOwner) return Promise.resolve({ enabled: false, source: 'brave', keys: [] });
     return session.read<SearchKeysData>(SEARCH_KEYS_URL);
   }, [session, isOwner]);
   const keysResource = useResource('web search keys', loadKeys);
@@ -1295,7 +1300,12 @@ function WebSearchCard({
                     Read the terms
                   </a>{' '}
                   ·{' '}
-                  <a className="underline" href="https://app.tavily.com" target="_blank" rel="noreferrer">
+                  <a
+                    className="underline"
+                    href="https://app.tavily.com"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     Get an API key
                   </a>
                 </p>
@@ -1356,7 +1366,11 @@ function WebSearchCard({
             >
               <p className="text-sm font-medium">Add a key</p>
               <Field label="Label" hint="1–60 characters, so you can tell keys apart">
-                <Input value={addLabel} onChange={(e) => setAddLabel(e.target.value)} maxLength={60} />
+                <Input
+                  value={addLabel}
+                  onChange={(e) => setAddLabel(e.target.value)}
+                  maxLength={60}
+                />
               </Field>
               <Field label="Key">
                 <Input

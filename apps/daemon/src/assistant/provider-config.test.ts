@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseConfig } from '@bananasaurs/core';
-import { assistantProviderRepo, assistantProvidersRepo, searchKeysRepo } from '@bananasaurs/storage';
+import {
+  assistantProviderRepo,
+  assistantProvidersRepo,
+  searchKeysRepo,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -376,10 +380,7 @@ describe('web search keys (ADR 0120)', () => {
       { provider: 'gemini', enabled: true, searchEnabled: true, searchSource: 'tavily' },
       10,
     );
-    const first = store.addSearchKey(
-      { source: 'tavily', label: 'T1', apiKey: 'tavily-one' },
-      11,
-    );
+    const first = store.addSearchKey({ source: 'tavily', label: 'T1', apiKey: 'tavily-one' }, 11);
     store.addSearchKey({ source: 'tavily', label: 'T2', apiKey: 'tavily-two' }, 12);
     store.addSearchKey({ source: 'brave', label: 'B1', apiKey: 'brave-one' }, 13);
     const braveSeen: string[] = [];
@@ -425,7 +426,7 @@ describe('web search keys (ADR 0120)', () => {
     });
   });
 
-  it("status().webSearch carries keyConfigured/enabled/source, absent when unused", () => {
+  it('status().webSearch carries keyConfigured/enabled/source, absent when unused', () => {
     const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
     expect(store.status().webSearch).toBeUndefined();
     store.save({ provider: 'gemini', enabled: true, searchEnabled: true }, 10);
@@ -482,10 +483,7 @@ describe('web search keys (ADR 0120)', () => {
 
   it('updateSearchKey re-seals only with a new apiKey; usage is undefined for unknown keys', () => {
     const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-    const keyId = store.addSearchKey(
-      { source: 'brave', label: 'B', apiKey: 'alpha-secret' },
-      10,
-    );
+    const keyId = store.addSearchKey({ source: 'brave', label: 'B', apiKey: 'alpha-secret' }, 10);
     const sealedOf = (): string | undefined =>
       searchKeysRepo.listSearchKeys(t.scopes.instance()).find((k) => k.keyId === keyId)?.apiKeyEnc;
     const before = sealedOf();
