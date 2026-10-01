@@ -159,8 +159,8 @@ const searchResourcesInner = (
     .filter((hit) => enabledIds.has(hit.resourceId));
   const head =
     enabled.length === 0
-      ? `No enabled resources in guild ${gate.guildId}.`
-      : `Resource search in guild ${gate.guildId}: ${String(hits.length)} matches across ${String(enabled.length)} enabled resources.`;
+      ? `No enabled resources in guild ${safeName(gate.guildId)}.`
+      : `Resource search in guild ${safeName(gate.guildId)}: ${String(hits.length)} matches across ${String(enabled.length)} enabled resources.`;
   return {
     ok: true,
     text: `${structuredText(head, { resources: enabled.map(summarize) })}\n\n${envelope(hits.map(toEvidenceItem))}`,
@@ -214,7 +214,7 @@ const openResourceInner = (
   if (found === undefined) {
     return {
       ok: true,
-      text: structuredText(`No enabled resource with id "${parsed.data.resourceId}".`, {
+      text: structuredText(`No enabled resource with id "${safeName(parsed.data.resourceId)}".`, {
         resource: null,
       }),
       read: {
@@ -248,8 +248,12 @@ const openResourceInner = (
       },
     };
   }
-  const shown = fitChunks(cached);
-  const head = `Resource ${found.title} (${found.id}) in guild ${gate.guildId}: ${found.url} — showing ${String(shown.length)} chunks.`;
+  // Belt over braces like `search_resources`: the port is asked for at most
+  // the limit, but a port that over-returns must not widen the answer.
+  const shown = fitChunks(cached.slice(0, OPEN_RESOURCE_CHUNK_LIMIT));
+  const head =
+    `Resource ${safeName(found.title)} (${safeName(found.id)}) in guild ${safeName(gate.guildId)}: ` +
+    `${safeName(found.url)} — showing ${String(shown.length)} chunks.`;
   return {
     ok: true,
     text: `${structuredText(head, { resource: summarize(found) })}\n\n${envelope(shown.map(toEvidenceItem))}`,
