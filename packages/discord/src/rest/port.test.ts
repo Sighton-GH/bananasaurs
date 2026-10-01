@@ -249,6 +249,15 @@ describe('messages and reactions', () => {
    * *double* encoding, which sends `%F0%9F%91%8D` as a literal and reacts with
    * nonsense, and decoding once catches exactly that.
    */
+  it('removes the bot reaction with DELETE on the same @me route', async () => {
+    const { port, requests } = harness();
+    await port.deleteOwnReaction(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, THUMBS_UP);
+    expect(last(requests).method).toBe('DELETE');
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/channels/${CHANNEL}/messages/${MESSAGE}/reactions/👍/@me`,
+    );
+  });
+
   it('seeds a unicode reaction on the @me route, encoded exactly once', async () => {
     const { port, requests } = harness();
     await port.createReaction(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, THUMBS_UP);
@@ -506,6 +515,39 @@ describe('messages and reactions', () => {
     expect(last(requests).body).toEqual({ content: 'hello' });
   });
 
+  /**
+   * `pingReplyAuthor` is an opt-out, not a toggle: undefined keeps today's
+   * behaviour byte-identical, and only an explicit `false` suppresses the ping.
+   */
+  it('keeps replied_user true when pingReplyAuthor is undefined', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'reply, ping on',
+      replyTo: '600000000000000001',
+      pingReplyAuthor: undefined,
+    });
+    expect(last(requests).body).toMatchObject({
+      allowed_mentions: { parse: [], replied_user: true },
+    });
+  });
+
+  it('sends replied_user false only when pingReplyAuthor is false', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'reply, ping off',
+      replyTo: '600000000000000001',
+      pingReplyAuthor: false,
+    });
+    expect(last(requests).body).toMatchObject({
+      message_reference: { message_id: '600000000000000001', fail_if_not_exists: false },
+      allowed_mentions: { parse: [], replied_user: false },
+    });
+  });
+
   it("keeps replyTo's replied_user alongside an explicit allowedMentions.roles", async () => {
     const { port, requests } = harness([
       { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
@@ -572,6 +614,53 @@ describe('messages and reactions', () => {
     await expect(
       forbidden.port.fetchMessageContent(GUILD, CHANNEL, MESSAGE),
     ).resolves.toBeUndefined();
+  });
+
+  it("fetches one message's author, content and embeds off the channel-message route", async () => {
+    const { port, requests } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'member' },
+          content: 'see attached chart',
+          embeds: [{ title: 'chart', type: 'rich' }],
+        },
+      },
+    ]);
+    await expect(
+      port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toEqual({
+      authorId: USER,
+      content: 'see attached chart',
+      embeds: [{ title: 'chart', type: 'rich' }],
+    });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
+  });
+
+  it('answers undefined for fetchMessageAuthor on 404 or 403, never a throw', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },
+    ]);
+    await expect(
+      gone.port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(
+      forbidden.port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else for fetchMessageAuthor (e.g. a server error)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(
+      port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).rejects.toBeInstanceOf(DiscordApiError);
   });
 
   it('still raises anything else (e.g. a rate limit)', async () => {
@@ -796,6 +885,22 @@ describe('message metadata (slice 2 task 6)', () => {
     await expect(
       port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
     ).rejects.toBeInstanceOf(DiscordApiError);
+  });
+});
+
+describe('pins', () => {
+  it('pins with PUT on the non-deprecated channelMessagesPin route', async () => {
+    const { port, requests } = harness();
+    await port.pinMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE });
+    expect(last(requests).method).toBe('PUT');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/pins/${MESSAGE}`);
+  });
+
+  it('unpins with DELETE on the same route', async () => {
+    const { port, requests } = harness();
+    await port.unpinMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE });
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/pins/${MESSAGE}`);
   });
 });
 

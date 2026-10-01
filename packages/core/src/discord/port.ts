@@ -115,6 +115,12 @@ export interface OutgoingMessage {
    * is byte-identical to a message with no reply at all.
    */
   replyTo?: string | undefined;
+  /**
+   * Opt-out of the reply ping (ADR 0072): only `false` suppresses the
+   * replied-to member's ping. Undefined keeps today's behaviour —
+   * `replied_user: true`.
+   */
+  pingReplyAuthor?: boolean | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */
@@ -235,6 +241,12 @@ export interface DiscordPort {
     | undefined
   >;
   createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void>;
+  /** Removes the bot's own reaction; other members' reactions are untouched. */
+  deleteOwnReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void>;
+  /** Pins a channel message. */
+  pinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void>;
+  /** Unpins a channel message; unpinning an unpinned message is not an error. */
+  unpinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void>;
   /**
    * Paginated at 100. An adopted panel with many reactors needs several calls,
    * which is why the adoption pass is a resumable job rather than a request.
@@ -265,6 +277,11 @@ export interface DiscordPort {
     channelId: Snowflake,
     messageId: Snowflake,
   ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
+  /** One message's author, content and embeds: edit/delete eligibility and undo (ADR 0116 §4). */
+  fetchMessageAuthor(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<{ authorId: string; content: string; embeds: readonly unknown[] } | undefined>;
   /**
    * Channel context for the assistant (ADR 0089): up to `limit` messages sent
    * before `before` in one channel, oldest first — or, when `before` is
