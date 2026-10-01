@@ -627,6 +627,34 @@ describe('migration 0039 keeps one chain row per model when 0038 duplicated fall
   });
 });
 
+/**
+ * A migrations folder containing only the journal entries and `.sql` files up
+ * to and including `tag`, so `migrate()` can run against a snapshot of the
+ * schema older than what ships. Keyed by tag rather than idx so a test names
+ * the migration it stops before. Shared by the 0091 and 0092 data tests.
+ */
+const migrationsFolderUpToTag = (tag: string): string => {
+  const journal = JSON.parse(
+    fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+  ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+  const last = journal.entries.find((entry) => entry.tag === tag);
+  expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migrations-up-to-tag-'));
+  fs.mkdirSync(path.join(dir, 'meta'));
+  const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
+  fs.writeFileSync(
+    path.join(dir, 'meta', '_journal.json'),
+    JSON.stringify({ ...journal, entries }),
+  );
+  for (const entry of entries) {
+    fs.copyFileSync(
+      path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+      path.join(dir, `${entry.tag}.sql`),
+    );
+  }
+  return dir;
+};
+
 describe('migration 0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
   const GUILD_ID = '111111111111111111';
   const CHANNEL_ID = '222222222222222222';
@@ -634,35 +662,6 @@ describe('migration 0091 rebuild preserves archive rows, edits, attachments and 
   const MESSAGE_ONE = '444444444444444444';
   const MESSAGE_PURGED = '555555555555555555';
   const ATTACHMENT_ID = '666666666666666666';
-
-  /**
-   * A migrations folder containing only the journal entries and `.sql` files
-   * up to and including `tag`, so `migrate()` can run against a snapshot of
-   * the schema older than what ships. Same shape as the neighbouring
-   * `migrationsFolderUpTo` helpers, keyed by tag rather than idx so the test
-   * names the migration it stops before.
-   */
-  const migrationsFolderUpToTag = (tag: string): string => {
-    const journal = JSON.parse(
-      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
-    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
-    const last = journal.entries.find((entry) => entry.tag === tag);
-    expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-rebuild-migration-'));
-    fs.mkdirSync(path.join(dir, 'meta'));
-    const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
-    fs.writeFileSync(
-      path.join(dir, 'meta', '_journal.json'),
-      JSON.stringify({ ...journal, entries }),
-    );
-    for (const entry of entries) {
-      fs.copyFileSync(
-        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
-        path.join(dir, `${entry.tag}.sql`),
-      );
-    }
-    return dir;
-  };
 
   it('0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
     const raw = new Database(':memory:');
@@ -822,34 +821,6 @@ describe('migration 0092 copies mcp_sends into mcp_actions (ADR 0116 section 2)'
   const CHANNEL_SENT = '222222222222222222';
   const CHANNEL_DRY = '333333333333333333';
   const MESSAGE_ID = '444444444444444444';
-
-  /**
-   * A migrations folder containing only the journal entries and `.sql` files
-   * up to and including `tag`. Same shape as the neighbouring 0091 helper,
-   * keyed by tag rather than idx so the test names the migration it stops
-   * before.
-   */
-  const migrationsFolderUpToTag = (tag: string): string => {
-    const journal = JSON.parse(
-      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
-    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
-    const last = journal.entries.find((entry) => entry.tag === tag);
-    expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-actions-copy-migration-'));
-    fs.mkdirSync(path.join(dir, 'meta'));
-    const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
-    fs.writeFileSync(
-      path.join(dir, 'meta', '_journal.json'),
-      JSON.stringify({ ...journal, entries }),
-    );
-    for (const entry of entries) {
-      fs.copyFileSync(
-        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
-        path.join(dir, `${entry.tag}.sql`),
-      );
-    }
-    return dir;
-  };
 
   it('copies every mcp_sends row with the mapped values and leaves mcp_sends unchanged', () => {
     const raw = new Database(':memory:');

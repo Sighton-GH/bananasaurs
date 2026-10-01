@@ -1759,7 +1759,7 @@ export const mcpSends = sqliteTable(
 /**
  * The ledger for every MCP write (ADR 0116 §2, slice M5 follow-up).
  *
- * Keyed `(guild_id, idempotency_key)` and unique per `(guild_id, action_id`):
+ * Keyed `(guild_id, idempotency_key)` and unique per `(guild_id, action_id)`:
  * a retried key with a matching `args_hash` is a replay, with a differing
  * hash a refusal. `status` is `claimed` between the claim and the single
  * Discord call, `dry_run` for a claim that never calls, and `done`/`failed`

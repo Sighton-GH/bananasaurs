@@ -173,7 +173,7 @@ describe('countActionsSince', () => {
       capGroup: 'message',
       now: 100,
     });
-    // Four in-window non-failed rows: claimed, done, dry_run, plus the failed
+    // Three in-window non-failed rows (claimed, done, dry_run) count; the failed
     // one excluded — the old row is outside the window.
     expect(countActionsSince(a, 'message', 500)).toBe(3);
     expect(countActionsSince(a, 'message', 1600)).toBe(1);
