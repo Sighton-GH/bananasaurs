@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { createLoggingSubscriber, type LoggingPorts } from './subscriber.js';
 import type { LogRoute } from './routing.js';
-import type { MessageEvent } from '../discord/events.js';
+import type { MemberSnapshotLike } from './member-changes.js';
+import type { MemberEvent, MessageEvent } from '../discord/events.js';
 
 const GUILD = '111111111111111111';
 const SOURCE = '222222222222222222';
@@ -31,9 +32,18 @@ function makeFake() {
   const excluded = new Set<string>();
   const enqueued: { dedupeKey: string; payload: string; runAfter: number }[] = [];
   let routes: LogRoute[] = [];
+  // The event kinds each route includes, like the real
+  // `loggingRepo.listEnabledRoutesFor` filtering. A route with no entry
+  // matches every kind, preserving the older tests' behaviour.
+  const routeKinds = new Map<string, readonly string[]>();
+  const snapshots = new Map<string, MemberSnapshotLike>();
   const ports: LoggingPorts = {
     guildId: GUILD,
-    listEnabledRoutesFor: () => routes,
+    listEnabledRoutesFor: (eventKind) =>
+      routes.filter((r) => {
+        const kinds = routeKinds.get(r.routeId);
+        return kinds === undefined || kinds.includes(eventKind);
+      }),
     isChannelExcluded: (id) => excluded.has(id),
     listEnabledLogChannels: () => [...new Set(routes.map((r) => r.channelId))],
     claim: ({ eventKind, fingerprint }) => {
@@ -58,6 +68,13 @@ function makeFake() {
       enqueued.push(input);
       return { enqueued: true };
     },
+    getMemberSnapshot: (userId) => snapshots.get(userId),
+    saveMemberSnapshot: (snapshot) => {
+      snapshots.set(snapshot.userId, { ...snapshot, roleIds: [...snapshot.roleIds] });
+    },
+    deleteMemberSnapshot: (userId) => {
+      snapshots.delete(userId);
+    },
     logger,
     now: () => 0,
   };
@@ -68,8 +85,12 @@ function makeFake() {
     excluded,
     enqueued,
     claims,
+    snapshots,
     setRoutes: (next: LogRoute[]) => {
       routes = next;
+    },
+    setRouteKinds: (routeId: string, kinds: readonly string[]) => {
+      routeKinds.set(routeId, kinds);
     },
   };
 }
@@ -228,5 +249,186 @@ describe('logging subscriber fan-out', () => {
       editedTimestampMs: undefined,
     });
     expect(fake.sent).toHaveLength(0);
+  });
+});
+
+const MEMBER = '666666666666666666';
+
+const memberProfile = (nickname: string | undefined) => ({
+  username: 'member',
+  globalName: undefined,
+  nickname,
+  avatarHash: undefined,
+  guildAvatarHash: undefined,
+});
+
+const memberUpdate = (over: Partial<MemberEvent> = {}): MemberEvent => ({
+  kind: 'memberUpdate',
+  guildId: GUILD,
+  receivedAtMs: 1_000,
+  userId: MEMBER,
+  roleIds: [],
+  previousRoleIds: undefined,
+  joinedAtMs: undefined,
+  profile: memberProfile(undefined),
+  previousMember: undefined,
+  ...over,
+});
+
+const memberJoin = (over: Partial<MemberEvent> = {}): MemberEvent => ({
+  kind: 'memberAdd',
+  guildId: GUILD,
+  receivedAtMs: 1_000,
+  userId: MEMBER,
+  roleIds: [],
+  previousRoleIds: undefined,
+  joinedAtMs: 100,
+  profile: memberProfile(undefined),
+  previousMember: undefined,
+  ...over,
+});
+
+const memberLeave = (over: Partial<MemberEvent> = {}): MemberEvent => ({
+  kind: 'memberRemove',
+  guildId: GUILD,
+  receivedAtMs: 1_000,
+  userId: MEMBER,
+  roleIds: [],
+  previousRoleIds: undefined,
+  joinedAtMs: 100,
+  ...over,
+});
+
+describe('member snapshots and change lines', () => {
+  it('a first-seen update with a partial before posts nothing but saves the baseline', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    await createLoggingSubscriber(fake.ports).handle(
+      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
+    );
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.snapshots.get(MEMBER)?.nickname).toBe('Nick');
+  });
+
+  it('saves nothing when no route wants member changes', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'j', channelId: DEST_A })]);
+    fake.setRouteKinds('j', ['member_join']);
+    await createLoggingSubscriber(fake.ports).handle(
+      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
+    );
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
+
+  it('a join saves the baseline when a member-change route exists', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    await createLoggingSubscriber(fake.ports).handle(
+      memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
+    );
+    // No member_join route, so nothing posts — but the baseline is kept.
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.snapshots.get(MEMBER)?.nickname).toBe('Nick');
+  });
+
+  it('a later update with a new nickname posts one line and updates the snapshot', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(
+      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }),
+    );
+    await subscriber.handle(
+      memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') }),
+    );
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.content).toContain('Nickname changed');
+    expect(fake.sent[0]?.content).toContain(`<@${MEMBER}>`);
+    expect(fake.sent[0]?.content).toContain('"Old"');
+    expect(fake.sent[0]?.content).toContain('"New"');
+    expect(fake.sent[0]?.allowedMentions).toEqual({ parse: [] });
+    expect(fake.snapshots.get(MEMBER)?.nickname).toBe('New');
+  });
+
+  it('replaying the identical event posts nothing — the snapshot now matches', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(
+      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }),
+    );
+    const change = memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') });
+    await subscriber.handle(change);
+    expect(fake.sent).toHaveLength(1);
+    await subscriber.handle(change);
+    expect(fake.sent).toHaveLength(1);
+  });
+
+  it('a failed send leaves the snapshot unchanged and a retry posts only to the failed route', async () => {
+    const fake = makeFake();
+    fake.setRoutes([
+      makeRoute({ routeId: 'a', channelId: DEST_A }),
+      makeRoute({ routeId: 'b', channelId: DEST_B }),
+    ]);
+    fake.setRouteKinds('a', ['member_nickname_changed']);
+    fake.setRouteKinds('b', ['member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(
+      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }),
+    );
+    expect(fake.sent).toHaveLength(0);
+
+    fake.failing.add(DEST_A);
+    const change = memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') });
+    await expect(subscriber.handle(change)).rejects.toThrow();
+    expect(fake.sent).toHaveLength(2);
+    // The replay must see the same baseline, so the snapshot is untouched.
+    expect(fake.snapshots.get(MEMBER)?.nickname).toBe('Old');
+
+    fake.failing.clear();
+    await subscriber.handle(change);
+    expect(fake.sent).toHaveLength(3);
+    expect(fake.sent[2]?.channelId).toBe(DEST_A);
+    expect(fake.snapshots.get(MEMBER)?.nickname).toBe('New');
+  });
+
+  it('an A→B→A→B nickname sequence posts four lines', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Zero') }));
+    expect(fake.sent).toHaveLength(0);
+
+    let at = 2_000;
+    for (const nickname of ['A', 'B', 'A', 'B']) {
+      await subscriber.handle(memberUpdate({ receivedAtMs: at, profile: memberProfile(nickname) }));
+      at += 1_000;
+    }
+    expect(fake.sent).toHaveLength(4);
+    expect(fake.sent.map((s) => s.content)).toEqual([
+      expect.stringContaining('"Zero" → "A"'),
+      expect.stringContaining('"A" → "B"'),
+      expect.stringContaining('"B" → "A"'),
+      expect.stringContaining('"A" → "B"'),
+    ]);
+  });
+
+  it('a leave posts the leave line and deletes the snapshot', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'l', channelId: DEST_A })]);
+    fake.setRouteKinds('l', ['member_leave', 'member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Nick') }));
+    expect(fake.snapshots.has(MEMBER)).toBe(true);
+
+    await subscriber.handle(memberLeave({ receivedAtMs: 2_000 }));
+    expect(fake.sent.map((s) => s.content)).toContain(`Member left: <@${MEMBER}>`);
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
 });

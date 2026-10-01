@@ -1,4 +1,6 @@
 import type { Snowflake } from '../discord/port.js';
+import { createHash } from 'node:crypto';
+import type { MemberEvent } from '../discord/events.js';
 import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
@@ -21,7 +23,8 @@ import {
   formatRoleDelete,
   formatRoleUpdate,
 } from './format.js';
-import { MEMBER_CHANGE_KINDS } from './member-changes.js';
+import { MEMBER_CHANGE_KINDS, baselineFor, memberChanges } from './member-changes.js';
+import type { MemberSnapshotLike } from './member-changes.js';
 
 export type { LogRoute } from './routing.js';
 
@@ -57,6 +60,15 @@ export interface LoggingPorts {
     channelId: Snowflake,
     message: { content: string; allowedMentions: { parse: readonly [] } },
   ): Promise<unknown>;
+  /**
+   * The per-member last-seen record (ADR 0123 decision 8): what the logging
+   * module last knew, so a change can be rendered old → new. Hashes only —
+   * no image is ever downloaded or stored. Guild scope is bound by the
+   * composition root, which closes over its own scope.
+   */
+  getMemberSnapshot(userId: Snowflake): MemberSnapshotLike | undefined;
+  saveMemberSnapshot(snapshot: MemberSnapshotLike): void;
+  deleteMemberSnapshot(userId: Snowflake): void;
   /** One job per deletion; a no-op if the same messageId is already queued. */
   enqueueDeletionAttribution(input: { dedupeKey: string; payload: string; runAfter: number }): {
     enqueued: boolean;
@@ -264,43 +276,6 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   throw new Error(`unreachable log event kind: ${event.kind}`);
 }
 
-/**
- * `docs/19` §6.7's restated gate, generalised (ADR 0123 decision 5): a gap
- * during which nothing was captured must be a visible marker, never a
- * silent hole. Every distinct enabled channel gets one, independently of the
- * others — one channel's send failing must not stop another's.
- */
-async function postGapMarkers(
-  ports: LoggingPorts,
-  event: { disconnectedAtMs: number; receivedAtMs: number },
-): Promise<void> {
-  const dedupeKind = 'log:gap_marker';
-  for (const channelId of ports.listEnabledLogChannels()) {
-    const fingerprint = `${event.disconnectedAtMs}:${channelId}`;
-    if (!ports.claim({ eventKind: dedupeKind, fingerprint })) continue;
-    try {
-      await ports.sendMessage(channelId, {
-        content: formatGapMarker(event.disconnectedAtMs, event.receivedAtMs),
-        // Log lines quote member-controlled text; mentions in the content
-        // must never ping anyone in the log channel.
-        allowedMentions: { parse: [] },
-      });
-    } catch (err) {
-      ports.release({ eventKind: dedupeKind, fingerprint });
-      ports.logger.error(
-        safeLogFields({
-          component: 'logging',
-          guildId: ports.guildId,
-          eventKind: 'connection',
-          channelId,
-          err,
-        }),
-        'failed to post a gap marker; released the claim for a future retry',
-      );
-    }
-  }
-}
-
 export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
   name: 'logging',
   async handle(event) {
@@ -341,41 +316,169 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
       return;
     }
 
-    const items = logItemsFor(event);
-    let firstError: unknown;
-    for (const item of items) {
-      if (isSourceExcluded(item.source, ports.isChannelExcluded)) continue;
-      const routes = ports
-        .listEnabledRoutesFor(item.eventKind)
-        .filter((r) => routeAccepts(r, item.source));
-      for (const route of routes) {
-        const dedupeKind = routeDedupeKind(route.routeId, item.eventKind);
-        if (!ports.claim({ eventKind: dedupeKind, fingerprint: item.fingerprint })) continue;
-        try {
-          await ports.sendMessage(route.channelId, {
-            content: item.render(route.includeContent),
-            allowedMentions: { parse: [] },
-          });
-        } catch (err) {
-          // A transient send failure must not blackhole this line forever —
-          // this module has no reconciliation to fall back on (ADR 0123
-          // decision 6) — and must not stop the other routes either.
-          ports.release({ eventKind: dedupeKind, fingerprint: item.fingerprint });
-          ports.logger.error(
-            safeLogFields({
-              component: 'logging',
-              guildId: ports.guildId,
-              eventKind: event.kind,
-              channelId: route.channelId,
-              routeId: route.routeId,
-              err,
-            }),
-            'failed to post a log line; released the claim for a future retry',
-          );
-          if (firstError === undefined) firstError = err;
+    if (event.kind === 'memberAdd') {
+      const firstError = await postItems(ports, logItemsFor(event), event.kind);
+      const snapshot = snapshotOf(event);
+      if (snapshot !== undefined && wantsMemberChanges(ports)) {
+        ports.saveMemberSnapshot(snapshot);
+      }
+      if (firstError !== undefined) throw firstError;
+      return;
+    }
+
+    if (event.kind === 'memberUpdate') {
+      const baseline = baselineFor(ports.getMemberSnapshot(event.userId), event);
+      const items: LogItem[] = memberChanges(baseline, event).map((change) => {
+        const text = change.render();
+        return {
+          eventKind: change.eventKind,
+          fingerprint: `${event.userId}:${change.eventKind}:${baseline.version}:${shortHash(text)}`,
+          source: undefined,
+          render: () => text,
+        };
+      });
+      const firstError = await postItems(ports, items, event.kind);
+      if (firstError === undefined) {
+        // The replay must see the same baseline and therefore the same
+        // fingerprints (routes that already posted are skipped by their
+        // claims), so a failed send leaves the snapshot untouched.
+        const snapshot = snapshotOf(event);
+        if (snapshot !== undefined && wantsMemberChanges(ports)) {
+          ports.saveMemberSnapshot(snapshot);
         }
       }
+      if (firstError !== undefined) throw firstError;
+      return;
     }
+
+    if (event.kind === 'memberRemove') {
+      const firstError = await postItems(ports, logItemsFor(event), event.kind);
+      if (firstError === undefined) {
+        // Deletion is always allowed, regardless of routes.
+        ports.deleteMemberSnapshot(event.userId);
+      }
+      if (firstError !== undefined) throw firstError;
+      return;
+    }
+
+    const firstError = await postItems(ports, logItemsFor(event), event.kind);
     if (firstError !== undefined) throw firstError;
   },
 });
+/**
+ * `docs/19` §6.7's restated gate, generalised (ADR 0123 decision 5): a gap
+ * during which nothing was captured must be a visible marker, never a
+ * silent hole. Every distinct enabled channel gets one, independently of the
+ * others — one channel's send failing must not stop another's.
+ */
+async function postGapMarkers(
+  ports: LoggingPorts,
+  event: { disconnectedAtMs: number; receivedAtMs: number },
+): Promise<void> {
+  const dedupeKind = 'log:gap_marker';
+  for (const channelId of ports.listEnabledLogChannels()) {
+    const fingerprint = `${event.disconnectedAtMs}:${channelId}`;
+    if (!ports.claim({ eventKind: dedupeKind, fingerprint })) continue;
+    try {
+      await ports.sendMessage(channelId, {
+        content: formatGapMarker(event.disconnectedAtMs, event.receivedAtMs),
+        // Log lines quote member-controlled text; mentions in the content
+        // must never ping anyone in the log channel.
+        allowedMentions: { parse: [] },
+      });
+    } catch (err) {
+      ports.release({ eventKind: dedupeKind, fingerprint });
+      ports.logger.error(
+        safeLogFields({
+          component: 'logging',
+          guildId: ports.guildId,
+          eventKind: 'connection',
+          channelId,
+          err,
+        }),
+        'failed to post a gap marker; released the claim for a future retry',
+      );
+    }
+  }
+}
+
+/**
+ * Short stable hash for a member-change fingerprint, the same primitive
+ * `pipeline/fingerprint.ts` hashes with. The fingerprint must distinguish two
+ * different changes from the same baseline version (A→B→A→B posts four lines)
+ * while staying replay-stable for the identical event.
+ */
+const shortHash = (text: string): string =>
+  createHash('sha256').update(text).digest('hex').slice(0, 16);
+
+/**
+ * Data minimisation (ADR 0123 decision 8): the last-seen record is only kept
+ * while some enabled route includes a member-change action. No route wants
+ * member changes → no record kept.
+ */
+const wantsMemberChanges = (ports: LoggingPorts): boolean =>
+  MEMBER_CHANGE_KINDS.some((kind) => ports.listEnabledRoutesFor(kind).length > 0);
+
+/** The snapshot to store for this dispatch, when the adapter saw the member. */
+const snapshotOf = (event: MemberEvent): MemberSnapshotLike | undefined => {
+  const profile = event.profile;
+  if (profile === undefined) return undefined;
+  return {
+    userId: event.userId,
+    username: profile.username,
+    globalName: profile.globalName,
+    nickname: profile.nickname,
+    avatarHash: profile.avatarHash,
+    guildAvatarHash: profile.guildAvatarHash,
+    roleIds: [...event.roleIds],
+    updatedAtMs: event.receivedAtMs,
+  };
+};
+
+/**
+ * Fans log items out to every matching enabled route — one post per route,
+ * each under its own claim, so one bad route never blocks another. Returns
+ * the first send error, if any, so the caller can decide whether derived
+ * state (the member snapshot) may be advanced.
+ */
+async function postItems(
+  ports: LoggingPorts,
+  items: readonly LogItem[],
+  gatewayKind: string,
+): Promise<unknown> {
+  let firstError: unknown;
+  for (const item of items) {
+    if (isSourceExcluded(item.source, ports.isChannelExcluded)) continue;
+    const routes = ports
+      .listEnabledRoutesFor(item.eventKind)
+      .filter((r) => routeAccepts(r, item.source));
+    for (const route of routes) {
+      const dedupeKind = routeDedupeKind(route.routeId, item.eventKind);
+      if (!ports.claim({ eventKind: dedupeKind, fingerprint: item.fingerprint })) continue;
+      try {
+        await ports.sendMessage(route.channelId, {
+          content: item.render(route.includeContent),
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        // A transient send failure must not blackhole this line forever —
+        // this module has no reconciliation to fall back on (ADR 0123
+        // decision 6) — and must not stop the other routes either.
+        ports.release({ eventKind: dedupeKind, fingerprint: item.fingerprint });
+        ports.logger.error(
+          safeLogFields({
+            component: 'logging',
+            guildId: ports.guildId,
+            eventKind: gatewayKind,
+            channelId: route.channelId,
+            routeId: route.routeId,
+            err,
+          }),
+          'failed to post a log line; released the claim for a future retry',
+        );
+        if (firstError === undefined) firstError = err;
+      }
+    }
+  }
+  return firstError;
+}
