@@ -75,6 +75,17 @@ describe('tavilyWebSearch (ADR 0120)', () => {
     expect(textSpy).not.toHaveBeenCalled();
   });
 
+  it('strips markup tags from titles and descriptions, like Brave', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      ok({
+        results: [{ title: '<b>x</b>', url: 'https://a.example/', content: '<em>y</em>' }],
+      }),
+    );
+    await expect(tavilyWebSearch({ apiKey: 'k', fetch }, 'q')).resolves.toEqual([
+      { title: 'x', url: 'https://a.example/', description: 'y' },
+    ]);
+  });
+
   it('a 200 with a non-JSON body throws the fixed message', async () => {
     const response = new Response('You have exceeded your plan limit', { status: 200 });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);

@@ -9,6 +9,9 @@ import { SearchHttpError } from './web-search.js';
  */
 const ENDPOINT = 'https://api.tavily.com/search';
 
+/** Same strip as `brave-search.ts`: the model only needs the text. */
+const stripTags = (text: string): string => text.replace(/<[^>]*>/g, '');
+
 const tavilyResponse = z.object({
   results: z
     .array(
@@ -62,9 +65,9 @@ export const tavilyWebSearch = async (
       ? []
       : [
           {
-            title: result.title ?? result.url,
+            title: stripTags(result.title ?? result.url),
             url: result.url,
-            description: result.content ?? '',
+            description: stripTags(result.content ?? ''),
           },
         ],
   );
