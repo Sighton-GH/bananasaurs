@@ -4,7 +4,7 @@
 
 **Status:** FINAL
 **Date:** 2026-09-30
-**ADR:** 0121 · **Migrations:** 0091 (drop the old table) and 0092 (create the new ones)
+**ADR:** 0123 · **Migrations:** 0091 (drop the old table) and 0092 (create the new ones)
 (0080–0089 are reserved for MCP connector v2 and 0090 is Tavily's.)
 
 ## Contents
@@ -222,7 +222,7 @@ in chat belong to automod, not logging.
 
 Tests come first wherever permissions, idempotency or guild scope are involved.
 
-1. **ADR 0121 + migrations 0091–0092 + repos.** Tests: a scope partition test (a guild B route is never
+1. **ADR 0123 + migrations 0091–0092 + repos.** Tests: a scope partition test (a guild B route is never
    read by guild A), cascade on delete, `route_id` never reused after a delete.
 2. **Subscriber fan-out.** Tests: overlapping routes post once each; a route's exclusion covers a
    thread whose parent is cached; the destination channel is skipped; the server-wide exclusion

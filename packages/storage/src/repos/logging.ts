@@ -14,7 +14,7 @@ import {
 } from '../schema.js';
 
 /**
- * Named logging routes (ADR 0121 decisions 1-3 and 8).
+ * Named logging routes (ADR 0123 decisions 1-3 and 8).
  *
  * A route is a row with its own random-UUID id; its event kinds and its
  * per-route excluded source channels are child rows. One event kind may

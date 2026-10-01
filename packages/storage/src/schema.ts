@@ -543,7 +543,7 @@ export const auditEvents = sqliteTable(
 // --- log routing ------------------------------------------------------------
 
 /**
- * A named logging route (ADR 0121 decisions 1-2).
+ * A named logging route (ADR 0123 decisions 1-2).
  *
  * One row per route, keyed by its own random-UUID `route_id` (like task ids):
  * a UUID is never reused after a delete, so a replayed event's claim can
@@ -573,7 +573,7 @@ export const logRoutes = sqliteTable(
 );
 
 /**
- * The event kinds a route logs (ADR 0121 decision 2).
+ * The event kinds a route logs (ADR 0123 decision 2).
  *
  * `event_kind` is validated in code against core's `LOG_EVENT_KINDS`, not by
  * a SQL CHECK. The composite foreign key carries `guild_id`, so a child row
@@ -596,7 +596,7 @@ export const logRouteEvents = sqliteTable(
 );
 
 /**
- * Per-route excluded source channels (ADR 0121 decisions 2 and 4).
+ * Per-route excluded source channels (ADR 0123 decisions 2 and 4).
  *
  * Distinct from the guild-wide `log_excluded_channels` list below, which
  * still wins over every route. An event is skipped for a route when its
@@ -620,7 +620,7 @@ export const logRouteExclusions = sqliteTable(
 );
 
 /**
- * A member's last-seen record, for old → new logging (ADR 0121 decision 8).
+ * A member's last-seen record, for old → new logging (ADR 0123 decision 8).
  *
  * Written on member events and compared against; the row is deleted once the
  * member leaves. Stores avatar hashes, never images. `role_ids` is a JSON

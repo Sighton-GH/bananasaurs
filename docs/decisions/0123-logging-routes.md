@@ -1,4 +1,4 @@
-# 0121. Logging routes: named routes, per-route exclusions, and more logged actions
+# 0123. Logging routes: named routes, per-route exclusions, and more logged actions
 
 Date: 2026-09-30
 
