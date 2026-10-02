@@ -16,6 +16,7 @@ import type { McpThreadsPort } from './threads.js';
 import type { McpSendPort } from './send.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
 import type { McpMessageWritesPort } from './message-writes.js';
+import type { McpSchedulePort } from './schedule.js';
 import type { McpReadAuditPort } from '../read-audit.js';
 import {
   CANCEL_EVENT_TOOL_NAME,
@@ -635,6 +636,16 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
 });
 const stubEventWrites = (): McpEventWritesPort =>
   fakeEventPort({ status: 'done', actionId: 'act-test', eventId: 'evt-test' });
+/** Minimal schedule port: required for the four schedule tools; never called by the event tools pinned here. */
+const stubSchedule = (): McpSchedulePort => ({
+  scheduleMessage: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  listScheduled: () => [],
+  editScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  cancelScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+});
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
   findJob: () => undefined,
@@ -676,6 +687,7 @@ const connectPair = async (
     messageWrites: stubMessageWrites(),
     threadWrites: stubThreadWrites(),
     eventWrites: stubEventWrites(),
+    schedule: stubSchedule(),
     // Required since slice 4 Task 3; never called by the event tools pinned here.
     roleWrites: {
       grant: () =>
@@ -724,9 +736,9 @@ describe('event-write scope filtering (ruling M4-D17)', () => {
     const { client, close } = await connectPair(principalWith([GUILD_A], ['bananasaurs:send']));
     try {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
-      // send_message, the six thread tools and the six message-write tools
-      // share the scope; this file pins its own four.
-      expect(names).toHaveLength(17);
+      // send_message, the six thread tools, the six message-write tools and
+      // the four schedule tools share the scope; this file pins its own four.
+      expect(names).toHaveLength(21);
       expect(names).toEqual(expect.arrayContaining(SEND_TOOL_NAMES));
     } finally {
       await close();

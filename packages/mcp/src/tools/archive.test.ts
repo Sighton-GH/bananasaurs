@@ -964,6 +964,16 @@ describe('archive tools on the MCP server', () => {
         createPoll: () =>
           Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
       },
+      // Required for the four schedule tools; never called by the archive tools pinned here.
+      schedule: {
+        scheduleMessage: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+        listScheduled: () => [],
+        editScheduled: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+        cancelScheduled: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+      },
       // Required since slice 4 Task 3; never called by the archive tools pinned here.
       roleWrites: {
         grant: () =>
