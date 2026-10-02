@@ -8,7 +8,6 @@ import {
   archiveBackfillDedupeKey,
   archiveBackfillHandler,
   archiveExpiryHandler,
-  authorize,
   createArchiveSubscriber,
   createAutomodSubscriber,
   createInteractionSubscriber,
@@ -79,7 +78,7 @@ import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
-import { mcpRoleGatewayFor } from '../mcp/roles-gateway.js';
+import { authorizeRolesMutate, mcpRoleGatewayFor } from '../mcp/roles-gateway.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
@@ -1217,17 +1216,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           discord,
           scope,
         ),
-        authorizeAccount: (accountId) => {
-          const result = authorize(
-            {
-              store: authzStoreFor(scope),
-              guildId,
-              actor: { type: 'dashboard', id: accountId, roleIds: [] },
-            },
-            'roles.mutate',
-          );
-          return result.ok ? result.value : undefined;
-        },
+        authorizeAccount: (accountId) => authorizeRolesMutate(scope, accountId),
         findPreview: (previewId) => mcpBulkRepo.findPreviewById(scope, previewId),
       }),
       logMessageDeleteHandler(deletionAttributionPorts),

@@ -9067,9 +9067,12 @@ describe('/mcp bulk_role_change through the real composition', () => {
       expect(second.isError).toBe(true);
       expect(second.text).toContain('already used');
       expect(second.text).not.toContain(token);
+      // The retry claimed its own row before losing the consume race, so it
+      // completes failed — and consumes nothing: the preview still names the
+      // first confirm's job.
       expect(
         mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2'),
-      ).toBeUndefined();
+      ).toMatchObject({ kind: 'role.bulk', status: 'failed' });
     } finally {
       await bulkApp.close();
     }

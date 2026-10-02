@@ -1,9 +1,11 @@
 import type { Client } from 'discord.js';
 import {
+  authorize,
   EffectGateway,
   rolePingAllowed,
   safeLogFields,
   type AuthzStore,
+  type Authorized,
   type DiscordPort,
   type GuildId,
   type Logger,
@@ -11,6 +13,7 @@ import {
   type RolePingRefusal,
 } from '@bananasaurs/core';
 import {
+  authzStoreFor,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -38,6 +41,29 @@ export interface McpRoleGatewayDeps {
   /** A property, not a method: it is destructured and passed on by value. */
   readonly now: () => number;
 }
+
+/**
+ * The `roles.mutate` witness for one MCP role change (ADR 0118 §2), shared
+ * by the HTTP role ports, the panel ports, the undo port and the bulk job.
+ * The actor is the token's dashboard account with no Discord roles —
+ * `authorize` drops dashboard role ids by construction, so a Discord grant
+ * can never satisfy this. `undefined` on denial: the caller refuses with the
+ * account's own refusal rather than falling back to anything else.
+ */
+export const authorizeRolesMutate = (
+  scope: GuildScope,
+  accountId: string,
+): Authorized<'roles.mutate'> | undefined => {
+  const result = authorize(
+    {
+      store: authzStoreFor(scope),
+      guildId: scope.guildId,
+      actor: { type: 'dashboard', id: accountId, roleIds: [] },
+    },
+    'roles.mutate',
+  );
+  return result.ok ? result.value : undefined;
+};
 
 /**
  * The MCP grant policy (ADR 0118 §1, §3): the ping policy's rule with the

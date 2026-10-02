@@ -13,7 +13,6 @@ import {
 import {
   CLUB_ASSISTANT_SKILLS,
   argsHashFor,
-  authorize,
   contentHashFor,
   customEmojiKey,
   effectiveSkillScope,
@@ -27,7 +26,6 @@ import {
   skillScopeAllows,
   unicodeEmojiChars,
   unicodeEmojiKey,
-  type Authorized,
   type DiscordPort,
   type EmojiKey,
   type GuildId,
@@ -39,7 +37,7 @@ import {
   type RolePingRefusal,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
-import { mcpRoleGatewayFor, roleGrantRefusal } from './roles-gateway.js';
+import { mcpRoleGatewayFor, authorizeRolesMutate, roleGrantRefusal } from './roles-gateway.js';
 import {
   MCP_BULK_MAX_ATTEMPTS,
   MCP_BULK_ROLE_KIND,
@@ -2516,35 +2514,56 @@ const mcpGatewayFor = (
     scope,
   );
 
-/**
- * The `roles.mutate` witness for one MCP role change (ADR 0118 §2). The actor
- * is the token's dashboard account with no Discord roles — `authorize` drops
- * dashboard role ids by construction, so a Discord grant can never satisfy
- * this. `undefined` on denial: the caller refuses with the account's own
- * refusal rather than falling back to anything else.
- */
-const authorizeRoleChange = (
-  scope: GuildScope,
-  guildId: GuildId,
-  accountId: string,
-): Authorized<'roles.mutate'> | undefined => {
-  const result = authorize(
-    {
-      store: authzStoreFor(scope),
-      guildId,
-      actor: { type: 'dashboard', id: accountId, roleIds: [] },
-    },
-    'roles.mutate',
-  );
-  return result.ok ? result.value : undefined;
-};
-
 type RolePrecheck =
   | { readonly ok: true }
   | {
       readonly ok: false;
       readonly outcome: Extract<McpRoleWriteOutcome, { readonly status: 'refused' }>;
     };
+
+/**
+ * The role half of the pre-checks, shared by single changes
+ * (`precheckRoleTarget` below) and bulk changes (the preview and the
+ * confirm): the role exists, is in `managed_roles`, and passes the MCP grant
+ * policy with the live floor. Reads are cache-first like the member half, so
+ * the common path makes no Discord call at all.
+ */
+type RoleGrantCheck =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason: 'unknown-role' | 'role-not-allowlisted' | 'role-not-permitted';
+      readonly detail: string;
+    };
+
+const checkRoleGrantTarget = async (
+  client: Client,
+  discord: DiscordPort,
+  scope: GuildScope,
+  roleId: string,
+): Promise<RoleGrantCheck> => {
+  if (client.guilds.cache.get(scope.guildId)?.roles.cache.get(roleId) === undefined) {
+    let found = false;
+    try {
+      found = (await discord.fetchRoles(scope.guildId)).some((role) => role.id === roleId);
+    } catch {
+      found = false;
+    }
+    if (!found) {
+      return { ok: false, reason: 'unknown-role', detail: roleId };
+    }
+  }
+  // ADR 0118 amendment: the role must already be in `managed_roles` AND pass
+  // the MCP grant policy. The MCP never inserts into `managed_roles` itself.
+  if (!roleRepo.isAllowlisted(scope, roleId)) {
+    return { ok: false, reason: 'role-not-allowlisted', detail: roleId };
+  }
+  const grantRefusal = roleGrantRefusal(client, scope, roleId);
+  if (grantRefusal !== true) {
+    return { ok: false, reason: 'role-not-permitted', detail: grantRefusal };
+  }
+  return { ok: true };
+};
 
 /**
  * The target and policy pre-checks for one role change, live and before the
@@ -2583,30 +2602,14 @@ const precheckRoleTarget = async (
       };
     }
   }
-  if (guild?.roles.cache.get(roleId) === undefined) {
-    let found = false;
-    try {
-      found = (await discord.fetchRoles(guildId)).some((role) => role.id === roleId);
-    } catch {
-      found = false;
-    }
-    if (!found) {
-      return { ok: false, outcome: { status: 'refused', reason: 'unknown-role', detail: roleId } };
-    }
-  }
-  // ADR 0118 amendment: the role must already be in `managed_roles` AND pass
-  // the MCP grant policy. The MCP never inserts into `managed_roles` itself.
-  if (!roleRepo.isAllowlisted(scope, roleId)) {
+  // The role half, shared with the bulk preview and confirm: the role
+  // exists, is in `managed_roles`, and passes the grant policy with the
+  // live floor.
+  const grant = await checkRoleGrantTarget(client, discord, scope, roleId);
+  if (!grant.ok) {
     return {
       ok: false,
-      outcome: { status: 'refused', reason: 'role-not-allowlisted', detail: roleId },
-    };
-  }
-  const grantRefusal = roleGrantRefusal(client, scope, roleId);
-  if (grantRefusal !== true) {
-    return {
-      ok: false,
-      outcome: { status: 'refused', reason: 'role-not-permitted', detail: grantRefusal },
+      outcome: { status: 'refused', reason: grant.reason, detail: grant.detail },
     };
   }
   if (memberIsOwner) {
@@ -2737,7 +2740,7 @@ const roleWritesPortFor = (
       },
       true,
       async () => {
-        const witness = authorizeRoleChange(scope, guildId, principal.accountId);
+        const witness = authorizeRolesMutate(scope, principal.accountId);
         if (witness === undefined) {
           // A denial is its own refusal ("this account lacks
           // roles.mutate"), recorded as a failed claim with no effect row
@@ -2835,52 +2838,10 @@ const roleWritesPortFor = (
 /** How long a stored bulk preview stays confirmable. */
 const BULK_PREVIEW_TTL_MS = 10 * 60 * 1000;
 
-type BulkRoleCheck =
-  | { readonly ok: true }
-  | {
-      readonly ok: false;
-      readonly reason: 'unknown-role' | 'role-not-allowlisted' | 'role-not-permitted';
-      readonly detail?: string | undefined;
-    };
-
-/**
- * The role half of `precheckRoleTarget`, for a change whose members are not
- * known yet (the preview) or arrive as a set (the confirm): the role exists,
- * is in `managed_roles`, and passes the MCP grant policy with the live floor.
- * Member checks (owner, protected) stay per-member work for the job's gateway
- * calls, which re-verify them live anyway.
- */
-const precheckBulkRole = async (
-  client: Client,
-  discord: DiscordPort,
-  scope: GuildScope,
-  roleId: string,
-): Promise<BulkRoleCheck> => {
-  if (client.guilds.cache.get(scope.guildId)?.roles.cache.get(roleId) === undefined) {
-    let found = false;
-    try {
-      found = (await discord.fetchRoles(scope.guildId)).some((role) => role.id === roleId);
-    } catch {
-      found = false;
-    }
-    if (!found) {
-      return { ok: false, reason: 'unknown-role', detail: roleId };
-    }
-  }
-  if (!roleRepo.isAllowlisted(scope, roleId)) {
-    return { ok: false, reason: 'role-not-allowlisted', detail: roleId };
-  }
-  const grantRefusal = roleGrantRefusal(client, scope, roleId);
-  if (grantRefusal !== true) {
-    return { ok: false, reason: 'role-not-permitted', detail: grantRefusal };
-  }
-  return { ok: true };
-};
-
 /**
  * The `McpBulkRolesPort` behind `bulk_role_change` (slice 4, Task 4), field
- * by field like `roleWritesPortFor` above. It reuses that port's helpers —
- * `precheckRoleTarget`'s role half, `authorizeRoleChange`, the MCP gateway
+ * by field like `roleWritesPortFor` above. It reuses the shared helpers —
+ * `checkRoleGrantTarget`, `authorizeRolesMutate`, the MCP gateway
  * with the per-guild `mcpLimiters` (in the job), one `effect_batches` row
  * per action (source `mcp`) — and duplicates none of them.
  *
@@ -2918,7 +2879,10 @@ const bulkRolesPortFor = (
     preview: (guildId, input) =>
       loggedCallAsync(deps.logger, 'bulkPreview', async () => {
         const scope = deps.scopes.forGuild(guildId);
-        const target = await precheckBulkRole(client, discord, scope, input.roleId);
+        // The role half only: member checks (owner, protected) stay
+        // per-member work for the job's gateway calls, which re-verify them
+        // live anyway.
+        const target = await checkRoleGrantTarget(client, discord, scope, input.roleId);
         if (!target.ok) {
           return {
             status: 'refused',
@@ -2997,7 +2961,7 @@ const bulkRolesPortFor = (
         ) {
           return { status: 'refused', reason: 'args-changed' };
         }
-        const target = await precheckBulkRole(client, discord, scope, input.roleId);
+        const target = await checkRoleGrantTarget(client, discord, scope, input.roleId);
         if (!target.ok) {
           return {
             status: 'refused',
@@ -3005,7 +2969,7 @@ const bulkRolesPortFor = (
             ...(target.detail !== undefined ? { detail: target.detail } : {}),
           };
         }
-        if (authorizeRoleChange(scope, guildId, principal.accountId) === undefined) {
+        if (authorizeRolesMutate(scope, principal.accountId) === undefined) {
           return { status: 'refused', reason: 'unauthorized' };
         }
         // The action id up front: the job payload and the `effect_batches`
@@ -3242,14 +3206,7 @@ const roleAdminPortFor = (
 ): McpRoleAdminPort => {
   /** `roles.mutate` for this token's account, live. A denial claims nothing. */
   const authorizedMutate = (scope: GuildScope): boolean =>
-    authorize(
-      {
-        store: authzStoreFor(scope),
-        guildId: scope.guildId,
-        actor: { type: 'dashboard', id: principal.accountId, roleIds: [] },
-      },
-      'roles.mutate',
-    ).ok;
+    authorizeRolesMutate(scope, principal.accountId) !== undefined;
 
   /** The gateway's outcomes onto the role-admin outcome, ids only. */
   const gatewayRefusal = (
@@ -3556,21 +3513,26 @@ const slugPanelOptionId = (base: string, taken: Set<string>): string => {
 
 type PanelRefused = Extract<McpPanelOutcome, { status: 'refused' }>;
 
-/** Every option role through the grant policy and the floor, live. */
-const checkPanelRoles = (
+/**
+ * Every option role through the grant policy and the floor, live — the one
+ * function both the pre-claim checks and the in-`execute` re-checks use. The
+ * pre-claim callers return its refusal as `role-not-permitted` with the
+ * policy cause as the detail; the `execute` callers record it on the shared
+ * closure and throw, so a post-mint failure still names the reason.
+ */
+type OptionRoleGrant =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly refusal: RolePingRefusal; readonly roleId: string };
+
+const checkOptionRoleGrants = (
   client: Client,
   scope: GuildScope,
   roleIds: readonly string[],
-): { readonly ok: true } | { readonly ok: false; readonly outcome: PanelRefused } => {
+): OptionRoleGrant => {
   for (const roleId of roleIds) {
     const refusal = roleGrantRefusal(client, scope, roleId);
     if (refusal !== true) {
-      // `role-not-permitted` with the policy reason as the detail — the same
-      // vocabulary `grant_role` uses, never the bare refusal as the reason.
-      return {
-        ok: false,
-        outcome: { status: 'refused', reason: 'role-not-permitted', detail: refusal },
-      };
+      return { ok: false, refusal, roleId };
     }
   }
   return { ok: true };
@@ -3761,14 +3723,7 @@ const panelsPortFor = (
 ): McpPanelsPort => {
   /** `roles.mutate` for this token's account, live. A denial claims nothing. */
   const authorizedMutate = (scope: GuildScope): boolean =>
-    authorize(
-      {
-        store: authzStoreFor(scope),
-        guildId: scope.guildId,
-        actor: { type: 'dashboard', id: principal.accountId, roleIds: [] },
-      },
-      'roles.mutate',
-    ).ok;
+    authorizeRolesMutate(scope, principal.accountId) !== undefined;
 
   /** The pipeline's outcomes onto the panel outcome, ids only. */
   const mapPipelineOutcome = (
@@ -3865,16 +3820,6 @@ const panelsPortFor = (
   let badInput:
     | { readonly reason: 'unknown-emoji' | 'invalid-definition'; readonly detail: string }
     | undefined;
-
-  const checkLiveRoles = (scope: GuildScope, roleIds: readonly string[]): void => {
-    for (const roleId of roleIds) {
-      const refusal = roleGrantRefusal(client, scope, roleId);
-      if (refusal !== true) {
-        grantRefusal = { reason: refusal, roleId };
-        throw new McpPanelGrantRefused();
-      }
-    }
-  };
 
   /**
    * The grant policy for a role this call just minted. `roleGrantRefusal`
@@ -4012,8 +3957,10 @@ const panelsPortFor = (
         const existingIds = input.options.flatMap((option) =>
           typeof option.role === 'string' ? [option.role] : [],
         );
-        const grant = checkPanelRoles(client, scope, existingIds);
-        if (!grant.ok) return grant.outcome;
+        const grant = checkOptionRoleGrants(client, scope, existingIds);
+        if (!grant.ok) {
+          return { status: 'refused', reason: 'role-not-permitted', detail: grant.refusal };
+        }
         // The channel the dashboard handler's way: send scope ∩ the bot's
         // live post permission, before the claim.
         const target = await resolveSendTarget(client, scope, guildId, input.channel, 'post');
@@ -4085,10 +4032,15 @@ const panelsPortFor = (
             // before any storage write. Minted roles run the same policy on
             // their known facts (the cache cannot know them yet).
             const createdSet = new Set(createdByIndex.values());
-            checkLiveRoles(
+            const live = checkOptionRoleGrants(
+              client,
               scope,
               roleIds.filter((roleId) => !createdSet.has(roleId)),
             );
+            if (!live.ok) {
+              grantRefusal = { reason: live.refusal, roleId: live.roleId };
+              throw new McpPanelGrantRefused();
+            }
             for (const roleId of createdSet) checkCreatedRole(scope, guildId, botTop, roleId);
             // 3. The definition, through the one schema every surface shares.
             const definition = {
@@ -4160,8 +4112,10 @@ const panelsPortFor = (
         const addExisting = (input.addOptions ?? []).flatMap((option) =>
           typeof option.role === 'string' ? [option.role] : [],
         );
-        const grant = checkPanelRoles(client, scope, addExisting);
-        if (!grant.ok) return grant.outcome;
+        const grant = checkOptionRoleGrants(client, scope, addExisting);
+        if (!grant.ok) {
+          return { status: 'refused', reason: 'role-not-permitted', detail: grant.refusal };
+        }
         for (const roleId of addExisting) {
           if (byRoleId.has(roleId)) {
             return {
@@ -4295,10 +4249,15 @@ const panelsPortFor = (
             });
             const finalIds = [...(order ?? keptIds), ...added.map((entry) => entry.roleId)];
             const createdSet = new Set(createdByIndex.values());
-            checkLiveRoles(
+            const live = checkOptionRoleGrants(
+              client,
               scope,
               finalIds.filter((roleId) => !createdSet.has(roleId)),
             );
+            if (!live.ok) {
+              grantRefusal = { reason: live.refusal, roleId: live.roleId };
+              throw new McpPanelGrantRefused();
+            }
             for (const roleId of createdSet) checkCreatedRole(scope, guildId, botTop, roleId);
             // Kept options keep their ids, labels and emoji, in the reorder
             // when one was given (it names kept ids only, so the lookup
@@ -4842,7 +4801,7 @@ const undoRoleChange = async (
     },
     true,
     async () => {
-      const witness = authorizeRoleChange(scope, guildId, principal.accountId);
+      const witness = authorizeRolesMutate(scope, principal.accountId);
       if (witness === undefined) {
         denied = true;
         throw new Error('roles.mutate denied');
@@ -5152,15 +5111,8 @@ const actionsPortFor = (
             detail: `role ${plan.roleId} is ${grantReasonText(grant)}`,
           };
         }
-        const auth = authorize(
-          {
-            store: authzStoreFor(scope),
-            guildId: scope.guildId,
-            actor: { type: 'dashboard', id: principal.accountId, roleIds: [] },
-          },
-          'roles.mutate',
-        );
-        if (!auth.ok) {
+        const auth = authorizeRolesMutate(scope, principal.accountId);
+        if (auth === undefined) {
           return {
             status: 'refused',
             reason: 'role-unavailable',
