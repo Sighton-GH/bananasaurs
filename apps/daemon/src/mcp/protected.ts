@@ -2,7 +2,7 @@ import { panelRepo, taskNudgeRepo, type GuildScope } from '@bananasaurs/storage'
 
 /**
  * The protected-message guard for the MCP message writes (ADR 0116 §4):
- * role-panel messages (`panels.message_id`) and task anchors
+ * role-panel messages (`panels.message_id`) and task posts (anchors and nudges)
  * (`task_message_anchors.message_id`) are never edited or deleted through
  * the MCP, whatever authored them.
  *
@@ -17,13 +17,13 @@ import { panelRepo, taskNudgeRepo, type GuildScope } from '@bananasaurs/storage'
  * this before the live authorship check.
  */
 
-export type ProtectedMessageReason = 'role-panel' | 'task-anchor';
+export type ProtectedMessageReason = 'role-panel' | 'task-post';
 
 export const protectedMessageReason = (
   scope: GuildScope,
   messageId: string,
 ): ProtectedMessageReason | undefined => {
   if (panelRepo.isPanelMessage(scope, messageId)) return 'role-panel';
-  if (taskNudgeRepo.isTaskPost(scope, messageId)) return 'task-anchor';
+  if (taskNudgeRepo.isTaskPost(scope, messageId)) return 'task-post';
   return undefined;
 };

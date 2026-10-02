@@ -318,7 +318,7 @@ describe('message-write refusal rendering', () => {
     ['private-thread', 'private thread'],
     ['bot-lacks-permission', 'lacks the'],
     ['protected-role-panel', 'role-panel'],
-    ['protected-task-anchor', 'task anchor'],
+    ['protected-task-post', 'task post'],
     ['not-bot-authored', 'someone else'],
     ['not-found', 'no longer exists'],
     ['unknown-emoji', 'not usable in guild'],

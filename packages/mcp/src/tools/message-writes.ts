@@ -47,14 +47,14 @@ export const EDIT_MESSAGE_TOOL_NAME = 'edit_message';
 export const EDIT_MESSAGE_TOOL_DESCRIPTION =
   'Edits a message the bot authored in an allowlisted channel of this guild. ' +
   'Pass content, embeds, or both; the previous text is kept for undo. ' +
-  'Role-panel messages, task anchors and messages written by anyone else are refused. ' +
+  'Role-panel messages, task posts (anchors and nudges) and messages written by anyone else are refused. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
   'Pass dryRun to record without editing.';
 
 export const DELETE_MESSAGE_TOOL_NAME = 'delete_message';
 export const DELETE_MESSAGE_TOOL_DESCRIPTION =
   'Deletes a message the bot authored in an allowlisted channel of this guild. ' +
-  'Role-panel messages, task anchors and messages written by anyone else are refused. ' +
+  'Role-panel messages, task posts (anchors and nudges) and messages written by anyone else are refused. ' +
   'A delete cannot be undone. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
   'Pass dryRun to record without deleting.';
@@ -171,7 +171,7 @@ export type McpMessageWriteRefusal =
   | 'private-thread'
   | 'bot-lacks-permission'
   | 'protected-role-panel'
-  | 'protected-task-anchor'
+  | 'protected-task-post'
   | 'not-bot-authored'
   | 'not-found'
   | 'unknown-emoji'
@@ -430,10 +430,10 @@ const refusalText = (
         `so nothing was ${noun}. Role panels are owned by the panel module — ` +
         'changing one here would break role assignment — so this tool refuses them outright.'
       );
-    case 'protected-task-anchor':
+    case 'protected-task-post':
       return (
-        `Message ${messageId} in guild ${guildId} is a task anchor, ` +
-        `so nothing was ${noun}. Task anchors are owned by the task module, ` +
+        `Message ${messageId} in guild ${guildId} is a task post, ` +
+        `so nothing was ${noun}. Task posts are owned by the task module, ` +
         'so this tool refuses them outright.'
       );
     case 'not-bot-authored':

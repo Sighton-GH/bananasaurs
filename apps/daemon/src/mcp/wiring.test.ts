@@ -1304,7 +1304,7 @@ describe('/mcp message writes through the real composition', () => {
     expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-edit')).toBeUndefined();
   });
 
-  it('a task anchor is refused before any Discord call', async () => {
+  it('a task post is refused before any Discord call', async () => {
     allowWrites();
     seedAnchor();
     const accessToken = await mintToken('bananasaurs:send');
@@ -1319,7 +1319,7 @@ describe('/mcp message writes through the real composition', () => {
       ).body,
     );
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain('task anchor');
+    expect(refused.text).toContain('task post');
     expectNoDiscordWrites();
     expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'anchor-delete')).toBeUndefined();
   });
@@ -1374,6 +1374,13 @@ describe('/mcp message writes through the real composition', () => {
     expect(row?.resultMessageId).toBe(BOT_MESSAGE);
     const undo = JSON.parse(row?.undoJson ?? '{}') as Record<string, unknown>;
     expect(undo['content']).toBe(ORIGINAL);
+    expect(undo['embeds']).toEqual([]);
+
+    // The edit can never ping, even when the new text carries a mention.
+    const sent = fakeDiscord.restCalls('editMessage')[0]?.args[2] as {
+      allowedMentions?: unknown;
+    };
+    expect(sent.allowedMentions).toEqual({ parse: [], roles: [], users: [] });
 
     // The audit row carries ids and the outcome — never either text (rule 4).
     const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
@@ -1460,6 +1467,23 @@ describe('/mcp message writes through the real composition', () => {
     expect(found.isError).not.toBe(true);
     expect(found.text).toContain('Pinned message');
     expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(1);
+    const pinRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'pin-ok');
+    expect(JSON.parse(pinRow?.undoJson ?? '{}')).toEqual({ op: 'unpin' });
+
+    const unpinned = readCall(
+      (
+        await writeCall(accessToken, 'unpin_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: PIN_MESSAGE,
+          idempotencyKey: 'unpin-ok',
+        })
+      ).body,
+    );
+    expect(unpinned.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    const unpinRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'unpin-ok');
+    expect(JSON.parse(unpinRow?.undoJson ?? '{}')).toEqual({ op: 'pin' });
   });
 
   it("a foreign guild's custom emoji is refused with no Discord call", async () => {
@@ -1525,6 +1549,30 @@ describe('/mcp message writes through the real composition', () => {
     expect(reacted).toHaveLength(2);
     expect(reacted[0]?.args[2]).toBe('u:1f44d');
     expect(reacted[1]?.args[2]).toBe(`c:${EMOJI_ID}`);
+    const reactRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'react-unicode');
+    expect(JSON.parse(reactRow?.undoJson ?? '{}')).toEqual({
+      op: 'remove-reaction',
+      emoji: 'u:1f44d',
+    });
+
+    const removed = readCall(
+      (
+        await writeCall(accessToken, 'remove_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: '👍',
+          idempotencyKey: 'unreact-unicode',
+        })
+      ).body,
+    );
+    expect(removed.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('deleteOwnReaction')).toHaveLength(1);
+    const unreactRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'unreact-unicode');
+    expect(JSON.parse(unreactRow?.undoJson ?? '{}')).toEqual({
+      op: 'add-reaction',
+      emoji: 'u:1f44d',
+    });
   });
 
   it('a write for the other guild is refused with no Discord call', async () => {

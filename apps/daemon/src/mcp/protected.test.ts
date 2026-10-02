@@ -9,7 +9,7 @@ import { protectedMessageReason } from './protected.js';
 
 /**
  * Task 6 Step 1: the protected-message guard over real storage. A role-panel
- * message and a task anchor are refused by kind; any other message passes;
+ * message and a task post are refused by kind; any other message passes;
  * and another guild's protected message id is invisible here — guild scope
  * is the partition, not a predicate anyone must remember.
  */
@@ -89,8 +89,8 @@ describe('protectedMessageReason', () => {
     expect(protectedMessageReason(a, PANEL_MESSAGE)).toBe('role-panel');
   });
 
-  it('names a task anchor', () => {
-    expect(protectedMessageReason(a, ANCHOR_MESSAGE)).toBe('task-anchor');
+  it('names a task post', () => {
+    expect(protectedMessageReason(a, ANCHOR_MESSAGE)).toBe('task-post');
   });
 
   it('passes any other message', () => {
@@ -101,7 +101,7 @@ describe('protectedMessageReason', () => {
     expect(protectedMessageReason(b, PANEL_MESSAGE)).toBeUndefined();
   });
 
-  it("does not see another guild's task anchor", () => {
+  it("does not see another guild's task post", () => {
     expect(protectedMessageReason(b, ANCHOR_MESSAGE)).toBeUndefined();
   });
 });

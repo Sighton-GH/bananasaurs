@@ -1353,8 +1353,8 @@ const messageWritesPortFor = (
     if (protectedReason === 'role-panel') {
       return { ok: false, outcome: { status: 'refused', reason: 'protected-role-panel' } };
     }
-    if (protectedReason === 'task-anchor') {
-      return { ok: false, outcome: { status: 'refused', reason: 'protected-task-anchor' } };
+    if (protectedReason === 'task-post') {
+      return { ok: false, outcome: { status: 'refused', reason: 'protected-task-post' } };
     }
     const live = await discord.fetchMessageAuthor(guildId, {
       channelId: target.channelId,
@@ -1474,6 +1474,9 @@ const messageWritesPortFor = (
               {
                 ...(input.content !== undefined ? { content: input.content } : {}),
                 ...(input.embeds !== undefined ? { embeds: input.embeds.map(toDiscordEmbed) } : {}),
+                // An edit that adds `@everyone` or a mention must never ping:
+                // absent, Discord would apply its default and notify.
+                allowedMentions: { parse: [], roles: [], users: [] },
               },
             );
             return {
