@@ -22,6 +22,7 @@ export type TargetNeed =
   | 'create-private-thread'
   | 'pin'
   | 'manage-thread'
+  | 'manage-events'
   | 'react';
 
 export type SendTargetRefusal =
@@ -69,6 +70,14 @@ const NEED_BITS: Record<TargetNeed, readonly NeedBit[]> = {
   // PinMessages alone pins; ManageMessages alone pins too. Checked in
   // `resolveSendTarget` rather than here, because no bit list expresses "or".
   pin: [BIT(PermissionFlagsBits.PinMessages, 'PinMessages')],
+  // Scheduled events live in voice and stage channels: sight plus the
+  // ManageEvents grant, checked live like every other need. The voice-or-stage
+  // type check itself lives in the daemon's event wiring (which reads the
+  // live channel type) — this layer only owns send scope and the permission.
+  'manage-events': [
+    BIT(PermissionFlagsBits.ViewChannel, 'ViewChannel'),
+    BIT(PermissionFlagsBits.ManageEvents, 'ManageEvents'),
+  ],
   'manage-thread': [BIT(PermissionFlagsBits.ManageThreads, 'ManageThreads')],
   react: [BIT(PermissionFlagsBits.AddReactions, 'AddReactions')],
 };
@@ -105,7 +114,12 @@ export const resolveSendTarget = async (
     return { ok: false, reason: 'not-in-guild' };
   }
   const resolved = await resolveChannel(client, guildId, channelId);
-  if (resolved === undefined || !resolved.postable) {
+  // Voice and stage channels host scheduled events but are not text-postable,
+  // so the postable gate would refuse them as not-in-guild. The
+  // `manage-events` need admits them past that gate; the daemon's event
+  // wiring checks the live voice-or-stage type before calling, so a text
+  // channel or thread passed as an event channel is still refused there.
+  if (resolved === undefined || (!resolved.postable && need !== 'manage-events')) {
     return { ok: false, reason: 'not-in-guild' };
   }
   // The private-thread own-row rule, before the scope predicate: private

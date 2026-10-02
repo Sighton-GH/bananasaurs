@@ -464,3 +464,119 @@ describe('resolvePings', () => {
     ).rejects.toThrow('connection reset');
   });
 });
+
+describe('resolveSendTarget with need manage-events', () => {
+  const VOICE = '477777777777777777';
+  const TEXT = '488888888888888888';
+
+  const voicePayload = (id: string): object => ({
+    id,
+    guild_id: GUILD_A,
+    type: ChannelType.GuildVoice,
+    name: `voice-${id}`,
+    position: 0,
+    permission_overwrites: [],
+  });
+
+  const makeEventClient = (botPermissions: bigint): Client => {
+    const client = new Client(buildClientOptions(() => BOT));
+    const mutable = client as unknown as { user: unknown };
+    const internals = client as unknown as {
+      guilds: { _add: (data: object) => unknown };
+      users: { _add: (data: object) => unknown };
+    };
+    mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [voicePayload(VOICE), textPayload(TEXT)],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions.toString(),
+          managed: true,
+        },
+      ],
+      members: [
+        { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  const withManageEvents =
+    PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.ManageEvents;
+  const withoutManageEvents = PermissionsBitField.Flags.ViewChannel;
+
+  it('an allowlisted voice channel passes with need manage-events', async () => {
+    allow(VOICE);
+    const resolved = await resolveSendTarget(
+      makeEventClient(withManageEvents),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      VOICE,
+      'manage-events',
+    );
+    expect(resolved).toMatchObject({ ok: true, channelId: VOICE });
+  });
+
+  it('a voice channel without ManageEvents is refused naming the permission', async () => {
+    allow(VOICE);
+    const resolved = await resolveSendTarget(
+      makeEventClient(withoutManageEvents),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      VOICE,
+      'manage-events',
+    );
+    expect(resolved).toEqual({
+      ok: false,
+      reason: 'bot-lacks-permission',
+      missing: 'ManageEvents',
+    });
+  });
+
+  it('a voice channel without any granting row is refused as not-in-send-scope', async () => {
+    const resolved = await resolveSendTarget(
+      makeEventClient(withManageEvents),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      VOICE,
+      'manage-events',
+    );
+    expect(resolved).toEqual({ ok: false, reason: 'not-in-send-scope' });
+  });
+
+  it('a voice channel the client never saw is refused as not-in-guild', async () => {
+    const resolved = await resolveSendTarget(
+      makeEventClient(withManageEvents),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      MISSING_CHANNEL,
+      'manage-events',
+    );
+    expect(resolved).toEqual({ ok: false, reason: 'not-in-guild' });
+  });
+
+  it('the target layer does not check the voice-or-stage rule: a text channel passes and the event wiring refuses it', async () => {
+    // The voice-or-stage type check lives in the daemon's event wiring
+    // (which reads the live channel type); the target layer only owns send
+    // scope and the live permission, so an allowlisted text channel with the
+    // permission passes here.
+    allow(TEXT);
+    const resolved = await resolveSendTarget(
+      makeEventClient(withManageEvents),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      TEXT,
+      'manage-events',
+    );
+    expect(resolved).toMatchObject({ ok: true, channelId: TEXT });
+  });
+});

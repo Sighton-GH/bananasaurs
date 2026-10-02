@@ -7394,3 +7394,618 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     ).toBeUndefined();
   });
 });
+
+/**
+ * Slice 5 Task 5, daemon side: the four event/poll tools through the real
+ * stack — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * event-writes port over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow.
+ *
+ * The client carries a voice channel, a stage channel and a text channel.
+ * The bot role holds ManageEvents guild-wide in the main client; a second
+ * client without it proves the permission refusal names the permission.
+ * Times are fixed far-future ISO strings: the tool layer checks
+ * start-in-future against the real clock, while the daemon's clock stays at
+ * `clock`.
+ */
+describe('/mcp event writes through the real composition', () => {
+  const BOT = '123456789012345678';
+  const OWNER = '345678901234567890';
+  const BOT_ROLE = '511111111111111111';
+  const VOICE = '522222222222222222';
+  const STAGE = '533333333333333333';
+  const TEXT = '544444444444444444';
+  const START = '2030-06-01T18:00:00.000Z';
+  const END = '2030-06-01T20:00:00.000Z';
+  /** Distinctive text: must reach Discord, must never reach the audit row. */
+  const EVENT_NAME = 'event-name-probe-that-must-never-reach-audit-zz1';
+  const POLL_QUESTION = 'poll-question-probe-that-must-never-reach-audit-zz2';
+
+  interface EventDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const buildEventClient = (withManageEvents: boolean): Client => {
+    const client = new Client(buildClientOptions(() => BOT));
+    const internals = client as unknown as EventDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
+    let botPermissions =
+      PermissionsBitField.Flags.ViewChannel |
+      PermissionsBitField.Flags.SendMessages |
+      PermissionsBitField.Flags.SendMessagesInThreads;
+    if (withManageEvents) botPermissions |= PermissionsBitField.Flags.ManageEvents;
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: VOICE,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildVoice,
+          name: 'lounge-voice',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: STAGE,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildStageVoice,
+          name: 'town-hall',
+          position: 1,
+          permission_overwrites: [],
+        },
+        {
+          id: TEXT,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 2,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions.toString(),
+          managed: true,
+        },
+      ],
+      members: [
+        { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  const buildEventApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
+    createServer({
+      deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+
+  const allowEventChannel = (channelId: string): void => {
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const eventCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const createdEventIdOf = (text: string): string => {
+    const match = /Created event (\d+) in guild/.exec(text);
+    expect(match?.[1]).toBeDefined();
+    return match?.[1] as string;
+  };
+
+  const createVoiceArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: '111111111111111111',
+    name: EVENT_NAME,
+    description: 'Monthly build night',
+    startAt: START,
+    endAt: END,
+    location: 'voice',
+    channel: VOICE,
+    idempotencyKey: 'event-k1',
+    ...over,
+  });
+
+  it('a voice event in an allowlisted voice channel creates through the port; the audit row holds no name', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const found = callText(
+        (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
+      );
+      expect(found.isError).not.toBe(true);
+      const eventId = createdEventIdOf(found.text);
+      expect(found.text).toContain('cancel_event');
+
+      const calls = discord.restCalls('createScheduledEvent');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.args[0]).toBe(GUILD_A);
+      expect(calls[0]?.args[1]).toMatchObject({
+        name: EVENT_NAME,
+        startAt: Date.parse(START),
+        endAt: Date.parse(END),
+        location: { kind: 'voice', channelId: VOICE },
+      });
+
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'event-k1');
+      expect(row?.status).toBe('done');
+      expect(row?.kind).toBe('event.create');
+      expect(row?.capGroup).toBe('structure');
+      expect(row?.targetChannelId).toBe(VOICE);
+
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'mcp.event.create');
+      expect(audit).toBeDefined();
+      expect(audit?.subjectId).toBe(VOICE);
+      expect(JSON.stringify(trail)).not.toContain(EVENT_NAME);
+      expect(found.text).toContain(eventId);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('a voice channel outside send scope is refused with no port call', async () => {
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const refused = callText(
+        (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('not on the send allowlist');
+      expect(discord.restCalls('createScheduledEvent')).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'event-k1')).toBeUndefined();
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('a text channel passed as an event channel is refused as not voice-or-stage', async () => {
+    allowEventChannel(TEXT);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const refused = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ channel: TEXT, idempotencyKey: 'event-text-channel' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('not a voice or stage channel');
+      expect(discord.restCalls('createScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('missing ManageEvents is refused naming the permission', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(false), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const refused = callText(
+        (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('ManageEvents');
+      expect(discord.restCalls('createScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an external event with guild ManageEvents is created', async () => {
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const found = callText(
+        (
+          await eventCall(eventApp, accessToken, 'create_event', {
+            guildId: '111111111111111111',
+            name: EVENT_NAME,
+            startAt: START,
+            endAt: END,
+            location: 'external',
+            place: 'Community hall',
+            idempotencyKey: 'event-external-k1',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      const calls = discord.restCalls('createScheduledEvent');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.args[1]).toMatchObject({
+        name: EVENT_NAME,
+        location: { kind: 'external', place: 'Community hall' },
+      });
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'event-external-k1');
+      expect(row?.status).toBe('done');
+      expect(row?.targetChannelId).toBeUndefined();
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an external event without guild ManageEvents is refused naming the permission', async () => {
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(false), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const refused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'create_event', {
+            guildId: '111111111111111111',
+            name: EVENT_NAME,
+            startAt: START,
+            endAt: END,
+            location: 'external',
+            place: 'Community hall',
+            idempotencyKey: 'event-external-noperm',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('ManageEvents');
+      expect(refused.text).toContain('in guild 111111111111111111');
+      expect(discord.restCalls('createScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('edit then undo_action restores the previous values and marks the original', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const created = callText(
+        (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const eventId = createdEventIdOf(created.text);
+
+      const edited = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            name: 'Build night renamed',
+            idempotencyKey: 'event-edit-k1',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain('kept for undo');
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(1);
+      const listed = await discord.listScheduledEvents(GUILD_A);
+      expect(listed.find((event) => event.id === eventId)?.name).toBe('Build night renamed');
+
+      const scope = t.scopes.forGuild(GUILD_A);
+      const editRow = mcpActionsRepo.findAction(scope, 'event-edit-k1');
+      expect(editRow?.kind).toBe('event.edit');
+      expect(editRow?.status).toBe('done');
+      const undoJson = JSON.parse(editRow?.undoJson ?? '{}') as {
+        eventId?: unknown;
+        previous?: unknown;
+      };
+      expect(undoJson.eventId).toBe(eventId);
+      expect(undoJson.previous).toMatchObject({ name: EVENT_NAME });
+      expect(JSON.stringify(editRow)).not.toContain('Build night renamed');
+
+      const undone = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(2);
+      const relisted = await discord.listScheduledEvents(GUILD_A);
+      expect(relisted.find((event) => event.id === eventId)?.name).toBe(EVENT_NAME);
+      expect(
+        mcpActionsRepo.findActionById(scope, editRow?.actionId ?? '')?.undoneByActionId,
+      ).toBeDefined();
+      const undoRow = mcpActionsRepo.findAction(scope, `undo:${editRow?.actionId ?? ''}`);
+      expect(undoRow?.kind).toBe('event.edit');
+
+      const again = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(again.isError).toBe(true);
+      expect(again.text).toContain('already undone');
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('cancel is not undoable and says the event cannot be un-cancelled', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const created = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ idempotencyKey: 'event-cancel-setup' }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const eventId = createdEventIdOf(created.text);
+
+      const cancelled = callText(
+        (
+          await eventCall(eventApp, accessToken, 'cancel_event', {
+            guildId: '111111111111111111',
+            eventId,
+            idempotencyKey: 'event-cancel-k1',
+          })
+        ).body,
+      );
+      expect(cancelled.isError).not.toBe(true);
+      expect(cancelled.text).toContain('cannot be un-cancelled');
+      expect(discord.restCalls('cancelScheduledEvent')).toHaveLength(1);
+
+      const scope = t.scopes.forGuild(GUILD_A);
+      const cancelRow = mcpActionsRepo.findAction(scope, 'event-cancel-k1');
+      expect(cancelRow?.kind).toBe('event.cancel');
+      const refused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: cancelRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('cannot be undone');
+      expect(refused.text).toContain('event.cancel');
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an unknown event id is refused as event-not-found', async () => {
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const editRefused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId: '999999999999999999',
+            name: 'Nope',
+            idempotencyKey: 'event-unknown-edit',
+          })
+        ).body,
+      );
+      expect(editRefused.isError).toBe(true);
+      expect(editRefused.text).toContain('was not found');
+      const cancelRefused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'cancel_event', {
+            guildId: '111111111111111111',
+            eventId: '999999999999999999',
+            idempotencyKey: 'event-unknown-cancel',
+          })
+        ).body,
+      );
+      expect(cancelRefused.isError).toBe(true);
+      expect(cancelRefused.text).toContain('was not found');
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(0);
+      expect(discord.restCalls('cancelScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('create_poll posts through sendMessage with the poll and empty mentions; a replay posts once', async () => {
+    allowEventChannel(TEXT);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const pollArgs = {
+        guildId: '111111111111111111',
+        channelId: TEXT,
+        question: POLL_QUESTION,
+        answers: ['Friday', 'Saturday'],
+        durationHours: 24,
+        idempotencyKey: 'poll-k1',
+      };
+      const first = callText((await eventCall(eventApp, accessToken, 'create_poll', pollArgs)).body);
+      expect(first.isError).not.toBe(true);
+      expect(first.text).toContain('Sent poll message');
+      const second = callText(
+        (await eventCall(eventApp, accessToken, 'create_poll', pollArgs)).body,
+      );
+      expect(second.isError).not.toBe(true);
+      expect(second.text).toContain('Already sent under this idempotency key');
+
+      const calls = discord.restCalls('sendMessage');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.args[0]).toBe(GUILD_A);
+      expect(calls[0]?.args[1]).toBe(TEXT);
+      expect(calls[0]?.args[2]).toEqual({
+        poll: {
+          question: POLL_QUESTION,
+          answers: ['Friday', 'Saturday'],
+          durationHours: 24,
+          allowMultiselect: false,
+        },
+        allowedMentions: { parse: [], roles: [], users: [] },
+      });
+
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'poll-k1');
+      expect(row?.kind).toBe('message.send');
+      expect(row?.capGroup).toBe('message');
+      const poll = discord.pollOf(TEXT, row?.resultMessageId ?? '');
+      expect(poll).toEqual({
+        question: POLL_QUESTION,
+        answers: ['Friday', 'Saturday'],
+        durationHours: 24,
+        allowMultiselect: false,
+      });
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      expect(JSON.stringify(trail)).not.toContain(POLL_QUESTION);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('the kill switch refuses all four tools', async () => {
+    allowEventChannel(VOICE);
+    allowEventChannel(TEXT);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    try {
+      const created = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ idempotencyKey: 'event-killswitch-setup' }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const eventId = createdEventIdOf(created.text);
+      guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+
+      const refusedCreate = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ idempotencyKey: 'event-killswitch-create' }),
+          )
+        ).body,
+      );
+      expect(refusedCreate.isError).toBe(true);
+      expect(refusedCreate.text).toContain('kill switch');
+      const refusedEdit = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            name: 'Renamed under killswitch',
+            idempotencyKey: 'event-killswitch-edit',
+          })
+        ).body,
+      );
+      expect(refusedEdit.isError).toBe(true);
+      expect(refusedEdit.text).toContain('kill switch');
+      const refusedCancel = callText(
+        (
+          await eventCall(eventApp, accessToken, 'cancel_event', {
+            guildId: '111111111111111111',
+            eventId,
+            idempotencyKey: 'event-killswitch-cancel',
+          })
+        ).body,
+      );
+      expect(refusedCancel.isError).toBe(true);
+      expect(refusedCancel.text).toContain('kill switch');
+      const refusedPoll = callText(
+        (
+          await eventCall(eventApp, accessToken, 'create_poll', {
+            guildId: '111111111111111111',
+            channelId: TEXT,
+            question: POLL_QUESTION,
+            answers: ['Friday', 'Saturday'],
+            durationHours: 24,
+            idempotencyKey: 'poll-killswitch',
+          })
+        ).body,
+      );
+      expect(refusedPoll.isError).toBe(true);
+      expect(refusedPoll.text).toContain('kill switch');
+
+      expect(discord.restCalls('createScheduledEvent')).toHaveLength(1);
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(0);
+      expect(discord.restCalls('cancelScheduledEvent')).toHaveLength(0);
+      expect(discord.restCalls('sendMessage')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+});

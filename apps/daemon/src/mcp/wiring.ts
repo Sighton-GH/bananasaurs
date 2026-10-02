@@ -68,6 +68,9 @@ import {
   type ThreadFirstMessage,
   type McpTaskDetailPort,
   type McpTaskPort,
+  type EventLocationInput,
+  type McpEventWriteOutcome,
+  type McpEventWritesPort,
 } from '@bananasaurs/mcp';
 import {
   archiveRepo,
@@ -2439,14 +2442,502 @@ const messageWritesPortFor = (
 };
 
 /**
+ * The guild-level ManageEvents grant behind external scheduled events (and
+ * the undo of an edit that left the event external): `guild.members.me`
+ * permissions, the way the daemon's other guild-level checks read them. No
+ * channel is involved, so there is no send-scope row to consult — the grant
+ * is the permission alone. False when the guild or the member is unknown
+ * (fail closed).
+ */
+const botHasGuildManageEvents = (client: Client, guildId: GuildId): boolean => {
+  const me = client.guilds.cache.get(guildId)?.members.me ?? null;
+  if (me === null) return false;
+  try {
+    return me.permissions.has(PermissionFlagsBits.ManageEvents);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The `McpEventWritesPort` behind the four event/poll tools (slice 5,
+ * Task 5), field by field like `sendPortFor` above. Each method resolves its
+ * target and runs the one `runMcpAction` pipeline:
+ *
+ * - `create_event` / `edit_event` / `cancel_event`: kinds `event.create` /
+ *   `event.edit` / `event.cancel`, cap group `structure`. A voice or stage
+ *   channel passes `resolveSendTarget` with the `manage-events` need (send
+ *   scope ∩ ViewChannel + ManageEvents, live); an external event carries no
+ *   channel and needs the guild-level ManageEvents grant instead. Edits and
+ *   cancellations work on any scheduled event of the guild that
+ *   `listScheduledEvents` returns; an unknown id refuses as
+ *   `event-not-found`. Only `event.edit` records an undo —
+ *   `{eventId, previous}` with the previous values of the changed fields —
+ *   because the ledger has no event-id column and Discord cannot un-cancel.
+ * - `create_poll`: kind `message.send`, cap group `message`, through the
+ *   same send path as `send_message` — the `post` target, no pings
+ *   (`allowedMentions` is always `{ parse: [] }`), and the
+ *   duplicate-content guard.
+ *
+ * Audit actions default to `mcp.<kind>` in `mcpActionDepsFor` — so
+ * `mcp.event.create` and friends land without a new audit vocabulary entry —
+ * holding ids, the outcome and `actionId`, never names, descriptions,
+ * questions or answers (rule 4). A fault leaves one allowlisted-fields
+ * error line via `loggedCallAsync` above, never content: the event id and
+ * the outcome name what happened.
+ */
+const eventWritesPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read: the voice-or-stage type
+   * check and the guild-level permission read both answer from its cache,
+   * so a channel outside the guild is refused before any Discord call.
+   */
+  client: Client,
+): McpEventWritesPort => {
+  type EventTargetRefusal = Extract<SendTarget, { readonly ok: false }>;
+
+  /** The target layer's reasons onto the event tools' refusals. */
+  const targetRefusalFor = (target: EventTargetRefusal): McpEventWriteOutcome => {
+    switch (target.reason) {
+      case 'not-in-guild':
+        return { status: 'refused', reason: 'channel-not-in-guild' };
+      case 'not-in-send-scope':
+        return { status: 'refused', reason: 'channel-not-allowlisted' };
+      case 'private-thread-not-allowed':
+        return { status: 'refused', reason: 'private-thread' };
+      case 'bot-lacks-permission':
+        return {
+          status: 'refused',
+          reason: 'bot-lacks-permission',
+          ...(target.missing !== undefined ? { detail: target.missing } : {}),
+        };
+    }
+  };
+
+  /** The gateway's outcomes onto the event tools' vocabulary, ids only. */
+  const gatewayOutcome = (
+    outcome: McpActionOutcome<{ undo?: unknown }>,
+    ids: { readonly eventId?: string | undefined } = {},
+  ): McpEventWriteOutcome => {
+    switch (outcome.status) {
+      case 'done':
+        return {
+          status: 'done',
+          actionId: outcome.actionId,
+          ...(ids.eventId !== undefined ? { eventId: ids.eventId } : {}),
+        };
+      case 'dry-run':
+        return { status: 'dry-run', actionId: outcome.actionId };
+      case 'replayed':
+        return {
+          status: 'replayed',
+          actionId: outcome.actionId,
+          ...(outcome.resultMessageId !== undefined ? { messageId: outcome.resultMessageId } : {}),
+        };
+      case 'refused':
+        switch (outcome.reason) {
+          case 'killswitch':
+            return { status: 'refused', reason: 'killswitch' };
+          case 'breaker-open':
+            return { status: 'refused', reason: 'breaker-open' };
+          case 'rate-cap':
+            return {
+              status: 'refused',
+              reason: 'rate-cap',
+              ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+            };
+          case 'key-reused-with-other-args':
+            return { status: 'refused', reason: 'duplicate-key-different-content' };
+          case 'duplicate-content-recently':
+            return { status: 'refused', reason: 'duplicate-content-recently' };
+          case 'guild-unknown':
+          case 'target':
+            // Unreachable: the guild gate above already answered that, and
+            // every target refusal returns before the pipeline runs, so
+            // `targetCheck` is always `true` here.
+            throw new Error(GUILD_REFUSAL_MESSAGE);
+        }
+        break;
+      case 'failed':
+        return { status: 'failed' };
+    }
+  };
+
+  /**
+   * The voice-or-stage type check for caller-supplied channels: the id must
+   * name a voice or stage channel of this guild (cache first, one fetch on
+   * miss — the same fallback `resolveChannel` uses). Anything else refuses
+   * before the scope check runs, because scope could pass on a text channel
+   * the event could never live in.
+   */
+  const checkVoiceOrStage = async (
+    guildId: GuildId,
+    channelId: string,
+  ): Promise<
+    | { readonly ok: true; readonly kind: 'voice' | 'stage'; readonly channelId: string }
+    | { readonly ok: false; readonly outcome: McpEventWriteOutcome }
+  > => {
+    const channel = await liveGuildChannel(client, guildId, channelId);
+    if (channel === undefined) {
+      return { ok: false, outcome: { status: 'refused', reason: 'channel-not-in-guild' } };
+    }
+    if (channel.type === ChannelType.GuildVoice) {
+      return { ok: true, kind: 'voice', channelId: channel.id };
+    }
+    if (channel.type === ChannelType.GuildStageVoice) {
+      return { ok: true, kind: 'stage', channelId: channel.id };
+    }
+    return { ok: false, outcome: { status: 'refused', reason: 'not-voice-or-stage' } };
+  };
+
+  const guildManageEventsRefusal = (): McpEventWriteOutcome => ({
+    status: 'refused',
+    reason: 'bot-lacks-permission',
+    detail: 'ManageEvents',
+  });
+
+  return {
+    createEvent: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'eventCreate', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        let targetChannelId: string | undefined;
+        let grantedByChannelId: string | undefined;
+        let location: EventLocationInput;
+        if (input.location.kind === 'external') {
+          if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
+          location = { kind: 'external', place: input.location.place };
+        } else {
+          const checked = await checkVoiceOrStage(guildId, input.location.channelId);
+          if (!checked.ok) return checked.outcome;
+          const target = await resolveSendTarget(
+            client,
+            scope,
+            guildId,
+            checked.channelId,
+            'manage-events',
+          );
+          if (!target.ok) return targetRefusalFor(target);
+          targetChannelId = target.channelId;
+          if (target.derivedGrant) grantedByChannelId = target.grantId;
+          location = { kind: checked.kind, channelId: target.channelId };
+        }
+        // The ledger has no event-id column, so the minted id travels out
+        // through this closure, never the ledger: on `done` it holds the id
+        // the single Discord call minted, and on a replay it stays undefined
+        // (the tool names the action instead).
+        let createdEventId: string | undefined;
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            grantedByChannelId !== undefined ? { grantedByChannelId } : {},
+          ),
+          {
+            kind: 'event.create',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('event.create', {
+              name: input.name,
+              description: input.description,
+              startAt: input.startAt,
+              endAt: input.endAt,
+              location,
+            }),
+            targetChannelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            const created = await discord.createScheduledEvent(guildId, {
+              name: input.name,
+              ...(input.description !== undefined ? { description: input.description } : {}),
+              startAt: input.startAt,
+              ...(input.endAt !== undefined ? { endAt: input.endAt } : {}),
+              location,
+            });
+            createdEventId = created.eventId;
+            return {};
+          },
+        );
+        return gatewayOutcome(
+          outcome,
+          createdEventId !== undefined ? { eventId: createdEventId } : {},
+        );
+      }),
+    editEvent: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'eventEdit', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const events = await discord.listScheduledEvents(guildId);
+        const current = events.find((event) => event.id === input.eventId);
+        if (current === undefined) {
+          return { status: 'refused', reason: 'event-not-found' };
+        }
+        let targetChannelId: string | undefined;
+        let grantedByChannelId: string | undefined;
+        let location: EventLocationInput | undefined;
+        if (input.location !== undefined) {
+          if ('channelId' in input.location) {
+            const checked = await checkVoiceOrStage(guildId, input.location.channelId);
+            if (!checked.ok) return checked.outcome;
+            const target = await resolveSendTarget(
+              client,
+              scope,
+              guildId,
+              checked.channelId,
+              'manage-events',
+            );
+            if (!target.ok) return targetRefusalFor(target);
+            targetChannelId = target.channelId;
+            if (target.derivedGrant) grantedByChannelId = target.grantId;
+            location = { kind: checked.kind, channelId: target.channelId };
+          } else {
+            if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
+            location = { kind: 'external', place: input.location.place };
+          }
+        } else if (current.channelId !== undefined) {
+          const target = await resolveSendTarget(
+            client,
+            scope,
+            guildId,
+            current.channelId,
+            'manage-events',
+          );
+          if (!target.ok) return targetRefusalFor(target);
+          targetChannelId = target.channelId;
+          if (target.derivedGrant) grantedByChannelId = target.grantId;
+        } else {
+          if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
+        }
+        // The previous values of the changed fields, for the `event.edit`
+        // undo row. An `endAt` change records no previous value: the port's
+        // `ScheduledEvent` carries no end time, so there is nothing truthful
+        // to restore — the undo still inverts every other changed field. A
+        // move records the old location; when the old channel's live type
+        // (or the old venue) is unknowable, the location stays moved.
+        const previous: {
+          name?: string;
+          description?: string;
+          startAt?: number;
+          location?: EventLocationInput;
+        } = {};
+        if (input.name !== undefined) previous.name = current.name;
+        if (input.description !== undefined && current.description !== undefined) {
+          previous.description = current.description;
+        }
+        if (input.startAt !== undefined) previous.startAt = current.scheduledStartAt;
+        if (location !== undefined) {
+          if (current.channelId !== undefined) {
+            const oldChannel = await liveGuildChannel(client, guildId, current.channelId);
+            if (oldChannel?.type === ChannelType.GuildVoice) {
+              previous.location = { kind: 'voice', channelId: current.channelId };
+            } else if (oldChannel?.type === ChannelType.GuildStageVoice) {
+              previous.location = { kind: 'stage', channelId: current.channelId };
+            }
+          } else if (current.location !== undefined) {
+            previous.location = { kind: 'external', place: current.location };
+          }
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            grantedByChannelId !== undefined ? { grantedByChannelId } : {},
+          ),
+          {
+            kind: 'event.edit',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('event.edit', {
+              event: input.eventId,
+              name: input.name,
+              description: input.description,
+              startAt: input.startAt,
+              endAt: input.endAt,
+              location,
+            }),
+            targetChannelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            await discord.editScheduledEvent(guildId, input.eventId, {
+              ...(input.name !== undefined ? { name: input.name } : {}),
+              ...(input.description !== undefined ? { description: input.description } : {}),
+              ...(input.startAt !== undefined ? { startAt: input.startAt } : {}),
+              ...(input.endAt !== undefined ? { endAt: input.endAt } : {}),
+              ...(location !== undefined ? { location } : {}),
+            });
+            return { undo: { eventId: input.eventId, previous } };
+          },
+        );
+        return gatewayOutcome(outcome, { eventId: input.eventId });
+      }),
+    cancelEvent: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'eventCancel', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const events = await discord.listScheduledEvents(guildId);
+        const current = events.find((event) => event.id === input.eventId);
+        if (current === undefined) {
+          return { status: 'refused', reason: 'event-not-found' };
+        }
+        let targetChannelId: string | undefined;
+        let grantedByChannelId: string | undefined;
+        // The channel comes from Discord's own listing, so no
+        // voice-or-stage type check: an event is in a voice or stage
+        // channel by construction.
+        if (current.channelId !== undefined) {
+          const target = await resolveSendTarget(
+            client,
+            scope,
+            guildId,
+            current.channelId,
+            'manage-events',
+          );
+          if (!target.ok) return targetRefusalFor(target);
+          targetChannelId = target.channelId;
+          if (target.derivedGrant) grantedByChannelId = target.grantId;
+        } else {
+          if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            grantedByChannelId !== undefined ? { grantedByChannelId } : {},
+          ),
+          {
+            kind: 'event.cancel',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('event.cancel', { event: input.eventId }),
+            targetChannelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            await discord.cancelScheduledEvent(guildId, input.eventId);
+            // Cancels are not undoable (Discord cannot un-cancel an event):
+            // no undo row.
+            return {};
+          },
+        );
+        return gatewayOutcome(outcome, { eventId: input.eventId });
+      }),
+    createPoll: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'pollPost', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const target = await resolveSendTarget(client, scope, guildId, input.channelId, 'post');
+        if (!target.ok) return targetRefusalFor(target);
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+          ),
+          {
+            kind: 'message.send',
+            capGroup: 'message',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('message.send', {
+              channel: target.channelId,
+              poll: {
+                question: input.question,
+                answers: [...input.answers],
+                durationHours: input.durationHours,
+                allowMultiselect: input.allowMultiselect,
+              },
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: true,
+          },
+          true,
+          async () => {
+            const ref = await discord.sendMessage(guildId, target.channelId, {
+              poll: {
+                question: input.question,
+                answers: [...input.answers],
+                durationHours: input.durationHours,
+                allowMultiselect: input.allowMultiselect,
+              },
+              // Polls never ping: `{ parse: [] }` with no roles or users.
+              allowedMentions: { parse: [], roles: [], users: [] },
+            });
+            return { resultMessageId: ref.messageId };
+          },
+        );
+        switch (outcome.status) {
+          case 'done': {
+            if (outcome.result.resultMessageId === undefined) return { status: 'failed' };
+            return {
+              status: 'done',
+              actionId: outcome.actionId,
+              messageId: outcome.result.resultMessageId,
+            };
+          }
+          case 'dry-run':
+            return { status: 'dry-run', actionId: outcome.actionId };
+          case 'replayed':
+            return {
+              status: 'replayed',
+              actionId: outcome.actionId,
+              ...(outcome.resultMessageId !== undefined
+                ? { messageId: outcome.resultMessageId }
+                : {}),
+            };
+          case 'refused':
+            switch (outcome.reason) {
+              case 'killswitch':
+                return { status: 'refused', reason: 'killswitch' };
+              case 'breaker-open':
+                return { status: 'refused', reason: 'breaker-open' };
+              case 'rate-cap':
+                return {
+                  status: 'refused',
+                  reason: 'rate-cap',
+                  ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+                };
+              case 'key-reused-with-other-args':
+                return { status: 'refused', reason: 'duplicate-key-different-content' };
+              case 'duplicate-content-recently':
+                return { status: 'refused', reason: 'duplicate-content-recently' };
+              case 'guild-unknown':
+              case 'target':
+                throw new Error(GUILD_REFUSAL_MESSAGE);
+            }
+            break;
+          case 'failed':
+            return { status: 'failed' };
+        }
+      }),
+  };
+};
+
+/**
  * The undo_json shapes, exactly as the ports above write them (slice 3,
- * Tasks 5–6): an edit stores the previous `{content, embeds}`, a pin stores
- * `{op:'unpin'}` and an unpin `{op:'pin'}`, a reaction add stores
- * `{op:'remove-reaction', emoji}` and a removal `{op:'add-reaction',
- * emoji}`, a thread-member add stores `{userIds}`, and a thread state change
- * stores `{archived}` or `{locked}`. Each kind parses only its own shape
- * (strict: an extra field refuses rather than guesses), and a row that
- * fails to parse is not undoable.
+ * Tasks 5–6, plus slice 5 Task 5): an edit stores the previous `{content,
+ * embeds}`, a pin stores `{op:'unpin'}` and an unpin `{op:'pin'}`, a
+ * reaction add stores `{op:'remove-reaction', emoji}` and a removal
+ * `{op:'add-reaction', emoji}`, a thread-member add stores `{userIds}`, a
+ * thread state change stores `{archived}` or `{locked}`, and an event edit
+ * stores `{eventId, previous}` with the previous values of the changed
+ * fields. Each kind parses only its own shape (strict: an extra field
+ * refuses rather than guesses), and a row that fails to parse is not
+ * undoable.
  */
 const undoEditSchema = z.object({ content: z.string(), embeds: z.array(z.unknown()) }).strict();
 /**
@@ -2509,6 +3000,30 @@ const undoThreadStateSchema = z.union([
   z.object({ archived: z.boolean() }).strict(),
   z.object({ locked: z.boolean() }).strict(),
 ]);
+/**
+ * The `event.edit` undo row (slice 5, Task 5): the edited event's id — the
+ * ledger has no event-id column — and the previous values of the changed
+ * fields, in the port patch's shape. Strict like every other undo shape: an
+ * extra field refuses rather than guesses.
+ */
+const undoEventEditSchema = z
+  .object({
+    eventId: z.string().min(1),
+    previous: z
+      .object({
+        name: z.string().optional(),
+        description: z.string().optional(),
+        startAt: z.number().optional(),
+        location: z
+          .union([
+            z.object({ kind: z.enum(['voice', 'stage']), channelId: z.string() }).strict(),
+            z.object({ kind: z.literal('external'), place: z.string() }).strict(),
+          ])
+          .optional(),
+      })
+      .strict(),
+  })
+  .strict();
 
 /** Kinds with an inverse. Everything else cannot be undone (ADR 0116 §5). */
 const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
