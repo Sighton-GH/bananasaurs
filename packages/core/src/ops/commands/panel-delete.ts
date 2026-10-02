@@ -42,7 +42,7 @@ export const panelDeleteCommand = defineCommand<z.infer<typeof panelDeleteArgs>>
     let text: string;
     if (messageDeleted) {
       text =
-        `Deleted panel ${args.panelId}: removed its Discord message ${panel.messageId} ` +
+        `Deleted panel ${args.panelId}: removed its Discord message ${panel.messageId} (or it was already gone) ` +
         `from <#${panel.channelId}> and deleted its configuration.\n` +
         `  Its roles stay allowlisted and members keep whatever they hold — ` +
         `deleting a panel revokes nothing.`;
