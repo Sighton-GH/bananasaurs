@@ -931,6 +931,15 @@ describe('archive tools on the MCP server', () => {
         send: () =>
           Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
       },
+      // Required since slice 3 Task 5; never called by the archive tools pinned here.
+      threadWrites: {
+        createThread: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        addThreadMembers: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        removeThreadMembers: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        createForumPost: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        setThreadState: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+      },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),

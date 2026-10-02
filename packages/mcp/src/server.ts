@@ -295,7 +295,12 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     // try/catch only fires on something it did not foresee.
     const threadWrites = deps.threadWrites;
     const writeTools = [
-      [CREATE_THREAD_TOOL_NAME, CREATE_THREAD_TOOL_DESCRIPTION, createThreadParams, createThreadText],
+      [
+        CREATE_THREAD_TOOL_NAME,
+        CREATE_THREAD_TOOL_DESCRIPTION,
+        createThreadParams,
+        createThreadText,
+      ],
       [
         ADD_THREAD_MEMBERS_TOOL_NAME,
         ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
@@ -314,11 +319,16 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         createForumPostParams,
         createForumPostText,
       ],
-      [ARCHIVE_THREAD_TOOL_NAME, ARCHIVE_THREAD_TOOL_DESCRIPTION, archiveThreadParams, archiveThreadText],
+      [
+        ARCHIVE_THREAD_TOOL_NAME,
+        ARCHIVE_THREAD_TOOL_DESCRIPTION,
+        archiveThreadParams,
+        archiveThreadText,
+      ],
       [LOCK_THREAD_TOOL_NAME, LOCK_THREAD_TOOL_DESCRIPTION, lockThreadParams, lockThreadText],
     ] as const;
     for (const [name, description, params, text] of writeTools) {
-      server.tool(name, description, params, async (args) => {
+      server.tool(name, description, params, async (args: unknown) => {
         try {
           const outcome = await text(deps.principal, threadWrites, args);
           if (!outcome.ok) {

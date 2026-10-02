@@ -54,6 +54,7 @@ import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
 import { openResourceText, searchResourcesText, type McpResourcesPort } from './tools/resources.js';
 import { readThreadText, type McpThreadsPort } from './tools/threads.js';
+import type { McpThreadWritesPort } from './tools/thread-writes.js';
 import { listUnansweredText, readDigestText } from './tools/digest.js';
 
 /**
@@ -613,6 +614,15 @@ const stubThreadsPort = (): McpThreadsPort => ({
   liveThreadMessages: () => Promise.resolve([]),
 });
 
+/** Minimal thread-writes port: required since slice 3 Task 5; never called by the reads pinned here. */
+const stubThreadWritesPort = (): McpThreadWritesPort => ({
+  createThread: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createForumPost: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -631,6 +641,7 @@ const connectWithReadAudit = async (
     resources: stubResourcesPort(),
     threads: stubThreadsPort(),
     send: stubSendPort(),
+    threadWrites: stubThreadWritesPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

@@ -1,21 +1,32 @@
 import { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { ChannelType, type Client, type Guild } from 'discord.js';
+import {
+  ChannelType,
+  PermissionFlagsBits,
+  type Client,
+  type Guild,
+  type GuildMember,
+} from 'discord.js';
 import {
   CLUB_ASSISTANT_SKILLS,
   argsHashFor,
   contentHashFor,
   effectiveSkillScope,
+  isInScope,
+  parseSnowflakeId,
   runMcpAction,
   safeLogFields,
   skillScopeAllows,
   type DiscordPort,
   type GuildId,
   type Logger,
+  type McpActionOutcome,
   type OpsJobRow,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
-import { resolvePings, resolveSendTarget } from './targets.js';
+import { resolvePings, resolveSendTarget, type SendTarget } from './targets.js';
+import { resolveChannel } from '../channels/resolver.js';
 import { mcpActionDepsFor } from './actions.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -42,6 +53,10 @@ import {
   type McpSendPort,
   type SendEmbed,
   type McpThreadsPort,
+  type McpThreadWritesPort,
+  type McpThreadWriteOutcome,
+  type McpThreadWriteRefusal,
+  type ThreadFirstMessage,
   type McpTaskDetailPort,
   type McpTaskPort,
 } from '@bananasaurs/mcp';
@@ -51,14 +66,18 @@ import {
   assistantRepo,
   automodAdminRepo,
   effectRepo,
+  loggingRepo,
   modCaseRepo,
   panelRepo,
   resourceCacheRepo,
   roleRepo,
   accountRepo,
+  mcpRolePolicyRepo,
+  mcpSendRepo,
   taskBindingRepo,
   taskNudgeRepo,
   taskRepo,
+  type GuildScope,
 } from '@bananasaurs/storage';
 
 /**
@@ -326,6 +345,12 @@ const ownerUserId = (deps: HttpDeps): string | undefined => {
  * or either id unknown, answers false. A non-member's 404 is routine, not a
  * fault, so failures leave no error line: refusing loudly here would log
  * every unshared thread as a failure.
+ *
+ * Slice 3 Task 5 extends it (plan Task 5, ADR 0116 §3): a thread the MCP
+ * created — an `mcp_private_threads` row — reads without the owner, as long
+ * as this guild's cache or REST still knows the thread id at all. The row is
+ * the grant; the cache-or-REST probe only confirms the id still names a
+ * thread of this guild rather than a deleted or foreign one.
  */
 const privateThreadReadableFor = (
   deps: HttpDeps,
@@ -333,6 +358,15 @@ const privateThreadReadableFor = (
   discord: DiscordPort,
 ): ((guildId: GuildId, threadId: string) => Promise<boolean>) => {
   return async (guildId, threadId) => {
+    if (mcpRolePolicyRepo.isMcpPrivateThread(deps.scopes.forGuild(guildId), threadId)) {
+      const cached = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+      if (cached !== undefined && cached.isThread()) return true;
+      try {
+        return (await discord.fetchThreadInfo(guildId, threadId)) !== undefined;
+      } catch {
+        return false;
+      }
+    }
     const botUserId = client.user?.id;
     const ownerId = ownerUserId(deps);
     if (botUserId === undefined || ownerId === undefined) return false;
@@ -1211,6 +1245,742 @@ const sendPortFor = (
 });
 
 /**
+ * Name resolution for the thread/forum tools (slice 3, Task 5): the tools
+ * take a channel id *or* name, but `resolveChannel` and the scope predicate
+ * only speak ids. A snowflake passes through unchanged (existence is the
+ * target layer's business, with its fetch fallback); anything else matches
+ * case-insensitively against the live guild cache after one leading `#` is
+ * stripped, the same normaliser `resolveChannelRef` owns in `packages/mcp`.
+ * Zero matches is `channel-not-in-guild` — the name is not a channel of this
+ * guild, so allowlisting could not help either — and several matches is
+ * `ambiguous-channel` with the `name (id)` list the tool renders.
+ */
+const resolveThreadChannelRef = (
+  client: Client,
+  guildId: GuildId,
+  ref: string,
+):
+  | { readonly ok: true; readonly channelId: string }
+  | {
+      readonly ok: false;
+      readonly reason: 'ambiguous-channel' | 'channel-not-in-guild';
+      readonly detail?: string | undefined;
+    } => {
+  const trimmed = ref.trim();
+  try {
+    parseSnowflakeId(trimmed);
+    return { ok: true, channelId: trimmed };
+  } catch {
+    const needle = (
+      trimmed.startsWith('#') ? trimmed.slice('#'.length).trim() : trimmed
+    ).toLowerCase();
+    const guild = client.guilds.cache.get(guildId);
+    const matches =
+      guild === undefined
+        ? []
+        : [...guild.channels.cache.values()]
+            .filter((channel) => channel.name.toLowerCase() === needle)
+            .sort((a, b) => (a.id < b.id ? -1 : 1))
+            .slice(0, 10);
+    if (matches.length === 1 && matches[0] !== undefined) {
+      return { ok: true, channelId: matches[0].id };
+    }
+    if (matches.length === 0) return { ok: false, reason: 'channel-not-in-guild' };
+    return {
+      ok: false,
+      reason: 'ambiguous-channel',
+      detail: matches.map((channel) => `${channel.name} (${channel.id})`).join(', '),
+    };
+  }
+};
+
+interface ForumTag {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * A forum's available tags, live from the discord.js cache with the same
+ * fetch fallback `resolveChannel` uses. `undefined` when the channel object
+ * cannot be produced at all — the caller then matches against an empty list,
+ * so any tag refuses naming what is (not) available rather than throwing.
+ */
+const readForumTags = async (
+  client: Client,
+  guildId: GuildId,
+  forumId: string,
+): Promise<readonly ForumTag[] | undefined> => {
+  const pick = (channel: unknown): readonly ForumTag[] | undefined => {
+    if (typeof channel !== 'object' || channel === null) return undefined;
+    const tags = (channel as { availableTags?: unknown }).availableTags;
+    if (!Array.isArray(tags)) return undefined;
+    return tags.flatMap((tag) => {
+      if (typeof tag !== 'object' || tag === null) return [];
+      const { id, name } = tag as { id?: unknown; name?: unknown };
+      return typeof id === 'string' && typeof name === 'string' ? [{ id, name }] : [];
+    });
+  };
+  const cached = client.guilds.cache.get(guildId)?.channels.cache.get(forumId);
+  const fromCache = cached === undefined ? undefined : pick(cached);
+  if (fromCache !== undefined) return fromCache;
+  const fetched = await client.channels.fetch(forumId).catch(() => null);
+  return fetched === null || fetched.isDMBased() ? undefined : pick(fetched);
+};
+
+/**
+ * Matches the caller's tag refs — names (case-insensitive) or ids — against
+ * the forum's live tags. Unknown refs come back for the refusal, which names
+ * them alongside the available list.
+ */
+const matchForumTags = (
+  available: readonly ForumTag[],
+  refs: readonly string[],
+):
+  | { readonly ok: true; readonly ids: string[] }
+  | { readonly ok: false; readonly unknown: string[] } => {
+  const ids: string[] = [];
+  const unknown: string[] = [];
+  for (const ref of refs) {
+    const needle = ref.trim().toLowerCase();
+    const found = available.find(
+      (tag) => tag.id === ref.trim() || tag.name.toLowerCase() === needle,
+    );
+    if (found === undefined) unknown.push(ref);
+    else if (!ids.includes(found.id)) ids.push(found.id);
+  }
+  return unknown.length > 0 ? { ok: false, unknown } : { ok: true, ids };
+};
+
+/** Discord's 10007 Unknown Member / 10013 Unknown User, or a bare 404. */
+const isUnknownThreadMember = (err: unknown): boolean => {
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, status } = err as { code?: unknown; status?: unknown };
+  return code === 10007 || code === 10013 || status === 404;
+};
+
+/**
+ * Whether the user is in this guild, checked live like `resolvePings` does:
+ * the member cache caps at fifty, so a hit proves membership but a miss
+ * proves nothing — one REST read decides. Only Discord's own "no such
+ * member" answer means not a member; a transport fault throws, so an outage
+ * is never reported as a refusal.
+ */
+const liveGuildMember = async (
+  client: Client,
+  guildId: GuildId,
+  userId: string,
+): Promise<boolean> => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) return false;
+  if (guild.members.cache.has(userId)) return true;
+  try {
+    await guild.members.fetch(userId);
+    return true;
+  } catch (err) {
+    if (isUnknownThreadMember(err)) return false;
+    throw err;
+  }
+};
+
+/**
+ * Whether the bot owns the thread, in which case member and state edits need
+ * only `post-in-thread` rather than `ManageThreads` (Task 5 rulings): either
+ * the MCP created it — the `mcp_private_threads` row — or the cached thread
+ * names the bot as its creator. Anything else needs the permission, checked
+ * live against the parent like every other `resolveSendTarget` need.
+ */
+const botOwnsThread = (
+  scope: GuildScope,
+  client: Client,
+  guildId: GuildId,
+  threadId: string,
+): boolean => {
+  if (mcpRolePolicyRepo.isMcpPrivateThread(scope, threadId)) return true;
+  const botUserId = client.user?.id;
+  if (botUserId === undefined) return false;
+  const channel = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+  return channel !== undefined && 'ownerId' in channel && channel.ownerId === botUserId;
+};
+
+/**
+ * The thread's live archive/lock state from the gateway cache, for the
+ * `thread.state` undo record (ADR 0116 §5: an archive or lock records the
+ * previous state). `undefined` when the cache does not know the thread — the
+ * change then records no undo, and Task 7's `undo_action` refuses it rather
+ * than guessing.
+ */
+const cachedThreadState = (
+  client: Client,
+  guildId: GuildId,
+  threadId: string,
+):
+  | { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined }
+  | undefined => {
+  const channel = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+  if (channel === undefined || !channel.isThread()) return undefined;
+  const archived = channel.archived ?? undefined;
+  const locked = channel.locked ?? undefined;
+  return {
+    ...(archived === undefined ? {} : { archived }),
+    ...(locked === undefined ? {} : { locked }),
+  };
+};
+
+interface ThreadActionResult {
+  readonly resultThreadId?: string | undefined;
+  readonly resultMessageId?: string | undefined;
+  readonly undo?: unknown;
+}
+
+/**
+ * The gateway's outcomes onto the thread tools' vocabulary, one to one like
+ * `sendPortFor` above: `guild-unknown` throws the shared refusal (the guild
+ * gate already answered that), and the `failed` code stays in the daemon's
+ * logs rather than reaching the model.
+ */
+const mapThreadOutcome = (outcome: McpActionOutcome<ThreadActionResult>): McpThreadWriteOutcome => {
+  switch (outcome.status) {
+    case 'done':
+      return {
+        status: 'done',
+        actionId: outcome.actionId,
+        ...(outcome.result.resultThreadId !== undefined
+          ? { threadId: outcome.result.resultThreadId }
+          : {}),
+        ...(outcome.result.resultMessageId !== undefined
+          ? { messageId: outcome.result.resultMessageId }
+          : {}),
+      };
+    case 'dry-run':
+      return { status: 'dry-run', actionId: outcome.actionId };
+    case 'replayed':
+      return {
+        status: 'replayed',
+        actionId: outcome.actionId,
+        ...(outcome.resultThreadId !== undefined ? { threadId: outcome.resultThreadId } : {}),
+        ...(outcome.resultMessageId !== undefined ? { messageId: outcome.resultMessageId } : {}),
+      };
+    case 'refused':
+      switch (outcome.reason) {
+        case 'killswitch':
+          return { status: 'refused', reason: 'killswitch' };
+        case 'breaker-open':
+          return { status: 'refused', reason: 'breaker-open' };
+        case 'rate-cap':
+          return {
+            status: 'refused',
+            reason: 'rate-cap',
+            ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+          };
+        case 'key-reused-with-other-args':
+          return { status: 'refused', reason: 'duplicate-key-different-content' };
+        case 'duplicate-content-recently':
+          return { status: 'refused', reason: 'duplicate-content-recently' };
+        case 'guild-unknown':
+        case 'target':
+          // Unreachable: every target refusal above returned before the
+          // pipeline ran, so `targetCheck` is always `true` here.
+          throw new Error(GUILD_REFUSAL_MESSAGE);
+      }
+      break;
+    case 'failed':
+      return { status: 'failed' };
+  }
+};
+
+/**
+ * Forum-post target resolution (slice 3, Task 5): send scope ∩ the bot's live
+ * permissions — the same two halves `resolveSendTarget` owns, but that helper
+ * answers `not-in-guild` for any channel whose `resolveChannel.postable` is
+ * false, and discord.js reports `ForumChannel.isTextBased() === false`, so a
+ * forum can never pass through it. This resolves the forum the same way up to
+ * the postable gate: ADR 0047's `isInScope('send', …)` with the forum's own
+ * facts, then the live `ViewChannel` + `SendMessages` check behind the `post`
+ * need (the Task 5 ruling). `targets.ts` is outside this task's Files list,
+ * so the fork lives here; a later task owning that file should reunite them.
+ */
+const resolveForumTarget = async (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+  forumId: string,
+): Promise<SendTarget> => {
+  if (client.guilds.cache.get(guildId) === undefined) {
+    return { ok: false, reason: 'not-in-guild' };
+  }
+  const resolved = await resolveChannel(client, guildId, forumId);
+  if (resolved === undefined || !resolved.isForum) {
+    return { ok: false, reason: 'not-in-guild' };
+  }
+  const grantId = isInScope('send', {
+    channelId: resolved.channelId,
+    parentChannelId: resolved.parentChannelId,
+    categoryId: resolved.categoryId,
+    isPrivateThread: false,
+    hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
+    hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
+    isExcluded: (id) => loggingRepo.isChannelExcluded(scope, id),
+    parentIncludesThreads: () => true,
+  });
+  if (grantId === undefined) return { ok: false, reason: 'not-in-send-scope' };
+  const me: GuildMember | null = client.guilds.cache.get(guildId)?.members.me ?? null;
+  if (me === null) return { ok: false, reason: 'bot-lacks-permission', missing: 'ViewChannel' };
+  const channel = client.channels.cache.get(resolved.channelId) as
+    { permissionsFor(member: GuildMember): { has(bit: bigint): boolean } | null } | undefined;
+  const perms = channel?.permissionsFor(me) ?? null;
+  if (perms === null) return { ok: false, reason: 'bot-lacks-permission', missing: 'ViewChannel' };
+  const missing =
+    (
+      [
+        { bit: PermissionFlagsBits.ViewChannel, name: 'ViewChannel' },
+        { bit: PermissionFlagsBits.SendMessages, name: 'SendMessages' },
+      ] as const
+    ).find((need) => !perms.has(need.bit))?.name ?? undefined;
+  if (missing !== undefined) return { ok: false, reason: 'bot-lacks-permission', missing };
+  return {
+    ok: true,
+    channelId: resolved.channelId,
+    parentChannelId: resolved.parentChannelId,
+    categoryId: resolved.categoryId,
+    isThread: false,
+    isPrivateThread: false,
+    isForum: true,
+    grantId,
+    derivedGrant: grantId !== resolved.channelId,
+  };
+};
+
+type ThreadTargetRefusal = Extract<SendTarget, { readonly ok: false }>;
+/**
+ * The target layer's reasons onto the thread tools' refusals. `notFound`
+ * varies by tool: a creation names the channel it could not see, while a
+ * thread-id tool reports the thread as not found.
+ */
+const targetRefusalFor = (
+  target: ThreadTargetRefusal,
+  notFound: McpThreadWriteRefusal,
+): McpThreadWriteOutcome => {
+  switch (target.reason) {
+    case 'not-in-guild':
+      return { status: 'refused', reason: notFound };
+    case 'not-in-send-scope':
+      return { status: 'refused', reason: 'channel-not-allowlisted' };
+    case 'private-thread-not-allowed':
+      return { status: 'refused', reason: 'private-thread' };
+    case 'bot-lacks-permission':
+      return {
+        status: 'refused',
+        reason: 'bot-lacks-permission',
+        ...(target.missing !== undefined ? { detail: target.missing } : {}),
+      };
+  }
+};
+
+/**
+ * The `McpThreadWritesPort` behind the six thread/forum tools (slice 3,
+ * Task 5), field by field like `sendPortFor` above. Each method resolves its
+ * target against send scope and the bot's live permissions, builds the
+ * `McpActionDeps` over the storage repos, and runs the one pipeline:
+ *
+ * - `create_thread`: kind `thread.create`, cap group `structure`. A private
+ *   thread writes the `mcp_private_threads` row and its own allowlist row
+ *   inside the action's execute — after the Discord call returned, before the
+ *   completion lands — so a retry that finds the claim replays instead of
+ *   creating twice, and both writes are idempotent. The
+ *   `addedByAccountId` is the principal's account. `firstMessage` is a second
+ *   action, key `<key>:first`, through the `message.send` path into the new
+ *   thread; when it fails the thread still stands and the tool says so.
+ * - `add_thread_members` / `remove_thread_members`: one action per call
+ *   (kinds `thread.members.add|remove`, cap group `structure`). An add
+ *   records `{ userIds }` as its undo (ADR 0116 §5); a removal is not
+ *   undoable.
+ * - `create_forum_post`: kind `forum.post`, cap group `message`, with the
+ *   duplicate-content guard — the content-bearing write of this family.
+ *   Always public.
+ * - `archive_thread` / `lock_thread`: kind `thread.state`, cap group
+ *   `structure`, recording the previous state as the undo.
+ *
+ * Member and state edits on a thread the bot owns run under `post-in-thread`
+ * rather than `manage-thread`. Audit actions are `mcp.<kind>` by the shared
+ * default in `mcpActionDepsFor` — `mcp.thread.create`,
+ * `mcp.thread.members.add`, `mcp.forum.post`, `mcp.thread.state` — holding
+ * ids, the outcome and `actionId`, never content (rule 4). A fault leaves one
+ * allowlisted-fields error line via `loggedCallAsync` above, never content:
+ * the thread id and the outcome name what happened.
+ */
+const threadWritesPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read (C2 send-time defence in
+   * depth): target resolution answers guild membership from
+   * `client.guilds.cache`, so a stale allowlist row for a channel outside
+   * the guild is refused before any Discord call.
+   */
+  client: Client,
+): McpThreadWritesPort => {
+  const grantContext = (
+    target: Extract<SendTarget, { readonly ok: true }>,
+  ): { readonly grantedByChannelId?: string } =>
+    target.derivedGrant ? { grantedByChannelId: target.grantId } : {};
+
+  /**
+   * The starter message `create_thread` posts into the new thread: the
+   * `message.send` path with the `<key>:first` key, so it is idempotent and
+   * audited like any other post. Anything but `done` answers no message id,
+   * and the tool renders the thread as created with an unknown first-message
+   * outcome rather than failing the creation.
+   */
+  const postFirstMessage = async (
+    guildId: GuildId,
+    threadId: string,
+    parentChannelId: string,
+    mainKey: string,
+    first: ThreadFirstMessage,
+  ): Promise<{ readonly messageId?: string | undefined }> => {
+    const plainText = first.embeds === undefined;
+    const argsHash =
+      plainText && first.content !== undefined
+        ? contentHashFor(threadId, first.content)
+        : argsHashFor('message.send', {
+            channel: threadId,
+            content: first.content,
+            embeds: first.embeds,
+          });
+    const outcome = await runMcpAction(
+      mcpActionDepsFor(deps, guildId, principal, { grantedByChannelId: parentChannelId }),
+      {
+        kind: 'message.send',
+        capGroup: 'message',
+        idempotencyKey: `${mainKey}:first`,
+        tokenId: principal.tokenId,
+        argsHash,
+        targetChannelId: threadId,
+        dryRun: false,
+        duplicateContentGuard: true,
+      },
+      true,
+      async () => {
+        const ref = await discord.sendMessage(guildId, threadId, {
+          ...(first.content !== undefined ? { content: first.content } : {}),
+          ...(first.embeds !== undefined ? { embeds: first.embeds.map(toDiscordEmbed) } : {}),
+          pingReplyAuthor: false,
+          allowedMentions: { parse: [], roles: [], users: [] },
+        });
+        return { resultMessageId: ref.messageId };
+      },
+    );
+    return outcome.status === 'done' ? { messageId: outcome.result.resultMessageId } : {};
+  };
+
+  return {
+    createThread: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'threadCreate', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const ref = resolveThreadChannelRef(client, guildId, input.channel);
+        if (!ref.ok) {
+          return ref.reason === 'ambiguous-channel'
+            ? {
+                status: 'refused',
+                reason: 'ambiguous-channel',
+                ...(ref.detail !== undefined ? { detail: ref.detail } : {}),
+              }
+            : { status: 'refused', reason: 'channel-not-in-guild' };
+        }
+        const resolved = await resolveChannel(client, guildId, ref.channelId);
+        if (resolved === undefined) return { status: 'refused', reason: 'channel-not-in-guild' };
+        if (resolved.isForum) return { status: 'refused', reason: 'use-forum-post' };
+        if (resolved.isThread) return { status: 'refused', reason: 'invalid-parent' };
+        const target = await resolveSendTarget(
+          client,
+          scope,
+          guildId,
+          resolved.channelId,
+          input.type === 'private' ? 'create-private-thread' : 'create-public-thread',
+        );
+        if (!target.ok) return targetRefusalFor(target, 'channel-not-in-guild');
+        const argsHash = argsHashFor('thread.create', {
+          channel: target.channelId,
+          name: input.name,
+          type: input.type,
+          autoArchiveMinutes: input.autoArchiveMinutes,
+          invitable: input.invitable,
+          fromMessageId: input.fromMessageId,
+          firstMessage: input.firstMessage,
+        });
+        // The action id up front: the private-thread rows written inside
+        // `execute` reference the creating action, and the gateway only mints
+        // it when it claims. Overriding `newActionId` keeps the gateway's
+        // ordering untouched — a lost claim race never runs `execute`, so the
+        // rows always name the winning action.
+        const claimId = randomUUID();
+        const actionDeps = {
+          ...mcpActionDepsFor(deps, guildId, principal, grantContext(target)),
+          newActionId: () => claimId,
+        };
+        const outcome = await runMcpAction(
+          actionDeps,
+          {
+            kind: 'thread.create',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash,
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            const created = await discord.createThread(guildId, target.channelId, {
+              name: input.name,
+              type: input.type,
+              autoArchiveMinutes: input.autoArchiveMinutes,
+              ...(input.type === 'private' ? { invitable: input.invitable } : {}),
+              ...(input.fromMessageId !== undefined ? { fromMessageId: input.fromMessageId } : {}),
+            });
+            if (input.type === 'private') {
+              mcpRolePolicyRepo.recordPrivateThread(scope, {
+                threadId: created.threadId,
+                parentChannelId: target.channelId,
+                createdActionId: claimId,
+                now: deps.now(),
+              });
+              mcpSendRepo.allowChannel(scope, {
+                channelId: created.threadId,
+                addedByAccountId: principal.accountId,
+                now: deps.now(),
+              });
+            }
+            const first =
+              input.firstMessage === undefined
+                ? undefined
+                : await postFirstMessage(
+                    guildId,
+                    created.threadId,
+                    target.channelId,
+                    input.idempotencyKey,
+                    input.firstMessage,
+                  );
+            return {
+              resultThreadId: created.threadId,
+              ...(first?.messageId !== undefined ? { resultMessageId: first.messageId } : {}),
+            };
+          },
+        );
+        return mapThreadOutcome(outcome);
+      }),
+    addThreadMembers: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'threadAddMembers', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const resolved = await resolveChannel(client, guildId, input.threadId);
+        if (resolved === undefined || !resolved.isThread) {
+          return { status: 'refused', reason: 'thread-not-found' };
+        }
+        const owned = botOwnsThread(scope, client, guildId, resolved.channelId);
+        const target = await resolveSendTarget(
+          client,
+          scope,
+          guildId,
+          resolved.channelId,
+          owned ? 'post-in-thread' : 'manage-thread',
+        );
+        if (!target.ok) return targetRefusalFor(target, 'thread-not-found');
+        for (const userId of input.userIds) {
+          if (!(await liveGuildMember(client, guildId, userId))) {
+            return { status: 'refused', reason: 'user-not-member', detail: userId };
+          }
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal, grantContext(target)),
+          {
+            kind: 'thread.members.add',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('thread.members.add', {
+              thread: target.channelId,
+              userIds: [...input.userIds],
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            for (const userId of input.userIds) {
+              await discord.addThreadMember(guildId, target.channelId, userId);
+            }
+            return { undo: { userIds: [...input.userIds] } };
+          },
+        );
+        return mapThreadOutcome(outcome);
+      }),
+    removeThreadMembers: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'threadRemoveMembers', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const resolved = await resolveChannel(client, guildId, input.threadId);
+        if (resolved === undefined || !resolved.isThread) {
+          return { status: 'refused', reason: 'thread-not-found' };
+        }
+        const owned = botOwnsThread(scope, client, guildId, resolved.channelId);
+        const target = await resolveSendTarget(
+          client,
+          scope,
+          guildId,
+          resolved.channelId,
+          owned ? 'post-in-thread' : 'manage-thread',
+        );
+        if (!target.ok) return targetRefusalFor(target, 'thread-not-found');
+        for (const userId of input.userIds) {
+          if (!(await liveGuildMember(client, guildId, userId))) {
+            return { status: 'refused', reason: 'user-not-member', detail: userId };
+          }
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal, grantContext(target)),
+          {
+            kind: 'thread.members.remove',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('thread.members.remove', {
+              thread: target.channelId,
+              userIds: [...input.userIds],
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            for (const userId of input.userIds) {
+              await discord.removeThreadMember(guildId, target.channelId, userId);
+            }
+            // A removal records no undo (ADR 0116 §5): only the add inverts.
+            return {};
+          },
+        );
+        return mapThreadOutcome(outcome);
+      }),
+    createForumPost: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'forumPost', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const ref = resolveThreadChannelRef(client, guildId, input.forum);
+        if (!ref.ok) {
+          return ref.reason === 'ambiguous-channel'
+            ? {
+                status: 'refused',
+                reason: 'ambiguous-channel',
+                ...(ref.detail !== undefined ? { detail: ref.detail } : {}),
+              }
+            : { status: 'refused', reason: 'channel-not-in-guild' };
+        }
+        const resolved = await resolveChannel(client, guildId, ref.channelId);
+        if (resolved === undefined) return { status: 'refused', reason: 'channel-not-in-guild' };
+        if (!resolved.isForum) return { status: 'refused', reason: 'not-a-forum' };
+        const target = await resolveForumTarget(client, scope, guildId, resolved.channelId);
+        if (!target.ok) return targetRefusalFor(target, 'channel-not-in-guild');
+        const available = (await readForumTags(client, guildId, target.channelId)) ?? [];
+        const matched = matchForumTags(available, [...input.tags]);
+        if (!matched.ok) {
+          return {
+            status: 'refused',
+            reason: 'tag-unknown',
+            detail: JSON.stringify({
+              unknown: matched.unknown,
+              available: available.map((tag) => tag.name),
+            }),
+          };
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal, grantContext(target)),
+          {
+            kind: 'forum.post',
+            capGroup: 'message',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('forum.post', {
+              forum: target.channelId,
+              title: input.title,
+              content: input.content,
+              embeds: input.embeds,
+              tags: matched.ids,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: true,
+          },
+          true,
+          async () => {
+            const posted = await discord.createForumPost(guildId, target.channelId, {
+              name: input.title,
+              message: {
+                ...(input.content !== undefined ? { content: input.content } : {}),
+                ...(input.embeds !== undefined ? { embeds: input.embeds.map(toDiscordEmbed) } : {}),
+                allowedMentions: { parse: [], roles: [], users: [] },
+              },
+              appliedTagIds: matched.ids,
+            });
+            return { resultThreadId: posted.threadId, resultMessageId: posted.messageId };
+          },
+        );
+        return mapThreadOutcome(outcome);
+      }),
+    setThreadState: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'threadState', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const resolved = await resolveChannel(client, guildId, input.threadId);
+        if (resolved === undefined || !resolved.isThread) {
+          return { status: 'refused', reason: 'thread-not-found' };
+        }
+        const owned = botOwnsThread(scope, client, guildId, resolved.channelId);
+        const target = await resolveSendTarget(
+          client,
+          scope,
+          guildId,
+          resolved.channelId,
+          owned ? 'post-in-thread' : 'manage-thread',
+        );
+        if (!target.ok) return targetRefusalFor(target, 'thread-not-found');
+        const previous = cachedThreadState(client, guildId, target.channelId);
+        const state =
+          input.archived !== undefined ? { archived: input.archived } : { locked: input.locked };
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal, grantContext(target)),
+          {
+            kind: 'thread.state',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('thread.state', { thread: target.channelId, ...state }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            await discord.setThreadState(guildId, target.channelId, state);
+            // The previous state is the undo (ADR 0116 §5); when the cache
+            // never knew the thread there is nothing truthful to record.
+            const undo =
+              input.archived !== undefined
+                ? previous?.archived === undefined
+                  ? undefined
+                  : { archived: previous.archived }
+                : previous?.locked === undefined
+                  ? undefined
+                  : { locked: previous.locked };
+            return undo === undefined ? {} : { undo };
+          },
+        );
+        return mapThreadOutcome(outcome);
+      }),
+  };
+};
+
+/**
  * The `McpReadAuditPort` behind every read tool (ADR 0050), the one writer
  * in this file: the tool layer says *what* was read (guild, action, subject,
  * result count) and this port closes over *who* read it — the OAuth token
@@ -1545,6 +2315,7 @@ export const registerMcpRoutes = (
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
+      threadWrites: threadWritesPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),

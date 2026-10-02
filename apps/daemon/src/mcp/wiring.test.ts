@@ -28,6 +28,7 @@ import {
   jobRepo,
   loggingRepo,
   mcpActionsRepo,
+  mcpRolePolicyRepo,
   mcpSendRepo,
   resourceCacheRepo,
   roleRepo,
@@ -421,15 +422,16 @@ describe('/mcp behind the bearer guard', () => {
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
   });
 
-  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees send_message and nothing else', async () => {
+  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees the send-scope tools and nothing else', async () => {
     // Through the real authorize/consent/exchange flow, not a hand-built
     // principal: this defect is invisible to a test that constructs the
     // principal itself, which is the exact shape of the three "works in
     // tests, broken in the daemon" defects this slice already found.
     //
     // Since M5 Task 4 the daemon always threads the real send port (ruling
-    // M5-D11), so a send-scoped token lists exactly `send_message` — the
-    // eleven read tools stay behind the read scope it does not carry.
+    // M5-D11), so a send-scoped token lists `send_message` plus the six
+    // thread-write tools (slice 3 Task 5, same scope) — the eleven read tools
+    // stay behind the read scope it does not carry.
     const accessToken = await mintToken('bananasaurs:send');
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -438,6 +440,12 @@ describe('/mcp behind the bearer guard', () => {
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     expect(result.result?.tools?.map((tool) => tool.name)).toEqual([
       'send_message',
+      'create_thread',
+      'add_thread_members',
+      'remove_thread_members',
+      'create_forum_post',
+      'archive_thread',
+      'lock_thread',
       'create_task_team',
       'configure_task_team',
       'delete_task_team',
@@ -1075,6 +1083,860 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.text).toContain('kill switch');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
     expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'kill-send')).toBeUndefined();
+  });
+});
+
+/**
+ * Slice 3 Task 5, daemon side: the six thread/forum write tools through the
+ * real stack — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * thread-writes port over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow.
+ *
+ * The client here is a dedicated one, not `deps.client`: its bot user is
+ * FakeDiscord's own bot id, so a thread the fake mints joins the same bot the
+ * readability check reasons about — "only the bot as a member" means exactly
+ * that. The bot role deliberately lacks ManageThreads: member and state edits
+ * on an MCP-created thread must still pass (the bot owns it), while the same
+ * edit on any other thread refuses naming the permission.
+ */
+describe('/mcp thread writes through the real composition', () => {
+  /** FakeDiscord's own bot: a thread it mints joins this member, and nothing else. */
+  const BOT = '999999999999999999';
+  const OWNER = '345678901234567890';
+  const MEMBER = '633333333333333333';
+  /** In no cache and behind a stubbed fetch: never a guild member. */
+  const STRANGER = '644444444444444444';
+  const PLANNING = '555555555555555555';
+  /** Same name as PLANNING on purpose: the ambiguous-name refusal. */
+  const PLANNING_DUP = '555555555555555556';
+  const FORUM = '566666666666666666';
+  const LOUNGE = '577777777777777777';
+  const BOT_ROLE = '511111111111111111';
+  /** A live thread the MCP never created, under the allowlisted parent. */
+  const OTHER_THREAD = '588888888888888888';
+  const TAG_QUESTION = '600000000000000001';
+  const TAG_ANNOUNCE = '600000000000000002';
+  /** Distinctive text: must reach Discord, must never reach the audit row. */
+  const FIRST_TEXT = 'thread-first-message-probe-content-that-must-never-reach-audit-zz1';
+
+  interface ThreadDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+    channels: { _add: (data: object, guild: Guild, opts: object) => void };
+  }
+
+  const buildThreadClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT));
+    const internals = client as unknown as ThreadDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
+    // Deliberately no ManageThreads on the bot role: creation needs only the
+    // Create*Threads bits, and ownership (not the permission) carries the
+    // member/state edits on MCP-created threads below.
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel |
+      PermissionsBitField.Flags.SendMessages |
+      PermissionsBitField.Flags.SendMessagesInThreads |
+      PermissionsBitField.Flags.CreatePublicThreads |
+      PermissionsBitField.Flags.CreatePrivateThreads
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: PLANNING,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: PLANNING_DUP,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 1,
+          permission_overwrites: [],
+        },
+        {
+          id: LOUNGE,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'lounge',
+          position: 2,
+          permission_overwrites: [],
+        },
+        {
+          id: FORUM,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildForum,
+          name: 'help-desk',
+          position: 3,
+          permission_overwrites: [],
+          available_tags: [
+            { id: TAG_QUESTION, name: 'question', moderated: false },
+            { id: TAG_ANNOUNCE, name: 'announcement', moderated: false },
+          ],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions,
+          managed: true,
+        },
+      ],
+      members: [
+        { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        { user: { id: MEMBER, username: 'member', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  const buildThreadApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
+    createServer({
+      deps: {
+        ...deps,
+        instance: {
+          ...deps.instance,
+          redactedConfig: () => ({ BANANASAURS_OWNER_USER_ID: OWNER }),
+        },
+      },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+
+  const seed = (): void => {
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: PLANNING,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: LOUNGE,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: FORUM,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  /** A thread the gateway cache learns the way production learns it: after creation. */
+  const injectThread = (
+    client: Client,
+    threadId: string,
+    parentId: string,
+    type: ChannelType,
+    ownerId: string = BOT,
+  ): void => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    const internals = client as unknown as ThreadDiscordInternals;
+    internals.channels._add(
+      {
+        id: threadId,
+        guild_id: GUILD_A,
+        parent_id: parentId,
+        owner_id: ownerId,
+        type,
+        name: `thread-${threadId.slice(-4)}`,
+        thread_metadata: {
+          archived: false,
+          auto_archive_duration: 1440,
+          archive_timestamp: new Date().toISOString(),
+          locked: false,
+        },
+      },
+      guild,
+      {},
+    );
+  };
+
+  const mcpCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const resultThreadIdOf = (key: string): string => {
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), key);
+    expect(row?.resultThreadId).toBeDefined();
+    if (row?.resultThreadId === undefined) throw new Error(`no thread id stored for key ${key}`);
+    return row.resultThreadId;
+  };
+
+  const createArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: '111111111111111111',
+    channel: PLANNING,
+    name: 'planning thread',
+    type: 'private',
+    idempotencyKey: 'thread-k1',
+    ...over,
+  });
+
+  it('a private thread created via MCP is readable by read_thread with only the bot as member', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const created = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ firstMessage: { content: FIRST_TEXT } }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      expect(created.text).toContain(threadId);
+
+      // Discord saw the creation with Discord's default: auto-archive 1440,
+      // private threads non-invitable unless asked.
+      const creates = discord.restCalls('createThread');
+      expect(creates).toHaveLength(1);
+      expect(creates[0]?.args[1]).toBe(PLANNING);
+      expect(creates[0]?.args[2]).toMatchObject({
+        name: 'planning thread',
+        type: 'private',
+        autoArchiveMinutes: 1440,
+        invitable: false,
+      });
+
+      // The ledger row carries kind and cap group; the private-thread rows
+      // exist; the audit names the action and never the content.
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'thread-k1');
+      expect(row?.kind).toBe('thread.create');
+      expect(row?.capGroup).toBe('structure');
+      expect(row?.status).toBe('done');
+      expect(mcpRolePolicyRepo.isMcpPrivateThread(t.scopes.forGuild(GUILD_A), threadId)).toBe(true);
+      expect(mcpSendRepo.isChannelAllowed(t.scopes.forGuild(GUILD_A), threadId)).toBe(true);
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'mcp.thread.create');
+      expect(audit).toBeDefined();
+      expect(audit?.actorType).toBe('mcp_operator');
+      expect(audit?.via).toBe('http');
+      expect(JSON.stringify(trail)).not.toContain(FIRST_TEXT);
+
+      // Readable live with only the bot as a member: the owner was configured
+      // but never joined, so the bot-and-owner membership path answers false
+      // and only the MCP row carries this read — proven by the absence of any
+      // membership check on the wire. (FakeDiscord's `sendMessage` stores no
+      // content, so the live page shows the no-content marker; the content
+      // reaching Discord is pinned by the `sendMessage` args assertion in the
+      // firstMessage test below.)
+      const readToken = await mintToken();
+      const read = callText(
+        (
+          await mcpCall(threadApp, readToken, 'read_thread', {
+            guildId: '111111111111111111',
+            threadId,
+          })
+        ).body,
+      );
+      expect(read.isError).not.toBe(true);
+      const firstId = mcpActionsRepo.findAction(
+        t.scopes.forGuild(GUILD_A),
+        'thread-k1:first',
+      )?.resultMessageId;
+      expect(firstId).toBeDefined();
+      expect(read.text).toContain(`message: ${firstId ?? ''}`);
+      expect(read.text).toContain(`author: ${BOT}`);
+      expect(read.text).toContain('private, read live');
+      expect(discord.restCalls('isThreadMember')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('its allowlist row lets a follow-up send_message with threadId pass', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const created = callText(
+        (await mcpCall(threadApp, accessToken, 'create_thread', createArgs())).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      // Production learns the thread through the gateway; the test cache
+      // learns it here, the same shape `resolveChannel` reads.
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPrivateThread);
+
+      const sent = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'send_message', {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+            threadId,
+            content: 'follow-up in the new private thread',
+            idempotencyKey: 'follow-k1',
+          })
+        ).body,
+      );
+      expect(sent.isError).not.toBe(true);
+      expect(sent.text).toContain('Sent message');
+      const sends = discord.restCalls('sendMessage');
+      // This creation carried no firstMessage, so the only send is this one.
+      expect(sends).toHaveLength(1);
+      expect(sends[0]?.args[1]).toBe(threadId);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('firstMessage posts into the new thread under key <key>:first', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const created = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ firstMessage: { content: FIRST_TEXT } }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      expect(created.text).toContain('first message was posted');
+
+      const sends = discord.restCalls('sendMessage');
+      expect(sends).toHaveLength(1);
+      expect(sends[0]?.args[1]).toBe(threadId);
+      expect(sends[0]?.args[2]).toMatchObject({
+        content: FIRST_TEXT,
+        allowedMentions: { parse: [], roles: [], users: [] },
+      });
+      const first = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'thread-k1:first');
+      expect(first?.kind).toBe('message.send');
+      expect(first?.capGroup).toBe('message');
+      expect(first?.status).toBe('done');
+      expect(first?.targetChannelId).toBe(threadId);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('the kill switch refuses the creation with no Discord call', async () => {
+    seed();
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (await mcpCall(threadApp, accessToken, 'create_thread', createArgs())).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('kill switch');
+      expect(discord.restCalls('createThread')).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'thread-k1')).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('replaying the key returns the same thread id and calls Discord once', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const first = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ firstMessage: { content: FIRST_TEXT } }),
+          )
+        ).body,
+      );
+      expect(first.isError).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      const second = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ firstMessage: { content: FIRST_TEXT } }),
+          )
+        ).body,
+      );
+      expect(second.isError).not.toBe(true);
+      expect(second.text).toContain(threadId);
+      expect(second.text).toContain('Already created under this idempotency key');
+      expect(discord.restCalls('createThread')).toHaveLength(1);
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('undo of add-members removes them, and the ledger holds the inverse', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      expect(
+        callText((await mcpCall(threadApp, accessToken, 'create_thread', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPrivateThread);
+
+      // The bot role has no ManageThreads: this passes only because the bot
+      // owns the thread it just created.
+      const added = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'add_thread_members', {
+            guildId: '111111111111111111',
+            threadId,
+            userIds: [MEMBER],
+            idempotencyKey: 'add-k1',
+          })
+        ).body,
+      );
+      expect(added.isError).not.toBe(true);
+      expect(await discord.isThreadMember(GUILD_A, threadId, MEMBER)).toBe(true);
+      const addRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'add-k1');
+      expect(addRow?.kind).toBe('thread.members.add');
+      expect(addRow?.capGroup).toBe('structure');
+      expect(JSON.parse(addRow?.undoJson ?? '')).toEqual({ userIds: [MEMBER] });
+      const addAudit = effectRepo
+        .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+        .find((entry) => entry.action === 'mcp.thread.members.add');
+      expect(addAudit).toBeDefined();
+
+      const removed = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'remove_thread_members', {
+            guildId: '111111111111111111',
+            threadId,
+            userIds: [MEMBER],
+            idempotencyKey: 'remove-k1',
+          })
+        ).body,
+      );
+      expect(removed.isError).not.toBe(true);
+      expect(await discord.isThreadMember(GUILD_A, threadId, MEMBER)).toBe(false);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('archive then undo restores, and lock then unlock restores', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      expect(
+        callText((await mcpCall(threadApp, accessToken, 'create_thread', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPrivateThread);
+
+      const archived = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId,
+            archived: true,
+            idempotencyKey: 'archive-k1',
+          })
+        ).body,
+      );
+      expect(archived.isError).not.toBe(true);
+      expect(discord.threadState(threadId)).toMatchObject({ archived: true, locked: false });
+      const archiveRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'archive-k1');
+      expect(archiveRow?.kind).toBe('thread.state');
+      expect(JSON.parse(archiveRow?.undoJson ?? '')).toEqual({ archived: false });
+
+      const restored = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId,
+            archived: false,
+            idempotencyKey: 'archive-k2',
+          })
+        ).body,
+      );
+      expect(restored.isError).not.toBe(true);
+      expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: false });
+
+      const locked = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'lock_thread', {
+            guildId: '111111111111111111',
+            threadId,
+            locked: true,
+            idempotencyKey: 'lock-k1',
+          })
+        ).body,
+      );
+      expect(locked.isError).not.toBe(true);
+      expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: true });
+      const unlocked = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'lock_thread', {
+            guildId: '111111111111111111',
+            threadId,
+            locked: false,
+            idempotencyKey: 'lock-k2',
+          })
+        ).body,
+      );
+      expect(unlocked.isError).not.toBe(true);
+      expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: false });
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('member and state edits on a thread the bot did not create refuse naming ManageThreads', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    discord.defineThread({ threadId: OTHER_THREAD, name: 'other', parentId: PLANNING });
+    const client = buildThreadClient();
+    // Owned by a member, not the bot: the manage-thread need applies in full.
+    injectThread(client, OTHER_THREAD, PLANNING, ChannelType.GuildPublicThread, MEMBER);
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refusedAdd = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'add_thread_members', {
+            guildId: '111111111111111111',
+            threadId: OTHER_THREAD,
+            userIds: [MEMBER],
+            idempotencyKey: 'add-other',
+          })
+        ).body,
+      );
+      expect(refusedAdd.isError).toBe(true);
+      expect(refusedAdd.text).toContain('ManageThreads');
+      const refusedArchive = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId: OTHER_THREAD,
+            archived: true,
+            idempotencyKey: 'archive-other',
+          })
+        ).body,
+      );
+      expect(refusedArchive.isError).toBe(true);
+      expect(refusedArchive.text).toContain('ManageThreads');
+      expect(discord.restCalls('addThreadMember')).toEqual([]);
+      expect(discord.restCalls('setThreadState')).toEqual([]);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'add-other')).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('adding a user who is not in the guild is refused with no Discord call', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    // Discord's unknown-member answer; anything else would be a transport
+    // fault and must throw rather than refuse (targets.ts owns that rule).
+    guild.members.fetch = (() =>
+      Promise.reject(
+        Object.assign(new Error('Unknown Member'), { code: 10007, status: 404 }),
+      )) as typeof guild.members.fetch;
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      expect(
+        callText((await mcpCall(threadApp, accessToken, 'create_thread', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPrivateThread);
+      const refused = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'add_thread_members', {
+            guildId: '111111111111111111',
+            threadId,
+            userIds: [STRANGER],
+            idempotencyKey: 'add-stranger',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain(STRANGER);
+      expect(refused.text).toContain('not a member');
+      expect(discord.restCalls('addThreadMember')).toEqual([]);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'add-stranger')).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a forum post resolves names, matches tags case-insensitively, and stores both ids', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const posted = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'create_forum_post', {
+            guildId: '111111111111111111',
+            forum: 'Help-Desk',
+            title: 'club question',
+            content: 'when is the next build night?',
+            embeds: [{ title: 'plan', footer: 'club' }],
+            tags: ['Question'],
+            idempotencyKey: 'forum-k1',
+          })
+        ).body,
+      );
+      expect(posted.isError).not.toBe(true);
+      const threadId = resultThreadIdOf('forum-k1');
+      expect(posted.text).toContain(threadId);
+
+      const posts = discord.restCalls('createForumPost');
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.args[1]).toBe(FORUM);
+      expect(posts[0]?.args[2]).toMatchObject({
+        name: 'club question',
+        appliedTagIds: [TAG_QUESTION],
+      });
+      expect(posts[0]?.args[2]).toMatchObject({
+        message: {
+          content: 'when is the next build night?',
+          embeds: [{ title: 'plan', footer: { text: 'club' } }],
+          allowedMentions: { parse: [], roles: [], users: [] },
+        },
+      });
+      const stored = discord.forumPost(threadId);
+      expect(stored?.appliedTagIds).toEqual([TAG_QUESTION]);
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'forum-k1');
+      expect(row?.kind).toBe('forum.post');
+      expect(row?.capGroup).toBe('message');
+      expect(row?.status).toBe('done');
+      expect(row?.resultMessageId).toBeDefined();
+      const audit = effectRepo
+        .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+        .find((entry) => entry.action === 'mcp.forum.post');
+      expect(audit).toBeDefined();
+      expect(audit?.subjectId).toBe(FORUM);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an unknown forum tag refuses listing the available tag names', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'create_forum_post', {
+            guildId: '111111111111111111',
+            forum: FORUM,
+            title: 'club question',
+            content: 'when is the next build night?',
+            tags: ['no-such-tag'],
+            idempotencyKey: 'forum-bad-tag',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('no-such-tag');
+      expect(refused.text).toContain('question');
+      expect(refused.text).toContain('announcement');
+      expect(discord.restCalls('createForumPost')).toEqual([]);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'forum-bad-tag'),
+      ).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('create_thread in a forum refuses pointing at create_forum_post', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ channel: FORUM, idempotencyKey: 'thread-in-forum' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('create_forum_post');
+      expect(discord.restCalls('createThread')).toEqual([]);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'thread-in-forum'),
+      ).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('create_forum_post in a non-forum refuses as not-a-forum', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'create_forum_post', {
+            guildId: '111111111111111111',
+            forum: PLANNING,
+            title: 'club question',
+            content: 'when is the next build night?',
+            idempotencyKey: 'forum-not-forum',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('is not a forum');
+      expect(discord.restCalls('createForumPost')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an ambiguous channel name refuses listing the matches', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ channel: 'planning', idempotencyKey: 'thread-ambiguous' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain(PLANNING);
+      expect(refused.text).toContain(PLANNING_DUP);
+      expect(refused.text).toContain('Pass a channel id');
+      expect(discord.restCalls('createThread')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a dry run records without creating', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const dry = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({ dryRun: true, firstMessage: { content: FIRST_TEXT } }),
+          )
+        ).body,
+      );
+      expect(dry.isError).not.toBe(true);
+      expect(dry.text).toContain('Dry run is on');
+      expect(discord.restCalls('createThread')).toEqual([]);
+      expect(discord.restCalls('sendMessage')).toEqual([]);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'thread-k1')?.status).toBe(
+        'dry_run',
+      );
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'thread-k1:first'),
+      ).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
   });
 });
 
@@ -4535,7 +5397,15 @@ describe('MCP task admin full surface (owner-only)', () => {
       (
         sseData(memberListed.body)[0] as { result?: { tools?: Array<{ name: string }> } }
       ).result?.tools?.map((tool) => tool.name),
-    ).toEqual(['send_message']);
+    ).toEqual([
+      'send_message',
+      'create_thread',
+      'add_thread_members',
+      'remove_thread_members',
+      'create_forum_post',
+      'archive_thread',
+      'lock_thread',
+    ]);
 
     // The port still rechecks per call: a non-owner token that names a hidden
     // tool is refused, never executed.

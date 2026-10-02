@@ -7,12 +7,7 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { idsAreWellFormed } from '../ids.js';
-import {
-  SEND_CONTENT_MAX,
-  SEND_EMBED_TOTAL_MAX,
-  SEND_EMBEDS_MAX,
-  type SendEmbed,
-} from './send.js';
+import { SEND_CONTENT_MAX, SEND_EMBED_TOTAL_MAX, SEND_EMBEDS_MAX, type SendEmbed } from './send.js';
 
 /**
  * The six thread/forum write tools, registered under the send scope.
@@ -129,8 +124,8 @@ export interface McpThreadWritesPort {
     input: {
       readonly forum: string;
       readonly title: string;
-      readonly content: string | undefined;
-      readonly embeds: readonly SendEmbed[] | undefined;
+      readonly content?: string | undefined;
+      readonly embeds?: readonly SendEmbed[] | undefined;
       readonly tags: readonly string[];
       readonly dryRun: boolean;
       readonly idempotencyKey: string;
@@ -140,8 +135,8 @@ export interface McpThreadWritesPort {
     guildId: GuildId,
     input: {
       readonly threadId: string;
-      readonly archived: boolean | undefined;
-      readonly locked: boolean | undefined;
+      readonly archived?: boolean | undefined;
+      readonly locked?: boolean | undefined;
       readonly dryRun: boolean;
       readonly idempotencyKey: string;
     },
@@ -225,11 +220,8 @@ const embedTotalLength = (embed: z.infer<typeof embedSchema>): number =>
   (embed.footer ?? '').length +
   (embed.fields ?? []).reduce((sum, field) => sum + field.name.length + field.value.length, 0);
 
-const embedsWithinTotal = (
-  embeds: readonly z.infer<typeof embedSchema>[] | undefined,
-): boolean =>
-  (embeds ?? []).reduce((sum, embed) => sum + embedTotalLength(embed), 0) <=
-  SEND_EMBED_TOTAL_MAX;
+const embedsWithinTotal = (embeds: readonly z.infer<typeof embedSchema>[] | undefined): boolean =>
+  (embeds ?? []).reduce((sum, embed) => sum + embedTotalLength(embed), 0) <= SEND_EMBED_TOTAL_MAX;
 
 const firstMessageSchema = z
   .object({
@@ -238,15 +230,19 @@ const firstMessageSchema = z
   })
   .refine(
     (message) =>
-      message.content !== undefined ||
-      (message.embeds !== undefined && message.embeds.length > 0),
+      message.content !== undefined || (message.embeds !== undefined && message.embeds.length > 0),
     { message: 'content or embeds required' },
   )
   .refine((message) => embedsWithinTotal(message.embeds), {
     message: 'embeds exceed 6000 characters in total',
   });
 
-const autoArchiveSchema = z.union([z.literal(60), z.literal(1440), z.literal(4320), z.literal(10080)]);
+const autoArchiveSchema = z.union([
+  z.literal(60),
+  z.literal(1440),
+  z.literal(4320),
+  z.literal(10080),
+]);
 
 /**
  * Zod schemas are the boundary (hard rule 3): a parse failure is the
@@ -368,7 +364,9 @@ export const createThreadParams = {
   dryRun: z.boolean().optional().describe('Record without creating: nothing reaches Discord.'),
   idempotencyKey: z
     .string()
-    .describe('Caller-supplied key for this creation; reuse the same value if you retry this call.'),
+    .describe(
+      'Caller-supplied key for this creation; reuse the same value if you retry this call.',
+    ),
 };
 
 export const addThreadMembersParams = {
@@ -395,7 +393,10 @@ export const createForumPostParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   forum: z.string().describe('Forum channel to post into, as an id or name.'),
   title: z.string().describe(`Post title, 1 to ${String(THREAD_NAME_MAX)} characters.`),
-  content: z.string().optional().describe('Post text in Discord Markdown. Optional when embeds are present.'),
+  content: z
+    .string()
+    .optional()
+    .describe('Post text in Discord Markdown. Optional when embeds are present.'),
   embeds: z
     .array(
       z.object({
@@ -452,10 +453,10 @@ const parseTagDetail = (detail: string | undefined): { unknown: string; availabl
   if (detail === undefined) return { unknown: 'a tag', available: 'none listed' };
   try {
     const parsed = JSON.parse(detail) as { unknown?: unknown; available?: unknown };
-    const unknown = Array.isArray(parsed.unknown)
-      ? parsed.unknown.map(String).join(', ')
-      : 'a tag';
-    const available = Array.isArray(parsed.available) ? parsed.available.map(String).join(', ') : 'none listed';
+    const unknown = Array.isArray(parsed.unknown) ? parsed.unknown.map(String).join(', ') : 'a tag';
+    const available = Array.isArray(parsed.available)
+      ? parsed.available.map(String).join(', ')
+      : 'none listed';
     return { unknown, available };
   } catch {
     return { unknown: 'a tag', available: detail };
@@ -523,8 +524,7 @@ const refusalText = (
       );
     case 'user-not-member':
       return (
-        `User ${detail ?? '?'} is not a member of guild ${guildId}, ` +
-        `so ${nothingHappened}.`
+        `User ${detail ?? '?'} is not a member of guild ${guildId}, ` + `so ${nothingHappened}.`
       );
     case 'tag-unknown': {
       const tags = parseTagDetail(detail);
@@ -570,11 +570,17 @@ const refusalText = (
   }
 };
 
-/** Trims caller text the way `send_message` does: blank-after-trim is an argument fault. */
-const trimmedContent = (content: string | undefined): string | undefined | 'blank' => {
-  if (content === undefined) return undefined;
+/**
+ * Trims caller text the way `send_message` does: blank-after-trim is an
+ * argument fault. The blank flag is separate from the text so a post whose
+ * whole content is the word "blank" still posts.
+ */
+const trimmedContent = (
+  content: string | undefined,
+): { readonly text: string | undefined; readonly blank: boolean } => {
+  if (content === undefined) return { text: undefined, blank: false };
   const trimmed = content.trim();
-  return trimmed === '' ? 'blank' : trimmed;
+  return trimmed === '' ? { text: undefined, blank: true } : { text: trimmed, blank: false };
 };
 
 interface ParsedCall {
@@ -619,9 +625,7 @@ const createThreadInner = async (
       input.firstMessage === undefined
         ? undefined
         : {
-            ...(firstContent === undefined
-              ? {}
-              : { content: firstContent.trim() }),
+            ...(firstContent === undefined ? {} : { content: firstContent.trim() }),
             ...(input.firstMessage.embeds === undefined
               ? {}
               : { embeds: input.firstMessage.embeds }),
@@ -679,7 +683,13 @@ const createThreadInner = async (
     case 'refused':
       return {
         ok: false,
-        message: refusalText(guildId, input.channel, outcome.reason, outcome.detail, nothingHappened),
+        message: refusalText(
+          guildId,
+          input.channel,
+          outcome.reason,
+          outcome.detail,
+          nothingHappened,
+        ),
       };
     case 'failed':
       return {
@@ -721,7 +731,10 @@ const membersInner = async (
           idempotencyKey: input.idempotencyKey,
         });
   const count = input.userIds.length;
-  const changed = verb === 'add' ? `added ${String(count)} member${count === 1 ? '' : 's'}` : `removed ${String(count)} member${count === 1 ? '' : 's'}`;
+  const changed =
+    verb === 'add'
+      ? `added ${String(count)} member${count === 1 ? '' : 's'}`
+      : `removed ${String(count)} member${count === 1 ? '' : 's'}`;
   const nothingHappened = 'the member list is unchanged';
   switch (outcome.status) {
     case 'done':
@@ -748,7 +761,13 @@ const membersInner = async (
     case 'refused':
       return {
         ok: false,
-        message: refusalText(guildId, input.threadId, outcome.reason, outcome.detail, nothingHappened),
+        message: refusalText(
+          guildId,
+          input.threadId,
+          outcome.reason,
+          outcome.detail,
+          nothingHappened,
+        ),
       };
     case 'failed':
       return {
@@ -770,8 +789,8 @@ const createForumPostInner = async (
   const parsed = createForumPostArgsSchema.safeParse(rawArgs);
   if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
-  const content = trimmedContent(input.content);
-  if (content === 'blank') return refuseInvalidArgs();
+  const { text: content, blank } = trimmedContent(input.content);
+  if (blank) return refuseInvalidArgs();
   const gate = gateGuild(principal, input.guildId);
   if (!('guildId' in gate)) return gate;
   const guildId = gate.guildId;
@@ -856,16 +875,23 @@ const setThreadStateInner = async (
   const gate = gateGuild(principal, input.guildId);
   if (!('guildId' in gate)) return gate;
   const guildId = gate.guildId;
-  const field = verb === 'archive' ? input.archived : (input as { locked: boolean }).locked;
+  // The schemas guarantee exactly one of the two fields, so `in` narrows
+  // the parse union without a cast.
+  const field = 'archived' in input ? input.archived : input.locked;
   const outcome = await port.setThreadState(guildId, {
     threadId: input.threadId,
-    ...(verb === 'archive' ? { archived: (input as { archived: boolean }).archived } : {}),
-    ...(verb === 'lock' ? { locked: (input as { locked: boolean }).locked } : {}),
+    ...('archived' in input ? { archived: input.archived } : { locked: input.locked }),
     dryRun: input.dryRun ?? false,
     idempotencyKey: input.idempotencyKey,
   });
   const changed =
-    verb === 'archive' ? (field === true ? 'Archived' : 'Unarchived') : field === true ? 'Locked' : 'Unlocked';
+    verb === 'archive'
+      ? field === true
+        ? 'Archived'
+        : 'Unarchived'
+      : field === true
+        ? 'Locked'
+        : 'Unlocked';
   const nothingHappened = 'the thread state is unchanged';
   switch (outcome.status) {
     case 'done':
@@ -892,7 +918,13 @@ const setThreadStateInner = async (
     case 'refused':
       return {
         ok: false,
-        message: refusalText(guildId, input.threadId, outcome.reason, outcome.detail, nothingHappened),
+        message: refusalText(
+          guildId,
+          input.threadId,
+          outcome.reason,
+          outcome.detail,
+          nothingHappened,
+        ),
       };
     case 'failed':
       return {

@@ -151,11 +151,7 @@ describe('create_thread guild gate (CLAUDE.md rule 2)', () => {
     ['empty reachable set', '111111111111111111', []],
   ])('%s is the shared refusal and the port was never called', async (_label, guildId, guilds) => {
     const port = fakeThreadPort({ status: 'done', actionId: ACTION, threadId: THREAD });
-    const outcome = await createThreadText(
-      principalWith(guilds as readonly GuildId[]),
-      port,
-      createArgs({ guildId }),
-    );
+    const outcome = await createThreadText(principalWith(guilds), port, createArgs({ guildId }));
     expect(messageOf(outcome)).toBe(GUILD_REFUSAL_MESSAGE);
     expect(port.calls).toBe(0);
   });
@@ -181,8 +177,16 @@ describe('create_thread argument boundary (hard rule 3)', () => {
     ['malformed fromMessageId', { fromMessageId: 'nope' }],
     ['firstMessage with neither content nor embeds', { firstMessage: {} }],
     ['firstMessage with blank content', { firstMessage: { content: '   ' } }],
-    ['firstMessage with four embeds', { firstMessage: { embeds: [{ title: 'a' }, { title: 'b' }, { title: 'c' }, { title: 'd' }] } }],
-    ['firstMessage embed with an image field', { firstMessage: { embeds: [{ title: 'a', image: 'x' }] } }],
+    [
+      'firstMessage with four embeds',
+      {
+        firstMessage: { embeds: [{ title: 'a' }, { title: 'b' }, { title: 'c' }, { title: 'd' }] },
+      },
+    ],
+    [
+      'firstMessage embed with an image field',
+      { firstMessage: { embeds: [{ title: 'a', image: 'x' }] } },
+    ],
   ])('%s is the argument fault and the port was never called', async (_label, over) => {
     const args: Record<string, unknown> = { ...createArgs() };
     for (const [key, value] of Object.entries(over)) {
@@ -197,12 +201,18 @@ describe('create_thread argument boundary (hard rule 3)', () => {
 
   it('malformed channel and thread ids are the argument fault', async () => {
     const port = fakeThreadPort({ status: 'done', actionId: ACTION, threadId: THREAD });
-    expect(messageOf(await createThreadText(principalWith([GUILD_A]), port, membersArgs({ threadId: 'nope' })))).toBe(
-      INVALID_ARGUMENTS_MESSAGE,
-    );
     expect(
       messageOf(
-        await addThreadMembersText(principalWith([GUILD_A]), port, membersArgs({ userIds: [USER, 'nope'] })),
+        await createThreadText(principalWith([GUILD_A]), port, membersArgs({ threadId: 'nope' })),
+      ),
+    ).toBe(INVALID_ARGUMENTS_MESSAGE);
+    expect(
+      messageOf(
+        await addThreadMembersText(
+          principalWith([GUILD_A]),
+          port,
+          membersArgs({ userIds: [USER, 'nope'] }),
+        ),
       ),
     ).toBe(INVALID_ARGUMENTS_MESSAGE);
     expect(port.calls).toBe(0);
@@ -212,7 +222,13 @@ describe('create_thread argument boundary (hard rule 3)', () => {
     const port = fakeThreadPort({ status: 'done', actionId: ACTION });
     const tooManyUsers = Array.from({ length: 26 }, (_, i) => String(400000000000000000 + i));
     expect(
-      messageOf(await addThreadMembersText(principalWith([GUILD_A]), port, membersArgs({ userIds: tooManyUsers }))),
+      messageOf(
+        await addThreadMembersText(
+          principalWith([GUILD_A]),
+          port,
+          membersArgs({ userIds: tooManyUsers }),
+        ),
+      ),
     ).toBe(INVALID_ARGUMENTS_MESSAGE);
     expect(
       messageOf(
@@ -230,7 +246,11 @@ describe('create_thread argument boundary (hard rule 3)', () => {
     ).toBe(INVALID_ARGUMENTS_MESSAGE);
     expect(
       messageOf(
-        await createForumPostText(principalWith([GUILD_A]), port, forumArgs({ title: 't'.repeat(101) })),
+        await createForumPostText(
+          principalWith([GUILD_A]),
+          port,
+          forumArgs({ title: 't'.repeat(101) }),
+        ),
       ),
     ).toBe(INVALID_ARGUMENTS_MESSAGE);
     expect(
@@ -489,9 +509,9 @@ describe('member and state outcomes', () => {
 
   it('archiving and locking name the new state', async () => {
     const port = fakeThreadPort({ status: 'done', actionId: ACTION });
-    expect(textOf(await archiveThreadText(principalWith([GUILD_A]), port, archiveArgs()))).toContain(
-      'Archived',
-    );
+    expect(
+      textOf(await archiveThreadText(principalWith([GUILD_A]), port, archiveArgs())),
+    ).toContain('Archived');
     expect(
       textOf(
         await archiveThreadText(principalWith([GUILD_A]), port, archiveArgs({ archived: false })),
@@ -562,7 +582,8 @@ const stubThreadWrites = (): McpThreadWritesPort => ({
   createThread: () => Promise.resolve({ status: 'done', actionId: 'act-test', threadId: THREAD }),
   addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
   removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
-  createForumPost: () => Promise.resolve({ status: 'done', actionId: 'act-test', threadId: THREAD }),
+  createForumPost: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', threadId: THREAD }),
   setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
 });
 const stubJobs = (): McpJobsPort => ({
