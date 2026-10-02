@@ -3015,12 +3015,20 @@ const roleAdminPortFor = (
             // Live re-check first: a grant revoked after the pre-check still
             // refuses before any Discord call.
             if (!authorizedMutate(scope)) throw new McpRoleAuthzDenied();
-            createdRoleId = await createRoleBelowBot(discord, guildId, botTop, {
-              name: input.name,
-              ...(input.color !== undefined ? { color: input.color } : {}),
-              ...(input.hoist !== undefined ? { hoist: input.hoist } : {}),
-              ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
-            });
+            await createRoleBelowBot(
+              discord,
+              guildId,
+              botTop,
+              {
+                name: input.name,
+                ...(input.color !== undefined ? { color: input.color } : {}),
+                ...(input.hoist !== undefined ? { hoist: input.hoist } : {}),
+                ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
+              },
+              (roleId) => {
+                createdRoleId = roleId;
+              },
+            );
             // No undo (ADR 0118 §6 as amended): a creation is not undoable.
             return {};
           },
@@ -3122,6 +3130,9 @@ const roleAdminPortFor = (
  * adapter always sends `'0'`, so no permission bit can travel. Shared by
  * `create_role` and panel `{create}` options (slice 4, Task 6b) — the one
  * place that knows the create-then-move order — rather than duplicated.
+ * `onCreated` fires between the creation and the move, so a caller that must
+ * name the role on a move failure (the role exists in Discord now) learns the
+ * id even when the move throws.
  */
 const createRoleBelowBot = async (
   discord: DiscordPort,
@@ -3133,6 +3144,7 @@ const createRoleBelowBot = async (
     readonly hoist?: boolean | undefined;
     readonly mentionable?: boolean | undefined;
   },
+  onCreated?: (roleId: string) => void,
 ): Promise<string> => {
   const created = await discord.createRole(guildId, {
     name: input.name,
@@ -3140,6 +3152,7 @@ const createRoleBelowBot = async (
     ...(input.hoist !== undefined ? { hoist: input.hoist } : {}),
     ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
   });
+  onCreated?.(created.roleId);
   await discord.setRolePosition(guildId, created.roleId, botTop - 1);
   return created.roleId;
 };
