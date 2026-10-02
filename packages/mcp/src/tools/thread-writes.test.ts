@@ -33,6 +33,7 @@ import type { McpResourcesPort } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
 import type { McpReadAuditPort } from '../read-audit.js';
 import type { McpMessageWritesPort } from './message-writes.js';
+import type { McpRoleWritesPort } from './role-writes.js';
 
 /**
  * Task 5, tool layer: the six thread/forum write tools against a fake
@@ -654,6 +655,12 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
     Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
 });
 
+/** Required since slice 4 Task 3; never called by the thread-write tools pinned here. */
+const stubRoleWrites = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
@@ -667,6 +674,7 @@ const connectPair = async (
     send: stubSend(),
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
+    roleWrites: stubRoleWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),

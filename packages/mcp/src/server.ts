@@ -126,6 +126,17 @@ import {
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
 import {
+  GRANT_ROLE_TOOL_DESCRIPTION,
+  GRANT_ROLE_TOOL_NAME,
+  REMOVE_ROLE_TOOL_DESCRIPTION,
+  REMOVE_ROLE_TOOL_NAME,
+  grantRoleParams,
+  grantRoleText,
+  removeRoleParams,
+  removeRoleText,
+  type McpRoleWritesPort,
+} from './tools/role-writes.js';
+import {
   LIST_ACTIONS_TOOL_DESCRIPTION,
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_DESCRIPTION,
@@ -168,6 +179,7 @@ import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './
 import {
   GUILD_REFUSAL_MESSAGE,
   hasReadScope,
+  hasRolesScope,
   hasSendScope,
   hasTasksScope,
   type McpPrincipal,
@@ -244,6 +256,15 @@ export interface McpServerDeps {
    * principal carries the send scope.
    */
   readonly messageWrites: McpMessageWritesPort;
+  /**
+   * The daemon's per-request role-writes port (slice 4, Task 3): role grants
+   * and removals behind the two role tools. Required like `send`: a missing
+   * port must fail at construction, not serve role tools that always refuse.
+   * Required means the port is always present, not that the tools are always
+   * advertised: the two tools still register only when the principal carries
+   * the roles scope.
+   */
+  readonly roleWrites: McpRoleWritesPort;
   /**
    * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
    * ledger behind `undo_action` and `list_actions`. Optional like the task
@@ -476,6 +497,32 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
           }
         },
       );
+    }
+  }
+  // ADR 0114: the role-change tools register under the roles scope, never
+  // send. A token carrying only `bananasaurs:send` can post messages but
+  // never touch roles; a roles-scope token sees exactly the two role tools.
+  if (hasRolesScope(deps.principal)) {
+    const roleWrites = deps.roleWrites;
+    const roleWriteTools = [
+      [GRANT_ROLE_TOOL_NAME, GRANT_ROLE_TOOL_DESCRIPTION, grantRoleParams, grantRoleText],
+      [REMOVE_ROLE_TOOL_NAME, REMOVE_ROLE_TOOL_DESCRIPTION, removeRoleParams, removeRoleText],
+    ] as const;
+    for (const [name, description, params, text] of roleWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, roleWrites, deps.guild, deps.members, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
     }
   }
   // ADR 0114 (ADR 0101's follow-up): the task-tracking write tools register

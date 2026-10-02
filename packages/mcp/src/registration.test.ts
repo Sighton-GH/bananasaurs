@@ -12,6 +12,7 @@ import type { McpRecordsPort } from './tools/records.js';
 import type { McpSendPort } from './tools/send.js';
 import type { McpThreadWritesPort } from './tools/thread-writes.js';
 import type { McpMessageWritesPort } from './tools/message-writes.js';
+import type { McpRoleWritesPort } from './tools/role-writes.js';
 import type { McpActionsPort } from './tools/actions.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
@@ -92,6 +93,10 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     addReaction: () => Promise.resolve({ status: 'done', actionId: 'act' }),
     removeReaction: () => Promise.resolve({ status: 'done', actionId: 'act' }),
   };
+  const roleWrites: McpRoleWritesPort = {
+    grant: () => Promise.resolve({ status: 'done', actionId: 'act', alreadyHad: false }),
+    remove: () => Promise.resolve({ status: 'done', actionId: 'act', alreadyHad: false }),
+  };
   const actions: McpActionsPort = {
     undo: () =>
       Promise.resolve({ status: 'done', actionId: 'undo', undoneActionId: 'act', kind: 'edit' }),
@@ -121,6 +126,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     send,
     threadWrites,
     messageWrites,
+    roleWrites,
     actions,
     tasks,
     taskDetail,
@@ -204,6 +210,9 @@ const SEND_TOOLS: readonly string[] = [
   'undo_action',
 ];
 
+/** The roles-scope set: the two role-change tools (slice 4, Task 3). */
+const ROLES_TOOLS: readonly string[] = ['grant_role', 'remove_role'];
+
 /** The tasks-scope set: main's task-tracking write tools, sorted. */
 const TASK_TOOLS: readonly string[] = [
   'add_task_reminder',
@@ -242,6 +251,7 @@ const expectedFor = (subset: readonly ScopeShort[]): readonly string[] => {
   const names = [
     ...(subset.includes('read') ? READ_TOOLS : []),
     ...(subset.includes('send') ? SEND_TOOLS : []),
+    ...(subset.includes('roles') ? ROLES_TOOLS : []),
     ...(subset.includes('tasks') ? TASK_TOOLS : []),
   ];
   return [...names].sort();
@@ -282,6 +292,7 @@ describe('registration pins every scope subset', () => {
   it('the three scope sets have the expected sizes', () => {
     expect(READ_TOOLS).toHaveLength(27);
     expect(SEND_TOOLS).toHaveLength(14);
+    expect(ROLES_TOOLS).toHaveLength(2);
     expect(TASK_TOOLS).toHaveLength(25);
     // The hardcoded task list is the whole registrar: no drift between this
     // file and the tools main registers.
@@ -289,7 +300,7 @@ describe('registration pins every scope subset', () => {
   });
 
   it('every name is unique across registrars', () => {
-    const all = [...READ_TOOLS, ...SEND_TOOLS, ...TASK_TOOLS];
+    const all = [...READ_TOOLS, ...SEND_TOOLS, ...ROLES_TOOLS, ...TASK_TOOLS];
     expect(new Set(all).size).toBe(all.length);
   });
 

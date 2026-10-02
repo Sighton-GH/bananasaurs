@@ -255,6 +255,20 @@ export {
   type MessageWriteOutcomeText,
 } from './tools/message-writes.js';
 export {
+  GRANT_ROLE_TOOL_DESCRIPTION,
+  GRANT_ROLE_TOOL_NAME,
+  REMOVE_ROLE_TOOL_DESCRIPTION,
+  REMOVE_ROLE_TOOL_NAME,
+  grantRoleParams,
+  grantRoleText,
+  removeRoleParams,
+  removeRoleText,
+  type McpRoleWriteOutcome,
+  type McpRoleWriteRefusal,
+  type McpRoleWritesPort,
+  type RoleWriteOutcomeText,
+} from './tools/role-writes.js';
+export {
   LIST_ACTIONS_DEFAULT_LIMIT,
   LIST_ACTIONS_LIMIT_MAX,
   LIST_ACTIONS_TOOL_DESCRIPTION,
