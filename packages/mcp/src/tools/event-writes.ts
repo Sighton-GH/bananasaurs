@@ -517,14 +517,15 @@ const refusalText = (
         `so ${nothingHappened}. Wait for an operator to clear it; do not retry in a loop.`
       );
     case 'rate-cap':
-      // Events share the 100-per-hour structure group; polls share the
-      // 300-per-hour message group (cap groups, ADR 0116 §6).
+      // Events share the structure cap group; polls share the message group
+      // (ADR 0116 §6). Both caps are owner-tunable settings (ADR 0119 §4), so
+      // the text names the setting rather than a number that could drift.
       return kind === 'create-poll'
-        ? `Guild ${guildId} has used its message budget of 300 sends per rolling hour, ` +
+        ? `Guild ${guildId} has used its rolling-hour message budget (setting mcp.cap.message), ` +
             `so ${nothingHappened}. Wait for the window to pass before retrying` +
             `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
             'answering an already-recorded idempotency key still works meanwhile.'
-        : `Guild ${guildId} has used its structure budget of 100 event changes per rolling hour, ` +
+        : `Guild ${guildId} has used its rolling-hour structure budget (setting mcp.cap.structure), ` +
             `so ${nothingHappened}. Wait for the window to pass before retrying` +
             `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
             'answering an already-recorded idempotency key still works meanwhile.';

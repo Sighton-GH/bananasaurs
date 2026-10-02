@@ -485,11 +485,11 @@ describe('event-write refusal rendering', () => {
     const pollText = messageOf(
       await createPollText(principalWith([GUILD_A]), fakeEventPort(refused), pollArgs()),
     );
-    expect(pollText).toContain('message budget of 300');
+    expect(pollText).toContain('setting mcp.cap.message');
     const eventText = messageOf(
       await createEventText(principalWith([GUILD_A]), fakeEventPort(refused), createArgs()),
     );
-    expect(eventText).toContain('structure budget of 100');
+    expect(eventText).toContain('setting mcp.cap.structure');
   });
 });
 
