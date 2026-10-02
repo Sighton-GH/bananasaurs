@@ -158,7 +158,11 @@ export type McpMessageWriteOutcome =
       readonly actionId: string;
       readonly messageId?: string;
     }
-  | { readonly status: 'refused'; readonly reason: McpMessageWriteRefusal; readonly detail?: string }
+  | {
+      readonly status: 'refused';
+      readonly reason: McpMessageWriteRefusal;
+      readonly detail?: string;
+    }
   | { readonly status: 'failed' };
 
 export type McpMessageWriteRefusal =
@@ -340,13 +344,13 @@ const reactionParamsDescription = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   channelId: z.string().describe('Channel holding the message.'),
   messageId: z.string().describe('Message to react to.'),
-  emoji: z
-    .string()
-    .describe('A unicode emoji, or name:id for a custom emoji of this guild.'),
+  emoji: z.string().describe('A unicode emoji, or name:id for a custom emoji of this guild.'),
   dryRun: z.boolean().optional().describe('Record without reacting: nothing reaches Discord.'),
   idempotencyKey: z
     .string()
-    .describe('Caller-supplied key for this reaction; reuse the same value if you retry this call.'),
+    .describe(
+      'Caller-supplied key for this reaction; reuse the same value if you retry this call.',
+    ),
 };
 
 export const addReactionParams = { ...reactionParamsDescription };
@@ -462,18 +466,14 @@ const refusalText = (
       // Edits and deletes share the 300-per-hour edit group; pins, unpins
       // and reactions share the 300-per-hour pin_react group (ruling).
       return kind === 'edit' || kind === 'delete'
-        ? (
-            `Guild ${guildId} has used its edit budget of 300 edits and deletes per rolling hour, ` +
+        ? `Guild ${guildId} has used its edit budget of 300 edits and deletes per rolling hour, ` +
             `so nothing was ${noun}. Wait for the window to pass before retrying` +
             `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
             'answering an already-recorded idempotency key still works meanwhile.'
-          )
-        : (
-            `Guild ${guildId} has used its pin and reaction budget of 300 pins and reactions ` +
+        : `Guild ${guildId} has used its pin and reaction budget of 300 pins and reactions ` +
             `per rolling hour, so nothing was ${noun}. Wait for the window to pass before retrying` +
             `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
-            'answering an already-recorded idempotency key still works meanwhile.'
-          );
+            'answering an already-recorded idempotency key still works meanwhile.';
     case 'duplicate-key-different-content':
       return (
         `That idempotency key was already used for a different write in guild ${guildId}, ` +
@@ -676,7 +676,13 @@ const reactionText = async (
       dryRun: input.dryRun ?? false,
       idempotencyKey: input.idempotencyKey,
     });
-    return renderOutcome(method === 'addReaction' ? 'add-reaction' : 'remove-reaction', gate.guildId, input.channelId, input.messageId, outcome);
+    return renderOutcome(
+      method === 'addReaction' ? 'add-reaction' : 'remove-reaction',
+      gate.guildId,
+      input.channelId,
+      input.messageId,
+      outcome,
+    );
   } catch {
     return refuse();
   }
@@ -686,12 +692,10 @@ export const addReactionText = async (
   principal: McpPrincipal,
   port: McpMessageWritesPort,
   rawArgs: unknown,
-): Promise<MessageWriteOutcomeText> =>
-  reactionText(principal, port, rawArgs, 'addReaction');
+): Promise<MessageWriteOutcomeText> => reactionText(principal, port, rawArgs, 'addReaction');
 
 export const removeReactionText = async (
   principal: McpPrincipal,
   port: McpMessageWritesPort,
   rawArgs: unknown,
-): Promise<MessageWriteOutcomeText> =>
-  reactionText(principal, port, rawArgs, 'removeReaction');
+): Promise<MessageWriteOutcomeText> => reactionText(principal, port, rawArgs, 'removeReaction');

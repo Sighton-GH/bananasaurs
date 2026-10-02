@@ -4,12 +4,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import {
-  guildRepo,
-  panelRepo,
-  taskRepo,
-  type GuildScope,
-} from '@bananasaurs/storage';
+import { guildRepo, panelRepo, taskRepo, type GuildScope } from '@bananasaurs/storage';
 import { protectedMessageReason } from './protected.js';
 
 /**

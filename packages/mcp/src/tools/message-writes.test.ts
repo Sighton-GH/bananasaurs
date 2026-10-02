@@ -147,19 +147,18 @@ const handlers = [
 ];
 
 describe('message-write guild gate (CLAUDE.md rule 2)', () => {
-  it.each(handlers)('%s refuses an unreachable guild with the shared refusal', async (
-    _name,
-    handler,
-    args,
-  ) => {
-    const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
-    const outcome = await handler(principalWith([GUILD_A]), port, {
-      ...args(),
-      guildId: '222222222222222222',
-    });
-    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    expect(totalCalls(port)).toBe(0);
-  });
+  it.each(handlers)(
+    '%s refuses an unreachable guild with the shared refusal',
+    async (_name, handler, args) => {
+      const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
+      const outcome = await handler(principalWith([GUILD_A]), port, {
+        ...args(),
+        guildId: '222222222222222222',
+      });
+      expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+      expect(totalCalls(port)).toBe(0);
+    },
+  );
 
   it.each(handlers)('%s refuses a malformed guild id identically', async (_name, handler, args) => {
     const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
@@ -171,12 +170,15 @@ describe('message-write guild gate (CLAUDE.md rule 2)', () => {
     expect(totalCalls(port)).toBe(0);
   });
 
-  it.each(handlers)('%s refuses an empty reachable set identically', async (_name, handler, args) => {
-    const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
-    const outcome = await handler(principalWith([]), port, args());
-    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    expect(totalCalls(port)).toBe(0);
-  });
+  it.each(handlers)(
+    '%s refuses an empty reachable set identically',
+    async (_name, handler, args) => {
+      const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
+      const outcome = await handler(principalWith([]), port, args());
+      expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+      expect(totalCalls(port)).toBe(0);
+    },
+  );
 });
 
 describe('edit_message argument boundary (hard rule 3)', () => {
@@ -327,25 +329,24 @@ describe('message-write refusal rendering', () => {
     ['duplicate-content-recently', 'already'],
   ];
 
-  it.each(handlers)('%s renders every refusal distinctly, with ids and no content', async (
-    _name,
-    handler,
-    args,
-  ) => {
-    const texts = new Map<McpMessageWriteRefusal, string>();
-    for (const [reason] of cases) {
-      const port = fakeWritesPort({ status: 'refused', reason, detail: 'PinMessages' });
-      const outcome = await handler(principalWith([GUILD_A]), port, args());
-      const text = messageOf(outcome);
-      expect(text).toContain('111111111111111111');
-      texts.set(reason, text);
-    }
-    // No two reasons share a string.
-    expect(new Set(texts.values()).size).toBe(cases.length);
-    for (const [reason, marker] of cases) {
-      expect(texts.get(reason)).toContain(marker);
-    }
-  });
+  it.each(handlers)(
+    '%s renders every refusal distinctly, with ids and no content',
+    async (_name, handler, args) => {
+      const texts = new Map<McpMessageWriteRefusal, string>();
+      for (const [reason] of cases) {
+        const port = fakeWritesPort({ status: 'refused', reason, detail: 'PinMessages' });
+        const outcome = await handler(principalWith([GUILD_A]), port, args());
+        const text = messageOf(outcome);
+        expect(text).toContain('111111111111111111');
+        texts.set(reason, text);
+      }
+      // No two reasons share a string.
+      expect(new Set(texts.values()).size).toBe(cases.length);
+      for (const [reason, marker] of cases) {
+        expect(texts.get(reason)).toContain(marker);
+      }
+    },
+  );
 
   it('a pin without pin permission names both PinMessages and ManageMessages', async () => {
     const port = fakeWritesPort({
@@ -364,9 +365,9 @@ describe('message-write refusal rendering', () => {
 describe('message-write outcomes', () => {
   it('done names the action and the message', async () => {
     const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
-    expect(textOf(await editMessageText(principalWith([GUILD_A]), port, validEditArgs()))).toContain(
-      ACTION,
-    );
+    expect(
+      textOf(await editMessageText(principalWith([GUILD_A]), port, validEditArgs())),
+    ).toContain(ACTION);
     expect(
       textOf(await deleteMessageText(principalWith([GUILD_A]), port, validDeleteArgs())),
     ).toContain('cannot be undone');
@@ -399,22 +400,21 @@ describe('message-write outcomes', () => {
     expect(text).toContain('same idempotency key');
   });
 
-  it.each(handlers)('%s never throws: a port fault is the shared refusal', async (
-    _name,
-    handler,
-    args,
-  ) => {
-    const failing: McpMessageWritesPort = {
-      edit: () => Promise.reject(new Error('discord is down')),
-      delete: () => Promise.reject(new Error('discord is down')),
-      pin: () => Promise.reject(new Error('discord is down')),
-      unpin: () => Promise.reject(new Error('discord is down')),
-      addReaction: () => Promise.reject(new Error('discord is down')),
-      removeReaction: () => Promise.reject(new Error('discord is down')),
-    };
-    const outcome = await handler(principalWith([GUILD_A]), failing, args());
-    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-  });
+  it.each(handlers)(
+    '%s never throws: a port fault is the shared refusal',
+    async (_name, handler, args) => {
+      const failing: McpMessageWritesPort = {
+        edit: () => Promise.reject(new Error('discord is down')),
+        delete: () => Promise.reject(new Error('discord is down')),
+        pin: () => Promise.reject(new Error('discord is down')),
+        unpin: () => Promise.reject(new Error('discord is down')),
+        addReaction: () => Promise.reject(new Error('discord is down')),
+        removeReaction: () => Promise.reject(new Error('discord is down')),
+      };
+      const outcome = await handler(principalWith([GUILD_A]), failing, args());
+      expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    },
+  );
 });
 
 /** Minimal ports: this block pins registration, never the tools themselves. */
