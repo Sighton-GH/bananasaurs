@@ -48,7 +48,8 @@ export const UNDO_ACTION_TOOL_DESCRIPTION =
   'a thread-member add removes the same members, a thread archive or lock restores ' +
   'the previous state, a role grant removes the same role while a role removal re-grants it, ' +
   'and a role edit restores the previous name, color and mentionable. ' +
-  'Posts, deletes, thread creation, forum posts, member removals and role creation ' +
+  'Posts, deletes, thread creation, forum posts, member removals, role creation, ' +
+  'panel creation, panel edits and panel deletion ' +
   'cannot be undone, and neither can a role change that changed nothing. Each action undoes at most once: repeating this call answers that ' +
   'it is already undone. Takes an actionId from list_actions; the undo runs as its own ' +
   'action with key undo:<actionId>.';
@@ -216,7 +217,7 @@ const undoRefusalText = (
         `Action ${actionId} in guild ${guildId} cannot be undone` +
         `${detail !== undefined ? ` (kind ${detail})` : ''}: only edits, pins, reactions, ` +
         'thread-member adds, thread state changes, role grants, role removals and role edits are reversible — posts, deletes, thread ' +
-        'creation, forum posts, member removals and role creation never are — a role change that changed nothing ' +
+        'creation, forum posts, member removals, role creation, panel creation, panel edits and panel deletion never are — a role change that changed nothing ' +
         '(the member already had the role, or did not have it) records no undo, and a reversible action whose ' +
         'stored previous state is missing or unreadable cannot be restored either.'
       );
