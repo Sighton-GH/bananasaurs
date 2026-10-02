@@ -70,6 +70,7 @@ export {
   MCP_READ_GET_MOD_CASE,
   MCP_READ_GET_SERVER_CONTEXT,
   MCP_READ_GET_SERVER_OVERVIEW,
+  MCP_READ_LIST_ACTIONS,
   MCP_READ_LIST_AUDIT_EVENTS,
   MCP_READ_LIST_CHANNELS,
   MCP_READ_LIST_JOBS,
@@ -253,6 +254,22 @@ export {
   type McpMessageWritesPort,
   type MessageWriteOutcomeText,
 } from './tools/message-writes.js';
+export {
+  LIST_ACTIONS_DEFAULT_LIMIT,
+  LIST_ACTIONS_LIMIT_MAX,
+  LIST_ACTIONS_TOOL_DESCRIPTION,
+  LIST_ACTIONS_TOOL_NAME,
+  UNDO_ACTION_TOOL_DESCRIPTION,
+  UNDO_ACTION_TOOL_NAME,
+  listActionsText,
+  listActionsParams,
+  undoActionText,
+  undoActionParams,
+  type McpActionView,
+  type McpActionsPort,
+  type McpUndoOutcome,
+  type McpUndoRefusal,
+} from './tools/actions.js';
 export { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 export {
   GET_SERVER_CONTEXT_TOOL_DESCRIPTION,

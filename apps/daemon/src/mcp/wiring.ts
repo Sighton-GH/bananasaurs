@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   ChannelType,
@@ -22,6 +23,7 @@ import {
   skillScopeAllows,
   unicodeEmojiKey,
   type DiscordPort,
+  type EmojiKey,
   type GuildId,
   type Logger,
   type McpActionOutcome,
@@ -38,6 +40,8 @@ import {
   createMcpServer,
   GUILD_REFUSAL_MESSAGE,
   MEMBER_LISTING_CAP,
+  type McpActionView,
+  type McpActionsPort,
   type McpArchiveMessage,
   type McpArchivePort,
   type McpContextPort,
@@ -2434,6 +2438,357 @@ const messageWritesPortFor = (
 };
 
 /**
+ * The undo_json shapes, exactly as the ports above write them (slice 3,
+ * Tasks 5–6): an edit stores the previous `{content, embeds}`, a pin stores
+ * `{op:'unpin'}` and an unpin `{op:'pin'}`, a reaction add stores
+ * `{op:'remove-reaction', emoji}` and a removal `{op:'add-reaction',
+ * emoji}`, a thread-member add stores `{userIds}`, and a thread state change
+ * stores `{archived}` or `{locked}`. Each kind parses only its own shape
+ * (strict: an extra field refuses rather than guesses), and a row that
+ * fails to parse is not undoable.
+ */
+const undoEditSchema = z
+  .object({ content: z.string(), embeds: z.array(z.unknown()) })
+  .strict();
+const undoUnpinSchema = z.object({ op: z.literal('unpin') }).strict();
+const undoPinSchema = z.object({ op: z.literal('pin') }).strict();
+const undoRemoveReactionSchema = z
+  .object({ op: z.literal('remove-reaction'), emoji: z.string().min(1) })
+  .strict();
+const undoAddReactionSchema = z
+  .object({ op: z.literal('add-reaction'), emoji: z.string().min(1) })
+  .strict();
+const undoRemoveMembersSchema = z
+  .object({ userIds: z.array(z.string().min(1)).min(1).max(25) })
+  .strict();
+const undoThreadStateSchema = z.union([
+  z.object({ archived: z.boolean() }).strict(),
+  z.object({ locked: z.boolean() }).strict(),
+]);
+
+/** Kinds with an inverse. Everything else cannot be undone (ADR 0116 §5). */
+const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
+  'message.edit',
+  'message.pin',
+  'message.unpin',
+  'reaction.add',
+  'reaction.remove',
+  'thread.members.add',
+  'thread.state',
+]);
+
+const parseUndoJson = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+interface UndoPlan {
+  readonly kind: string;
+  readonly capGroup: 'edit' | 'pin_react' | 'structure';
+  readonly argsHash: string;
+  readonly execute: () => Promise<{ resultMessageId?: string; resultThreadId?: string }>;
+}
+
+/**
+ * The inverse of one ledger row (ADR 0116 §5), or `undefined` when the row
+ * cannot be inverted: a kind with no inverse, a row with no `undo_json`
+ * (a `thread.state` whose previous state was unknown records none), a row
+ * whose `undo_json` fails its kind's schema, or a row missing the ids the
+ * inverse needs. Never guesses — every one of those answers `not-undoable`
+ * at the call site.
+ */
+const planUndo = (
+  guildId: GuildId,
+  discord: DiscordPort,
+  row: {
+    readonly kind: string;
+    readonly targetChannelId: string | undefined;
+    readonly resultMessageId: string | undefined;
+    readonly undoJson: string | undefined;
+  },
+): UndoPlan | undefined => {
+  if (row.undoJson === undefined) return undefined;
+  const parsed = parseUndoJson(row.undoJson);
+  if (parsed === undefined) return undefined;
+  switch (row.kind) {
+    case 'message.edit': {
+      const undo = undoEditSchema.safeParse(parsed);
+      const channelId = row.targetChannelId;
+      const messageId = row.resultMessageId;
+      if (!undo.success || channelId === undefined || messageId === undefined) return undefined;
+      return {
+        kind: 'message.edit',
+        capGroup: 'edit',
+        argsHash: argsHashFor('message.edit', {
+          channel: channelId,
+          message: messageId,
+          content: undo.data.content,
+          embeds: undo.data.embeds,
+        }),
+        execute: async () => {
+          await discord.editMessage(
+            guildId,
+            { channelId, messageId },
+            {
+              content: undo.data.content,
+              embeds: undo.data.embeds,
+              // An undo edit that pings would notify on a restoration:
+              // absent, Discord would apply its default and notify.
+              allowedMentions: { parse: [], roles: [], users: [] },
+            },
+          );
+          return { resultMessageId: messageId };
+        },
+      };
+    }
+    case 'message.pin':
+    case 'message.unpin': {
+      const undo =
+        row.kind === 'message.pin'
+          ? undoUnpinSchema.safeParse(parsed)
+          : undoPinSchema.safeParse(parsed);
+      const channelId = row.targetChannelId;
+      const messageId = row.resultMessageId;
+      if (!undo.success || channelId === undefined || messageId === undefined) return undefined;
+      const pin = row.kind === 'message.unpin';
+      return {
+        kind: pin ? 'message.pin' : 'message.unpin',
+        capGroup: 'pin_react',
+        argsHash: argsHashFor(pin ? 'message.pin' : 'message.unpin', {
+          channel: channelId,
+          message: messageId,
+        }),
+        execute: async () => {
+          if (pin) await discord.pinMessage(guildId, { channelId, messageId });
+          else await discord.unpinMessage(guildId, { channelId, messageId });
+          return { resultMessageId: messageId };
+        },
+      };
+    }
+    case 'reaction.add':
+    case 'reaction.remove': {
+      const undo =
+        row.kind === 'reaction.add'
+          ? undoRemoveReactionSchema.safeParse(parsed)
+          : undoAddReactionSchema.safeParse(parsed);
+      const channelId = row.targetChannelId;
+      const messageId = row.resultMessageId;
+      if (!undo.success || channelId === undefined || messageId === undefined) return undefined;
+      const emoji = undo.data.emoji as EmojiKey;
+      const add = row.kind === 'reaction.remove';
+      return {
+        kind: add ? 'reaction.add' : 'reaction.remove',
+        capGroup: 'pin_react',
+        argsHash: argsHashFor(add ? 'reaction.add' : 'reaction.remove', {
+          channel: channelId,
+          message: messageId,
+          emoji,
+        }),
+        execute: async () => {
+          if (add) await discord.createReaction(guildId, { channelId, messageId }, emoji);
+          else await discord.deleteOwnReaction(guildId, { channelId, messageId }, emoji);
+          return { resultMessageId: messageId };
+        },
+      };
+    }
+    case 'thread.members.add': {
+      const undo = undoRemoveMembersSchema.safeParse(parsed);
+      const threadId = row.targetChannelId;
+      if (!undo.success || threadId === undefined) return undefined;
+      const userIds = [...undo.data.userIds];
+      return {
+        kind: 'thread.members.remove',
+        capGroup: 'structure',
+        argsHash: argsHashFor('thread.members.remove', { thread: threadId, userIds }),
+        execute: async () => {
+          for (const userId of userIds) {
+            await discord.removeThreadMember(guildId, threadId, userId);
+          }
+          return { resultThreadId: threadId };
+        },
+      };
+    }
+    case 'thread.state': {
+      const undo = undoThreadStateSchema.safeParse(parsed);
+      const threadId = row.targetChannelId;
+      if (!undo.success || threadId === undefined) return undefined;
+      const state =
+        'archived' in undo.data ? { archived: undo.data.archived } : { locked: undo.data.locked };
+      return {
+        kind: 'thread.state',
+        capGroup: 'structure',
+        argsHash: argsHashFor('thread.state', { thread: threadId, ...state }),
+        execute: async () => {
+          await discord.setThreadState(guildId, threadId, state);
+          return { resultThreadId: threadId };
+        },
+      };
+    }
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * The `McpActionsPort` behind `undo_action` and `list_actions` (slice 3,
+ * Task 7), field by field like `healthPortFor` above.
+ *
+ * An undo finds the action in this guild's ledger — another guild's id
+ * answers `action-not-found`, never its facts — refuses a dry run, a failed
+ * row, a row that has not completed, an already-undone row, and a row with
+ * no invertible state, then runs the inverse through the one `runMcpAction`
+ * pipeline with key `undo:<actionId>` and the inverse's kind and cap group.
+ * On `done` it names the undo with `markUndone`; a replayed undo (the same
+ * key claimed twice) answers `already-undone` with the undo's action id.
+ * An undo records no undo of its own: each action inverts once.
+ *
+ * Audit actions default to `mcp.<kind>` in `mcpActionDepsFor`, so the undo
+ * lands as `mcp.message.edit`, `mcp.message.unpin` and friends — ids, the
+ * outcome and `actionId`, never content (rule 4). A fault leaves one
+ * allowlisted-fields error line via `loggedCallAsync` above, never content:
+ * the action id and the outcome name what happened.
+ */
+const actionsPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+): McpActionsPort => ({
+  undo: (guildId, input) =>
+    loggedCallAsync(deps.logger, 'undoAction', async () => {
+      const scope = deps.scopes.forGuild(guildId);
+      const row = mcpActionsRepo.findActionById(scope, input.actionId);
+      if (row === undefined) return { status: 'refused', reason: 'action-not-found' };
+      if (row.undoneByActionId !== undefined) {
+        return {
+          status: 'refused',
+          reason: 'already-undone',
+          detail: row.undoneByActionId,
+        };
+      }
+      if (row.status === 'dry_run') return { status: 'refused', reason: 'action-dry-run' };
+      if (row.status === 'failed') return { status: 'refused', reason: 'action-failed' };
+      if (row.status !== 'done') return { status: 'refused', reason: 'action-incomplete' };
+      const plan = planUndo(guildId, discord, row);
+      if (plan === undefined) {
+        return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+      }
+      const outcome = await runMcpAction(
+        mcpActionDepsFor(deps, guildId, principal),
+        {
+          kind: plan.kind,
+          capGroup: plan.capGroup,
+          idempotencyKey: `undo:${row.actionId}`,
+          tokenId: principal.tokenId,
+          argsHash: plan.argsHash,
+          targetChannelId: row.targetChannelId,
+          dryRun: false,
+          duplicateContentGuard: false,
+        },
+        true,
+        plan.execute,
+      );
+      switch (outcome.status) {
+        case 'done': {
+          // Only the first undo wins: a lost race finds the mark taken and
+          // answers already-undone with the winner's id rather than
+          // inverting twice.
+          const marked = mcpActionsRepo.markUndone(scope, row.actionId, outcome.actionId);
+          if (!marked) {
+            const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+            return {
+              status: 'refused',
+              reason: 'already-undone',
+              detail: reread?.undoneByActionId ?? outcome.actionId,
+            };
+          }
+          return {
+            status: 'done',
+            actionId: outcome.actionId,
+            undoneActionId: row.actionId,
+            kind: row.kind,
+          };
+        }
+        case 'dry-run': {
+          // Dry run records without executing, so the original stays
+          // undoable: nothing was restored, and nothing is marked.
+          return {
+            status: 'dry-run',
+            actionId: outcome.actionId,
+            undoneActionId: row.actionId,
+            kind: row.kind,
+          };
+        }
+        case 'replayed': {
+          // The same derived key claimed twice with the same args: the undo
+          // already ran. The mark is idempotent, so claiming it again is
+          // safe, and the answer names the undo's action id.
+          mcpActionsRepo.markUndone(scope, row.actionId, outcome.actionId);
+          const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+          return {
+            status: 'refused',
+            reason: 'already-undone',
+            detail: reread?.undoneByActionId ?? outcome.actionId,
+          };
+        }
+        case 'refused':
+          switch (outcome.reason) {
+            case 'killswitch':
+              return { status: 'refused', reason: 'killswitch' };
+            case 'breaker-open':
+              return { status: 'refused', reason: 'breaker-open' };
+            case 'rate-cap':
+              return {
+                status: 'refused',
+                reason: 'rate-cap',
+                ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+              };
+            case 'key-reused-with-other-args':
+            case 'duplicate-content-recently':
+              // Unreachable: the key is derived from the action id and the
+              // hash from the stored inverse, so one action always hashes one
+              // way — and the duplicate-content guard is off. A ledger edited
+              // by hand is the only way here, and that is a failure, not a
+              // refusal the model can act on.
+              return { status: 'failed' };
+            case 'guild-unknown':
+            case 'target':
+              // Unreachable: the guild gate above already answered that, and
+              // every target refusal returns before the pipeline runs, so
+              // `targetCheck` is always `true` here.
+              throw new Error(GUILD_REFUSAL_MESSAGE);
+          }
+          break;
+        case 'failed':
+          return { status: 'failed' };
+      }
+    }),
+  list: (guildId, input) =>
+    loggedCall(deps.logger, 'listActions', () => {
+      const scope = deps.scopes.forGuild(guildId);
+      const limit = Math.min(Math.max(1, Math.floor(input.limit)), 100);
+      return mcpActionsRepo.listActions(scope, { limit }).map(
+        (row): McpActionView => ({
+          actionId: row.actionId,
+          kind: row.kind,
+          status: row.status,
+          ...(row.targetChannelId !== undefined ? { targetChannelId: row.targetChannelId } : {}),
+          ...(row.resultMessageId !== undefined ? { resultMessageId: row.resultMessageId } : {}),
+          ...(row.resultThreadId !== undefined ? { resultThreadId: row.resultThreadId } : {}),
+          undoable:
+            row.status === 'done' &&
+            row.undoneByActionId === undefined &&
+            row.undoJson !== undefined &&
+            REVERSIBLE_ACTION_KINDS.has(row.kind),
+          createdAt: row.createdAt,
+        }),
+      );
+    }),
+});
+
+/**
  * The `McpReadAuditPort` behind every read tool (ADR 0050), the one writer
  * in this file: the tool layer says *what* was read (guild, action, subject,
  * result count) and this port closes over *who* read it — the OAuth token
@@ -2770,6 +3125,7 @@ export const registerMcpRoutes = (
       send: sendPortFor(principal, deps, discord, client),
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
+      actions: actionsPortFor(principal, deps, discord),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),
