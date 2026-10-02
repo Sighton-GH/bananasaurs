@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  JOB_KINDS,
   parseSnowflakeId,
   RetryAfterError,
   safeLogFields,
@@ -28,8 +29,9 @@ import type { mcpBulkRepo } from '@bananasaurs/storage';
  * `effect_batches` row the confirm opened.
  *
  * Per-member outcomes (applied / already had / refused reason / failed code)
- * land in the completion log line — ids only, never member names or the
- * confirm token. A gateway `rate-cap` refusal persists the cursor and throws
+ * accumulate in the persisted cursor, so a rate-capped or restarted run keeps
+ * the outcomes of the members before it, and the completion log line carries
+ * the whole list — ids only, never member names or the confirm token. A gateway `rate-cap` refusal persists the cursor and throws
  * `RetryAfterError`, so the worker retries after the bucket refills and the
  * run resumes at the refused member; a restart resumes the same way through
  * the stranded-job recovery. Any other refusal is recorded and the walk
@@ -42,7 +44,7 @@ import type { mcpBulkRepo } from '@bananasaurs/storage';
  */
 
 /** The job kind, as the confirm enqueues it and `get_job` shows it. */
-export const MCP_BULK_ROLE_KIND = 'mcp.bulk_role';
+export const MCP_BULK_ROLE_KIND = JOB_KINDS.mcpBulkRole;
 
 /** One job per accepted preview: the confirm's action id makes the key unique. */
 export const mcpBulkRoleDedupeKey = (actionId: string): string =>
@@ -59,11 +61,16 @@ export type McpBulkRolePayload = z.infer<typeof mcpBulkRolePayload>;
 
 /**
  * Where the walk got to: the index into the preview's stored member list of
- * the next member to apply. Our own prior write, but still validated on read
- * like every cursor — a row that does not validate restarts from zero rather
- * than trusting garbage into the walk.
+ * the next member to apply, and the outcomes of the members before it. Our
+ * own prior write, but still validated on read like every cursor — a row that
+ * does not validate restarts from zero rather than trusting garbage into the
+ * walk.
  */
-const mcpBulkRoleCursor = z.object({ next: z.number().int().nonnegative() });
+const mcpBulkRoleCursor = z.object({
+  next: z.number().int().nonnegative(),
+  outcomes: z.array(z.string()).max(100).default([]),
+});
+type McpBulkRoleCursor = z.infer<typeof mcpBulkRoleCursor>;
 
 /** A gateway `rate-cap` retries after a full bucket refill (the per-minute rate). */
 export const MCP_BULK_RATE_RETRY_MS = 60_000;
@@ -83,13 +90,12 @@ export interface McpBulkRoleJobPorts {
   findPreview(previewId: string): mcpBulkRepo.McpBulkPreviewRow | undefined;
 }
 
-const parseCursor = (raw: string | null): number => {
-  if (raw === null) return 0;
+const parseCursor = (raw: string | null): McpBulkRoleCursor => {
+  if (raw === null) return { next: 0, outcomes: [] };
   try {
-    const parsed = mcpBulkRoleCursor.parse(JSON.parse(raw) as unknown);
-    return parsed.next;
+    return mcpBulkRoleCursor.parse(JSON.parse(raw) as unknown);
   } catch {
-    return 0;
+    return { next: 0, outcomes: [] };
   }
 };
 
@@ -137,8 +143,11 @@ export const mcpBulkRoleHandler = (ports: McpBulkRoleJobPorts): JobHandler<McpBu
     }
     const witness = ports.authorizeAccount(payload.accountId);
     const action = preview.actionKind === 'add' ? 'grant' : 'revoke';
-    const outcomes: string[] = [];
-    let next = Math.min(parseCursor(context.cursor), memberIds.length);
+    const resumed = parseCursor(context.cursor);
+    let next = Math.min(resumed.next, memberIds.length);
+    // Outcomes beyond the resume point would be stale (a cursor that does not
+    // match its own index): keep exactly one per member already walked.
+    const outcomes: string[] = resumed.outcomes.slice(0, next);
     for (; next < memberIds.length; next += 1) {
       const memberId = memberIds[next];
       if (memberId === undefined) break;
@@ -176,7 +185,7 @@ export const mcpBulkRoleHandler = (ports: McpBulkRoleJobPorts): JobHandler<McpBu
           if (result.reason === 'rate-cap') {
             // Persist the cursor at the refused member and reschedule: the
             // retry resumes here after the bucket refills.
-            context.saveCursor(JSON.stringify({ next }));
+            context.saveCursor(JSON.stringify({ next, outcomes }));
             throw new RetryAfterError(
               `bulk role job rate-capped at member ${String(next)} of ${String(memberIds.length)}`,
               MCP_BULK_RATE_RETRY_MS,
@@ -192,7 +201,7 @@ export const mcpBulkRoleHandler = (ports: McpBulkRoleJobPorts): JobHandler<McpBu
           outcomes.push(`${memberId}:failed:dry-run`);
           break;
       }
-      context.saveCursor(JSON.stringify({ next: next + 1 }));
+      context.saveCursor(JSON.stringify({ next: next + 1, outcomes }));
     }
     const applied = outcomes.filter((line) => line.endsWith(':applied')).length;
     logger.info(

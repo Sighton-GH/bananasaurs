@@ -3033,6 +3033,10 @@ const bulkRolesPortFor = (
               throw new Error('bulk role job was not enqueued');
             }
             if (!mcpBulkRepo.consumePreview(scope, preview.previewId, enqueued.jobId, deps.now())) {
+              // Lost the single-use race: another confirm owns the preview.
+              // Cancel the job this confirm just enqueued, so exactly one
+              // `mcp.bulk_role` job per preview is ever runnable.
+              jobRepo.cancelJob(scope, enqueued.jobId, deps.now());
               consumedRace = true;
               throw new Error('bulk preview already consumed');
             }

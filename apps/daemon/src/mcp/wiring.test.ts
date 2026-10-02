@@ -8788,6 +8788,61 @@ describe('/mcp bulk_role_change through the real composition', () => {
     }
   });
 
+  it('a confirm that loses the consume race leaves no runnable bulk job', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const previewId = mcpBulkRepo.findPreviewByToken(scope, token)?.previewId;
+      if (previewId === undefined) throw new Error('preview was not stored');
+      // The race, made deterministic: the role is out of the cache, so the
+      // confirm's live pre-check awaits a role fetch. While it waits, another
+      // confirm wins the single-use consume, and the role is back in the
+      // cache for the grant policy — this confirm passes every pre-check and
+      // only `consumePreview` inside `execute` can stop it.
+      const guild = client.guilds.cache.get(GUILD_A);
+      const role = guild?.roles.cache.get(LOW_ROLE);
+      if (guild === undefined || role === undefined) throw new Error('role not cached');
+      guild.roles.cache.delete(LOW_ROLE);
+      const fetchRoles = discord.fetchRoles.bind(discord);
+      discord.fetchRoles = async (guildId) => {
+        mcpBulkRepo.consumePreview(scope, previewId, 987654, clock);
+        guild.roles.cache.set(LOW_ROLE, role);
+        return fetchRoles(guildId);
+      };
+      const loser = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-race-k1' }),
+          )
+        ).body,
+      );
+      expect(loser.isError).toBe(true);
+      expect(loser.text).toContain('already used');
+      const bulkJobs = jobRepo
+        .listJobs(scope, { limit: 100 })
+        .filter((job) => job.kind === 'mcp.bulk_role');
+      // The loser enqueued before its consume failed; that job is cancelled,
+      // never left queued to run.
+      expect(bulkJobs.length).toBeGreaterThan(0);
+      expect(bulkJobs.filter((job) => job.state === 'queued')).toHaveLength(0);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
   it("another guild's token is unknown", async () => {
     seedBulkScope();
     const discord = new FakeDiscord({ guildId: GUILD_A });

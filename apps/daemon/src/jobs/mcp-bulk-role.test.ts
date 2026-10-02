@@ -254,7 +254,7 @@ describe('mcp.bulk_role resume', () => {
     await expect(mcpBulkRoleHandler(ports).run(payload(), first.ctx)).rejects.toBeInstanceOf(
       RetryAfterError,
     );
-    expect(first.saved.at(-1)).toBe(JSON.stringify({ next: 1 }));
+    expect(JSON.parse(first.saved.at(-1) ?? '{}')).toMatchObject({ next: 1 });
     // The retry resumes at the refused member, after the bucket refills.
     const retryGateway = fakeGateway(() => ({
       status: 'applied',
@@ -268,6 +268,32 @@ describe('mcp.bulk_role resume', () => {
     );
     expect(retryGateway.calls).toHaveLength(1);
     expect(String(retryGateway.calls[0]?.triggerRef)).toContain(MEMBER_B);
+  });
+
+  it('outcomes from before a rate-cap retry survive into the completion record', async () => {
+    let calls = 0;
+    const gateway = fakeGateway(() => {
+      calls += 1;
+      return calls === 1
+        ? { status: 'skipped', reason: 'no-change-needed' }
+        : { status: 'refused', reason: 'rate-cap' };
+    });
+    const ports = portsFor({ gateway });
+    const first = runCtx();
+    await expect(mcpBulkRoleHandler(ports).run(payload(), first.ctx)).rejects.toBeInstanceOf(
+      RetryAfterError,
+    );
+    const retry = portsFor({
+      gateway: fakeGateway(() => ({ status: 'applied', effectId: 'eff-2', hadRoleBefore: false })),
+      scope: ports.scope,
+    });
+    await mcpBulkRoleHandler(retry).run(
+      payload(),
+      runCtx({ cursor: first.saved.at(-1) ?? null }).ctx,
+    );
+    const record = retry.lines.join('\n');
+    expect(record).toContain(`${MEMBER_A}:already-had`);
+    expect(record).toContain(`${MEMBER_B}:applied`);
   });
 });
 
