@@ -4,7 +4,7 @@ import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import type { GuildScope } from '../scope.js';
 import { upsertGuild } from './guilds.js';
-import { consumePreview, createPreview, findPreviewByToken } from './mcp-bulk.js';
+import { consumePreview, createPreview, findPreviewById, findPreviewByToken, sumConsumedMembers } from './mcp-bulk.js';
 
 const GUILD_A = parseGuildId('111111111111111111');
 const GUILD_B = parseGuildId('222222222222222222');
@@ -127,5 +127,51 @@ describe('consumePreview', () => {
     expect(consumePreview(b, 'preview-1', 7, 1500)).toBe(true);
     expect(findPreviewByToken(a, 'token-a')?.consumedAt).toBeUndefined();
     expect(consumePreview(a, 'preview-1', 7, 1500)).toBe(true);
+  });
+});
+
+describe('findPreviewById', () => {
+  it('loads the preview by id in its own guild only', () => {
+    create(a, { previewId: 'preview-9', memberIds: ['666666666666666666'] });
+    expect(findPreviewById(a, 'preview-9')).toMatchObject({
+      previewId: 'preview-9',
+      actionKind: 'add',
+      roleId: ROLE,
+      memberIds: ['666666666666666666'],
+    });
+    expect(findPreviewById(a, 'preview-missing')).toBeUndefined();
+    expect(findPreviewById(b, 'preview-9')).toBeUndefined();
+  });
+
+  it('sees consumed rows too, with the job id', () => {
+    create(a);
+    expect(consumePreview(a, 'preview-1', 7, 1500)).toBe(true);
+    expect(findPreviewById(a, 'preview-1')).toMatchObject({ consumedAt: 1500, jobId: 7 });
+  });
+});
+
+describe('sumConsumedMembers', () => {
+  it('sums the member counts of previews consumed since the window bound', () => {
+    const live = { createdAt: 1000, expiresAt: 3000 };
+    create(a, { previewId: 'p1', token: 't1', memberIds: ['1'.repeat(18), '2'.repeat(18)], ...live });
+    create(a, { previewId: 'p2', token: 't2', memberIds: ['3'.repeat(18)], ...live });
+    create(a, { previewId: 'p3', token: 't3', memberIds: ['4'.repeat(18)], ...live });
+    expect(consumePreview(a, 'p1', 7, 1500)).toBe(true);
+    expect(consumePreview(a, 'p2', 8, 2500)).toBe(true);
+    // p3 stays unconsumed: never counted.
+    expect(sumConsumedMembers(a, 1000)).toEqual({ previewCount: 2, memberTotal: 3 });
+    expect(sumConsumedMembers(a, 2000)).toEqual({ previewCount: 1, memberTotal: 1 });
+    expect(sumConsumedMembers(a, 2500)).toEqual({ previewCount: 1, memberTotal: 1 });
+    expect(sumConsumedMembers(a, 2501)).toEqual({ previewCount: 0, memberTotal: 0 });
+  });
+
+  it('is guild-scoped: guild B’s consumption never counts for guild A', () => {
+    create(a, { previewId: 'p1', token: 't1', memberIds: ['1'.repeat(18)] });
+    create(b, { previewId: 'p1', token: 't1', memberIds: ['2'.repeat(18), '3'.repeat(18)] });
+    expect(consumePreview(b, 'p1', 9, 1500)).toBe(true);
+    expect(sumConsumedMembers(a, 1000)).toEqual({ previewCount: 0, memberTotal: 0 });
+    expect(sumConsumedMembers(b, 1000)).toEqual({ previewCount: 1, memberTotal: 2 });
+    expect(consumePreview(a, 'p1', 7, 1500)).toBe(true);
+    expect(sumConsumedMembers(a, 1000)).toEqual({ previewCount: 1, memberTotal: 1 });
   });
 });
