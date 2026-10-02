@@ -249,6 +249,15 @@ describe('messages and reactions', () => {
    * *double* encoding, which sends `%F0%9F%91%8D` as a literal and reacts with
    * nonsense, and decoding once catches exactly that.
    */
+  it('removes the bot reaction with DELETE on the same @me route', async () => {
+    const { port, requests } = harness();
+    await port.deleteOwnReaction(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, THUMBS_UP);
+    expect(last(requests).method).toBe('DELETE');
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/channels/${CHANNEL}/messages/${MESSAGE}/reactions/👍/@me`,
+    );
+  });
+
   it('seeds a unicode reaction on the @me route, encoded exactly once', async () => {
     const { port, requests } = harness();
     await port.createReaction(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, THUMBS_UP);
@@ -506,6 +515,39 @@ describe('messages and reactions', () => {
     expect(last(requests).body).toEqual({ content: 'hello' });
   });
 
+  /**
+   * `pingReplyAuthor` is an opt-out, not a toggle: undefined keeps today's
+   * behaviour byte-identical, and only an explicit `false` suppresses the ping.
+   */
+  it('keeps replied_user true when pingReplyAuthor is undefined', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'reply, ping on',
+      replyTo: '600000000000000001',
+      pingReplyAuthor: undefined,
+    });
+    expect(last(requests).body).toMatchObject({
+      allowed_mentions: { parse: [], replied_user: true },
+    });
+  });
+
+  it('sends replied_user false only when pingReplyAuthor is false', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'reply, ping off',
+      replyTo: '600000000000000001',
+      pingReplyAuthor: false,
+    });
+    expect(last(requests).body).toMatchObject({
+      message_reference: { message_id: '600000000000000001', fail_if_not_exists: false },
+      allowed_mentions: { parse: [], replied_user: false },
+    });
+  });
+
   it("keeps replyTo's replied_user alongside an explicit allowedMentions.roles", async () => {
     const { port, requests } = harness([
       { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
@@ -519,6 +561,67 @@ describe('messages and reactions', () => {
       allowed_mentions: { parse: [], roles: ['555555555555555555'], replied_user: true },
       message_reference: { message_id: '600000000000000001', fail_if_not_exists: false },
     });
+  });
+
+  it('emits a native poll object when poll is set (question, answers, duration, multiselect)', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'lunch?',
+      poll: {
+        question: 'Where for lunch?',
+        answers: ['Tacos', 'Sushi'],
+        durationHours: 24,
+        allowMultiselect: false,
+      },
+    });
+    expect(last(requests).body).toEqual({
+      content: 'lunch?',
+      poll: {
+        question: { text: 'Where for lunch?' },
+        answers: [{ poll_media: { text: 'Tacos' } }, { poll_media: { text: 'Sushi' } }],
+        duration: 24,
+        allow_multiselect: false,
+      },
+    });
+  });
+
+  it('emits allow_multiselect true when the poll allows several answers', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'pick two',
+      poll: {
+        question: 'Which days?',
+        answers: ['Friday', 'Saturday'],
+        durationHours: 48,
+        allowMultiselect: true,
+      },
+    });
+    expect(last(requests).body).toMatchObject({
+      poll: { duration: 48, allow_multiselect: true },
+    });
+  });
+
+  it('sends no poll key at all when the message does not set it', async () => {
+    // A full-featured message without a poll must reach the wire exactly as
+    // before — `poll` is opt-in, like `allowedMentions` and `replyTo`.
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'hello',
+      embeds: [{ title: 'details' }],
+      allowedMentions: { parse: [] },
+    });
+    expect(last(requests).body).toEqual({
+      content: 'hello',
+      embeds: [{ title: 'details' }],
+      allowed_mentions: { parse: [] },
+    });
+    expect(last(requests).body).not.toHaveProperty('poll');
   });
 
   it("fetches one message's content and author", async () => {
@@ -572,6 +675,53 @@ describe('messages and reactions', () => {
     await expect(
       forbidden.port.fetchMessageContent(GUILD, CHANNEL, MESSAGE),
     ).resolves.toBeUndefined();
+  });
+
+  it("fetches one message's author, content and embeds off the channel-message route", async () => {
+    const { port, requests } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'member' },
+          content: 'see attached chart',
+          embeds: [{ title: 'chart', type: 'rich' }],
+        },
+      },
+    ]);
+    await expect(
+      port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toEqual({
+      authorId: USER,
+      content: 'see attached chart',
+      embeds: [{ title: 'chart', type: 'rich' }],
+    });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
+  });
+
+  it('answers undefined for fetchMessageAuthor on 404 or 403, never a throw', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },
+    ]);
+    await expect(
+      gone.port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(
+      forbidden.port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else for fetchMessageAuthor (e.g. a server error)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(
+      port.fetchMessageAuthor(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
+    ).rejects.toBeInstanceOf(DiscordApiError);
   });
 
   it('still raises anything else (e.g. a rate limit)', async () => {
@@ -796,6 +946,22 @@ describe('message metadata (slice 2 task 6)', () => {
     await expect(
       port.fetchMessageMeta(GUILD, { channelId: CHANNEL, messageId: MESSAGE }),
     ).rejects.toBeInstanceOf(DiscordApiError);
+  });
+});
+
+describe('pins', () => {
+  it('pins with PUT on the non-deprecated channelMessagesPin route', async () => {
+    const { port, requests } = harness();
+    await port.pinMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE });
+    expect(last(requests).method).toBe('PUT');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/pins/${MESSAGE}`);
+  });
+
+  it('unpins with DELETE on the same route', async () => {
+    const { port, requests } = harness();
+    await port.unpinMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE });
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/pins/${MESSAGE}`);
   });
 });
 
@@ -1309,6 +1475,160 @@ describe('thread info (ADR 0115 sweeper fallback)', () => {
   });
 });
 
+describe('thread writes (MCP slice 3)', () => {
+  const THREAD = '666666666666666666';
+  const FORUM = '777777777777777777';
+
+  it('starts a public thread with the type explicit (the API defaults to private)', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: THREAD } }]);
+    await expect(
+      port.createThread(GUILD, CHANNEL, {
+        name: 'build night',
+        type: 'public',
+        autoArchiveMinutes: 1440,
+      }),
+    ).resolves.toEqual({ threadId: THREAD });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/threads`);
+    // `type: 11` is ChannelType.PublicThread; asserted as the number the
+    // existing thread-info tests use rather than importing the enum.
+    expect(last(requests).body).toEqual({
+      name: 'build night',
+      auto_archive_duration: 1440,
+      type: 11,
+    });
+  });
+
+  it('starts a private thread, sending invitable only for private', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: THREAD } }]);
+    await port.createThread(GUILD, CHANNEL, {
+      name: 'mod huddle',
+      type: 'private',
+      autoArchiveMinutes: 60,
+      invitable: true,
+    });
+    // `type: 12` is ChannelType.PrivateThread.
+    expect(last(requests).body).toEqual({
+      name: 'mod huddle',
+      auto_archive_duration: 60,
+      type: 12,
+      invitable: true,
+    });
+  });
+
+  it('defaults a private thread to not invitable, and never sends it for public threads', async () => {
+    const noFlag = harness([{ status: 200, body: { id: THREAD } }]);
+    await noFlag.port.createThread(GUILD, CHANNEL, {
+      name: 'mod huddle',
+      type: 'private',
+      autoArchiveMinutes: 60,
+    });
+    expect(last(noFlag.requests).body).toHaveProperty('invitable', false);
+
+    const publicThread = harness([{ status: 200, body: { id: THREAD } }]);
+    await publicThread.port.createThread(GUILD, CHANNEL, {
+      name: 'build night',
+      type: 'public',
+      autoArchiveMinutes: 1440,
+      invitable: true,
+    });
+    expect(last(publicThread.requests).body).not.toHaveProperty('invitable');
+  });
+
+  it('starts a thread from a message on the from-message route, with no type', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: THREAD } }]);
+    await port.createThread(GUILD, CHANNEL, {
+      name: 'side discussion',
+      type: 'public',
+      autoArchiveMinutes: 4320,
+      fromMessageId: MESSAGE,
+    });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}/threads`);
+    // The from-message endpoint derives the kind from the message: no
+    // `type`, no `invitable` — both would be rejected or meaningless.
+    expect(last(requests).body).toEqual({ name: 'side discussion', auto_archive_duration: 4320 });
+  });
+
+  it('refuses a private thread from a message with a TypeError before any call', async () => {
+    const { port, requests } = harness();
+    await expect(
+      port.createThread(GUILD, CHANNEL, {
+        name: 'side discussion',
+        type: 'private',
+        autoArchiveMinutes: 1440,
+        fromMessageId: MESSAGE,
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('adds a thread member with PUT and no body', async () => {
+    const { port, requests } = harness();
+    await port.addThreadMember(GUILD, THREAD, USER);
+    expect(last(requests).method).toBe('PUT');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}/thread-members/${USER}`);
+    expect(last(requests).body).toBeUndefined();
+  });
+
+  it('removes a thread member with DELETE on the same route', async () => {
+    const { port, requests } = harness();
+    await port.removeThreadMember(GUILD, THREAD, USER);
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}/thread-members/${USER}`);
+  });
+
+  it('starts a forum post with the starter message built as sendMessage builds it', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: THREAD, message: { id: MESSAGE } } },
+    ]);
+    await expect(
+      port.createForumPost(GUILD, FORUM, {
+        name: 'looking for players',
+        message: {
+          content: 'friday night?',
+          embeds: [{ title: 'details' }],
+          allowedMentions: { parse: [] },
+        },
+        appliedTagIds: ['888888888888888888', '999999999999999999'],
+      }),
+    ).resolves.toEqual({ threadId: THREAD, messageId: MESSAGE });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${FORUM}/threads`);
+    expect(last(requests).body).toEqual({
+      name: 'looking for players',
+      message: {
+        content: 'friday night?',
+        embeds: [{ title: 'details' }],
+        allowed_mentions: { parse: [] },
+      },
+      applied_tags: ['888888888888888888', '999999999999999999'],
+    });
+  });
+
+  it('falls back to the thread id, which a forum starter message shares, when no message is nested', async () => {
+    const { port } = harness([{ status: 200, body: { id: THREAD } }]);
+    await expect(
+      port.createForumPost(GUILD, FORUM, {
+        name: 'looking for players',
+        message: { content: 'friday night?' },
+        appliedTagIds: [],
+      }),
+    ).resolves.toEqual({ threadId: THREAD, messageId: THREAD });
+  });
+
+  it('patches only the thread fields given', async () => {
+    const { port, requests } = harness();
+    await port.setThreadState(GUILD, THREAD, { archived: true });
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/channels/${THREAD}`);
+    expect(last(requests).body).toEqual({ archived: true });
+
+    await port.setThreadState(GUILD, THREAD, { locked: false, archived: false });
+    expect(last(requests).body).toEqual({ locked: false, archived: false });
+  });
+});
+
 describe('guild lifecycle', () => {
   it('leaves a guild on the @me route', async () => {
     const { port, requests } = harness();
@@ -1319,6 +1639,10 @@ describe('guild lifecycle', () => {
 });
 
 describe('scheduled events', () => {
+  const EVENT = '888888888888888888';
+  const START_AT = Date.parse('2026-09-25T19:00:00.000Z');
+  const END_AT = Date.parse('2026-09-25T21:00:00.000Z');
+
   it('lists guild scheduled events with start, channel and location', async () => {
     const { port, requests } = harness([
       {
@@ -1376,6 +1700,118 @@ describe('scheduled events', () => {
       { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
     ]);
     await expect(port.listScheduledEvents(GUILD)).resolves.toEqual([]);
+  });
+
+  it('creates a voice event with guild-only privacy and ISO times', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: EVENT } }]);
+    await expect(
+      port.createScheduledEvent(GUILD, {
+        name: 'Build night',
+        description: 'Bring tools.',
+        startAt: START_AT,
+        location: { kind: 'voice', channelId: CHANNEL },
+      }),
+    ).resolves.toEqual({ eventId: EVENT });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/scheduled-events`);
+    // `privacy_level: 2` is GuildOnly; `entity_type: 2` is Voice.
+    expect(last(requests).body).toEqual({
+      name: 'Build night',
+      description: 'Bring tools.',
+      privacy_level: 2,
+      scheduled_start_time: '2026-09-25T19:00:00.000Z',
+      entity_type: 2,
+      channel_id: CHANNEL,
+    });
+  });
+
+  it('creates a stage event with the stage-instance entity type', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: EVENT } }]);
+    await port.createScheduledEvent(GUILD, {
+      name: 'Town hall',
+      startAt: START_AT,
+      endAt: END_AT,
+      location: { kind: 'stage', channelId: CHANNEL },
+    });
+    // `entity_type: 1` is StageInstance.
+    expect(last(requests).body).toEqual({
+      name: 'Town hall',
+      privacy_level: 2,
+      scheduled_start_time: '2026-09-25T19:00:00.000Z',
+      scheduled_end_time: '2026-09-25T21:00:00.000Z',
+      entity_type: 1,
+      channel_id: CHANNEL,
+    });
+  });
+
+  it('creates an external event at a location with its end time', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: EVENT } }]);
+    await port.createScheduledEvent(GUILD, {
+      name: 'Track day',
+      startAt: START_AT,
+      endAt: END_AT,
+      location: { kind: 'external', place: 'Mission Raceway' },
+    });
+    // `entity_type: 3` is External: hosted at a location, in no channel.
+    expect(last(requests).body).toEqual({
+      name: 'Track day',
+      privacy_level: 2,
+      scheduled_start_time: '2026-09-25T19:00:00.000Z',
+      scheduled_end_time: '2026-09-25T21:00:00.000Z',
+      entity_type: 3,
+      entity_metadata: { location: 'Mission Raceway' },
+    });
+  });
+
+  it('refuses an external event without endAt with a TypeError before any call', async () => {
+    const { port, requests } = harness();
+    await expect(
+      port.createScheduledEvent(GUILD, {
+        name: 'Track day',
+        startAt: START_AT,
+        location: { kind: 'external', place: 'Mission Raceway' },
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('patches only the event fields given', async () => {
+    const { port, requests } = harness();
+    await port.editScheduledEvent(GUILD, EVENT, { name: 'Build night 2' });
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/scheduled-events/${EVENT}`);
+    expect(last(requests).body).toEqual({ name: 'Build night 2' });
+
+    await port.editScheduledEvent(GUILD, EVENT, {
+      startAt: START_AT,
+      location: { kind: 'voice', channelId: CHANNEL },
+    });
+    expect(last(requests).body).toEqual({
+      scheduled_start_time: '2026-09-25T19:00:00.000Z',
+      entity_type: 2,
+      channel_id: CHANNEL,
+    });
+  });
+
+  it('edits a location to external with the channel cleared', async () => {
+    const { port, requests } = harness();
+    await port.editScheduledEvent(GUILD, EVENT, {
+      location: { kind: 'external', place: 'Mission Raceway' },
+    });
+    expect(last(requests).body).toEqual({
+      entity_type: 3,
+      channel_id: null,
+      entity_metadata: { location: 'Mission Raceway' },
+    });
+  });
+
+  it('cancels an event with PATCH status Canceled', async () => {
+    const { port, requests } = harness();
+    await port.cancelScheduledEvent(GUILD, EVENT);
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/scheduled-events/${EVENT}`);
+    // `status: 4` is Canceled.
+    expect(last(requests).body).toEqual({ status: 4 });
   });
 });
 

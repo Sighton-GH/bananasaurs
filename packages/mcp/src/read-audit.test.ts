@@ -49,11 +49,13 @@ import {
 } from './tools/records.js';
 import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
 import type { McpSendPort } from './tools/send.js';
+import type { McpMessageWritesPort } from './tools/message-writes.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
 import { openResourceText, searchResourcesText, type McpResourcesPort } from './tools/resources.js';
 import { readThreadText, type McpThreadsPort } from './tools/threads.js';
+import type { McpThreadWritesPort } from './tools/thread-writes.js';
 import { listUnansweredText, readDigestText } from './tools/digest.js';
 
 /**
@@ -574,7 +576,19 @@ const contentfulArchivePort = (): McpArchivePort => ({
 });
 
 const stubSendPort = (): McpSendPort => ({
-  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
+});
+
+/** Minimal message-writes port: this file pins read logging, never the write tools. */
+const stubMessageWritesPort = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
 });
 
 /** Minimal jobs port: this file pins read logging, never the jobs tools. */
@@ -613,6 +627,15 @@ const stubThreadsPort = (): McpThreadsPort => ({
   liveThreadMessages: () => Promise.resolve([]),
 });
 
+/** Minimal thread-writes port: required since slice 3 Task 5; never called by the reads pinned here. */
+const stubThreadWritesPort = (): McpThreadWritesPort => ({
+  createThread: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createForumPost: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+});
+
 /** One connected client/server pair whose read-audit port is the one under test. */
 const connectWithReadAudit = async (
   readAudit: McpReadAuditPort,
@@ -631,6 +654,8 @@ const connectWithReadAudit = async (
     resources: stubResourcesPort(),
     threads: stubThreadsPort(),
     send: stubSendPort(),
+    threadWrites: stubThreadWritesPort(),
+    messageWrites: stubMessageWritesPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

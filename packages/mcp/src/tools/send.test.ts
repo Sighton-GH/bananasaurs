@@ -36,6 +36,8 @@ import {
   type McpResourcesPort,
 } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
+import type { McpThreadWritesPort } from './thread-writes.js';
+import type { McpMessageWritesPort } from './message-writes.js';
 
 /**
  * Task 3, tool layer: `send_message` against a fake `McpSendPort` — the same
@@ -60,6 +62,11 @@ import type { McpThreadsPort } from './threads.js';
 const GUILD_A = parseGuildId('111111111111111111');
 const GUILD_B = parseGuildId('222222222222222222');
 const CHANNEL = '333333333333333333';
+const THREAD = '344444444444444444';
+const REPLY_TO = '355555555555555555';
+const ROLE = '366666666666666666';
+const USER = '377777777777777777';
+const ACTION = 'act-00000000000000000000000001';
 
 const principalWith = (
   guilds: readonly GuildId[],
@@ -109,7 +116,11 @@ describe('send_message guild gate (CLAUDE.md rule 2)', () => {
     ['malformed guild id', 'not-a-snowflake', [GUILD_A]],
     ['empty reachable set', '111111111111111111', []],
   ])('%s is the shared refusal and the port was never called', async (_label, guildId, guilds) => {
-    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+    const port = fakeSendPort({
+      status: 'sent',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     const outcome = await sendMessageText(principalWith(guilds), port, {
       ...validArgs(),
       guildId,
@@ -119,7 +130,11 @@ describe('send_message guild gate (CLAUDE.md rule 2)', () => {
   });
 
   it('empty, malformed and unreachable refusals are indistinguishable', async () => {
-    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+    const port = fakeSendPort({
+      status: 'sent',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     const outcomes = await Promise.all([
       sendMessageText(principalWith([]), port, validArgs()),
       sendMessageText(principalWith([GUILD_A]), port, {
@@ -149,15 +164,60 @@ describe('send_message argument boundary (hard rule 3)', () => {
     ['malformed channel id', { ...validArgs(), channelId: 'not-a-channel' }],
     ['missing guild id', { channelId: CHANNEL, content: 'hi', idempotencyKey: 'k' }],
     ['non-string content', { ...validArgs(), content: 42 }],
+    [
+      'neither content nor embeds',
+      { guildId: '111111111111111111', channelId: CHANNEL, idempotencyKey: 'k' },
+    ],
+    ['empty embeds without content', { ...validArgs(), content: undefined, embeds: [] }],
+    [
+      'four embeds',
+      { ...validArgs(), embeds: [{ title: 'a' }, { title: 'b' }, { title: 'c' }, { title: 'd' }] },
+    ],
+    [
+      'an embed with an image field',
+      { ...validArgs(), embeds: [{ title: 't', image: { url: 'https://x.test/i.png' } }] },
+    ],
+    [
+      'an embed with a url field',
+      { ...validArgs(), embeds: [{ title: 't', url: 'https://x.test/' }] },
+    ],
+    ['an empty embed', { ...validArgs(), content: undefined, embeds: [{}] }],
+    [
+      'embeds over 6000 characters in total',
+      {
+        ...validArgs(),
+        content: undefined,
+        embeds: [{ description: 'x'.repeat(4096) }, { description: 'y'.repeat(2005) }],
+      },
+    ],
+    [
+      'eleven ping roles',
+      { ...validArgs(), pingRoles: Array.from({ length: 11 }, (_, i) => `role-${String(i)}`) },
+    ],
+    [
+      'twenty-six ping users',
+      { ...validArgs(), pingUsers: Array.from({ length: 26 }, () => USER) },
+    ],
+    ['malformed thread id', { ...validArgs(), threadId: 'not-a-thread' }],
+    ['malformed reply id', { ...validArgs(), replyTo: 'not-a-message' }],
+    ['malformed ping user id', { ...validArgs(), pingUsers: ['not-a-user'] }],
   ])('%s is the argument fault and the port was never called', async (_label, args) => {
-    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+    const port = fakeSendPort({
+      status: 'sent',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, args);
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(port.calls).toBe(0);
   });
 
   it('content of exactly 2000 characters reaches the port', async () => {
-    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+    const port = fakeSendPort({
+      status: 'sent',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, {
       ...validArgs(),
       content: 'x'.repeat(SEND_CONTENT_MAX),
@@ -169,7 +229,11 @@ describe('send_message argument boundary (hard rule 3)', () => {
   it('whitespace-only content is an argument fault and the port was never called', async () => {
     // M8: refused before anything is claimed — the port never runs, so no
     // ledger row, no rate-cap slot, no Discord call.
-    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+    const port = fakeSendPort({
+      status: 'sent',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     for (const content of ['   ', '\n\t  ', ' \n ']) {
       const outcome = await sendMessageText(principalWith([GUILD_A]), port, {
         ...validArgs(),
@@ -185,7 +249,11 @@ describe('send_message argument boundary (hard rule 3)', () => {
     const port: McpSendPort = {
       send: (_guildId, input) => {
         seen = input.content;
-        return Promise.resolve({ status: 'sent', messageId: '444444444444444444' });
+        return Promise.resolve({
+          status: 'sent',
+          messageId: '444444444444444444',
+          actionId: ACTION,
+        });
       },
     };
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, {
@@ -195,6 +263,64 @@ describe('send_message argument boundary (hard rule 3)', () => {
     expect(outcome.ok).toBe(true);
     expect(seen).toBe('hello   world\nnewline');
   });
+
+  it('embeds without content reach the port, and the port sees the new fields', async () => {
+    let seen: Parameters<McpSendPort['send']>[1] | undefined;
+    const port: McpSendPort = {
+      send: (_guildId, input) => {
+        seen = input;
+        return Promise.resolve({
+          status: 'sent',
+          messageId: '444444444444444444',
+          actionId: ACTION,
+        });
+      },
+    };
+    const outcome = await sendMessageText(principalWith([GUILD_A]), port, {
+      guildId: '111111111111111111',
+      channelId: CHANNEL,
+      embeds: [{ title: 'plan', description: 'picnic', footer: 'club' }],
+      replyTo: REPLY_TO,
+      threadId: THREAD,
+      pingRoles: [ROLE],
+      pingUsers: [USER],
+      dryRun: true,
+      idempotencyKey: 'key-embeds',
+    });
+    expect(outcome.ok).toBe(true);
+    expect(seen).toMatchObject({
+      channelId: CHANNEL,
+      content: undefined,
+      replyTo: REPLY_TO,
+      pingReplyAuthor: false,
+      threadId: THREAD,
+      pingRoles: [ROLE],
+      pingUsers: [USER],
+      dryRun: true,
+      idempotencyKey: 'key-embeds',
+    });
+    expect(seen?.embeds).toHaveLength(1);
+  });
+
+  it('pingReplyAuthor true reaches the port', async () => {
+    let seen: Parameters<McpSendPort['send']>[1] | undefined;
+    const port: McpSendPort = {
+      send: (_guildId, input) => {
+        seen = input;
+        return Promise.resolve({
+          status: 'sent',
+          messageId: '444444444444444444',
+          actionId: ACTION,
+        });
+      },
+    };
+    await sendMessageText(principalWith([GUILD_A]), port, {
+      ...validArgs(),
+      replyTo: REPLY_TO,
+      pingReplyAuthor: true,
+    });
+    expect(seen?.pingReplyAuthor).toBe(true);
+  });
 });
 
 describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
@@ -202,6 +328,13 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
     'private-thread',
     'channel-not-allowlisted',
     'channel-not-in-guild',
+    'bot-lacks-permission',
+    'role-unknown',
+    'role-dangerous',
+    'role-managed-or-everyone',
+    'role-above-bot',
+    'role-not-allowlisted',
+    'user-not-member',
     'killswitch',
     'breaker-open',
     'rate-cap',
@@ -212,7 +345,7 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
   it('every refusal is an error with distinct, non-empty text', async () => {
     const messages: string[] = [];
     for (const reason of ALL_REFUSALS) {
-      const port = fakeSendPort({ status: 'refused', reason });
+      const port = fakeSendPort({ status: 'refused', reason, detail: 'detail-probe' });
       const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
       expect(port.calls).toBe(1);
       const message = messageOf(outcome);
@@ -227,13 +360,24 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
     ['private-thread', 'private thread'],
     ['channel-not-allowlisted', 'allowlist'],
     ['channel-not-in-guild', 'will not help'],
+    ['bot-lacks-permission', 'permission'],
+    ['role-unknown', 'No role'],
+    ['role-dangerous', 'never allows'],
+    ['role-managed-or-everyone', 'never be pinged'],
+    ['role-above-bot', 'highest role'],
+    ['role-not-allowlisted', 'allowlist'],
+    ['user-not-member', 'not a member'],
     ['killswitch', 'kill switch'],
     ['breaker-open', 'breaker'],
     ['rate-cap', 'hour'],
     ['duplicate-key-different-content', 'different message'],
     ['duplicate-content-recently', 'minute'],
   ])('%s tells the operator what to do next (%s)', async (reason, phrase) => {
-    const port = fakeSendPort({ status: 'refused', reason: reason as McpSendRefusal });
+    const port = fakeSendPort({
+      status: 'refused',
+      reason: reason as McpSendRefusal,
+      detail: 'detail-probe',
+    });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
     expect(messageOf(outcome)).toContain(phrase);
   });
@@ -245,56 +389,97 @@ it('the allowlist remediation names the guild', async () => {
   expect(messageOf(outcome)).toContain('--guild 111111111111111111');
 });
 
+it('the bot-permission refusal names the missing permission', async () => {
+  const port = fakeSendPort({
+    status: 'refused',
+    reason: 'bot-lacks-permission',
+    detail: 'SendMessages',
+  });
+  const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
+  expect(messageOf(outcome)).toContain('SendMessages');
+});
+
 describe('send_message happy path', () => {
-  it('sent renders with the message id', async () => {
-    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+  it('sent renders with the message id and the action id', async () => {
+    const port = fakeSendPort({
+      status: 'sent',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     const text = textOf(await sendMessageText(principalWith([GUILD_A]), port, validArgs()));
     expect(text).toContain('444444444444444444');
+    expect(text).toContain(ACTION);
   });
 
   it('dry-run says plainly that nothing was posted because dry run is on', async () => {
-    const port = fakeSendPort({ status: 'dry-run' });
+    const port = fakeSendPort({ status: 'dry-run', actionId: ACTION });
     const text = textOf(await sendMessageText(principalWith([GUILD_A]), port, validArgs()));
     expect(text).toContain('ry run');
     expect(text).toContain('nothing was posted');
+    expect(text).toContain(ACTION);
+  });
+
+  it('dry-run reports what would be sent', async () => {
+    const port = fakeSendPort({ status: 'dry-run', actionId: ACTION });
+    const text = textOf(
+      await sendMessageText(principalWith([GUILD_A]), port, {
+        ...validArgs(),
+        threadId: THREAD,
+        replyTo: REPLY_TO,
+        pingRoles: [ROLE],
+        embeds: [{ title: 'plan' }],
+      }),
+    );
+    expect(text).toContain(THREAD);
+    expect(text).toContain(REPLY_TO);
+    expect(text).toContain('1 role(s)');
+    expect(text).toContain('1 embed(s)');
   });
 
   it('replayed is ok:true with the original id, never failure language', async () => {
-    const port = fakeSendPort({ status: 'replayed', messageId: '444444444444444444' });
+    const port = fakeSendPort({
+      status: 'replayed',
+      messageId: '444444444444444444',
+      actionId: ACTION,
+    });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
     expect(outcome.ok).toBe(true);
     const text = textOf(outcome);
     expect(text).toContain('444444444444444444');
+    expect(text).toContain(ACTION);
     expect(text).toContain('othing new was posted');
     expect(text.toLowerCase()).not.toContain('fail');
   });
 
-  it('replayed without a message id says to check the channel and reuse the key, never a fresh one', async () => {
-    // I4: probe F2 showed a fresh key 61 s later posts again, so this text
-    // must contain nothing that would produce a second send.
-    const port = fakeSendPort({ status: 'replayed', messageId: undefined });
+  it('replayed without a message id says the earlier outcome is unknown, never "sent"', async () => {
+    // A replay of a row whose earlier attempt failed: the tool text must say
+    // the earlier attempt's outcome is unknown and the message may or may
+    // not be in the channel — never "sent".
+    const port = fakeSendPort({ status: 'replayed', messageId: undefined, actionId: ACTION });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
     expect(outcome.ok).toBe(true);
     const text = textOf(outcome);
-    expect(text).toContain('othing new was posted');
-    expect(text).toContain('may or may not have been posted');
+    expect(text).toContain(ACTION);
+    expect(text).toContain('outcome is unknown');
+    expect(text).toContain('may or may not be in channel');
     expect(text).toContain(`Check channel ${CHANNEL}`);
     expect(text).toContain('reuse this same idempotency key');
     expect(text).not.toContain('fresh key');
+    expect(text.toLowerCase()).not.toContain('sent');
   });
 
   it('replayed with and without an id render differently', async () => {
     const withId = textOf(
       await sendMessageText(
         principalWith([GUILD_A]),
-        fakeSendPort({ status: 'replayed', messageId: '444444444444444444' }),
+        fakeSendPort({ status: 'replayed', messageId: '444444444444444444', actionId: ACTION }),
         validArgs(),
       ),
     );
     const withoutId = textOf(
       await sendMessageText(
         principalWith([GUILD_A]),
-        fakeSendPort({ status: 'replayed', messageId: undefined }),
+        fakeSendPort({ status: 'replayed', messageId: undefined, actionId: ACTION }),
         validArgs(),
       ),
     );
@@ -331,6 +516,15 @@ describe('send_message tool description (ruling M5-D8)', () => {
     expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('same value');
     expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('retry');
     expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('twice');
+  });
+
+  it('describes the new fields and the Discord Markdown note', () => {
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('thread');
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('reply');
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('embed');
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('dryRun');
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('Markdown');
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('masked links');
   });
 });
 
@@ -383,7 +577,34 @@ const stubRecords = (): McpRecordsPort => ({
 });
 
 const stubSend = (): McpSendPort => ({
-  send: () => Promise.resolve({ status: 'sent', messageId: '444444444444444444' }),
+  send: () =>
+    Promise.resolve({ status: 'sent', messageId: '444444444444444444', actionId: ACTION }),
+});
+
+/** Minimal thread-writes port: required since slice 3 Task 5; never called by the send pinned here. */
+const stubThreadWrites = (): McpThreadWritesPort => ({
+  createThread: () =>
+    Promise.resolve({ status: 'done', actionId: ACTION, threadId: '488888888888888888' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+  createForumPost: () =>
+    Promise.resolve({ status: 'done', actionId: ACTION, threadId: '488888888888888888' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+});
+
+/** Minimal message-writes port: this file pins `send_message`, never the write tools. */
+const stubMessageWrites = (): McpMessageWritesPort => ({
+  edit: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+  delete: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+  pin: () => Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+  unpin: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
 });
 
 /** Minimal jobs port: this file pins `send_message`, never the jobs tools. */
@@ -458,6 +679,8 @@ const connectPair = async (
     guild: stubGuild(),
     records: stubRecords(),
     send: stubSend(),
+    threadWrites: stubThreadWrites(),
+    messageWrites: stubMessageWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
@@ -494,17 +717,17 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
     expect(names).not.toContain(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a send-only token sees only send_message', async () => {
+  it('a send-only token sees send_message plus the six thread-write and six message-write tools', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A], ['bananasaurs:send']));
-    expect(names).toHaveLength(1);
-    expect(names).toEqual([SEND_MESSAGE_TOOL_NAME]);
+    expect(names).toHaveLength(13);
+    expect(names[0]).toBe(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a token with both scopes sees twenty-three tools', async () => {
+  it('a token with both scopes sees thirty-five tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(23);
+    expect(names).toHaveLength(35);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

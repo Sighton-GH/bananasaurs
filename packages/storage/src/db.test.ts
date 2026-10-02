@@ -627,6 +627,34 @@ describe('migration 0039 keeps one chain row per model when 0038 duplicated fall
   });
 });
 
+/**
+ * A migrations folder containing only the journal entries and `.sql` files up
+ * to and including `tag`, so `migrate()` can run against a snapshot of the
+ * schema older than what ships. Keyed by tag rather than idx so a test names
+ * the migration it stops before. Shared by the 0091 and 0092 data tests.
+ */
+const migrationsFolderUpToTag = (tag: string): string => {
+  const journal = JSON.parse(
+    fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+  ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+  const last = journal.entries.find((entry) => entry.tag === tag);
+  expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migrations-up-to-tag-'));
+  fs.mkdirSync(path.join(dir, 'meta'));
+  const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
+  fs.writeFileSync(
+    path.join(dir, 'meta', '_journal.json'),
+    JSON.stringify({ ...journal, entries }),
+  );
+  for (const entry of entries) {
+    fs.copyFileSync(
+      path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+      path.join(dir, `${entry.tag}.sql`),
+    );
+  }
+  return dir;
+};
+
 describe('migration 0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
   const GUILD_ID = '111111111111111111';
   const CHANNEL_ID = '222222222222222222';
@@ -634,35 +662,6 @@ describe('migration 0091 rebuild preserves archive rows, edits, attachments and 
   const MESSAGE_ONE = '444444444444444444';
   const MESSAGE_PURGED = '555555555555555555';
   const ATTACHMENT_ID = '666666666666666666';
-
-  /**
-   * A migrations folder containing only the journal entries and `.sql` files
-   * up to and including `tag`, so `migrate()` can run against a snapshot of
-   * the schema older than what ships. Same shape as the neighbouring
-   * `migrationsFolderUpTo` helpers, keyed by tag rather than idx so the test
-   * names the migration it stops before.
-   */
-  const migrationsFolderUpToTag = (tag: string): string => {
-    const journal = JSON.parse(
-      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
-    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
-    const last = journal.entries.find((entry) => entry.tag === tag);
-    expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-rebuild-migration-'));
-    fs.mkdirSync(path.join(dir, 'meta'));
-    const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
-    fs.writeFileSync(
-      path.join(dir, 'meta', '_journal.json'),
-      JSON.stringify({ ...journal, entries }),
-    );
-    for (const entry of entries) {
-      fs.copyFileSync(
-        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
-        path.join(dir, `${entry.tag}.sql`),
-      );
-    }
-    return dir;
-  };
 
   it('0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
     const raw = new Database(':memory:');
@@ -812,6 +811,127 @@ describe('migration 0091 rebuild preserves archive rows, edits, attachments and 
         )
         .all(),
     ).toEqual([{ guild_id: GUILD_ID, channel_id: CHANNEL_ID, message_id: MESSAGE_ONE }]);
+
+    raw.close();
+  });
+});
+
+describe('migration 0092 copies mcp_sends into mcp_actions (ADR 0116 section 2)', () => {
+  const GUILD_ID = '111111111111111111';
+  const CHANNEL_SENT = '222222222222222222';
+  const CHANNEL_DRY = '333333333333333333';
+  const MESSAGE_ID = '444444444444444444';
+
+  it('copies every mcp_sends row with the mapped values and leaves mcp_sends unchanged', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0092, seeded the way a
+    // real upgrade would find it: one accepted send with a message id and one
+    // dry run without.
+    runMigrations(raw, db, migrationsFolderUpToTag('0091_archive_reply_links'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mcp_sends
+           (guild_id, idempotency_key, channel_id, content_hash, message_id, token_id, sent_at, outcome)
+         VALUES (?, 'plain-key', ?, 'hash-plain', ?, 'tok_1', 1000, 'sent')`,
+      )
+      .run(GUILD_ID, CHANNEL_SENT, MESSAGE_ID);
+    raw
+      .prepare(
+        `INSERT INTO mcp_sends
+           (guild_id, idempotency_key, channel_id, content_hash, message_id, token_id, sent_at, outcome)
+         VALUES (?, 'dry-key', ?, 'hash-dry', NULL, 'tok_2', 2000, 'dry_run')`,
+      )
+      .run(GUILD_ID, CHANNEL_DRY);
+
+    // Applies 0092 against the seeded rows, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // Both rows are in mcp_actions with every mapped value.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, action_id, idempotency_key, kind, cap_group, args_hash, status,
+                  token_id, target_channel_id, result_message_id, result_thread_id,
+                  undo_json, undone_by_action_id, created_at, completed_at
+           FROM mcp_actions ORDER BY idempotency_key`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        action_id: 'legacy:dry-key',
+        idempotency_key: 'dry-key',
+        kind: 'message.send',
+        cap_group: 'message',
+        args_hash: 'hash-dry',
+        status: 'dry_run',
+        token_id: 'tok_2',
+        target_channel_id: CHANNEL_DRY,
+        result_message_id: null,
+        result_thread_id: null,
+        undo_json: null,
+        undone_by_action_id: null,
+        created_at: 2000,
+        completed_at: 2000,
+      },
+      {
+        guild_id: GUILD_ID,
+        action_id: 'legacy:plain-key',
+        idempotency_key: 'plain-key',
+        kind: 'message.send',
+        cap_group: 'message',
+        args_hash: 'hash-plain',
+        status: 'done',
+        token_id: 'tok_1',
+        target_channel_id: CHANNEL_SENT,
+        result_message_id: MESSAGE_ID,
+        result_thread_id: null,
+        undo_json: null,
+        undone_by_action_id: null,
+        created_at: 1000,
+        completed_at: 1000,
+      },
+    ]);
+    // mcp_sends still has both rows unchanged: the copy reads, never moves.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, idempotency_key, channel_id, content_hash, message_id,
+                  token_id, sent_at, outcome
+           FROM mcp_sends ORDER BY idempotency_key`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        idempotency_key: 'dry-key',
+        channel_id: CHANNEL_DRY,
+        content_hash: 'hash-dry',
+        message_id: null,
+        token_id: 'tok_2',
+        sent_at: 2000,
+        outcome: 'dry_run',
+      },
+      {
+        guild_id: GUILD_ID,
+        idempotency_key: 'plain-key',
+        channel_id: CHANNEL_SENT,
+        content_hash: 'hash-plain',
+        message_id: MESSAGE_ID,
+        token_id: 'tok_1',
+        sent_at: 1000,
+        outcome: 'sent',
+      },
+    ]);
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
 
     raw.close();
   });

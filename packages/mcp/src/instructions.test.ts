@@ -23,4 +23,14 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
   it('stays a short static string', () => {
     expect(MCP_SERVER_INSTRUCTIONS.length).toBeLessThan(3000);
   });
+
+  it('has a Writes section naming keys, dry runs, undo, explicit pings and private threads', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Writes');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('dryRun');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('undo_action');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('list_actions');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('pingRoles');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('pingUsers');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Private threads');
+  });
 });

@@ -71,6 +71,71 @@ import {
   sendMessageText,
   type McpSendPort,
 } from './tools/send.js';
+import {
+  ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
+  ADD_THREAD_MEMBERS_TOOL_NAME,
+  ARCHIVE_THREAD_TOOL_DESCRIPTION,
+  ARCHIVE_THREAD_TOOL_NAME,
+  CREATE_FORUM_POST_TOOL_DESCRIPTION,
+  CREATE_FORUM_POST_TOOL_NAME,
+  CREATE_THREAD_TOOL_DESCRIPTION,
+  CREATE_THREAD_TOOL_NAME,
+  LOCK_THREAD_TOOL_DESCRIPTION,
+  LOCK_THREAD_TOOL_NAME,
+  REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
+  REMOVE_THREAD_MEMBERS_TOOL_NAME,
+  addThreadMembersParams,
+  addThreadMembersText,
+  archiveThreadParams,
+  archiveThreadText,
+  createForumPostParams,
+  createForumPostText,
+  createThreadParams,
+  createThreadText,
+  lockThreadParams,
+  lockThreadText,
+  removeThreadMembersParams,
+  removeThreadMembersText,
+  type McpThreadWritesPort,
+} from './tools/thread-writes.js';
+import {
+  ADD_REACTION_TOOL_DESCRIPTION,
+  ADD_REACTION_TOOL_NAME,
+  DELETE_MESSAGE_TOOL_DESCRIPTION,
+  DELETE_MESSAGE_TOOL_NAME,
+  EDIT_MESSAGE_TOOL_DESCRIPTION,
+  EDIT_MESSAGE_TOOL_NAME,
+  PIN_MESSAGE_TOOL_DESCRIPTION,
+  PIN_MESSAGE_TOOL_NAME,
+  REMOVE_REACTION_TOOL_DESCRIPTION,
+  REMOVE_REACTION_TOOL_NAME,
+  UNPIN_MESSAGE_TOOL_DESCRIPTION,
+  UNPIN_MESSAGE_TOOL_NAME,
+  addReactionParams,
+  addReactionText,
+  deleteMessageParams,
+  deleteMessageText,
+  editMessageParams,
+  editMessageText,
+  pinMessageParams,
+  pinMessageText,
+  removeReactionParams,
+  removeReactionText,
+  unpinMessageParams,
+  unpinMessageText,
+  type McpMessageWritesPort,
+} from './tools/message-writes.js';
+import {
+  LIST_ACTIONS_TOOL_DESCRIPTION,
+  LIST_ACTIONS_TOOL_NAME,
+  UNDO_ACTION_TOOL_DESCRIPTION,
+  UNDO_ACTION_TOOL_NAME,
+  listActionsParams,
+  listActionsText,
+  undoActionParams,
+  undoActionText,
+  type McpActionsPort,
+} from './tools/actions.js';
 import { registerJobTools, type McpJobsPort } from './tools/jobs.js';
 import { registerMemberTools, type McpMembersPort } from './tools/members.js';
 import { registerContextTools, type McpContextPort } from './tools/context.js';
@@ -100,7 +165,13 @@ import {
 } from './tools/tasks.js';
 import { taskAdminTools, runTaskAdmin, type TaskAdminPort } from './tools/task-admin.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
-import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  hasReadScope,
+  hasSendScope,
+  hasTasksScope,
+  type McpPrincipal,
+} from './scope.js';
 
 /**
  * The MCP server Task 3 mounts at `/mcp`.
@@ -155,6 +226,33 @@ export interface McpServerDeps {
    * still registers only when the principal carries the send scope.
    */
   readonly send: McpSendPort;
+  /**
+   * The daemon's per-request thread-writes port (slice 3, Task 5): thread
+   * creation, membership, forum posts and thread state behind the six write
+   * tools. Required like `send`: a missing port must fail at construction,
+   * not serve thread tools that always refuse. The tools still register only
+   * when the principal carries the send scope.
+   */
+  readonly threadWrites: McpThreadWritesPort;
+  /**
+   * The daemon's per-request message-write port (slice 3, Task 6): editing
+   * and deleting the bot's own messages, pinning, and the bot's own
+   * reactions. Required like `send`: the daemon always provides it, and a
+   * missing port must fail at construction, not serve tools that always
+   * refuse. Required means the port is always present, not that the tools
+   * are always advertised: the six tools still register only when the
+   * principal carries the send scope.
+   */
+  readonly messageWrites: McpMessageWritesPort;
+  /**
+   * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
+   * ledger behind `undo_action` and `list_actions`. Optional like the task
+   * ports: a server without it (an isolated legacy client in a test, or a
+   * composition that omits it) simply does not advertise either tool, and the
+   * daemon always provides it. The tools still register only under their own
+   * scopes — `undo_action` under send, `list_actions` under read.
+   */
+  readonly actions?: McpActionsPort | undefined;
   readonly tasks?: McpTaskPort | undefined;
   readonly taskDetail?: McpTaskDetailPort | undefined;
   readonly taskAdmin?: TaskAdminPort | undefined;
@@ -255,8 +353,136 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
+    // The six thread/forum write tools (slice 3, Task 5): same scope, same
+    // handler shape — the text function answers every outcome and the
+    // try/catch only fires on something it did not foresee.
+    const threadWrites = deps.threadWrites;
+    const writeTools = [
+      [
+        CREATE_THREAD_TOOL_NAME,
+        CREATE_THREAD_TOOL_DESCRIPTION,
+        createThreadParams,
+        createThreadText,
+      ],
+      [
+        ADD_THREAD_MEMBERS_TOOL_NAME,
+        ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
+        addThreadMembersParams,
+        addThreadMembersText,
+      ],
+      [
+        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
+        removeThreadMembersParams,
+        removeThreadMembersText,
+      ],
+      [
+        CREATE_FORUM_POST_TOOL_NAME,
+        CREATE_FORUM_POST_TOOL_DESCRIPTION,
+        createForumPostParams,
+        createForumPostText,
+      ],
+      [
+        ARCHIVE_THREAD_TOOL_NAME,
+        ARCHIVE_THREAD_TOOL_DESCRIPTION,
+        archiveThreadParams,
+        archiveThreadText,
+      ],
+      [LOCK_THREAD_TOOL_NAME, LOCK_THREAD_TOOL_DESCRIPTION, lockThreadParams, lockThreadText],
+    ] as const;
+    for (const [name, description, params, text] of writeTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, threadWrites, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // Task 6: the six message-write tools, same handler shape as
+    // `send_message` above — each text function already answers every
+    // malformed argument and every port fault, so the try/catch here only
+    // fires on something the tool layer did not foresee.
+    const writes = deps.messageWrites;
+    const messageWriteTools = [
+      [EDIT_MESSAGE_TOOL_NAME, EDIT_MESSAGE_TOOL_DESCRIPTION, editMessageParams, editMessageText],
+      [
+        DELETE_MESSAGE_TOOL_NAME,
+        DELETE_MESSAGE_TOOL_DESCRIPTION,
+        deleteMessageParams,
+        deleteMessageText,
+      ],
+      [PIN_MESSAGE_TOOL_NAME, PIN_MESSAGE_TOOL_DESCRIPTION, pinMessageParams, pinMessageText],
+      [
+        UNPIN_MESSAGE_TOOL_NAME,
+        UNPIN_MESSAGE_TOOL_DESCRIPTION,
+        unpinMessageParams,
+        unpinMessageText,
+      ],
+      [ADD_REACTION_TOOL_NAME, ADD_REACTION_TOOL_DESCRIPTION, addReactionParams, addReactionText],
+      [
+        REMOVE_REACTION_TOOL_NAME,
+        REMOVE_REACTION_TOOL_DESCRIPTION,
+        removeReactionParams,
+        removeReactionText,
+      ],
+    ] as const;
+    for (const [name, description, params, text] of messageWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, writes, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // Task 7: `undo_action`, same handler shape — the text function answers
+    // every outcome and the try/catch only fires on something it did not
+    // foresee. Registers under send (slice 4 extends it with the role-kind
+    // inverses under the roles scope); the read half, `list_actions`, lives
+    // in the read block below.
+    if (deps.actions !== undefined) {
+      const actions = deps.actions;
+      server.tool(
+        UNDO_ACTION_TOOL_NAME,
+        UNDO_ACTION_TOOL_DESCRIPTION,
+        undoActionParams,
+        async (args: unknown) => {
+          try {
+            const outcome = await undoActionText(deps.principal, actions, args);
+            if (!outcome.ok) {
+              return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+            }
+            return { content: [{ type: 'text' as const, text: outcome.text }] };
+          } catch {
+            return {
+              content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+              isError: true,
+            };
+          }
+        },
+      );
+    }
   }
-  if (hasSendScope(deps.principal) && deps.taskAdmin) {
+  // ADR 0114 (ADR 0101's follow-up): the task-tracking write tools register
+  // under the tasks scope, not send. A token carrying only `bananasaurs:send`
+  // can post messages but never touch tasks; read-only task tools stay under
+  // read below.
+  if (hasTasksScope(deps.principal) && deps.taskAdmin) {
     const taskAdmin = deps.taskAdmin;
     for (const [name, spec] of Object.entries(taskAdminTools)) {
       server.tool(name, spec.description, spec.params, async (args: unknown) => {
@@ -607,6 +833,31 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   registerMemberTools({ server, principal: deps.principal, readAudit }, deps.members, deps.guild);
   registerContextTools({ server, principal: deps.principal, readAudit }, deps.context);
   registerResourceTools({ server, principal: deps.principal, readAudit }, deps.resources);
+  // Task 7: `list_actions`, the ledger read. A structural read like
+  // `list_channels` (ADR 0050): one log line per successful call through
+  // `okReadResult`, never an audit row, and the view carries ids only.
+  if (deps.actions !== undefined) {
+    const actions = deps.actions;
+    server.tool(
+      LIST_ACTIONS_TOOL_NAME,
+      LIST_ACTIONS_TOOL_DESCRIPTION,
+      listActionsParams,
+      async (args) => {
+        try {
+          const outcome = await listActionsText(deps.principal, actions, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return okReadResult(readAudit, outcome);
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
   // The overview resource (ruling M4-D13): the same card as
   // `get_server_overview` through a second door. The `{guildId}` template
   // variable is untrusted input exactly like a tool argument — it goes

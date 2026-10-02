@@ -113,6 +113,13 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'principal_id',
   // ADR 0072: assistant_conversations.started_by.
   'started_by',
+  // Slice 3 task 1 (migration 0092): the mcp_actions targets and results, and
+  // the mcp_private_threads thread and parent channel.
+  'target_channel_id',
+  'result_message_id',
+  'result_thread_id',
+  'thread_id',
+  'parent_channel_id',
 ]);
 
 interface ColumnInfo {

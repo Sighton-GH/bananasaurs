@@ -35,6 +35,29 @@ import {
 import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
+import {
+  ADD_THREAD_MEMBERS_TOOL_NAME,
+  ARCHIVE_THREAD_TOOL_NAME,
+  CREATE_FORUM_POST_TOOL_NAME,
+  CREATE_THREAD_TOOL_NAME,
+  LOCK_THREAD_TOOL_NAME,
+  REMOVE_THREAD_MEMBERS_TOOL_NAME,
+  type McpThreadWritesPort,
+} from './tools/thread-writes.js';
+import {
+  ADD_REACTION_TOOL_NAME,
+  DELETE_MESSAGE_TOOL_NAME,
+  EDIT_MESSAGE_TOOL_NAME,
+  PIN_MESSAGE_TOOL_NAME,
+  REMOVE_REACTION_TOOL_NAME,
+  UNPIN_MESSAGE_TOOL_NAME,
+  type McpMessageWritesPort,
+} from './tools/message-writes.js';
+import {
+  LIST_ACTIONS_TOOL_NAME,
+  UNDO_ACTION_TOOL_NAME,
+  type McpActionsPort,
+} from './tools/actions.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './tools/context.js';
@@ -122,9 +145,43 @@ const stubRecords = (): McpRecordsPort => ({
 
 /** Minimal send port: this file pins registration, never the send itself. */
 const stubSend = (): McpSendPort => ({
-  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
 });
 
+/** Minimal thread-writes port: this file pins registration, never the writes themselves. */
+const stubThreadWrites = (): McpThreadWritesPort => ({
+  createThread: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', threadId: 'thread-test' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createForumPost: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', threadId: 'thread-test' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+});
+
+/** Minimal message-writes port: this file pins registration, never the writes themselves. */
+const stubMessageWrites = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
+/** Minimal actions port: this file pins registration, never undo or list themselves. */
+const stubActions = (): McpActionsPort => ({
+  undo: () =>
+    Promise.resolve({
+      status: 'done',
+      actionId: 'act-undo',
+      undoneActionId: 'act-1',
+      kind: 'edit',
+    }),
+  list: () => [],
+});
 /** Minimal jobs port: this file pins registration, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
@@ -181,6 +238,9 @@ const connectPair = async (
     resources: stubResources(),
     threads: stubThreads(),
     send,
+    threadWrites: stubThreadWrites(),
+    messageWrites: stubMessageWrites(),
+    actions: stubActions(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -230,15 +290,28 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message first, alongside the twenty-two read tools', async () => {
+  it('lists send_message and the thirteen write tools first, alongside the twenty-three read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(23);
+      expect(list.tools).toHaveLength(37);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
+        CREATE_THREAD_TOOL_NAME,
+        ADD_THREAD_MEMBERS_TOOL_NAME,
+        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        CREATE_FORUM_POST_TOOL_NAME,
+        ARCHIVE_THREAD_TOOL_NAME,
+        LOCK_THREAD_TOOL_NAME,
+        EDIT_MESSAGE_TOOL_NAME,
+        DELETE_MESSAGE_TOOL_NAME,
+        PIN_MESSAGE_TOOL_NAME,
+        UNPIN_MESSAGE_TOOL_NAME,
+        ADD_REACTION_TOOL_NAME,
+        REMOVE_REACTION_TOOL_NAME,
+        UNDO_ACTION_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
@@ -261,6 +334,7 @@ describe('createMcpServer', () => {
         GET_SERVER_CONTEXT_TOOL_NAME,
         SEARCH_RESOURCES_TOOL_NAME,
         OPEN_RESOURCE_TOOL_NAME,
+        LIST_ACTIONS_TOOL_NAME,
       ]);
       const resources = await client.listResourceTemplates();
       expect(resources.resourceTemplates).toHaveLength(1);
@@ -307,14 +381,31 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ruling M4-D17) a send-only principal gets send_message and nothing else', async () => {
+  it('(ruling M4-D17) a send-only principal gets send_message and the thirteen write tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
     try {
-      // `send_message` registers under the send scope independently of the
-      // read-scope block, so a send-only server lists exactly one tool — and
-      // still no resource, which stays behind the read scope.
+      // `send_message`, the six thread-write tools (Task 5), the six
+      // message-write tools (Task 6) and `undo_action` (Task 7) register
+      // under the send scope independently of the read-scope block, so a
+      // send-only server lists exactly fourteen tools — and still no
+      // resource, which stays behind the read scope.
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual([SEND_MESSAGE_TOOL_NAME]);
+      expect(list.tools.map((tool) => tool.name)).toEqual([
+        SEND_MESSAGE_TOOL_NAME,
+        CREATE_THREAD_TOOL_NAME,
+        ADD_THREAD_MEMBERS_TOOL_NAME,
+        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        CREATE_FORUM_POST_TOOL_NAME,
+        ARCHIVE_THREAD_TOOL_NAME,
+        LOCK_THREAD_TOOL_NAME,
+        EDIT_MESSAGE_TOOL_NAME,
+        DELETE_MESSAGE_TOOL_NAME,
+        PIN_MESSAGE_TOOL_NAME,
+        UNPIN_MESSAGE_TOOL_NAME,
+        ADD_REACTION_TOOL_NAME,
+        REMOVE_REACTION_TOOL_NAME,
+        UNDO_ACTION_TOOL_NAME,
+      ]);
       // The SDK installs its `resources/templates/list` handler lazily on the
       // first `registerResource()` call, so a server with no resource answers
       // Method-not-found rather than an empty array.
@@ -354,10 +445,11 @@ describe('createMcpServer', () => {
   });
 
   it('(ADR 0114) a tasks-only principal sees no tools and no resources', async () => {
-    // No tool registers under the tasks scope on this branch (the
-    // task-tracking branch switches its writes to it when it merges), so a
-    // token carrying only `bananasaurs:tasks` must see neither the read/send
-    // tools nor the overview resource — Method-not-found on both, as above.
+    // The task-tracking write tools register under the tasks scope (ADR
+    // 0114), but only when the daemon threads the task-admin port — this
+    // file's server has none, so a token carrying only `bananasaurs:tasks`
+    // still sees neither tools nor the overview resource. The tasks-scope
+    // pin with the port present lives in `registration.test.ts`.
     const { client, close } = await connectPair(principalWith([GUILD], [MCP_TASKS_SCOPE]));
     try {
       await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });

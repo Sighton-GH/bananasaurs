@@ -252,6 +252,55 @@ Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model 
 
 - [ ] Steps 1–10 recorded with timestamps (no destructive step taken).
 
+## Section G — MCP message writes on the test guild (slice 3, not yet run)
+
+**Test guild only.** The unit and composition suites prove the ledger, the
+target checks and the inverses against fakes; what they cannot prove is the
+live Discord behaviour — permission errors, mention rendering, thread
+visibility — so each write tool below runs once against the real test
+guild, from the owner's Claude client through the tunnel connector.
+Preconditions: `bananasaurs doctor` is clean; one text channel allowlisted
+for sends; the connector authorised with `bananasaurs:read` **and**
+`bananasaurs:send`. Record the run with timestamps.
+
+1. **`send_message` with a reply and an embed.** Post content with
+   `@everyone` in the text plus one embed, as a reply without
+   `pingReplyAuthor`. Confirm in Discord: the message is there as a reply,
+   **nobody was pinged**, and the embed renders.
+2. **`send_message` pings only through `pingRoles`/`pingUsers`.** Post
+   naming one low role in `pingRoles` and one member in `pingUsers`.
+   Confirm only those two notify, and the audit row carries ids, never the
+   text.
+3. **`create_thread` (private) then `send_message` into it.** Create a
+   private thread with a first message. Confirm `read_thread` reads it and
+   a follow-up `send_message` with `threadId` posts into it.
+4. **`add_thread_members` / `remove_thread_members`.** Add a member, confirm
+   they see the thread; remove them, confirm they no longer do.
+5. **`create_forum_post`.** Post with a title and one tag. Confirm the post
+   appears in the forum with the tag applied; an unknown tag refuses
+   listing the available names.
+6. **`archive_thread` / `lock_thread`.** Archive the thread from step 3,
+   confirm it archives; unarchive it. Lock it, confirm posting is refused
+   to non-moderators; unlock it.
+7. **`edit_message` then `undo_action`.** Edit a bot message, confirm the
+   new text; call `undo_action` with the edit's action id, confirm the
+   previous text returns and a second undo answers "already undone".
+8. **`pin_message` / `unpin_message`.** Pin a message, confirm it pins;
+   unpin it. A channel where the bot lacks the pin permission refuses
+   naming it.
+9. **`add_reaction` / `remove_reaction`.** Add a unicode reaction to a bot
+   message, confirm it appears; remove it. A foreign guild's custom emoji
+   refuses.
+10. **`delete_message`.** Delete a bot message, confirm it disappears, and
+    confirm `undo_action` on the delete answers that it cannot be undone.
+11. **`list_actions`.** Confirm it lists the actions above newest-first with
+    kind, status, target ids and `undoable` flags — and no message content
+    anywhere in the output.
+12. **The retry.** Repeat step 1's call with the **same** `idempotencyKey`.
+    Confirm it answers as a replay and Discord has exactly one message.
+
+- [ ] Steps 1–12 recorded with timestamps.
+
 ## Sign-off
 
 **Release 1 is done — 2026-08-30.** Every box above is checked, run against

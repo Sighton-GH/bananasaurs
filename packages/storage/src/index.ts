@@ -70,6 +70,8 @@ export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
 export * as loggingRepo from './repos/logging.js';
 export * as mcpSendRepo from './repos/mcp-send.js';
+export * as mcpActionsRepo from './repos/mcp-actions.js';
+export * as mcpRolePolicyRepo from './repos/mcp-role-policy.js';
 export * as panelRepo from './repos/panels.js';
 export * as pipelineRepo from './repos/pipeline.js';
 export * as resourceCacheRepo from './repos/resource-cache.js';

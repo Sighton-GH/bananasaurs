@@ -37,6 +37,7 @@ import {
   type McpResourcesPort,
 } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
+import type { McpThreadWritesPort } from './thread-writes.js';
 
 /** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -525,7 +526,34 @@ describe('guild tools on the MCP server', () => {
         listPanels: () => [],
       },
       // Required since M5 Task 4; never called by the guild tools pinned here.
-      send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+      send: {
+        send: () =>
+          Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
+      },
+      // Required since slice 3 Task 5; never called by the guild tools pinned here.
+      threadWrites: {
+        createThread: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        addThreadMembers: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        removeThreadMembers: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        createForumPost: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        setThreadState: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+      } satisfies McpThreadWritesPort,
+      // Required since slice 3 Task 6; never called by the guild tools pinned here.
+      messageWrites: {
+        edit: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        delete: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        pin: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        unpin: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        addReaction: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        removeReaction: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),
