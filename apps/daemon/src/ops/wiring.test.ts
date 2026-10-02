@@ -399,7 +399,10 @@ describe('role policy ports (slice 5 task 6, ADR 0117 §2)', () => {
   const stubFetch = (role: Role | null): void => {
     const guild = client.guilds.cache.get(GUILD);
     expect(guild, 'fake guild in cache').toBeDefined();
-    vi.spyOn(guild!.roles, 'fetch').mockResolvedValue(role);
+    if (guild === undefined) throw new Error('fake guild missing from cache');
+    vi.spyOn(guild.roles, 'fetch').mockImplementation(
+      () => Promise.resolve(role) as unknown as ReturnType<typeof guild.roles.fetch>,
+    );
   };
 
   it('reads the default policy as both below-bot', () => {
