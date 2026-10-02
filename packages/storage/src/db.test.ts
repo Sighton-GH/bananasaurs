@@ -937,6 +937,117 @@ describe('migration 0092 copies mcp_sends into mcp_actions (ADR 0116 section 2)'
   });
 });
 
+describe('migration 0094 widens the effect_batches source CHECK to admit mcp', () => {
+  const GUILD_ID = '111111111111111111';
+  const ROLE_ID = '222222222222222222';
+  const MEMBER_ID = '333333333333333333';
+
+  it('carries every effect_batches and role_effects row across the rebuild, then admits mcp', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0094, seeded the way a
+    // real upgrade would find it: one batch row and the role effect that
+    // belongs to it, through the managed_roles row the foreign key demands.
+    runMigrations(raw, db, migrationsFolderUpToTag('0093_mcp_bulk_previews'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(`INSERT INTO managed_roles (guild_id, role_id) VALUES (?, ?)`)
+      .run(GUILD_ID, ROLE_ID);
+    raw
+      .prepare(
+        `INSERT INTO effect_batches
+           (guild_id, batch_id, source, actor_type, actor_id, started_at, finished_at, undone_at)
+         VALUES (?, 'batch-1', 'dashboard', 'dashboard', 'acct_1', 1000, 2000, NULL)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO role_effects
+           (guild_id, effect_id, batch_id, dedupe_key, user_id, role_id, action,
+            state, had_role_before, panel_id, attempted_at, completed_at, error_code)
+         VALUES (?, 'effect-1', 'batch-1', 'dedupe-1', ?, ?, 'grant',
+            'applied', 0, NULL, 1000, 2000, NULL)`,
+      )
+      .run(GUILD_ID, MEMBER_ID, ROLE_ID);
+
+    // Applies 0094 against the seeded rows, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // The batch row survives with every original column value unchanged.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, batch_id, source, actor_type, actor_id,
+                  started_at, finished_at, undone_at
+           FROM effect_batches`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        batch_id: 'batch-1',
+        source: 'dashboard',
+        actor_type: 'dashboard',
+        actor_id: 'acct_1',
+        started_at: 1000,
+        finished_at: 2000,
+        undone_at: null,
+      },
+    ]);
+    // The role effect survives with the batch it belongs to.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, effect_id, batch_id, dedupe_key, user_id, role_id, action,
+                  state, had_role_before, panel_id, attempted_at, completed_at, error_code
+           FROM role_effects`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        effect_id: 'effect-1',
+        batch_id: 'batch-1',
+        dedupe_key: 'dedupe-1',
+        user_id: MEMBER_ID,
+        role_id: ROLE_ID,
+        action: 'grant',
+        state: 'applied',
+        had_role_before: 0,
+        panel_id: null,
+        attempted_at: 1000,
+        completed_at: 2000,
+        error_code: null,
+      },
+    ]);
+    // The rebuild leaves no dangling reference behind.
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+
+    // And the widened CHECK admits the new source the MCP role tools open
+    // their batches with.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO effect_batches
+             (guild_id, batch_id, source, actor_type, actor_id, started_at)
+           VALUES (?, 'batch-mcp', 'mcp', 'mcp_operator', 'tok_1', 3000)`,
+        )
+        .run(GUILD_ID),
+    ).not.toThrow();
+    expect(
+      raw.prepare(`SELECT source FROM effect_batches WHERE batch_id = 'batch-mcp'`).get(),
+    ).toEqual({ source: 'mcp' });
+
+    raw.close();
+  });
+});
+
 describe('migration journal ordering (ADR 0115 section 3)', () => {
   interface JournalEntry {
     readonly idx: number;

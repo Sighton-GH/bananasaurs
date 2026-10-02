@@ -268,7 +268,7 @@ export const effectBatches = sqliteTable(
     check('effect_batches_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check(
       'effect_batches_source',
-      sql`${t.source} IN ('interaction','reaction','adoption','reconcile','cli','dashboard')`,
+      sql`${t.source} IN ('interaction','reaction','adoption','reconcile','cli','dashboard','mcp')`,
     ),
   ],
 );
