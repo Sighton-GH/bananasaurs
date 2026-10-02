@@ -155,6 +155,29 @@ import {
   type McpBulkRolesPort,
 } from './tools/bulk-roles.js';
 import {
+  CREATE_PANEL_TOOL_DESCRIPTION,
+  CREATE_PANEL_TOOL_NAME,
+  createPanelParams,
+  createPanelText,
+  DELETE_PANEL_TOOL_DESCRIPTION,
+  DELETE_PANEL_TOOL_NAME,
+  deletePanelParams,
+  deletePanelText,
+  EDIT_PANEL_TOOL_DESCRIPTION,
+  EDIT_PANEL_TOOL_NAME,
+  editPanelParams,
+  editPanelText,
+  GET_PANEL_TOOL_DESCRIPTION,
+  GET_PANEL_TOOL_NAME,
+  getPanelParams,
+  getPanelText,
+  LIST_PANELS_TOOL_DESCRIPTION,
+  LIST_PANELS_TOOL_NAME,
+  listPanelsParams,
+  listPanelsText,
+  type McpPanelsPort,
+} from './tools/panels.js';
+import {
   LIST_ACTIONS_TOOL_DESCRIPTION,
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_DESCRIPTION,
@@ -299,6 +322,16 @@ export interface McpServerDeps {
    * principal carries the roles scope.
    */
   readonly bulkRoles?: McpBulkRolesPort | undefined;
+  /**
+   * The daemon's per-request panels port (slice 4, Task 6b): panel listing
+   * and detail behind `list_panels` / `get_panel`, and panel creation,
+   * editing and deletion behind `create_panel` / `edit_panel` /
+   * `delete_panel`. Optional like the actions port: a server without it
+   * simply does not advertise any of the five tools, and the daemon always
+   * provides it. The reads still register only when the principal carries
+   * the read scope, the writes only under the roles scope.
+   */
+  readonly panels?: McpPanelsPort | undefined;
   /**
    * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
    * ledger behind `undo_action` and `list_actions`. Optional like the task
@@ -564,6 +597,55 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
+  }
+  // Slice 4, Task 6b: `create_panel`, `edit_panel` and `delete_panel`
+  // under the roles scope (ADR 0114) — the same handler shape as
+  // `send_message` above. Each text function already answers every malformed
+  // argument and every port fault, so the try/catch here only fires on
+  // something the tool layer did not foresee.
+  if (hasRolesScope(deps.principal) && deps.panels !== undefined) {
+    const panels = deps.panels;
+    const panelWriteTools = [
+      [CREATE_PANEL_TOOL_NAME, CREATE_PANEL_TOOL_DESCRIPTION, createPanelParams, createPanelText],
+      [EDIT_PANEL_TOOL_NAME, EDIT_PANEL_TOOL_DESCRIPTION, editPanelParams, editPanelText],
+    ] as const;
+    for (const [name, description, params, text] of panelWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, panels, deps.guild, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // `delete_panel` takes no refs to resolve, so its text function needs no
+    // guild port — registered beside the other two panel writes.
+    server.tool(
+      DELETE_PANEL_TOOL_NAME,
+      DELETE_PANEL_TOOL_DESCRIPTION,
+      deletePanelParams,
+      async (args: unknown) => {
+        try {
+          const outcome = await deletePanelText(deps.principal, panels, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
   }
   // ADR 0114: the role-change tools register under the roles scope, never
   // send. A token carrying only `bananasaurs:send` can post messages but
@@ -905,6 +987,38 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       }
     },
   );
+  // Slice 4, Task 6b: `list_panels` / `get_panel`, the `panel list` /
+  // `panel show` reads. Structural reads like `list_roles` (ADR 0050): ids,
+  // titles and labels in the text, one log line through `okReadResult`,
+  // never an audit row — and the record itself carries no title or label.
+  if (deps.panels !== undefined) {
+    const panels = deps.panels;
+    server.tool(LIST_PANELS_TOOL_NAME, LIST_PANELS_TOOL_DESCRIPTION, listPanelsParams, (args) => {
+      try {
+        const outcome = listPanelsText(deps.principal, panels, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    });
+    server.tool(GET_PANEL_TOOL_NAME, GET_PANEL_TOOL_DESCRIPTION, getPanelParams, (args) => {
+      try {
+        const outcome = getPanelText(deps.principal, panels, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+      }
+    });
+  }
   const records = deps.records;
   server.tool(
     LIST_MOD_CASES_TOOL_NAME,

@@ -15,6 +15,7 @@ import type { McpMessageWritesPort } from './tools/message-writes.js';
 import type { McpRoleWritesPort } from './tools/role-writes.js';
 import type { McpBulkRolesPort } from './tools/bulk-roles.js';
 import type { McpRoleAdminPort } from './tools/role-admin.js';
+import type { McpPanelsPort } from './tools/panels.js';
 import type { McpActionsPort } from './tools/actions.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
@@ -107,6 +108,13 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     createRole: () => Promise.resolve({ status: 'done', actionId: 'act', roleId: 'role' }),
     editRole: () => Promise.resolve({ status: 'done', actionId: 'act', roleId: 'role' }),
   };
+  const panels: McpPanelsPort = {
+    list: () => [],
+    get: () => undefined,
+    create: () => Promise.resolve({ status: 'done', actionId: 'act', panelId: 'mcp-1a2b3c4d' }),
+    edit: () => Promise.resolve({ status: 'done', actionId: 'act', panelId: 'mcp-1a2b3c4d' }),
+    remove: () => Promise.resolve({ status: 'done', actionId: 'act', panelId: 'mcp-1a2b3c4d' }),
+  };
   const actions: McpActionsPort = {
     undo: () =>
       Promise.resolve({ status: 'done', actionId: 'undo', undoneActionId: 'act', kind: 'edit' }),
@@ -139,6 +147,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     roleWrites,
     roleAdmin,
     bulkRoles,
+    panels,
     actions,
     tasks,
     taskDetail,
@@ -173,7 +182,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
   };
 };
 
-/** The read-scope set: the twenty-two long-standing read tools, the four read-only task tools, and `list_actions`. */
+/** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the four read-only task tools, and `list_actions`. */
 const READ_TOOLS: readonly string[] = [
   'get_health',
   'search_messages',
@@ -186,6 +195,8 @@ const READ_TOOLS: readonly string[] = [
   'list_threads',
   'list_roles',
   'list_members',
+  'list_panels',
+  'get_panel',
   'list_mod_cases',
   'get_mod_case',
   'list_audit_events',
@@ -222,10 +233,13 @@ const SEND_TOOLS: readonly string[] = [
   'undo_action',
 ];
 
-/** The roles-scope set: role changes (slice 4, Task 3), bulk changes (Task 4) and role creation and editing (Task 5), sorted. */
+/** The roles-scope set: role changes (slice 4, Task 3), bulk changes (Task 4), role creation and editing (Task 5), and role panels (Task 6b), sorted. */
 const ROLES_TOOLS: readonly string[] = [
   'bulk_role_change',
+  'create_panel',
   'create_role',
+  'delete_panel',
+  'edit_panel',
   'edit_role',
   'grant_role',
   'remove_role',
@@ -312,9 +326,9 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
 
 describe('registration pins every scope subset', () => {
   it('the four scope sets have the expected sizes', () => {
-    expect(READ_TOOLS).toHaveLength(27);
+    expect(READ_TOOLS).toHaveLength(29);
     expect(SEND_TOOLS).toHaveLength(14);
-    expect(ROLES_TOOLS).toHaveLength(5);
+    expect(ROLES_TOOLS).toHaveLength(8);
     expect(TASK_TOOLS).toHaveLength(25);
     // The hardcoded task list is the whole registrar: no drift between this
     // file and the tools main registers.
@@ -350,11 +364,14 @@ describe('registration pins every scope subset', () => {
     }
   });
 
-  it('roles-only sees the five role tools and undo_action, and nothing else writable', async () => {
+  it('roles-only sees the eight role and panel tools and undo_action, and nothing else writable', async () => {
     const names = await toolNamesFor(['roles']);
     expect(names).toEqual([
       'bulk_role_change',
+      'create_panel',
       'create_role',
+      'delete_panel',
+      'edit_panel',
       'edit_role',
       'grant_role',
       'remove_role',
