@@ -1,10 +1,10 @@
 import type { Client } from 'discord.js';
 import {
   DiscordApiError,
+  parseGuildId,
   ReminderDeliveryError,
   safeLogFields,
   type DiscordPort,
-  type GuildId,
   type Logger,
   type OutgoingMessage,
   type Reminder,
@@ -155,15 +155,6 @@ export const renderReminder = (
 };
 
 /**
- * Sends one reminder to its destination channel.
- *
- * Pings are allowed now, but only the stored, permission-checked targets
- * (ADR 0086 decision 6): `renderReminder` puts exactly the stored ids in
- * `allowedMentions`, so text typed into the reminder can never ping. The
- * text is capped at creation (1,500 characters) and the render is capped
- * at Discord's 2,000 regardless.
- */
-/**
  * The live facts the `origin='mcp'` re-check needs: the discord.js client
  * for cache math and membership reads, this guild's storage scope for the
  * send-scope and role-policy rows, and the logger for the ids-only lines.
@@ -175,6 +166,18 @@ export interface McpDeliveryRecheck {
   readonly logger: Logger;
 }
 
+/**
+ * Sends one reminder to its destination channel.
+ *
+ * Pings are allowed now, but only the stored, permission-checked targets
+ * (ADR 0086 decision 6): `renderReminder` puts exactly the stored ids in
+ * `allowedMentions`, so text typed into the reminder can never ping. The
+ * text is capped at creation (1,500 characters) and the render is capped
+ * at Discord's 2,000 regardless.
+ *
+ * `origin='mcp'` rows additionally re-check the destination and the pings
+ * live before sending (ADR 0119 §2); assistant rows never take that path.
+ */
 export const createReminderDelivery = (
   guildId: string,
   discord: DiscordPort,
@@ -202,7 +205,7 @@ export const createReminderDelivery = (
     // The row's guild governs every check — never the closure guild, which
     // only equals it when the wiring is right. A row for another guild can
     // therefore never borrow this guild's scope.
-    const rowGuildId = row.guildId as GuildId;
+    const rowGuildId = parseGuildId(row.guildId);
     const target = await resolveSendTarget(
       mcp.client,
       mcp.scope,

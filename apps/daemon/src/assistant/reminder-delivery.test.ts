@@ -182,21 +182,27 @@ const textChannelPayload = (guildId: string, id: string): object => ({
   permission_overwrites: [],
 });
 
-const makeDeliveryClient = (options: {
-  readonly guilds?: ReadonlyArray<{
-    readonly guildId: string;
-    readonly channels: readonly string[];
-    readonly evilPermissions?: string;
-    readonly members?: readonly string[];
-  }>;
-} = {}): Client => {
+const makeDeliveryClient = (
+  options: {
+    readonly guilds?: ReadonlyArray<{
+      readonly guildId: string;
+      readonly channels: readonly string[];
+      readonly evilPermissions?: string;
+      readonly members?: readonly string[];
+    }>;
+  } = {},
+): Client => {
   const client = new Client(buildClientOptions(() => BOT_USER));
   const mutable = client as unknown as { user: unknown };
   const internals = client as unknown as {
     guilds: { _add: (data: object) => unknown };
     users: { _add: (data: object) => unknown };
   };
-  mutable.user = internals.users._add({ id: BOT_USER, username: 'bananasaurs', discriminator: '0' });
+  mutable.user = internals.users._add({
+    id: BOT_USER,
+    username: 'bananasaurs',
+    discriminator: '0',
+  });
   const botPermissions =
     PermissionsBitField.Flags.ViewChannel |
     PermissionsBitField.Flags.SendMessages |
@@ -240,10 +246,15 @@ const makeDeliveryClient = (options: {
   return client;
 };
 
-const setRolePermissions = (client: Client, guildId: string, roleId: string, bits: bigint): void => {
-  const role = client.guilds.cache
-    .get(guildId)
-    ?.roles.cache.get(roleId) as unknown as { permissions: PermissionsBitField };
+const setRolePermissions = (
+  client: Client,
+  guildId: string,
+  roleId: string,
+  bits: bigint,
+): void => {
+  const role = client.guilds.cache.get(guildId)?.roles.cache.get(roleId) as unknown as {
+    permissions: PermissionsBitField;
+  };
   if (role === undefined) throw new Error('role missing from test client cache');
   role.permissions = new PermissionsBitField(bits);
 };
@@ -281,7 +292,9 @@ describe('mcp scheduled sends (origin mcp)', () => {
     const { logger, lines } = capturingLogger();
 
     await createReminderDelivery(GUILD, port, { client, scope, logger }).send(
-      mcpReminder({ mentions: { userIds: [], roleIds: [LOW_ROLE, EVIL_ROLE], everyone: false, here: false } }),
+      mcpReminder({
+        mentions: { userIds: [], roleIds: [LOW_ROLE, EVIL_ROLE], everyone: false, here: false },
+      }),
     );
 
     const calls = port.restCalls('sendMessage');
@@ -374,7 +387,9 @@ describe('mcp scheduled sends (origin mcp)', () => {
     const { logger, lines } = capturingLogger();
 
     await createReminderDelivery(GUILD, port, { client, scope, logger }).send(
-      mcpReminder({ mentions: { userIds: [MEMBER, STRANGER], roleIds: [], everyone: false, here: false } }),
+      mcpReminder({
+        mentions: { userIds: [MEMBER, STRANGER], roleIds: [], everyone: false, here: false },
+      }),
     );
 
     const calls = port.restCalls('sendMessage');

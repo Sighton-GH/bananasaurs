@@ -468,13 +468,23 @@ describe('resolvePings', () => {
 describe('checkRolePing', () => {
   it('passes a role below the bot with its resolved id', () => {
     expect(
-      checkRolePing(makeClient({ roles: defaultRoles() }), t.scopes.forGuild(GUILD_A), GUILD_A, LOW_ROLE),
+      checkRolePing(
+        makeClient({ roles: defaultRoles() }),
+        t.scopes.forGuild(GUILD_A),
+        GUILD_A,
+        LOW_ROLE,
+      ),
     ).toEqual({ ok: true, id: LOW_ROLE });
   });
 
   it('refuses a role above the bot with the same reason resolvePings reports', () => {
     expect(
-      checkRolePing(makeClient({ roles: defaultRoles() }), t.scopes.forGuild(GUILD_A), GUILD_A, HIGH_ROLE),
+      checkRolePing(
+        makeClient({ roles: defaultRoles() }),
+        t.scopes.forGuild(GUILD_A),
+        GUILD_A,
+        HIGH_ROLE,
+      ),
     ).toEqual({ ok: false, reason: 'role-above-bot', ref: HIGH_ROLE, id: HIGH_ROLE });
   });
 

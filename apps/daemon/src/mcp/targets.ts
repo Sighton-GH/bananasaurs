@@ -336,9 +336,11 @@ export const filterPings = async (
       userIds: [],
       dropped: [
         ...input.roles.map((ref): PingDrop => ({ kind: 'role', id: ref, reason: 'role-unknown' })),
-        ...input.users.map(
-          (ref): PingDrop => ({ kind: 'user', id: ref, reason: 'user-not-member' }),
-        ),
+        ...input.users.map((ref): PingDrop => ({
+          kind: 'user',
+          id: ref,
+          reason: 'user-not-member',
+        })),
       ],
     };
   }
