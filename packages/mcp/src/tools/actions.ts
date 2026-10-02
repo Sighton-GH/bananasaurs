@@ -110,6 +110,7 @@ export type McpUndoRefusal =
   | 'action-incomplete'
   | 'not-undoable'
   | 'undo-in-progress'
+  | 'scope-mismatch'
   | 'target-unavailable'
   | 'role-unavailable'
   | 'killswitch'
@@ -233,6 +234,13 @@ const undoRefusalText = (
         `An undo of action ${actionId} in guild ${guildId} is already running` +
         `${detail !== undefined ? ` as action ${detail}` : ''}, so no second one was started. ` +
         'Check `list_actions` for its outcome before retrying.'
+      );
+    case 'scope-mismatch':
+      return (
+        `Action ${actionId} in guild ${guildId} was not undone: undoing it needs the ` +
+        `${detail ?? 'bananasaurs:send'} scope, which this token does not carry. ` +
+        'Ask the owner to re-authorise the connector with that scope, then retry. ' +
+        'Nothing was changed.'
       );
     case 'target-unavailable':
       return (

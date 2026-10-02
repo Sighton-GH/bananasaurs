@@ -6793,7 +6793,7 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
   };
 
-  type SeedCap = 'message' | 'edit' | 'structure' | 'pin_react';
+  type SeedCap = 'message' | 'edit' | 'structure' | 'pin_react' | 'member_role';
 
   /** One completed ledger row, exactly as a forward write leaves it. */
   const seedAction = (input: {
@@ -7168,7 +7168,7 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
       resultMessageId: BOT_MESSAGE,
     });
     seedActionB('list-foreign');
-    const read = await mintToken('bananasaurs:read');
+    const read = await mintToken('bananasaurs:read bananasaurs:send');
     const found = callText((await undoCall(read, 'list_actions', { guildId: GID })).body);
     expect(found.isError).not.toBe(true);
     expect(found.text).toContain('list-edit | message.edit | done');
@@ -7406,6 +7406,82 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     expect(
       mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'undo:undo-out-of-scope'),
     ).toBeUndefined();
+  });
+
+  it('a send+roles token undoes a message edit end-to-end', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const both = await mintToken('bananasaurs:send bananasaurs:roles');
+    const edited = callText(
+      (
+        await undoCall(both, 'edit_message', {
+          guildId: GID,
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          content: 'edited-by-both-scope-probe-zz7',
+          idempotencyKey: 'undo-both-k1',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const scope = t.scopes.forGuild(GUILD_A);
+    const row = mcpActionsRepo.findAction(scope, 'undo-both-k1');
+    if (row === undefined) throw new Error('forward edit left no ledger row');
+
+    const undone = callText(
+      (await undoCall(both, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(undone.text).toContain('message.edit');
+    expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeDefined();
+  });
+
+  it('list_actions lists every kind but never offers an out-of-scope kind as undoable', async () => {
+    allow();
+    seedAction({
+      actionId: 'list-scope-edit',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ content: ORIGINAL, embeds: [] }),
+    });
+    seedAction({
+      actionId: 'list-scope-grant',
+      kind: 'role.grant',
+      capGroup: 'member_role',
+      undoJson: JSON.stringify({ op: 'remove-role' }),
+    });
+
+    const send = await mintToken('bananasaurs:read bananasaurs:send');
+    const sendList = callText((await undoCall(send, 'list_actions', { guildId: GID })).body);
+    expect(sendList.isError).not.toBe(true);
+    // Both rows are listed, but only the message row is offered as undoable.
+    expect(sendList.text).toContain('list-scope-edit');
+    expect(sendList.text).toContain('list-scope-grant');
+    const sendLines = sendList.text.split('\n');
+    expect(
+      sendLines.find((line) => line.startsWith('list-scope-edit')),
+    ).toContain('undoable yes');
+    expect(
+      sendLines.find((line) => line.startsWith('list-scope-grant')),
+    ).toContain('undoable no');
+
+    const roles = await mintToken('bananasaurs:read bananasaurs:roles');
+    const rolesList = callText((await undoCall(roles, 'list_actions', { guildId: GID })).body);
+    expect(rolesList.isError).not.toBe(true);
+    const rolesLines = rolesList.text.split('\n');
+    expect(
+      rolesLines.find((line) => line.startsWith('list-scope-edit')),
+    ).toContain('undoable no');
+    expect(
+      rolesLines.find((line) => line.startsWith('list-scope-grant')),
+    ).toContain('undoable yes');
   });
 });
 
@@ -7938,7 +8014,6 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const roles = await mintToken('bananasaurs:roles');
-      const send = await mintToken('bananasaurs:send');
       expect(
         callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
       ).not.toBe(true);
@@ -7948,7 +8023,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       if (row === undefined) throw new Error('grant left no ledger row');
 
       const undone = callText(
-        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: row.actionId }))
           .body,
       );
       expect(undone.isError).not.toBe(true);
@@ -7977,7 +8052,6 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const roles = await mintToken('bananasaurs:roles');
-      const send = await mintToken('bananasaurs:send');
       expect(
         callText(
           (
@@ -7996,7 +8070,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       if (row === undefined) throw new Error('removal left no ledger row');
 
       const undone = callText(
-        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: row.actionId }))
           .body,
       );
       expect(undone.isError).not.toBe(true);
@@ -8019,7 +8093,6 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const roles = await mintToken('bananasaurs:roles');
-      const send = await mintToken('bananasaurs:send');
       const granted = callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body);
       expect(granted.isError).not.toBe(true);
       expect(granted.text).toContain('already had');
@@ -8032,7 +8105,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
 
       const undone = callText(
         (
-          await roleCall(roleApp, send, 'undo_action', {
+          await roleCall(roleApp, roles, 'undo_action', {
             guildId: GID,
             actionId: row?.actionId ?? '',
           })
@@ -8054,7 +8127,6 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const roles = await mintToken('bananasaurs:roles');
-      const send = await mintToken('bananasaurs:send');
       expect(
         callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
       ).not.toBe(true);
@@ -8069,7 +8141,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
 
       const refused = callText(
-        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: row.actionId }))
           .body,
       );
       expect(refused.isError).toBe(true);
@@ -8077,6 +8149,116 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
       expect(discord.restCalls('removeRole')).toHaveLength(0);
       expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a send-only token cannot undo a role grant: refused, the role still held, nothing marked', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      expect(
+        callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const refused = callText(
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('bananasaurs:roles');
+      // Nothing changed: the role is still held, no inverse ran, the row is
+      // still undoable, and no undo row was claimed.
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.restCalls('removeRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+      expect(
+        mcpActionsRepo.findAction(scope, `undo:${row.actionId}`),
+      ).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a roles-only token cannot undo a message edit: refused before any target read', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'scope-edit-1',
+        idempotencyKey: 'scope-edit-k1',
+        kind: 'message.edit',
+        capGroup: 'edit',
+        argsHash: 'hash-scope-edit-1',
+        tokenId: 'tok_test',
+        targetChannelId: '911111111111111111',
+        now: clock,
+        dryRun: false,
+      });
+      mcpActionsRepo.completeAction(scope, 'scope-edit-1', {
+        status: 'done',
+        resultMessageId: '922222222222222222',
+        undoJson: JSON.stringify({ content: 'prior text', embeds: [] }),
+        now: clock,
+      });
+
+      const refused = callText(
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: 'scope-edit-1' }))
+          .body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('bananasaurs:send');
+      expect(discord.restCalls('editMessage')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findActionById(scope, 'scope-edit-1')?.undoneByActionId,
+      ).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a send+roles token undoes a role grant end-to-end', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const both = await mintToken('bananasaurs:send bananasaurs:roles');
+      expect(
+        callText((await roleCall(roleApp, both, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const undone = callText(
+        (await roleCall(roleApp, both, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('role.grant');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeDefined();
     } finally {
       await roleApp.close();
     }
@@ -9502,7 +9684,9 @@ describe('/mcp create_role and edit_role through the real composition', () => {
   it('a creation is not undoable', async () => {
     allow();
     grantMutate();
-    const roles = await mintToken('bananasaurs:roles');
+    // Both scopes: a roles-only token would refuse on the kind's scope
+    // before ever reaching the not-undoable answer under test.
+    const roles = await mintToken('bananasaurs:send bananasaurs:roles');
 
     const created = callText((await roleCall(roles, 'create_role', createArgs())).body);
     expect(created.isError).not.toBe(true);

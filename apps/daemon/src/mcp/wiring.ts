@@ -60,6 +60,10 @@ import {
   normalizeRef,
   bulkArgsHashFor,
   BULK_MEMBERS_MAX,
+  hasRolesScope,
+  hasSendScope,
+  MCP_ROLES_SCOPE,
+  MCP_SEND_SCOPE,
   type McpActionView,
   type McpActionsPort,
   type McpArchiveMessage,
@@ -5010,6 +5014,34 @@ const undoNeedFor = (scope: GuildScope, inverseKind: string, channelId: string):
   }
 };
 
+/**
+ * The OAuth scope an undo needs for one ledger kind (ADR 0114, whole-branch
+ * review): the role kinds undo only under the roles scope, every other kind
+ * only under send. A send-only token undoes message edits, pins and thread
+ * locks but never a role change; a roles-only token undoes role changes but
+ * never a message. Checked in the daemon undo port right after loading the
+ * row — before any other ledger read — so it holds whatever the tool layer's
+ * send-or-roles registration admits.
+ */
+const ROLE_UNDO_KINDS: ReadonlySet<string> = new Set([
+  'role.grant',
+  'role.remove',
+  'role.edit',
+  'role.bulk',
+]);
+
+const undoScopeForKind = (kind: string): string =>
+  ROLE_UNDO_KINDS.has(kind) ? MCP_ROLES_SCOPE : MCP_SEND_SCOPE;
+
+const undoScopeHeld = (
+  principal: McpPrincipal,
+  kind: string,
+): { readonly ok: true } | { readonly ok: false; readonly needed: string } => {
+  const needed = undoScopeForKind(kind);
+  const held = needed === MCP_ROLES_SCOPE ? hasRolesScope(principal) : hasSendScope(principal);
+  return held ? { ok: true } : { ok: false, needed };
+};
+
 const actionsPortFor = (
   principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
   deps: HttpDeps,
@@ -5024,6 +5056,13 @@ const actionsPortFor = (
       const scope = deps.scopes.forGuild(guildId);
       const row = mcpActionsRepo.findActionById(scope, input.actionId);
       if (row === undefined) return { status: 'refused', reason: 'action-not-found' };
+      // The scope gate by kind, before any ledger read beyond loading the
+      // row: a token without the kind's scope refuses here with
+      // `scope-mismatch` naming the scope needed, and nothing is changed.
+      const allowed = undoScopeHeld(principal, row.kind);
+      if (!allowed.ok) {
+        return { status: 'refused', reason: 'scope-mismatch', detail: allowed.needed };
+      }
       if (row.undoneByActionId !== undefined) {
         return {
           status: 'refused',
@@ -5219,11 +5258,15 @@ const actionsPortFor = (
         ...(row.targetChannelId !== undefined ? { targetChannelId: row.targetChannelId } : {}),
         ...(row.resultMessageId !== undefined ? { resultMessageId: row.resultMessageId } : {}),
         ...(row.resultThreadId !== undefined ? { resultThreadId: row.resultThreadId } : {}),
+        // The ledger read stays complete — every kind is listed — but a row
+        // outside the caller's scopes is never offered as undoable: its undo
+        // would refuse as `scope-mismatch`, so `yes` would be a lie.
         undoable:
           row.status === 'done' &&
           row.undoneByActionId === undefined &&
           row.undoJson !== undefined &&
-          REVERSIBLE_ACTION_KINDS.has(row.kind),
+          REVERSIBLE_ACTION_KINDS.has(row.kind) &&
+          undoScopeHeld(principal, row.kind).ok,
         createdAt: row.createdAt,
       }));
     }),
