@@ -263,11 +263,8 @@ describe('role-admin refusal texts', () => {
   const reasons: readonly McpRoleAdminRefusal[] = [
     'unknown-role',
     'ambiguous-role',
-    'above-bot',
-    'managed-or-everyone',
-    'dangerous',
-    'not-allowlisted',
     'role-not-allowlisted',
+    'role-not-permitted',
     'unauthorized',
     'killswitch',
     'breaker-open',
@@ -282,15 +279,11 @@ describe('role-admin refusal texts', () => {
       const detail =
         reason === 'ambiguous-role'
           ? '111111111111111112, 111111111111111113'
-          : [
-              'above-bot',
-              'managed-or-everyone',
-              'dangerous',
-              'not-allowlisted',
-              'role-not-allowlisted',
-            ].includes(reason)
+          : reason === 'role-not-allowlisted'
             ? ROLE
-            : undefined;
+            : reason === 'role-not-permitted'
+              ? 'dangerous'
+              : undefined;
       const createOutcome = await createRoleText(
         principalWith([GUILD_A]),
         fakeRolePort({
@@ -330,22 +323,33 @@ describe('role-admin refusal texts', () => {
     expect(messageOf(outcome)).toContain('roles.mutate');
   });
 
-  it('grant-policy refusals name the role id, never a role name', async () => {
-    for (const reason of [
-      'above-bot',
-      'managed-or-everyone',
-      'dangerous',
-      'not-allowlisted',
-    ] as const) {
+  it('grant-policy refusals name the specific cause', async () => {
+    const cases = [
+      ['above-bot', 'above'],
+      ['managed-or-everyone', 'managed'],
+      ['dangerous', 'dangerous'],
+      ['not-allowlisted', 'grant allowlist'],
+    ] as const;
+    for (const [cause, marker] of cases) {
       const outcome = await editRoleText(
         principalWith([GUILD_A]),
-        fakeRolePort({ status: 'refused', reason, detail: ROLE }),
+        fakeRolePort({ status: 'refused', reason: 'role-not-permitted', detail: cause }),
         editArgs({ role: SENTINEL_NAME }),
       );
       const message = messageOf(outcome);
-      expect(message).toContain(ROLE);
-      expect(message).not.toContain(SENTINEL_NAME);
+      expect(message).toContain(marker);
     }
+  });
+
+  it('the bot-allowlist refusal names the resolved role id', async () => {
+    const outcome = await editRoleText(
+      principalWith([GUILD_A]),
+      fakeRolePort({ status: 'refused', reason: 'role-not-allowlisted', detail: ROLE }),
+      editArgs({ role: SENTINEL_NAME }),
+    );
+    const message = messageOf(outcome);
+    expect(message).toContain(ROLE);
+    expect(message).toContain('allowlist');
   });
 });
 

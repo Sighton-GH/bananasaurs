@@ -3373,9 +3373,12 @@ const roleAdminPortFor = (
         }
         // The grant policy and the floor, live before the claim: a role that
         // gained a dangerous permission after allowlisting refuses here, with
-        // no Discord call.
+        // no Discord call — `role-not-permitted` with the policy reason as
+        // the detail, the same vocabulary `grant_role` uses.
         const grant = roleGrantRefusal(client, scope, roleId);
-        if (grant !== true) return { status: 'refused', reason: grant, detail: roleId };
+        if (grant !== true) {
+          return { status: 'refused', reason: 'role-not-permitted', detail: grant };
+        }
         const live = client.guilds.cache.get(guildId)?.roles.cache.get(roleId);
         if (live === undefined) return { status: 'refused', reason: 'unknown-role' };
         // Only the given fields move — a rename never disturbs the color —
@@ -3562,7 +3565,12 @@ const checkPanelRoles = (
   for (const roleId of roleIds) {
     const refusal = roleGrantRefusal(client, scope, roleId);
     if (refusal !== true) {
-      return { ok: false, outcome: { status: 'refused', reason: refusal, detail: roleId } };
+      // `role-not-permitted` with the policy reason as the detail — the same
+      // vocabulary `grant_role` uses, never the bare refusal as the reason.
+      return {
+        ok: false,
+        outcome: { status: 'refused', reason: 'role-not-permitted', detail: refusal },
+      };
     }
   }
   return { ok: true };
@@ -3835,7 +3843,11 @@ const panelsPortFor = (
           };
         }
         if (grantRefusal !== undefined) {
-          return { status: 'refused', reason: grantRefusal.reason, detail: grantRefusal.roleId };
+          return {
+            status: 'refused',
+            reason: 'role-not-permitted',
+            detail: grantRefusal.reason,
+          };
         }
         if (badInput !== undefined) {
           return { status: 'refused', reason: badInput.reason, detail: badInput.detail };

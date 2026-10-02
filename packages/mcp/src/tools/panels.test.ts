@@ -752,10 +752,7 @@ describe('panel refusals are distinct and content-free', () => {
     'ambiguous-role',
     'unknown-panel',
     'unknown-emoji',
-    'above-bot',
-    'managed-or-everyone',
-    'dangerous',
-    'not-allowlisted',
+    'role-not-permitted',
     'create-not-allowed-in-allowlist-mode',
     'invalid-definition',
     'bad-reorder',
@@ -793,6 +790,22 @@ describe('panel refusals are distinct and content-free', () => {
         expect(message).not.toContain(SENTINEL_LABEL);
       }
       expect(seen.size).toBe(reasons.length);
+    }
+  });
+
+  it('the grant-policy refusal names the specific cause', async () => {
+    const cases = [
+      ['above-bot', 'above'],
+      ['managed-or-everyone', 'managed'],
+      ['dangerous', 'dangerous'],
+      ['not-allowlisted', 'grant allowlist'],
+    ] as const;
+    for (const [cause, marker] of cases) {
+      const port = fakePanelsPort({ status: 'refused', reason: 'role-not-permitted', detail: cause });
+      const message = messageOf(
+        await createPanelText(principalWith([GUILD_A]), port, guild, createArgs()),
+      );
+      expect(message).toContain(marker);
     }
   });
 

@@ -93,11 +93,8 @@ export type McpRoleAdminOutcome =
 export type McpRoleAdminRefusal =
   | 'unknown-role'
   | 'ambiguous-role'
-  | 'above-bot'
-  | 'managed-or-everyone'
-  | 'dangerous'
-  | 'not-allowlisted'
   | 'role-not-allowlisted'
+  | 'role-not-permitted'
   | 'unauthorized'
   | 'killswitch'
   | 'breaker-open'
@@ -194,19 +191,20 @@ const refuseInvalidArgs = (): RoleAdminOutcomeText => ({
 /**
  * Every refusal renders distinctly and actionably: the operator reading it
  * knows what stopped the write and what to do next. No two reasons share a
- * string (pinned by test). Role ids only, never role names: the daemon
- * resolves a name to an id before refusing, and the one refusal that cannot
- * name an id (`unknown-role`) names no ref at all.
+ * string (pinned by test). `roleRef` is the caller's own ref (an id or a
+ * name, like `grant_role`'s renderer): the daemon resolves it to an id
+ * before refusing, and the one refusal that cannot name even the ref
+ * (`unknown-role`) names no ref at all.
  */
 const refusalText = (
   kind: RoleAdminKind,
   guildId: GuildId,
-  roleId: string | undefined,
+  roleRef: string | undefined,
   reason: McpRoleAdminRefusal,
   detail?: string,
 ): string => {
   const created = kind === 'create' ? 'no role was created' : 'nothing was edited';
-  const id = roleId ?? 'that role';
+  const id = roleRef ?? 'that role';
   switch (reason) {
     case 'unknown-role':
       return (
@@ -219,33 +217,47 @@ const refusalText = (
         `${detail !== undefined ? ` (${detail})` : ''}, so ${created}. ` +
         'Pass one role id instead of a name.'
       );
-    case 'above-bot':
-      return (
-        `Role ${id} in guild ${guildId} sits at or above the bot\u2019s highest role, ` +
-        `so ${created}. The MCP only creates and edits roles below the bot.`
-      );
-    case 'managed-or-everyone':
-      return (
-        `Role ${id} in guild ${guildId} is managed by an integration or is @everyone, ` +
-        `so ${created}. Managed roles belong to their integration, not to this tool.`
-      );
-    case 'dangerous':
-      return (
-        `Role ${id} in guild ${guildId} holds a dangerous Discord permission, ` +
-        `so ${created}. The MCP never touches a role that could escalate its holder.`
-      );
-    case 'not-allowlisted':
-      return (
-        `Role ${id} in guild ${guildId} is not allowlisted for MCP role changes, ` +
-        `so ${created}. An operator must allowlist it before the MCP can change it.`
-      );
     case 'role-not-allowlisted':
       // The bot's role allowlist (`managed_roles`), the same refusal
       // `grant_role` gives: the role id is the daemon-resolved id in `detail`.
       return (
-        `Role ${id} in guild ${guildId} is not on the bot's role allowlist, ` +
+        `Role ${detail ?? id} in guild ${guildId} is not on the bot's role allowlist, ` +
         `so ${created}. An operator must allowlist it before the MCP can change it.`
       );
+    case 'role-not-permitted': {
+      // The daemon's grant-policy reason, named the way the policy names it —
+      // the same vocabulary `grant_role` renders.
+      let cause: string;
+      switch (detail) {
+        case 'above-bot':
+          cause =
+            'sits above the bot\u2019s highest role, so the grant policy refuses it. ' +
+            'An operator must move it below the bot first';
+          break;
+        case 'managed-or-everyone':
+          cause =
+            'is managed by an integration (or is @everyone), so the grant policy refuses it. ' +
+            'Managed roles are never changed through this tool';
+          break;
+        case 'dangerous':
+          cause =
+            'carries a dangerous permission, so the floor refuses it. ' +
+            'The MCP never touches a role that could escalate its holder';
+          break;
+        case 'not-allowlisted':
+          cause =
+            'is not on the MCP grant allowlist, so the grant policy refuses it. ' +
+            'An operator must allow it for MCP grants first';
+          break;
+        default:
+          cause =
+            `does not pass the MCP grant policy` +
+            `${detail !== undefined ? ` (${detail})` : ''}, so the grant policy refuses it. ` +
+            'An operator must fix the role first';
+          break;
+      }
+      return `Role ${id} in guild ${guildId} ${cause}, so ${created}.`;
+    }
     case 'unauthorized':
       return (
         `This account lacks roles.mutate in guild ${guildId}, so ${created}. ` +
@@ -312,33 +324,35 @@ const renderDone = (
 /**
  * Refused outcomes that name a role id carry it in `detail` (the daemon
  * resolves the caller's ref to an id before refusing, except for
- * `unknown-role` and `ambiguous-role`, which have no single id). The renderer
- * speaks ids only, so the detail is threaded through as the id here.
+ * `unknown-role` and `ambiguous-role`, which have no single id). The
+ * grant-policy refusal instead carries the policy cause in `detail`, so the
+ * renderer names the caller's own ref there — the same precedent as
+ * `grant_role`'s renderer, which speaks the caller's refs throughout.
  */
 const renderRefused = (
   kind: RoleAdminKind,
   guildId: GuildId,
+  roleRef: string | undefined,
   outcome: Extract<McpRoleAdminOutcome, { status: 'refused' }>,
 ): RoleAdminOutcomeText => {
-  const idReasons: ReadonlySet<McpRoleAdminRefusal> = new Set([
-    'above-bot',
-    'managed-or-everyone',
-    'dangerous',
-    'not-allowlisted',
-    'role-not-allowlisted',
-  ]);
-  const roleId =
-    outcome.reason === 'ambiguous-role'
-      ? undefined
-      : idReasons.has(outcome.reason)
-        ? outcome.detail
-        : undefined;
+  if (outcome.reason === 'role-not-allowlisted') {
+    return {
+      ok: false,
+      message: refusalText(kind, guildId, outcome.detail ?? roleRef, outcome.reason, undefined),
+    };
+  }
+  if (outcome.reason === 'role-not-permitted') {
+    return {
+      ok: false,
+      message: refusalText(kind, guildId, roleRef, outcome.reason, outcome.detail),
+    };
+  }
   return {
     ok: false,
     message: refusalText(
       kind,
       guildId,
-      roleId,
+      undefined,
       outcome.reason,
       outcome.reason === 'ambiguous-role' ? outcome.detail : undefined,
     ),
@@ -348,6 +362,7 @@ const renderRefused = (
 const renderOutcome = (
   kind: RoleAdminKind,
   guildId: GuildId,
+  roleRef: string | undefined,
   outcome: McpRoleAdminOutcome,
 ): RoleAdminOutcomeText => {
   switch (outcome.status) {
@@ -384,7 +399,7 @@ const renderOutcome = (
               `nothing new was changed on role ${outcome.roleId ?? 'that role'}.`,
           };
     case 'refused':
-      return renderRefused(kind, guildId, outcome);
+      return renderRefused(kind, guildId, roleRef, outcome);
     case 'failed':
       // The Discord call failed with an unknown result: Discord may have
       // applied the write and the response been lost, so this must not claim
@@ -438,7 +453,10 @@ export const createRoleText = async (
       dryRun: input.dryRun ?? false,
       idempotencyKey: input.idempotencyKey,
     });
-    return renderOutcome('create', gate.guildId, outcome);
+    // A creation names no role ref on refusal: the name the caller typed must
+    // never be echoed back (it is member content), and the daemon never got
+    // far enough to resolve one.
+    return renderOutcome('create', gate.guildId, undefined, outcome);
   } catch {
     return refuse();
   }
@@ -471,7 +489,9 @@ export const editRoleText = async (
       dryRun: input.dryRun ?? false,
       idempotencyKey: input.idempotencyKey,
     });
-    return renderOutcome('edit', gate.guildId, outcome);
+    // The caller's own ref, like `grant_role`'s renderer: the grant-policy
+    // refusal names its cause from the daemon's detail and this ref.
+    return renderOutcome('edit', gate.guildId, role, outcome);
   } catch {
     return refuse();
   }

@@ -10235,7 +10235,9 @@ describe('/mcp panel tools through the real composition', () => {
       );
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('dangerous');
-      expect(refused.text).toContain(DANGEROUS_ROLE);
+      // The refusal names the grant-policy cause, not the role: a panel
+      // names several option roles and the outcome carries no single id.
+      expect(refused.text).toContain('grant policy');
       // Refused before any write: no role created, no `managed_roles` row,
       // no panel row, no Discord call.
       expect(discord.restCalls()).toHaveLength(0);
@@ -10367,7 +10369,7 @@ describe('/mcp panel tools through the real composition', () => {
       );
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('above');
-      expect(refused.text).toContain(HIGH_ROLE);
+      expect(refused.text).toContain('grant policy');
       expect(discord.restCalls()).toHaveLength(0);
       expect(panelsOf()).toEqual([]);
       expect(

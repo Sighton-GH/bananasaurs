@@ -220,10 +220,7 @@ export type McpPanelRefusal =
   | 'ambiguous-role'
   | 'unknown-panel'
   | 'unknown-emoji'
-  | 'above-bot'
-  | 'managed-or-everyone'
-  | 'dangerous'
-  | 'not-allowlisted'
+  | 'role-not-permitted'
   | 'create-not-allowed-in-allowlist-mode'
   | 'invalid-definition'
   | 'bad-reorder'
@@ -544,26 +541,34 @@ const refusalText = (
         `${detail !== undefined ? ` (${detail})` : ''}, so ${undone}. ` +
         'Pass a unicode emoji, or name:id for a custom emoji of this guild.'
       );
-    case 'above-bot':
+    case 'role-not-permitted': {
+      // The daemon's grant-policy reason, named the way the policy names it —
+      // the same vocabulary `grant_role` renders. The detail is the cause;
+      // the failing option role is not named (a panel names several).
+      let cause: string;
+      switch (detail) {
+        case 'above-bot':
+          cause = 'above the bot\u2019s highest role';
+          break;
+        case 'managed-or-everyone':
+          cause = 'managed by an integration or @everyone';
+          break;
+        case 'dangerous':
+          cause = 'holding a dangerous Discord permission';
+          break;
+        case 'not-allowlisted':
+          cause = 'not on the MCP grant allowlist';
+          break;
+        default:
+          cause = detail === undefined ? 'refused by the grant policy' : detail;
+          break;
+      }
       return (
-        `Role ${detail ?? 'that role'} in guild ${guildId} sits at or above the bot\u2019s highest role, ` +
-        `so ${undone}. The MCP only panels roles below the bot.`
+        `An option role of ${panel} in guild ${guildId} does not pass the MCP grant policy ` +
+        `(${cause}), so ${undone}. The MCP only panels roles below the bot that are not managed, ` +
+        'not @everyone and without dangerous permissions.'
       );
-    case 'managed-or-everyone':
-      return (
-        `Role ${detail ?? 'that role'} in guild ${guildId} is managed by an integration or is @everyone, ` +
-        `so ${undone}. Managed roles belong to their integration, not to a panel.`
-      );
-    case 'dangerous':
-      return (
-        `Role ${detail ?? 'that role'} in guild ${guildId} holds a dangerous Discord permission, ` +
-        `so ${undone}. The MCP never panels a role that could escalate its holder.`
-      );
-    case 'not-allowlisted':
-      return (
-        `Role ${detail ?? 'that role'} in guild ${guildId} is not allowlisted for MCP grants, ` +
-        `so ${undone}. An operator must allow it for MCP grants first.`
-      );
+    }
     case 'create-not-allowed-in-allowlist-mode':
       return (
         `Guild ${guildId} is in allowlist grant mode, so new roles cannot be created inline and ` +
