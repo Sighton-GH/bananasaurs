@@ -7746,6 +7746,9 @@ describe('/mcp create_role and edit_role through the real composition', () => {
     // Only the given fields moved in FakeDiscord; the row holds the role id
     // and exactly those fields' previous values.
     expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    // The PATCH carries only the given fields: no name was asked for, so none is sent.
+    const patch = fakeDiscord.restCalls('editRole')[0]?.args[2] as Record<string, unknown>;
+    expect(patch).toEqual({ color: 0x12_34_56, mentionable: true });
     const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-k1');
     expect(row?.kind).toBe('role.edit');
     expect(JSON.parse(row?.undoJson ?? '')).toEqual({
@@ -7775,6 +7778,25 @@ describe('/mcp create_role and edit_role through the real composition', () => {
     expect(again.isError).toBe(true);
     expect(again.text).toContain('already undone');
     expect(fakeDiscord.restCalls('editRole')).toHaveLength(2);
+  });
+
+  it('a failed move after creation fails naming the created role id', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+    fakeDiscord.failNext(
+      'setRolePosition',
+      new DiscordApiError(500, undefined, 'discord is on fire'),
+    );
+    const failed = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(failed.isError).toBe(true);
+    expect(fakeDiscord.restCalls('createRole')).toHaveLength(1);
+    // The role exists in Discord now; the failure text must name it so an operator can find it.
+    const newRoles = (await fakeDiscord.fetchRoles(GUILD_A)).filter(
+      (role) => role.permissions === '0' && role.id !== GUILD_A,
+    );
+    const createdId = newRoles.map((role) => role.id).find((id) => failed.text.includes(id));
+    expect(createdId).toBeDefined();
   });
 
   it('a creation is not undoable', async () => {
