@@ -166,10 +166,7 @@ export interface ConsumedPreviewTotals {
   readonly memberTotal: number;
 }
 
-export const sumConsumedMembers = (
-  scope: GuildScope,
-  sinceMs: number,
-): ConsumedPreviewTotals =>
+export const sumConsumedMembers = (scope: GuildScope, sinceMs: number): ConsumedPreviewTotals =>
   read(scope, (db) => {
     const rows = db
       .select({ memberIdsJson: mcpBulkPreviews.memberIdsJson })

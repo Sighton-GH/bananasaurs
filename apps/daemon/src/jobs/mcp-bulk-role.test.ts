@@ -87,7 +87,9 @@ const captureLogger = (lines: string[]): McpBulkRoleJobPorts['logger'] =>
     },
   }) as unknown as McpBulkRoleJobPorts['logger'];
 
-const portsFor = (over: Partial<McpBulkRoleJobPorts> = {}): McpBulkRoleJobPorts & {
+const portsFor = (
+  over: Partial<McpBulkRoleJobPorts> = {},
+): McpBulkRoleJobPorts & {
   readonly lines: string[];
 } => {
   const lines: string[] = [];
@@ -260,7 +262,10 @@ describe('mcp.bulk_role resume', () => {
       hadRoleBefore: false,
     }));
     const retry = portsFor({ gateway: retryGateway, scope: ports.scope });
-    await mcpBulkRoleHandler(retry).run(payload(), runCtx({ cursor: first.saved.at(-1) ?? null }).ctx);
+    await mcpBulkRoleHandler(retry).run(
+      payload(),
+      runCtx({ cursor: first.saved.at(-1) ?? null }).ctx,
+    );
     expect(retryGateway.calls).toHaveLength(1);
     expect(String(retryGateway.calls[0]?.triggerRef)).toContain(MEMBER_B);
   });

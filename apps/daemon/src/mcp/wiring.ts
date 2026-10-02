@@ -2958,7 +2958,11 @@ const bulkRolesPortFor = (
         // the tool sends, and required to match the tool-supplied hash too.
         const expected =
           input.memberIds !== undefined
-            ? bulkArgsHashFor({ action: input.action, roleId: input.roleId, members: input.memberIds })
+            ? bulkArgsHashFor({
+                action: input.action,
+                roleId: input.roleId,
+                members: input.memberIds,
+              })
             : input.selector === undefined
               ? undefined
               : bulkArgsHashFor({

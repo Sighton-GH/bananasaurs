@@ -492,7 +492,8 @@ describe('runMcpAction layer order', () => {
     expect(h.executeCalls.value).toBe(0);
   });
 
-  it('success completes with the result ids, audits done, and leaks no content', async () => {    const h = build();
+  it('success completes with the result ids, audits done, and leaks no content', async () => {
+    const h = build();
     const outcome = await runMcpAction(h.deps, intent(), true, async () => {
       h.executeCalls.value += 1;
       return { resultMessageId: '444444444444444445', resultThreadId: '666666666666666666' };

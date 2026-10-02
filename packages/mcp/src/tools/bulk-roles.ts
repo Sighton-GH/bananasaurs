@@ -106,13 +106,14 @@ export interface McpBulkConfirmInput {
 /** Mirrors the daemon's preview outcomes, named in this package's own vocabulary. */
 export type McpBulkPreviewOutcome =
   | { readonly status: 'done'; readonly token: string; readonly expiresAt: number }
-  | { readonly status: 'refused'; readonly reason: McpBulkPreviewRefusal; readonly detail?: string };
+  | {
+      readonly status: 'refused';
+      readonly reason: McpBulkPreviewRefusal;
+      readonly detail?: string;
+    };
 
 export type McpBulkPreviewRefusal =
-  | 'unknown-role'
-  | 'role-not-allowlisted'
-  | 'role-not-permitted'
-  | 'too-many';
+  'unknown-role' | 'role-not-allowlisted' | 'role-not-permitted' | 'too-many';
 
 /** Mirrors the daemon's confirm outcomes, named in this package's own vocabulary. */
 export type McpBulkConfirmOutcome =
@@ -137,8 +138,7 @@ export type McpBulkConfirmRefusal =
   | 'duplicate-key-different-content';
 
 export type BulkRoleOutcomeText =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly message: string };
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
 /**
  * The args hash: `sha256` of the canonical JSON of `{action, roleId}` plus
@@ -153,7 +153,8 @@ export const bulkArgsHashFor = (input: {
   readonly action: 'add' | 'remove';
   readonly roleId: string;
   readonly members?: readonly string[] | undefined;
-  readonly selector?: { readonly hasRoles?: readonly string[]; readonly lacksRoles?: readonly string[] } | undefined;
+  readonly selector?:
+    { readonly hasRoles?: readonly string[]; readonly lacksRoles?: readonly string[] } | undefined;
 }): string => {
   const canon = {
     action: input.action,
@@ -235,7 +236,8 @@ const refuseInvalidArgs = (): BulkRoleOutcomeText => ({
   message: INVALID_ARGUMENTS_MESSAGE,
 });
 
-const memberNoun = (count: number): string => (count === 1 ? '1 member' : `${String(count)} members`);
+const memberNoun = (count: number): string =>
+  count === 1 ? '1 member' : `${String(count)} members`;
 
 /**
  * Every preview refusal renders distinctly and actionably (pinned by test).
@@ -278,10 +280,7 @@ const previewRefusalText = (
  * `detail` may carry it (or a reset time), so no confirm refusal renders
  * `detail` at all.
  */
-const confirmRefusalText = (
-  guildId: GuildId,
-  reason: McpBulkConfirmRefusal,
-): string => {
+const confirmRefusalText = (guildId: GuildId, reason: McpBulkConfirmRefusal): string => {
   switch (reason) {
     case 'unknown-token':
       return (
@@ -315,9 +314,7 @@ const confirmRefusalText = (
         'an operator must allowlist it before this tool can change it, so nothing was changed.'
       );
     case 'role-not-permitted':
-      return (
-        `That role in guild ${guildId} does not pass the MCP grant policy, so nothing was changed.`
-      );
+      return `That role in guild ${guildId} does not pass the MCP grant policy, so nothing was changed.`;
     case 'unauthorized':
       return (
         `This account lacks the roles.mutate capability in guild ${guildId}, ` +
@@ -361,9 +358,7 @@ const renderPreview = (
   const shown = members.slice(0, BULK_PREVIEW_NAMES_SHOWN);
   const names = shown.map((member) => safeName(member.displayName)).join(', ');
   const rest =
-    members.length > shown.length
-      ? ` and ${String(members.length - shown.length)} more`
-      : '';
+    members.length > shown.length ? ` and ${String(members.length - shown.length)} more` : '';
   return (
     `Bulk preview in guild ${guildId}: ${memberNoun(members.length)} will ${verb} role ${roleRef}` +
     `${members.length === 0 ? '.' : ` (${names}${rest}).`} ` +

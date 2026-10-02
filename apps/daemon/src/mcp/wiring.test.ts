@@ -8177,9 +8177,13 @@ describe('/mcp bulk_role_change through the real composition', () => {
     };
   };
 
-  const buildBulkApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
+  const buildBulkApp = (
+    client: Client,
+    discord: FakeDiscord,
+    logger: DashboardAppDeps['logger'] = deps.logger,
+  ): FastifyInstance =>
     createServer({
-      deps: { ...deps },
+      deps: { ...deps, logger },
       registerRoutes: (instance, _guard, routeDeps) => {
         registerMcpRoutes(instance, routeDeps, client, discord);
       },
@@ -8271,19 +8275,27 @@ describe('/mcp bulk_role_change through the real composition', () => {
     client: Client,
     discord: FakeDiscord,
     input: { previewId: string; actionId: string; jobId: number; cursor?: string | null },
-  ): Promise<{ readonly lines: string[]; readonly saved: (string | null)[] }> => {
+  ): Promise<{
+    readonly lines: string[];
+    readonly saved: (string | null)[];
+    readonly logged: { readonly fields: unknown; readonly msg: string }[];
+  }> => {
     const scope = t.scopes.forGuild(GUILD_A);
     const lines: string[] = [];
     const saved: (string | null)[] = [];
+    const logged: { readonly fields: unknown; readonly msg: string }[] = [];
     const logger = {
-      info: (_fields: unknown, message: string) => {
+      info: (fields: unknown, message: string) => {
         lines.push(message);
+        logged.push({ fields, msg: message });
       },
-      warn: (_fields: unknown, message: string) => {
+      warn: (fields: unknown, message: string) => {
         lines.push(message);
+        logged.push({ fields, msg: message });
       },
-      error: (_fields: unknown, message: string) => {
+      error: (fields: unknown, message: string) => {
         lines.push(message);
+        logged.push({ fields, msg: message });
       },
     } as never;
     await mcpBulkRoleHandler({
@@ -8291,7 +8303,12 @@ describe('/mcp bulk_role_change through the real composition', () => {
       logger,
       now: () => clock,
       gateway: mcpRoleGatewayFor(
-        { authz: authzStoreFor(scope), rateLimiter: new RateLimiter(1000), logger, now: () => clock },
+        {
+          authz: authzStoreFor(scope),
+          rateLimiter: new RateLimiter(1000),
+          logger,
+          now: () => clock,
+        },
         client,
         discord,
         scope,
@@ -8324,7 +8341,7 @@ describe('/mcp bulk_role_change through the real composition', () => {
         },
       },
     );
-    return { lines, saved };
+    return { lines, saved, logged };
   };
 
   const storedTrail = (): string => {
@@ -8345,7 +8362,9 @@ describe('/mcp bulk_role_change through the real composition', () => {
     const bulkApp = buildBulkApp(client, discord);
     try {
       const accessToken = await mintToken('bananasaurs:roles');
-      const preview = bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body);
+      const preview = bulkText(
+        (await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body,
+      );
       expect(preview.isError).not.toBe(true);
       expect(preview.text).toContain('2 members');
       expect(preview.text).toContain(MEMBER_NAME);
@@ -8381,7 +8400,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       const confirmed = bulkText(
         (
@@ -8407,7 +8427,9 @@ describe('/mcp bulk_role_change through the real composition', () => {
       expect(confirmed.text).toContain(row.actionId);
       // One batch row: source mcp, batch id = the action id.
       expect(
-        t.raw.prepare("SELECT batch_id, source FROM effect_batches WHERE batch_id = ?").get(row.actionId),
+        t.raw
+          .prepare('SELECT batch_id, source FROM effect_batches WHERE batch_id = ?')
+          .get(row.actionId),
       ).toEqual({ batch_id: row.actionId, source: 'mcp' });
       // One job row: the bulk kind, carrying preview and action ids — never the token.
       const job = jobRepo.findJob(scope, jobId);
@@ -8430,7 +8452,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       const confirmed = bulkText(
         (
@@ -8474,6 +8497,67 @@ describe('/mcp bulk_role_change through the real composition', () => {
     }
   });
 
+  it('the token reaches no log line across preview, confirm and the job', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const captured: { readonly fields: unknown; readonly msg: string }[] = [];
+    const captureLogger = {
+      info(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      warn(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      error(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as never;
+    const bulkApp = buildBulkApp(client, discord, captureLogger);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      const { logged } = await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      // The token authenticates the confirm: it must reach neither the HTTP
+      // layer's log lines nor the job's, fields and messages alike — and
+      // neither do member display names, which live in responses only.
+      const dump = JSON.stringify({ captured, logged });
+      expect(dump).not.toContain(token);
+      expect(dump).not.toContain(MEMBER_NAME);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
   it('the job applies the previewed set even after membership changed', async () => {
     seedBulkScope();
     const discord = new FakeDiscord({ guildId: GUILD_A });
@@ -8484,7 +8568,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       const confirmed = bulkText(
         (
@@ -8530,7 +8615,9 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const args = previewArgs({ members: undefined, selector: {} });
-      const preview = bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', args)).body);
+      const preview = bulkText(
+        (await bulkCall(bulkApp, accessToken, 'bulk_role_change', args)).body,
+      );
       expect(preview.isError).not.toBe(true);
       // The stub listing holds three members: the selector matches all three.
       expect(preview.text).toContain('3 members');
@@ -8581,7 +8668,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       const jobsBefore = jobRepo.listJobs(t.scopes.forGuild(GUILD_A), {}).length;
       const refused = bulkText(
@@ -8601,7 +8689,9 @@ describe('/mcp bulk_role_change through the real composition', () => {
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('do not match the preview');
       expect(refused.text).not.toContain(token);
-      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-tampered-k1')).toBeUndefined();
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-tampered-k1'),
+      ).toBeUndefined();
       expect(jobRepo.listJobs(t.scopes.forGuild(GUILD_A), {}).length).toBe(jobsBefore);
       expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
     } finally {
@@ -8663,7 +8753,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       const first = bulkText(
         (
@@ -8689,7 +8780,9 @@ describe('/mcp bulk_role_change through the real composition', () => {
       expect(second.isError).toBe(true);
       expect(second.text).toContain('already used');
       expect(second.text).not.toContain(token);
-      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2')).toBeUndefined();
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2'),
+      ).toBeUndefined();
     } finally {
       await bulkApp.close();
     }
@@ -8732,7 +8825,9 @@ describe('/mcp bulk_role_change through the real composition', () => {
       );
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('No bulk preview matches that token');
-      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-foreign-k1')).toBeUndefined();
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-foreign-k1'),
+      ).toBeUndefined();
     } finally {
       await bulkApp.close();
     }
@@ -8748,7 +8843,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       const scope = t.scopes.forGuild(GUILD_A);
       const jobsBefore = jobRepo.listJobs(scope, {}).length;
@@ -8783,7 +8879,8 @@ describe('/mcp bulk_role_change through the real composition', () => {
     try {
       const accessToken = await mintToken('bananasaurs:roles');
       const token = extractToken(
-        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
       );
       bulkText(
         (

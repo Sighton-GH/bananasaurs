@@ -3,7 +3,13 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { effectRepo, guildRepo, mcpActionsRepo, mcpBulkRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  effectRepo,
+  guildRepo,
+  mcpActionsRepo,
+  mcpBulkRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import { mcpActionDepsFor } from './actions.js';
 

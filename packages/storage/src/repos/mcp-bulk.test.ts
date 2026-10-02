@@ -4,7 +4,13 @@ import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import type { GuildScope } from '../scope.js';
 import { upsertGuild } from './guilds.js';
-import { consumePreview, createPreview, findPreviewById, findPreviewByToken, sumConsumedMembers } from './mcp-bulk.js';
+import {
+  consumePreview,
+  createPreview,
+  findPreviewById,
+  findPreviewByToken,
+  sumConsumedMembers,
+} from './mcp-bulk.js';
 
 const GUILD_A = parseGuildId('111111111111111111');
 const GUILD_B = parseGuildId('222222222222222222');
@@ -153,7 +159,12 @@ describe('findPreviewById', () => {
 describe('sumConsumedMembers', () => {
   it('sums the member counts of previews consumed since the window bound', () => {
     const live = { createdAt: 1000, expiresAt: 3000 };
-    create(a, { previewId: 'p1', token: 't1', memberIds: ['1'.repeat(18), '2'.repeat(18)], ...live });
+    create(a, {
+      previewId: 'p1',
+      token: 't1',
+      memberIds: ['1'.repeat(18), '2'.repeat(18)],
+      ...live,
+    });
     create(a, { previewId: 'p2', token: 't2', memberIds: ['3'.repeat(18)], ...live });
     create(a, { previewId: 'p3', token: 't3', memberIds: ['4'.repeat(18)], ...live });
     expect(consumePreview(a, 'p1', 7, 1500)).toBe(true);

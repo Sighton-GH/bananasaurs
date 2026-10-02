@@ -76,6 +76,13 @@ const profile = (
   joinedAt: undefined,
 });
 
+/**
+ * Distinct 18-digit member ids from string parts only: arithmetic on
+ * snowflake-sized number literals loses precision at runtime
+ * (`no-loss-of-precision`), and near 1e16 even `+1` stops being exact.
+ */
+const memberIdAt = (i: number): string => `6333333333${String(i).padStart(8, '0')}`;
+
 const fakeMembers = (
   members: readonly McpMemberProfile[] = [
     profile('633333333333333333', 'Sam One', [ROLE]),
@@ -140,7 +147,7 @@ describe('bulk_role_change argument boundary', () => {
       port,
       fakeGuild(),
       members,
-      previewArgs({ members: Array.from({ length: 101 }, (_, i) => String(633333333333333300 + i)) }),
+      previewArgs({ members: Array.from({ length: 101 }, (_, i) => memberIdAt(i)) }),
     );
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(port.previewCalls).toHaveLength(0);
@@ -161,7 +168,8 @@ describe('bulk_role_change argument boundary', () => {
 
   it('neither members nor selector is an argument fault', async () => {
     const port = fakeBulkPort({});
-    const { members: _dropped, ...rest } = previewArgs();
+    const { members: given, ...rest } = previewArgs();
+    expect(given).toHaveLength(2);
     const outcome = await bulkRoleChangeText(
       principalWith([GUILD_A]),
       port,
@@ -223,7 +231,13 @@ describe('bulk_role_change preview', () => {
       preview: { status: 'done', token: 'preview-token-1', expiresAt: 1_700_000_060_000 },
     });
     const text = textOf(
-      await bulkRoleChangeText(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), previewArgs()),
+      await bulkRoleChangeText(
+        principalWith([GUILD_A]),
+        port,
+        fakeGuild(),
+        fakeMembers(),
+        previewArgs(),
+      ),
     );
     expect(text).toContain('2 members');
     expect(text).toContain('Sam One');
@@ -274,7 +288,7 @@ describe('bulk_role_change preview', () => {
   it('a selector matching more than 100 refuses with the narrow-the-set text', async () => {
     const port = fakeBulkPort({});
     const many = Array.from({ length: 120 }, (_, i) =>
-      profile(String(633333333333333300 + i).slice(0, 18).padStart(18, '7'), `Member ${String(i)}`),
+      profile(memberIdAt(i), `Member ${String(i)}`),
     );
     const outcome = await bulkRoleChangeText(
       principalWith([GUILD_A]),
@@ -291,7 +305,7 @@ describe('bulk_role_change preview', () => {
   it('the preview names only the first 20 members', async () => {
     const port = fakeBulkPort({});
     const many = Array.from({ length: 25 }, (_, i) =>
-      profile(`7${String(10000000000000000 + i)}`, `Member ${String(i).padStart(2, '0')}`),
+      profile(memberIdAt(1000 + i), `Member ${String(i).padStart(2, '0')}`),
     );
     const text = textOf(
       await bulkRoleChangeText(
@@ -328,7 +342,13 @@ describe('bulk_role_change preview', () => {
             : { status: 'refused', reason, detail: ROLE },
       });
       const message = messageOf(
-        await bulkRoleChangeText(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), previewArgs()),
+        await bulkRoleChangeText(
+          principalWith([GUILD_A]),
+          port,
+          fakeGuild(),
+          fakeMembers(),
+          previewArgs(),
+        ),
       );
       expect(message.length).toBeGreaterThan(0);
       texts.add(message);
