@@ -262,7 +262,8 @@ export const resolvePings: (client, scope, guildId, input: { roles: readonly str
 **Tools** (all `send` scope; each takes `guildId`, `idempotencyKey`, `dryRun?`):
 - `create_thread {channel (id|name), name ≤100, type: 'public'|'private', autoArchiveMinutes? (default 1440), invitable? (private only, default false), fromMessageId? (public only), firstMessage? {content?, embeds?}}`
   - kind `thread.create`, cap group `structure`.
-  - A private thread: in the same transaction as completing the action, write `mcp_private_threads` and an `mcp_send_allowlist` channel row for the thread (`addedByAccountId` = the principal's account).
+  - A private thread: write `mcp_private_threads` and an `mcp_send_allowlist` channel row for the thread (`addedByAccountId` = the principal's account) as soon as `createThread` returns, inside `execute` (both writes are idempotent).
+    - *As built (controller ruling, Task 5 review):* this does not use the completion transaction. The Discord call → database window exists either way. A crash before the rows leaves an orphan thread that MCP cannot read, and putting the rows in the completion transaction would not prevent that. A crash after the rows but before completion leaves a thread the MCP really did create, readable, with its action still `claimed`; that is correct, not a leak.
   - `firstMessage` is a second action, key `<idempotencyKey>:first`, through the `message.send` path into the new thread.
 - `add_thread_members` / `remove_thread_members {threadId, userIds ≤25}`
   - One action per call (kind `thread.members.add|remove`, cap group `structure`). Members are resolved live; a non-member of the guild is refused.
