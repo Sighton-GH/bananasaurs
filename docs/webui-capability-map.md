@@ -84,6 +84,13 @@ links this runbook rather than offering a restore control.
 
 ## Terminal-only, by design
 
+- `panel edit` / `panel delete` stay terminal (and MCP) operations in this
+  release: Release scope keeps the role-panel builder create-only, so there is
+  no dashboard edit or delete control. Both run through the shared ops
+  commands — `panel edit` replaces the definition storage-only (publish with
+  `panel sync`), `panel delete` removes the Discord message then the rows —
+  and both land in the audit trail as `panel.edited` / `panel.deleted`. The
+  Role panels page links that scope rather than offering the controls.
 - `bootstrap reissue` re-arms the first-account setup page when **no**
   dashboard account exists — a state in which nobody can sign in to click a
   web button. It stays a host command; the Accounts page's empty state says

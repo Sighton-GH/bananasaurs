@@ -125,13 +125,13 @@ class FakeLedger {
   }
 
   /** Seed a claimed row directly, for cap tests. */
-  seedClaimed(index: number, atMs: number): void {
-    this.rows.set(`seed-key-${index}`, {
-      actionId: `seed-action-${index}`,
-      idempotencyKey: `seed-key-${index}`,
+  seedClaimed(index: number, atMs: number, capGroup: StoredRow['capGroup'] = 'message'): void {
+    this.rows.set(`seed-key-${capGroup}-${index}`, {
+      actionId: `seed-action-${capGroup}-${index}`,
+      idempotencyKey: `seed-key-${capGroup}-${index}`,
       kind: KIND,
-      capGroup: 'message',
-      argsHash: `seed-hash-${index}`,
+      capGroup,
+      argsHash: `seed-hash-${capGroup}-${index}`,
       status: 'claimed',
       tokenId: TOKEN_ID,
       targetChannelId: CHANNEL,
@@ -560,5 +560,40 @@ describe('runMcpAction layer order', () => {
       expect(JSON.stringify(row)).not.toContain(CONTENT);
     }
     expect(h.logText()).not.toContain(CONTENT);
+  });
+
+  it('an absent weight counts one: the cap fills at exactly the cap, not before', async () => {
+    const h = build();
+    for (let i = 0; i < MCP_ACTION_CAPS.message - 1; i += 1) {
+      h.ledger.seedClaimed(i, h.nowMs.value);
+    }
+    const outcome = await runMcpAction(h.deps, intent(), true, succeedingExecute(h));
+    expect(outcome.status).toBe('done');
+    expect(h.executeCalls.value).toBe(1);
+  });
+
+  it('a weight-100 bulk intent is refused once 901 singles fill the member_role window', async () => {
+    const h = build();
+    for (let i = 0; i < 901; i += 1) {
+      h.ledger.seedClaimed(i, h.nowMs.value, 'member_role');
+    }
+    const bulk = intent({ capGroup: 'member_role', weight: 100 });
+    const refused = await runMcpAction(h.deps, bulk, true, succeedingExecute(h));
+    expect(refused).toEqual({
+      status: 'refused',
+      reason: 'rate-cap',
+      detail: new Date(h.nowMs.value + MCP_ACTION_WINDOW_MS).toISOString(),
+    });
+    expect(h.executeCalls.value).toBe(0);
+
+    // Ninety-nine members still fit: 901 + 99 is not over the 1,000 cap.
+    const fits = await runMcpAction(
+      h.deps,
+      intent({ capGroup: 'member_role', idempotencyKey: 'key-2', weight: 99 }),
+      true,
+      succeedingExecute(h),
+    );
+    expect(fits.status).toBe('done');
+    expect(h.executeCalls.value).toBe(1);
   });
 });

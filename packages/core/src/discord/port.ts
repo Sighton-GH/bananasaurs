@@ -22,6 +22,14 @@ export interface DiscordRole {
   position: number;
   /** Integration-managed roles cannot be assigned at any position. */
   managed: boolean;
+  /**
+   * Bitwise permissions as Discord sends them (a decimal string).
+   *
+   * Present on every role the REST adapter and `FakeDiscord.createRole`
+   * report. Absent only for roles a test seeded through `defineRole`, which
+   * predates it and never needed permissions for a hierarchy assertion.
+   */
+  permissions?: string | undefined;
 }
 
 export interface DiscordMember {
@@ -229,6 +237,41 @@ export interface DiscordPort {
   fetchRoles(guildId: Snowflake): Promise<readonly DiscordRole[]>;
   /** The bot's own highest role position, recomputed rather than cached. */
   fetchBotHighestRolePosition(guildId: Snowflake): Promise<number>;
+  /**
+   * Creates a guild role (MCP slice 4): `POST /guilds/{guild}/roles`.
+   *
+   * There is deliberately no permissions parameter — the input type has no
+   * permissions field, and the adapter always sends `'0'`, so a created role
+   * can never carry a permission bit (review focus 6).
+   */
+  createRole(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly color?: number | undefined;
+      readonly hoist?: boolean | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<{ roleId: Snowflake }>;
+  /**
+   * Moves a role (MCP slice 4): `PATCH /guilds/{guild}/roles` with one
+   * `{ id, position }` entry.
+   */
+  setRolePosition(guildId: Snowflake, roleId: Snowflake, position: number): Promise<void>;
+  /**
+   * Edits a role (MCP slice 4): `PATCH /guilds/{guild}/roles/{role}` with
+   * only the fields given, so a rename never disturbs the colour and vice
+   * versa — the same shape `setThreadState` keeps for threads.
+   */
+  editRole(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly color?: number | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<void>;
 
   // --- members -----------------------------------------------------------
   fetchMember(guildId: Snowflake, userId: Snowflake): Promise<DiscordMember>;

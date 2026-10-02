@@ -39,6 +39,7 @@ import type { McpThreadsPort } from './threads.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
 import type { McpMessageWritesPort } from './message-writes.js';
 import type { McpEventWritesPort } from './event-writes.js';
+import type { McpRoleWritesPort } from './role-writes.js';
 
 /**
  * Task 3, tool layer: `send_message` against a fake `McpSendPort` — the same
@@ -617,6 +618,12 @@ const stubEventWrites = (): McpEventWritesPort => ({
     Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
 });
 
+/** Minimal role-writes port: required since slice 4 Task 3; never called by the send pinned here. */
+const stubRoleWrites = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: ACTION, alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: ACTION, alreadyHad: false }),
+});
+
 /** Minimal jobs port: this file pins `send_message`, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
@@ -692,6 +699,7 @@ const connectPair = async (
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
     eventWrites: stubEventWrites(),
+    roleWrites: stubRoleWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),

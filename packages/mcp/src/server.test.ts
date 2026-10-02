@@ -53,6 +53,7 @@ import {
   UNPIN_MESSAGE_TOOL_NAME,
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
+import type { McpRoleWritesPort } from './tools/role-writes.js';
 import {
   CANCEL_EVENT_TOOL_NAME,
   CREATE_EVENT_TOOL_NAME,
@@ -75,6 +76,8 @@ import {
 } from './tools/resources.js';
 import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './tools/threads.js';
 import { LIST_UNANSWERED_TOOL_NAME, READ_DIGEST_TOOL_NAME } from './tools/digest.js';
+import type { McpRoleAdminPort } from './tools/role-admin.js';
+import type { McpPanelsPort } from './tools/panels.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -187,6 +190,12 @@ const stubEventWrites = (): McpEventWritesPort => ({
     Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
 });
 
+/** Minimal role-writes port: this file pins registration, never the writes themselves. */
+const stubRoleWrites = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+});
+
 /** Minimal actions port: this file pins registration, never undo or list themselves. */
 const stubActions = (): McpActionsPort => ({
   undo: () =>
@@ -235,6 +244,23 @@ const stubThreads = (): McpThreadsPort => ({
 });
 
 /** One connected client/server pair over the in-memory transport. */
+/** Minimal role-admin port: this file pins registration, never the role writes themselves. */
+const stubRoleAdmin = (): McpRoleAdminPort => ({
+  createRole: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', roleId: '511111111111111111' }),
+  editRole: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', roleId: '511111111111111111' }),
+});
+
+/** Minimal panels port: this file pins registration, never the panel reads or writes themselves. */
+const stubPanels = (): McpPanelsPort => ({
+  list: () => [],
+  get: () => undefined,
+  create: () => Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
   send: McpSendPort = stubSend(),
@@ -257,7 +283,10 @@ const connectPair = async (
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
     eventWrites: stubEventWrites(),
+    roleWrites: stubRoleWrites(),
     actions: stubActions(),
+    roleAdmin: stubRoleAdmin(),
+    panels: stubPanels(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -307,13 +336,13 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message and the seventeen write tools first, alongside the twenty-three read tools', async () => {
+  it('lists send_message and the seventeen write tools first, alongside the twenty-five read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(41);
+      expect(list.tools).toHaveLength(43);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         CREATE_THREAD_TOOL_NAME,
@@ -344,6 +373,8 @@ describe('createMcpServer', () => {
         'list_threads',
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
+        'list_panels',
+        'get_panel',
         LIST_MOD_CASES_TOOL_NAME,
         GET_MOD_CASE_TOOL_NAME,
         LIST_AUDIT_EVENTS_TOOL_NAME,
@@ -453,16 +484,25 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ADR 0114) a roles-only principal sees no tools and no resources', async () => {
-    // No tool registers under the roles scope yet (slice 4 does that), so a
-    // token carrying only `bananasaurs:roles` must see neither the read/send
-    // tools nor the overview resource. With zero tools registered the SDK
-    // never installs its `tools/list` handler, so the client answers
-    // Method-not-found rather than an empty array — the same laziness the
-    // send-only test pins for `resources/templates/list` below.
+  it('(ADR 0114) a roles-only principal sees the role and panel tools and no resources', async () => {
+    // Slice 4 registers `grant_role` / `remove_role` (Task 3), `create_role` /
+    // `edit_role` (Task 5), `create_panel` / `edit_panel` / `delete_panel`
+    // (Task 6b) and `undo_action` (which serves send and roles)
+    // under the roles scope — never the read/send tools and never the
+    // overview resource.
     const { client, close } = await connectPair(principalWith([GUILD], [MCP_ROLES_SCOPE]));
     try {
-      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
+      const list = await client.listTools();
+      expect(list.tools.map((tool) => tool.name).sort()).toEqual([
+        'create_panel',
+        'create_role',
+        'delete_panel',
+        'edit_panel',
+        'edit_role',
+        'grant_role',
+        'remove_role',
+        'undo_action',
+      ]);
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();

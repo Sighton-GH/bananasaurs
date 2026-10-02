@@ -400,6 +400,20 @@
       "when": 1790828439528,
       "tag": "0092_mcp_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "6",
+      "when": 1790901999335,
+      "tag": "0093_mcp_bulk_previews",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "6",
+      "when": 1790911444298,
+      "tag": "0094_effect_batches_mcp_source",
+      "breakpoints": true
     }
   ]
 }

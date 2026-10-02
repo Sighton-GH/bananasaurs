@@ -42,6 +42,7 @@ const UNDO_REFUSALS: readonly McpUndoRefusal[] = [
   'action-incomplete',
   'not-undoable',
   'undo-in-progress',
+  'scope-mismatch',
   'target-unavailable',
   'killswitch',
   'breaker-open',
@@ -109,6 +110,7 @@ describe('undo_action', () => {
               reason,
               ...(reason === 'already-undone' ? { detail: 'undo-9' } : {}),
               ...(reason === 'not-undoable' ? { detail: 'message.send' } : {}),
+              ...(reason === 'scope-mismatch' ? { detail: 'bananasaurs:roles' } : {}),
             } satisfies McpUndoOutcome),
         }),
         { guildId: '111111111111111111', actionId: 'act-1' },
@@ -121,6 +123,7 @@ describe('undo_action', () => {
     expect(new Set(messages).size).toBe(UNDO_REFUSALS.length);
     expect(messages.join('\n')).toContain('undo-9');
     expect(messages.join('\n')).toContain('message.send');
+    expect(messages.join('\n')).toContain('bananasaurs:roles');
   });
 
   it('a dry-run undo reports what would be undone without changing anything', async () => {

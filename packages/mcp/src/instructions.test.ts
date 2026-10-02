@@ -21,7 +21,21 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
   });
 
   it('stays a short static string', () => {
-    expect(MCP_SERVER_INSTRUCTIONS.length).toBeLessThan(3000);
+    // Slice 4 added the Roles section (seven lines for fourteen facts), so
+    // the cap grew from 3000; the string is still one short static text.
+    expect(MCP_SERVER_INSTRUCTIONS.length).toBeLessThan(3500);
+  });
+
+  it('has a Roles section with the grant policy, bulk preview rules and panel limits', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Roles');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('100 members');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('single-use');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('10 minutes');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('invalidates the token');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('get_job');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('cannot be undone');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('{create}');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('colour');
   });
 
   it('has a Writes section naming keys, dry runs, undo, explicit pings and private threads', () => {

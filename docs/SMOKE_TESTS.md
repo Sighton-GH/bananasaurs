@@ -301,6 +301,68 @@ for sends; the connector authorised with `bananasaurs:read` **and**
 
 - [ ] Steps 1–12 recorded with timestamps.
 
+## Section H — MCP roles and panels on the test guild (slice 4, not yet run)
+
+**Test guild only.** The unit suites prove the grant policy, the preview→confirm
+hashing, the inverses and the panel validation against fakes; what they cannot
+prove is the live Discord behaviour — hierarchy enforcement, dangerous-permission
+refusals, job application, panel message ownership — so each roles-scope tool
+below runs once against the real test guild, from the owner's Claude client
+through the tunnel connector.
+Preconditions: `bananasaurs doctor` is clean; one low test role is on the
+operator's managed-roles allowlist and below the bot; the connector is
+authorised with `bananasaurs:read`, `bananasaurs:send` **and**
+`bananasaurs:roles` — re-authorise the MCP client to add the `roles` scope
+before starting, and confirm the roles tools appear in the tool list.
+Record the run with timestamps.
+
+1. **`grant_role`.** Grant the allowlisted low role to a test member.
+   Confirm in Discord the member has the role, and `list_actions` shows the
+   grant with its action id.
+2. **`remove_role`.** Remove the same role from the same member. Confirm in
+   Discord the role is gone.
+3. **`undo_action` of a grant.** Grant the role again, then call
+   `undo_action` with the grant's action id. Confirm the member loses the
+   role, and a second undo of the same action answers "already undone".
+4. **A dangerous role refused.** Call `grant_role` for a role holding a
+   dangerous permission. Confirm the refusal names the dangerous-permission
+   reason and nothing changed in Discord.
+5. **An above-bot role refused.** Call `grant_role` for a role above the
+   bot's highest role. Confirm the refusal names the hierarchy reason and
+   nothing changed in Discord.
+6. **`create_role`.** Create a role with a distinctive test name. Confirm in
+   Discord it exists with no permissions just below the bot — and that
+   granting it refuses as not allowlisted until an operator allowlists it.
+7. **`edit_role`.** Rename the role from step 6 and set a colour. Confirm
+   the new name and colour in Discord.
+8. **`bulk_role_change` preview.** Preview adding the low role to two or
+   three test members. Confirm the answer names the count and returns a
+   single-use token.
+9. **Bulk confirm, then the job, then the members changed.** Confirm with
+   the same arguments plus the token and a fresh `idempotencyKey`. Watch
+   the job with `get_job` until it completes, then confirm in Discord every
+   previewed member gained the role.
+10. **A reused token refused.** Repeat the step 9 confirm with the same
+    token and new arguments otherwise unchanged. Confirm it refuses as
+    already used and nothing new changed.
+11. **`create_panel`.** Create a button panel in the allowlisted channel
+    with the low role as its option. Confirm the panel message posts in
+    Discord.
+12. **`edit_panel`.** Change the panel's title and reorder its options.
+    Confirm the panel message republishes with the new title and order.
+13. **`edit_message` on a panel message refused.** Call `edit_message` on
+    the panel message from step 11. Confirm it refuses as a role-panel
+    message and the message is unchanged.
+14. **`delete_panel`.** Delete the panel. Confirm its message is removed,
+    `list_panels` no longer shows it, and members keep whatever roles they
+    hold.
+15. **The kill switch refuses every roles write.** `bananasaurs killswitch on
+    --confirm`, then attempt `grant_role`, `create_role` and `create_panel`:
+    all three must refuse naming the kill switch with nothing changed.
+    `killswitch off --confirm` restores normal operation.
+
+- [ ] Steps 1–15 recorded with timestamps.
+
 ## Sign-off
 
 **Release 1 is done — 2026-08-30.** Every box above is checked, run against

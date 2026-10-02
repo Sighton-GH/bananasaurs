@@ -13,6 +13,10 @@ import type { McpSendPort } from './tools/send.js';
 import type { McpThreadWritesPort } from './tools/thread-writes.js';
 import type { McpMessageWritesPort } from './tools/message-writes.js';
 import type { McpEventWritesPort } from './tools/event-writes.js';
+import type { McpRoleWritesPort } from './tools/role-writes.js';
+import type { McpBulkRolesPort } from './tools/bulk-roles.js';
+import type { McpRoleAdminPort } from './tools/role-admin.js';
+import type { McpPanelsPort } from './tools/panels.js';
 import type { McpActionsPort } from './tools/actions.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
@@ -99,6 +103,25 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act' }),
     createPoll: () => Promise.resolve({ status: 'done', actionId: 'act', messageId: 'mid' }),
   };
+  const roleWrites: McpRoleWritesPort = {
+    grant: () => Promise.resolve({ status: 'done', actionId: 'act', alreadyHad: false }),
+    remove: () => Promise.resolve({ status: 'done', actionId: 'act', alreadyHad: false }),
+  };
+  const bulkRoles: McpBulkRolesPort = {
+    preview: () => Promise.resolve({ status: 'done', token: 'tok', expiresAt: 1 }),
+    confirm: () => Promise.resolve({ status: 'done', actionId: 'act', jobId: 1 }),
+  };
+  const roleAdmin: McpRoleAdminPort = {
+    createRole: () => Promise.resolve({ status: 'done', actionId: 'act', roleId: 'role' }),
+    editRole: () => Promise.resolve({ status: 'done', actionId: 'act', roleId: 'role' }),
+  };
+  const panels: McpPanelsPort = {
+    list: () => [],
+    get: () => undefined,
+    create: () => Promise.resolve({ status: 'done', actionId: 'act', panelId: 'mcp-1a2b3c4d' }),
+    edit: () => Promise.resolve({ status: 'done', actionId: 'act', panelId: 'mcp-1a2b3c4d' }),
+    remove: () => Promise.resolve({ status: 'done', actionId: 'act', panelId: 'mcp-1a2b3c4d' }),
+  };
   const actions: McpActionsPort = {
     undo: () =>
       Promise.resolve({ status: 'done', actionId: 'undo', undoneActionId: 'act', kind: 'edit' }),
@@ -129,6 +152,10 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     threadWrites,
     messageWrites,
     eventWrites,
+    roleWrites,
+    roleAdmin,
+    bulkRoles,
+    panels,
     actions,
     tasks,
     taskDetail,
@@ -163,7 +190,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
   };
 };
 
-/** The read-scope set: the twenty-two long-standing read tools, the four read-only task tools, and `list_actions`. */
+/** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the four read-only task tools, and `list_actions`. */
 const READ_TOOLS: readonly string[] = [
   'get_health',
   'search_messages',
@@ -176,6 +203,8 @@ const READ_TOOLS: readonly string[] = [
   'list_threads',
   'list_roles',
   'list_members',
+  'list_panels',
+  'get_panel',
   'list_mod_cases',
   'get_mod_case',
   'list_audit_events',
@@ -216,6 +245,18 @@ const SEND_TOOLS: readonly string[] = [
   'undo_action',
 ];
 
+/** The roles-scope set: role changes (slice 4, Task 3), bulk changes (Task 4), role creation and editing (Task 5), and role panels (Task 6b), sorted. */
+const ROLES_TOOLS: readonly string[] = [
+  'bulk_role_change',
+  'create_panel',
+  'create_role',
+  'delete_panel',
+  'edit_panel',
+  'edit_role',
+  'grant_role',
+  'remove_role',
+];
+
 /** The tasks-scope set: main's task-tracking write tools, sorted. */
 const TASK_TOOLS: readonly string[] = [
   'add_task_reminder',
@@ -254,9 +295,14 @@ const expectedFor = (subset: readonly ScopeShort[]): readonly string[] => {
   const names = [
     ...(subset.includes('read') ? READ_TOOLS : []),
     ...(subset.includes('send') ? SEND_TOOLS : []),
+    ...(subset.includes('roles') ? ROLES_TOOLS : []),
+    // `undo_action` registers under send or roles, whichever is carried —
+    // once. SEND_TOOLS already names it, so only a roles-without-send subset
+    // adds it here.
+    ...(subset.includes('roles') && !subset.includes('send') ? ['undo_action'] : []),
     ...(subset.includes('tasks') ? TASK_TOOLS : []),
   ];
-  return [...names].sort();
+  return [...new Set(names)].sort();
 };
 
 const subsets = (): ScopeShort[][] => {
@@ -291,9 +337,10 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
 };
 
 describe('registration pins every scope subset', () => {
-  it('the three scope sets have the expected sizes', () => {
-    expect(READ_TOOLS).toHaveLength(27);
+  it('the four scope sets have the expected sizes', () => {
+    expect(READ_TOOLS).toHaveLength(29);
     expect(SEND_TOOLS).toHaveLength(18);
+    expect(ROLES_TOOLS).toHaveLength(8);
     expect(TASK_TOOLS).toHaveLength(25);
     // The hardcoded task list is the whole registrar: no drift between this
     // file and the tools main registers.
@@ -301,7 +348,9 @@ describe('registration pins every scope subset', () => {
   });
 
   it('every name is unique across registrars', () => {
-    const all = [...READ_TOOLS, ...SEND_TOOLS, ...TASK_TOOLS];
+    // `undo_action` is advertised under both send and roles from one shared
+    // block, but named once: it lives in SEND_TOOLS only.
+    const all = [...READ_TOOLS, ...SEND_TOOLS, ...ROLES_TOOLS, ...TASK_TOOLS];
     expect(new Set(all).size).toBe(all.length);
   });
 
@@ -311,6 +360,36 @@ describe('registration pins every scope subset', () => {
       expect(await toolNamesFor(subset)).toEqual(expectedFor(subset));
     });
   }
+
+  it('role tools appear only with the roles scope, and undo follows send or roles', async () => {
+    for (const subset of subsets()) {
+      const names = await toolNamesFor(subset);
+      if (subset.includes('roles')) {
+        for (const name of ROLES_TOOLS) expect(names).toContain(name);
+        expect(names).toContain('undo_action');
+      } else {
+        for (const name of ROLES_TOOLS) expect(names).not.toContain(name);
+      }
+      if (!subset.includes('send') && !subset.includes('roles')) {
+        expect(names).not.toContain('undo_action');
+      }
+    }
+  });
+
+  it('roles-only sees the eight role and panel tools and undo_action, and nothing else writable', async () => {
+    const names = await toolNamesFor(['roles']);
+    expect(names).toEqual([
+      'bulk_role_change',
+      'create_panel',
+      'create_role',
+      'delete_panel',
+      'edit_panel',
+      'edit_role',
+      'grant_role',
+      'remove_role',
+      'undo_action',
+    ]);
+  });
 
   it('task write tools appear only with the tasks scope', async () => {
     for (const subset of subsets()) {

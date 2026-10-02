@@ -27,6 +27,7 @@ import type { McpContextPort } from '../tools/context.js';
 import type { McpResourcesPort } from '../tools/resources.js';
 import type { McpThreadsPort } from '../tools/threads.js';
 import type { McpThreadWritesPort } from '../tools/thread-writes.js';
+import type { McpRoleWritesPort } from '../tools/role-writes.js';
 import {
   buildOverviewCard,
   OVERVIEW_RESOURCE_URI_TEMPLATE,
@@ -156,6 +157,12 @@ const stubThreadWrites = (): McpThreadWritesPort => ({
   setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
 });
 
+/** Minimal role-writes port: required since slice 4 Task 3; never called by the resource pinned here. */
+const stubRoleWrites = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -198,6 +205,7 @@ const connectPair = async (
       createPoll: () =>
         Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
     },
+    roleWrites: stubRoleWrites(),
     jobs: stubJobs(),
     members: stubMembers(),
     context: stubContext(),

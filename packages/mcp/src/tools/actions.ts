@@ -46,10 +46,12 @@ export const UNDO_ACTION_TOOL_DESCRIPTION =
   'Undoes one reversible MCP action in this guild: a message edit restores the previous text, ' +
   'an event edit restores the previous values, ' +
   'a pin or unpin does the opposite, a reaction add or remove does the opposite, ' +
-  'a thread-member add removes the same members, and a thread archive or lock restores ' +
-  'the previous state. Posts, deletes, event creation, event cancellation, thread creation, ' +
-  'forum posts and member removals ' +
-  'cannot be undone. Each action undoes at most once: repeating this call answers that ' +
+  'a thread-member add removes the same members, a thread archive or lock restores ' +
+  'the previous state, a role grant removes the same role while a role removal re-grants it, ' +
+  'and a role edit restores the previous name, color and mentionable. ' +
+  'Posts, deletes, event creation, event cancellation, thread creation, forum posts, ' +
+  'member removals, role creation, panel creation, panel edits and panel deletion ' +
+  'cannot be undone, and neither can a role change that changed nothing. Each action undoes at most once: repeating this call answers that ' +
   'it is already undone. Takes an actionId from list_actions; the undo runs as its own ' +
   'action with key undo:<actionId>.';
 
@@ -109,7 +111,9 @@ export type McpUndoRefusal =
   | 'action-incomplete'
   | 'not-undoable'
   | 'undo-in-progress'
+  | 'scope-mismatch'
   | 'target-unavailable'
+  | 'role-unavailable'
   | 'killswitch'
   | 'breaker-open'
   | 'rate-cap';
@@ -211,12 +215,21 @@ const undoRefusalText = (
         'to undo yet. Wait for it to complete, then retry this call.'
       );
     case 'not-undoable':
+      if (detail === 'role.bulk') {
+        return (
+          `Action ${actionId} in guild ${guildId} is a bulk role change, which cannot be undone: ` +
+          'run the opposite bulk change (`bulk_role_change` with the other action over the same set) ' +
+          'to reverse it.'
+        );
+      }
       return (
         `Action ${actionId} in guild ${guildId} cannot be undone` +
         `${detail !== undefined ? ` (kind ${detail})` : ''}: only message edits, event edits, ` +
-        'pins, reactions, thread-member adds and thread state changes are reversible — posts, ' +
-        'deletes, event creation, event cancellation, thread creation, forum posts and member ' +
-        'removals never are — and a reversible action whose ' +
+        'pins, reactions, thread-member adds, thread state changes, role grants, role removals ' +
+        'and role edits are reversible — posts, deletes, event creation, event cancellation, ' +
+        'thread creation, forum posts, member removals, role creation, panel creation, panel ' +
+        'edits and panel deletion never are — a role change that changed nothing ' +
+        '(the member already had the role, or did not have it) records no undo, and a reversible action whose ' +
         'stored previous state is missing or unreadable cannot be restored either.'
       );
     case 'undo-in-progress':
@@ -225,12 +238,26 @@ const undoRefusalText = (
         `${detail !== undefined ? ` as action ${detail}` : ''}, so no second one was started. ` +
         'Check `list_actions` for its outcome before retrying.'
       );
+    case 'scope-mismatch':
+      return (
+        `Action ${actionId} in guild ${guildId} was not undone: undoing it needs the ` +
+        `${detail ?? 'bananasaurs:send'} scope, which this token does not carry. ` +
+        'Ask the owner to re-authorise the connector with that scope, then retry. ' +
+        'Nothing was changed.'
+      );
     case 'target-unavailable':
       return (
         `Action ${actionId} in guild ${guildId} was not undone: its channel or thread is no ` +
         'longer one this connector may write to' +
         `${detail !== undefined ? ` (${detail})` : ''}. An operator must restore send scope or ` +
         "the bot's permission there before the undo can run."
+      );
+    case 'role-unavailable':
+      return (
+        `Action ${actionId} in guild ${guildId} was not undone: ` +
+        `${detail ?? 'its role or member is no longer available'}. ` +
+        'The member, the role or the grant policy changed since the action ran — ' +
+        'change it back by hand if the undo is still wanted.'
       );
     case 'killswitch':
       return (

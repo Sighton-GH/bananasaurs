@@ -75,6 +75,8 @@ const operations: GuildOperations = {
     reactionsFailed: [],
   }),
   createPanel: () => {},
+  updatePanel: () => {},
+  unpublishPanel: async () => {},
   grantAdoptionAllowance: () => {},
   adoptionAllowance: () => 0,
 };

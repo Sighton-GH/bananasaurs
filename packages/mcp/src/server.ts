@@ -145,6 +145,58 @@ import {
   type McpEventWritesPort,
 } from './tools/event-writes.js';
 import {
+  GRANT_ROLE_TOOL_DESCRIPTION,
+  GRANT_ROLE_TOOL_NAME,
+  REMOVE_ROLE_TOOL_DESCRIPTION,
+  REMOVE_ROLE_TOOL_NAME,
+  grantRoleParams,
+  grantRoleText,
+  removeRoleParams,
+  removeRoleText,
+  type McpRoleWritesPort,
+} from './tools/role-writes.js';
+import {
+  CREATE_ROLE_TOOL_DESCRIPTION,
+  CREATE_ROLE_TOOL_NAME,
+  createRoleParams,
+  createRoleText,
+  EDIT_ROLE_TOOL_DESCRIPTION,
+  EDIT_ROLE_TOOL_NAME,
+  editRoleParams,
+  editRoleText,
+  type McpRoleAdminPort,
+} from './tools/role-admin.js';
+import {
+  BULK_ROLE_CHANGE_TOOL_DESCRIPTION,
+  BULK_ROLE_CHANGE_TOOL_NAME,
+  bulkRoleChangeParams,
+  bulkRoleChangeText,
+  type McpBulkRolesPort,
+} from './tools/bulk-roles.js';
+import {
+  CREATE_PANEL_TOOL_DESCRIPTION,
+  CREATE_PANEL_TOOL_NAME,
+  createPanelParams,
+  createPanelText,
+  DELETE_PANEL_TOOL_DESCRIPTION,
+  DELETE_PANEL_TOOL_NAME,
+  deletePanelParams,
+  deletePanelText,
+  EDIT_PANEL_TOOL_DESCRIPTION,
+  EDIT_PANEL_TOOL_NAME,
+  editPanelParams,
+  editPanelText,
+  GET_PANEL_TOOL_DESCRIPTION,
+  GET_PANEL_TOOL_NAME,
+  getPanelParams,
+  getPanelText,
+  LIST_PANELS_TOOL_DESCRIPTION,
+  LIST_PANELS_TOOL_NAME,
+  listPanelsParams,
+  listPanelsText,
+  type McpPanelsPort,
+} from './tools/panels.js';
+import {
   LIST_ACTIONS_TOOL_DESCRIPTION,
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_DESCRIPTION,
@@ -187,6 +239,7 @@ import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './
 import {
   GUILD_REFUSAL_MESSAGE,
   hasReadScope,
+  hasRolesScope,
   hasSendScope,
   hasTasksScope,
   type McpPrincipal,
@@ -273,6 +326,41 @@ export interface McpServerDeps {
    * carries the send scope.
    */
   readonly eventWrites: McpEventWritesPort;
+  /**
+   * The daemon's per-request role-writes port (slice 4, Task 3): role grants
+   * and removals behind the two role tools. Required like `send`: a missing
+   * port must fail at construction, not serve role tools that always refuse.
+   * Required means the port is always present, not that the tools are always
+   * advertised: the two tools still register only when the principal carries
+   * the roles scope.
+   */
+  readonly roleWrites: McpRoleWritesPort;
+  /**
+   * The daemon's per-request role-admin port (slice 4, Task 5): role creation
+   * and role edits behind `create_role` and `edit_role`. Optional like the
+   * actions port: a server without it simply does not advertise either tool,
+   * and the daemon always provides it. The tools still register only when the
+   * principal carries the roles scope.
+   */
+  readonly roleAdmin?: McpRoleAdminPort | undefined;
+  /**
+   * The daemon's per-request bulk-roles port (slice 4, Task 4): the
+   * preview → confirm handshake behind `bulk_role_change`. Optional like
+   * the role-admin port: a server without it simply does not advertise the
+   * tool, and the daemon always provides it. Registers only when the
+   * principal carries the roles scope.
+   */
+  readonly bulkRoles?: McpBulkRolesPort | undefined;
+  /**
+   * The daemon's per-request panels port (slice 4, Task 6b): panel listing
+   * and detail behind `list_panels` / `get_panel`, and panel creation,
+   * editing and deletion behind `create_panel` / `edit_panel` /
+   * `delete_panel`. Optional like the actions port: a server without it
+   * simply does not advertise any of the five tools, and the daemon always
+   * provides it. The reads still register only when the principal carries
+   * the read scope, the writes only under the roles scope.
+   */
+  readonly panels?: McpPanelsPort | undefined;
   /**
    * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
    * ledger behind `undo_action` and `list_actions`. Optional like the task
@@ -506,20 +594,159 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
-    // Task 7: `undo_action`, same handler shape — the text function answers
-    // every outcome and the try/catch only fires on something it did not
-    // foresee. Registers under send (slice 4 extends it with the role-kind
-    // inverses under the roles scope); the read half, `list_actions`, lives
-    // in the read block below.
-    if (deps.actions !== undefined) {
-      const actions = deps.actions;
+  }
+  // Slice 4, Task 5: `undo_action`, same handler shape — the text function
+  // answers every outcome and the try/catch only fires on something it did
+  // not foresee. Registers under send or roles, whichever the principal
+  // carries (slice 4 extends it with the role-kind inverses under the roles
+  // scope); the read half, `list_actions`, lives in the read block below.
+  // Registered once: a token with both scopes must not see it twice.
+  if (
+    (hasSendScope(deps.principal) || hasRolesScope(deps.principal)) &&
+    deps.actions !== undefined
+  ) {
+    const actions = deps.actions;
+    server.tool(
+      UNDO_ACTION_TOOL_NAME,
+      UNDO_ACTION_TOOL_DESCRIPTION,
+      undoActionParams,
+      async (args: unknown) => {
+        try {
+          const outcome = await undoActionText(deps.principal, actions, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
+  // Slice 4, Task 5: `create_role` and `edit_role` under the roles scope
+  // (ADR 0114) — the same handler shape as `send_message` above. Each text
+  // function already answers every malformed argument and every port fault,
+  // so the try/catch here only fires on something the tool layer did not
+  // foresee.
+  if (hasRolesScope(deps.principal) && deps.roleAdmin !== undefined) {
+    const roleAdmin = deps.roleAdmin;
+    const roleAdminTools = [
+      [CREATE_ROLE_TOOL_NAME, CREATE_ROLE_TOOL_DESCRIPTION, createRoleParams, createRoleText],
+      [EDIT_ROLE_TOOL_NAME, EDIT_ROLE_TOOL_DESCRIPTION, editRoleParams, editRoleText],
+    ] as const;
+    for (const [name, description, params, text] of roleAdminTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, roleAdmin, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+  }
+  // Slice 4, Task 6b: `create_panel`, `edit_panel` and `delete_panel`
+  // under the roles scope (ADR 0114) — the same handler shape as
+  // `send_message` above. Each text function already answers every malformed
+  // argument and every port fault, so the try/catch here only fires on
+  // something the tool layer did not foresee.
+  if (hasRolesScope(deps.principal) && deps.panels !== undefined) {
+    const panels = deps.panels;
+    const panelWriteTools = [
+      [CREATE_PANEL_TOOL_NAME, CREATE_PANEL_TOOL_DESCRIPTION, createPanelParams, createPanelText],
+      [EDIT_PANEL_TOOL_NAME, EDIT_PANEL_TOOL_DESCRIPTION, editPanelParams, editPanelText],
+    ] as const;
+    for (const [name, description, params, text] of panelWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, panels, deps.guild, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // `delete_panel` takes no refs to resolve, so its text function needs no
+    // guild port — registered beside the other two panel writes.
+    server.tool(
+      DELETE_PANEL_TOOL_NAME,
+      DELETE_PANEL_TOOL_DESCRIPTION,
+      deletePanelParams,
+      async (args: unknown) => {
+        try {
+          const outcome = await deletePanelText(deps.principal, panels, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
+  // ADR 0114: the role-change tools register under the roles scope, never
+  // send. A token carrying only `bananasaurs:send` can post messages but
+  // never touch roles; a roles-scope token sees exactly the two role tools.
+  if (hasRolesScope(deps.principal)) {
+    const roleWrites = deps.roleWrites;
+    const roleWriteTools = [
+      [GRANT_ROLE_TOOL_NAME, GRANT_ROLE_TOOL_DESCRIPTION, grantRoleParams, grantRoleText],
+      [REMOVE_ROLE_TOOL_NAME, REMOVE_ROLE_TOOL_DESCRIPTION, removeRoleParams, removeRoleText],
+    ] as const;
+    for (const [name, description, params, text] of roleWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, roleWrites, deps.guild, deps.members, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // Slice 4, Task 4: `bulk_role_change` under the same roles scope — the
+    // same handler shape. The text function already answers every malformed
+    // argument and every port fault, so the try/catch here only fires on
+    // something the tool layer did not foresee.
+    if (deps.bulkRoles !== undefined) {
+      const bulkRoles = deps.bulkRoles;
       server.tool(
-        UNDO_ACTION_TOOL_NAME,
-        UNDO_ACTION_TOOL_DESCRIPTION,
-        undoActionParams,
+        BULK_ROLE_CHANGE_TOOL_NAME,
+        BULK_ROLE_CHANGE_TOOL_DESCRIPTION,
+        bulkRoleChangeParams,
         async (args: unknown) => {
           try {
-            const outcome = await undoActionText(deps.principal, actions, args);
+            const outcome = await bulkRoleChangeText(
+              deps.principal,
+              bulkRoles,
+              deps.guild,
+              deps.members,
+              args,
+            );
             if (!outcome.ok) {
               return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
             }
@@ -816,6 +1043,38 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       }
     },
   );
+  // Slice 4, Task 6b: `list_panels` / `get_panel`, the `panel list` /
+  // `panel show` reads. Structural reads like `list_roles` (ADR 0050): ids,
+  // titles and labels in the text, one log line through `okReadResult`,
+  // never an audit row — and the record itself carries no title or label.
+  if (deps.panels !== undefined) {
+    const panels = deps.panels;
+    server.tool(LIST_PANELS_TOOL_NAME, LIST_PANELS_TOOL_DESCRIPTION, listPanelsParams, (args) => {
+      try {
+        const outcome = listPanelsText(deps.principal, panels, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    });
+    server.tool(GET_PANEL_TOOL_NAME, GET_PANEL_TOOL_DESCRIPTION, getPanelParams, (args) => {
+      try {
+        const outcome = getPanelText(deps.principal, panels, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+      }
+    });
+  }
   const records = deps.records;
   server.tool(
     LIST_MOD_CASES_TOOL_NAME,

@@ -195,6 +195,70 @@ export const createPanel = (
     }
   });
 
+/**
+ * Replaces a panel's definition in place: its scalar fields, its options and
+ * its blocked roles, in one transaction.
+ *
+ * `message_id` and `status` are deliberately untouched. The posted message
+ * lives in its channel whatever the new definition says, and a panel
+ * `doctor` took out of service stays out of service until it is re-enabled —
+ * an edit must not quietly republish or re-enable. `kind` and `channel_id`
+ * are untouched for the same reason: the `panel edit` command refuses to
+ * change them (moving the message would orphan it) rather than writing them.
+ */
+export const updatePanel = (
+  scope: GuildScope,
+  definition: PanelDefinition,
+  now: number,
+  newlyAllowlistedRoleIds: readonly string[] = [],
+): void =>
+  write(scope, ({ db }) => {
+    for (const roleId of newlyAllowlistedRoleIds) {
+      db.insert(managedRoles)
+        .values({ guildId: scope.guildId, roleId })
+        .onConflictDoNothing()
+        .run();
+    }
+
+    db.update(panels)
+      .set({
+        content: definition.content ?? null,
+        behaviour: definition.behaviour,
+        component: definition.component,
+        maxRoles: definition.maxRoles ?? null,
+        requiredRoleId: definition.requiredRoleId ?? null,
+        updatedAt: now,
+      })
+      .where(scope.only(panels, eq(panels.panelId, definition.panelId)))
+      .run();
+
+    db.delete(panelOptions)
+      .where(scope.only(panelOptions, eq(panelOptions.panelId, definition.panelId)))
+      .run();
+    for (const option of definition.options) {
+      db.insert(panelOptions)
+        .values({
+          guildId: scope.guildId,
+          panelId: definition.panelId,
+          optionId: option.optionId,
+          roleId: option.roleId,
+          emojiKey: option.emojiKey ?? null,
+          label: option.label ?? null,
+          position: option.position,
+        })
+        .run();
+    }
+
+    db.delete(panelBlockedRoles)
+      .where(scope.only(panelBlockedRoles, eq(panelBlockedRoles.panelId, definition.panelId)))
+      .run();
+    for (const roleId of definition.blockedRoleIds) {
+      db.insert(panelBlockedRoles)
+        .values({ guildId: scope.guildId, panelId: definition.panelId, roleId })
+        .run();
+    }
+  });
+
 export const findPanel = (scope: GuildScope, panelId: string): PanelConfig | undefined => {
   const row = read(scope, (db) =>
     db

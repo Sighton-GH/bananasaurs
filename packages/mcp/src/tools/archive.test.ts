@@ -964,6 +964,13 @@ describe('archive tools on the MCP server', () => {
         createPoll: () =>
           Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
       },
+      // Required since slice 4 Task 3; never called by the archive tools pinned here.
+      roleWrites: {
+        grant: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+        remove: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+      },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),

@@ -1162,6 +1162,19 @@ export interface OpsPorts {
    */
   allowlistRole(roleId: string): void;
 
+  /**
+   * Replaces a panel's definition: its scalar fields, its options and its
+   * blocked roles, in one transaction.
+   *
+   * The definition has already been through `panelDefinitionSchema`, the
+   * caller has already checked the panel exists and that neither `channelId`
+   * nor `kind` changed, so this port validates nothing itself. Storage only —
+   * nothing here reaches Discord, and the panel keeps its `message_id` and
+   * its `status`: publishing the change stays `publishPanel`'s job, and an
+   * edit never re-enables a panel `doctor` took out of service (ADR 0053).
+   */
+  updatePanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
+
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**
    * Posts or edits a managed panel's message and re-seeds its reactions.
@@ -1172,6 +1185,17 @@ export interface OpsPorts {
    * minutes at the default cap and the CLI gives up after thirty seconds.
    */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
+  /**
+   * Deletes a panel's Discord message, then its rows.
+   *
+   * Only a managed panel with a `messageId` has a message deleted: an adopted
+   * panel's message belongs to someone else, and an unposted panel has nothing
+   * to remove — both delete their rows only. An already-deleted message
+   * (unknown message, 10008/404) counts as success, so retrying is safe; any
+   * other Discord error throws with the rows still in place, so a retry can
+   * finish. Roles stay in `managed_roles` either way.
+   */
+  unpublishPanel(panelId: string): Promise<void>;
   /** Queues the reconciliation half. Absent `panelId` would mean every panel. */
   enqueueReconcile(panelId: string): OpsEnqueued;
   /** The batch row, so `undo` can refuse one that does not exist or is done. */

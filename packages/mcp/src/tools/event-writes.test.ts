@@ -676,6 +676,13 @@ const connectPair = async (
     messageWrites: stubMessageWrites(),
     threadWrites: stubThreadWrites(),
     eventWrites: stubEventWrites(),
+    // Required since slice 4 Task 3; never called by the event tools pinned here.
+    roleWrites: {
+      grant: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+      remove: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+    },
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),

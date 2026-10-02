@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { mcpActions } from '../schema.js';
@@ -200,6 +200,7 @@ export const countActionsSince = (
   scope: GuildScope,
   capGroup: McpCapGroup,
   sinceMs: number,
+  options: { readonly excludeKind?: string } = {},
 ): number =>
   read(
     scope,
@@ -214,6 +215,11 @@ export const countActionsSince = (
               eq(mcpActions.capGroup, capGroup),
               gte(mcpActions.createdAt, sinceMs),
               inArray(mcpActions.status, ['claimed', 'done', 'dry_run']),
+              // A kind whose weight is counted elsewhere (`role.bulk`: its
+              // consumed preview's members) is left out of the row count.
+              options.excludeKind === undefined
+                ? undefined
+                : ne(mcpActions.kind, options.excludeKind),
             ),
           ),
         )

@@ -18,6 +18,7 @@ import {
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
+  DiscordApiError,
   EffectGateway,
   JobWorker,
   JOB_KINDS,
@@ -60,6 +61,7 @@ import {
   jobRepo,
   jobStoreFor,
   loggingRepo,
+  mcpBulkRepo,
   modCaseRepo,
   modPendingRepo,
   panelRepo,
@@ -75,6 +77,12 @@ import {
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
+import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
+import {
+  authorizeRolesMutate,
+  mcpRateLimiterFor,
+  mcpRoleGatewayFor,
+} from '../mcp/roles-gateway.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
@@ -198,8 +206,21 @@ export interface GuildOperations {
    * (ADR 0053).
    */
   createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
+  /**
+   * Replaces a panel's definition — options, blocked roles and scalar fields —
+   * keeping its `message_id` and its `status`. Storage only, like
+   * `createPanel`: publishing the change stays `publishPanel`'s job.
+   */
+  updatePanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
   /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
+  /**
+   * `panel delete`'s Discord half plus its rows: deletes the message of a
+   * managed posted panel, then the panel's rows. An adopted panel's message
+   * belongs to someone else and an unposted panel has none — both delete
+   * their rows only.
+   */
+  unpublishPanel(panelId: string): Promise<void>;
   grantAdoptionAllowance(count: number): void;
   adoptionAllowance(): number;
 }
@@ -1174,6 +1195,24 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
+      // Slice 4, Task 4: the durable bulk role walk, through the MCP's own
+      // gateway instance (same policy, same no-op breaker, same `mcp` audit
+      // rows as the interactive role tools) on the shared per-guild limiter
+      // from `mcp/roles-gateway.ts` — the job and the HTTP role ports spend
+      // one `roleRatePerMin` bucket.
+      mcpBulkRoleHandler({
+        scope,
+        logger,
+        now,
+        gateway: mcpRoleGatewayFor(
+          { authz: authzStoreFor(scope), rateLimiter: mcpRateLimiterFor(scope), logger, now },
+          client,
+          discord,
+          scope,
+        ),
+        authorizeAccount: (accountId) => authorizeRolesMutate(scope, accountId),
+        findPreview: (previewId) => mcpBulkRepo.findPreviewById(scope, previewId),
+      }),
       logMessageDeleteHandler(deletionAttributionPorts),
       modPurgeHandler(purgePorts),
       archiveBackfillHandler(archiveBackfillPorts),
@@ -1264,6 +1303,30 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const ops: GuildOperations = {
     createPanel: (definition, newlyAllowlistedRoleIds = []) => {
       panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds);
+    },
+    updatePanel: (definition, newlyAllowlistedRoleIds = []) => {
+      panelRepo.updatePanel(scope, definition, now(), newlyAllowlistedRoleIds);
+    },
+    async unpublishPanel(panelId) {
+      const panel = panelRepo.findPanel(scope, panelId);
+      if (panel === undefined) throw new Error(`no panel ${panelId} in guild ${guildId}`);
+
+      if (panel.kind === 'managed' && panel.messageId !== undefined) {
+        // Deleting a message that is already gone is a no-op, so retrying
+        // this command is safe: an unknown message (10008/404) counts as
+        // success. Any other Discord error throws with the rows still in
+        // place, so a retry can finish.
+        try {
+          await discord.deleteMessage(
+            guildId,
+            { channelId: panel.channelId, messageId: panel.messageId },
+            `panel delete ${panelId}`,
+          );
+        } catch (err) {
+          if (!(err instanceof DiscordApiError && err.isGone)) throw err;
+        }
+      }
+      panelRepo.deletePanel(scope, panelId);
     },
     async publishPanel(panelId) {
       const panel = panelRepo.findPanel(scope, panelId);

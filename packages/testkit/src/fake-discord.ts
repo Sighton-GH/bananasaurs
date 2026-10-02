@@ -154,6 +154,17 @@ interface FakeForumPost {
   appliedTagIds: readonly string[];
 }
 
+/**
+ * The display fields a `createRole`/`editRole` carried (MCP slice 4).
+ * `DiscordRole` is deliberately narrow — hierarchy only — so the colour, the
+ * hoist and the mentionable live beside the roles map rather than on it.
+ */
+interface FakeRoleDetails {
+  color: number | undefined;
+  hoist: boolean | undefined;
+  mentionable: boolean | undefined;
+}
+
 export interface RestCall {
   method: PortMethod;
   args: readonly unknown[];
@@ -195,6 +206,8 @@ export class FakeDiscord implements DiscordPort {
   readonly guildId: Snowflake;
 
   private roles = new Map<Snowflake, DiscordRole>();
+  /** Display fields for roles `createRole` minted or `editRole` touched (MCP slice 4). */
+  private roleDisplay = new Map<Snowflake, FakeRoleDetails>();
   private members = new Map<Snowflake, FakeMember>();
   /**
    * What `timeoutMember`/`kickMember` most recently did to a member.
@@ -257,10 +270,31 @@ export class FakeDiscord implements DiscordPort {
     this.roles.set(full.id, full);
     return full;
   }
-  setRolePosition(roleId: Snowflake, position: number): void {
-    const r = this.roles.get(roleId);
-    if (!r) throw new Error(`no such role ${roleId}`);
-    this.roles.set(roleId, { ...r, position });
+  /**
+   * Moves a role's position.
+   *
+   * Two-arg form is world-building: it seeds the position without recording
+   * a call or checking scope, so fixtures stay silent in `restCalls`.
+   * Three-arg form is the `DiscordPort.setRolePosition` write (MCP slice 4):
+   * it records, checks scope, then mutates the same position — and throws a
+   * 404 for an unknown role, mirroring the adapter's mapped error.
+   */
+  setRolePosition(roleId: Snowflake, position: number): void;
+  setRolePosition(guildId: Snowflake, roleId: Snowflake, position: number): Promise<void>;
+  setRolePosition(a: Snowflake, b: Snowflake | number, c?: number): void | Promise<void> {
+    if (c === undefined) {
+      const r = this.roles.get(a);
+      if (!r) throw new Error(`no such role ${a}`);
+      this.roles.set(a, { ...r, position: b as number });
+      return;
+    }
+    return (async () => {
+      this.record('setRolePosition', [a, b, c]);
+      this.check('setRolePosition', a);
+      const role = this.roles.get(b as Snowflake);
+      if (!role) throw new DiscordApiError(404, DiscordErrorCode.UnknownRole, 'Unknown Role');
+      this.roles.set(b as Snowflake, { ...role, position: c });
+    })();
   }
   setBotHighestRolePosition(position: number): void {
     this.botPosition = position;
@@ -356,6 +390,20 @@ export class FakeDiscord implements DiscordPort {
     threadId: Snowflake,
   ): { messageId: Snowflake; appliedTagIds: readonly string[] } | undefined {
     return this.forumPosts.get(threadId);
+  }
+  /**
+   * The display fields a `createRole`/`editRole` carried (MCP slice 4).
+   * `undefined` for a role neither minted nor edited — including every
+   * `defineRole` seed, which predates the fields the way it predates
+   * `permissions`. Name, position and permissions are on `fetchRoles`
+   * instead, where Discord itself reports them.
+   */
+  roleDetails(
+    roleId: Snowflake,
+  ):
+    | { color: number | undefined; hoist: boolean | undefined; mentionable: boolean | undefined }
+    | undefined {
+    return this.roleDisplay.get(roleId);
   }
 
   defineMessage(msg: {
@@ -1077,6 +1125,68 @@ export class FakeDiscord implements DiscordPort {
     this.record('fetchBotHighestRolePosition', [guildId]);
     this.check('fetchBotHighestRolePosition', guildId);
     return this.botPosition;
+  }
+
+  /**
+   * Creates a role (MCP slice 4): mints the id and stores it with
+   * permissions `'0'` — mirroring the REST adapter, which always sends
+   * `'0'` — at the bottom of the list. The name, position and permissions
+   * are what `fetchRoles` reads; the display fields go to `roleDetails`.
+   */
+  async createRole(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly color?: number | undefined;
+      readonly hoist?: boolean | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<{ roleId: string }> {
+    this.record('createRole', [guildId, input]);
+    this.check('createRole', guildId);
+    const roleId = this.nextId();
+    this.roles.set(roleId, {
+      id: roleId,
+      name: input.name,
+      position: 1,
+      managed: false,
+      permissions: '0',
+    });
+    this.roleDisplay.set(roleId, {
+      color: input.color,
+      hoist: input.hoist,
+      mentionable: input.mentionable,
+    });
+    return { roleId };
+  }
+
+  /**
+   * Edits a role (MCP slice 4): only the fields given move — the name on
+   * the role itself, the rest on the details beside it. An unknown role
+   * throws a 404, the way the other *writes* answer.
+   */
+  async editRole(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly color?: number | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<void> {
+    this.record('editRole', [guildId, roleId, patch]);
+    this.check('editRole', guildId);
+    const role = this.roles.get(roleId);
+    if (!role) throw new DiscordApiError(404, DiscordErrorCode.UnknownRole, 'Unknown Role');
+    if (patch.name !== undefined) this.roles.set(roleId, { ...role, name: patch.name });
+    const details = this.roleDisplay.get(roleId) ?? {
+      color: undefined,
+      hoist: undefined,
+      mentionable: undefined,
+    };
+    if (patch.color !== undefined) details.color = patch.color;
+    if (patch.mentionable !== undefined) details.mentionable = patch.mentionable;
+    this.roleDisplay.set(roleId, details);
   }
 
   async fetchMember(guildId: Snowflake, userId: Snowflake): Promise<DiscordMember> {

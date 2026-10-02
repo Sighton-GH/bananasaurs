@@ -38,6 +38,7 @@ import {
 } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
+import type { McpRoleWritesPort } from './role-writes.js';
 
 /** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
@@ -564,6 +565,13 @@ describe('guild tools on the MCP server', () => {
           Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
       },
       readAudit: noopReadAudit,
+      // Required since slice 4 Task 3; never called by the guild tools pinned here.
+      roleWrites: {
+        grant: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+        remove: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+      } satisfies McpRoleWritesPort,
       jobs: stubJobs(),
       members: stubMembers(),
       context: stubContext(),
