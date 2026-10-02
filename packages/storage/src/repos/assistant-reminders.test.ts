@@ -240,9 +240,7 @@ describe('reminder origin', () => {
     expect(getReminder(scope(), 'm', 'assistant')).toBeUndefined();
     expect(getReminder(scope(), 'm', 'mcp')?.origin).toBe('mcp');
     expect(
-      listRemindersForCreator(scope(), CREATOR, { includeFinished: true }, 'mcp').map(
-        (r) => r.id,
-      ),
+      listRemindersForCreator(scope(), CREATOR, { includeFinished: true }, 'mcp').map((r) => r.id),
     ).toEqual(['m']);
     expect(
       listRemindersForCreator(scope(), CREATOR, { includeFinished: true }).map((r) => r.id),
@@ -295,9 +293,9 @@ describe('reminder origin', () => {
     // Assistant rows keep today's behaviour: mass pings are allowed.
     expect(insertReminder(scope(), reminder('ok', { mentions: everyone }))).toBe('created');
     insertReminder(scope(), reminder('m'), 'mcp');
-    expect(() =>
-      updateReminder(scope(), 'm', { mentions: everyone }, 2, 'mcp'),
-    ).toThrow(/everyone or here/);
+    expect(() => updateReminder(scope(), 'm', { mentions: everyone }, 2, 'mcp')).toThrow(
+      /everyone or here/,
+    );
     expect(() => updateReminder(scope(), 'm', { mentions: here }, 2, 'mcp')).toThrow(
       /everyone or here/,
     );

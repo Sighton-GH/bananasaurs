@@ -1125,10 +1125,12 @@ describe('migration 0095 adds the reminder origin column (ADR 0119)', () => {
       pk: number;
       name: string;
     }[];
-    expect(pk.filter((c) => c.pk > 0).map((c) => c.name).sort()).toEqual([
-      'guild_id',
-      'reminder_id',
-    ]);
+    expect(
+      pk
+        .filter((c) => c.pk > 0)
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(['guild_id', 'reminder_id']);
     const fks = raw.prepare(`PRAGMA foreign_key_list(assistant_reminders)`).all() as {
       table: string;
     }[];
@@ -1142,9 +1144,7 @@ describe('migration 0095 adds the reminder origin column (ADR 0119)', () => {
     expect(indexes.map((i) => i.name)).toEqual(
       expect.arrayContaining(['assistant_reminders_dedupe', 'assistant_reminders_due']),
     );
-    expect(
-      indexes.find((i) => i.name === 'assistant_reminders_dedupe')?.unique,
-    ).toBe(1);
+    expect(indexes.find((i) => i.name === 'assistant_reminders_dedupe')?.unique).toBe(1);
     // A second row with the same dedupe key in the same guild is refused.
     expect(() =>
       raw
