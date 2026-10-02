@@ -7394,3 +7394,425 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     ).toBeUndefined();
   });
 });
+
+/**
+ * Slice 4 Task 5, daemon side: `create_role` and `edit_role` through the
+ * real stack — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * `roleAdminPortFor` over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow.
+ *
+ * What this proves: a created role always carries permissions `"0"` and
+ * lands directly below the bot; both tools enforce `roles.mutate`; the grant
+ * policy and the floor refuse before any Discord call; an edit restores
+ * through `undo_action`; a creation never does; and neither the audit row
+ * nor the tool answer carries a role name.
+ */
+describe('/mcp create_role and edit_role through the real composition', () => {
+  const BOT_ROLE = '511111111111111111';
+  const LOW_ROLE = '522222222222222222';
+  const ABOVE_ROLE = '533333333333333333';
+  const MANAGED_ROLE = '555555555555555555';
+  const DANGEROUS_ROLE = '566666666666666666';
+  const GHOST_ROLE = '599999999999999999';
+  const GID = '111111111111111111';
+  /** Distinctive role name: must reach Discord, must never reach the audit row or an answer. */
+  const SENTINEL = 'SentinelRoleNamezz9';
+  /** Distinct raw positions: discord.js computes `Role.position` from their ordering. */
+  const BOT_TOP_RAW = 10;
+
+  interface RoleDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  const seedRoleGuild = (): void => {
+    const internals = deps.client as unknown as RoleDiscordInternals;
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: MANAGED_ROLE,
+          name: 'integration',
+          position: 1,
+          permissions: '0',
+          managed: true,
+          color: 0,
+          mentionable: false,
+        },
+        {
+          id: DANGEROUS_ROLE,
+          name: 'janitors',
+          position: 2,
+          permissions: String(PermissionsBitField.Flags.ManageRoles),
+          color: 0,
+          mentionable: false,
+        },
+        { id: LOW_ROLE, name: 'helpers', position: 4, permissions: '0', color: 0, mentionable: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: BOT_TOP_RAW,
+          permissions: (
+            PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+          ).toString(),
+          managed: true,
+          color: 0,
+          mentionable: false,
+        },
+        {
+          id: ABOVE_ROLE,
+          name: 'admins',
+          position: BOT_TOP_RAW + 2,
+          permissions: '0',
+          color: 0,
+          mentionable: false,
+        },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    for (const role of [LOW_ROLE, ABOVE_ROLE, MANAGED_ROLE, DANGEROUS_ROLE]) {
+      fakeDiscord.defineRole({
+        id: role,
+        name: role === LOW_ROLE ? 'helpers' : `role-${role}`,
+        position: 2,
+        managed: role === MANAGED_ROLE,
+      });
+    }
+  };
+
+  const allow = (): void => {
+    seedRoleGuild();
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const grantMutate = (): void => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: ACCOUNT,
+      capability: 'roles.mutate',
+      grantedBy: 'test',
+      now: clock,
+    });
+  };
+
+  const roleCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  /** The bot's live top position, the same cache read the port uses. */
+  const botTop = (): number => {
+    const top = deps.client.guilds.cache
+      .get(GUILD_A)
+      ?.members.me?.roles.highest.position;
+    if (top === undefined) throw new Error('test setup: bot top missing from cache');
+    return top;
+  };
+
+  const createArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    name: SENTINEL,
+    idempotencyKey: 'create-k1',
+    ...over,
+  });
+
+  it('creates with no permissions, below the bot, and names the allowlisting step', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const created = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(created.isError).not.toBe(true);
+    expect(created.text).toContain('no permissions');
+    expect(created.text).toContain('allowlist');
+
+    // The REST input carries no permissions key at all: the adapter always
+    // sends `'0'`, so no permission bit can travel.
+    const creates = fakeDiscord.restCalls('createRole');
+    expect(creates).toHaveLength(1);
+    expect(creates[0]?.args[0]).toBe(GUILD_A);
+    expect(creates[0]?.args[1]).toMatchObject({ name: SENTINEL });
+    expect('permissions' in (creates[0]?.args[1] as Record<string, unknown>)).toBe(false);
+
+    // The created role reads back with permissions `"0"`, positioned
+    // directly below the bot's live top — create first, move second.
+    const fetched = await fakeDiscord.fetchRoles(GUILD_A);
+    const role = fetched.find((entry) => entry.name === SENTINEL);
+    expect(role?.permissions).toBe('0');
+    expect(role?.position).toBe(botTop() - 1);
+    expect(fakeDiscord.restCalls().map((call) => call.method)).toEqual([
+      'createRole',
+      'setRolePosition',
+      'fetchRoles',
+    ]);
+
+    // The ledger row lands with no undo: a creation is not undoable.
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1');
+    expect(row?.kind).toBe('role.create');
+    expect(row?.status).toBe('done');
+    expect(row?.targetChannelId).toBeUndefined();
+    expect(row?.undoJson).toBeUndefined();
+
+    // The audit row holds ids and the outcome — never the role name.
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+    const audit = trail.find((entry) => entry.action === 'mcp.role.create');
+    expect(audit).toBeDefined();
+    expect(audit?.actorType).toBe('mcp_operator');
+    expect(JSON.stringify(audit)).not.toContain(SENTINEL);
+
+    // The MCP never inserts into `managed_roles`: the new role is not on the
+    // bot's role allowlist until an operator allowlists it.
+    expect(role?.id).toBeDefined();
+    expect(roleRepo.isAllowlisted(t.scopes.forGuild(GUILD_A), role?.id ?? '')).toBe(false);
+  });
+
+  it('replays a creation under its key with one createRole call', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const first = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(first.isError).not.toBe(true);
+    const second = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toContain('Already recorded');
+    expect(fakeDiscord.restCalls('createRole')).toHaveLength(1);
+    expect(fakeDiscord.restCalls('setRolePosition')).toHaveLength(1);
+  });
+
+  it('an account without roles.mutate is refused with no Discord call and no row', async () => {
+    allow();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const refusedCreate = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(refusedCreate.isError).toBe(true);
+    expect(refusedCreate.text).toContain('roles.mutate');
+    const refusedEdit = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-denied',
+        })
+      ).body,
+    );
+    expect(refusedEdit.isError).toBe(true);
+    expect(refusedEdit.text).toContain('roles.mutate');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-denied')).toBeUndefined();
+  });
+
+  it('editing a dangerous or above-bot role is refused with no Discord call and no row', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const dangerous = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: DANGEROUS_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-dangerous',
+        })
+      ).body,
+    );
+    expect(dangerous.isError).toBe(true);
+    expect(dangerous.text).toContain('dangerous');
+    expect(dangerous.text).toContain(DANGEROUS_ROLE);
+
+    const above = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: ABOVE_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-above',
+        })
+      ).body,
+    );
+    expect(above.isError).toBe(true);
+    expect(above.text).toContain('above');
+
+    const managed = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: MANAGED_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-managed',
+        })
+      ).body,
+    );
+    expect(managed.isError).toBe(true);
+
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-dangerous')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-above')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-managed')).toBeUndefined();
+  });
+
+  it('an unknown role and a traversal-shaped ref are refused with no Discord call', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const ghost = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: GHOST_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-ghost',
+        })
+      ).body,
+    );
+    expect(ghost.isError).toBe(true);
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+
+    const traversal = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: '../../etc/passwd',
+          name: 'renamed',
+          idempotencyKey: 'edit-traversal',
+        })
+      ).body,
+    );
+    expect(traversal.isError).toBe(true);
+    expect(traversal.text).not.toContain('..');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+  });
+
+  it('edits by name, restores through undo_action, and marks the original', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const edited = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: 'helpers',
+          color: 0x12_34_56,
+          mentionable: true,
+          idempotencyKey: 'edit-k1',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    expect(edited.text).toContain(LOW_ROLE);
+
+    // Only the given fields moved in FakeDiscord; the row holds the role id
+    // and exactly those fields' previous values.
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-k1');
+    expect(row?.kind).toBe('role.edit');
+    expect(JSON.parse(row?.undoJson ?? '')).toEqual({
+      roleId: LOW_ROLE,
+      previous: { color: 0, mentionable: false },
+    });
+    const editAudit = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+      .find((entry) => entry.action === 'mcp.role.edit');
+    expect(editAudit).toBeDefined();
+    expect(JSON.stringify(editAudit)).not.toContain('helpers');
+
+    const undone = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row?.actionId ?? '' })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(undone.text).toContain('role.edit');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(2);
+    expect(fakeDiscord.roleDetails(LOW_ROLE)).toMatchObject({ color: 0, mentionable: false });
+
+    const reread = mcpActionsRepo.findActionById(t.scopes.forGuild(GUILD_A), row?.actionId ?? '');
+    expect(reread?.undoneByActionId).toBeDefined();
+
+    const again = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row?.actionId ?? '' })).body,
+    );
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain('already undone');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(2);
+  });
+
+  it('a creation is not undoable', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const created = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(created.isError).not.toBe(true);
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1');
+    expect(row).toBeDefined();
+
+    const undone = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row?.actionId ?? '' })).body,
+    );
+    expect(undone.isError).toBe(true);
+    expect(undone.text).toContain('cannot be undone');
+    expect(undone.text).toContain('role.create');
+  });
+
+  it('the kill switch refuses both tools with no Discord call and no row', async () => {
+    allow();
+    grantMutate();
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const refusedCreate = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(refusedCreate.isError).toBe(true);
+    expect(refusedCreate.text).toContain('kill switch');
+    const refusedEdit = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-killed',
+        })
+      ).body,
+    );
+    expect(refusedEdit.isError).toBe(true);
+    expect(refusedEdit.text).toContain('kill switch');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-killed')).toBeUndefined();
+  });
+});
