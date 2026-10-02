@@ -143,6 +143,7 @@ interface FakeScheduledEvent {
   name: string;
   description: string | undefined;
   scheduledStartAt: number;
+  scheduledEndAt: number | undefined;
   channelId: Snowflake | undefined;
   location: string | undefined;
 }
@@ -1563,6 +1564,7 @@ export class FakeDiscord implements DiscordPort {
       name: event.name,
       ...(event.description === undefined ? {} : { description: event.description }),
       scheduledStartAt: event.scheduledStartAt,
+      ...(event.scheduledEndAt === undefined ? {} : { scheduledEndAt: event.scheduledEndAt }),
       ...(event.channelId === undefined ? {} : { channelId: event.channelId }),
       ...(event.location === undefined ? {} : { location: event.location }),
     }));
@@ -1597,6 +1599,7 @@ export class FakeDiscord implements DiscordPort {
       name: input.name,
       description: input.description,
       scheduledStartAt: input.startAt,
+      scheduledEndAt: input.endAt,
       channelId: input.location.kind === 'external' ? undefined : input.location.channelId,
       location: input.location.kind === 'external' ? input.location.place : undefined,
     });
@@ -1605,7 +1608,10 @@ export class FakeDiscord implements DiscordPort {
 
   /**
    * Edits a guild scheduled event (MCP slice 5): only the fields given move,
-   * the way `setThreadState` carries only its fields. An unknown event throws
+   * the way `setThreadState` carries only its fields. `description: null`
+   * clears the description, like the REST adapter's JSON null; `endAt` moves
+   * the end time, which can never be cleared because Discord's PATCH
+   * `scheduled_end_time` is not nullable. An unknown event throws
    * a 404, mirroring the adapter's mapped error — not `undefined`, which is
    * what the *reads* answer.
    */
@@ -1614,7 +1620,7 @@ export class FakeDiscord implements DiscordPort {
     eventId: Snowflake,
     patch: {
       readonly name?: string | undefined;
-      readonly description?: string | undefined;
+      readonly description?: string | null | undefined;
       readonly startAt?: number | undefined;
       readonly endAt?: number | undefined;
       readonly location?:
@@ -1629,8 +1635,9 @@ export class FakeDiscord implements DiscordPort {
     if (!event)
       throw new DiscordApiError(404, undefined, `Unknown Guild Scheduled Event: ${eventId}`);
     if (patch.name !== undefined) event.name = patch.name;
-    if (patch.description !== undefined) event.description = patch.description;
+    if (patch.description !== undefined) event.description = patch.description ?? undefined;
     if (patch.startAt !== undefined) event.scheduledStartAt = patch.startAt;
+    if (patch.endAt !== undefined) event.scheduledEndAt = patch.endAt;
     if (patch.location !== undefined) {
       event.channelId = patch.location.kind === 'external' ? undefined : patch.location.channelId;
       event.location = patch.location.kind === 'external' ? patch.location.place : undefined;

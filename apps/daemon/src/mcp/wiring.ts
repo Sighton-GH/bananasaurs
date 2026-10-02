@@ -2520,7 +2520,10 @@ const eventWritesPortFor = (
   /** The gateway's outcomes onto the event tools' vocabulary, ids only. */
   const gatewayOutcome = (
     outcome: McpActionOutcome<{ undo?: unknown }>,
-    ids: { readonly eventId?: string | undefined } = {},
+    ids: {
+      readonly eventId?: string | undefined;
+      readonly endTimeNotCovered?: boolean | undefined;
+    } = {},
   ): McpEventWriteOutcome => {
     switch (outcome.status) {
       case 'done':
@@ -2528,6 +2531,9 @@ const eventWritesPortFor = (
           status: 'done',
           actionId: outcome.actionId,
           ...(ids.eventId !== undefined ? { eventId: ids.eventId } : {}),
+          // The edit's not-covered end time, for the outcome text that must
+          // name it (finding 2): set only when true, never as false.
+          ...(ids.endTimeNotCovered === true ? { endTimeNotCovered: true } : {}),
         };
       case 'dry-run':
         return { status: 'dry-run', actionId: outcome.actionId };
@@ -2715,22 +2721,29 @@ const eventWritesPortFor = (
           if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
         }
         // The previous values of the changed fields, for the `event.edit`
-        // undo row. An `endAt` change records no previous value: the port's
-        // `ScheduledEvent` carries no end time, so there is nothing truthful
-        // to restore — the undo still inverts every other changed field. A
-        // move records the old location; when the old channel's live type
+        // undo row. A description added to an event that had none records
+        // `null`, and the undo clears it back (the PATCH body's `description`
+        // is nullable). An `endAt` change records the previous end time; when
+        // the event had none, nothing is recorded — Discord's PATCH
+        // `scheduled_end_time` is not nullable, so the absence cannot be
+        // restored — and the outcome says the end time is not covered by undo.
+        // A move records the old location; when the old channel's live type
         // (or the old venue) is unknowable, the location stays moved.
         const previous: {
           name?: string;
-          description?: string;
+          description?: string | null;
           startAt?: number;
+          endAt?: number;
           location?: EventLocationInput;
         } = {};
+        let endTimeNotCovered = false;
         if (input.name !== undefined) previous.name = current.name;
-        if (input.description !== undefined && current.description !== undefined) {
-          previous.description = current.description;
-        }
+        if (input.description !== undefined) previous.description = current.description ?? null;
         if (input.startAt !== undefined) previous.startAt = current.scheduledStartAt;
+        if (input.endAt !== undefined) {
+          if (current.scheduledEndAt !== undefined) previous.endAt = current.scheduledEndAt;
+          else endTimeNotCovered = true;
+        }
         if (location !== undefined) {
           if (current.channelId !== undefined) {
             const oldChannel = await liveGuildChannel(client, guildId, current.channelId);
@@ -2779,7 +2792,10 @@ const eventWritesPortFor = (
             return { undo: { eventId: input.eventId, previous } };
           },
         );
-        return gatewayOutcome(outcome, { eventId: input.eventId });
+        return gatewayOutcome(outcome, {
+          eventId: input.eventId,
+          ...(endTimeNotCovered ? { endTimeNotCovered: true as const } : {}),
+        });
       }),
     cancelEvent: (guildId, input) =>
       loggedCallAsync(deps.logger, 'eventCancel', async () => {
@@ -3012,8 +3028,11 @@ const undoEventEditSchema = z
     previous: z
       .object({
         name: z.string().optional(),
-        description: z.string().optional(),
+        // `null` is an event that had no description when the description was
+        // added: the undo clears it back (finding 1).
+        description: z.string().nullable().optional(),
         startAt: z.number().optional(),
+        endAt: z.number().optional(),
         location: z
           .union([
             z.object({ kind: z.enum(['voice', 'stage']), channelId: z.string() }).strict(),
@@ -3197,6 +3216,14 @@ const planUndo = (
     case 'event.edit': {
       const undo = undoEventEditSchema.safeParse(parsed);
       if (!undo.success) return undefined;
+      // The undo calls the port with this id: a stored row whose id is not a
+      // well-formed snowflake (a hand-edited ledger, a corruption) is
+      // not-undoable rather than a malformed port call (finding 3).
+      try {
+        parseSnowflakeId(undo.data.eventId);
+      } catch {
+        return undefined;
+      }
       const eventId = undo.data.eventId;
       const previous = undo.data.previous;
       return {

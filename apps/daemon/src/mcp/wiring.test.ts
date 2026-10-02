@@ -7797,6 +7797,225 @@ describe('/mcp event writes through the real composition', () => {
     }
   });
 
+  it('an added description is cleared by undo_action when the event had none', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const created = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ description: undefined, idempotencyKey: 'event-nodesc-setup' }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const eventId = createdEventIdOf(created.text);
+
+      const edited = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            description: 'A description added later',
+            idempotencyKey: 'event-nodesc-edit',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain('kept for undo');
+      const scope = t.scopes.forGuild(GUILD_A);
+      const editRow = mcpActionsRepo.findAction(scope, 'event-nodesc-edit');
+      const undoJson = JSON.parse(editRow?.undoJson ?? '{}') as {
+        previous?: { description?: unknown };
+      };
+      expect(undoJson.previous).toMatchObject({ description: null });
+
+      const undone = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      const relisted = await discord.listScheduledEvents(GUILD_A);
+      expect(relisted.find((event) => event.id === eventId)?.description).toBeUndefined();
+      expect(
+        mcpActionsRepo.findActionById(scope, editRow?.actionId ?? '')?.undoneByActionId,
+      ).toBeDefined();
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an endAt-only edit is restored by undo_action to the previous end time', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const created = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ idempotencyKey: 'event-endat-setup' }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const eventId = createdEventIdOf(created.text);
+      const NEW_END = '2030-06-01T22:00:00.000Z';
+
+      const edited = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            endAt: NEW_END,
+            idempotencyKey: 'event-endat-edit',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain('kept for undo');
+      expect(edited.text).not.toContain('not covered by undo');
+      const scope = t.scopes.forGuild(GUILD_A);
+      const editRow = mcpActionsRepo.findAction(scope, 'event-endat-edit');
+      const undoJson = JSON.parse(editRow?.undoJson ?? '{}') as {
+        previous?: { endAt?: unknown };
+      };
+      expect(undoJson.previous).toMatchObject({ endAt: Date.parse(END) });
+      const moved = await discord.listScheduledEvents(GUILD_A);
+      expect(moved.find((event) => event.id === eventId)?.scheduledEndAt).toBe(Date.parse(NEW_END));
+
+      const undone = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      const relisted = await discord.listScheduledEvents(GUILD_A);
+      expect(relisted.find((event) => event.id === eventId)?.scheduledEndAt).toBe(Date.parse(END));
+      expect(
+        mcpActionsRepo.findActionById(scope, editRow?.actionId ?? '')?.undoneByActionId,
+      ).toBeDefined();
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an endAt set on an event with no end time says undo does not cover it', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const created = callText(
+        (
+          await eventCall(
+            eventApp,
+            accessToken,
+            'create_event',
+            createVoiceArgs({ endAt: undefined, idempotencyKey: 'event-noend-setup' }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const eventId = createdEventIdOf(created.text);
+      const NEW_END = '2030-06-01T22:00:00.000Z';
+
+      const edited = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            endAt: NEW_END,
+            idempotencyKey: 'event-noend-edit',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain('end time');
+      expect(edited.text).toContain('not covered by undo');
+      const scope = t.scopes.forGuild(GUILD_A);
+      const editRow = mcpActionsRepo.findAction(scope, 'event-noend-edit');
+      const undoJson = JSON.parse(editRow?.undoJson ?? '{}') as {
+        previous?: Record<string, unknown>;
+      };
+      expect(undoJson.previous).not.toHaveProperty('endAt');
+
+      const undone = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      // Discord cannot clear an end time, so the undo leaves the new one in
+      // place — and still marks the original undone.
+      const relisted = await discord.listScheduledEvents(GUILD_A);
+      expect(relisted.find((event) => event.id === eventId)?.scheduledEndAt).toBe(
+        Date.parse(NEW_END),
+      );
+      expect(
+        mcpActionsRepo.findActionById(scope, editRow?.actionId ?? '')?.undoneByActionId,
+      ).toBeDefined();
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('a stored event.edit row with a malformed event id is not undoable with no port call', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'event-edit-bad-id',
+        idempotencyKey: 'key-event-edit-bad-id',
+        kind: 'event.edit',
+        capGroup: 'structure',
+        argsHash: 'hash-event-edit-bad-id',
+        tokenId: 'tok_test',
+        now: clock,
+        dryRun: false,
+      });
+      mcpActionsRepo.completeAction(scope, 'event-edit-bad-id', {
+        status: 'done',
+        undoJson: JSON.stringify({ eventId: '../x', previous: { name: 'Old name' } }),
+        now: clock,
+      });
+      const refused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: 'event-edit-bad-id',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('cannot be undone');
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
   it('cancel is not undoable and says the event cannot be un-cancelled', async () => {
     allowEventChannel(VOICE);
     const discord = new FakeDiscord({ guildId: GUILD_A });

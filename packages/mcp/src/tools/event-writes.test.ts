@@ -508,6 +508,15 @@ describe('event-write outcomes', () => {
     expect(text).toContain(EVENT);
     expect(text).toContain(ACTION);
     expect(text).toContain('undo');
+    expect(text).not.toContain('not covered by undo');
+  });
+
+  it('edit names the end time as not covered by undo when the daemon says so', async () => {
+    const port = fakeEventPort({ status: 'done', actionId: ACTION, endTimeNotCovered: true });
+    const text = textOf(await editEventText(principalWith([GUILD_A]), port, editArgs()));
+    expect(text).toContain(EVENT);
+    expect(text).toContain('end time');
+    expect(text).toContain('not covered by undo');
   });
 
   it('cancel says the event cannot be un-cancelled', async () => {

@@ -151,6 +151,14 @@ export type McpEventWriteOutcome =
       readonly actionId: string;
       readonly eventId?: string | undefined;
       readonly messageId?: string | undefined;
+      /**
+       * Set by the daemon's edit wiring when the edit moved the end time of
+       * an event that had none: Discord's PATCH `scheduled_end_time` is not
+       * nullable, so undo cannot restore the absence. The only consumer is
+       * the edit-event outcome text below, which must name the field undo
+       * does not cover.
+       */
+      readonly endTimeNotCovered?: boolean | undefined;
     }
   | { readonly status: 'dry-run'; readonly actionId: string }
   | {
@@ -579,7 +587,11 @@ const renderOutcome = (
             ok: true,
             text:
               `Edited event ${target.eventId ?? '?'} in guild ${guildId} ` +
-              `(action ${outcome.actionId}). The previous values were kept for undo.`,
+              `(action ${outcome.actionId}). The previous values were kept for undo.` +
+              (outcome.endTimeNotCovered === true
+                ? ' The end time is not covered by undo: the event had no end time ' +
+                  'before this edit, and Discord does not allow clearing an end time.'
+                : ''),
           };
         case 'cancel-event':
           return {
