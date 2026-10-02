@@ -29,12 +29,18 @@ import {
   loggingRepo,
   mcpActionsRepo,
   mcpSendRepo,
+  panelRepo,
   resourceCacheRepo,
   roleRepo,
   taskNudgeRepo,
   taskRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId, DiscordApiError, contentHashFor, panelDefinitionSchema } from '@bananasaurs/core';
+import {
+  parseGuildId,
+  DiscordApiError,
+  contentHashFor,
+  panelDefinitionSchema,
+} from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -421,15 +427,16 @@ describe('/mcp behind the bearer guard', () => {
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
   });
 
-  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees send_message and nothing else', async () => {
+  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees the send tools and nothing else', async () => {
     // Through the real authorize/consent/exchange flow, not a hand-built
     // principal: this defect is invisible to a test that constructs the
     // principal itself, which is the exact shape of the three "works in
     // tests, broken in the daemon" defects this slice already found.
     //
     // Since M5 Task 4 the daemon always threads the real send port (ruling
-    // M5-D11), so a send-scoped token lists exactly `send_message` — the
-    // eleven read tools stay behind the read scope it does not carry.
+    // M5-D11), so a send-scoped token lists `send_message` plus the six
+    // Task 6 message-write tools — the eleven read tools stay behind the
+    // read scope it does not carry.
     const accessToken = await mintToken('bananasaurs:send');
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -438,6 +445,12 @@ describe('/mcp behind the bearer guard', () => {
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     expect(result.result?.tools?.map((tool) => tool.name)).toEqual([
       'send_message',
+      'edit_message',
+      'delete_message',
+      'pin_message',
+      'unpin_message',
+      'add_reaction',
+      'remove_reaction',
       'create_task_team',
       'configure_task_team',
       'delete_task_team',
@@ -1146,7 +1159,10 @@ describe('/mcp message writes through the real composition', () => {
         },
       ],
       members: [
-        { user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
         { user: { id: MEMBER_USER, username: 'member', discriminator: '0' }, roles: [] },
       ],
       emojis: emojis.map((emoji) => ({ id: emoji.id, name: emoji.name })),
@@ -1294,16 +1310,12 @@ describe('/mcp message writes through the real composition', () => {
     const accessToken = await mintToken('bananasaurs:send');
     const refused = readCall(
       (
-        await writeCall(
-          accessToken,
-          'delete_message',
-          {
-            guildId: '111111111111111111',
-            channelId: CHANNEL,
-            messageId: ANCHOR_MESSAGE,
-            idempotencyKey: 'anchor-delete',
-          },
-        )
+        await writeCall(accessToken, 'delete_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: ANCHOR_MESSAGE,
+          idempotencyKey: 'anchor-delete',
+        })
       ).body,
     );
     expect(refused.isError).toBe(true);
@@ -1518,8 +1530,9 @@ describe('/mcp message writes through the real composition', () => {
   it('a write for the other guild is refused with no Discord call', async () => {
     allowWrites();
     const accessToken = await mintToken('bananasaurs:send');
-    // The channel is allowlisted in guild A only, and the composed client
-    // knows no guild B: the target never resolves.
+    // The token reaches guild A only (`mcp.authorize` is granted there and
+    // nowhere else), so naming guild B fails the tool-layer guild gate
+    // before the port — and Discord — is ever reached.
     const refused = readCall(
       (
         await writeCall(
@@ -1530,8 +1543,11 @@ describe('/mcp message writes through the real composition', () => {
       ).body,
     );
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("is not a channel this guild's bot can see");
+    expect(refused.text).toContain(GUILD_REFUSAL_MESSAGE);
     expectNoDiscordWrites();
+    expect(
+      mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_B), 'other-guild-edit'),
+    ).toBeUndefined();
   });
 
   it('the same idempotency key twice edits once and answers the second as a replay', async () => {
@@ -1562,13 +1578,8 @@ describe('/mcp message writes through the real composition', () => {
     guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
     const accessToken = await mintToken('bananasaurs:send');
     const refused = readCall(
-      (
-        await writeCall(
-          accessToken,
-          'edit_message',
-          editArgs({ idempotencyKey: 'kill-edit' }),
-        )
-      ).body,
+      (await writeCall(accessToken, 'edit_message', editArgs({ idempotencyKey: 'kill-edit' })))
+        .body,
     );
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('kill switch');
@@ -5034,7 +5045,15 @@ describe('MCP task admin full surface (owner-only)', () => {
       (
         sseData(memberListed.body)[0] as { result?: { tools?: Array<{ name: string }> } }
       ).result?.tools?.map((tool) => tool.name),
-    ).toEqual(['send_message']);
+    ).toEqual([
+      'send_message',
+      'edit_message',
+      'delete_message',
+      'pin_message',
+      'unpin_message',
+      'add_reaction',
+      'remove_reaction',
+    ]);
 
     // The port still rechecks per call: a non-owner token that names a hidden
     // tool is refused, never executed.

@@ -312,12 +312,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         unpinMessageParams,
         unpinMessageText,
       ],
-      [
-        ADD_REACTION_TOOL_NAME,
-        ADD_REACTION_TOOL_DESCRIPTION,
-        addReactionParams,
-        addReactionText,
-      ],
+      [ADD_REACTION_TOOL_NAME, ADD_REACTION_TOOL_DESCRIPTION, addReactionParams, addReactionText],
       [
         REMOVE_REACTION_TOOL_NAME,
         REMOVE_REACTION_TOOL_DESCRIPTION,
@@ -326,7 +321,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       ],
     ] as const;
     for (const [name, description, params, text] of writeTools) {
-      server.tool(name, description, params, async (args) => {
+      server.tool(name, description, params, async (args: unknown) => {
         try {
           const outcome = await text(deps.principal, writes, args);
           if (!outcome.ok) {

@@ -14,6 +14,7 @@ import {
   type DiscordPort,
   type GuildId,
   type Logger,
+  type McpActionOutcome,
   type OpsJobRow,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
@@ -1252,7 +1253,8 @@ const messageWritesPortFor = (
 ): McpMessageWritesPort => {
   /** The target layer's reasons mapped onto the writes outcome, ids only. */
   const targetRefusal = (
-    reason: 'not-in-guild' | 'not-in-send-scope' | 'private-thread-not-allowed' | 'bot-lacks-permission',
+    reason:
+      'not-in-guild' | 'not-in-send-scope' | 'private-thread-not-allowed' | 'bot-lacks-permission',
     missing?: string,
   ): McpMessageWriteOutcome => {
     switch (reason) {
@@ -1273,23 +1275,7 @@ const messageWritesPortFor = (
 
   /** The gateway's outcomes mapped onto the writes outcome, ids only. */
   const gatewayOutcome = (
-    outcome:
-      | { status: 'done'; actionId: string; result: { resultMessageId?: string } }
-      | { status: 'dry-run'; actionId: string }
-      | { status: 'replayed'; actionId: string; resultMessageId?: string }
-      | {
-          status: 'refused';
-          reason:
-            | 'target'
-            | 'killswitch'
-            | 'breaker-open'
-            | 'rate-cap'
-            | 'key-reused-with-other-args'
-            | 'duplicate-content-recently'
-            | 'guild-unknown';
-          detail?: string;
-        }
-      | { status: 'failed'; actionId: string; code: string },
+    outcome: McpActionOutcome<{ resultMessageId?: string; undo?: unknown }>,
   ): McpMessageWriteOutcome => {
     switch (outcome.status) {
       case 'done':
@@ -1306,9 +1292,7 @@ const messageWritesPortFor = (
         return {
           status: 'replayed',
           actionId: outcome.actionId,
-          ...(outcome.resultMessageId !== undefined
-            ? { messageId: outcome.resultMessageId }
-            : {}),
+          ...(outcome.resultMessageId !== undefined ? { messageId: outcome.resultMessageId } : {}),
         };
       case 'refused':
         switch (outcome.reason) {
@@ -1351,7 +1335,13 @@ const messageWritesPortFor = (
     channelId: string,
     messageId: string,
   ): Promise<
-    | { readonly ok: true; readonly channelId: string; readonly grantId: string; readonly derivedGrant: boolean; readonly prev: { readonly content: string; readonly embeds: readonly unknown[] } }
+    | {
+        readonly ok: true;
+        readonly channelId: string;
+        readonly grantId: string;
+        readonly derivedGrant: boolean;
+        readonly prev: { readonly content: string; readonly embeds: readonly unknown[] };
+      }
     | { readonly ok: false; readonly outcome: McpMessageWriteOutcome }
   > => {
     const scope = deps.scopes.forGuild(guildId);
@@ -1400,11 +1390,12 @@ const messageWritesPortFor = (
   const resolveReactionEmoji = (guildId: GuildId, raw: string): string | undefined => {
     const custom = /^([^:<>@#\s]+):(\d{17,20})$/.exec(raw);
     if (custom !== null) {
-      const [, name, id] = custom as readonly [string, string, string];
-      const entry = client.guilds.cache.get(guildId)?.emojis.cache.get(id ?? '');
+      const name = custom[1] ?? '';
+      const id = custom[2] ?? '';
+      const entry = client.guilds.cache.get(guildId)?.emojis.cache.get(id);
       if (entry === undefined || entry.name !== name) return undefined;
       try {
-        return customEmojiKey(id ?? '');
+        return customEmojiKey(id);
       } catch {
         return undefined;
       }
@@ -1417,7 +1408,7 @@ const messageWritesPortFor = (
     }
   };
 
-  const runWrite = (
+  const runWrite = async (
     guildId: GuildId,
     intent: {
       readonly kind: string;
@@ -1431,7 +1422,7 @@ const messageWritesPortFor = (
     execute: () => Promise<{ resultMessageId?: string; undo?: unknown }>,
   ): Promise<McpMessageWriteOutcome> =>
     gatewayOutcome(
-      runMcpAction(
+      await runMcpAction(
         mcpActionDepsFor(
           deps,
           guildId,
@@ -1482,9 +1473,7 @@ const messageWritesPortFor = (
               { channelId: eligible.channelId, messageId: input.messageId },
               {
                 ...(input.content !== undefined ? { content: input.content } : {}),
-                ...(input.embeds !== undefined
-                  ? { embeds: input.embeds.map(toDiscordEmbed) }
-                  : {}),
+                ...(input.embeds !== undefined ? { embeds: input.embeds.map(toDiscordEmbed) } : {}),
               },
             );
             return {
@@ -1615,7 +1604,10 @@ const messageWritesPortFor = (
               { channelId: target.channelId, messageId: input.messageId },
               key,
             );
-            return { resultMessageId: input.messageId, undo: { op: 'remove-reaction', emoji: key } };
+            return {
+              resultMessageId: input.messageId,
+              undo: { op: 'remove-reaction', emoji: key },
+            };
           },
         );
       }),
@@ -1657,7 +1649,7 @@ const messageWritesPortFor = (
       }),
   };
 };
- *
+/**
  * A content-bearing read writes one `audit_events` row through
  * `effectRepo.recordAudit`, in the send path's vocabulary (ruling M5-D10):
  * `actor_type = 'mcp_operator'`, `actor_id = <token id>`, `via = 'http'`.
@@ -1987,6 +1979,7 @@ export const registerMcpRoutes = (
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
+      messageWrites: messageWritesPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),
