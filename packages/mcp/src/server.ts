@@ -126,6 +126,25 @@ import {
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
 import {
+  CANCEL_EVENT_TOOL_DESCRIPTION,
+  CANCEL_EVENT_TOOL_NAME,
+  CREATE_EVENT_TOOL_DESCRIPTION,
+  CREATE_EVENT_TOOL_NAME,
+  CREATE_POLL_TOOL_DESCRIPTION,
+  CREATE_POLL_TOOL_NAME,
+  EDIT_EVENT_TOOL_DESCRIPTION,
+  EDIT_EVENT_TOOL_NAME,
+  cancelEventParams,
+  cancelEventText,
+  createEventParams,
+  createEventText,
+  createPollParams,
+  createPollText,
+  editEventParams,
+  editEventText,
+  type McpEventWritesPort,
+} from './tools/event-writes.js';
+import {
   LIST_ACTIONS_TOOL_DESCRIPTION,
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_DESCRIPTION,
@@ -244,6 +263,16 @@ export interface McpServerDeps {
    * principal carries the send scope.
    */
   readonly messageWrites: McpMessageWritesPort;
+  /**
+   * The daemon's per-request event-writes port: scheduled-event creation,
+   * editing and cancellation plus native polls behind the four event tools.
+   * Required like `send`: the daemon always provides it, and a missing port
+   * must fail at construction, not serve tools that always refuse. Required
+   * means the port is always present, not that the tools are always
+   * advertised: the four tools still register only when the principal
+   * carries the send scope.
+   */
+  readonly eventWrites: McpEventWritesPort;
   /**
    * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
    * ledger behind `undo_action` and `list_actions`. Optional like the task
@@ -438,6 +467,33 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       server.tool(name, description, params, async (args: unknown) => {
         try {
           const outcome = await text(deps.principal, writes, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // The four event/poll write tools, same handler shape as
+    // `send_message` above — each text function already answers every
+    // malformed argument and every port fault, so the try/catch here only
+    // fires on something the tool layer did not foresee.
+    const eventWrites = deps.eventWrites;
+    const eventWriteTools = [
+      [CREATE_EVENT_TOOL_NAME, CREATE_EVENT_TOOL_DESCRIPTION, createEventParams, createEventText],
+      [EDIT_EVENT_TOOL_NAME, EDIT_EVENT_TOOL_DESCRIPTION, editEventParams, editEventText],
+      [CANCEL_EVENT_TOOL_NAME, CANCEL_EVENT_TOOL_DESCRIPTION, cancelEventParams, cancelEventText],
+      [CREATE_POLL_TOOL_NAME, CREATE_POLL_TOOL_DESCRIPTION, createPollParams, createPollText],
+    ] as const;
+    for (const [name, description, params, text] of eventWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, eventWrites, args);
           if (!outcome.ok) {
             return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
           }

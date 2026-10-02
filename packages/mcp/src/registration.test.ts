@@ -12,6 +12,7 @@ import type { McpRecordsPort } from './tools/records.js';
 import type { McpSendPort } from './tools/send.js';
 import type { McpThreadWritesPort } from './tools/thread-writes.js';
 import type { McpMessageWritesPort } from './tools/message-writes.js';
+import type { McpEventWritesPort } from './tools/event-writes.js';
 import type { McpActionsPort } from './tools/actions.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
@@ -92,6 +93,12 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     addReaction: () => Promise.resolve({ status: 'done', actionId: 'act' }),
     removeReaction: () => Promise.resolve({ status: 'done', actionId: 'act' }),
   };
+  const eventWrites: McpEventWritesPort = {
+    createEvent: () => Promise.resolve({ status: 'done', actionId: 'act', eventId: 'evt' }),
+    editEvent: () => Promise.resolve({ status: 'done', actionId: 'act' }),
+    cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act' }),
+    createPoll: () => Promise.resolve({ status: 'done', actionId: 'act', messageId: 'mid' }),
+  };
   const actions: McpActionsPort = {
     undo: () =>
       Promise.resolve({ status: 'done', actionId: 'undo', undoneActionId: 'act', kind: 'edit' }),
@@ -121,6 +128,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     send,
     threadWrites,
     messageWrites,
+    eventWrites,
     actions,
     tasks,
     taskDetail,
@@ -186,7 +194,7 @@ const READ_TOOLS: readonly string[] = [
   'list_task_reminders',
 ];
 
-/** The send-scope set: `send_message`, the twelve thread/message write tools, and `undo_action`. */
+/** The send-scope set: `send_message`, the twelve thread/message write tools, the four event tools, and `undo_action`. */
 const SEND_TOOLS: readonly string[] = [
   'send_message',
   'create_thread',
@@ -201,6 +209,10 @@ const SEND_TOOLS: readonly string[] = [
   'unpin_message',
   'add_reaction',
   'remove_reaction',
+  'create_event',
+  'edit_event',
+  'cancel_event',
+  'create_poll',
   'undo_action',
 ];
 
@@ -281,7 +293,7 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
 describe('registration pins every scope subset', () => {
   it('the three scope sets have the expected sizes', () => {
     expect(READ_TOOLS).toHaveLength(27);
-    expect(SEND_TOOLS).toHaveLength(14);
+    expect(SEND_TOOLS).toHaveLength(18);
     expect(TASK_TOOLS).toHaveLength(25);
     // The hardcoded task list is the whole registrar: no drift between this
     // file and the tools main registers.

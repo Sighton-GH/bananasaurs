@@ -33,6 +33,7 @@ import type { McpResourcesPort } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
 import type { McpReadAuditPort } from '../read-audit.js';
 import type { McpMessageWritesPort } from './message-writes.js';
+import type { McpEventWritesPort } from './event-writes.js';
 
 /**
  * Task 5, tool layer: the six thread/forum write tools against a fake
@@ -654,6 +655,15 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
     Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
 });
 
+/** Required for the four event tools; never called by the thread-write tools pinned here. */
+const stubEventWrites = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test', eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
@@ -665,8 +675,9 @@ const connectPair = async (
     guild: stubGuild(),
     records: stubRecords(),
     send: stubSend(),
-    threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
+    threadWrites: stubThreadWrites(),
+    eventWrites: stubEventWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
@@ -690,9 +701,9 @@ describe('thread-write scope filtering (ruling M4-D17)', () => {
     const { client, close } = await connectPair(principalWith([GUILD_A]));
     try {
       const list = await client.listTools();
-      // The message-write tools (Task 6) share the scope; this file pins its own six.
+      // The message-write and event tools share the scope; this file pins its own six.
       const names = list.tools.map((tool) => tool.name);
-      expect(names).toHaveLength(13);
+      expect(names).toHaveLength(17);
       expect(names.slice(0, 7)).toEqual([
         'send_message',
         CREATE_THREAD_TOOL_NAME,

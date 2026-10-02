@@ -955,6 +955,15 @@ describe('archive tools on the MCP server', () => {
         removeReaction: () =>
           Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
       },
+      // Required for the four event tools; never called by the archive tools pinned here.
+      eventWrites: {
+        createEvent: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', eventId: 'evt' }),
+        editEvent: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        cancelEvent: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        createPoll: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),

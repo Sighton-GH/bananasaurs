@@ -38,6 +38,7 @@ import {
 import type { McpThreadsPort } from './threads.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
 import type { McpMessageWritesPort } from './message-writes.js';
+import type { McpEventWritesPort } from './event-writes.js';
 
 /**
  * Task 3, tool layer: `send_message` against a fake `McpSendPort` — the same
@@ -607,6 +608,15 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
     Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
 });
 
+/** Minimal event-writes port: this file pins `send_message`, never the event tools. */
+const stubEventWrites = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: ACTION, eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+});
+
 /** Minimal jobs port: this file pins `send_message`, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({
   listJobs: () => [],
@@ -681,6 +691,7 @@ const connectPair = async (
     send: stubSend(),
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
+    eventWrites: stubEventWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
@@ -717,17 +728,17 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
     expect(names).not.toContain(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a send-only token sees send_message plus the six thread-write and six message-write tools', async () => {
+  it('a send-only token sees send_message plus the write tools', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A], ['bananasaurs:send']));
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(17);
     expect(names[0]).toBe(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a token with both scopes sees thirty-five tools', async () => {
+  it('a token with both scopes sees thirty-nine tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(35);
+    expect(names).toHaveLength(39);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

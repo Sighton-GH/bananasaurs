@@ -43,10 +43,12 @@ export const LIST_ACTIONS_DEFAULT_LIMIT = 20;
 
 export const UNDO_ACTION_TOOL_NAME = 'undo_action';
 export const UNDO_ACTION_TOOL_DESCRIPTION =
-  'Undoes one reversible MCP action in this guild: an edit restores the previous text, ' +
+  'Undoes one reversible MCP action in this guild: a message edit restores the previous text, ' +
+  'an event edit restores the previous values, ' +
   'a pin or unpin does the opposite, a reaction add or remove does the opposite, ' +
   'a thread-member add removes the same members, and a thread archive or lock restores ' +
-  'the previous state. Posts, deletes, thread creation, forum posts and member removals ' +
+  'the previous state. Posts, deletes, event creation, event cancellation, thread creation, ' +
+  'forum posts and member removals ' +
   'cannot be undone. Each action undoes at most once: repeating this call answers that ' +
   'it is already undone. Takes an actionId from list_actions; the undo runs as its own ' +
   'action with key undo:<actionId>.';
@@ -211,9 +213,10 @@ const undoRefusalText = (
     case 'not-undoable':
       return (
         `Action ${actionId} in guild ${guildId} cannot be undone` +
-        `${detail !== undefined ? ` (kind ${detail})` : ''}: only edits, pins, reactions, ` +
-        'thread-member adds and thread state changes are reversible — posts, deletes, thread ' +
-        'creation, forum posts and member removals never are — and a reversible action whose ' +
+        `${detail !== undefined ? ` (kind ${detail})` : ''}: only message edits, event edits, ` +
+        'pins, reactions, thread-member adds and thread state changes are reversible — posts, ' +
+        'deletes, event creation, event cancellation, thread creation, forum posts and member ' +
+        'removals never are — and a reversible action whose ' +
         'stored previous state is missing or unreadable cannot be restored either.'
       );
     case 'undo-in-progress':
