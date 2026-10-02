@@ -1,14 +1,26 @@
+import type { Client } from 'discord.js';
 import {
   DiscordApiError,
   ReminderDeliveryError,
+  safeLogFields,
   type DiscordPort,
+  type GuildId,
+  type Logger,
   type OutgoingMessage,
   type Reminder,
   type ReminderDelivery,
   type ReminderStore,
 } from '@bananasaurs/core';
 import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
+import { filterPings, resolveSendTarget } from '../mcp/targets.js';
 import { neutraliseMassMentions } from './reminder-summary.js';
+
+/**
+ * A reminder as the claim path hands it over: Task 1's `origin` rides along
+ * on the row (`packages/storage`'s `StoredReminder`), while `core`'s pass
+ * only knows the base shape — so the adapter reads it as an optional field.
+ */
+type DeliverableReminder = Reminder & { readonly origin?: string };
 
 /**
  * The composition half of reminder delivery (Release 3,
@@ -88,10 +100,16 @@ export const classifyReminderSendError = (error: unknown): ReminderDeliveryError
  * reminder can never ping. The "Set by" line names
  * the creator without pinging them — their id reaches `users` only when it
  * is already in `mentions.userIds`.
+ *
+ * `origin='mcp'` rows never carry `@everyone`/`@here` (Task 1's insert
+ * guard); the render path asserts it too, so a row that somehow carries
+ * them is refused here rather than posted.
  */
 export const renderReminder = (
-  reminder: Reminder,
+  reminder: DeliverableReminder,
 ): { content: string; allowedMentions: NonNullable<OutgoingMessage['allowedMentions']> } => {
+  if (reminder.origin === 'mcp' && (reminder.mentions.everyone || reminder.mentions.here))
+    throw new Error('mcp reminders cannot ping everyone or here');
   const pings: string[] = [];
   if (reminder.mentions.everyone) pings.push('@everyone');
   if (reminder.mentions.here) pings.push('@here');
@@ -145,16 +163,97 @@ export const renderReminder = (
  * text is capped at creation (1,500 characters) and the render is capped
  * at Discord's 2,000 regardless.
  */
+/**
+ * The live facts the `origin='mcp'` re-check needs: the discord.js client
+ * for cache math and membership reads, this guild's storage scope for the
+ * send-scope and role-policy rows, and the logger for the ids-only lines.
+ * Threaded through from the composition root (`runtime/guild.ts`).
+ */
+export interface McpDeliveryRecheck {
+  readonly client: Client;
+  readonly scope: GuildScope;
+  readonly logger: Logger;
+}
+
 export const createReminderDelivery = (
   guildId: string,
   discord: DiscordPort,
+  mcp?: McpDeliveryRecheck,
 ): ReminderDelivery => ({
   async send(reminder) {
+    const row = reminder as DeliverableReminder;
+    // Assistant rows go exactly through today's code: no live client, no
+    // policy, no log lines.
+    if (row.origin !== 'mcp') {
+      try {
+        const rendered = renderReminder(row);
+        await discord.sendMessage(guildId, reminder.destinationId, {
+          content: rendered.content,
+          allowedMentions: rendered.allowedMentions,
+        });
+      } catch (error) {
+        throw classifyReminderSendError(error);
+      }
+      return;
+    }
+    // No AI anywhere below: two policy reads and one post, nothing else.
+    if (mcp === undefined)
+      throw new ReminderDeliveryError('mcp delivery requires live checks', true);
+    // The row's guild governs every check — never the closure guild, which
+    // only equals it when the wiring is right. A row for another guild can
+    // therefore never borrow this guild's scope.
+    const rowGuildId = row.guildId as GuildId;
+    const target = await resolveSendTarget(
+      mcp.client,
+      mcp.scope,
+      rowGuildId,
+      row.destinationId,
+      'post',
+    );
+    if (!target.ok) {
+      mcp.logger.warn(
+        safeLogFields({
+          component: 'reminders',
+          guildId: row.guildId,
+          dedupeKey: row.dedupeKey,
+          channelId: row.destinationId,
+          reason: target.reason,
+        }),
+        'mcp reminder target out of scope',
+      );
+      // Terminal: the scope row is gone, so retrying cannot change the
+      // answer — the pass fails the reminder with nothing posted.
+      throw new ReminderDeliveryError('target-out-of-scope', true);
+    }
+    const filtered = await filterPings(mcp.client, mcp.scope, rowGuildId, {
+      roles: row.mentions.roleIds,
+      users: row.mentions.userIds,
+    });
+    for (const drop of filtered.dropped) {
+      mcp.logger.info(
+        safeLogFields({
+          component: 'reminders',
+          guildId: row.guildId,
+          dedupeKey: row.dedupeKey,
+          ...(drop.kind === 'role' ? { roleId: drop.id } : { userId: drop.id }),
+          reason: drop.reason,
+        }),
+        'mcp reminder ping dropped',
+      );
+    }
+    // The content renders whole — a dropped mention still reads as typed
+    // text, it just no longer notifies — and only `allowedMentions` narrows
+    // to the surviving pings. The render also re-asserts the mcp
+    // no-`@everyone`/`@here` rule, so `parse` here is always empty.
+    const rendered = renderReminder(row);
     try {
-      const rendered = renderReminder(reminder);
-      await discord.sendMessage(guildId, reminder.destinationId, {
+      await discord.sendMessage(rowGuildId, row.destinationId, {
         content: rendered.content,
-        allowedMentions: rendered.allowedMentions,
+        allowedMentions: {
+          parse: rendered.allowedMentions.parse,
+          ...(filtered.roleIds.length > 0 ? { roles: [...filtered.roleIds] } : {}),
+          ...(filtered.userIds.length > 0 ? { users: [...filtered.userIds] } : {}),
+        },
       });
     } catch (error) {
       throw classifyReminderSendError(error);

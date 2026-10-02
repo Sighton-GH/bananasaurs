@@ -1,4 +1,4 @@
-import { PermissionFlagsBits, type Client, type GuildMember } from 'discord.js';
+import { PermissionFlagsBits, type Client, type Guild, type GuildMember } from 'discord.js';
 import { isInScope, rolePingAllowed, type GuildId } from '@bananasaurs/core';
 import { loggingRepo, mcpSendRepo, mcpRolePolicyRepo, type GuildScope } from '@bananasaurs/storage';
 import { resolveRoleRef } from '@bananasaurs/mcp';
@@ -195,6 +195,86 @@ const isUnknownMember = (err: unknown): boolean => {
   return code === 10007 || code === 10013 || status === 404;
 };
 
+/**
+ * The exact per-role ping decision `resolvePings` applies, one role at a
+ * time: ref resolution, then the live role facts through `rolePingAllowed`
+ * (below-bot or allowlist, `isDangerousRole`, managed/@everyone; ADR 0117)
+ * with the refusal mapped to a `PingRefusal`.
+ *
+ * Extracted — not copied — so the delivery-time re-check (`filterPings`,
+ * ADR 0119 §2) runs the same predicate at delivery that scheduling ran at
+ * scheduling. `id` is the resolved role id when the role was found, else the
+ * ref itself, so a drop log can always name an id.
+ */
+export type RolePingCheck =
+  | { readonly ok: true; readonly id: string }
+  | { readonly ok: false; readonly reason: PingRefusal; readonly ref: string; readonly id: string };
+
+export const checkRolePing = (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+  ref: string,
+): RolePingCheck => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) return { ok: false, reason: 'role-unknown', ref, id: ref };
+  // Full `McpGuildRole` rows for `resolveRoleRef` (it reads id and name;
+  // the rest rides along because the resolver owns its input shape, not us).
+  const names = [...guild.roles.cache.values()].map((role) => ({
+    id: role.id,
+    name: role.name,
+    position: role.position,
+    color: role.color,
+    managedByBananasaurs: false,
+  }));
+  const policy = mcpRolePolicyRepo.readRolePolicy(scope);
+  const botTopPosition = guild.members.me?.roles.highest.position ?? 0;
+  const matched = resolveRoleRef(names, ref);
+  if (!matched.ok) return { ok: false, reason: 'role-unknown', ref, id: ref };
+  const role = guild.roles.cache.get(matched.id);
+  if (role === undefined) return { ok: false, reason: 'role-unknown', ref, id: ref };
+  const allowed = rolePingAllowed(
+    {
+      id: role.id,
+      position: role.position,
+      permissions: role.permissions.bitfield,
+      managed: role.managed,
+      isEveryone: role.id === guild.id,
+    },
+    botTopPosition,
+    policy.pingMode,
+    mcpRolePolicyRepo.isRoleAllowlisted(scope, role.id, 'ping'),
+  );
+  if (allowed === true) return { ok: true, id: role.id };
+  const reason: PingRefusal =
+    allowed === 'dangerous'
+      ? 'role-dangerous'
+      : allowed === 'managed-or-everyone'
+        ? 'role-managed-or-everyone'
+        : allowed === 'above-bot'
+          ? 'role-above-bot'
+          : 'role-not-allowlisted';
+  return { ok: false, reason, ref, id: role.id };
+};
+
+/**
+ * Live guild membership, as at schedule time: a cache hit proves it, but a
+ * miss proves nothing (the cache caps at fifty members), so one REST read
+ * decides. Only Discord's own "no such member/user" answer means not a
+ * member; a transport fault throws, so an outage is never reported as a
+ * refusal.
+ */
+const isLiveMember = async (guild: Guild, userId: string): Promise<boolean> => {
+  if (guild.members.cache.get(userId) !== undefined) return true;
+  return guild.members.fetch(userId).then(
+    () => true,
+    (err: unknown) => {
+      if (isUnknownMember(err)) return false;
+      throw err;
+    },
+  );
+};
+
 export const resolvePings = async (
   client: Client,
   scope: GuildScope,
@@ -210,67 +290,77 @@ export const resolvePings = async (
     return { ok: true, roleIds: [], userIds: [] };
   }
   const roleIds: string[] = [];
-  if (input.roles.length > 0) {
-    // Full `McpGuildRole` rows for `resolveRoleRef` (it reads id and name;
-    // the rest rides along because the resolver owns its input shape, not us).
-    const names = [...guild.roles.cache.values()].map((role) => ({
-      id: role.id,
-      name: role.name,
-      position: role.position,
-      color: role.color,
-      managedByBananasaurs: false,
-    }));
-    const policy = mcpRolePolicyRepo.readRolePolicy(scope);
-    const botTopPosition = guild.members.me?.roles.highest.position ?? 0;
-    for (const ref of input.roles) {
-      const matched = resolveRoleRef(names, ref);
-      if (!matched.ok) return { ok: false, reason: 'role-unknown', ref };
-      const role = guild.roles.cache.get(matched.id);
-      if (role === undefined) return { ok: false, reason: 'role-unknown', ref };
-      const allowed = rolePingAllowed(
-        {
-          id: role.id,
-          position: role.position,
-          permissions: role.permissions.bitfield,
-          managed: role.managed,
-          isEveryone: role.id === guild.id,
-        },
-        botTopPosition,
-        policy.pingMode,
-        mcpRolePolicyRepo.isRoleAllowlisted(scope, role.id, 'ping'),
-      );
-      if (allowed !== true) {
-        const reason: PingRefusal =
-          allowed === 'dangerous'
-            ? 'role-dangerous'
-            : allowed === 'managed-or-everyone'
-              ? 'role-managed-or-everyone'
-              : allowed === 'above-bot'
-                ? 'role-above-bot'
-                : 'role-not-allowlisted';
-        return { ok: false, reason, ref };
-      }
-      if (!roleIds.includes(role.id)) roleIds.push(role.id);
-    }
+  for (const ref of input.roles) {
+    const checked = checkRolePing(client, scope, guildId, ref);
+    if (!checked.ok) return { ok: false, reason: checked.reason, ref: checked.ref };
+    if (!roleIds.includes(checked.id)) roleIds.push(checked.id);
   }
   const userIds: string[] = [];
   for (const ref of input.users) {
-    const cached = guild.members.cache.get(ref) !== undefined;
-    // Live, not cached: the cache caps at fifty members, so a cache hit
-    // proves membership but a miss proves nothing — one REST read decides.
-    // Only Discord's own "no such member/user" answer means not a member; a
-    // transport fault throws, so an outage is never reported as a refusal.
-    const member = cached
-      ? true
-      : await guild.members.fetch(ref).then(
-          () => true,
-          (err: unknown) => {
-            if (isUnknownMember(err)) return false;
-            throw err;
-          },
-        );
-    if (!member) return { ok: false, reason: 'user-not-member', ref };
+    if (!(await isLiveMember(guild, ref))) return { ok: false, reason: 'user-not-member', ref };
     if (!userIds.includes(ref)) userIds.push(ref);
   }
   return { ok: true, roleIds, userIds };
+};
+
+export interface PingDrop {
+  readonly kind: 'role' | 'user';
+  readonly id: string;
+  readonly reason: PingRefusal;
+}
+
+export interface FilteredPings {
+  readonly roleIds: string[];
+  readonly userIds: string[];
+  readonly dropped: PingDrop[];
+}
+
+/**
+ * The delivery-time ping filter (ADR 0119 §2): `resolvePings` refuses the
+ * whole call on the first bad role, which is right at schedule time but
+ * wrong at delivery — here each refused role (or departed user) is dropped
+ * from the pings and the rest are kept, with one drop record each for the
+ * ids-only log line. The per-role decision is `checkRolePing`, the exact
+ * predicate scheduling uses; user membership is the same live check.
+ */
+export const filterPings = async (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+  input: { readonly roles: readonly string[]; readonly users: readonly string[] },
+): Promise<FilteredPings> => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) {
+    return {
+      roleIds: [],
+      userIds: [],
+      dropped: [
+        ...input.roles.map((ref): PingDrop => ({ kind: 'role', id: ref, reason: 'role-unknown' })),
+        ...input.users.map(
+          (ref): PingDrop => ({ kind: 'user', id: ref, reason: 'user-not-member' }),
+        ),
+      ],
+    };
+  }
+  const roleIds: string[] = [];
+  const userIds: string[] = [];
+  const dropped: PingDrop[] = [];
+  for (const ref of input.roles) {
+    const checked = checkRolePing(client, scope, guildId, ref);
+    if (!checked.ok) {
+      if (!dropped.some((drop) => drop.kind === 'role' && drop.id === checked.id))
+        dropped.push({ kind: 'role', id: checked.id, reason: checked.reason });
+      continue;
+    }
+    if (!roleIds.includes(checked.id)) roleIds.push(checked.id);
+  }
+  for (const ref of input.users) {
+    if (!(await isLiveMember(guild, ref))) {
+      if (!dropped.some((drop) => drop.kind === 'user' && drop.id === ref))
+        dropped.push({ kind: 'user', id: ref, reason: 'user-not-member' });
+      continue;
+    }
+    if (!userIds.includes(ref)) userIds.push(ref);
+  }
+  return { roleIds, userIds, dropped };
 };
