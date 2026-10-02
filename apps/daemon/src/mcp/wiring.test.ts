@@ -438,7 +438,8 @@ describe('/mcp behind the bearer guard', () => {
     // Since M5 Task 4 the daemon always threads the real send port (ruling
     // M5-D11), so a send-scoped token lists `send_message` plus the six
     // thread-write tools (slice 3 Task 5), the six message-write tools
-    // (Task 6) and `undo_action` (Task 7), all the same scope — the eleven
+    // (Task 6), the four event tools (slice 5 Task 5) and `undo_action`
+    // (Task 7), all the same scope — the eleven
     // read tools stay behind the read scope it does not carry, and the
     // task-tracking write tools stay behind the tasks scope (ADR 0114).
     const accessToken = await mintToken('bananasaurs:send');
@@ -461,6 +462,10 @@ describe('/mcp behind the bearer guard', () => {
       'unpin_message',
       'add_reaction',
       'remove_reaction',
+      'create_event',
+      'edit_event',
+      'cancel_event',
+      'create_poll',
       'undo_action',
     ]);
   });
@@ -6004,6 +6009,10 @@ describe('MCP task admin full surface (owner-only)', () => {
       'unpin_message',
       'add_reaction',
       'remove_reaction',
+      'create_event',
+      'edit_event',
+      'cancel_event',
+      'create_poll',
       'undo_action',
     ]);
 
@@ -7558,7 +7567,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(VOICE);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const found = callText(
         (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
@@ -7598,7 +7607,7 @@ describe('/mcp event writes through the real composition', () => {
     guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const refused = callText(
         (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
@@ -7616,7 +7625,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(TEXT);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const refused = callText(
         (
@@ -7640,7 +7649,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(VOICE);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(false), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const refused = callText(
         (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
@@ -7657,7 +7666,7 @@ describe('/mcp event writes through the real composition', () => {
     guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const found = callText(
         (
@@ -7691,7 +7700,7 @@ describe('/mcp event writes through the real composition', () => {
     guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(false), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const refused = callText(
         (
@@ -7719,7 +7728,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(VOICE);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const created = callText(
         (await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body,
@@ -7792,7 +7801,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(VOICE);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const created = callText(
         (
@@ -7843,7 +7852,7 @@ describe('/mcp event writes through the real composition', () => {
     guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const editRefused = callText(
         (
@@ -7879,7 +7888,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(TEXT);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const pollArgs = {
         guildId: '111111111111111111',
@@ -7889,7 +7898,9 @@ describe('/mcp event writes through the real composition', () => {
         durationHours: 24,
         idempotencyKey: 'poll-k1',
       };
-      const first = callText((await eventCall(eventApp, accessToken, 'create_poll', pollArgs)).body);
+      const first = callText(
+        (await eventCall(eventApp, accessToken, 'create_poll', pollArgs)).body,
+      );
       expect(first.isError).not.toBe(true);
       expect(first.text).toContain('Sent poll message');
       const second = callText(
@@ -7934,7 +7945,7 @@ describe('/mcp event writes through the real composition', () => {
     allowEventChannel(TEXT);
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const eventApp = buildEventApp(buildEventClient(true), discord);
-    const accessToken = await mintToken('bananasaurs:send', eventApp);
+    const accessToken = await mintToken('bananasaurs:send');
     try {
       const created = callText(
         (

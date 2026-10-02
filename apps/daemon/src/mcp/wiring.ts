@@ -3034,6 +3034,7 @@ const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
   'reaction.remove',
   'thread.members.add',
   'thread.state',
+  'event.edit',
 ]);
 
 const parseUndoJson = (raw: string): unknown => {
@@ -3193,6 +3194,21 @@ const planUndo = (
         },
       };
     }
+    case 'event.edit': {
+      const undo = undoEventEditSchema.safeParse(parsed);
+      if (!undo.success) return undefined;
+      const eventId = undo.data.eventId;
+      const previous = undo.data.previous;
+      return {
+        kind: 'event.edit',
+        capGroup: 'structure',
+        argsHash: argsHashFor('event.edit', { event: eventId, ...previous }),
+        execute: async () => {
+          await discord.editScheduledEvent(guildId, eventId, { ...previous });
+          return {};
+        },
+      };
+    }
     default:
       return undefined;
   }
@@ -3268,6 +3284,8 @@ const undoNeedFor = (scope: GuildScope, inverseKind: string, channelId: string):
     case 'reaction.add':
     case 'reaction.remove':
       return 'react';
+    case 'event.edit':
+      return 'manage-events';
     default:
       return botOwnsThread(scope, channelId) ? 'post-in-thread' : 'manage-thread';
   }
@@ -3296,25 +3314,41 @@ const actionsPortFor = (
       if (row.status === 'failed') return { status: 'refused', reason: 'action-failed' };
       if (row.status !== 'done') return { status: 'refused', reason: 'action-incomplete' };
       const plan = planUndo(guildId, discord, row);
-      if (plan === undefined || row.targetChannelId === undefined) {
+      if (plan === undefined) {
         return { status: 'refused', reason: 'not-undoable', detail: row.kind };
       }
       // The target policy again, live: a channel dropped from send scope or
       // a permission revoked since the forward write refuses cleanly here
-      // rather than surfacing as an unknown Discord result.
-      const target = await resolveSendTarget(
-        client,
-        scope,
-        guildId,
-        row.targetChannelId,
-        plan.need ?? undoNeedFor(scope, plan.kind, row.targetChannelId),
-      );
-      if (!target.ok) {
-        return {
-          status: 'refused',
-          reason: 'target-unavailable',
-          detail: target.missing !== undefined ? `missing ${target.missing}` : target.reason,
-        };
+      // rather than surfacing as an unknown Discord result. An external
+      // event edit carries no channel, so the guild-level ManageEvents
+      // grant stands in for the target check (the `event.edit` undo ruling:
+      // `manage-events` on the event's channel, the guild-level check for
+      // external events).
+      let undoTargetChannelId = row.targetChannelId;
+      let grantedByChannelId: string | undefined;
+      if (undoTargetChannelId === undefined) {
+        if (plan.kind !== 'event.edit' || !botHasGuildManageEvents(client, guildId)) {
+          return plan.kind === 'event.edit'
+            ? { status: 'refused', reason: 'target-unavailable', detail: 'missing ManageEvents' }
+            : { status: 'refused', reason: 'not-undoable', detail: row.kind };
+        }
+      } else {
+        const target = await resolveSendTarget(
+          client,
+          scope,
+          guildId,
+          undoTargetChannelId,
+          plan.need ?? undoNeedFor(scope, plan.kind, undoTargetChannelId),
+        );
+        if (!target.ok) {
+          return {
+            status: 'refused',
+            reason: 'target-unavailable',
+            detail: target.missing !== undefined ? `missing ${target.missing}` : target.reason,
+          };
+        }
+        undoTargetChannelId = target.channelId;
+        if (target.derivedGrant) grantedByChannelId = target.grantId;
       }
       const undoKey = nextUndoKey(scope, row.actionId, deps.now());
       if (undoKey === undefined) {
@@ -3325,7 +3359,7 @@ const actionsPortFor = (
           deps,
           guildId,
           principal,
-          target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+          grantedByChannelId !== undefined ? { grantedByChannelId } : {},
         ),
         {
           kind: plan.kind,
@@ -3333,7 +3367,7 @@ const actionsPortFor = (
           idempotencyKey: undoKey,
           tokenId: principal.tokenId,
           argsHash: plan.argsHash,
-          targetChannelId: row.targetChannelId,
+          targetChannelId: undoTargetChannelId,
           dryRun: false,
           duplicateContentGuard: false,
         },
@@ -3777,6 +3811,7 @@ export const registerMcpRoutes = (
       send: sendPortFor(principal, deps, discord, client),
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
+      eventWrites: eventWritesPortFor(principal, deps, discord, client),
       actions: actionsPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
