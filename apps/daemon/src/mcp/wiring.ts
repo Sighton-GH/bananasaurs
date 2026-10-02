@@ -2897,7 +2897,9 @@ const precheckBulkRole = async (
  *   the `mcp.bulk_role` job, consumes the preview against that job id (a
  *   lost race refuses as already used, through the `consumedRace` flag —
  *   the same shape as the role port's `denied` flag), and opens the batch
- *   row the job's effects claim under.
+ *   row the job's effects claim under. A same-key retry after a success
+ *   replays through `runMcpAction` and answers the preview's original job
+ *   id; a different key still refuses as already used.
  */
 const bulkRolesPortFor = (
   principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
@@ -2963,7 +2965,13 @@ const bulkRolesPortFor = (
         const now = deps.now();
         const preview = mcpBulkRepo.findPreviewByToken(scope, input.confirmToken);
         if (preview === undefined) return { status: 'refused', reason: 'unknown-token' };
-        if (preview.consumedAt !== undefined) return { status: 'refused', reason: 'preview-used' };
+        // A consumed preview is single-use — except for a same-key retry
+        // after a successful confirm whose answer was lost: when the stored
+        // args hash still matches, `runMcpAction` below replays the existing
+        // row (by key and hash, calling nothing) and the answer carries the
+        // original job id from the preview. A different key, or tampered
+        // args, still gets `preview-used`.
+        const alreadyConsumed = preview.consumedAt !== undefined;
         if (preview.expiresAt <= now) return { status: 'refused', reason: 'preview-expired' };
         // The hash of this call's {action, role, members-or-selector} must
         // equal the stored preview's — recomputed here over the resolved ids
@@ -3072,6 +3080,13 @@ const bulkRolesPortFor = (
           case 'dry-run':
             return { status: 'dry-run', actionId: outcome.actionId };
           case 'replayed':
+            // A same-key retry after a successful confirm: the preview was
+            // already consumed by the first confirm, `runMcpAction` replayed
+            // its row without enqueuing, and the answer replays the original
+            // job id from the preview — not a fresh job.
+            if (alreadyConsumed && preview.jobId !== undefined) {
+              return { status: 'done', actionId: outcome.actionId, jobId: preview.jobId };
+            }
             return { status: 'replayed', actionId: outcome.actionId };
           case 'refused':
             switch (outcome.reason) {

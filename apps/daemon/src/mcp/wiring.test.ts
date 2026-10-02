@@ -8631,6 +8631,104 @@ describe('/mcp bulk_role_change through the real composition', () => {
     }
   });
 
+  it('a same-key retry after a successful confirm replays with the original job id', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const scope = t.scopes.forGuild(GUILD_A);
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-retry-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      const jobId = extractJobId(confirmed.text);
+      const jobsAfterConfirm = jobRepo.listJobs(scope, {}).length;
+
+      // The answer was lost: the same confirm runs again with the same key.
+      const replayed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-retry-k1' }),
+          )
+        ).body,
+      );
+      expect(replayed.isError).not.toBe(true);
+      // The original job id, from the preview — not a fresh job.
+      expect(extractJobId(replayed.text)).toBe(jobId);
+      expect(jobRepo.listJobs(scope, {}).length).toBe(jobsAfterConfirm);
+      // Still one ledger row for the key: the retry replayed it.
+      expect(mcpActionsRepo.findAction(scope, 'bulk-retry-k1')?.status).toBe('done');
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a different key after a successful confirm is preview-used', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-used-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-used-k2' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('already used');
+      // The failed retry claimed a row but consumed nothing new: the preview
+      // still names the first confirm's job.
+      const scope = t.scopes.forGuild(GUILD_A);
+      expect(mcpBulkRepo.findPreviewByToken(scope, token)?.jobId).toBe(
+        extractJobId(confirmed.text),
+      );
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
   it('the job applies the previewed set through the gateway, with per-member outcomes', async () => {
     seedBulkScope();
     const discord = new FakeDiscord({ guildId: GUILD_A });
