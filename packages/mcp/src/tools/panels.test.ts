@@ -801,7 +801,11 @@ describe('panel refusals are distinct and content-free', () => {
       ['not-allowlisted', 'grant allowlist'],
     ] as const;
     for (const [cause, marker] of cases) {
-      const port = fakePanelsPort({ status: 'refused', reason: 'role-not-permitted', detail: cause });
+      const port = fakePanelsPort({
+        status: 'refused',
+        reason: 'role-not-permitted',
+        detail: cause,
+      });
       const message = messageOf(
         await createPanelText(principalWith([GUILD_A]), port, guild, createArgs()),
       );

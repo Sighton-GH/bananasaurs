@@ -7468,23 +7468,17 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     expect(sendList.text).toContain('list-scope-edit');
     expect(sendList.text).toContain('list-scope-grant');
     const sendLines = sendList.text.split('\n');
-    expect(
-      sendLines.find((line) => line.startsWith('list-scope-edit')),
-    ).toContain('undoable yes');
-    expect(
-      sendLines.find((line) => line.startsWith('list-scope-grant')),
-    ).toContain('undoable no');
+    expect(sendLines.find((line) => line.startsWith('list-scope-edit'))).toContain('undoable yes');
+    expect(sendLines.find((line) => line.startsWith('list-scope-grant'))).toContain('undoable no');
 
     const roles = await mintToken('bananasaurs:read bananasaurs:roles');
     const rolesList = callText((await undoCall(roles, 'list_actions', { guildId: GID })).body);
     expect(rolesList.isError).not.toBe(true);
     const rolesLines = rolesList.text.split('\n');
-    expect(
-      rolesLines.find((line) => line.startsWith('list-scope-edit')),
-    ).toContain('undoable no');
-    expect(
-      rolesLines.find((line) => line.startsWith('list-scope-grant')),
-    ).toContain('undoable yes');
+    expect(rolesLines.find((line) => line.startsWith('list-scope-edit'))).toContain('undoable no');
+    expect(rolesLines.find((line) => line.startsWith('list-scope-grant'))).toContain(
+      'undoable yes',
+    );
   });
 });
 
@@ -8186,9 +8180,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
       expect(discord.restCalls('removeRole')).toHaveLength(0);
       expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
-      expect(
-        mcpActionsRepo.findAction(scope, `undo:${row.actionId}`),
-      ).toBeUndefined();
+      expect(mcpActionsRepo.findAction(scope, `undo:${row.actionId}`)).toBeUndefined();
     } finally {
       await roleApp.close();
     }
@@ -9073,9 +9065,10 @@ describe('/mcp bulk_role_change through the real composition', () => {
       // The retry claimed its own row before losing the consume race, so it
       // completes failed — and consumes nothing: the preview still names the
       // first confirm's job.
-      expect(
-        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2'),
-      ).toMatchObject({ kind: 'role.bulk', status: 'failed' });
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2')).toMatchObject({
+        kind: 'role.bulk',
+        status: 'failed',
+      });
     } finally {
       await bulkApp.close();
     }
