@@ -2457,10 +2457,7 @@ const messageWritesPortFor = (
  * `registerMcpRoutes` closure rather than the module so every app — and every
  * test app — starts with full buckets.
  */
-const mcpRateLimiterFor = (
-  limiters: Map<GuildId, RateLimiter>,
-  scope: GuildScope,
-): RateLimiter => {
+const mcpRateLimiterFor = (limiters: Map<GuildId, RateLimiter>, scope: GuildScope): RateLimiter => {
   const existing = limiters.get(scope.guildId);
   if (existing !== undefined) return existing;
   const created = new RateLimiter(guildRepo.findGuild(scope)?.roleRatePerMin ?? 20);
@@ -2600,10 +2597,7 @@ const precheckRoleTarget = async (
  * moved, the breaker opened, or the bucket filled between the check and the
  * call) back onto the role tools' vocabulary.
  */
-const mapRoleGatewayRefusal = (
-  reason: RefusalReason,
-  roleId: string,
-): McpRoleWriteOutcome => {
+const mapRoleGatewayRefusal = (reason: RefusalReason, roleId: string): McpRoleWriteOutcome => {
   switch (reason) {
     case 'killswitch':
       return { status: 'refused', reason: 'killswitch' };
@@ -2726,20 +2720,23 @@ const roleWritesPortFor = (
           actorId: principal.accountId,
           now: deps.now(),
         });
-        const result = await mcpGatewayFor(mcpLimiters, deps, client, discord, scope).applyRoleEffect(
-          witness,
-          {
-            userId: parseSnowflakeId(input.memberId),
-            roleId: parseSnowflakeId(input.roleId),
-            // The gateway names a removal `revoke`, not `remove`.
-            action: action === 'grant' ? 'grant' : 'revoke',
-            panelId: undefined,
-            triggerRef: `mcp:${claimId}`,
-            source: 'mcp',
-            batchId: claimId,
-            reason: action === 'grant' ? 'mcp grant_role' : 'mcp remove_role',
-          },
-        );
+        const result = await mcpGatewayFor(
+          mcpLimiters,
+          deps,
+          client,
+          discord,
+          scope,
+        ).applyRoleEffect(witness, {
+          userId: parseSnowflakeId(input.memberId),
+          roleId: parseSnowflakeId(input.roleId),
+          // The gateway names a removal `revoke`, not `remove`.
+          action: action === 'grant' ? 'grant' : 'revoke',
+          panelId: undefined,
+          triggerRef: `mcp:${claimId}`,
+          source: 'mcp',
+          batchId: claimId,
+          reason: action === 'grant' ? 'mcp grant_role' : 'mcp remove_role',
+        });
         switch (result.status) {
           case 'applied':
             return { undo: { op: action === 'grant' ? 'remove-role' : 'add-role' } };
@@ -3076,11 +3073,9 @@ const roleUnavailableDetail = (
     case 'role-not-permitted':
       return `the grant policy now refuses role ${roleId} (${outcome.detail ?? 'unknown reason'})`;
     case 'protected-target':
-      return (
-        outcome.detail === 'guild-owner'
-          ? `member ${memberId} is the guild owner`
-          : `member ${memberId} or role ${roleId} is now protected`
-      );
+      return outcome.detail === 'guild-owner'
+        ? `member ${memberId} is the guild owner`
+        : `member ${memberId} or role ${roleId} is now protected`;
     default:
       return `role ${roleId} for member ${memberId} can no longer be changed (${outcome.reason})`;
   }

@@ -123,8 +123,14 @@ const roleWriteArgsSchema = z.object({
  */
 export const grantRoleParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  member: z.string().describe('Member to grant the role to, as an id or a username, display name or nickname.'),
-  role: z.string().describe('Role to grant, as an id or a name. Must already be on the bot\u2019s role allowlist.'),
+  member: z
+    .string()
+    .describe('Member to grant the role to, as an id or a username, display name or nickname.'),
+  role: z
+    .string()
+    .describe(
+      'Role to grant, as an id or a name. Must already be on the bot\u2019s role allowlist.',
+    ),
   dryRun: z.boolean().optional().describe('Record without changing: nobody gains the role.'),
   idempotencyKey: z
     .string()
@@ -133,8 +139,14 @@ export const grantRoleParams = {
 
 export const removeRoleParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  member: z.string().describe('Member to remove the role from, as an id or a username, display name or nickname.'),
-  role: z.string().describe('Role to remove, as an id or a name. Must already be on the bot\u2019s role allowlist.'),
+  member: z
+    .string()
+    .describe('Member to remove the role from, as an id or a username, display name or nickname.'),
+  role: z
+    .string()
+    .describe(
+      'Role to remove, as an id or a name. Must already be on the bot\u2019s role allowlist.',
+    ),
   dryRun: z.boolean().optional().describe('Record without changing: nobody loses the role.'),
   idempotencyKey: z
     .string()
@@ -161,12 +173,16 @@ const refuseInvalidArgs = (): RoleWriteOutcomeText => ({
 const resolveMemberRef = (
   members: readonly McpMemberProfile[],
   ref: string,
-): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
+):
+  { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
   const query = ref.trim();
   if (isSnowflake(query)) {
     const found = members.find((member) => member.id === query);
     return found === undefined
-      ? { ok: false, message: `No member ${query} in this guild. Pass a member id, or pick one with \`search_members\`.` }
+      ? {
+          ok: false,
+          message: `No member ${query} in this guild. Pass a member id, or pick one with \`search_members\`.`,
+        }
       : { ok: true, id: found.id };
   }
   const needle = normalizeRef(query, '@');

@@ -141,7 +141,11 @@ const fakeRolePort = (
   };
 };
 
-const doneOutcome = (): McpRoleWriteOutcome => ({ status: 'done', actionId: ACTION, alreadyHad: false });
+const doneOutcome = (): McpRoleWriteOutcome => ({
+  status: 'done',
+  actionId: ACTION,
+  alreadyHad: false,
+});
 
 const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): string => {
   expect(outcome.ok).toBe(true);
@@ -172,15 +176,18 @@ const callHandler = (
   })();
 
 describe('role-write guild gate (CLAUDE.md rule 2)', () => {
-  it.each(handlers)('%s refuses an unreachable guild with the shared refusal', async (...[, handler, args]) => {
-    const port = fakeRolePort(doneOutcome());
-    const outcome = await handler(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), {
-      ...args(),
-      guildId: '222222222222222222',
-    });
-    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    expect(port.calls).toBe(0);
-  });
+  it.each(handlers)(
+    '%s refuses an unreachable guild with the shared refusal',
+    async (...[, handler, args]) => {
+      const port = fakeRolePort(doneOutcome());
+      const outcome = await handler(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), {
+        ...args(),
+        guildId: '222222222222222222',
+      });
+      expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+      expect(port.calls).toBe(0);
+    },
+  );
 
   it.each(handlers)('%s refuses a malformed guild id identically', async (...[, handler, args]) => {
     const port = fakeRolePort(doneOutcome());
@@ -192,17 +199,26 @@ describe('role-write guild gate (CLAUDE.md rule 2)', () => {
     expect(port.calls).toBe(0);
   });
 
-  it.each(handlers)('%s refuses an empty reachable set identically', async (...[, handler, args]) => {
-    const port = fakeRolePort(doneOutcome());
-    const outcome = await handler(principalWith([]), port, fakeGuild(), fakeMembers(), args());
-    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    expect(port.calls).toBe(0);
-  });
+  it.each(handlers)(
+    '%s refuses an empty reachable set identically',
+    async (...[, handler, args]) => {
+      const port = fakeRolePort(doneOutcome());
+      const outcome = await handler(principalWith([]), port, fakeGuild(), fakeMembers(), args());
+      expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+      expect(port.calls).toBe(0);
+    },
+  );
 
   it('a two-guild principal calling the other guild is refused without a port call', async () => {
     for (const [, handler, args] of handlers) {
       const port = fakeRolePort(doneOutcome());
-      const outcome = await handler(principalWith([GUILD_B]), port, fakeGuild(), fakeMembers(), args());
+      const outcome = await handler(
+        principalWith([GUILD_B]),
+        port,
+        fakeGuild(),
+        fakeMembers(),
+        args(),
+      );
       expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
       expect(port.calls).toBe(0);
     }
@@ -210,24 +226,33 @@ describe('role-write guild gate (CLAUDE.md rule 2)', () => {
 });
 
 describe('role-write argument boundary (hard rule 3)', () => {
-  it.each(handlers)('%s refuses malformed arguments and the port was never called', async (...[, handler, args]) => {
-    const cases: ReadonlyArray<Record<string, unknown>> = [
-      { ...args(), member: '' },
-      { ...args(), member: 'm'.repeat(101) },
-      { ...args(), role: '' },
-      { ...args(), role: 'r'.repeat(101) },
-      { ...args(), idempotencyKey: '' },
-      { ...args(), guildId: undefined },
-      { ...args(), member: undefined },
-      { ...args(), role: undefined },
-    ];
-    for (const invalid of cases) {
-      const port = fakeRolePort(doneOutcome());
-      const outcome = await handler(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), invalid);
-      expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
-      expect(port.calls).toBe(0);
-    }
-  });
+  it.each(handlers)(
+    '%s refuses malformed arguments and the port was never called',
+    async (...[, handler, args]) => {
+      const cases: ReadonlyArray<Record<string, unknown>> = [
+        { ...args(), member: '' },
+        { ...args(), member: 'm'.repeat(101) },
+        { ...args(), role: '' },
+        { ...args(), role: 'r'.repeat(101) },
+        { ...args(), idempotencyKey: '' },
+        { ...args(), guildId: undefined },
+        { ...args(), member: undefined },
+        { ...args(), role: undefined },
+      ];
+      for (const invalid of cases) {
+        const port = fakeRolePort(doneOutcome());
+        const outcome = await handler(
+          principalWith([GUILD_A]),
+          port,
+          fakeGuild(),
+          fakeMembers(),
+          invalid,
+        );
+        expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+        expect(port.calls).toBe(0);
+      }
+    },
+  );
 });
 
 describe('role-write refs resolve before any port call', () => {
@@ -261,14 +286,20 @@ describe('role-write refs resolve before any port call', () => {
   );
 
   it('an unknown member id refuses with no port call', async () => {
-    const { message, calls } = await callHandler(grantRoleText, grantArgs({ member: '699999999999999999' }));
+    const { message, calls } = await callHandler(
+      grantRoleText,
+      grantArgs({ member: '699999999999999999' }),
+    );
     expect(message).toContain('No member');
     expect(message).toContain('699999999999999999');
     expect(calls).toBe(0);
   });
 
   it('an unknown member name refuses with no port call', async () => {
-    const { message, calls } = await callHandler(grantRoleText, grantArgs({ member: 'Nobody Here' }));
+    const { message, calls } = await callHandler(
+      grantRoleText,
+      grantArgs({ member: 'Nobody Here' }),
+    );
     expect(message).toContain('No member');
     expect(calls).toBe(0);
   });
@@ -328,7 +359,13 @@ describe('role-write refusal rendering', () => {
       const texts = new Map<McpRoleWriteRefusal, string>();
       for (const [reason] of cases) {
         const port = fakeRolePort({ status: 'refused', reason, detail: 'above-bot' });
-        const outcome = await handler(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), args());
+        const outcome = await handler(
+          principalWith([GUILD_A]),
+          port,
+          fakeGuild(),
+          fakeMembers(),
+          args(),
+        );
         const text = messageOf(outcome);
         expect(text).toContain('111111111111111111');
         texts.set(reason, text);
@@ -372,12 +409,24 @@ describe('role-write refusal rendering', () => {
       detail: 'guild-owner',
     });
     const ownerText = messageOf(
-      await grantRoleText(principalWith([GUILD_A]), ownerPort, fakeGuild(), fakeMembers(), grantArgs()),
+      await grantRoleText(
+        principalWith([GUILD_A]),
+        ownerPort,
+        fakeGuild(),
+        fakeMembers(),
+        grantArgs(),
+      ),
     );
     expect(ownerText).toContain('guild owner');
     const otherPort = fakeRolePort({ status: 'refused', reason: 'protected-target' });
     const otherText = messageOf(
-      await grantRoleText(principalWith([GUILD_A]), otherPort, fakeGuild(), fakeMembers(), grantArgs()),
+      await grantRoleText(
+        principalWith([GUILD_A]),
+        otherPort,
+        fakeGuild(),
+        fakeMembers(),
+        grantArgs(),
+      ),
     );
     expect(otherText).toContain('protected');
     expect(otherText).not.toBe(ownerText);
@@ -388,7 +437,13 @@ describe('role-write outcomes', () => {
   it('done names the action, the member and the role', async () => {
     const grantPort = fakeRolePort(doneOutcome());
     const granted = textOf(
-      await grantRoleText(principalWith([GUILD_A]), grantPort, fakeGuild(), fakeMembers(), grantArgs()),
+      await grantRoleText(
+        principalWith([GUILD_A]),
+        grantPort,
+        fakeGuild(),
+        fakeMembers(),
+        grantArgs(),
+      ),
     );
     expect(granted).toContain(ACTION);
     expect(granted).toContain(MEMBER);
@@ -396,7 +451,13 @@ describe('role-write outcomes', () => {
 
     const removePort = fakeRolePort(doneOutcome());
     const removed = textOf(
-      await removeRoleText(principalWith([GUILD_A]), removePort, fakeGuild(), fakeMembers(), removeArgs()),
+      await removeRoleText(
+        principalWith([GUILD_A]),
+        removePort,
+        fakeGuild(),
+        fakeMembers(),
+        removeArgs(),
+      ),
     );
     expect(removed).toContain(ACTION);
     expect(removed).toContain('Removed');
@@ -414,7 +475,13 @@ describe('role-write outcomes', () => {
   it('a removal that changed nothing answers did not have', async () => {
     const port = fakeRolePort({ status: 'done', actionId: ACTION, alreadyHad: true });
     const text = textOf(
-      await removeRoleText(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), removeArgs()),
+      await removeRoleText(
+        principalWith([GUILD_A]),
+        port,
+        fakeGuild(),
+        fakeMembers(),
+        removeArgs(),
+      ),
     );
     expect(text).toContain('did not have');
     expect(text).toContain(ACTION);
@@ -436,7 +503,13 @@ describe('role-write outcomes', () => {
   it('replayed answers without a new change', async () => {
     const port = fakeRolePort({ status: 'replayed', actionId: ACTION });
     const text = textOf(
-      await removeRoleText(principalWith([GUILD_A]), port, fakeGuild(), fakeMembers(), removeArgs()),
+      await removeRoleText(
+        principalWith([GUILD_A]),
+        port,
+        fakeGuild(),
+        fakeMembers(),
+        removeArgs(),
+      ),
     );
     expect(text).toContain('Already recorded under this idempotency key');
     expect(text).toContain(ACTION);
@@ -450,14 +523,23 @@ describe('role-write outcomes', () => {
     expect(text).toContain('same idempotency key');
   });
 
-  it.each(handlers)('%s never throws: a port fault is the shared refusal', async (...[, handler, args]) => {
-    const failing: McpRoleWritesPort = {
-      grant: () => Promise.reject(new Error('discord is down')),
-      remove: () => Promise.reject(new Error('discord is down')),
-    };
-    const outcome = await handler(principalWith([GUILD_A]), failing, fakeGuild(), fakeMembers(), args());
-    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-  });
+  it.each(handlers)(
+    '%s never throws: a port fault is the shared refusal',
+    async (...[, handler, args]) => {
+      const failing: McpRoleWritesPort = {
+        grant: () => Promise.reject(new Error('discord is down')),
+        remove: () => Promise.reject(new Error('discord is down')),
+      };
+      const outcome = await handler(
+        principalWith([GUILD_A]),
+        failing,
+        fakeGuild(),
+        fakeMembers(),
+        args(),
+      );
+      expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    },
+  );
 });
 
 const stubHealth = (): McpHealthPort => ({

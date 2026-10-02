@@ -7418,7 +7418,11 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const client = new Client(buildClientOptions(() => BOT_USER_ID));
     const internals = client as unknown as RoleDiscordInternals;
     const mutable = client as unknown as { user: unknown };
-    mutable.user = internals.users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    mutable.user = internals.users._add({
+      id: BOT_USER_ID,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
     const botPermissions = (
       PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
     ).toString();
@@ -7468,7 +7472,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       { id: MEMBER, username: 'samwise', displayName: MEMBER_NAME },
       { id: MEMBER2, username: 'sam2', displayName: 'Sam the second' },
     ];
-    guild.members.list = (async () => {
+    guild.members.list = async () => {
       const members = profiles.map(
         (profile) =>
           ({
@@ -7481,7 +7485,7 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
           }) as unknown as GuildMember,
       );
       return new Collection(members.map((member) => [member.id, member] as const));
-    }) as typeof guild.members.list;
+    };
   };
 
   const buildRoleApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
@@ -7579,7 +7583,9 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const accessToken = await mintToken('bananasaurs:roles');
-      const granted = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      const granted = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
       expect(granted.isError).not.toBe(true);
       expect(granted.text).toContain('Granted');
       expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
@@ -7737,7 +7743,9 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const accessToken = await mintToken('bananasaurs:roles');
-      const refused = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      const refused = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('roles.mutate');
       expect(discord.restCalls('addRole')).toHaveLength(0);
@@ -7801,7 +7809,9 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('guild owner');
       expect(discord.restCalls('addRole')).toHaveLength(0);
-      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-owner-k1')).toBeUndefined();
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-owner-k1'),
+      ).toBeUndefined();
     } finally {
       await roleApp.close();
     }
@@ -7870,9 +7880,13 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
     const roleApp = buildRoleApp(client, discord);
     try {
       const accessToken = await mintToken('bananasaurs:roles');
-      const first = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      const first = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
       expect(first.isError).not.toBe(true);
-      const second = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      const second = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
       expect(second.isError).not.toBe(true);
       expect(second.text).toContain('Already recorded under this idempotency key');
       expect(discord.restCalls('addRole')).toHaveLength(1);
@@ -7920,7 +7934,8 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       if (row === undefined) throw new Error('grant left no ledger row');
 
       const undone = callText(
-        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
       );
       expect(undone.isError).not.toBe(true);
       expect(undone.text).toContain('role.grant');
@@ -7951,8 +7966,14 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       const send = await mintToken('bananasaurs:send');
       expect(
         callText(
-          (await roleCall(roleApp, roles, 'remove_role', grantArgs({ idempotencyKey: 'remove-k1' })))
-            .body,
+          (
+            await roleCall(
+              roleApp,
+              roles,
+              'remove_role',
+              grantArgs({ idempotencyKey: 'remove-k1' }),
+            )
+          ).body,
         ).isError,
       ).not.toBe(true);
       expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
@@ -7961,7 +7982,8 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       if (row === undefined) throw new Error('removal left no ledger row');
 
       const undone = callText(
-        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
       );
       expect(undone.isError).not.toBe(true);
       expect(undone.text).toContain('role.remove');
@@ -7996,12 +8018,10 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
 
       const undone = callText(
         (
-          await roleCall(
-            roleApp,
-            send,
-            'undo_action',
-            { guildId: GID, actionId: row?.actionId ?? '' },
-          )
+          await roleCall(roleApp, send, 'undo_action', {
+            guildId: GID,
+            actionId: row?.actionId ?? '',
+          })
         ).body,
       );
       expect(undone.isError).toBe(true);
@@ -8035,7 +8055,8 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
 
       const refused = callText(
-        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
       );
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('dangerous');
