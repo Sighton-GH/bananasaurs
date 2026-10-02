@@ -79,7 +79,12 @@ export const createPreview = (
       .run();
   });
 
-/** The preview holding this token in this guild, if any. Hashes the input. */
+/**
+ * The preview holding this token in this guild, if any. Hashes the input.
+ * Found is not valid: expired and consumed rows come back too, so a caller
+ * reads `expiresAt`/`consumedAt` for its refusal text and acts only after
+ * `consumePreview` succeeds — that predicated update is the single-use gate.
+ */
 export const findPreviewByToken = (
   scope: GuildScope,
   token: string,
