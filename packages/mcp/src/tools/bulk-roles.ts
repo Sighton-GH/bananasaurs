@@ -11,7 +11,7 @@ import { idsAreWellFormed } from '../ids.js';
 import { resolveRoleRef } from '../resolve.js';
 import { safeName } from '../structured.js';
 import type { McpGuildPort } from './guild.js';
-import type { McpMemberProfile, McpMembersPort } from './members.js';
+import { MEMBER_LISTING_CAP, type McpMemberProfile, type McpMembersPort } from './members.js';
 
 /**
  * `bulk_role_change` (slice 4, Task 4): preview → confirm → durable job.
@@ -417,7 +417,8 @@ const bulkRoleChangeInner = async (
             ok: false,
             message: truncated
               ? `Member ${id} was not found in guild ${guildId}'s member listing, which is capped at ` +
-                '5,000 and was cut off, so no preview was stored. Check the id with `get_member`.'
+                `${MEMBER_LISTING_CAP.toLocaleString('en-US')} and was cut off, so no preview was stored. ` +
+                'Check the id with `get_member`.'
               : `Member ${id} is not in guild ${guildId}, ` +
                 'so no preview was stored. Pass member ids, or pick them with `search_members`.',
           };
@@ -449,7 +450,8 @@ const bulkRoleChangeInner = async (
         return {
           ok: false,
           message:
-            `Guild ${guildId}'s member listing is capped at 5,000 and was cut off, so a selector ` +
+            `Guild ${guildId}'s member listing is capped at ${MEMBER_LISTING_CAP.toLocaleString('en-US')} ` +
+            'and was cut off, so a selector ' +
             'cannot see every member and no preview was stored. Pass explicit `members` ids instead.',
         };
       }

@@ -543,10 +543,14 @@ const refusalText = (
       );
     case 'role-not-permitted': {
       // The daemon's grant-policy reason, named the way the policy names it —
-      // the same vocabulary `grant_role` renders. The detail is the cause;
-      // the failing option role is not named (a panel names several).
+      // the same vocabulary `grant_role` renders. The detail is
+      // `cause:roleId`, so the failing option role is named (a panel names
+      // several, and the caller must know which option to drop).
+      const separator = detail?.indexOf(':') ?? -1;
+      const causeCode = separator === -1 ? detail : detail?.slice(0, separator);
+      const failingRoleId = separator === -1 ? undefined : detail?.slice(separator + 1);
       let cause: string;
-      switch (detail) {
+      switch (causeCode) {
         case 'above-bot':
           cause = 'above the bot\u2019s highest role';
           break;
@@ -560,11 +564,12 @@ const refusalText = (
           cause = 'not on the MCP grant allowlist';
           break;
         default:
-          cause = detail === undefined ? 'refused by the grant policy' : detail;
+          cause = causeCode === undefined ? 'refused by the grant policy' : causeCode;
           break;
       }
       return (
-        `An option role of ${panel} in guild ${guildId} does not pass the MCP grant policy ` +
+        `${failingRoleId !== undefined ? `Option role ${failingRoleId}` : 'An option role'} ` +
+        `of ${panel} in guild ${guildId} does not pass the MCP grant policy ` +
         `(${cause}), so ${undone}. The MCP only panels roles below the bot that are not managed, ` +
         'not @everyone and without dangerous permissions.'
       );

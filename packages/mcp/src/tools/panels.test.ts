@@ -813,6 +813,19 @@ describe('panel refusals are distinct and content-free', () => {
     }
   });
 
+  it('the grant-policy refusal names the failing option role', async () => {
+    const port = fakePanelsPort({
+      status: 'refused',
+      reason: 'role-not-permitted',
+      detail: 'above-bot:345678901234567890',
+    });
+    const message = messageOf(
+      await createPanelText(principalWith([GUILD_A]), port, guild, createArgs()),
+    );
+    expect(message).toContain('Option role 345678901234567890');
+    expect(message).toContain('above');
+  });
+
   it('the authorization refusal names roles.mutate', async () => {
     const port = fakePanelsPort({ status: 'refused', reason: 'unauthorized' });
     expect(

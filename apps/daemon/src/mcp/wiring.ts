@@ -2911,6 +2911,15 @@ const bulkRolesPortFor = (
         // original job id from the preview. A different key, or tampered
         // args, still gets `preview-used`.
         const alreadyConsumed = preview.consumedAt !== undefined;
+        // A consumed preview with no row under this key is a reused token,
+        // not a retry: refuse before the pipeline, so a reuse claims no
+        // ledger row, enqueues no job and cannot answer `rate-cap` instead.
+        if (
+          alreadyConsumed &&
+          mcpActionsRepo.findAction(scope, input.idempotencyKey) === undefined
+        ) {
+          return { status: 'refused', reason: 'preview-used' };
+        }
         if (preview.expiresAt <= now) return { status: 'refused', reason: 'preview-expired' };
         // The hash of this call's {action, role, members-or-selector} must
         // equal the stored preview's — recomputed here over the resolved ids
@@ -3776,7 +3785,9 @@ const panelsPortFor = (
           return {
             status: 'refused',
             reason: 'role-not-permitted',
-            detail: grantRefusal.reason,
+            // `cause:roleId`: the failing option role is named, so the caller
+            // knows which option to drop.
+            detail: `${grantRefusal.reason}:${grantRefusal.roleId}`,
           };
         }
         if (badInput !== undefined) {
@@ -3934,7 +3945,11 @@ const panelsPortFor = (
         );
         const grant = checkOptionRoleGrants(client, scope, existingIds);
         if (!grant.ok) {
-          return { status: 'refused', reason: 'role-not-permitted', detail: grant.refusal };
+          return {
+            status: 'refused',
+            reason: 'role-not-permitted',
+            detail: `${grant.refusal}:${grant.roleId}`,
+          };
         }
         // The channel the dashboard handler's way: send scope ∩ the bot's
         // live post permission, before the claim.
@@ -4089,7 +4104,11 @@ const panelsPortFor = (
         );
         const grant = checkOptionRoleGrants(client, scope, addExisting);
         if (!grant.ok) {
-          return { status: 'refused', reason: 'role-not-permitted', detail: grant.refusal };
+          return {
+            status: 'refused',
+            reason: 'role-not-permitted',
+            detail: `${grant.refusal}:${grant.roleId}`,
+          };
         }
         for (const roleId of addExisting) {
           if (byRoleId.has(roleId)) {
