@@ -18,6 +18,7 @@ import {
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
+  DiscordApiError,
   EffectGateway,
   JobWorker,
   JOB_KINDS,
@@ -198,8 +199,21 @@ export interface GuildOperations {
    * (ADR 0053).
    */
   createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
+  /**
+   * Replaces a panel's definition — options, blocked roles and scalar fields —
+   * keeping its `message_id` and its `status`. Storage only, like
+   * `createPanel`: publishing the change stays `publishPanel`'s job.
+   */
+  updatePanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
   /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
+  /**
+   * `panel delete`'s Discord half plus its rows: deletes the message of a
+   * managed posted panel, then the panel's rows. An adopted panel's message
+   * belongs to someone else and an unposted panel has none — both delete
+   * their rows only.
+   */
+  unpublishPanel(panelId: string): Promise<void>;
   grantAdoptionAllowance(count: number): void;
   adoptionAllowance(): number;
 }
@@ -1264,6 +1278,30 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const ops: GuildOperations = {
     createPanel: (definition, newlyAllowlistedRoleIds = []) => {
       panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds);
+    },
+    updatePanel: (definition, newlyAllowlistedRoleIds = []) => {
+      panelRepo.updatePanel(scope, definition, now(), newlyAllowlistedRoleIds);
+    },
+    async unpublishPanel(panelId) {
+      const panel = panelRepo.findPanel(scope, panelId);
+      if (panel === undefined) throw new Error(`no panel ${panelId} in guild ${guildId}`);
+
+      if (panel.kind === 'managed' && panel.messageId !== undefined) {
+        // Deleting a message that is already gone is a no-op, so retrying
+        // this command is safe: an unknown message (10008/404) counts as
+        // success. Any other Discord error throws with the rows still in
+        // place, so a retry can finish.
+        try {
+          await discord.deleteMessage(
+            guildId,
+            { channelId: panel.channelId, messageId: panel.messageId },
+            `panel delete ${panelId}`,
+          );
+        } catch (err) {
+          if (!(err instanceof DiscordApiError && err.isGone)) throw err;
+        }
+      }
+      panelRepo.deletePanel(scope, panelId);
     },
     async publishPanel(panelId) {
       const panel = panelRepo.findPanel(scope, panelId);
