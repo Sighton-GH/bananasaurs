@@ -20,7 +20,7 @@ import {
   MCP_READ_LIST_PANELS,
   type McpReadRecord,
 } from '../read-audit.js';
-import type { McpGuildPort } from './guild.js';
+import type { McpGuildPort, McpGuildChannel, McpGuildRole } from './guild.js';
 
 /**
  * The five panel tools (slice 4, Task 6b): `list_panels` / `get_panel` under
@@ -714,7 +714,7 @@ const renderOutcome = (
  * the daemon port is never called.
  */
 const resolveChannel = (
-  channels: readonly { readonly id: string; readonly name: string }[],
+  channels: readonly McpGuildChannel[],
   ref: string,
 ): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
   const resolved = resolveChannelRef(channels, ref);
@@ -727,7 +727,7 @@ const resolveChannel = (
  * the daemon port is never called.
  */
 const resolveRole = (
-  roles: readonly { readonly id: string; readonly name: string }[],
+  roles: readonly McpGuildRole[],
   ref: string,
 ): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
   const resolved = resolveRoleRef(roles, ref);
