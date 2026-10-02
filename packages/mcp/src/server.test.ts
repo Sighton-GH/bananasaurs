@@ -240,8 +240,7 @@ const stubRoleAdmin = (): McpRoleAdminPort => ({
 const stubPanels = (): McpPanelsPort => ({
   list: () => [],
   get: () => undefined,
-  create: () =>
-    Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
+  create: () => Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
   edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
   remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', panelId: 'mcp-1a2b3c4d' }),
 });

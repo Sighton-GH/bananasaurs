@@ -8896,7 +8896,9 @@ describe('/mcp panel tools through the real composition', () => {
       const scope = t.scopes.forGuild(GUILD_A);
       expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(false);
       const accessToken = await mintToken('bananasaurs:roles');
-      const created = callText((await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body);
+      const created = callText(
+        (await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body,
+      );
       expect(created.isError).not.toBe(true);
       expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(true);
       const stored = panelRepo.findPanel(scope, panelsOf()[0] ?? '');
@@ -8980,17 +8982,12 @@ describe('/mcp panel tools through the real composition', () => {
 
       const edited = callText(
         (
-          await panelCall(
-            panelApp,
-            accessToken,
-            'edit_panel',
-            {
-              guildId: GID,
-              panelId,
-              addOptions: [{ role: LOW_ROLE_2, label: 'Ushers' }],
-              idempotencyKey: 'panel-edit-k1',
-            },
-          )
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            addOptions: [{ role: LOW_ROLE_2, label: 'Ushers' }],
+            idempotencyKey: 'panel-edit-k1',
+          })
         ).body,
       );
       expect(edited.isError).not.toBe(true);
@@ -9026,18 +9023,13 @@ describe('/mcp panel tools through the real composition', () => {
 
       const refused = callText(
         (
-          await panelCall(
-            panelApp,
-            accessToken,
-            'edit_panel',
-            {
-              guildId: GID,
-              panelId,
-              channel: OTHER_CHANNEL,
-              title: 'Moved panel',
-              idempotencyKey: 'panel-move-k1',
-            },
-          )
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            channel: OTHER_CHANNEL,
+            title: 'Moved panel',
+            idempotencyKey: 'panel-move-k1',
+          })
         ).body,
       );
       expect(refused.isError).toBe(true);
@@ -9068,12 +9060,11 @@ describe('/mcp panel tools through the real composition', () => {
 
       const deleted = callText(
         (
-          await panelCall(
-            panelApp,
-            accessToken,
-            'delete_panel',
-            { guildId: GID, panelId, idempotencyKey: 'panel-del-k1' },
-          )
+          await panelCall(panelApp, accessToken, 'delete_panel', {
+            guildId: GID,
+            panelId,
+            idempotencyKey: 'panel-del-k1',
+          })
         ).body,
       );
       expect(deleted.isError).not.toBe(true);
@@ -9099,8 +9090,9 @@ describe('/mcp panel tools through the real composition', () => {
       const scope = t.scopes.forGuild(GUILD_A);
       const roles = await mintToken('bananasaurs:roles');
       const send = await mintToken('bananasaurs:send');
-      expect(callText((await panelCall(panelApp, roles, 'create_panel', createArgs())).body).isError)
-        .not.toBe(true);
+      expect(
+        callText((await panelCall(panelApp, roles, 'create_panel', createArgs())).body).isError,
+      ).not.toBe(true);
       const messageId = panelRepo.findPanel(scope, panelsOf()[0] ?? '')?.messageId;
       if (messageId === undefined) throw new Error('create left no posted message');
 
@@ -9193,24 +9185,23 @@ describe('/mcp panel tools through the real composition', () => {
       expect(refusedCreate.text).toContain('kill switch');
       const refusedEdit = callText(
         (
-          await panelCall(
-            panelApp,
-            accessToken,
-            'edit_panel',
-            { guildId: GID, panelId, title: 'Blocked edit', idempotencyKey: 'panel-ks-edit' },
-          )
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            title: 'Blocked edit',
+            idempotencyKey: 'panel-ks-edit',
+          })
         ).body,
       );
       expect(refusedEdit.isError).toBe(true);
       expect(refusedEdit.text).toContain('kill switch');
       const refusedDelete = callText(
         (
-          await panelCall(
-            panelApp,
-            accessToken,
-            'delete_panel',
-            { guildId: GID, panelId, idempotencyKey: 'panel-ks-del' },
-          )
+          await panelCall(panelApp, accessToken, 'delete_panel', {
+            guildId: GID,
+            panelId,
+            idempotencyKey: 'panel-ks-del',
+          })
         ).body,
       );
       expect(refusedDelete.isError).toBe(true);

@@ -57,7 +57,11 @@ const SENTINEL_LABEL = 'SentinelOptionLabelzz9';
 const principalWith = (
   guilds: readonly GuildId[],
   scopes: readonly string[] = ['bananasaurs:roles'],
-): McpPrincipal => ({ accountId: 'acct_00000000000000000000000000000000', reachableGuilds: guilds, scopes });
+): McpPrincipal => ({
+  accountId: 'acct_00000000000000000000000000000000',
+  reachableGuilds: guilds,
+  scopes,
+});
 
 const buttonOption = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   role: ROLE,
@@ -233,21 +237,89 @@ describe('panel tool names', () => {
 describe('panel guild gate (CLAUDE.md rule 2)', () => {
   const guild = fakeGuild();
   it.each([
-    ['list_panels unreachable', () => listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: '222222222222222222' })],
-    ['get_panel unreachable', () => getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: '222222222222222222', panelId: PANEL })],
-    ['create_panel unreachable', () => createPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), guild, { ...createArgs(), guildId: '222222222222222222' })],
-    ['edit_panel unreachable', () => editPanelText(principalWith([GUILD_A]), fakePanelsPort(doneEdit), guild, { ...editArgs(), guildId: '222222222222222222' })],
-    ['delete_panel unreachable', () => deletePanelText(principalWith([GUILD_A]), fakePanelsPort(doneDelete), { ...deleteArgs(), guildId: '222222222222222222' })],
+    [
+      'list_panels unreachable',
+      () =>
+        listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+          guildId: '222222222222222222',
+        }),
+    ],
+    [
+      'get_panel unreachable',
+      () =>
+        getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+          guildId: '222222222222222222',
+          panelId: PANEL,
+        }),
+    ],
+    [
+      'create_panel unreachable',
+      () =>
+        createPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), guild, {
+          ...createArgs(),
+          guildId: '222222222222222222',
+        }),
+    ],
+    [
+      'edit_panel unreachable',
+      () =>
+        editPanelText(principalWith([GUILD_A]), fakePanelsPort(doneEdit), guild, {
+          ...editArgs(),
+          guildId: '222222222222222222',
+        }),
+    ],
+    [
+      'delete_panel unreachable',
+      () =>
+        deletePanelText(principalWith([GUILD_A]), fakePanelsPort(doneDelete), {
+          ...deleteArgs(),
+          guildId: '222222222222222222',
+        }),
+    ],
   ])('%s refuses an unreachable guild with the shared refusal', async (_label, call) => {
     expect(await call()).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
   });
 
   it.each([
-    ['list_panels malformed', () => listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: 'not-a-snowflake' })],
-    ['get_panel malformed', () => getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: 'not-a-snowflake', panelId: PANEL })],
-    ['create_panel malformed', () => createPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), guild, { ...createArgs(), guildId: 'not-a-snowflake' })],
-    ['edit_panel malformed', () => editPanelText(principalWith([GUILD_A]), fakePanelsPort(doneEdit), guild, { ...editArgs(), guildId: 'not-a-snowflake' })],
-    ['delete_panel malformed', () => deletePanelText(principalWith([GUILD_A]), fakePanelsPort(doneDelete), { ...deleteArgs(), guildId: 'not-a-snowflake' })],
+    [
+      'list_panels malformed',
+      () =>
+        listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+          guildId: 'not-a-snowflake',
+        }),
+    ],
+    [
+      'get_panel malformed',
+      () =>
+        getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+          guildId: 'not-a-snowflake',
+          panelId: PANEL,
+        }),
+    ],
+    [
+      'create_panel malformed',
+      () =>
+        createPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), guild, {
+          ...createArgs(),
+          guildId: 'not-a-snowflake',
+        }),
+    ],
+    [
+      'edit_panel malformed',
+      () =>
+        editPanelText(principalWith([GUILD_A]), fakePanelsPort(doneEdit), guild, {
+          ...editArgs(),
+          guildId: 'not-a-snowflake',
+        }),
+    ],
+    [
+      'delete_panel malformed',
+      () =>
+        deletePanelText(principalWith([GUILD_A]), fakePanelsPort(doneDelete), {
+          ...deleteArgs(),
+          guildId: 'not-a-snowflake',
+        }),
+    ],
   ])('%s refuses a malformed guild id identically', async (_label, call) => {
     expect(await call()).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
   });
@@ -286,24 +358,55 @@ describe('create_panel argument boundary (hard rule 3)', () => {
     ['empty title', createArgs({ title: '' })],
     ['whitespace-only title', createArgs({ title: '   ' })],
     ['whitespace-only body', createArgs({ body: '  ' })],
-    ['title plus body over 2000 characters', createArgs({ title: 't'.repeat(1500), body: 'b'.repeat(600) })],
+    [
+      'title plus body over 2000 characters',
+      createArgs({ title: 't'.repeat(1500), body: 'b'.repeat(600) }),
+    ],
     ['no options', createArgs({ options: [] })],
-    ['twenty-six options', createArgs({ options: Array.from({ length: 26 }, () => buttonOption()) })],
-    ['label over 80 characters', createArgs({ options: [buttonOption({ label: 'x'.repeat(81) })] })],
+    [
+      'twenty-six options',
+      createArgs({ options: Array.from({ length: 26 }, () => buttonOption()) }),
+    ],
+    [
+      'label over 80 characters',
+      createArgs({ options: [buttonOption({ label: 'x'.repeat(81) })] }),
+    ],
     ['whitespace-only label', createArgs({ options: [buttonOption({ label: '  ' })] })],
     ['button without a label', createArgs({ options: [{ role: ROLE }] })],
-    ['reaction without an emoji', createArgs({ component: 'reaction', options: [{ role: ROLE, label: 'x' }] })],
+    [
+      'reaction without an emoji',
+      createArgs({ component: 'reaction', options: [{ role: ROLE, label: 'x' }] }),
+    ],
     ['unknown behaviour', createArgs({ behaviour: 'chaos' })],
     ['unknown component', createArgs({ component: 'carousel' })],
     ['empty channel', createArgs({ channel: '' })],
     ['empty idempotency key', createArgs({ idempotencyKey: '' })],
-    ['missing idempotency key', (() => { const args = createArgs(); delete args['idempotencyKey']; return args; })()],
+    [
+      'missing idempotency key',
+      (() => {
+        const args = createArgs();
+        delete args['idempotencyKey'];
+        return args;
+      })(),
+    ],
     ['a permissions key', createArgs({ permissions: '0' })],
     ['a kind key', createArgs({ kind: 'managed' })],
-    ['created name over 100 characters', createArgs({ options: [{ role: { create: { name: 'x'.repeat(101) } }, label: 'x' }] })],
-    ['created blank name', createArgs({ options: [{ role: { create: { name: '   ' } }, label: 'x' }] })],
-    ['created negative color', createArgs({ options: [{ role: { create: { name: 'x', color: -1 } }, label: 'x' }] })],
-    ['created color over 0xFFFFFF', createArgs({ options: [{ role: { create: { name: 'x', color: 0x100_0000 } }, label: 'x' }] })],
+    [
+      'created name over 100 characters',
+      createArgs({ options: [{ role: { create: { name: 'x'.repeat(101) } }, label: 'x' }] }),
+    ],
+    [
+      'created blank name',
+      createArgs({ options: [{ role: { create: { name: '   ' } }, label: 'x' }] }),
+    ],
+    [
+      'created negative color',
+      createArgs({ options: [{ role: { create: { name: 'x', color: -1 } }, label: 'x' }] }),
+    ],
+    [
+      'created color over 0xFFFFFF',
+      createArgs({ options: [{ role: { create: { name: 'x', color: 0x100_0000 } }, label: 'x' }] }),
+    ],
   ])('%s is the argument fault with no port call', async (_label, args) => {
     const port = fakePanelsPort(doneCreate);
     const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, args);
@@ -313,10 +416,15 @@ describe('create_panel argument boundary (hard rule 3)', () => {
 
   it('a reaction option with an emoji and no label is accepted', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      component: 'reaction',
-      options: [{ role: ROLE, emoji: '🎉' }],
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        component: 'reaction',
+        options: [{ role: ROLE, emoji: '🎉' }],
+      }),
+    );
     expect(outcome.ok).toBe(true);
     expect(port.calls).toBe(1);
   });
@@ -350,8 +458,22 @@ describe('edit_panel and delete_panel argument boundary (hard rule 3)', () => {
   });
 
   it.each([
-    ['get_panel empty panel id', () => getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: '111111111111111111', panelId: '' })],
-    ['list_panels extra key', () => listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: '111111111111111111', limit: 5 })],
+    [
+      'get_panel empty panel id',
+      () =>
+        getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+          guildId: '111111111111111111',
+          panelId: '',
+        }),
+    ],
+    [
+      'list_panels extra key',
+      () =>
+        listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+          guildId: '111111111111111111',
+          limit: 5,
+        }),
+    ],
   ])('%s is the argument fault', (_label, call) => {
     expect(call()).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
   });
@@ -361,60 +483,95 @@ describe('panel refs resolve before any port call', () => {
   const guild = fakeGuild();
   it('create_panel refuses a path-traversal channel with no port call', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      channel: '../../../../guilds/111111111111111111/channels/333333333333333333',
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        channel: '../../../../guilds/111111111111111111/channels/333333333333333333',
+      }),
+    );
     expect(messageOf(outcome)).toContain('No channel');
     expect(port.calls).toBe(0);
   });
 
   it('create_panel refuses a path-traversal role with no port call', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      options: [buttonOption({ role: '1/../../guilds/111111111111111111' })],
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        options: [buttonOption({ role: '1/../../guilds/111111111111111111' })],
+      }),
+    );
     expect(messageOf(outcome)).toContain('No role');
     expect(port.calls).toBe(0);
   });
 
   it('create_panel refuses an unknown channel name with no port call', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({ channel: 'nowhere' }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({ channel: 'nowhere' }),
+    );
     expect(messageOf(outcome)).toContain('No channel named');
     expect(port.calls).toBe(0);
   });
 
   it('create_panel answers an ambiguous channel name with no port call', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({ channel: 'planning' }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({ channel: 'planning' }),
+    );
     expect(messageOf(outcome)).toContain('2 channels');
     expect(port.calls).toBe(0);
   });
 
   it('create_panel refuses an unknown role name with no port call', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      options: [buttonOption({ role: 'janitors' })],
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        options: [buttonOption({ role: 'janitors' })],
+      }),
+    );
     expect(messageOf(outcome)).toContain('No role named');
     expect(port.calls).toBe(0);
   });
 
   it('create_panel answers an ambiguous role name with no port call', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      options: [buttonOption({ role: 'helpers' })],
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        options: [buttonOption({ role: 'helpers' })],
+      }),
+    );
     expect(messageOf(outcome)).toContain('2 roles');
     expect(port.calls).toBe(0);
   });
 
   it('a channel name and a role name resolve to ids at the port', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      channel: 'lounge',
-      options: [buttonOption({ role: 'ushers' })],
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        channel: 'lounge',
+        options: [buttonOption({ role: 'ushers' })],
+      }),
+    );
     expect(outcome.ok).toBe(true);
     expect(port.lastCreate).toMatchObject({
       channel: '355555555555555555',
@@ -424,9 +581,14 @@ describe('panel refs resolve before any port call', () => {
 
   it('a {create} spec travels to the port with its trimmed name', async () => {
     const port = fakePanelsPort(doneCreate);
-    const outcome = await createPanelText(principalWith([GUILD_A]), port, guild, createArgs({
-      options: [{ role: { create: { name: '  ushers  ', color: 12 } }, label: 'Ushers' }],
-    }));
+    const outcome = await createPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      createArgs({
+        options: [{ role: { create: { name: '  ushers  ', color: 12 } }, label: 'Ushers' }],
+      }),
+    );
     expect(outcome.ok).toBe(true);
     expect(port.lastCreate).toMatchObject({
       options: [{ role: { create: { name: 'ushers', color: 12 } }, label: 'Ushers' }],
@@ -435,10 +597,15 @@ describe('panel refs resolve before any port call', () => {
 
   it('edit_panel refuses a path-traversal added role with no port call', async () => {
     const port = fakePanelsPort(doneEdit);
-    const outcome = await editPanelText(principalWith([GUILD_A]), port, guild, editArgs({
-      title: undefined,
-      addOptions: [buttonOption({ role: '../../etc/passwd' })],
-    }));
+    const outcome = await editPanelText(
+      principalWith([GUILD_A]),
+      port,
+      guild,
+      editArgs({
+        title: undefined,
+        addOptions: [buttonOption({ role: '../../etc/passwd' })],
+      }),
+    );
     expect(messageOf(outcome)).toContain('No role');
     expect(port.calls).toBe(0);
   });
@@ -447,7 +614,12 @@ describe('panel refs resolve before any port call', () => {
 describe('panel write outcomes render', () => {
   const guild = fakeGuild();
   it('a creation names the panel and says it cannot be undone', async () => {
-    const port = fakePanelsPort({ status: 'done', actionId: ACTION, panelId: PANEL, messageId: '666666666666666666' });
+    const port = fakePanelsPort({
+      status: 'done',
+      actionId: ACTION,
+      panelId: PANEL,
+      messageId: '666666666666666666',
+    });
     const text = textOf(await createPanelText(principalWith([GUILD_A]), port, guild, createArgs()));
     expect(text).toContain(PANEL);
     expect(text).toContain('666666666666666666');
@@ -473,23 +645,42 @@ describe('panel write outcomes render', () => {
 
   it('a dry run records without changing', async () => {
     const create = textOf(
-      await createPanelText(principalWith([GUILD_A]), fakePanelsPort({ status: 'dry-run', actionId: ACTION }), guild, createArgs({ dryRun: true })),
+      await createPanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'dry-run', actionId: ACTION }),
+        guild,
+        createArgs({ dryRun: true }),
+      ),
     );
     expect(create).toContain('Dry run');
     expect(create).toContain(ACTION);
     const edit = textOf(
-      await editPanelText(principalWith([GUILD_A]), fakePanelsPort({ status: 'dry-run', actionId: ACTION }), guild, editArgs({ dryRun: true })),
+      await editPanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'dry-run', actionId: ACTION }),
+        guild,
+        editArgs({ dryRun: true }),
+      ),
     );
     expect(edit).toContain('Dry run');
     const remove = textOf(
-      await deletePanelText(principalWith([GUILD_A]), fakePanelsPort({ status: 'dry-run', actionId: ACTION }), deleteArgs({ dryRun: true })),
+      await deletePanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'dry-run', actionId: ACTION }),
+        deleteArgs({ dryRun: true }),
+      ),
     );
     expect(remove).toContain('Dry run');
   });
 
   it('a replay answers that nothing new changed', async () => {
     const text = textOf(
-      await createPanelText(principalWith([GUILD_A]), fakePanelsPort({ status: 'replayed', actionId: ACTION }), guild, createArgs()),
+      await createPanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'replayed', actionId: ACTION }),
+        guild,
+        createArgs(),
+      ),
     );
     expect(text).toContain('Already recorded');
     expect(text).toContain(ACTION);
@@ -497,7 +688,12 @@ describe('panel write outcomes render', () => {
 
   it('a failure points at the listing and the same key', async () => {
     const message = messageOf(
-      await createPanelText(principalWith([GUILD_A]), fakePanelsPort({ status: 'failed' }), guild, createArgs()),
+      await createPanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'failed' }),
+        guild,
+        createArgs(),
+      ),
     );
     expect(message).toContain('list_panels');
     expect(message).toContain('same idempotency key');
@@ -505,17 +701,28 @@ describe('panel write outcomes render', () => {
 
   it('a port fault is the shared refusal, never a throw', async () => {
     const failing: McpPanelsPort = {
-      list: () => { throw new Error('boom'); },
-      get: () => { throw new Error('boom'); },
+      list: () => {
+        throw new Error('boom');
+      },
+      get: () => {
+        throw new Error('boom');
+      },
       create: () => Promise.reject(new Error('boom')),
       edit: () => Promise.reject(new Error('boom')),
       remove: () => Promise.reject(new Error('boom')),
     };
-    expect(listPanelsText(principalWith([GUILD_A]), failing, { guildId: '111111111111111111' })).toEqual({
+    expect(
+      listPanelsText(principalWith([GUILD_A]), failing, { guildId: '111111111111111111' }),
+    ).toEqual({
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,
     });
-    expect(getPanelText(principalWith([GUILD_A]), failing, { guildId: '111111111111111111', panelId: PANEL })).toEqual({
+    expect(
+      getPanelText(principalWith([GUILD_A]), failing, {
+        guildId: '111111111111111111',
+        panelId: PANEL,
+      }),
+    ).toEqual({
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,
     });
@@ -590,12 +797,16 @@ describe('panel refusals are distinct and content-free', () => {
 
   it('the authorization refusal names roles.mutate', async () => {
     const port = fakePanelsPort({ status: 'refused', reason: 'unauthorized' });
-    expect(messageOf(await createPanelText(principalWith([GUILD_A]), port, guild, createArgs()))).toContain('roles.mutate');
+    expect(
+      messageOf(await createPanelText(principalWith([GUILD_A]), port, guild, createArgs())),
+    ).toContain('roles.mutate');
   });
 
   it('the channel-change refusal calls the channel immutable', async () => {
     const port = fakePanelsPort({ status: 'refused', reason: 'channel-change' });
-    expect(messageOf(await editPanelText(principalWith([GUILD_A]), port, guild, editArgs()))).toContain('immutable');
+    expect(
+      messageOf(await editPanelText(principalWith([GUILD_A]), port, guild, editArgs())),
+    ).toContain('immutable');
   });
 });
 
@@ -604,11 +815,28 @@ describe('panel reads', () => {
     const port: McpPanelsPort = {
       ...fakePanelsPort(doneCreate),
       list: () => [
-        { panelId: 'colour-roles', title: 'Pick a colour', behaviour: 'toggle', component: 'button', status: 'enabled', messageId: '666666666666666666', optionCount: 2 },
-        { panelId: 'game-night', title: 'Game night', behaviour: 'add_only', component: 'select', status: 'enabled', optionCount: 1 },
+        {
+          panelId: 'colour-roles',
+          title: 'Pick a colour',
+          behaviour: 'toggle',
+          component: 'button',
+          status: 'enabled',
+          messageId: '666666666666666666',
+          optionCount: 2,
+        },
+        {
+          panelId: 'game-night',
+          title: 'Game night',
+          behaviour: 'add_only',
+          component: 'select',
+          status: 'enabled',
+          optionCount: 1,
+        },
       ],
     };
-    const outcome = listPanelsText(principalWith([GUILD_A]), port, { guildId: '111111111111111111' });
+    const outcome = listPanelsText(principalWith([GUILD_A]), port, {
+      guildId: '111111111111111111',
+    });
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error('expected ok:true');
     expect(outcome.text).toContain('colour-roles');
@@ -623,7 +851,9 @@ describe('panel reads', () => {
   });
 
   it('list_panels with no panels answers so and records an empty read', () => {
-    const outcome = listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: '111111111111111111' });
+    const outcome = listPanelsText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+      guildId: '111111111111111111',
+    });
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error('expected ok:true');
     expect(outcome.text).toContain('No role panels');
@@ -653,7 +883,10 @@ describe('panel reads', () => {
         ],
       }),
     };
-    const outcome = getPanelText(principalWith([GUILD_A]), port, { guildId: '111111111111111111', panelId: PANEL });
+    const outcome = getPanelText(principalWith([GUILD_A]), port, {
+      guildId: '111111111111111111',
+      panelId: PANEL,
+    });
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error('expected ok:true');
     expect(outcome.text).toContain(PANEL);
@@ -670,7 +903,10 @@ describe('panel reads', () => {
   });
 
   it('get_panel on an unknown panel names list_panels', () => {
-    const outcome = getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), { guildId: '111111111111111111', panelId: 'nope' });
+    const outcome = getPanelText(principalWith([GUILD_A]), fakePanelsPort(doneCreate), {
+      guildId: '111111111111111111',
+      panelId: 'nope',
+    });
     expect(messageOf(outcome)).toContain('list_panels');
   });
 });

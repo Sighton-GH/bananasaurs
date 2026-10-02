@@ -946,28 +946,23 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   // never an audit row — and the record itself carries no title or label.
   if (deps.panels !== undefined) {
     const panels = deps.panels;
-    server.tool(
-      LIST_PANELS_TOOL_NAME,
-      LIST_PANELS_TOOL_DESCRIPTION,
-      listPanelsParams,
-      (args) => {
-        try {
-          const outcome = listPanelsText(deps.principal, panels, args);
-          if (!outcome.ok) {
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          }
-          return okReadResult(readAudit, outcome);
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
+    server.tool(LIST_PANELS_TOOL_NAME, LIST_PANELS_TOOL_DESCRIPTION, listPanelsParams, (args) => {
+      try {
+        const outcome = listPanelsText(deps.principal, panels, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-      },
-    );
+        return okReadResult(readAudit, outcome);
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    });
     server.tool(GET_PANEL_TOOL_NAME, GET_PANEL_TOOL_DESCRIPTION, getPanelParams, (args) => {
       try {
-          const outcome = getPanelText(deps.principal, panels, args);
+        const outcome = getPanelText(deps.principal, panels, args);
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }

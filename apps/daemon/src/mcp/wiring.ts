@@ -3261,9 +3261,7 @@ const checkPanelRoles = (
   return { ok: true };
 };
 
-const mapPanelTargetRefusal = (
-  target: Extract<SendTarget, { ok: false }>,
-): PanelRefused => {
+const mapPanelTargetRefusal = (target: Extract<SendTarget, { ok: false }>): PanelRefused => {
   switch (target.reason) {
     case 'not-in-guild':
       return { status: 'refused', reason: 'unknown-channel' };
@@ -3308,7 +3306,8 @@ const resolvePanelChannelRef = (
     if (matches.length === 1 && matches[0] !== undefined) {
       return { ok: true, channelId: matches[0].id };
     }
-    if (matches.length === 0) return { ok: false, outcome: { status: 'refused', reason: 'unknown-channel' } };
+    if (matches.length === 0)
+      return { ok: false, outcome: { status: 'refused', reason: 'unknown-channel' } };
     return {
       ok: false,
       outcome: {
@@ -3354,7 +3353,8 @@ const resolvePanelOptionRef = (
     .filter((role) => role.name.toLowerCase() === needle)
     .sort((a, b) => (a.id < b.id ? -1 : 1))
     .slice(0, 10);
-  if (matches.length === 0) return { ok: false, outcome: { status: 'refused', reason: 'unknown-role' } };
+  if (matches.length === 0)
+    return { ok: false, outcome: { status: 'refused', reason: 'unknown-role' } };
   if (matches.length > 1 || matches[0] === undefined) {
     return {
       ok: false,
@@ -3433,7 +3433,11 @@ const panelsPortFor = (
 
   /** The pipeline's outcomes onto the panel outcome, ids only. */
   const mapPipelineOutcome = (
-    outcome: McpActionOutcome<{ resultMessageId?: string; resultThreadId?: string; undo?: unknown }>,
+    outcome: McpActionOutcome<{
+      resultMessageId?: string;
+      resultThreadId?: string;
+      undo?: unknown;
+    }>,
     panelId: string | undefined,
   ): McpPanelOutcome => {
     switch (outcome.status) {
@@ -3498,12 +3502,11 @@ const panelsPortFor = (
   /** A grant refusal inside this call's `execute`, reset per call. */
   let grantRefusal: { readonly reason: RolePingRefusal; readonly roleId: string } | undefined;
   /** An emoji or definition refusal inside this call's `execute`. */
-  let badInput: { readonly reason: 'unknown-emoji' | 'invalid-definition'; readonly detail: string } | undefined;
+  let badInput:
+    | { readonly reason: 'unknown-emoji' | 'invalid-definition'; readonly detail: string }
+    | undefined;
 
-  const checkLiveRoles = (
-    scope: GuildScope,
-    roleIds: readonly string[],
-  ): void => {
+  const checkLiveRoles = (scope: GuildScope, roleIds: readonly string[]): void => {
     for (const roleId of roleIds) {
       const refusal = roleGrantRefusal(client, scope, roleId);
       if (refusal !== true) {
@@ -3807,7 +3810,13 @@ const panelsPortFor = (
         if (input.reorder !== undefined) {
           const ids: string[] = [];
           for (const ref of input.reorder) {
-            const resolved = resolvePanelOptionRef(client, guildId, existing.panelId, reorderBase, ref);
+            const resolved = resolvePanelOptionRef(
+              client,
+              guildId,
+              existing.panelId,
+              reorderBase,
+              ref,
+            );
             if (!resolved.ok) return resolved.outcome;
             ids.push(resolved.roleId);
           }
@@ -3872,23 +3881,26 @@ const panelsPortFor = (
                 }),
               );
             }
-            const added: { readonly roleId: string; readonly label?: string; readonly emoji?: string }[] =
-              addOptions.map((option, index) => {
-                if (typeof option.role === 'string') {
-                  return {
-                    roleId: option.role,
-                    ...(option.label !== undefined ? { label: option.label } : {}),
-                    ...(option.emoji !== undefined ? { emoji: option.emoji } : {}),
-                  };
-                }
-                const created = createdByIndex.get(index);
-                if (created === undefined) throw new Error('panel role creation left no id');
+            const added: {
+              readonly roleId: string;
+              readonly label?: string;
+              readonly emoji?: string;
+            }[] = addOptions.map((option, index) => {
+              if (typeof option.role === 'string') {
                 return {
-                  roleId: created,
+                  roleId: option.role,
                   ...(option.label !== undefined ? { label: option.label } : {}),
                   ...(option.emoji !== undefined ? { emoji: option.emoji } : {}),
                 };
-              });
+              }
+              const created = createdByIndex.get(index);
+              if (created === undefined) throw new Error('panel role creation left no id');
+              return {
+                roleId: created,
+                ...(option.label !== undefined ? { label: option.label } : {}),
+                ...(option.emoji !== undefined ? { emoji: option.emoji } : {}),
+              };
+            });
             const finalIds = [...(order ?? keptIds), ...added.map((entry) => entry.roleId)];
             const createdSet = new Set(createdByIndex.values());
             checkLiveRoles(
@@ -3922,13 +3934,15 @@ const panelsPortFor = (
               ...(entry.label !== undefined ? { label: entry.label } : {}),
               ...(entry.emoji !== undefined ? { emoji: entry.emoji } : {}),
             }));
-            const addedDefs = buildOptions(taken, addedInputs, added.map((entry) => entry.roleId)).map(
-              (option, position) => ({
-                ...option,
-                roleId: parseSnowflakeId(option.roleId),
-                position: keptDefs.length + position,
-              }),
-            );
+            const addedDefs = buildOptions(
+              taken,
+              addedInputs,
+              added.map((entry) => entry.roleId),
+            ).map((option, position) => ({
+              ...option,
+              roleId: parseSnowflakeId(option.roleId),
+              position: keptDefs.length + position,
+            }));
             const { title: oldTitle, body: oldBody } = splitPanelContent(existing.content);
             const title = input.title ?? oldTitle;
             const body = input.body ?? oldBody;

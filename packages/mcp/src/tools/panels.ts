@@ -15,11 +15,7 @@ import {
 } from '../scope.js';
 import { resolveChannelRef, resolveRoleRef } from '../resolve.js';
 import { safeName } from '../structured.js';
-import {
-  MCP_READ_GET_PANEL,
-  MCP_READ_LIST_PANELS,
-  type McpReadRecord,
-} from '../read-audit.js';
+import { MCP_READ_GET_PANEL, MCP_READ_LIST_PANELS, type McpReadRecord } from '../read-audit.js';
 import type { McpGuildPort, McpGuildChannel, McpGuildRole } from './guild.js';
 
 /**
@@ -139,8 +135,7 @@ export interface McpPanelDetail {
 /** One option as the write tools take it: a resolved role id, or a creation spec. */
 export interface McpPanelOptionInput {
   readonly role:
-    | string
-    | { readonly create: { readonly name: string; readonly color?: number | undefined } };
+    string | { readonly create: { readonly name: string; readonly color?: number | undefined } };
   readonly label?: string | undefined;
   readonly emoji?: string | undefined;
 }
@@ -316,7 +311,10 @@ const editArgsSchema = z
     behaviour: z.enum(PANEL_BEHAVIOURS).optional(),
     component: z.enum(PANEL_COMPONENTS).optional(),
     addOptions: z.array(optionSchema).max(MAX_PANEL_OPTIONS).optional(),
-    removeOptions: z.array(z.string().min(1).max(PANEL_ROLE_NAME_MAX)).max(MAX_PANEL_OPTIONS).optional(),
+    removeOptions: z
+      .array(z.string().min(1).max(PANEL_ROLE_NAME_MAX))
+      .max(MAX_PANEL_OPTIONS)
+      .optional(),
     reorder: z.array(z.string().min(1).max(PANEL_ROLE_NAME_MAX)).max(MAX_PANEL_OPTIONS).optional(),
     dryRun: z.boolean().optional(),
     idempotencyKey: z.string().min(1),
@@ -403,7 +401,9 @@ export const createPanelParams = {
   dryRun: z.boolean().optional().describe('Record without creating: nothing reaches Discord.'),
   idempotencyKey: z
     .string()
-    .describe('Caller-supplied key for this creation; reuse the same value if you retry this call.'),
+    .describe(
+      'Caller-supplied key for this creation; reuse the same value if you retry this call.',
+    ),
 };
 
 export const editPanelParams = {
@@ -443,7 +443,9 @@ export const deletePanelParams = {
   dryRun: z.boolean().optional().describe('Record without deleting: nothing reaches Discord.'),
   idempotencyKey: z
     .string()
-    .describe('Caller-supplied key for this deletion; reuse the same value if you retry this call.'),
+    .describe(
+      'Caller-supplied key for this deletion; reuse the same value if you retry this call.',
+    ),
 };
 
 /** Which write tool is rendering, for the verbs below. */
@@ -716,7 +718,8 @@ const renderOutcome = (
 const resolveChannel = (
   channels: readonly McpGuildChannel[],
   ref: string,
-): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
+):
+  { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
   const resolved = resolveChannelRef(channels, ref);
   return resolved.ok ? { ok: true, id: resolved.id } : { ok: false, message: resolved.message };
 };
@@ -729,7 +732,8 @@ const resolveChannel = (
 const resolveRole = (
   roles: readonly McpGuildRole[],
   ref: string,
-): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
+):
+  { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
   const resolved = resolveRoleRef(roles, ref);
   return resolved.ok ? { ok: true, id: resolved.id } : { ok: false, message: resolved.message };
 };
