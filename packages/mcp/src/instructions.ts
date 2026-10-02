@@ -23,5 +23,14 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   '\n' +
   'Writes (when these tools are present):\n' +
   '- Every write needs an idempotencyKey: reuse the same key when you retry a call, or the action happens twice. Pass dryRun to record without changing anything.\n' +
-  '- undo_action reverses one reversible action (an edit, a pin, a reaction, a thread-member add or a thread state change); posts, deletes, thread creation and forum posts cannot be undone. list_actions shows recent actions with ids, never content.\n' +
-  '- Pings happen only through pingRoles and pingUsers: mentions typed into text never notify anyone. Private threads created through these tools stay readable and postable.';
+  '- undo_action reverses one reversible action (an edit, a pin, a reaction, a thread-member add, a thread state change, a role grant, removal or edit); posts, deletes, thread creation, forum posts, bulk changes, role creation and panels cannot be undone. list_actions shows recent actions with ids, never content.\n' +
+  '- Pings happen only through pingRoles and pingUsers: mentions typed into text never notify anyone. Private threads created through these tools stay readable and postable.\n' +
+  '\n' +
+  'Roles (when these tools are present):\n' +
+  '- A role changes hands only if allowlisted, below the bot, not managed or @everyone, with no dangerous permissions; allowlist grant mode also needs the MCP grant allowlist.\n' +
+  '- A refusal names the reason; do not try another route.\n' +
+  '- bulk_role_change previews at most 100 members for a single-use token valid for 10 minutes; confirm repeats the arguments plus the token and a new idempotencyKey, and any change invalidates the token.\n' +
+  '- The change runs as a job (watch it with get_job) and cannot be undone; run the opposite bulk change instead.\n' +
+  '- create_role makes a zero-permission role just below the bot, ungrantable until allowlisted; edit_role changes only name, colour and mentionable.\n' +
+  '- Panel option roles pass the grant policy first, and creation allowlists them; in allowlist grant mode options cannot use {create}. edit_panel reorder lists the current options; added options go at the end.\n' +
+  '- Panel creation, editing and deletion cannot be undone; delete_panel removes a panel, whose messages the message tools cannot edit or delete.';
