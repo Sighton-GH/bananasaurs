@@ -742,7 +742,12 @@ export const updateReminder = (
             }),
         updatedAt: now,
       })
-      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .where(
+        scope.only(
+          assistantReminders,
+          and(eq(assistantReminders.reminderId, id), eq(assistantReminders.origin, origin)),
+        ),
+      )
       .run();
     return 'updated';
   });
