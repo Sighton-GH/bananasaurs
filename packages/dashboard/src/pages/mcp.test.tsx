@@ -86,6 +86,11 @@ const STUBS = [
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
+const selectOf = (element: HTMLElement): HTMLSelectElement => {
+  if (!(element instanceof HTMLSelectElement)) throw new Error('expected a <select>');
+  return element;
+};
+
 describe('McpPage', () => {
   it('renders clients, tokens and the allowlist', async () => {
     stubFetch(STUBS);
@@ -128,8 +133,8 @@ describe('McpPage', () => {
     stubFetch(STUBS);
     renderWithSession(<McpPage />);
     expect(await screen.findByText('Role policy')).toBeTruthy();
-    expect(screen.getByLabelText('Grant mode').value).toBe('below-bot');
-    expect(screen.getByLabelText('Ping mode').value).toBe('allowlist');
+    expect(selectOf(screen.getByLabelText('Grant mode')).value).toBe('below-bot');
+    expect(selectOf(screen.getByLabelText('Ping mode')).value).toBe('allowlist');
     // The name comes from the live role list, which resolves just after the
     // policy itself; the id is its own column. The id also appears in the
     // role picker's suggestion list, so it is a multi-match.
