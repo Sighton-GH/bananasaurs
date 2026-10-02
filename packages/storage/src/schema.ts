@@ -1880,6 +1880,45 @@ export const mcpPrivateThreads = sqliteTable(
 );
 
 /**
+ * A stored bulk role-change preview (slice 4, task 1).
+ *
+ * The preview is the durable half of the preview → confirm handshake: the
+ * tool resolves the member set live, stores it here, and hands the caller a
+ * random 128-bit token. Storage keeps only `token_hash` = sha256 hex of that
+ * token — the token itself is never written — and `findPreviewByToken`
+ * hashes its input, so a database read answers nothing about any token.
+ * `consumePreview` succeeds once, before `expires_at`, and records the
+ * `mcp.bulk_role` job that applies the stored member set.
+ */
+export const mcpBulkPreviews = sqliteTable(
+  'mcp_bulk_previews',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    previewId: text('preview_id').notNull(),
+    /** sha256 hex of the confirm token. The token itself is never stored. */
+    tokenHash: text('token_hash').notNull(),
+    actionKind: text('action_kind').notNull(),
+    roleId: snowflake('role_id').notNull(),
+    argsHash: text('args_hash').notNull(),
+    /** The previewed member set as a JSON array of snowflakes. */
+    memberIdsJson: text('member_ids_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    consumedAt: integer('consumed_at'),
+    jobId: integer('job_id'),
+  },
+  (t) => [
+    unique('mcp_bulk_previews_preview_once').on(t.guildId, t.previewId),
+    unique('mcp_bulk_previews_token_once').on(t.guildId, t.tokenHash),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_bulk_previews_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_bulk_previews_role_id_snowflake', snowflakeCheck(t.roleId)),
+    check('mcp_bulk_previews_action_kind', sql`${t.actionKind} IN ('add','remove')`),
+    check('mcp_bulk_previews_expiry_sane', sql`${t.expiresAt} > ${t.createdAt}`),
+  ],
+);
+
+/**
  * Training-eligibility record (ADR 0044 §7, ADR 0010 §1). Instance-level
  * (ADR 0027): a provider is a fact about the daemon, not a guild — the same
  * reason `bootstrap_tokens` and `oauth_clients` carry no `guild_id`.
