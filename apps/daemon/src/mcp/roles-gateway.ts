@@ -16,6 +16,7 @@ import {
   isTargetProtected,
   mcpRolePolicyRepo,
   panelRepo,
+  roleRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
 
@@ -87,7 +88,12 @@ export const mcpRoleGatewayFor = (
     state: {
       read: () => guildRepo.readSafetyState(scope),
       isPanelEnabled: (panelId) => panelRepo.isPanelEnabled(scope, panelId),
-      isRoleAllowlisted: (roleId) => roleGrantRefusal(client, scope, roleId) === true,
+      // ADR 0118 amendment (owner decision 2026-10-01): the role must
+      // already be on the bot's role allowlist (`managed_roles`, which
+      // `role_effects` holds a foreign key into) AND pass the MCP grant
+      // policy. The MCP never adds to `managed_roles` itself.
+      isRoleAllowlisted: (roleId) =>
+        roleRepo.isAllowlisted(scope, roleId) && roleGrantRefusal(client, scope, roleId) === true,
       isTargetProtected: (userId, roleId) => isTargetProtected(scope, { userId, roleId }),
       // ADR 0118 §2: an MCP rate overflow refuses but never opens the guild
       // breaker. A no-op that logs the allowlisted fields only — guild id

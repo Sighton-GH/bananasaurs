@@ -230,12 +230,13 @@ beforeEach(() => {
     });
   }
 
-  // `role_effects` carries a composite foreign key into `managed_roles`
-  // (production's allowlist), so the applied-grant tests seed the row the
-  // way `effects.integration.test.ts` does. The MCP gateway itself never
-  // consults `managed_roles` — its allowlist is the grant policy.
+  // ADR 0118 amendment: an MCP grant needs the role in `managed_roles`
+  // (the bot's role allowlist) as well as the MCP grant policy. LOW_ROLE and
+  // FLOOR_ROLE are allowlisted, so the policy decides for them; ALLOW_ROLE is
+  // deliberately not, so it shows the managed_roles conjunct on its own.
   write(scope, ({ db }) => {
     db.insert(schema.managedRoles).values({ guildId: GUILD, roleId: LOW_ROLE }).run();
+    db.insert(schema.managedRoles).values({ guildId: GUILD, roleId: FLOOR_ROLE }).run();
   });
 });
 
@@ -336,6 +337,31 @@ describe('mcpRoleGatewayFor', () => {
     }
 
     // Only the passing grant reached Discord.
+    expect(discord.restCalls('addRole')).toHaveLength(1);
+  });
+
+  it('a role passing the grant policy but not in managed_roles is refused, then applies once allowlisted', async () => {
+    // ALLOW_ROLE is below the bot and passes the default below-bot policy.
+    expect(roleGrantRefusal(client, scope, ALLOW_ROLE)).toBe(true);
+    const gateway = mcpRoleGatewayFor(gatewayDeps(new RateLimiter(100)), client, discord, scope);
+    discord.defineMember('611111111111111111', []);
+    discord.defineMember('622222222222222222', []);
+
+    const refused = await gateway.applyRoleEffect(
+      witness(),
+      intent('611111111111111111', ALLOW_ROLE),
+    );
+    expect(refused).toEqual({ status: 'refused', reason: 'role-not-allowlisted' });
+    expect(discord.restCalls('addRole')).toHaveLength(0);
+
+    write(scope, ({ db }) => {
+      db.insert(schema.managedRoles).values({ guildId: GUILD, roleId: ALLOW_ROLE }).run();
+    });
+    const applied = await gateway.applyRoleEffect(
+      witness(),
+      intent('622222222222222222', ALLOW_ROLE),
+    );
+    expect(applied.status).toBe('applied');
     expect(discord.restCalls('addRole')).toHaveLength(1);
   });
 
