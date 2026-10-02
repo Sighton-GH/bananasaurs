@@ -914,33 +914,30 @@ export const registerOpsWriteRoutes = (
     return reply.status(200).send({ outcome });
   });
 
-  app.delete<{ Params: { roleId: string } }>(
-    '/api/role-allowlist/:roleId',
-    (request, reply) => {
-      const session = guard.require(request, reply);
-      if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+  app.delete<{ Params: { roleId: string } }>('/api/role-allowlist/:roleId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
 
-      const roleId = snowflakeIdSchema.safeParse(request.params.roleId);
-      if (!roleId.success) return badRequest(reply, roleId.error);
-      const query = roleDisallowQuerySchema.safeParse(request.query);
-      if (!query.success) return badRequest(reply, query.error);
+    const roleId = snowflakeIdSchema.safeParse(request.params.roleId);
+    if (!roleId.success) return badRequest(reply, roleId.error);
+    const query = roleDisallowQuerySchema.safeParse(request.query);
+    if (!query.success) return badRequest(reply, query.error);
 
-      const ports = deps.portsFor(session.scope);
-      const outcome = ports.disallowRole({ roleId: roleId.data, purpose: query.data.purpose });
-      if (outcome === 'removed') {
-        ports.recordAudit({
-          ...dashboardAuditBase(session, deps.now()),
-          action: 'role_allowlist.disallowed',
-          subjectType: 'role_allowlist',
-          subjectId: roleId.data,
-          before: { allowed: true },
-          after: { allowed: false, purpose: query.data.purpose },
-        });
-      }
-      return reply.status(200).send({ ok: true, outcome });
-    },
-  );
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.disallowRole({ roleId: roleId.data, purpose: query.data.purpose });
+    if (outcome === 'removed') {
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'role_allowlist.disallowed',
+        subjectType: 'role_allowlist',
+        subjectId: roleId.data,
+        before: { allowed: true },
+        after: { allowed: false, purpose: query.data.purpose },
+      });
+    }
+    return reply.status(200).send({ ok: true, outcome });
+  });
 
   app.post('/api/adoption-allowance', (request, reply) => {
     const session = guard.require(request, reply);

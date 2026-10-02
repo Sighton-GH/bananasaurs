@@ -1429,12 +1429,7 @@ export interface OpsRoleAllowlistEntry {
  * distinct refusals — unknown role, `@everyone`, managed, dangerous.
  */
 export type OpsAllowRoleOutcome =
-  | 'allowed'
-  | 'already-allowed'
-  | 'no-such-role'
-  | 'everyone'
-  | 'managed'
-  | 'dangerous';
+  'allowed' | 'already-allowed' | 'no-such-role' | 'everyone' | 'managed' | 'dangerous';
 
 /** What `mcp allow-channel` did: allowed, already allowed, or refused. */
 export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';

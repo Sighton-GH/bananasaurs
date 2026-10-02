@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../../ids.js';
-import {
-  defineCommand,
-  type OpsContext,
-  type OpsWriteResult,
-} from '../dispatch.js';
+import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
 
 /**
  * The `mcp role-policy` / `mcp allow-role` / `mcp disallow-role` surface

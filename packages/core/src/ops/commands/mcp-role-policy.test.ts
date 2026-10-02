@@ -220,25 +220,28 @@ describe('mcp allow-role', () => {
     ['everyone', 'is @everyone'],
     ['managed', 'managed by an integration'],
     ['dangerous', 'dangerous permission'],
-  ] as const)('a %s refusal is distinct data with an audit row, not a fault', async (outcome, text) => {
-    const h = harness({ allowRole: () => Promise.resolve(outcome) });
-    const response = await h.run('mcp allow-role', { roleId: ROLE, purpose: 'ping' });
-    expect(response.ok).toBe(true);
-    expect(response.ok && response.text).toContain(text);
-    expect(response.ok && response.data).toMatchObject({
-      ok: false,
-      reason: outcome,
-      roleId: ROLE,
-      purpose: 'ping',
-    });
-    expect(h.audit).toHaveLength(1);
-    expect(h.audit[0]).toMatchObject({
-      action: 'mcp.role_allowlist.allowed',
-      subjectType: 'mcp_role_allowlist',
-      subjectId: ROLE,
-      after: { outcome, roleId: ROLE, purpose: 'ping' },
-    });
-  });
+  ] as const)(
+    'a %s refusal is distinct data with an audit row, not a fault',
+    async (outcome, text) => {
+      const h = harness({ allowRole: () => Promise.resolve(outcome) });
+      const response = await h.run('mcp allow-role', { roleId: ROLE, purpose: 'ping' });
+      expect(response.ok).toBe(true);
+      expect(response.ok && response.text).toContain(text);
+      expect(response.ok && response.data).toMatchObject({
+        ok: false,
+        reason: outcome,
+        roleId: ROLE,
+        purpose: 'ping',
+      });
+      expect(h.audit).toHaveLength(1);
+      expect(h.audit[0]).toMatchObject({
+        action: 'mcp.role_allowlist.allowed',
+        subjectType: 'mcp_role_allowlist',
+        subjectId: ROLE,
+        after: { outcome, roleId: ROLE, purpose: 'ping' },
+      });
+    },
+  );
 
   it('carries no role name anywhere: ids and purposes only', async () => {
     const h = harness({ allowRole: () => Promise.resolve('allowed') });

@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChannelType, Client, PermissionsBitField, Status, type Guild, type Role } from 'discord.js';
+import {
+  ChannelType,
+  Client,
+  PermissionsBitField,
+  Status,
+  type Guild,
+  type Role,
+} from 'discord.js';
 import { JOB_KINDS, parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import { REQUIRED_PERMISSIONS } from '../runtime/doctor.js';

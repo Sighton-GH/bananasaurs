@@ -128,8 +128,8 @@ describe('McpPage', () => {
     stubFetch(STUBS);
     renderWithSession(<McpPage />);
     expect(await screen.findByText('Role policy')).toBeTruthy();
-    expect((screen.getByLabelText('Grant mode') as HTMLSelectElement).value).toBe('below-bot');
-    expect((screen.getByLabelText('Ping mode') as HTMLSelectElement).value).toBe('allowlist');
+    expect(screen.getByLabelText('Grant mode').value).toBe('below-bot');
+    expect(screen.getByLabelText('Ping mode').value).toBe('allowlist');
     // The name comes from the live role list, which resolves just after the
     // policy itself; the id is its own column. The id also appears in the
     // role picker's suggestion list, so it is a multi-match.
@@ -151,7 +151,9 @@ describe('McpPage', () => {
       },
     ]);
     renderWithSession(<McpPage />);
-    fireEvent.change(await screen.findByLabelText('Grant mode'), { target: { value: 'allowlist' } });
+    fireEvent.change(await screen.findByLabelText('Grant mode'), {
+      target: { value: 'allowlist' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Save modes' }));
     await vi.waitFor(() => {
       const post = mock.mock.calls.find(
@@ -195,8 +197,7 @@ describe('McpPage', () => {
     await vi.waitFor(() => {
       const call = mock.mock.calls.find(
         (c) =>
-          (c[0] as string) === '/api/role-allowlist/r-1?purpose=grant' &&
-          c[1]?.method === 'DELETE',
+          (c[0] as string) === '/api/role-allowlist/r-1?purpose=grant' && c[1]?.method === 'DELETE',
       );
       expect(call, 'disallow DELETE').toBeTruthy();
     });

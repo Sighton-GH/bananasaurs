@@ -680,9 +680,7 @@ export const testPortsFor = (
     return Promise.resolve(added ? 'allowed' : 'already-allowed');
   },
   disallowRole: (input) =>
-    mcpRolePolicyRepo.disallowRole(scope, input.roleId, input.purpose)
-      ? 'removed'
-      : 'not-allowed',
+    mcpRolePolicyRepo.disallowRole(scope, input.roleId, input.purpose) ? 'removed' : 'not-allowed',
   listRoleAllowlist: () => mcpRolePolicyRepo.listRoleAllowlist(scope),
   // ADR 0028 / ADR 0045 (ruling PR-102): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires, with the account lookup running

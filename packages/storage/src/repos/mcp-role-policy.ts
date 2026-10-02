@@ -82,9 +82,7 @@ export interface RoleAllowlistEntry {
   readonly addedAt: number;
 }
 
-const toRoleAllowlistEntry = (
-  row: typeof mcpRoleAllowlist.$inferSelect,
-): RoleAllowlistEntry => ({
+const toRoleAllowlistEntry = (row: typeof mcpRoleAllowlist.$inferSelect): RoleAllowlistEntry => ({
   roleId: row.roleId,
   purpose: row.purpose as RoleAllowlistPurpose,
   addedByAccountId: row.addedByAccountId,

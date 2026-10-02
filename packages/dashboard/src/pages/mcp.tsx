@@ -437,11 +437,7 @@ export function McpPage() {
           </p>
         </Card>
         <Card title="Role policy">
-          <DataState
-            resource={rolePolicy.resource}
-            isEmpty={() => false}
-            empty={null}
-          >
+          <DataState resource={rolePolicy.resource} isEmpty={() => false} empty={null}>
             {(policy) => <RolePolicyControls policy={policy} reload={rolePolicy.reload} />}
           </DataState>
         </Card>
