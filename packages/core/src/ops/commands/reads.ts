@@ -375,7 +375,10 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           problems.push({
             title: `No enabled dashboard account can reach guild ${guildId}`,
             impact: 'Nobody can operate this server from the dashboard.',
-            fix: `Run 'bananasaurs account grant-guild <username> --guild ${guildId} --confirm' on the host.`,
+            // ADR 0124: a restart grants every enabled owner; other accounts stay explicit.
+            fix:
+              `Restart the daemon: every enabled owner is given access at startup. ` +
+              `For another account, run 'bananasaurs account grant-guild <username> --guild ${guildId} --confirm' on the host.`,
             route: '/accounts',
           });
         }
