@@ -257,15 +257,15 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'That role is not in this server.',
     hint: 'Pick the role from the list.',
   },
-  everyone: {
+  'role-everyone': {
     title: 'That role cannot be allowlisted',
     explanation: 'The @everyone role can never be allowlisted.',
   },
-  managed: {
+  'role-managed': {
     title: 'That role cannot be allowlisted',
     explanation: 'That role is managed by an integration and can never be allowlisted.',
   },
-  dangerous: {
+  'role-dangerous': {
     title: 'That role cannot be allowlisted',
     explanation: 'That role holds a dangerous permission and can never be allowlisted.',
   },

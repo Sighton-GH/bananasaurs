@@ -45,9 +45,9 @@ const VARIABLE_CODES = [
   'no-key',
   'unsupported',
   'not-observing',
-  'everyone',
-  'managed',
-  'dangerous',
+  'role-everyone',
+  'role-managed',
+  'role-dangerous',
 ] as const;
 
 describe('ERROR_CATALOG covers every error slug', () => {

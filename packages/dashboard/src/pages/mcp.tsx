@@ -46,18 +46,18 @@ const ROLE_ALLOWLIST_PURPOSES: readonly RoleAllowlistPurpose[] = ['grant', 'ping
 
 /**
  * A server refusal from the allow-role write, as one inline sentence. The
- * route answers 404 `no-such-role` and 409 `everyone` / `managed` /
- * `dangerous`; anything else falls back to the catalogued error text.
+ * route answers 404 `no-such-role` and 409 `role-everyone` / `role-managed` /
+ * `role-dangerous`; anything else falls back to the catalogued error text.
  */
 const describeRoleRefusal = (err: unknown): string => {
   if (err instanceof ApiError) {
     if (err.body.error === 'no-such-role')
       return 'That role is not in this server — nothing was allowlisted.';
-    if (err.body.error === 'everyone')
+    if (err.body.error === 'role-everyone')
       return '@everyone can never be allowlisted — nothing was allowlisted.';
-    if (err.body.error === 'managed')
+    if (err.body.error === 'role-managed')
       return 'That role is managed by an integration and can never be allowlisted — nothing was allowlisted.';
-    if (err.body.error === 'dangerous')
+    if (err.body.error === 'role-dangerous')
       return (
         'That role holds a dangerous permission (ADR 0117 floor) and can never ' +
         'be allowlisted — nothing was allowlisted.'

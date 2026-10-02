@@ -211,7 +211,12 @@ describe('McpPage', () => {
   it('shows a server refusal inline instead of failing silently', async () => {
     stubFetch([
       ...STUBS,
-      { method: 'POST', url: '/api/role-allowlist', status: 409, body: { error: 'dangerous' } },
+      {
+        method: 'POST',
+        url: '/api/role-allowlist',
+        status: 409,
+        body: { error: 'role-dangerous' },
+      },
     ]);
     renderWithSession(<McpPage />);
     fireEvent.change(await screen.findByPlaceholderText('Search role names'), {

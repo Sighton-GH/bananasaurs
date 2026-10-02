@@ -901,7 +901,9 @@ export const registerOpsWriteRoutes = (
       return reply.status(404).send({ error: 'no-such-role' });
     }
     if (outcome === 'everyone' || outcome === 'managed' || outcome === 'dangerous') {
-      return reply.status(409).send({ error: outcome });
+      // Namespaced on the wire: the error catalog is shared across routes,
+      // so a bare `managed` could one day mean something else.
+      return reply.status(409).send({ error: `role-${outcome}` });
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
