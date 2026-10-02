@@ -88,13 +88,14 @@ const fakeMembers = (
     profile('633333333333333333', 'Sam One', [ROLE]),
     profile('634444444444444444', 'Sam Two', []),
   ],
+  truncated = false,
 ): McpMembersPort & { readonly listingCalls: () => number } => {
   let calls = 0;
   return {
     listingCalls: () => calls,
     listAllMembers: () => {
       calls += 1;
-      return Promise.resolve({ members, truncated: false });
+      return Promise.resolve({ members, truncated });
     },
     lastMessageAt: () => new Map(),
     now: () => 1_700_000_000_000,
@@ -270,6 +271,38 @@ describe('bulk_role_change preview', () => {
     expect(text).not.toContain('Sam Two');
     const input = port.previewCalls[0] as Record<string, unknown>;
     expect(input['memberIds']).toEqual(['633333333333333333']);
+  });
+
+  it('a selector over a cut-off member listing is refused, storing nothing', async () => {
+    const port = fakeBulkPort({});
+    const message = messageOf(
+      await bulkRoleChangeText(
+        principalWith([GUILD_A]),
+        port,
+        fakeGuild(),
+        fakeMembers(undefined, true),
+        previewArgs({ members: undefined, selector: { hasRoles: [ROLE] } }),
+      ),
+    );
+    expect(message).toContain('cut off');
+    expect(message).toContain('explicit `members`');
+    expect(port.previewCalls).toHaveLength(0);
+  });
+
+  it('an explicit id missing from a cut-off listing says the listing was capped', async () => {
+    const port = fakeBulkPort({});
+    const message = messageOf(
+      await bulkRoleChangeText(
+        principalWith([GUILD_A]),
+        port,
+        fakeGuild(),
+        fakeMembers(undefined, true),
+        previewArgs({ members: ['633333333333333333', '635555555555555555'] }),
+      ),
+    );
+    expect(message).toContain('635555555555555555');
+    expect(message).toContain('capped at 5,000');
+    expect(port.previewCalls).toHaveLength(0);
   });
 
   it('lacksRoles drops members holding any named role', async () => {

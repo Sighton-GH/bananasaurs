@@ -407,7 +407,7 @@ const bulkRoleChangeInner = async (
     let previewSelector: McpBulkSelector | undefined;
     if (input.members !== undefined) {
       if (!idsAreWellFormed(input.members)) return refuseInvalidArgs();
-      const { members: listing } = await members.listAllMembers(guildId);
+      const { members: listing, truncated } = await members.listAllMembers(guildId);
       const byId = new Map(listing.map((profile) => [profile.id, profile] as const));
       const found: McpMemberProfile[] = [];
       for (const id of input.members) {
@@ -415,9 +415,11 @@ const bulkRoleChangeInner = async (
         if (profile === undefined) {
           return {
             ok: false,
-            message:
-              `Member ${id} is not in guild ${guildId}, ` +
-              'so no preview was stored. Pass member ids, or pick them with `search_members`.',
+            message: truncated
+              ? `Member ${id} was not found in guild ${guildId}'s member listing, which is capped at ` +
+                '5,000 and was cut off, so no preview was stored. Check the id with `get_member`.'
+              : `Member ${id} is not in guild ${guildId}, ` +
+                'so no preview was stored. Pass member ids, or pick them with `search_members`.',
           };
         }
         found.push(profile);
@@ -440,7 +442,17 @@ const bulkRoleChangeInner = async (
         if (!resolvedRef.ok) return { ok: false, message: resolvedRef.message };
         lacksIds.push(resolvedRef.id);
       }
-      const { members: listing } = await members.listAllMembers(guildId);
+      const { members: listing, truncated } = await members.listAllMembers(guildId);
+      if (truncated) {
+        // A selector over a cut-off listing would silently preview a subset
+        // of the members it names: refuse rather than under-apply.
+        return {
+          ok: false,
+          message:
+            `Guild ${guildId}'s member listing is capped at 5,000 and was cut off, so a selector ` +
+            'cannot see every member and no preview was stored. Pass explicit `members` ids instead.',
+        };
+      }
       resolved = listing.filter(
         (profile) =>
           hasIds.every((id) => profile.roleIds.includes(id)) &&
