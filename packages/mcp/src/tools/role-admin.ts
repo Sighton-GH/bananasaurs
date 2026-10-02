@@ -140,8 +140,7 @@ const editArgsSchema = z
   })
   .strict()
   .refine(
-    (args) =>
-      args.name !== undefined || args.color !== undefined || args.mentionable !== undefined,
+    (args) => args.name !== undefined || args.color !== undefined || args.mentionable !== undefined,
     { message: 'name, color or mentionable required' },
   );
 
@@ -168,7 +167,10 @@ export const createRoleParams = {
 export const editRoleParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   role: z.string().describe('Role to edit, as an id or the exact name shown by list_roles.'),
-  name: z.string().optional().describe(`New name, 1 to ${String(ROLE_NAME_MAX)} characters.`),
+  name: z
+    .string()
+    .optional()
+    .describe(`New name, 1 to ${String(ROLE_NAME_MAX)} characters.`),
   color: z.number().optional().describe('New color as an integer, 0 to 16777215.'),
   mentionable: z.boolean().optional().describe('New mentionable flag.'),
   dryRun: z.boolean().optional().describe('Record without editing: nothing reaches Discord.'),

@@ -477,7 +477,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   // carries (slice 4 extends it with the role-kind inverses under the roles
   // scope); the read half, `list_actions`, lives in the read block below.
   // Registered once: a token with both scopes must not see it twice.
-  if ((hasSendScope(deps.principal) || hasRolesScope(deps.principal)) && deps.actions !== undefined) {
+  if (
+    (hasSendScope(deps.principal) || hasRolesScope(deps.principal)) &&
+    deps.actions !== undefined
+  ) {
     const actions = deps.actions;
     server.tool(
       UNDO_ACTION_TOOL_NAME,

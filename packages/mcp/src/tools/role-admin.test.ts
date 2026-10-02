@@ -49,7 +49,11 @@ const editArgs = (over: Record<string, unknown> = {}): Record<string, unknown> =
 /** Fake role-admin port: every call recorded, the outcome scripted per test. */
 const fakeRolePort = (
   outcome: McpRoleAdminOutcome,
-): McpRoleAdminPort & { readonly calls: number; readonly lastCreate: unknown; readonly lastEdit: unknown } => {
+): McpRoleAdminPort & {
+  readonly calls: number;
+  readonly lastCreate: unknown;
+  readonly lastEdit: unknown;
+} => {
   let calls = 0;
   let lastCreate: unknown;
   let lastEdit: unknown;
@@ -320,7 +324,12 @@ describe('role-admin refusal texts', () => {
   });
 
   it('grant-policy refusals name the role id, never a role name', async () => {
-    for (const reason of ['above-bot', 'managed-or-everyone', 'dangerous', 'not-allowlisted'] as const) {
+    for (const reason of [
+      'above-bot',
+      'managed-or-everyone',
+      'dangerous',
+      'not-allowlisted',
+    ] as const) {
       const outcome = await editRoleText(
         principalWith([GUILD_A]),
         fakeRolePort({ status: 'refused', reason, detail: ROLE }),
@@ -348,7 +357,11 @@ describe('role-admin outcomes', () => {
   });
 
   it('the edit answer names the role id and the undo', async () => {
-    const outcome = await editRoleText(principalWith([GUILD_A]), fakeRolePort(doneEdit), editArgs());
+    const outcome = await editRoleText(
+      principalWith([GUILD_A]),
+      fakeRolePort(doneEdit),
+      editArgs(),
+    );
     const text = textOf(outcome);
     expect(text).toContain(ROLE);
     expect(text).toContain(ACTION);

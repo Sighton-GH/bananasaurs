@@ -7454,7 +7454,14 @@ describe('/mcp create_role and edit_role through the real composition', () => {
           color: 0,
           mentionable: false,
         },
-        { id: LOW_ROLE, name: 'helpers', position: 4, permissions: '0', color: 0, mentionable: false },
+        {
+          id: LOW_ROLE,
+          name: 'helpers',
+          position: 4,
+          permissions: '0',
+          color: 0,
+          mentionable: false,
+        },
         {
           id: BOT_ROLE,
           name: 'bananasaurs',
@@ -7534,9 +7541,7 @@ describe('/mcp create_role and edit_role through the real composition', () => {
 
   /** The bot's live top position, the same cache read the port uses. */
   const botTop = (): number => {
-    const top = deps.client.guilds.cache
-      .get(GUILD_A)
-      ?.members.me?.roles.highest.position;
+    const top = deps.client.guilds.cache.get(GUILD_A)?.members.me?.roles.highest.position;
     if (top === undefined) throw new Error('test setup: bot top missing from cache');
     return top;
   };

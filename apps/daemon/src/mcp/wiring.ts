@@ -2477,7 +2477,10 @@ const resolveRoleRefLive = (
   ref: string,
 ):
   | { readonly ok: true; readonly roleId: string }
-  | { readonly ok: false; readonly outcome: Extract<McpRoleAdminOutcome, { status: 'refused' }> } => {
+  | {
+      readonly ok: false;
+      readonly outcome: Extract<McpRoleAdminOutcome, { status: 'refused' }>;
+    } => {
   const trimmed = ref.trim();
   const roles = client.guilds.cache.get(guildId)?.roles.cache;
   if (isSnowflake(trimmed)) {

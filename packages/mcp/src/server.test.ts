@@ -68,6 +68,7 @@ import {
 } from './tools/resources.js';
 import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './tools/threads.js';
 import { LIST_UNANSWERED_TOOL_NAME, READ_DIGEST_TOOL_NAME } from './tools/digest.js';
+import type { McpRoleAdminPort } from './tools/role-admin.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -219,6 +220,14 @@ const stubThreads = (): McpThreadsPort => ({
 });
 
 /** One connected client/server pair over the in-memory transport. */
+/** Minimal role-admin port: this file pins registration, never the role writes themselves. */
+const stubRoleAdmin = (): McpRoleAdminPort => ({
+  createRole: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', roleId: '511111111111111111' }),
+  editRole: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', roleId: '511111111111111111' }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
   send: McpSendPort = stubSend(),
@@ -241,6 +250,7 @@ const connectPair = async (
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
     actions: stubActions(),
+    roleAdmin: stubRoleAdmin(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -428,16 +438,17 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ADR 0114) a roles-only principal sees no tools and no resources', async () => {
-    // No tool registers under the roles scope yet (slice 4 does that), so a
-    // token carrying only `bananasaurs:roles` must see neither the read/send
-    // tools nor the overview resource. With zero tools registered the SDK
-    // never installs its `tools/list` handler, so the client answers
-    // Method-not-found rather than an empty array — the same laziness the
-    // send-only test pins for `resources/templates/list` below.
+  it('(ADR 0114) a roles-only principal sees only the role tools and no resources', async () => {
+    // Slice 4 registers `create_role` / `edit_role` (and `undo_action`, which
+    // serves send and roles) under the roles scope, so a token carrying only
+    // `bananasaurs:roles` lists exactly those three, and still
+    // neither the read/send tools nor the overview resource. With no resource
+    // registered the SDK never installs `resources/templates/list`, so the
+    // client answers Method-not-found rather than an empty array.
     const { client, close } = await connectPair(principalWith([GUILD], [MCP_ROLES_SCOPE]));
     try {
-      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
+      const names = (await client.listTools()).tools.map((tool) => tool.name).sort();
+      expect(names).toEqual(['create_role', 'edit_role', 'undo_action']);
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();
