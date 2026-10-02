@@ -39,6 +39,7 @@ const storedReminder = (over: Partial<StoredReminder> = {}): StoredReminder => (
   dedupeKey: 'reminder:msg1:0',
   mentions: { userIds: [], roleIds: [], everyone: false, here: false },
   deliveredCount: 0,
+  origin: 'assistant' as const,
   ...over,
 });
 
