@@ -950,9 +950,9 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       LIST_PANELS_TOOL_NAME,
       LIST_PANELS_TOOL_DESCRIPTION,
       listPanelsParams,
-      async (args) => {
+      (args) => {
         try {
-          const outcome = await listPanelsText(deps.principal, panels, args);
+          const outcome = listPanelsText(deps.principal, panels, args);
           if (!outcome.ok) {
             return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
           }
@@ -965,9 +965,9 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
-    server.tool(GET_PANEL_TOOL_NAME, GET_PANEL_TOOL_DESCRIPTION, getPanelParams, async (args) => {
+    server.tool(GET_PANEL_TOOL_NAME, GET_PANEL_TOOL_DESCRIPTION, getPanelParams, (args) => {
       try {
-        const outcome = await getPanelText(deps.principal, panels, args);
+          const outcome = getPanelText(deps.principal, panels, args);
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }

@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
@@ -18,18 +18,23 @@ import {
   customEmojiKey,
   effectiveSkillScope,
   isInScope,
+  panelDefinitionSchema,
   parseSnowflakeId,
   RateLimiter,
+  rolePingAllowed,
   runMcpAction,
   safeLogFields,
   skillScopeAllows,
+  unicodeEmojiChars,
   unicodeEmojiKey,
   type Authorized,
   type DiscordPort,
+  type EmojiKey,
   type GuildId,
   type Logger,
   type McpActionOutcome,
   type OpsJobRow,
+  type PanelDefinition,
   type RefusalReason,
   type RolePingRefusal,
 } from '@bananasaurs/core';
@@ -60,6 +65,9 @@ import {
   type McpJobsPort,
   type McpMemberProfile,
   type McpMembersPort,
+  type McpPanelOptionInput,
+  type McpPanelOutcome,
+  type McpPanelsPort,
   type McpPrincipal,
   type McpReadAuditPort,
   type McpRecordsPort,
@@ -3007,14 +3015,12 @@ const roleAdminPortFor = (
             // Live re-check first: a grant revoked after the pre-check still
             // refuses before any Discord call.
             if (!authorizedMutate(scope)) throw new McpRoleAuthzDenied();
-            const created = await discord.createRole(guildId, {
+            createdRoleId = await createRoleBelowBot(discord, guildId, botTop, {
               name: input.name,
               ...(input.color !== undefined ? { color: input.color } : {}),
               ...(input.hoist !== undefined ? { hoist: input.hoist } : {}),
               ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
             });
-            createdRoleId = created.roleId;
-            await discord.setRolePosition(guildId, created.roleId, botTop - 1);
             // No undo (ADR 0118 §6 as amended): a creation is not undoable.
             return {};
           },
@@ -3107,6 +3113,882 @@ const roleAdminPortFor = (
             }
             return { status: 'failed', roleId };
         }
+      }),
+  };
+};
+
+/**
+ * Mints a role one below the bot's highest role, with zero permissions: the
+ * adapter always sends `'0'`, so no permission bit can travel. Shared by
+ * `create_role` and panel `{create}` options (slice 4, Task 6b) — the one
+ * place that knows the create-then-move order — rather than duplicated.
+ */
+const createRoleBelowBot = async (
+  discord: DiscordPort,
+  guildId: GuildId,
+  botTop: number,
+  input: {
+    readonly name: string;
+    readonly color?: number | undefined;
+    readonly hoist?: boolean | undefined;
+    readonly mentionable?: boolean | undefined;
+  },
+): Promise<string> => {
+  const created = await discord.createRole(guildId, {
+    name: input.name,
+    ...(input.color !== undefined ? { color: input.color } : {}),
+    ...(input.hoist !== undefined ? { hoist: input.hoist } : {}),
+    ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
+  });
+  await discord.setRolePosition(guildId, created.roleId, botTop - 1);
+  return created.roleId;
+};
+
+/**
+ * The error name marking an authorization denial raised inside a panel
+ * action's `execute`. `runMcpAction` reports a throw's error name as the
+ * failure code, so the port maps this code back to the `unauthorized`
+ * refusal — the same split `McpRoleAuthzDenied` owns for the role tools.
+ */
+class McpPanelAuthzDenied extends Error {
+  constructor() {
+    super('roles.mutate denied inside the action');
+    this.name = 'McpPanelAuthzDenied';
+  }
+}
+
+/**
+ * A grant-policy refusal raised inside a panel action's `execute` — for a
+ * role minted by a `{create}` option, which cannot be checked before it
+ * exists, and as a live re-check of every other option role. The failure
+ * code alone cannot carry the reason and the role id (the pipeline reports
+ * only the error name), so the port reads them off closure state the way
+ * `roleWritesPortFor` reads its `gatewayRefusal`.
+ */
+class McpPanelGrantRefused extends Error {
+  constructor() {
+    super('panel option role refused by the grant policy');
+    this.name = 'McpPanelGrantRefused';
+  }
+}
+
+/** An unusable emoji or definition, likewise carried on closure state. */
+class McpPanelBadInput extends Error {
+  constructor() {
+    super('panel option or definition refused');
+    this.name = 'McpPanelBadInput';
+  }
+}
+
+/** A fresh panel id: `mcp-` plus 8 random hex characters. */
+const newPanelId = (): string => `mcp-${randomBytes(4).toString('hex')}`;
+
+/** The posted message body back into the title and body the tools take. */
+const splitPanelContent = (
+  content: string | undefined,
+): { readonly title: string | undefined; readonly body: string | undefined } => {
+  if (content === undefined) return { title: undefined, body: undefined };
+  const at = content.indexOf('\n\n');
+  if (at === -1) return { title: content, body: undefined };
+  const body = content.slice(at + 2);
+  return { title: content.slice(0, at), body: body === '' ? undefined : body };
+};
+
+/** A stored emoji key back into what an option takes: chars, or the key. */
+const panelEmojiForView = (key: EmojiKey): string => {
+  if (!key.startsWith('u:')) return key;
+  try {
+    return unicodeEmojiChars(key);
+  } catch {
+    return key;
+  }
+};
+
+/**
+ * What an option's emoji becomes in storage: a unicode emoji to its
+ * canonical key, or a `name:id` custom reference to its id's key. Anything
+ * else is `unknown-emoji` naming what was typed.
+ */
+const emojiKeyForOption = (raw: string): EmojiKey => {
+  const trimmed = raw.trim();
+  const custom = /^(?:[^:\s]+:)?(\d{17,20})$/.exec(trimmed);
+  if (custom?.[1] !== undefined) return customEmojiKey(custom[1]);
+  return unicodeEmojiKey(trimmed);
+};
+
+/** A label, emoji or role id into a schema-valid option id, de-duplicated. */
+const slugPanelOptionId = (base: string, taken: Set<string>): string => {
+  const slug =
+    base
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'option';
+  let candidate = slug;
+  let n = 2;
+  while (taken.has(candidate)) candidate = `${slug}-${String(n++)}`;
+  taken.add(candidate);
+  return candidate;
+};
+
+type PanelRefused = Extract<McpPanelOutcome, { status: 'refused' }>;
+
+/** Every option role through the grant policy and the floor, live. */
+const checkPanelRoles = (
+  client: Client,
+  scope: GuildScope,
+  roleIds: readonly string[],
+): { readonly ok: true } | { readonly ok: false; readonly outcome: PanelRefused } => {
+  for (const roleId of roleIds) {
+    const refusal = roleGrantRefusal(client, scope, roleId);
+    if (refusal !== true) {
+      return { ok: false, outcome: { status: 'refused', reason: refusal, detail: roleId } };
+    }
+  }
+  return { ok: true };
+};
+
+const mapPanelTargetRefusal = (
+  target: Extract<SendTarget, { ok: false }>,
+): PanelRefused => {
+  switch (target.reason) {
+    case 'not-in-guild':
+      return { status: 'refused', reason: 'unknown-channel' };
+    case 'not-in-send-scope':
+      return { status: 'refused', reason: 'channel-not-allowlisted' };
+    case 'private-thread-not-allowed':
+      return { status: 'refused', reason: 'private-thread' };
+    case 'bot-lacks-permission':
+      return {
+        status: 'refused',
+        reason: 'bot-lacks-permission',
+        ...(target.missing !== undefined ? { detail: target.missing } : {}),
+      };
+  }
+};
+
+/**
+ * The edit's raw channel ref to an id. It travels unresolved on purpose —
+ * the tool layer accepts it solely to refuse a move — so a snowflake passes
+ * through (existence is the target layer's business) and anything else
+ * matches case-insensitively against live channel names. A traversal-shaped
+ * string is neither, and refuses here as an unknown channel, never as a path.
+ */
+const resolvePanelChannelRef = (
+  client: Client,
+  guildId: GuildId,
+  ref: string,
+):
+  | { readonly ok: true; readonly channelId: string }
+  | { readonly ok: false; readonly outcome: PanelRefused } => {
+  const trimmed = ref.trim();
+  try {
+    return { ok: true, channelId: parseSnowflakeId(trimmed) };
+  } catch {
+    const needle = (
+      trimmed.startsWith('#') ? trimmed.slice('#'.length).trim() : trimmed
+    ).toLowerCase();
+    const matches = [...(client.guilds.cache.get(guildId)?.channels.cache.values() ?? [])]
+      .filter((channel) => channel.name.toLowerCase() === needle)
+      .sort((a, b) => (a.id < b.id ? -1 : 1))
+      .slice(0, 10);
+    if (matches.length === 1 && matches[0] !== undefined) {
+      return { ok: true, channelId: matches[0].id };
+    }
+    if (matches.length === 0) return { ok: false, outcome: { status: 'refused', reason: 'unknown-channel' } };
+    return {
+      ok: false,
+      outcome: {
+        status: 'refused',
+        reason: 'ambiguous-channel',
+        detail: matches.map((channel) => channel.id).join(', '),
+      },
+    };
+  }
+};
+
+/**
+ * A removal, reorder or (for edits) addition ref to a role id. A snowflake
+ * on the panel passes through; a live name match must also land on the
+ * panel. Anything else refuses with the id only when there is one to name.
+ */
+const resolvePanelOptionRef = (
+  client: Client,
+  guildId: GuildId,
+  panelId: string,
+  memberIds: ReadonlySet<string>,
+  ref: string,
+):
+  | { readonly ok: true; readonly roleId: string }
+  | { readonly ok: false; readonly outcome: PanelRefused } => {
+  const trimmed = ref.trim();
+  if (isSnowflake(trimmed)) {
+    if (memberIds.has(trimmed)) return { ok: true, roleId: trimmed };
+    const live = client.guilds.cache.get(guildId)?.roles.cache.has(trimmed) === true;
+    return live
+      ? {
+          ok: false,
+          outcome: {
+            status: 'refused',
+            reason: 'invalid-definition',
+            detail: `role ${trimmed} is not an option of panel ${panelId}`,
+          },
+        }
+      : { ok: false, outcome: { status: 'refused', reason: 'unknown-role' } };
+  }
+  const needle = normalizeRef(trimmed, '@');
+  const matches = [...(client.guilds.cache.get(guildId)?.roles.cache.values() ?? [])]
+    .filter((role) => role.name.toLowerCase() === needle)
+    .sort((a, b) => (a.id < b.id ? -1 : 1))
+    .slice(0, 10);
+  if (matches.length === 0) return { ok: false, outcome: { status: 'refused', reason: 'unknown-role' } };
+  if (matches.length > 1 || matches[0] === undefined) {
+    return {
+      ok: false,
+      outcome: {
+        status: 'refused',
+        reason: 'ambiguous-role',
+        detail: matches.map((role) => role.id).join(', '),
+      },
+    };
+  }
+  return memberIds.has(matches[0].id)
+    ? { ok: true, roleId: matches[0].id }
+    : {
+        ok: false,
+        outcome: {
+          status: 'refused',
+          reason: 'invalid-definition',
+          detail: `role ${matches[0].id} is not an option of panel ${panelId}`,
+        },
+      };
+};
+
+/**
+ * The `McpPanelsPort` behind `list_panels` / `get_panel` and `create_panel`
+ * / `edit_panel` / `delete_panel` (slice 4, Task 6b), field by field like
+ * `sendPortFor` above. The reads wrap the `panel list` / `panel show` ops
+ * reads; the writes run the one `runMcpAction` pipeline — kinds
+ * `panel.create` / `panel.edit` / `panel.delete`, cap group `structure` —
+ * over the same ops ports `panel create` / `panel edit` / `panel delete` /
+ * `panel sync` use, so the dashboard, the CLI and the MCP cannot fork.
+ *
+ * - Reads return ids plus the titles and labels the panel renders, never role
+ *   names (rule 4): the view carries role ids, and the audit record carries
+ *   only the guild key.
+ * - Writes authorize `roles.mutate` exactly as `create_role` does, before
+ *   the claim and again inside `execute`. Every option role — existing, or
+ *   minted by a `{create}` option — passes `roleGrantRefusal` live before
+ *   any storage write: one failing role refuses the whole call naming the
+ *   role and the reason. `{create}` roles mint through the shared
+ *   `createRoleBelowBot` (zero permissions, directly below the bot) and join
+ *   `managed_roles` with the panel row in the one `createPanel` transaction.
+ * - `create_panel` generates `mcp-` plus 8 random hex inside `execute`, so a
+ *   replay never mints a second id; the id travels back through the closure
+ *   like `create_role`'s role id, never through `undo_json`. None of the
+ *   three writes records an undo: the text points at `delete_panel` instead.
+ * - `edit_panel` rebuilds the definition from `findPanel` plus the changes
+ *   and refuses a channel change as `panel edit` does; the posted message is
+ *   republished in place. `delete_panel` removes the message and the rows
+ *   with the `panel delete` semantics (an already-gone message counts as
+ *   success), and the roles stay allowlisted.
+ *
+ * A fault leaves one allowlisted-fields error line via the logged calls
+ * above, never a title, a label or a role name (rule 4).
+ */
+const panelsPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read: the grant policy, the floor,
+   * the bot's top position and ref resolution all read the cache, so a role
+   * Discord changed after allowlisting refuses before any Discord call.
+   */
+  client: Client,
+): McpPanelsPort => {
+  /** `roles.mutate` for this token's account, live. A denial claims nothing. */
+  const authorizedMutate = (scope: GuildScope): boolean =>
+    authorize(
+      {
+        store: authzStoreFor(scope),
+        guildId: scope.guildId,
+        actor: { type: 'dashboard', id: principal.accountId, roleIds: [] },
+      },
+      'roles.mutate',
+    ).ok;
+
+  /** The pipeline's outcomes onto the panel outcome, ids only. */
+  const mapPipelineOutcome = (
+    outcome: McpActionOutcome<{ resultMessageId?: string; resultThreadId?: string; undo?: unknown }>,
+    panelId: string | undefined,
+  ): McpPanelOutcome => {
+    switch (outcome.status) {
+      case 'done': {
+        if (panelId === undefined) throw new Error('panel action completed without a panel id');
+        const messageId = outcome.result.resultMessageId;
+        return {
+          status: 'done',
+          actionId: outcome.actionId,
+          panelId,
+          ...(messageId !== undefined ? { messageId } : {}),
+        };
+      }
+      case 'dry-run':
+        return { status: 'dry-run', actionId: outcome.actionId };
+      case 'replayed':
+        return {
+          status: 'replayed',
+          actionId: outcome.actionId,
+          ...(outcome.resultMessageId !== undefined ? { messageId: outcome.resultMessageId } : {}),
+        };
+      case 'refused':
+        switch (outcome.reason) {
+          case 'killswitch':
+            return { status: 'refused', reason: 'killswitch' };
+          case 'breaker-open':
+            return { status: 'refused', reason: 'breaker-open' };
+          case 'rate-cap':
+            return {
+              status: 'refused',
+              reason: 'rate-cap',
+              ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+            };
+          case 'key-reused-with-other-args':
+            return { status: 'refused', reason: 'duplicate-key-different-content' };
+          case 'duplicate-content-recently':
+            return { status: 'refused', reason: 'duplicate-content-recently' };
+          case 'guild-unknown':
+          case 'target':
+            // Unreachable: every target refusal above returned before the
+            // pipeline ran, so `targetCheck` is always `true` here.
+            throw new Error(GUILD_REFUSAL_MESSAGE);
+        }
+        break;
+      case 'failed':
+        // Set on closure state beside each throw below, the way
+        // `roleWritesPortFor` carries its gateway refusal: the pipeline
+        // reports only the error name, not the reason and role it refused.
+        if (grantRefusal !== undefined) {
+          return { status: 'refused', reason: grantRefusal.reason, detail: grantRefusal.roleId };
+        }
+        if (badInput !== undefined) {
+          return { status: 'refused', reason: badInput.reason, detail: badInput.detail };
+        }
+        if (outcome.code === 'McpPanelAuthzDenied') {
+          return { status: 'refused', reason: 'unauthorized' };
+        }
+        return { status: 'failed', ...(panelId !== undefined ? { panelId } : {}) };
+    }
+  };
+
+  /** A grant refusal inside this call's `execute`, reset per call. */
+  let grantRefusal: { readonly reason: RolePingRefusal; readonly roleId: string } | undefined;
+  /** An emoji or definition refusal inside this call's `execute`. */
+  let badInput: { readonly reason: 'unknown-emoji' | 'invalid-definition'; readonly detail: string } | undefined;
+
+  const checkLiveRoles = (
+    scope: GuildScope,
+    roleIds: readonly string[],
+  ): void => {
+    for (const roleId of roleIds) {
+      const refusal = roleGrantRefusal(client, scope, roleId);
+      if (refusal !== true) {
+        grantRefusal = { reason: refusal, roleId };
+        throw new McpPanelGrantRefused();
+      }
+    }
+  };
+
+  /**
+   * The grant policy for a role this call just minted. `roleGrantRefusal`
+   * cannot answer it — it reads the discord.js cache, which cannot know a
+   * role minted milliseconds ago (in production the create event has not
+   * arrived either) — so the same `rolePingAllowed` policy runs on the
+   * creation's known facts instead: zero permissions by construction (the
+   * port type has no permissions field and the adapter always sends `'0'`),
+   * directly below the bot, unmanaged, never @everyone. In allowlist grant
+   * mode the fresh id is not on the grant allowlist and refuses, exactly as
+   * an existing unlisted role does.
+   */
+  const checkCreatedRole = (
+    scope: GuildScope,
+    guildId: GuildId,
+    botTop: number,
+    roleId: string,
+  ): void => {
+    const policy = mcpRolePolicyRepo.readRolePolicy(scope);
+    const allowed = rolePingAllowed(
+      {
+        id: roleId,
+        position: botTop - 1,
+        permissions: 0n,
+        managed: false,
+        isEveryone: roleId === guildId,
+      },
+      botTop,
+      policy.grantMode,
+      mcpRolePolicyRepo.isRoleAllowlisted(scope, roleId, 'grant'),
+    );
+    if (allowed !== true) {
+      grantRefusal = { reason: allowed, roleId };
+      throw new McpPanelGrantRefused();
+    }
+  };
+
+  const buildOptions = (
+    taken: Set<string>,
+    options: readonly McpPanelOptionInput[],
+    roleIds: readonly string[],
+  ): PanelDefinition['options'] => {
+    const parsed = z.object({
+      options: z.array(
+        z.object({
+          optionId: z.string(),
+          roleId: z.string(),
+          emojiKey: z.string().optional(),
+          label: z.string().optional(),
+          position: z.number(),
+        }),
+      ),
+    });
+    const built = options.map((option, index) => {
+      const roleId = roleIds[index];
+      if (roleId === undefined) throw new Error('panel options and role ids diverged');
+      let emojiKey: EmojiKey | undefined;
+      if (option.emoji !== undefined) {
+        try {
+          emojiKey = emojiKeyForOption(option.emoji);
+        } catch {
+          badInput = { reason: 'unknown-emoji', detail: option.emoji.trim() };
+          throw new McpPanelBadInput();
+        }
+      }
+      const label = option.label === undefined ? undefined : option.label.trim();
+      return {
+        optionId: slugPanelOptionId(label ?? option.emoji?.trim() ?? roleId, taken),
+        roleId,
+        ...(emojiKey !== undefined ? { emojiKey } : {}),
+        ...(label !== undefined ? { label } : {}),
+        position: index,
+      };
+    });
+    // Shape-check here so a typo surfaces before the schema's vocabulary;
+    // the schema itself still owns validity, parsed by the caller.
+    return parsed.parse({ options: built }).options as PanelDefinition['options'];
+  };
+
+  return {
+    list: (guildId) =>
+      loggedCall(deps.logger, 'panelList', () => {
+        const ports = deps.portsFor(deps.scopes.forGuild(guildId));
+        return ports.listPanels().map((panel) => {
+          const full = ports.findPanel(panel.panelId);
+          const { title } = splitPanelContent(full?.content);
+          return {
+            panelId: panel.panelId,
+            title: title ?? panel.panelId,
+            behaviour: panel.behaviour,
+            component: panel.component,
+            status: panel.status,
+            ...(panel.messageId !== undefined ? { messageId: panel.messageId } : {}),
+            optionCount: panel.optionCount,
+          };
+        });
+      }),
+    get: (guildId, panelId) =>
+      loggedCall(deps.logger, 'panelGet', () => {
+        const panel = deps.portsFor(deps.scopes.forGuild(guildId)).findPanel(panelId);
+        if (panel === undefined) return undefined;
+        const { title, body } = splitPanelContent(panel.content);
+        return {
+          panelId: panel.panelId,
+          channelId: panel.channelId,
+          ...(panel.messageId !== undefined ? { messageId: panel.messageId } : {}),
+          behaviour: panel.behaviour,
+          component: panel.component,
+          status: panel.status,
+          title: title ?? panel.panelId,
+          ...(body !== undefined ? { body } : {}),
+          options: panel.options.map((option) => ({
+            optionId: option.optionId,
+            roleId: option.roleId,
+            ...(option.label !== undefined ? { label: option.label } : {}),
+            ...(option.emojiKey !== undefined ? { emoji: panelEmojiForView(option.emojiKey) } : {}),
+          })),
+        };
+      }),
+    create: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'panelCreate', async () => {
+        grantRefusal = undefined;
+        badInput = undefined;
+        const scope = deps.scopes.forGuild(guildId);
+        const ports = deps.portsFor(scope);
+        if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
+        // Every existing option role passes live before any write: one
+        // failing role refuses the whole call with no row and no Discord
+        // call. `{create}` specs name nothing yet and are checked after
+        // minting, inside `execute`.
+        const existingIds = input.options.flatMap((option) =>
+          typeof option.role === 'string' ? [option.role] : [],
+        );
+        const grant = checkPanelRoles(client, scope, existingIds);
+        if (!grant.ok) return grant.outcome;
+        // The channel the dashboard handler's way: send scope ∩ the bot's
+        // live post permission, before the claim.
+        const target = await resolveSendTarget(client, scope, guildId, input.channel, 'post');
+        if (!target.ok) return mapPanelTargetRefusal(target);
+        const botTop = client.guilds.cache.get(guildId)?.members.me?.roles.highest.position;
+        if (botTop === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
+        // Through the closure like `create_role`'s role id: generated inside
+        // `execute`, so a replay never mints a second id.
+        let createdPanelId: string | undefined;
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+          ),
+          {
+            kind: 'panel.create',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('panel.create', {
+              channel: target.channelId,
+              title: input.title,
+              body: input.body,
+              behaviour: input.behaviour,
+              component: input.component,
+              options: input.options,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            if (!authorizedMutate(scope)) throw new McpPanelAuthzDenied();
+            // 1. Mint any `{create}` roles: zero permissions, below the bot.
+            const createdByIndex = new Map<number, string>();
+            for (const [index, option] of input.options.entries()) {
+              if (typeof option.role === 'string') continue;
+              createdByIndex.set(
+                index,
+                await createRoleBelowBot(discord, guildId, botTop, {
+                  name: option.role.create.name,
+                  ...(option.role.create.color !== undefined
+                    ? { color: option.role.create.color }
+                    : {}),
+                }),
+              );
+            }
+            const roleIds = input.options.map((option, index) => {
+              if (typeof option.role === 'string') return option.role;
+              const created = createdByIndex.get(index);
+              if (created === undefined) throw new Error('panel role creation left no id');
+              return created;
+            });
+            // 2. Every option role — existing or just minted — passes live
+            // before any storage write. Minted roles run the same policy on
+            // their known facts (the cache cannot know them yet).
+            const createdSet = new Set(createdByIndex.values());
+            checkLiveRoles(
+              scope,
+              roleIds.filter((roleId) => !createdSet.has(roleId)),
+            );
+            for (const roleId of createdSet) checkCreatedRole(scope, guildId, botTop, roleId);
+            // 3. The definition, through the one schema every surface shares.
+            const definition = {
+              panelId: newPanelId(),
+              kind: 'managed' as const,
+              channelId: target.channelId,
+              content: input.body === undefined ? input.title : `${input.title}\n\n${input.body}`,
+              behaviour: input.behaviour,
+              component: input.component,
+              blockedRoleIds: [],
+              options: buildOptions(new Set<string>(), input.options, roleIds).map((option) => ({
+                ...option,
+                roleId: parseSnowflakeId(option.roleId),
+              })),
+            };
+            const parsed = panelDefinitionSchema.safeParse(definition);
+            if (!parsed.success) {
+              const problems = parsed.error.issues
+                .slice(0, 3)
+                .map((issue) => {
+                  const where = issue.path.join('.');
+                  return where === '' ? issue.message : `${where}: ${issue.message}`;
+                })
+                .join('; ');
+              badInput = { reason: 'invalid-definition', detail: problems };
+              throw new McpPanelBadInput();
+            }
+            createdPanelId = parsed.data.panelId;
+            // 4. The rows — options plus the allowlist join in the one
+            // transaction — then the post.
+            const newlyAllowlisted = roleIds.filter((roleId) => !ports.isManagedRole(roleId));
+            ports.createPanel(parsed.data, newlyAllowlisted);
+            const published = await ports.publishPanel(parsed.data.panelId);
+            return published.messageId === undefined
+              ? {}
+              : { resultMessageId: published.messageId };
+          },
+        );
+        return mapPipelineOutcome(outcome, createdPanelId);
+      }),
+    edit: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'panelEdit', async () => {
+        grantRefusal = undefined;
+        badInput = undefined;
+        const scope = deps.scopes.forGuild(guildId);
+        const ports = deps.portsFor(scope);
+        if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
+        const existing = ports.findPanel(input.panelId);
+        if (existing === undefined) return { status: 'refused', reason: 'unknown-panel' };
+        // A panel's channel is immutable: the posted message lives in it, so
+        // a different channel refuses rather than orphaning the message.
+        if (input.channel !== undefined) {
+          const resolved = resolvePanelChannelRef(client, guildId, input.channel);
+          if (!resolved.ok) return resolved.outcome;
+          if (resolved.channelId !== existing.channelId) {
+            return { status: 'refused', reason: 'channel-change' };
+          }
+        }
+        const byRoleId = new Map(existing.options.map((option) => [option.roleId, option]));
+        const remainingIds = existing.options
+          .map((option) => option.roleId)
+          .filter((roleId) => roleId !== undefined);
+        // Options to add: existing ids pass live now; `{create}` specs are
+        // minted and checked inside `execute`.
+        const addExisting = (input.addOptions ?? []).flatMap((option) =>
+          typeof option.role === 'string' ? [option.role] : [],
+        );
+        const grant = checkPanelRoles(client, scope, addExisting);
+        if (!grant.ok) return grant.outcome;
+        for (const roleId of addExisting) {
+          if (byRoleId.has(roleId)) {
+            return {
+              status: 'refused',
+              reason: 'invalid-definition',
+              detail: `role ${roleId} is already an option of panel ${existing.panelId}`,
+            };
+          }
+        }
+        // Removals resolve against the stored panel, daemon-side.
+        const memberIds = new Set(byRoleId.keys());
+        const removeIds: string[] = [];
+        for (const ref of input.removeOptions ?? []) {
+          const resolved = resolvePanelOptionRef(client, guildId, existing.panelId, memberIds, ref);
+          if (!resolved.ok) return resolved.outcome;
+          if (!removeIds.includes(resolved.roleId)) removeIds.push(resolved.roleId);
+        }
+        const keptIds = remainingIds.filter((roleId) => !removeIds.includes(roleId));
+        // A reorder names exactly the remaining roles plus the added
+        // existing ones: a `{create}` name cannot resolve yet, so minted
+        // roles keep their place at the end (see `execute`).
+        const addedIds = [...addExisting];
+        const reorderBase = new Set([...keptIds, ...addedIds]);
+        let order: readonly string[] | undefined;
+        if (input.reorder !== undefined) {
+          const ids: string[] = [];
+          for (const ref of input.reorder) {
+            const resolved = resolvePanelOptionRef(client, guildId, existing.panelId, reorderBase, ref);
+            if (!resolved.ok) return resolved.outcome;
+            ids.push(resolved.roleId);
+          }
+          const same =
+            ids.length === reorderBase.size &&
+            new Set(ids).size === ids.length &&
+            ids.every((roleId) => reorderBase.has(roleId));
+          if (!same) {
+            return {
+              status: 'refused',
+              reason: 'bad-reorder',
+              detail: `panel ${existing.panelId} has ${String(reorderBase.size)} role(s): ${[...reorderBase].sort().join(', ')}`,
+            };
+          }
+          order = ids;
+        }
+        const target = await resolveSendTarget(client, scope, guildId, existing.channelId, 'post');
+        if (!target.ok) return mapPanelTargetRefusal(target);
+        const botTop = client.guilds.cache.get(guildId)?.members.me?.roles.highest.position;
+        if (botTop === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+          ),
+          {
+            kind: 'panel.edit',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('panel.edit', {
+              panel: existing.panelId,
+              ...(input.channel !== undefined ? { channel: input.channel } : {}),
+              ...(input.title !== undefined ? { title: input.title } : {}),
+              ...(input.body !== undefined ? { body: input.body } : {}),
+              ...(input.behaviour !== undefined ? { behaviour: input.behaviour } : {}),
+              ...(input.component !== undefined ? { component: input.component } : {}),
+              ...(input.addOptions !== undefined ? { addOptions: input.addOptions } : {}),
+              ...(removeIds.length > 0 ? { removeOptions: removeIds } : {}),
+              ...(order !== undefined ? { reorder: order } : {}),
+            }),
+            targetChannelId: existing.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            if (!authorizedMutate(scope)) throw new McpPanelAuthzDenied();
+            const createdByIndex = new Map<number, string>();
+            const addOptions = input.addOptions ?? [];
+            for (const [index, option] of addOptions.entries()) {
+              if (typeof option.role === 'string') continue;
+              createdByIndex.set(
+                index,
+                await createRoleBelowBot(discord, guildId, botTop, {
+                  name: option.role.create.name,
+                  ...(option.role.create.color !== undefined
+                    ? { color: option.role.create.color }
+                    : {}),
+                }),
+              );
+            }
+            const added: { readonly roleId: string; readonly label?: string; readonly emoji?: string }[] =
+              addOptions.map((option, index) => {
+                if (typeof option.role === 'string') {
+                  return {
+                    roleId: option.role,
+                    ...(option.label !== undefined ? { label: option.label } : {}),
+                    ...(option.emoji !== undefined ? { emoji: option.emoji } : {}),
+                  };
+                }
+                const created = createdByIndex.get(index);
+                if (created === undefined) throw new Error('panel role creation left no id');
+                return {
+                  roleId: created,
+                  ...(option.label !== undefined ? { label: option.label } : {}),
+                  ...(option.emoji !== undefined ? { emoji: option.emoji } : {}),
+                };
+              });
+            const finalIds = [...(order ?? keptIds), ...added.map((entry) => entry.roleId)];
+            const createdSet = new Set(createdByIndex.values());
+            checkLiveRoles(
+              scope,
+              finalIds.filter((roleId) => !createdSet.has(roleId)),
+            );
+            for (const roleId of createdSet) checkCreatedRole(scope, guildId, botTop, roleId);
+            // Kept options keep their ids, labels and emoji; added ones are
+            // minted, in place after the kept ones (or the reorder).
+            const taken = new Set(
+              keptIds.flatMap((roleId) => {
+                const kept = byRoleId.get(roleId);
+                return kept === undefined ? [] : [kept.optionId];
+              }),
+            );
+            const keptDefs = (order ?? keptIds).flatMap((roleId, position) => {
+              const kept = byRoleId.get(roleId);
+              if (kept === undefined) throw new Error(`panel lost option for role ${roleId}`);
+              return [
+                {
+                  optionId: kept.optionId,
+                  roleId: kept.roleId,
+                  ...(kept.emojiKey !== undefined ? { emojiKey: kept.emojiKey } : {}),
+                  ...(kept.label !== undefined ? { label: kept.label } : {}),
+                  position,
+                },
+              ];
+            });
+            const addedInputs: readonly McpPanelOptionInput[] = added.map((entry) => ({
+              role: entry.roleId,
+              ...(entry.label !== undefined ? { label: entry.label } : {}),
+              ...(entry.emoji !== undefined ? { emoji: entry.emoji } : {}),
+            }));
+            const addedDefs = buildOptions(taken, addedInputs, added.map((entry) => entry.roleId)).map(
+              (option, position) => ({
+                ...option,
+                roleId: parseSnowflakeId(option.roleId),
+                position: keptDefs.length + position,
+              }),
+            );
+            const { title: oldTitle, body: oldBody } = splitPanelContent(existing.content);
+            const title = input.title ?? oldTitle;
+            const body = input.body ?? oldBody;
+            const definition = {
+              panelId: existing.panelId,
+              kind: existing.kind,
+              channelId: existing.channelId,
+              ...(existing.messageId !== undefined ? { messageId: existing.messageId } : {}),
+              ...(title !== undefined
+                ? { content: body === undefined ? title : `${title}\n\n${body}` }
+                : {}),
+              behaviour: input.behaviour ?? existing.behaviour,
+              component: input.component ?? existing.component,
+              maxRoles: existing.maxRoles,
+              requiredRoleId: existing.requiredRoleId,
+              blockedRoleIds: [...existing.blockedRoleIds],
+              options: [...keptDefs, ...addedDefs],
+            };
+            const parsed = panelDefinitionSchema.safeParse(definition);
+            if (!parsed.success) {
+              const problems = parsed.error.issues
+                .slice(0, 3)
+                .map((issue) => {
+                  const where = issue.path.join('.');
+                  return where === '' ? issue.message : `${where}: ${issue.message}`;
+                })
+                .join('; ');
+              badInput = { reason: 'invalid-definition', detail: problems };
+              throw new McpPanelBadInput();
+            }
+            const newlyAllowlisted = finalIds.filter((roleId) => !ports.isManagedRole(roleId));
+            ports.updatePanel(parsed.data, newlyAllowlisted);
+            const published = await ports.publishPanel(existing.panelId);
+            return published.messageId === undefined
+              ? {}
+              : { resultMessageId: published.messageId };
+          },
+        );
+        return mapPipelineOutcome(outcome, existing.panelId);
+      }),
+    remove: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'panelDelete', async () => {
+        grantRefusal = undefined;
+        badInput = undefined;
+        const scope = deps.scopes.forGuild(guildId);
+        const ports = deps.portsFor(scope);
+        if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
+        const existing = ports.findPanel(input.panelId);
+        if (existing === undefined) return { status: 'refused', reason: 'unknown-panel' };
+        const removedMessageId = existing.messageId;
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal),
+          {
+            kind: 'panel.delete',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('panel.delete', { panel: input.panelId }),
+            targetChannelId: existing.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            if (!authorizedMutate(scope)) throw new McpPanelAuthzDenied();
+            // The `panel delete` semantics: the message first (an
+            // already-gone one counts as success), then the rows. The roles
+            // stay allowlisted either way.
+            await ports.unpublishPanel(input.panelId);
+            return removedMessageId === undefined ? {} : { resultMessageId: removedMessageId };
+          },
+        );
+        return mapPipelineOutcome(outcome, existing.panelId);
       }),
   };
 };
@@ -4305,6 +5187,7 @@ export const registerMcpRoutes = (
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
       roleWrites: roleWritesPortFor(principal, deps, discord, client, mcpLimiters),
       roleAdmin: roleAdminPortFor(principal, deps, discord, client),
+      panels: panelsPortFor(principal, deps, discord, client),
       actions: actionsPortFor(principal, deps, discord, client, mcpLimiters),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
