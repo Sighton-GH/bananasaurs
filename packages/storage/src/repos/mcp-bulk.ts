@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, gte, isNotNull, isNull } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { mcpBulkPreviews } from '../schema.js';
@@ -99,6 +99,26 @@ export const findPreviewByToken = (
   });
 
 /**
+ * The preview with this id in this guild, if any — the durable job's read
+ * path. The job carries only the preview id (never the confirm token, which
+ * must not sit in the durable jobs table), so it loads the stored member set
+ * here and walks it from its persisted cursor, never re-resolving membership.
+ * Consumed and expired rows come back too: the job decides those itself.
+ */
+export const findPreviewById = (
+  scope: GuildScope,
+  previewId: string,
+): McpBulkPreviewRow | undefined =>
+  read(scope, (db) => {
+    const row = db
+      .select()
+      .from(mcpBulkPreviews)
+      .where(scope.only(mcpBulkPreviews, eq(mcpBulkPreviews.previewId, previewId)))
+      .get();
+    return row === undefined ? undefined : toPreviewRow(row);
+  });
+
+/**
  * Single-use, expiring claim: sets `consumed_at` and `job_id` only when the
  * row is still unconsumed and `now` is before `expires_at`. The predicate
  * is in the UPDATE itself, so two concurrent confirms consume once.
@@ -125,4 +145,43 @@ export const consumePreview = (
       )
       .run();
     return result.changes === 1;
+  });
+
+/**
+ * The `member_role` cap's bulk half (ADR 0118 §8, no migration): how many
+ * previews this guild consumed since `sinceMs`, and the total members those
+ * previews covered. The daemon's `countSince` subtracts the count (one
+ * `role.bulk` ledger row per consumed preview — every confirm claims exactly
+ * one row and consumes exactly one preview inside its execute) and adds the
+ * member total, so the cap counts members instead of confirms.
+ *
+ * Bounds match `countActionsSince` (`consumed_at >= sinceMs`, like the
+ * ledger's `created_at >= sinceMs`): a preview consumed microseconds after
+ * its action row was claimed still lands in the same window except at the
+ * exact boundary. Unconsumed rows — including dry-run confirms, whose execute
+ * never runs — never count here.
+ */
+export interface ConsumedPreviewTotals {
+  readonly previewCount: number;
+  readonly memberTotal: number;
+}
+
+export const sumConsumedMembers = (scope: GuildScope, sinceMs: number): ConsumedPreviewTotals =>
+  read(scope, (db) => {
+    const rows = db
+      .select({ memberIdsJson: mcpBulkPreviews.memberIdsJson })
+      .from(mcpBulkPreviews)
+      .where(
+        scope.only(
+          mcpBulkPreviews,
+          and(isNotNull(mcpBulkPreviews.consumedAt), gte(mcpBulkPreviews.consumedAt, sinceMs)),
+        ),
+      )
+      .all();
+    let memberTotal = 0;
+    for (const row of rows) {
+      const ids = JSON.parse(row.memberIdsJson) as readonly unknown[];
+      memberTotal += ids.length;
+    }
+    return { previewCount: rows.length, memberTotal };
   });

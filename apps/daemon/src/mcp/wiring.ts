@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
@@ -35,6 +35,12 @@ import {
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
 import { mcpRoleGatewayFor, roleGrantRefusal } from './roles-gateway.js';
+import {
+  MCP_BULK_MAX_ATTEMPTS,
+  MCP_BULK_ROLE_KIND,
+  mcpBulkRoleDedupeKey,
+  mcpBulkRolePayload,
+} from '../jobs/mcp-bulk-role.js';
 import { resolvePings, resolveSendTarget, type SendTarget, type TargetNeed } from './targets.js';
 import { protectedMessageReason } from './protected.js';
 import { resolveChannel } from '../channels/resolver.js';
@@ -47,6 +53,8 @@ import {
   isSnowflake,
   MEMBER_LISTING_CAP,
   normalizeRef,
+  bulkArgsHashFor,
+  BULK_MEMBERS_MAX,
   type McpActionView,
   type McpActionsPort,
   type McpArchiveMessage,
@@ -73,6 +81,7 @@ import {
   type McpMessageWritesPort,
   type McpRoleWriteOutcome,
   type McpRoleWritesPort,
+  type McpBulkRolesPort,
   type McpThreadsPort,
   type McpThreadWritesPort,
   type McpThreadWriteOutcome,
@@ -91,6 +100,7 @@ import {
   effectRepo,
   guildRepo,
   isTargetProtected,
+  jobRepo,
   loggingRepo,
   modCaseRepo,
   panelRepo,
@@ -98,6 +108,7 @@ import {
   roleRepo,
   accountRepo,
   mcpActionsRepo,
+  mcpBulkRepo,
   mcpRolePolicyRepo,
   mcpSendRepo,
   taskBindingRepo,
@@ -2809,6 +2820,277 @@ const roleWritesPortFor = (
   };
 };
 
+/** How long a stored bulk preview stays confirmable. */
+const BULK_PREVIEW_TTL_MS = 10 * 60 * 1000;
+
+type BulkRoleCheck =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason: 'unknown-role' | 'role-not-allowlisted' | 'role-not-permitted';
+      readonly detail?: string | undefined;
+    };
+
+/**
+ * The role half of `precheckRoleTarget`, for a change whose members are not
+ * known yet (the preview) or arrive as a set (the confirm): the role exists,
+ * is in `managed_roles`, and passes the MCP grant policy with the live floor.
+ * Member checks (owner, protected) stay per-member work for the job's gateway
+ * calls, which re-verify them live anyway.
+ */
+const precheckBulkRole = async (
+  client: Client,
+  discord: DiscordPort,
+  scope: GuildScope,
+  roleId: string,
+): Promise<BulkRoleCheck> => {
+  if (client.guilds.cache.get(scope.guildId)?.roles.cache.get(roleId) === undefined) {
+    let found = false;
+    try {
+      found = (await discord.fetchRoles(scope.guildId)).some((role) => role.id === roleId);
+    } catch {
+      found = false;
+    }
+    if (!found) {
+      return { ok: false, reason: 'unknown-role', detail: roleId };
+    }
+  }
+  if (!roleRepo.isAllowlisted(scope, roleId)) {
+    return { ok: false, reason: 'role-not-allowlisted', detail: roleId };
+  }
+  const grantRefusal = roleGrantRefusal(client, scope, roleId);
+  if (grantRefusal !== true) {
+    return { ok: false, reason: 'role-not-permitted', detail: grantRefusal };
+  }
+  return { ok: true };
+};
+
+/**
+ * The `McpBulkRolesPort` behind `bulk_role_change` (slice 4, Task 4), field
+ * by field like `roleWritesPortFor` above. It reuses that port's helpers —
+ * `precheckRoleTarget`'s role half, `authorizeRoleChange`, the MCP gateway
+ * with the per-guild `mcpLimiters` (in the job), one `effect_batches` row
+ * per action (source `mcp`) — and duplicates none of them.
+ *
+ * - Preview stores the row and answers the single-use token: 128 random bits
+ *   (`crypto.randomBytes(16)`, hex) with only its sha256 kept, a 10-minute
+ *   expiry, and the daemon-recomputed args hash of `{action, role,
+ *   members}`. It writes no `mcp_actions` row, and the token never reaches a
+ *   row, a log line or an audit payload.
+ * - Confirm checks guild (the repo scopes by guild, so another guild's token
+ *   is simply unknown), single use, expiry and the args hash — each a
+ *   distinct refusal — re-runs the role pre-check live, authorizes
+ *   `roles.mutate`, then runs one `runMcpAction` (kind `role.bulk`, cap group
+ *   `member_role`, weight = the member count). Inside `execute` it enqueues
+ *   the `mcp.bulk_role` job, consumes the preview against that job id (a
+ *   lost race refuses as already used, through the `consumedRace` flag —
+ *   the same shape as the role port's `denied` flag), and opens the batch
+ *   row the job's effects claim under.
+ */
+const bulkRolesPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read: the grant policy and the floor
+   * answer from its role cache, so a role that gained a dangerous permission
+   * is refused before anything is stored. (No limiter: the port makes no
+   * Discord calls itself — the job paces its gateway calls through the
+   * per-guild `mcpLimiters`, like the role port's gateway does.)
+   */
+  client: Client,
+): McpBulkRolesPort => {
+  return {
+    preview: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'bulkPreview', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const target = await precheckBulkRole(client, discord, scope, input.roleId);
+        if (!target.ok) {
+          return {
+            status: 'refused',
+            reason: target.reason,
+            ...(target.detail !== undefined ? { detail: target.detail } : {}),
+          };
+        }
+        if (input.memberIds.length > BULK_MEMBERS_MAX) {
+          return {
+            status: 'refused',
+            reason: 'too-many',
+            detail: String(input.memberIds.length),
+          };
+        }
+        const now = deps.now();
+        const token = randomBytes(16).toString('hex');
+        // The args hash of {action, role, members-or-selector}: the stored
+        // form is whichever the preview resolved, so a selector confirm
+        // hashes equal and an explicit one does too.
+        const selector = input.selector;
+        const argsHash =
+          selector === undefined
+            ? bulkArgsHashFor({
+                action: input.action,
+                roleId: input.roleId,
+                members: [...input.memberIds],
+              })
+            : bulkArgsHashFor({ action: input.action, roleId: input.roleId, selector });
+        mcpBulkRepo.createPreview(scope, {
+          previewId: randomUUID(),
+          token,
+          actionKind: input.action,
+          roleId: input.roleId,
+          argsHash,
+          memberIds: [...input.memberIds],
+          createdAt: now,
+          expiresAt: now + BULK_PREVIEW_TTL_MS,
+        });
+        return { status: 'done', token, expiresAt: now + BULK_PREVIEW_TTL_MS };
+      }),
+    confirm: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'bulkConfirm', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const now = deps.now();
+        const preview = mcpBulkRepo.findPreviewByToken(scope, input.confirmToken);
+        if (preview === undefined) return { status: 'refused', reason: 'unknown-token' };
+        if (preview.consumedAt !== undefined) return { status: 'refused', reason: 'preview-used' };
+        if (preview.expiresAt <= now) return { status: 'refused', reason: 'preview-expired' };
+        // The hash of this call's {action, role, members-or-selector} must
+        // equal the stored preview's — recomputed here over the resolved ids
+        // the tool sends, and required to match the tool-supplied hash too.
+        const expected =
+          input.memberIds !== undefined
+            ? bulkArgsHashFor({
+                action: input.action,
+                roleId: input.roleId,
+                members: input.memberIds,
+              })
+            : input.selector === undefined
+              ? undefined
+              : bulkArgsHashFor({
+                  action: input.action,
+                  roleId: input.roleId,
+                  selector: input.selector,
+                });
+        if (
+          expected === undefined ||
+          expected !== preview.argsHash ||
+          input.argsHash !== preview.argsHash
+        ) {
+          return { status: 'refused', reason: 'args-changed' };
+        }
+        const target = await precheckBulkRole(client, discord, scope, input.roleId);
+        if (!target.ok) {
+          return {
+            status: 'refused',
+            reason: target.reason,
+            ...(target.detail !== undefined ? { detail: target.detail } : {}),
+          };
+        }
+        if (authorizeRoleChange(scope, guildId, principal.accountId) === undefined) {
+          return { status: 'refused', reason: 'unauthorized' };
+        }
+        // The action id up front: the job payload and the `effect_batches`
+        // row opened inside `execute` both name the claim's action id, the
+        // way `roleWritesPortFor` overrides `newActionId` for its batch row.
+        const claimId = randomUUID();
+        const actionDeps = {
+          ...mcpActionDepsFor(deps, guildId, principal, {}),
+          newActionId: () => claimId,
+        };
+        let confirmedJobId: number | undefined;
+        let consumedRace = false;
+        const outcome = await runMcpAction(
+          actionDeps,
+          {
+            kind: 'role.bulk',
+            capGroup: 'member_role',
+            weight: preview.memberIds.length,
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: preview.argsHash,
+            targetChannelId: undefined,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          // Synchronous: the confirm's work is storage only (enqueue, claim,
+          // batch) — Discord calls belong to the job, paced by its bucket.
+          () => {
+            const enqueued = jobRepo.enqueue(scope, {
+              kind: MCP_BULK_ROLE_KIND,
+              payload: JSON.stringify(
+                mcpBulkRolePayload.parse({
+                  guildId,
+                  previewId: preview.previewId,
+                  actionId: claimId,
+                  accountId: principal.accountId,
+                }),
+              ),
+              dedupeKey: mcpBulkRoleDedupeKey(claimId),
+              maxAttempts: MCP_BULK_MAX_ATTEMPTS,
+              now: deps.now(),
+            });
+            if (!enqueued.enqueued || enqueued.jobId === undefined) {
+              throw new Error('bulk role job was not enqueued');
+            }
+            if (!mcpBulkRepo.consumePreview(scope, preview.previewId, enqueued.jobId, deps.now())) {
+              // Lost the single-use race: another confirm owns the preview.
+              // Cancel the job this confirm just enqueued, so exactly one
+              // `mcp.bulk_role` job per preview is ever runnable.
+              jobRepo.cancelJob(scope, enqueued.jobId, deps.now());
+              consumedRace = true;
+              throw new Error('bulk preview already consumed');
+            }
+            effectRepo.openBatch(scope, {
+              batchId: claimId,
+              source: 'mcp',
+              actorType: 'mcp_operator',
+              actorId: principal.accountId,
+              now: deps.now(),
+            });
+            confirmedJobId = enqueued.jobId;
+            return Promise.resolve({});
+          },
+        );
+        switch (outcome.status) {
+          case 'done':
+            if (confirmedJobId === undefined) {
+              throw new Error('bulk confirm completed without a job id');
+            }
+            return { status: 'done', actionId: outcome.actionId, jobId: confirmedJobId };
+          case 'dry-run':
+            return { status: 'dry-run', actionId: outcome.actionId };
+          case 'replayed':
+            return { status: 'replayed', actionId: outcome.actionId };
+          case 'refused':
+            switch (outcome.reason) {
+              case 'killswitch':
+                return { status: 'refused', reason: 'killswitch' };
+              case 'breaker-open':
+                return { status: 'refused', reason: 'breaker-open' };
+              case 'rate-cap':
+                return {
+                  status: 'refused',
+                  reason: 'rate-cap',
+                  ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+                };
+              case 'key-reused-with-other-args':
+                return { status: 'refused', reason: 'duplicate-key-different-content' };
+              case 'duplicate-content-recently':
+              case 'guild-unknown':
+              case 'target':
+                // Unreachable: the duplicate-content guard is off, the guild
+                // gate already answered, and `targetCheck` is always `true` here.
+                throw new Error(GUILD_REFUSAL_MESSAGE);
+            }
+            break;
+          case 'failed':
+            if (consumedRace) return { status: 'refused', reason: 'preview-used' };
+            return { status: 'failed' };
+        }
+      }),
+  };
+};
+
 /**
  * The error name marking an authorization denial raised inside a role action's
  * `execute`. `runMcpAction` reports a throw's error name as the failure code,
@@ -4305,6 +4587,7 @@ export const registerMcpRoutes = (
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
       roleWrites: roleWritesPortFor(principal, deps, discord, client, mcpLimiters),
       roleAdmin: roleAdminPortFor(principal, deps, discord, client),
+      bulkRoles: bulkRolesPortFor(principal, deps, discord, client),
       actions: actionsPortFor(principal, deps, discord, client, mcpLimiters),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),

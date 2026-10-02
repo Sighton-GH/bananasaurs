@@ -92,6 +92,23 @@ export {
   type McpStructuralReadRecord,
 } from './read-audit.js';
 export {
+  BULK_MEMBERS_MAX,
+  BULK_PREVIEW_NAMES_SHOWN,
+  BULK_ROLE_CHANGE_TOOL_DESCRIPTION,
+  BULK_ROLE_CHANGE_TOOL_NAME,
+  bulkArgsHashFor,
+  bulkRoleChangeText,
+  type BulkRoleOutcomeText,
+  type McpBulkConfirmInput,
+  type McpBulkConfirmOutcome,
+  type McpBulkConfirmRefusal,
+  type McpBulkPreviewInput,
+  type McpBulkPreviewOutcome,
+  type McpBulkPreviewRefusal,
+  type McpBulkRolesPort,
+  type McpBulkSelector,
+} from './tools/bulk-roles.js';
+export {
   MCP_SERVER_NAME,
   MCP_SERVER_VERSION,
   createMcpServer,
