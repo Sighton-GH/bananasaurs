@@ -62,7 +62,7 @@ import {
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
-import { mcpRoleGatewayFor } from './roles-gateway.js';
+import { mcpRoleGatewayFor, resetMcpRateLimiters } from './roles-gateway.js';
 import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
 import { FakeDiscord, BOT_USER_ID } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
@@ -110,6 +110,9 @@ const silentLogger = {
 beforeEach(async () => {
   t = openMigratedTestDatabase();
   clock = 1_700_000_000_000;
+  // The MCP role gateway's per-guild limiters are process-wide (shared by
+  // the HTTP ports and the bulk job): start every test with full buckets.
+  resetMcpRateLimiters();
 
   dir = mkdtempSync(path.join(tmpdir(), 'bananasaurs-mcp-'));
   writeFileSync(path.join(dir, 'index.html'), '<html>spa shell</html>');

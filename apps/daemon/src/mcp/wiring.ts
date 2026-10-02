@@ -37,7 +37,7 @@ import {
   type RolePingRefusal,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
-import { mcpRoleGatewayFor, authorizeRolesMutate, roleGrantRefusal } from './roles-gateway.js';
+import { mcpRoleGatewayFor, authorizeRolesMutate, mcpRateLimiterFor, roleGrantRefusal } from './roles-gateway.js';
 import {
   MCP_BULK_MAX_ATTEMPTS,
   MCP_BULK_ROLE_KIND,
@@ -2476,27 +2476,11 @@ const messageWritesPortFor = (
 };
 
 /**
- * The MCP gateway's per-guild rate limiter, shared across the requests one
- * daemon serves. One limiter per guild (buckets are per source, not per
- * guild, so a single limiter would let one guild spend another's budget);
- * created lazily at the guild's standing per-minute rate. Lives in the
- * `registerMcpRoutes` closure rather than the module so every app — and every
- * test app — starts with full buckets.
- *
- * The rate is read once, when the guild's limiter is first built: a later
- * change to `roleRatePerMin` applies after a daemon restart, exactly as the
- * production gateway's limiter in `runtime/guild.ts` behaves.
+ * The MCP gateway for one guild: the shared per-guild limiter from
+ * `roles-gateway.ts`, so the HTTP role ports, the undo port and the durable
+ * bulk job all spend one `roleRatePerMin` bucket.
  */
-const mcpRateLimiterFor = (limiters: Map<GuildId, RateLimiter>, scope: GuildScope): RateLimiter => {
-  const existing = limiters.get(scope.guildId);
-  if (existing !== undefined) return existing;
-  const created = new RateLimiter(guildRepo.findGuild(scope)?.roleRatePerMin ?? 20);
-  limiters.set(scope.guildId, created);
-  return created;
-};
-
 const mcpGatewayFor = (
-  limiters: Map<GuildId, RateLimiter>,
   deps: HttpDeps,
   client: Client,
   discord: DiscordPort,
@@ -2505,7 +2489,7 @@ const mcpGatewayFor = (
   mcpRoleGatewayFor(
     {
       authz: authzStoreFor(scope),
-      rateLimiter: mcpRateLimiterFor(limiters, scope),
+      rateLimiter: mcpRateLimiterFor(scope),
       logger: deps.logger,
       now: deps.now,
     },
@@ -2692,7 +2676,6 @@ const roleWritesPortFor = (
    * is refused before any Discord call.
    */
   client: Client,
-  mcpLimiters: Map<GuildId, RateLimiter>,
 ): McpRoleWritesPort => {
   const runRoleWrite = async (
     action: 'grant' | 'remove',
@@ -2755,13 +2738,7 @@ const roleWritesPortFor = (
           actorId: principal.accountId,
           now: deps.now(),
         });
-        const result = await mcpGatewayFor(
-          mcpLimiters,
-          deps,
-          client,
-          discord,
-          scope,
-        ).applyRoleEffect(witness, {
+        const result = await mcpGatewayFor(deps, client, discord, scope).applyRoleEffect(witness, {
           userId: parseSnowflakeId(input.memberId),
           roleId: parseSnowflakeId(input.roleId),
           // The gateway names a removal `revoke`, not `remove`.
@@ -2842,7 +2819,7 @@ const BULK_PREVIEW_TTL_MS = 10 * 60 * 1000;
  * The `McpBulkRolesPort` behind `bulk_role_change` (slice 4, Task 4), field
  * by field like `roleWritesPortFor` above. It reuses the shared helpers —
  * `checkRoleGrantTarget`, `authorizeRolesMutate`, the MCP gateway
- * with the per-guild `mcpLimiters` (in the job), one `effect_batches` row
+ * (on the shared per-guild limiter, like the job's), one `effect_batches` row
  * per action (source `mcp`) — and duplicates none of them.
  *
  * - Preview stores the row and answers the single-use token: 128 random bits
@@ -2871,7 +2848,7 @@ const bulkRolesPortFor = (
    * answer from its role cache, so a role that gained a dangerous permission
    * is refused before anything is stored. (No limiter: the port makes no
    * Discord calls itself — the job paces its gateway calls through the
-   * per-guild `mcpLimiters`, like the role port's gateway does.)
+   * shared per-guild limiter, like the role port's gateway does.)
    */
   client: Client,
 ): McpBulkRolesPort => {
@@ -4744,13 +4721,12 @@ const undoRoleChange = async (
     readonly principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string };
     readonly discord: DiscordPort;
     readonly client: Client;
-    readonly mcpLimiters: Map<GuildId, RateLimiter>;
   },
   guildId: GuildId,
   scope: GuildScope,
   row: { readonly kind: string; readonly actionId: string; readonly undoJson: string | undefined },
 ): Promise<McpUndoOutcome> => {
-  const { deps, principal, discord, client, mcpLimiters } = env;
+  const { deps, principal, discord, client } = env;
   const expectedOp = row.kind === 'role.grant' ? 'remove-role' : 'add-role';
   const forwardAction = row.kind === 'role.grant' ? 'grant' : 'revoke';
   const parsed = row.undoJson === undefined ? undefined : parseUndoJson(row.undoJson);
@@ -4813,7 +4789,7 @@ const undoRoleChange = async (
         actorId: principal.accountId,
         now: deps.now(),
       });
-      const result = await mcpGatewayFor(mcpLimiters, deps, client, discord, scope).applyRoleEffect(
+      const result = await mcpGatewayFor(deps, client, discord, scope).applyRoleEffect(
         witness,
         {
           userId: parseSnowflakeId(memberId),
@@ -5040,8 +5016,6 @@ const actionsPortFor = (
   discord: DiscordPort,
   /** Live target policy for the inverse: send scope ∩ the bot's permission now. */
   client: Client,
-  /** The MCP gateway's per-guild rate limiters, shared with the role port. */
-  mcpLimiters: Map<GuildId, RateLimiter>,
 ): McpActionsPort => ({
   undo: (guildId, input) =>
     loggedCallAsync(deps.logger, 'undoAction', async () => {
@@ -5070,7 +5044,7 @@ const actionsPortFor = (
       // pre-check set, rather than resolving a send target.
       if (row.kind === 'role.grant' || row.kind === 'role.remove') {
         return undoRoleChange(
-          { deps, principal, discord, client, mcpLimiters },
+          { deps, principal, discord, client },
           guildId,
           scope,
           row,
@@ -5552,9 +5526,9 @@ export const registerMcpRoutes = (
    */
   discord: DiscordPort,
 ): void => {
-  // One rate-limiter set per app, shared across its requests: buckets are
-  // per guild source, so refilling them per request would never cap anything.
-  const mcpLimiters = new Map<GuildId, RateLimiter>();
+  // No per-app limiter map here: the MCP role gateway's per-guild limiters
+  // live in the shared registry in `roles-gateway.ts`, so the HTTP role
+  // ports, the undo port and the durable bulk job all spend one bucket.
   app.all(MCP_ROUTE_PATH, async (request, reply) => {
     // The opt-in, in the shape of `registerOAuthRoutes`' early return
     // (ruling PR-116): without a public origin there is nothing truthful to
@@ -5607,11 +5581,11 @@ export const registerMcpRoutes = (
       send: sendPortFor(principal, deps, discord, client),
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
-      roleWrites: roleWritesPortFor(principal, deps, discord, client, mcpLimiters),
+      roleWrites: roleWritesPortFor(principal, deps, discord, client),
       roleAdmin: roleAdminPortFor(principal, deps, discord, client),
       bulkRoles: bulkRolesPortFor(principal, deps, discord, client),
       panels: panelsPortFor(principal, deps, discord, client),
-      actions: actionsPortFor(principal, deps, discord, client, mcpLimiters),
+      actions: actionsPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),

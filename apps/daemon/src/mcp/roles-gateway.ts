@@ -66,6 +66,37 @@ export const authorizeRolesMutate = (
 };
 
 /**
+ * The MCP gateway's per-guild rate limiter, shared by the HTTP role ports
+ * and the durable bulk job (whole-branch review): one limiter per guild, so
+ * a bulk job plus interactive grants draw from one `roleRatePerMin` bucket
+ * instead of two. Owned here, taken by `apps/daemon/src/mcp/wiring.ts` and
+ * `apps/daemon/src/runtime/guild.ts` alike.
+ *
+ * One limiter per guild (buckets are per source, not per guild, so a single
+ * limiter would let one guild spend another's budget); created lazily at the
+ * guild's standing per-minute rate. The rate is read once, when the guild's
+ * limiter is first built: a later change to `roleRatePerMin` applies after a
+ * daemon restart, exactly as the production gateway's limiter behaves.
+ */
+const mcpLimiterRegistry = new Map<GuildId, RateLimiter>();
+
+export const mcpRateLimiterFor = (scope: GuildScope): RateLimiter => {
+  const existing = mcpLimiterRegistry.get(scope.guildId);
+  if (existing !== undefined) return existing;
+  const created = new RateLimiter(guildRepo.findGuild(scope)?.roleRatePerMin ?? 20);
+  mcpLimiterRegistry.set(scope.guildId, created);
+  return created;
+};
+
+/**
+ * Test escape hatch: drops every cached limiter so buckets start full.
+ * Production never calls this — one process owns its registry for life.
+ */
+export const resetMcpRateLimiters = (): void => {
+  mcpLimiterRegistry.clear();
+};
+
+/**
  * The MCP grant policy (ADR 0118 §1, §3): the ping policy's rule with the
  * grant mode, fed live role facts from the discord.js client cache.
  *

@@ -254,18 +254,6 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
 
   const rateLimiter = new RateLimiter(config.BANANASAURS_ROLE_RATE_LIMIT_PER_MIN);
 
-  /**
-   * Slice 4, Task 4: the bulk job's Discord throttle. A separate object from
-   * both the moderation `rateLimiter` above and the MCP HTTP layer's
-   * per-guild map in `mcp/wiring.ts` (that map lives in the request
-   * composition root, unreachable from this per-guild worker) — same DB
-   * rate, same `mcp` source bucket shape, but its own spend. The shared
-   * budget is the `member_role` ledger cap, which is storage-backed and
-   * counts the job's members at confirm time whatever surface spends the
-   * per-minute throttle.
-   */
-  const mcpBulkLimiter = new RateLimiter(guildRepo.findGuild(scope)?.roleRatePerMin ?? 20);
-
   const gateway = new EffectGateway({
     guildId,
     authz: authzStoreFor(scope),
@@ -1205,13 +1193,15 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       adoptPanelHandler(adoptionPorts),
       // Slice 4, Task 4: the durable bulk role walk, through the MCP's own
       // gateway instance (same policy, same no-op breaker, same `mcp` audit
-      // rows as the interactive role tools).
+      // rows as the interactive role tools) on the shared per-guild limiter
+      // from `mcp/roles-gateway.ts` — the job and the HTTP role ports spend
+      // one `roleRatePerMin` bucket.
       mcpBulkRoleHandler({
         scope,
         logger,
         now,
         gateway: mcpRoleGatewayFor(
-          { authz: authzStoreFor(scope), rateLimiter: mcpBulkLimiter, logger, now },
+          { authz: authzStoreFor(scope), rateLimiter: mcpRateLimiterFor(scope), logger, now },
           client,
           discord,
           scope,

@@ -25,7 +25,13 @@ import {
   type GuildScope,
 } from '@bananasaurs/storage';
 import { FakeDiscord } from '@bananasaurs/testkit';
-import { mcpRoleGatewayFor, roleGrantRefusal, type McpRoleGatewayDeps } from './roles-gateway.js';
+import {
+  mcpRateLimiterFor,
+  mcpRoleGatewayFor,
+  resetMcpRateLimiters,
+  roleGrantRefusal,
+  type McpRoleGatewayDeps,
+} from './roles-gateway.js';
 
 /**
  * Task 2: the MCP's own `EffectGateway` instance over real storage, a
@@ -242,6 +248,46 @@ beforeEach(() => {
 
 afterEach(() => {
   t.close();
+});
+
+describe('mcpRateLimiterFor', () => {
+  const OTHER = parseGuildId('222222222222222222');
+
+  it('hands one limiter per guild: grants and the job draw from one bucket', async () => {
+    resetMcpRateLimiters();
+    // One instance per guild — and a different guild gets its own.
+    expect(mcpRateLimiterFor(scope)).toBe(mcpRateLimiterFor(scope));
+    expect(mcpRateLimiterFor(t.scopes.forGuild(OTHER))).not.toBe(mcpRateLimiterFor(scope));
+
+    // The HTTP side's gateway and the job side's gateway over the same
+    // registry limiter: 19 spends straight from the bucket, one grant
+    // through the HTTP gateway, and the job gateway's next grant refuses
+    // as rate-cap. The guild rate is the standing 20/min.
+    const limiter = mcpRateLimiterFor(scope);
+    for (let i = 0; i < 19; i += 1) expect(limiter.take('mcp', clock)).toBe(true);
+    const httpGateway = mcpRoleGatewayFor(gatewayDeps(limiter), client, discord, scope);
+    const jobGateway = mcpRoleGatewayFor(
+      gatewayDeps(mcpRateLimiterFor(scope)),
+      client,
+      discord,
+      scope,
+    );
+    discord.defineMember('611111111111111111', []);
+    discord.defineMember('622222222222222222', []);
+    const applied = await httpGateway.applyRoleEffect(
+      witness(),
+      intent('611111111111111111', LOW_ROLE),
+    );
+    expect(applied.status).toBe('applied');
+    const refused = await jobGateway.applyRoleEffect(
+      witness(),
+      intent('622222222222222222', LOW_ROLE),
+    );
+    expect(refused).toEqual({ status: 'refused', reason: 'rate-cap' });
+    // The breaker is still closed — a refused spend never trips it.
+    expect(guildRepo.readSafetyState(scope)?.breakerOpen).toBe(false);
+    resetMcpRateLimiters();
+  });
 });
 
 describe('roleGrantRefusal, over the live client cache', () => {
