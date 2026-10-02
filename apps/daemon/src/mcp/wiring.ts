@@ -19,7 +19,6 @@ import {
   isInScope,
   panelDefinitionSchema,
   parseSnowflakeId,
-  RateLimiter,
   rolePingAllowed,
   runMcpAction,
   safeLogFields,
@@ -37,7 +36,12 @@ import {
   type RolePingRefusal,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
-import { mcpRoleGatewayFor, authorizeRolesMutate, mcpRateLimiterFor, roleGrantRefusal } from './roles-gateway.js';
+import {
+  mcpRoleGatewayFor,
+  authorizeRolesMutate,
+  mcpRateLimiterFor,
+  roleGrantRefusal,
+} from './roles-gateway.js';
 import {
   MCP_BULK_MAX_ATTEMPTS,
   MCP_BULK_ROLE_KIND,
@@ -108,7 +112,6 @@ import {
   automodAdminRepo,
   authzStoreFor,
   effectRepo,
-  guildRepo,
   isTargetProtected,
   jobRepo,
   loggingRepo,
@@ -2480,12 +2483,7 @@ const messageWritesPortFor = (
  * `roles-gateway.ts`, so the HTTP role ports, the undo port and the durable
  * bulk job all spend one `roleRatePerMin` bucket.
  */
-const mcpGatewayFor = (
-  deps: HttpDeps,
-  client: Client,
-  discord: DiscordPort,
-  scope: GuildScope,
-) =>
+const mcpGatewayFor = (deps: HttpDeps, client: Client, discord: DiscordPort, scope: GuildScope) =>
   mcpRoleGatewayFor(
     {
       authz: authzStoreFor(scope),
@@ -4789,19 +4787,16 @@ const undoRoleChange = async (
         actorId: principal.accountId,
         now: deps.now(),
       });
-      const result = await mcpGatewayFor(deps, client, discord, scope).applyRoleEffect(
-        witness,
-        {
-          userId: parseSnowflakeId(memberId),
-          roleId: parseSnowflakeId(roleId),
-          action: inverseAction,
-          panelId: undefined,
-          triggerRef: `mcp:${claimUndoId}`,
-          source: 'mcp',
-          batchId: claimUndoId,
-          reason: `mcp undo ${row.kind}`,
-        },
-      );
+      const result = await mcpGatewayFor(deps, client, discord, scope).applyRoleEffect(witness, {
+        userId: parseSnowflakeId(memberId),
+        roleId: parseSnowflakeId(roleId),
+        action: inverseAction,
+        panelId: undefined,
+        triggerRef: `mcp:${claimUndoId}`,
+        source: 'mcp',
+        batchId: claimUndoId,
+        reason: `mcp undo ${row.kind}`,
+      });
       switch (result.status) {
         case 'applied':
         case 'skipped':
@@ -5043,12 +5038,7 @@ const actionsPortFor = (
       // member and role live from the effect row and re-runs the same
       // pre-check set, rather than resolving a send target.
       if (row.kind === 'role.grant' || row.kind === 'role.remove') {
-        return undoRoleChange(
-          { deps, principal, discord, client },
-          guildId,
-          scope,
-          row,
-        );
+        return undoRoleChange({ deps, principal, discord, client }, guildId, scope, row);
       }
       const plan = planUndo(guildId, discord, row);
       // A role kind has no channel target (slice 4, Task 5; Task 3 adds

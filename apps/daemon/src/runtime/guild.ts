@@ -78,7 +78,11 @@ import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
-import { authorizeRolesMutate, mcpRoleGatewayFor } from '../mcp/roles-gateway.js';
+import {
+  authorizeRolesMutate,
+  mcpRateLimiterFor,
+  mcpRoleGatewayFor,
+} from '../mcp/roles-gateway.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';

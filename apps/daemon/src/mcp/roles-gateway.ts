@@ -9,7 +9,7 @@ import {
   type DiscordPort,
   type GuildId,
   type Logger,
-  type RateLimiter,
+  RateLimiter,
   type RolePingRefusal,
 } from '@bananasaurs/core';
 import {
