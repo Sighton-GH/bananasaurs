@@ -12,6 +12,7 @@ import {
   findPanel,
   findPanelByMessage,
   isPanelEnabled,
+  isPanelMessage,
   listAdoptedPanels,
   listPanels,
   setAdoptionPassState,
@@ -232,6 +233,23 @@ describe('findPanelByMessage', () => {
   it('refuses a second panel on the same message', () => {
     createPanel(a, definition(), 1000);
     expect(() => createPanel(a, definition({ panelId: 'other' }), 1000)).toThrow(/UNIQUE/i);
+  });
+});
+
+describe('isPanelMessage', () => {
+  it('is true for a panel message in any channel of this guild', () => {
+    createPanel(a, definition(), 1000);
+    expect(isPanelMessage(a, MESSAGE)).toBe(true);
+  });
+
+  it('is false for a message with no panel', () => {
+    createPanel(a, definition(), 1000);
+    expect(isPanelMessage(a, '999999999999999999')).toBe(false);
+  });
+
+  it("is false for another guild's panel message", () => {
+    createPanel(a, definition(), 1000);
+    expect(isPanelMessage(b, MESSAGE)).toBe(false);
   });
 });
 

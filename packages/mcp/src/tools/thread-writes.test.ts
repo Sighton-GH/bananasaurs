@@ -32,6 +32,7 @@ import type { McpContextPort } from './context.js';
 import type { McpResourcesPort } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
 import type { McpReadAuditPort } from '../read-audit.js';
+import type { McpMessageWritesPort } from './message-writes.js';
 
 /**
  * Task 5, tool layer: the six thread/forum write tools against a fake
@@ -613,6 +614,18 @@ const stubThreads = (): McpThreadsPort => ({
   liveThreadMessages: () => Promise.resolve([]),
 });
 
+/** Required since slice 3 Task 6; never called by the thread-write tools pinned here. */
+const stubMessageWrites = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
@@ -625,6 +638,7 @@ const connectPair = async (
     records: stubRecords(),
     send: stubSend(),
     threadWrites: stubThreadWrites(),
+    messageWrites: stubMessageWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
@@ -648,7 +662,10 @@ describe('thread-write scope filtering (ruling M4-D17)', () => {
     const { client, close } = await connectPair(principalWith([GUILD_A]));
     try {
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual([
+      // The message-write tools (Task 6) share the scope; this file pins its own six.
+      const names = list.tools.map((tool) => tool.name);
+      expect(names).toHaveLength(13);
+      expect(names.slice(0, 7)).toEqual([
         'send_message',
         CREATE_THREAD_TOOL_NAME,
         ADD_THREAD_MEMBERS_TOOL_NAME,

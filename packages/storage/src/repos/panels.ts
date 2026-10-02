@@ -231,6 +231,27 @@ export const findPanelByMessage = (
   return row ? hydrate(scope, row) : undefined;
 };
 
+/**
+ * True when the message id belongs to a panel in this guild, whatever channel
+ * it was posted in.
+ *
+ * Message-id only, deliberately — unlike `findPanelByMessage`, which answers
+ * the reaction event's (channel, message) pair. The MCP message-write guard
+ * (`apps/daemon/src/mcp/protected.ts`) must not be bypassable by naming a
+ * different channel: the lookup key is the message alone, guild-scoped like
+ * every finder here, so another guild's panel message never counts.
+ */
+export const isPanelMessage = (scope: GuildScope, messageId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ panelId: panels.panelId })
+        .from(panels)
+        .where(scope.only(panels, eq(panels.messageId, messageId)))
+        .get() !== undefined,
+  );
+
 export const listPanels = (scope: GuildScope): PanelConfig[] => {
   const rows = read(scope, (db) =>
     db.select(panelColumns).from(panels).where(scope.only(panels)).all(),

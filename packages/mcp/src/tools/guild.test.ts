@@ -539,6 +539,21 @@ describe('guild tools on the MCP server', () => {
         createForumPost: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
         setThreadState: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
       } satisfies McpThreadWritesPort,
+      // Required since slice 3 Task 6; never called by the guild tools pinned here.
+      messageWrites: {
+        edit: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        delete: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        pin: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        unpin: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        addReaction: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        removeReaction: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      },
       readAudit: noopReadAudit,
       jobs: stubJobs(),
       members: stubMembers(),

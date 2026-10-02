@@ -49,6 +49,7 @@ import {
 } from './tools/records.js';
 import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
 import type { McpSendPort } from './tools/send.js';
+import type { McpMessageWritesPort } from './tools/message-writes.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
@@ -578,6 +579,18 @@ const stubSendPort = (): McpSendPort => ({
   send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
 });
 
+/** Minimal message-writes port: this file pins read logging, never the write tools. */
+const stubMessageWritesPort = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
 /** Minimal jobs port: this file pins read logging, never the jobs tools. */
 const stubJobsPort = (): McpJobsPort => ({
   listJobs: () => [],
@@ -642,6 +655,7 @@ const connectWithReadAudit = async (
     threads: stubThreadsPort(),
     send: stubSendPort(),
     threadWrites: stubThreadWritesPort(),
+    messageWrites: stubMessageWritesPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

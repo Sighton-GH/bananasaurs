@@ -13,12 +13,14 @@ import {
   CLUB_ASSISTANT_SKILLS,
   argsHashFor,
   contentHashFor,
+  customEmojiKey,
   effectiveSkillScope,
   isInScope,
   parseSnowflakeId,
   runMcpAction,
   safeLogFields,
   skillScopeAllows,
+  unicodeEmojiKey,
   type DiscordPort,
   type GuildId,
   type Logger,
@@ -27,6 +29,7 @@ import {
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
 import { resolvePings, resolveSendTarget, type SendTarget } from './targets.js';
+import { protectedMessageReason } from './protected.js';
 import { resolveChannel } from '../channels/resolver.js';
 import { mcpActionDepsFor } from './actions.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
@@ -53,6 +56,8 @@ import {
   type McpResourceSummary,
   type McpSendPort,
   type SendEmbed,
+  type McpMessageWriteOutcome,
+  type McpMessageWritesPort,
   type McpThreadsPort,
   type McpThreadWritesPort,
   type McpThreadWriteOutcome,
@@ -1992,6 +1997,443 @@ const threadWritesPortFor = (
 };
 
 /**
+ * The `McpMessageWritesPort` behind the six message-write tools (slice 3,
+ * Task 6), field by field like `healthPortFor` above. Every method resolves
+ * its target against send scope and the bot's live permissions, then runs
+ * the one `runMcpAction` pipeline — edits and deletes in cap group `edit`,
+ * pins, unpins and reactions in `pin_react` (ruling) — with the
+ * duplicate-content guard off (it is a message-post rule) and the audit
+ * action defaulting to `mcp.<kind>` (so `mcp.message.edit` and friends land
+ * without a new audit vocabulary entry).
+ *
+ * Edit/delete eligibility order is fixed: the target resolves, then the
+ * protected-message guard (a storage read — no Discord call), then the
+ * live authorship check (`fetchMessageAuthor`: gone → `not-found`, another
+ * author → `not-bot-authored` against the discord.js client's own user
+ * id), and only then the pipeline. A fault leaves one allowlisted-fields
+ * error line via `loggedCallAsync` — never message content (rule 4).
+ *
+ * Undo (ADR 0116 §5, for Task 7's `undo_action`): an edit stores the
+ * previous `{content, embeds}`; a pin stores `{op:'unpin'}` and an unpin
+ * `{op:'pin'}`; a reaction add stores `{op:'remove-reaction', emoji}` and
+ * a removal `{op:'add-reaction', emoji}`. A delete stores nothing and is
+ * not undoable.
+ */
+const messageWritesPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read: target resolution answers
+   * guild membership from `client.guilds.cache`, the authorship check reads
+   * the bot's own id from `client.user.id`, and custom emoji resolve
+   * against this guild's emoji cache.
+   */
+  client: Client,
+): McpMessageWritesPort => {
+  /** The target layer's reasons mapped onto the writes outcome, ids only. */
+  const targetRefusal = (
+    reason:
+      'not-in-guild' | 'not-in-send-scope' | 'private-thread-not-allowed' | 'bot-lacks-permission',
+    missing?: string,
+  ): McpMessageWriteOutcome => {
+    switch (reason) {
+      case 'not-in-guild':
+        return { status: 'refused', reason: 'channel-not-in-guild' };
+      case 'not-in-send-scope':
+        return { status: 'refused', reason: 'channel-not-allowlisted' };
+      case 'private-thread-not-allowed':
+        return { status: 'refused', reason: 'private-thread' };
+      case 'bot-lacks-permission':
+        return {
+          status: 'refused',
+          reason: 'bot-lacks-permission',
+          ...(missing !== undefined ? { detail: missing } : {}),
+        };
+    }
+  };
+
+  /** The gateway's outcomes mapped onto the writes outcome, ids only. */
+  const gatewayOutcome = (
+    outcome: McpActionOutcome<{ resultMessageId?: string; undo?: unknown }>,
+  ): McpMessageWriteOutcome => {
+    switch (outcome.status) {
+      case 'done':
+        return {
+          status: 'done',
+          actionId: outcome.actionId,
+          ...(outcome.result.resultMessageId !== undefined
+            ? { messageId: outcome.result.resultMessageId }
+            : {}),
+        };
+      case 'dry-run':
+        return { status: 'dry-run', actionId: outcome.actionId };
+      case 'replayed':
+        return {
+          status: 'replayed',
+          actionId: outcome.actionId,
+          ...(outcome.resultMessageId !== undefined ? { messageId: outcome.resultMessageId } : {}),
+        };
+      case 'refused':
+        switch (outcome.reason) {
+          case 'killswitch':
+            return { status: 'refused', reason: 'killswitch' };
+          case 'breaker-open':
+            return { status: 'refused', reason: 'breaker-open' };
+          case 'rate-cap':
+            return {
+              status: 'refused',
+              reason: 'rate-cap',
+              ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+            };
+          case 'key-reused-with-other-args':
+            return { status: 'refused', reason: 'duplicate-key-different-content' };
+          case 'duplicate-content-recently':
+            return { status: 'refused', reason: 'duplicate-content-recently' };
+          case 'guild-unknown':
+            throw new Error(GUILD_REFUSAL_MESSAGE);
+          case 'target':
+            // Unreachable: every target refusal above returned before the
+            // pipeline ran, so `targetCheck` is always `true` here.
+            throw new Error(GUILD_REFUSAL_MESSAGE);
+        }
+        break;
+      case 'failed':
+        return { status: 'failed' };
+    }
+  };
+
+  /**
+   * The edit/delete eligibility chain: send-scope target with posting need
+   * (edits and deletes are channel operations — the existing `post` need,
+   * so no new target kind), then the protected guard with no Discord call,
+   * then the live authorship read. Returns the resolved channel and the
+   * previous content for the edit's undo row.
+   */
+  const resolveEditable = async (
+    guildId: GuildId,
+    channelId: string,
+    messageId: string,
+  ): Promise<
+    | {
+        readonly ok: true;
+        readonly channelId: string;
+        readonly grantId: string;
+        readonly derivedGrant: boolean;
+        readonly prev: { readonly content: string; readonly embeds: readonly unknown[] };
+      }
+    | { readonly ok: false; readonly outcome: McpMessageWriteOutcome }
+  > => {
+    const scope = deps.scopes.forGuild(guildId);
+    const target = await resolveSendTarget(client, scope, guildId, channelId, 'post');
+    if (!target.ok) {
+      return { ok: false, outcome: targetRefusal(target.reason, target.missing) };
+    }
+    const protectedReason = protectedMessageReason(scope, messageId);
+    if (protectedReason === 'role-panel') {
+      return { ok: false, outcome: { status: 'refused', reason: 'protected-role-panel' } };
+    }
+    if (protectedReason === 'task-post') {
+      return { ok: false, outcome: { status: 'refused', reason: 'protected-task-post' } };
+    }
+    const live = await discord.fetchMessageAuthor(guildId, {
+      channelId: target.channelId,
+      messageId,
+    });
+    if (live === undefined) {
+      return { ok: false, outcome: { status: 'refused', reason: 'not-found' } };
+    }
+    // The bot's own user id, live from the discord.js client — never a
+    // configured constant, so a `/doctor`-rotated token cannot strand or
+    // misattribute authorship.
+    const botId = client.user?.id;
+    if (botId === undefined || live.authorId !== botId) {
+      return { ok: false, outcome: { status: 'refused', reason: 'not-bot-authored' } };
+    }
+    return {
+      ok: true,
+      channelId: target.channelId,
+      grantId: target.grantId,
+      derivedGrant: target.derivedGrant,
+      prev: { content: live.content, embeds: live.embeds },
+    };
+  };
+
+  /**
+   * A reaction emoji in the tool's vocabulary to the port's canonical key:
+   * `name:id` for a custom emoji that exists in this guild's cache (a
+   * foreign guild's id answers `undefined` — the refusal, not a Discord
+   * call), otherwise a unicode emoji key. Anything else answers `undefined`
+   * too; the tool layer already rejected malformed shapes, so this is the
+   * guild-membership check, not the format check.
+   */
+  const resolveReactionEmoji = (guildId: GuildId, raw: string): string | undefined => {
+    const custom = /^([^:<>@#\s]+):(\d{17,20})$/.exec(raw);
+    if (custom !== null) {
+      const name = custom[1] ?? '';
+      const id = custom[2] ?? '';
+      const entry = client.guilds.cache.get(guildId)?.emojis.cache.get(id);
+      if (entry === undefined || entry.name !== name) return undefined;
+      try {
+        return customEmojiKey(id);
+      } catch {
+        return undefined;
+      }
+    }
+    if (raw.includes(':')) return undefined;
+    try {
+      return unicodeEmojiKey(raw);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const runWrite = async (
+    guildId: GuildId,
+    intent: {
+      readonly kind: string;
+      readonly capGroup: 'edit' | 'pin_react';
+      readonly idempotencyKey: string;
+      readonly argsHash: string;
+      readonly targetChannelId: string;
+      readonly dryRun: boolean;
+      readonly grantedByChannelId?: string;
+    },
+    execute: () => Promise<{ resultMessageId?: string; undo?: unknown }>,
+  ): Promise<McpMessageWriteOutcome> =>
+    gatewayOutcome(
+      await runMcpAction(
+        mcpActionDepsFor(
+          deps,
+          guildId,
+          principal,
+          intent.grantedByChannelId !== undefined
+            ? { grantedByChannelId: intent.grantedByChannelId }
+            : {},
+        ),
+        {
+          kind: intent.kind,
+          capGroup: intent.capGroup,
+          idempotencyKey: intent.idempotencyKey,
+          tokenId: principal.tokenId,
+          argsHash: intent.argsHash,
+          targetChannelId: intent.targetChannelId,
+          dryRun: intent.dryRun,
+          duplicateContentGuard: false,
+        },
+        true,
+        execute,
+      ),
+    );
+
+  return {
+    edit: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'editMessage', async () => {
+        const eligible = await resolveEditable(guildId, input.channelId, input.messageId);
+        if (!eligible.ok) return eligible.outcome;
+        return runWrite(
+          guildId,
+          {
+            kind: 'message.edit',
+            capGroup: 'edit',
+            idempotencyKey: input.idempotencyKey,
+            argsHash: argsHashFor('message.edit', {
+              channel: eligible.channelId,
+              message: input.messageId,
+              content: input.content,
+              embeds: input.embeds,
+            }),
+            targetChannelId: eligible.channelId,
+            dryRun: input.dryRun,
+            ...(eligible.derivedGrant ? { grantedByChannelId: eligible.grantId } : {}),
+          },
+          async () => {
+            await discord.editMessage(
+              guildId,
+              { channelId: eligible.channelId, messageId: input.messageId },
+              {
+                ...(input.content !== undefined ? { content: input.content } : {}),
+                ...(input.embeds !== undefined ? { embeds: input.embeds.map(toDiscordEmbed) } : {}),
+                // An edit that adds `@everyone` or a mention must never ping:
+                // absent, Discord would apply its default and notify.
+                allowedMentions: { parse: [], roles: [], users: [] },
+              },
+            );
+            return {
+              resultMessageId: input.messageId,
+              undo: { content: eligible.prev.content, embeds: eligible.prev.embeds },
+            };
+          },
+        );
+      }),
+    delete: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'deleteMessage', async () => {
+        const eligible = await resolveEditable(guildId, input.channelId, input.messageId);
+        if (!eligible.ok) return eligible.outcome;
+        return runWrite(
+          guildId,
+          {
+            kind: 'message.delete',
+            capGroup: 'edit',
+            idempotencyKey: input.idempotencyKey,
+            argsHash: argsHashFor('message.delete', {
+              channel: eligible.channelId,
+              message: input.messageId,
+            }),
+            targetChannelId: eligible.channelId,
+            dryRun: input.dryRun,
+            ...(eligible.derivedGrant ? { grantedByChannelId: eligible.grantId } : {}),
+          },
+          async () => {
+            await discord.deleteMessage(
+              guildId,
+              { channelId: eligible.channelId, messageId: input.messageId },
+              'mcp delete_message',
+            );
+            // Deletes are not undoable (ADR 0116 §5): no undo row.
+            return { resultMessageId: input.messageId };
+          },
+        );
+      }),
+    pin: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'pinMessage', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const target = await resolveSendTarget(client, scope, guildId, input.channelId, 'pin');
+        if (!target.ok) {
+          return targetRefusal(target.reason, target.missing);
+        }
+        return runWrite(
+          guildId,
+          {
+            kind: 'message.pin',
+            capGroup: 'pin_react',
+            idempotencyKey: input.idempotencyKey,
+            argsHash: argsHashFor('message.pin', {
+              channel: target.channelId,
+              message: input.messageId,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            ...(target.derivedGrant ? { grantedByChannelId: target.grantId } : {}),
+          },
+          async () => {
+            await discord.pinMessage(guildId, {
+              channelId: target.channelId,
+              messageId: input.messageId,
+            });
+            return { resultMessageId: input.messageId, undo: { op: 'unpin' } };
+          },
+        );
+      }),
+    unpin: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'unpinMessage', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const target = await resolveSendTarget(client, scope, guildId, input.channelId, 'pin');
+        if (!target.ok) {
+          return targetRefusal(target.reason, target.missing);
+        }
+        return runWrite(
+          guildId,
+          {
+            kind: 'message.unpin',
+            capGroup: 'pin_react',
+            idempotencyKey: input.idempotencyKey,
+            argsHash: argsHashFor('message.unpin', {
+              channel: target.channelId,
+              message: input.messageId,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            ...(target.derivedGrant ? { grantedByChannelId: target.grantId } : {}),
+          },
+          async () => {
+            await discord.unpinMessage(guildId, {
+              channelId: target.channelId,
+              messageId: input.messageId,
+            });
+            return { resultMessageId: input.messageId, undo: { op: 'pin' } };
+          },
+        );
+      }),
+    addReaction: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'addReaction', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const target = await resolveSendTarget(client, scope, guildId, input.channelId, 'react');
+        if (!target.ok) {
+          return targetRefusal(target.reason, target.missing);
+        }
+        const key = resolveReactionEmoji(guildId, input.emoji);
+        if (key === undefined) {
+          return { status: 'refused', reason: 'unknown-emoji', detail: input.emoji };
+        }
+        return runWrite(
+          guildId,
+          {
+            kind: 'reaction.add',
+            capGroup: 'pin_react',
+            idempotencyKey: input.idempotencyKey,
+            argsHash: argsHashFor('reaction.add', {
+              channel: target.channelId,
+              message: input.messageId,
+              emoji: key,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            ...(target.derivedGrant ? { grantedByChannelId: target.grantId } : {}),
+          },
+          async () => {
+            await discord.createReaction(
+              guildId,
+              { channelId: target.channelId, messageId: input.messageId },
+              key,
+            );
+            return {
+              resultMessageId: input.messageId,
+              undo: { op: 'remove-reaction', emoji: key },
+            };
+          },
+        );
+      }),
+    removeReaction: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'removeReaction', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const target = await resolveSendTarget(client, scope, guildId, input.channelId, 'react');
+        if (!target.ok) {
+          return targetRefusal(target.reason, target.missing);
+        }
+        const key = resolveReactionEmoji(guildId, input.emoji);
+        if (key === undefined) {
+          return { status: 'refused', reason: 'unknown-emoji', detail: input.emoji };
+        }
+        return runWrite(
+          guildId,
+          {
+            kind: 'reaction.remove',
+            capGroup: 'pin_react',
+            idempotencyKey: input.idempotencyKey,
+            argsHash: argsHashFor('reaction.remove', {
+              channel: target.channelId,
+              message: input.messageId,
+              emoji: key,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            ...(target.derivedGrant ? { grantedByChannelId: target.grantId } : {}),
+          },
+          async () => {
+            await discord.deleteOwnReaction(
+              guildId,
+              { channelId: target.channelId, messageId: input.messageId },
+              key,
+            );
+            return { resultMessageId: input.messageId, undo: { op: 'add-reaction', emoji: key } };
+          },
+        );
+      }),
+  };
+};
+
+/**
  * The `McpReadAuditPort` behind every read tool (ADR 0050), the one writer
  * in this file: the tool layer says *what* was read (guild, action, subject,
  * result count) and this port closes over *who* read it — the OAuth token
@@ -2326,6 +2768,7 @@ export const registerMcpRoutes = (
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
+      messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
