@@ -191,12 +191,14 @@ describe('mcpActionDepsFor ledger', () => {
   });
 
   it('capFor reads the live setting on every call', () => {
-    const store = createInstanceSettingsStore({ instance: t.scopes.instance(), logger: silentLogger });
-    const live = mcpActionDepsFor(
-      { ...env(), instanceSettings: store },
-      GUILD_A,
-      { clientId: CLIENT_ID, tokenId: TOKEN_ID },
-    );
+    const store = createInstanceSettingsStore({
+      instance: t.scopes.instance(),
+      logger: silentLogger,
+    });
+    const live = mcpActionDepsFor({ ...env(), instanceSettings: store }, GUILD_A, {
+      clientId: CLIENT_ID,
+      tokenId: TOKEN_ID,
+    });
     expect(live.capFor('message')).toBe(300);
     expect(store.set('mcp.cap.message', 2, 'owner-acct', clock).ok).toBe(true);
     expect(live.capFor('message')).toBe(2);

@@ -1078,7 +1078,10 @@ describe('/mcp send_message through the real composition', () => {
   });
 
   it('(Review Focus 4) a cap edited in settings takes effect on the next call with no restart', async () => {
-    const store = createInstanceSettingsStore({ instance: t.scopes.instance(), logger: silentLogger });
+    const store = createInstanceSettingsStore({
+      instance: t.scopes.instance(),
+      logger: silentLogger,
+    });
     expect(store.set('mcp.cap.message', 2, 'owner', clock).ok).toBe(true);
     await app.close();
     deps = { ...deps, instanceSettings: store };

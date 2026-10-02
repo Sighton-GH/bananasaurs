@@ -40,8 +40,7 @@ export interface McpActionEnv {
    * to `MCP_ACTION_CAPS`.
    */
   readonly instanceSettings?:
-    | { get?(key: InstanceSettingKey): unknown; list?(): readonly unknown[] }
-    | undefined;
+    { get?(key: InstanceSettingKey): unknown; list?(): readonly unknown[] } | undefined;
 }
 
 const MCP_CAP_KEY_FOR_GROUP: Readonly<Record<McpCapGroup, InstanceSettingKey>> = {
