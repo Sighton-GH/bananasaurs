@@ -87,6 +87,7 @@ Building the MCP gateway exposed two storage facts this ADR did not account for.
    - An MCP grant or removal is therefore allowed only for a role that is **both** in `managed_roles` **and** passes the MCP grant policy above (below-bot or `grant` allowlist, plus the live floor).
    - The MCP never inserts into `managed_roles`. That includes `create_role`: a role the MCP creates must be allowlisted by an operator (`roles allowlist`, or the dashboard) before the MCP can grant it.
    - The refusal text names the missing allowlisting, so the model asks an operator rather than retrying.
+   - **Panels are the one exception** (owner decision, 2026-10-01). MCP `create_panel` / `edit_panel` allowlist their option roles in `managed_roles`, as `panel create` does for the CLI and the dashboard. Every option role, including one created through `{create:{…}}`, must first pass the MCP grant policy and the floor, live. `grant_role`, `remove_role` and `create_role` still never allowlist.
 2. **`effect_batches.source` admits `mcp`.** §4's batch per action carries source `mcp`, but the existing CHECK enumerated only six sources.
    - Slice 4 widens the CHECK in its migration, a table rebuild under the existing foreign-keys-off migration path in `packages/storage/src/db.ts`.
    - No existing row changes.
