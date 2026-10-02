@@ -165,7 +165,13 @@ import {
 } from './tools/tasks.js';
 import { taskAdminTools, runTaskAdmin, type TaskAdminPort } from './tools/task-admin.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
-import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, hasTasksScope, type McpPrincipal } from './scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  hasReadScope,
+  hasSendScope,
+  hasTasksScope,
+  type McpPrincipal,
+} from './scope.js';
 
 /**
  * The MCP server Task 3 mounts at `/mcp`.

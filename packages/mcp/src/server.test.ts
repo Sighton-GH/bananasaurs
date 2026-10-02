@@ -174,8 +174,13 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
 /** Minimal actions port: this file pins registration, never undo or list themselves. */
 const stubActions = (): McpActionsPort => ({
   undo: () =>
-    Promise.resolve({ status: 'done', actionId: 'act-undo', undoneActionId: 'act-1', kind: 'edit' }),
-  list: () => Promise.resolve([]),
+    Promise.resolve({
+      status: 'done',
+      actionId: 'act-undo',
+      undoneActionId: 'act-1',
+      kind: 'edit',
+    }),
+  list: () => [],
 });
 /** Minimal jobs port: this file pins registration, never the jobs tools. */
 const stubJobs = (): McpJobsPort => ({

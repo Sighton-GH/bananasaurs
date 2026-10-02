@@ -6947,9 +6947,7 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
         kind: entry.kind,
         capGroup: entry.capGroup,
         targetChannelId: entry.kind.startsWith('thread.') ? THREAD : CHANNEL,
-        ...(entry.kind.startsWith('thread.')
-          ? {}
-          : { resultMessageId: BOT_MESSAGE }),
+        ...(entry.kind.startsWith('thread.') ? {} : { resultMessageId: BOT_MESSAGE }),
         undoJson: entry.undoJson,
       });
       const found = callText(
@@ -7063,7 +7061,11 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
   it('kinds with no inverse, missing state and unreadable state cannot be undone', async () => {
     allow();
     const send = await mintToken('bananasaurs:send');
-    const kinds: ReadonlyArray<{ readonly actionId: string; readonly kind: string; readonly cap: SeedCap }> = [
+    const kinds: ReadonlyArray<{
+      readonly actionId: string;
+      readonly kind: string;
+      readonly cap: SeedCap;
+    }> = [
       { actionId: 'undo-send', kind: 'message.send', cap: 'message' },
       { actionId: 'undo-delete', kind: 'message.delete', cap: 'edit' },
       { actionId: 'undo-create', kind: 'thread.create', cap: 'structure' },
@@ -7104,7 +7106,12 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
       resultMessageId: BOT_MESSAGE,
       undoJson: JSON.stringify({ op: 'unpin' }),
     });
-    for (const actionId of [...kinds.map((entry) => entry.actionId), 'undo-state-bare', 'undo-malformed', 'undo-wrong-shape']) {
+    for (const actionId of [
+      ...kinds.map((entry) => entry.actionId),
+      'undo-state-bare',
+      'undo-malformed',
+      'undo-wrong-shape',
+    ]) {
       const refused = callText(
         (await undoCall(send, 'undo_action', { guildId: GID, actionId })).body,
       );
@@ -7134,9 +7141,7 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     });
     seedActionB('list-foreign');
     const read = await mintToken('bananasaurs:read');
-    const found = callText(
-      (await undoCall(read, 'list_actions', { guildId: GID })).body,
-    );
+    const found = callText((await undoCall(read, 'list_actions', { guildId: GID })).body);
     expect(found.isError).not.toBe(true);
     expect(found.text).toContain('list-edit | message.edit | done');
     expect(found.text).toContain(`target ${CHANNEL}`);
@@ -7183,6 +7188,8 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     expect(found.isError).not.toBe(true);
     expect(found.text).toContain('Dry run');
     expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(0);
-    expect(mcpActionsRepo.findActionById(scope, 'undo-dryrun-guild')?.undoneByActionId).toBeUndefined();
+    expect(
+      mcpActionsRepo.findActionById(scope, 'undo-dryrun-guild')?.undoneByActionId,
+    ).toBeUndefined();
   });
 });

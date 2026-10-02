@@ -6,7 +6,7 @@ import {
   requireReachableGuild,
   type McpPrincipal,
 } from '../scope.js';
-import { MCP_READ_LIST_ACTIONS } from '../read-audit.js';
+import { MCP_READ_LIST_ACTIONS, type McpReadRecord } from '../read-audit.js';
 
 /**
  * `undo_action` and `list_actions` (slice 3, Task 7): the task-tracking
@@ -79,10 +79,7 @@ export interface McpActionsPort {
     guildId: GuildId,
     input: { readonly actionId: string },
   ) => Promise<McpUndoOutcome>;
-  readonly list: (
-    guildId: GuildId,
-    input: { readonly limit: number },
-  ) => Promise<readonly McpActionView[]>;
+  readonly list: (guildId: GuildId, input: { readonly limit: number }) => readonly McpActionView[];
 }
 
 /** Mirrors the gateway's outcomes, named in this package's own vocabulary. */
@@ -117,7 +114,7 @@ export type UndoOutcomeText =
   { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
 export type ListActionsOutcomeText =
-  | { readonly ok: true; readonly text: string; readonly read: import('../read-audit.js').McpReadRecord }
+  | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
   | { readonly ok: false; readonly message: string };
 
 /**
@@ -147,7 +144,9 @@ const listArgsSchema = z.object({
  */
 export const undoActionParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  actionId: z.string().describe('Action to undo, from list_actions. Each action undoes at most once.'),
+  actionId: z
+    .string()
+    .describe('Action to undo, from list_actions. Each action undoes at most once.'),
 };
 
 export const listActionsParams = {
@@ -264,7 +263,12 @@ const undoActionInner = async (
     case 'refused':
       return {
         ok: false,
-        message: undoRefusalText(gate.guildId, parsed.data.actionId, outcome.reason, outcome.detail),
+        message: undoRefusalText(
+          gate.guildId,
+          parsed.data.actionId,
+          outcome.reason,
+          outcome.detail,
+        ),
       };
     case 'failed':
       // The Discord call failed with an unknown result: Discord may have
@@ -302,16 +306,16 @@ export const undoActionText = async (
   }
 };
 
-const listActionsInner = async (
+const listActionsInner = (
   principal: McpPrincipal,
   port: McpActionsPort,
   rawArgs: unknown,
-): Promise<ListActionsOutcomeText> => {
+): ListActionsOutcomeText => {
   const parsed = listArgsSchema.safeParse(rawArgs);
   if (!parsed.success) return { ok: false, message: INVALID_ARGUMENTS_MESSAGE };
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
-  const views = await port.list(gate.guildId, { limit: parsed.data.limit ?? LIST_ACTIONS_DEFAULT_LIMIT });
+  const views = port.list(gate.guildId, { limit: parsed.data.limit ?? LIST_ACTIONS_DEFAULT_LIMIT });
   if (views.length === 0) {
     return {
       ok: true,
@@ -354,14 +358,14 @@ const listActionsInner = async (
 };
 
 /** Never throws and never rejects: a rejected port promise is the shared refusal. */
-export const listActionsText = async (
+export const listActionsText = (
   principal: McpPrincipal,
   port: McpActionsPort,
   rawArgs: unknown,
 ): Promise<ListActionsOutcomeText> => {
   try {
-    return await listActionsInner(principal, port, rawArgs);
+    return Promise.resolve(listActionsInner(principal, port, rawArgs));
   } catch {
-    return { ok: false, message: GUILD_REFUSAL_MESSAGE };
+    return Promise.resolve({ ok: false, message: GUILD_REFUSAL_MESSAGE });
   }
 };

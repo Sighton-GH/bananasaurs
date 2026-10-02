@@ -95,7 +95,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
   const actions: McpActionsPort = {
     undo: () =>
       Promise.resolve({ status: 'done', actionId: 'undo', undoneActionId: 'act', kind: 'edit' }),
-    list: () => Promise.resolve([]),
+    list: () => [],
   };
   const tasks: McpTaskPort = {
     list: () => ({ teams: [], tasks: [] }),
@@ -271,9 +271,7 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
     // rather than an empty array.
     const list = await client.listTools().catch((err: unknown) => err);
     if (typeof list !== 'object' || list === null || !('tools' in list)) return [];
-    return (list as { tools: Array<{ name: string }> }).tools
-      .map((tool) => tool.name)
-      .sort();
+    return (list as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
   } finally {
     await client.close();
     await server.close();

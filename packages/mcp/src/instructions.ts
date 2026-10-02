@@ -17,7 +17,7 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   '\n' +
   'Writing for Discord (for any text you draft for the owner to post):\n' +
   '- Discord renders Markdown: **bold**, *italics*, __underline__, ~~strike~~, # / ## / ### headings, -# subtext, - lists, 1. numbered lists, > quotes, `inline code`, ```fenced code```, [masked links](https://example.com), ||spoilers||.\n' +
-  "- Timestamps that show in each reader's time zone: <t:UNIX:F> for a full date, <t:UNIX:R> for \"in 2 hours\".\n" +
+  '- Timestamps that show in each reader\'s time zone: <t:UNIX:F> for a full date, <t:UNIX:R> for "in 2 hours".\n' +
   '- Mentions look like <@USER_ID>, <@&ROLE_ID>, <#CHANNEL_ID>.\n' +
   '- Tables do not render; use lists. A message is at most 2,000 characters.\n' +
   '\n' +

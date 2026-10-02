@@ -23,7 +23,6 @@ import {
   skillScopeAllows,
   unicodeEmojiKey,
   type DiscordPort,
-  type EmojiKey,
   type GuildId,
   type Logger,
   type McpActionOutcome,
@@ -2447,9 +2446,7 @@ const messageWritesPortFor = (
  * (strict: an extra field refuses rather than guesses), and a row that
  * fails to parse is not undoable.
  */
-const undoEditSchema = z
-  .object({ content: z.string(), embeds: z.array(z.unknown()) })
-  .strict();
+const undoEditSchema = z.object({ content: z.string(), embeds: z.array(z.unknown()) }).strict();
 const undoUnpinSchema = z.object({ op: z.literal('unpin') }).strict();
 const undoPinSchema = z.object({ op: z.literal('pin') }).strict();
 const undoRemoveReactionSchema = z
@@ -2577,7 +2574,7 @@ const planUndo = (
       const channelId = row.targetChannelId;
       const messageId = row.resultMessageId;
       if (!undo.success || channelId === undefined || messageId === undefined) return undefined;
-      const emoji = undo.data.emoji as EmojiKey;
+      const emoji = undo.data.emoji;
       const add = row.kind === 'reaction.remove';
       return {
         kind: add ? 'reaction.add' : 'reaction.remove',
@@ -2769,22 +2766,20 @@ const actionsPortFor = (
     loggedCall(deps.logger, 'listActions', () => {
       const scope = deps.scopes.forGuild(guildId);
       const limit = Math.min(Math.max(1, Math.floor(input.limit)), 100);
-      return mcpActionsRepo.listActions(scope, { limit }).map(
-        (row): McpActionView => ({
-          actionId: row.actionId,
-          kind: row.kind,
-          status: row.status,
-          ...(row.targetChannelId !== undefined ? { targetChannelId: row.targetChannelId } : {}),
-          ...(row.resultMessageId !== undefined ? { resultMessageId: row.resultMessageId } : {}),
-          ...(row.resultThreadId !== undefined ? { resultThreadId: row.resultThreadId } : {}),
-          undoable:
-            row.status === 'done' &&
-            row.undoneByActionId === undefined &&
-            row.undoJson !== undefined &&
-            REVERSIBLE_ACTION_KINDS.has(row.kind),
-          createdAt: row.createdAt,
-        }),
-      );
+      return mcpActionsRepo.listActions(scope, { limit }).map((row): McpActionView => ({
+        actionId: row.actionId,
+        kind: row.kind,
+        status: row.status,
+        ...(row.targetChannelId !== undefined ? { targetChannelId: row.targetChannelId } : {}),
+        ...(row.resultMessageId !== undefined ? { resultMessageId: row.resultMessageId } : {}),
+        ...(row.resultThreadId !== undefined ? { resultThreadId: row.resultThreadId } : {}),
+        undoable:
+          row.status === 'done' &&
+          row.undoneByActionId === undefined &&
+          row.undoJson !== undefined &&
+          REVERSIBLE_ACTION_KINDS.has(row.kind),
+        createdAt: row.createdAt,
+      }));
     }),
 });
 

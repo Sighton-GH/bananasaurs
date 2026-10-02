@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import {
-  GUILD_REFUSAL_MESSAGE,
-  INVALID_ARGUMENTS_MESSAGE,
-  type McpPrincipal,
-} from '../scope.js';
+import { GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
 import {
   LIST_ACTIONS_LIMIT_MAX,
   LIST_ACTIONS_TOOL_NAME,
@@ -27,8 +23,14 @@ const principalWith = (reachable: readonly GuildId[]): McpPrincipal => ({
 });
 
 const stubPort = (over: Partial<McpActionsPort> = {}): McpActionsPort => ({
-  undo: () => Promise.resolve({ status: 'done', actionId: 'undo-1', undoneActionId: 'act-1', kind: 'message.edit' }),
-  list: () => Promise.resolve([]),
+  undo: () =>
+    Promise.resolve({
+      status: 'done',
+      actionId: 'undo-1',
+      undoneActionId: 'act-1',
+      kind: 'message.edit',
+    }),
+  list: () => [],
   ...over,
 });
 
@@ -141,7 +143,8 @@ describe('undo_action', () => {
     expect(outcome.text).toContain('no Discord call was made');
   });
 
-  it('a failed undo reports the unknown result and the same action id', async () => {    const outcome = await undoActionText(
+  it('a failed undo reports the unknown result and the same action id', async () => {
+    const outcome = await undoActionText(
       principalWith([GUILD_A]),
       stubPort({ undo: () => Promise.resolve({ status: 'failed' }) }),
       { guildId: '111111111111111111', actionId: 'act-1' },
@@ -182,7 +185,11 @@ describe('list_actions', () => {
   it('answers a port throw as the shared refusal', async () => {
     const outcome = await listActionsText(
       principalWith([GUILD_A]),
-      stubPort({ list: () => Promise.reject(new Error('db down')) }),
+      stubPort({
+        list: () => {
+          throw new Error('db down');
+        },
+      }),
       { guildId: String(GUILD_A) },
     );
     expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
@@ -211,7 +218,7 @@ describe('list_actions', () => {
     ];
     const outcome = await listActionsText(
       principalWith([GUILD_A]),
-      stubPort({ list: () => Promise.resolve(views) }),
+      stubPort({ list: () => views }),
       { guildId: String(GUILD_A) },
     );
     expect(outcome.ok).toBe(true);
@@ -229,18 +236,17 @@ describe('list_actions', () => {
     const threaded = await listActionsText(
       principalWith([GUILD_A]),
       stubPort({
-        list: () =>
-          Promise.resolve([
-            {
-              actionId: 'act-3',
-              kind: 'thread.create',
-              status: 'done',
-              targetChannelId: '333333333333333333',
-              resultThreadId: '666666666666666666',
-              undoable: false,
-              createdAt: 1_700_000_002_000,
-            },
-          ]),
+        list: () => [
+          {
+            actionId: 'act-3',
+            kind: 'thread.create',
+            status: 'done',
+            targetChannelId: '333333333333333333',
+            resultThreadId: '666666666666666666',
+            undoable: false,
+            createdAt: 1_700_000_002_000,
+          },
+        ],
       }),
       { guildId: String(GUILD_A) },
     );
@@ -263,7 +269,7 @@ describe('list_actions', () => {
       stubPort({
         list: (_guildId, input) => {
           seen = input.limit;
-          return Promise.resolve([]);
+          return [];
         },
       }),
       { guildId: String(GUILD_A) },
