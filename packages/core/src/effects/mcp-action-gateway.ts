@@ -56,10 +56,9 @@ export type McpCapGroup = 'message' | 'edit' | 'member_role' | 'structure' | 'pi
 
 /**
  * Caps per guild per rolling hour, counted from `mcp_actions` rows by cap
- * group (ADR 0116 §6). Mirrors the numbers the Task 1 storage repos enforce;
- * duplicated rather than imported because `core` cannot depend on `storage`
- * (the dependency runs the other way), so the daemon wiring passes
- * repository-backed ports and this module owns the numbers it enforces.
+ * group (ADR 0116 §6). Exists only as the defaults source for the
+ * `mcp.cap.*` instance settings (ADR 0119 §4): `runMcpAction` reads its cap
+ * from `McpActionDeps.capFor`, never from this constant.
  */
 export const MCP_ACTION_CAPS: Readonly<Record<McpCapGroup, number>> = {
   message: 300,
@@ -203,6 +202,7 @@ export interface McpActionDeps {
   readonly logger: Logger;
   now(): number;
   newActionId(): string;
+  capFor(capGroup: McpCapGroup): number;
   readonly state: {
     read(): SafetyStateForSend | undefined;
   };
@@ -311,7 +311,7 @@ export const runMcpAction = async <
   // bound, one full window out. It never trips the breaker (M5-D12).
   if (
     deps.ledger.countSince(intent.capGroup, now - MCP_ACTION_WINDOW_MS) >=
-    MCP_ACTION_CAPS[intent.capGroup]
+    deps.capFor(intent.capGroup)
   ) {
     return refuse('rate-cap', new Date(now + MCP_ACTION_WINDOW_MS).toISOString());
   }

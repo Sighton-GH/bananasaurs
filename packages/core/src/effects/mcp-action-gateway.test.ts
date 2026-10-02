@@ -175,6 +175,9 @@ const build = (): Harness => {
   });
   const logger = pino({ level: 'debug' }, sink);
 
+  const capFor = (capGroup: 'message' | 'edit' | 'member_role' | 'structure' | 'pin_react') =>
+    MCP_ACTION_CAPS[capGroup];
+
   const deps: McpActionDeps = {
     guildId: GUILD,
     logger,
@@ -183,6 +186,7 @@ const build = (): Harness => {
       actionSeq.value += 1;
       return `action-${actionSeq.value}`;
     },
+    capFor,
     state: {
       // Deliberately only `read`: this pipeline must never trip the breaker,
       // so there is no `tripBreaker` to call. The tests below fail if anyone
@@ -390,6 +394,39 @@ describe('runMcpAction layer order', () => {
       resultMessageId: '555555555555555555',
     });
     expect(h.executeCalls.value).toBe(0);
+  });
+
+  it('refuses at the capFor value, not at the constant', async () => {
+    const h = build();
+    h.deps.capFor = () => 2;
+    h.ledger.seedClaimed(0, h.nowMs.value);
+    h.ledger.seedClaimed(1, h.nowMs.value);
+
+    const capped = await runMcpAction(
+      h.deps,
+      intent({ idempotencyKey: 'new-key', duplicateContentGuard: false }),
+      true,
+      succeedingExecute(h),
+    );
+    expect(capped).toEqual({
+      status: 'refused',
+      reason: 'rate-cap',
+      detail: new Date(h.nowMs.value + MCP_ACTION_WINDOW_MS).toISOString(),
+    });
+    expect(h.executeCalls.value).toBe(0);
+
+    // One row fewer than capFor passes.
+    const h2 = build();
+    h2.deps.capFor = () => 2;
+    h2.ledger.seedClaimed(0, h2.nowMs.value);
+    const ok = await runMcpAction(
+      h2.deps,
+      intent({ duplicateContentGuard: false }),
+      true,
+      succeedingExecute(h2),
+    );
+    expect(ok.status).toBe('done');
+    expect(h2.executeCalls.value).toBe(1);
   });
 
   it('refuses duplicate content only when the guard is on', async () => {
