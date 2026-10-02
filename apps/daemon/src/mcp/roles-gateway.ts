@@ -34,7 +34,8 @@ export interface McpRoleGatewayDeps {
   readonly authz: AuthzStore;
   readonly rateLimiter: RateLimiter;
   readonly logger: Logger;
-  now(): number;
+  /** A property, not a method: it is destructured and passed on by value. */
+  readonly now: () => number;
 }
 
 /**
@@ -75,13 +76,14 @@ export const mcpRoleGatewayFor = (
   scope: GuildScope,
 ): EffectGateway => {
   const guildId: GuildId = scope.guildId;
+  const { authz, rateLimiter, logger, now } = deps;
   return new EffectGateway({
     guildId,
-    authz: deps.authz,
+    authz,
     discord,
-    rateLimiter: deps.rateLimiter,
-    logger: deps.logger,
-    now: deps.now,
+    rateLimiter,
+    logger,
+    now,
     state: {
       read: () => guildRepo.readSafetyState(scope),
       isPanelEnabled: (panelId) => panelRepo.isPanelEnabled(scope, panelId),
@@ -91,7 +93,7 @@ export const mcpRoleGatewayFor = (
       // breaker. A no-op that logs the allowlisted fields only — guild id
       // and reason — and never calls `guildRepo.tripBreaker`.
       tripBreaker: (reason, _atMs) => {
-        deps.logger.warn(
+        logger.warn(
           safeLogFields({ component: 'mcp-roles', guildId, reason }),
           'mcp rate overflow refused; guild breaker left closed',
         );

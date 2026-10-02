@@ -308,9 +308,7 @@ describe('mcpRoleGatewayFor', () => {
     expect(discord.restCalls('addRole')).toHaveLength(2);
 
     // One warn line from the no-op trip, carrying guild id and reason only.
-    const trips = warns.filter((args) =>
-      JSON.stringify(args).includes('breaker left closed'),
-    );
+    const trips = warns.filter((args) => JSON.stringify(args).includes('breaker left closed'));
     expect(trips).toHaveLength(1);
     expect(JSON.stringify(trips[0])).toContain(GUILD);
     expect(JSON.stringify(trips[0])).toContain('rate cap exceeded');
@@ -333,10 +331,7 @@ describe('mcpRoleGatewayFor', () => {
 
     const cases = [ABOVE_ROLE, MANAGED_ROLE, GUILD, DANGEROUS_ROLE, GHOST_ROLE];
     for (const [index, roleId] of cases.entries()) {
-      const outcome = await gateway.applyRoleEffect(
-        witness(),
-        intent(members[index + 1]!, roleId),
-      );
+      const outcome = await gateway.applyRoleEffect(witness(), intent(members[index + 1]!, roleId));
       expect(outcome).toEqual({ status: 'refused', reason: 'role-not-allowlisted' });
     }
 
@@ -385,9 +380,7 @@ describe('mcpRoleGatewayFor', () => {
     );
     expect(outcome.status).toBe('applied');
 
-    const row = effectRepo
-      .tailAudit(scope)
-      .find((entry) => entry.action === 'role.grant');
+    const row = effectRepo.tailAudit(scope).find((entry) => entry.action === 'role.grant');
     expect(row).toMatchObject({ actorType: 'mcp_operator', actorId: ACCOUNT });
   });
 });

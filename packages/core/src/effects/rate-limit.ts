@@ -86,13 +86,7 @@ export class TokenBucket {
 }
 
 export type EffectSource =
-  | 'interaction'
-  | 'reaction'
-  | 'adoption'
-  | 'reconcile'
-  | 'cli'
-  | 'dashboard'
-  | 'mcp';
+  'interaction' | 'reaction' | 'adoption' | 'reconcile' | 'cli' | 'dashboard' | 'mcp';
 
 /**
  * One bucket per source, created lazily at the guild's configured rate.
