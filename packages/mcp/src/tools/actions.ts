@@ -106,6 +106,8 @@ export type McpUndoRefusal =
   | 'action-failed'
   | 'action-incomplete'
   | 'not-undoable'
+  | 'undo-in-progress'
+  | 'target-unavailable'
   | 'killswitch'
   | 'breaker-open'
   | 'rate-cap';
@@ -214,6 +216,19 @@ const undoRefusalText = (
         'creation, forum posts and member removals never are — and a reversible action whose ' +
         'stored previous state is missing or unreadable cannot be restored either.'
       );
+    case 'undo-in-progress':
+      return (
+        `An undo of action ${actionId} in guild ${guildId} is already running` +
+        `${detail !== undefined ? ` as action ${detail}` : ''}, so no second one was started. ` +
+        'Check `list_actions` for its outcome before retrying.'
+      );
+    case 'target-unavailable':
+      return (
+        `Action ${actionId} in guild ${guildId} was not undone: its channel or thread is no ` +
+        'longer one this connector may write to' +
+        `${detail !== undefined ? ` (${detail})` : ''}. An operator must restore send scope or ` +
+        "the bot's permission there before the undo can run."
+      );
     case 'killswitch':
       return (
         `The kill switch is on for guild ${guildId}, so action ${actionId} was not undone. ` +
@@ -273,16 +288,17 @@ const undoActionInner = async (
     case 'failed':
       // The Discord call failed with an unknown result: Discord may have
       // applied the inverse and the response been lost, so this must not
-      // claim nothing changed — nobody knows that. Retrying names the same
-      // action id (the undo key is derived from it), so it replays rather
-      // than applying twice.
+      // claim nothing changed — nobody knows that. A retry with the same
+      // action id runs the inverse again under a fresh attempt key; every
+      // inverse is idempotent (edit back, pin/unpin, own reaction, member
+      // removal, thread state), so a second application changes nothing.
       return {
         ok: false,
         message:
           `The Discord call undoing action ${parsed.data.actionId} ` +
           `in guild ${gate.guildId} failed with an unknown result: the target ` +
-          `may or may not have been restored. Check it before retrying, ` +
-          'and retry with the same action id — never a different one.',
+          `may or may not have been restored. Retrying with the same action id is safe: ` +
+          'the inverse is re-applied, and re-applying it changes nothing that already happened.',
       };
   }
 };

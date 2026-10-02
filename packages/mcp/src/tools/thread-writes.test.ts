@@ -266,6 +266,34 @@ describe('create_thread argument boundary (hard rule 3)', () => {
   });
 });
 
+describe('thread-write ids are snowflakes before any port call (REST path safety)', () => {
+  // Ids go into REST route paths unencoded and a URL resolves `..`: a
+  // traversal id must die at the argument boundary (whole-branch review).
+  const TRAVERSAL = '../../../guilds/111111111111111111/members/222222222222222222';
+  it.each([
+    ['create_thread fromMessageId', createThreadText, createArgs({ fromMessageId: TRAVERSAL })],
+    ['add_thread_members userIds', addThreadMembersText, membersArgs({ userIds: [TRAVERSAL] })],
+    [
+      'remove_thread_members userIds',
+      removeThreadMembersText,
+      membersArgs({ userIds: [USER, TRAVERSAL] }),
+    ],
+    [
+      'remove_thread_members threadId',
+      removeThreadMembersText,
+      membersArgs({ threadId: TRAVERSAL }),
+    ],
+    ['archive_thread threadId', archiveThreadText, archiveArgs({ threadId: TRAVERSAL })],
+    ['lock_thread threadId', lockThreadText, lockArgs({ threadId: TRAVERSAL })],
+  ] as const)('%s refuses a path-traversal id', async (_label, text, args) => {
+    const port = fakeThreadPort({ status: 'done', actionId: ACTION, threadId: THREAD });
+    expect(messageOf(await text(principalWith([GUILD_A]), port, args))).toBe(
+      INVALID_ARGUMENTS_MESSAGE,
+    );
+    expect(port.calls).toBe(0);
+  });
+});
+
 describe('create_thread outcomes', () => {
   it('a created thread names the thread id and the action', async () => {
     const port = fakeThreadPort({ status: 'done', actionId: ACTION, threadId: THREAD });

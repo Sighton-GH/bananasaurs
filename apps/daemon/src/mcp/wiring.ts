@@ -29,7 +29,7 @@ import {
   type OpsJobRow,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
-import { resolvePings, resolveSendTarget, type SendTarget } from './targets.js';
+import { resolvePings, resolveSendTarget, type SendTarget, type TargetNeed } from './targets.js';
 import { protectedMessageReason } from './protected.js';
 import { resolveChannel } from '../channels/resolver.js';
 import { mcpActionDepsFor } from './actions.js';
@@ -1954,7 +1954,9 @@ const threadWritesPortFor = (
         if (resolved === undefined || !resolved.isThread) {
           return { status: 'refused', reason: 'thread-not-found' };
         }
-        const owned = botOwnsThread(scope, resolved.channelId);
+        // Discord lets a thread's owner archive it, but only ManageThreads
+        // locks or unlocks — ownership never relaxes a lock.
+        const owned = input.locked === undefined && botOwnsThread(scope, resolved.channelId);
         const target = await resolveSendTarget(
           client,
           scope,
@@ -2447,6 +2449,51 @@ const messageWritesPortFor = (
  * fails to parse is not undoable.
  */
 const undoEditSchema = z.object({ content: z.string(), embeds: z.array(z.unknown()) }).strict();
+/**
+ * The stored previous embeds are Discord's own API objects, link previews
+ * included. An edit accepts only rich embeds and only their authorable
+ * fields, so the restore keeps exactly those: a preview (`type` link, image,
+ * video, gifv, article) regenerates from the restored content by itself,
+ * and sending it back could fail the PATCH (whole-branch review).
+ */
+const pickFields = (
+  value: unknown,
+  keys: readonly string[],
+): Record<string, unknown> | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const source = value as Record<string, unknown>;
+  const picked: Record<string, unknown> = {};
+  for (const key of keys) if (source[key] !== undefined) picked[key] = source[key];
+  return Object.keys(picked).length === 0 ? undefined : picked;
+};
+
+const restorableEmbeds = (embeds: readonly unknown[]): unknown[] =>
+  embeds.flatMap((embed) => {
+    if (typeof embed !== 'object' || embed === null) return [];
+    const raw = embed as Record<string, unknown>;
+    if (raw['type'] !== undefined && raw['type'] !== 'rich') return [];
+    const top = pickFields(raw, ['title', 'description', 'url', 'timestamp', 'color']) ?? {};
+    const footer = pickFields(raw['footer'], ['text', 'icon_url']);
+    const image = pickFields(raw['image'], ['url']);
+    const thumbnail = pickFields(raw['thumbnail'], ['url']);
+    const author = pickFields(raw['author'], ['name', 'url', 'icon_url']);
+    const fields = Array.isArray(raw['fields'])
+      ? raw['fields'].flatMap((field) => {
+          const kept = pickFields(field, ['name', 'value', 'inline']);
+          return kept === undefined ? [] : [kept];
+        })
+      : [];
+    const restored = {
+      ...top,
+      ...(footer !== undefined ? { footer } : {}),
+      ...(image !== undefined ? { image } : {}),
+      ...(thumbnail !== undefined ? { thumbnail } : {}),
+      ...(author !== undefined ? { author } : {}),
+      ...(fields.length > 0 ? { fields } : {}),
+    };
+    return Object.keys(restored).length === 0 ? [] : [restored];
+  });
+
 const undoUnpinSchema = z.object({ op: z.literal('unpin') }).strict();
 const undoPinSchema = z.object({ op: z.literal('pin') }).strict();
 const undoRemoveReactionSchema = z
@@ -2484,6 +2531,12 @@ const parseUndoJson = (raw: string): unknown => {
 
 interface UndoPlan {
   readonly kind: string;
+  /**
+   * Set when the inverse needs more than its kind's usual permission:
+   * Discord lets a thread's owner archive it, but only ManageThreads locks
+   * or unlocks, whoever owns the thread.
+   */
+  readonly need?: TargetNeed;
   readonly capGroup: 'edit' | 'pin_react' | 'structure';
   readonly argsHash: string;
   readonly execute: () => Promise<{ resultMessageId?: string; resultThreadId?: string }>;
@@ -2523,7 +2576,7 @@ const planUndo = (
           channel: channelId,
           message: messageId,
           content: undo.data.content,
-          embeds: undo.data.embeds,
+          embeds: restorableEmbeds(undo.data.embeds),
         }),
         execute: async () => {
           await discord.editMessage(
@@ -2531,7 +2584,7 @@ const planUndo = (
             { channelId, messageId },
             {
               content: undo.data.content,
-              embeds: undo.data.embeds,
+              embeds: restorableEmbeds(undo.data.embeds),
               // An undo edit that pings would notify on a restoration:
               // absent, Discord would apply its default and notify.
               allowedMentions: { parse: [], roles: [], users: [] },
@@ -2617,6 +2670,7 @@ const planUndo = (
       return {
         kind: 'thread.state',
         capGroup: 'structure',
+        ...('locked' in state ? { need: 'manage-thread' as const } : {}),
         argsHash: argsHashFor('thread.state', { thread: threadId, ...state }),
         execute: async () => {
           await discord.setThreadState(guildId, threadId, state);
@@ -2648,10 +2702,59 @@ const planUndo = (
  * allowlisted-fields error line via `loggedCallAsync` above, never content:
  * the action id and the outcome name what happened.
  */
+/**
+ * The undo's idempotency key for one attempt. Attempt 0 is `undo:<id>`; a
+ * dry run or a failure spends its attempt without restoring anything, so the
+ * next real undo takes `undo:<id>:<n>` rather than replaying that record
+ * (whole-branch review: a spent key must never mark the original undone).
+ */
+const undoKeyFor = (actionId: string, attempt: number): string =>
+  attempt === 0 ? `undo:${actionId}` : `undo:${actionId}:${attempt}`;
+
+/** A bound on spent attempts, so a broken target cannot grow the ledger without limit. */
+const UNDO_ATTEMPTS_MAX = 20;
+
+/**
+ * The first attempt key not spent by a dry run or a failure: a fresh key,
+ * or one whose row is `claimed` (in flight) or `done` (the pipeline then
+ * replays it). `undefined` once every attempt is spent.
+ */
+const nextUndoKey = (scope: GuildScope, actionId: string): string | undefined => {
+  for (let attempt = 0; attempt < UNDO_ATTEMPTS_MAX; attempt += 1) {
+    const key = undoKeyFor(actionId, attempt);
+    const prior = mcpActionsRepo.findAction(scope, key);
+    if (prior === undefined || prior.status === 'claimed' || prior.status === 'done') return key;
+  }
+  return undefined;
+};
+
+/**
+ * The live permission an inverse needs — the same need its forward tool
+ * resolves (ADR 0116 §5: the inverse runs through the same gateway, target
+ * policy first). Thread inverses need only `post-in-thread` on a thread the
+ * MCP created, like the forward member and state tools.
+ */
+const undoNeedFor = (scope: GuildScope, inverseKind: string, channelId: string): TargetNeed => {
+  switch (inverseKind) {
+    case 'message.edit':
+      return 'post';
+    case 'message.pin':
+    case 'message.unpin':
+      return 'pin';
+    case 'reaction.add':
+    case 'reaction.remove':
+      return 'react';
+    default:
+      return botOwnsThread(scope, channelId) ? 'post-in-thread' : 'manage-thread';
+  }
+};
+
 const actionsPortFor = (
   principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
   deps: HttpDeps,
   discord: DiscordPort,
+  /** Live target policy for the inverse: send scope ∩ the bot's permission now. */
+  client: Client,
 ): McpActionsPort => ({
   undo: (guildId, input) =>
     loggedCallAsync(deps.logger, 'undoAction', async () => {
@@ -2669,15 +2772,41 @@ const actionsPortFor = (
       if (row.status === 'failed') return { status: 'refused', reason: 'action-failed' };
       if (row.status !== 'done') return { status: 'refused', reason: 'action-incomplete' };
       const plan = planUndo(guildId, discord, row);
-      if (plan === undefined) {
+      if (plan === undefined || row.targetChannelId === undefined) {
+        return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+      }
+      // The target policy again, live: a channel dropped from send scope or
+      // a permission revoked since the forward write refuses cleanly here
+      // rather than surfacing as an unknown Discord result.
+      const target = await resolveSendTarget(
+        client,
+        scope,
+        guildId,
+        row.targetChannelId,
+        plan.need ?? undoNeedFor(scope, plan.kind, row.targetChannelId),
+      );
+      if (!target.ok) {
+        return {
+          status: 'refused',
+          reason: 'target-unavailable',
+          detail: target.missing !== undefined ? `missing ${target.missing}` : target.reason,
+        };
+      }
+      const undoKey = nextUndoKey(scope, row.actionId);
+      if (undoKey === undefined) {
         return { status: 'refused', reason: 'not-undoable', detail: row.kind };
       }
       const outcome = await runMcpAction(
-        mcpActionDepsFor(deps, guildId, principal),
+        mcpActionDepsFor(
+          deps,
+          guildId,
+          principal,
+          target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+        ),
         {
           kind: plan.kind,
           capGroup: plan.capGroup,
-          idempotencyKey: `undo:${row.actionId}`,
+          idempotencyKey: undoKey,
           tokenId: principal.tokenId,
           argsHash: plan.argsHash,
           targetChannelId: row.targetChannelId,
@@ -2719,9 +2848,13 @@ const actionsPortFor = (
           };
         }
         case 'replayed': {
-          // The same derived key claimed twice with the same args: the undo
-          // already ran. The mark is idempotent, so claiming it again is
-          // safe, and the answer names the undo's action id.
+          // `nextUndoKey` only hands out a key whose row is fresh, in flight
+          // or done. Only a done undo restored anything, so only it may mark
+          // the original; an in-flight one answers that and marks nothing.
+          const prior = mcpActionsRepo.findActionById(scope, outcome.actionId);
+          if (prior?.status !== 'done') {
+            return { status: 'refused', reason: 'undo-in-progress', detail: outcome.actionId };
+          }
           mcpActionsRepo.markUndone(scope, row.actionId, outcome.actionId);
           const reread = mcpActionsRepo.findActionById(scope, row.actionId);
           return {
@@ -3120,7 +3253,7 @@ export const registerMcpRoutes = (
       send: sendPortFor(principal, deps, discord, client),
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
-      actions: actionsPortFor(principal, deps, discord),
+      actions: actionsPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),

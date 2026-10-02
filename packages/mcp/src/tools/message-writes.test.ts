@@ -264,6 +264,31 @@ describe('edit_message argument boundary (hard rule 3)', () => {
   });
 });
 
+describe('message-write ids are snowflakes before any port call (REST path safety)', () => {
+  // An id goes into a REST route path unencoded, and a URL resolves `..`
+  // segments: a traversal id must die at the argument boundary, never reach
+  // the port (whole-branch review, slice 3).
+  it.each(handlers)('%s refuses a path-traversal message id', async (_name, text, valid) => {
+    const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
+    const outcome = await text(principalWith([GUILD_A]), port, {
+      ...valid(),
+      messageId: '../../../../guilds/111111111111111111/bans/222222222222222222',
+    });
+    expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(totalCalls(port)).toBe(0);
+  });
+
+  it.each(handlers)('%s refuses a path-traversal channel id', async (_name, text, valid) => {
+    const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
+    const outcome = await text(principalWith([GUILD_A]), port, {
+      ...valid(),
+      channelId: '1/../../guilds/111111111111111111',
+    });
+    expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(totalCalls(port)).toBe(0);
+  });
+});
+
 describe('reaction emoji shape (hard rule 3)', () => {
   it.each([
     ['a unicode emoji', '👍'],

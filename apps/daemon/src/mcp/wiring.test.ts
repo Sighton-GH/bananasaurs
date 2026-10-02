@@ -1575,7 +1575,7 @@ describe('/mcp thread writes through the real composition', () => {
     }
   });
 
-  it('archive then undo restores, and lock then unlock restores', async () => {
+  it('archive then restore works on an owned thread, and a lock still needs ManageThreads', async () => {
     seed();
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const client = buildThreadClient();
@@ -1628,19 +1628,12 @@ describe('/mcp thread writes through the real composition', () => {
           })
         ).body,
       );
-      expect(locked.isError).not.toBe(true);
-      expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: true });
-      const unlocked = callText(
-        (
-          await mcpCall(threadApp, accessToken, 'lock_thread', {
-            guildId: '111111111111111111',
-            threadId,
-            locked: false,
-            idempotencyKey: 'lock-k2',
-          })
-        ).body,
-      );
-      expect(unlocked.isError).not.toBe(true);
+      // Discord lets a thread's owner archive it but only ManageThreads
+      // locks: owning the thread never relaxes a lock, so this bot (no
+      // ManageThreads) is refused before any Discord call.
+      expect(locked.isError).toBe(true);
+      expect(locked.text).toContain('ManageThreads');
+      expect(discord.restCalls('setThreadState')).toHaveLength(2);
       expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: false });
     } finally {
       await threadApp.close();
@@ -6693,7 +6686,12 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
       PermissionsBitField.Flags.ViewChannel |
       PermissionsBitField.Flags.SendMessages |
       PermissionsBitField.Flags.SendMessagesInThreads |
-      PermissionsBitField.Flags.AddReactions
+      PermissionsBitField.Flags.AddReactions |
+      // The undo re-resolves its target live (whole-branch review), so the
+      // bot needs every inverse's permission: pin for pin/unpin, and
+      // ManageThreads for thread inverses on a thread the MCP did not create.
+      PermissionsBitField.Flags.PinMessages |
+      PermissionsBitField.Flags.ManageThreads
     ).toString();
     internals.guilds._add({
       id: GUILD_A,
@@ -6707,6 +6705,22 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
           name: 'planning',
           position: 0,
           permission_overwrites: [],
+        },
+      ],
+      threads: [
+        {
+          id: THREAD,
+          guild_id: GUILD_A,
+          parent_id: CHANNEL,
+          owner_id: MEMBER,
+          type: ChannelType.PublicThread,
+          name: 'undo-thread',
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 1440,
+            archive_timestamp: new Date().toISOString(),
+            locked: false,
+          },
         },
       ],
       roles: [
@@ -7190,6 +7204,153 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(0);
     expect(
       mcpActionsRepo.findActionById(scope, 'undo-dryrun-guild')?.undoneByActionId,
+    ).toBeUndefined();
+  });
+
+  it('a dry-run undo never blocks the real one: dry run off, the undo runs and marks', async () => {
+    // Whole-branch review: the dry-run row used to sit on `undo:<id>`, the
+    // real undo replayed it, marked the original undone, and restored nothing.
+    seedUndoGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-dry-then-real',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    const dry = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-dry-then-real' })).body,
+    );
+    expect(dry.text).toContain('Dry run');
+    guildRepo.setDryRun(scope, false, clock);
+    const real = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-dry-then-real' })).body,
+    );
+    expect(real.isError).not.toBe(true);
+    expect(real.text).toContain('Undid');
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    const marked = mcpActionsRepo.findActionById(scope, 'undo-dry-then-real')?.undoneByActionId;
+    expect(marked).toBeDefined();
+    expect(mcpActionsRepo.findActionById(scope, marked ?? '')?.status).toBe('done');
+  });
+
+  it('a failed undo retried with the same action id runs again and only then marks', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-fail-then-retry',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    fakeDiscord.failNext('unpinMessage', new DiscordApiError(500, undefined, 'discord is on fire'));
+    const failed = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-fail-then-retry' }))
+        .body,
+    );
+    expect(failed.isError).toBe(true);
+    expect(failed.text).toContain('unknown result');
+    expect(
+      mcpActionsRepo.findActionById(scope, 'undo-fail-then-retry')?.undoneByActionId,
+    ).toBeUndefined();
+    const retried = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-fail-then-retry' }))
+        .body,
+    );
+    expect(retried.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(2);
+    const marked = mcpActionsRepo.findActionById(scope, 'undo-fail-then-retry')?.undoneByActionId;
+    expect(mcpActionsRepo.findActionById(scope, marked ?? '')?.status).toBe('done');
+  });
+
+  it('an edit undo restores rich embeds only, with authorable fields only', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    seedAction({
+      actionId: 'undo-embeds',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({
+        content: ORIGINAL,
+        embeds: [
+          {
+            type: 'rich',
+            title: 'Agenda',
+            color: 3447003,
+            fields: [{ name: 'When', value: 'Friday', inline: true }],
+            footer: { text: 'club', proxy_icon_url: 'https://media.example/x.png' },
+          },
+          { type: 'link', url: 'https://example.com', provider: { name: 'example' } },
+        ],
+      }),
+    });
+    const undone = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-embeds' })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    const body = fakeDiscord.restCalls('editMessage')[0]?.args[2] as { embeds?: unknown };
+    expect(body.embeds).toEqual([
+      {
+        title: 'Agenda',
+        color: 3447003,
+        fields: [{ name: 'When', value: 'Friday', inline: true }],
+        footer: { text: 'club' },
+      },
+    ]);
+  });
+
+  it('an undo whose channel left send scope refuses with no Discord call', async () => {
+    seedUndoGuild();
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    // No allowlist row for CHANNEL: the forward pin was allowed, the undo is not.
+    const send = await mintToken('bananasaurs:send');
+    seedAction({
+      actionId: 'undo-out-of-scope',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    const refused = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-out-of-scope' })).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('no longer one this connector may write to');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+    expect(
+      mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'undo:undo-out-of-scope'),
     ).toBeUndefined();
   });
 });

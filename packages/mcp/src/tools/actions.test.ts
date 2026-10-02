@@ -41,6 +41,8 @@ const UNDO_REFUSALS: readonly McpUndoRefusal[] = [
   'action-failed',
   'action-incomplete',
   'not-undoable',
+  'undo-in-progress',
+  'target-unavailable',
   'killswitch',
   'breaker-open',
   'rate-cap',
