@@ -88,10 +88,15 @@ export const mcpActionDepsFor = (
        * cap group counts ledger rows unchanged.
        */
       countSince: (capGroup, sinceMs) => {
-        const base = mcpActionsRepo.countActionsSince(scope, capGroup, sinceMs);
-        if (capGroup !== 'member_role') return base;
-        const { previewCount, memberTotal } = mcpBulkRepo.sumConsumedMembers(scope, sinceMs);
-        return base - previewCount + memberTotal;
+        if (capGroup !== 'member_role') {
+          return mcpActionsRepo.countActionsSince(scope, capGroup, sinceMs);
+        }
+        // `role.bulk` rows carry no weight of their own: a bulk change counts
+        // as the members of its consumed preview, whatever its row's state.
+        const singles = mcpActionsRepo.countActionsSince(scope, capGroup, sinceMs, {
+          excludeKind: 'role.bulk',
+        });
+        return singles + mcpBulkRepo.sumConsumedMembers(scope, sinceMs).memberTotal;
       },
       recentSameContent: (argsHash, channelId, sinceMs) =>
         channelId === undefined
