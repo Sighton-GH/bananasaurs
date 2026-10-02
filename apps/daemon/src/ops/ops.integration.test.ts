@@ -1066,7 +1066,7 @@ describe('the operator CLI, end to end', () => {
         discord.resetCalls();
         const result = await cli(`panel edit --definition ${editJson()} --confirm`);
         expect(result.code, result.err).toBe(0);
-        expect(result.out).toMatch(/updated panel buttons/);
+        expect(result.out).toMatch(/updated panel 'buttons'/);
         expect(result.out).toMatch(/panel sync buttons/);
 
         const panel = panelRepo.findPanel(scope(), 'buttons');
