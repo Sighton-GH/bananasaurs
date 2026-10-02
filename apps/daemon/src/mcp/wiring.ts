@@ -2715,15 +2715,24 @@ const undoKeyFor = (actionId: string, attempt: number): string =>
 const UNDO_ATTEMPTS_MAX = 20;
 
 /**
+ * An undo still `claimed` this long after its claim died with the process
+ * (a crash between claim and completion): nothing will ever complete it, so
+ * it counts as spent rather than answering `undo-in-progress` forever. Safe
+ * because every inverse sets a state — re-applying one changes nothing.
+ */
+const UNDO_CLAIM_STALE_MS = 10 * 60 * 1000;
+
+/**
  * The first attempt key not spent by a dry run or a failure: a fresh key,
  * or one whose row is `claimed` (in flight) or `done` (the pipeline then
  * replays it). `undefined` once every attempt is spent.
  */
-const nextUndoKey = (scope: GuildScope, actionId: string): string | undefined => {
+const nextUndoKey = (scope: GuildScope, actionId: string, nowMs: number): string | undefined => {
   for (let attempt = 0; attempt < UNDO_ATTEMPTS_MAX; attempt += 1) {
     const key = undoKeyFor(actionId, attempt);
     const prior = mcpActionsRepo.findAction(scope, key);
-    if (prior === undefined || prior.status === 'claimed' || prior.status === 'done') return key;
+    if (prior === undefined || prior.status === 'done') return key;
+    if (prior.status === 'claimed' && nowMs - prior.createdAt < UNDO_CLAIM_STALE_MS) return key;
   }
   return undefined;
 };
@@ -2792,7 +2801,7 @@ const actionsPortFor = (
           detail: target.missing !== undefined ? `missing ${target.missing}` : target.reason,
         };
       }
-      const undoKey = nextUndoKey(scope, row.actionId);
+      const undoKey = nextUndoKey(scope, row.actionId, deps.now());
       if (undoKey === undefined) {
         return { status: 'refused', reason: 'not-undoable', detail: row.kind };
       }

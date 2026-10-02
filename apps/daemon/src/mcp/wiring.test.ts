@@ -7330,6 +7330,46 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     ]);
   });
 
+  it('an undo stranded at claimed by a crash is retried once its claim is stale', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-stranded',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    // The crashed undo: claimed eleven minutes ago, never completed.
+    mcpActionsRepo.claimAction(scope, {
+      actionId: 'undo-crashed',
+      idempotencyKey: 'undo:undo-stranded',
+      kind: 'message.unpin',
+      capGroup: 'pin_react',
+      argsHash: 'hash-crashed',
+      tokenId: 'tok_test',
+      targetChannelId: CHANNEL,
+      now: clock - 11 * 60 * 1000,
+      dryRun: false,
+    });
+    const undone = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-stranded' })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    const marked = mcpActionsRepo.findActionById(scope, 'undo-stranded')?.undoneByActionId;
+    expect(marked).toBeDefined();
+    expect(marked).not.toBe('undo-crashed');
+  });
+
   it('an undo whose channel left send scope refuses with no Discord call', async () => {
     seedUndoGuild();
     guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
