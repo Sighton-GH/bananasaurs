@@ -10,7 +10,12 @@ export type SettingDisplay =
   | 'seconds-list'
   | 'host-list';
 export type SettingGroup =
-  'Assistant retries' | 'Assistant tool loop' | 'Assistant context' | 'Network' | 'Resources';
+  | 'Assistant retries'
+  | 'Assistant tool loop'
+  | 'Assistant context'
+  | 'Network'
+  | 'Resources'
+  | 'MCP connector';
 
 export interface SettingDefinition<T> {
   readonly key: string;
@@ -183,6 +188,61 @@ const fetchHeaderHosts: SettingDefinition<string[]> = {
   bounds: { maxItems: 10 },
 };
 
+const mcpCapMessage: SettingDefinition<number> = {
+  key: 'mcp.cap.message',
+  group: 'MCP connector',
+  label: 'MCP message cap',
+  help: 'Maximum send_message, create_forum_post, create_poll and schedule_message posts per rolling hour per guild. Refusals over the cap never trip the breaker.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10000),
+  defaultValue: 300,
+  bounds: { min: 1, max: 10000 },
+};
+
+const mcpCapEdit: SettingDefinition<number> = {
+  key: 'mcp.cap.edit',
+  group: 'MCP connector',
+  label: 'MCP edit cap',
+  help: 'Maximum edit_message, delete_message, edit_scheduled and cancel_scheduled writes per rolling hour per guild. Refusals over the cap never trip the breaker.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10000),
+  defaultValue: 300,
+  bounds: { min: 1, max: 10000 },
+};
+
+const mcpCapMemberRole: SettingDefinition<number> = {
+  key: 'mcp.cap.member_role',
+  group: 'MCP connector',
+  label: 'MCP member-role cap',
+  help: 'Maximum grant_role, remove_role and bulk role changes per rolling hour per guild, counting each member. Refusals over the cap never trip the breaker.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10000),
+  defaultValue: 1000,
+  bounds: { min: 1, max: 10000 },
+};
+
+const mcpCapStructure: SettingDefinition<number> = {
+  key: 'mcp.cap.structure',
+  group: 'MCP connector',
+  label: 'MCP structure cap',
+  help: 'Maximum create_thread, thread member and state changes, create_role, edit_role, create_event, edit_event and cancel_event writes per rolling hour per guild. Refusals over the cap never trip the breaker.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10000),
+  defaultValue: 100,
+  bounds: { min: 1, max: 10000 },
+};
+
+const mcpCapPinReact: SettingDefinition<number> = {
+  key: 'mcp.cap.pin_react',
+  group: 'MCP connector',
+  label: 'MCP pin and reaction cap',
+  help: 'Maximum pin_message, unpin_message, add_reaction and remove_reaction writes per rolling hour per guild. Refusals over the cap never trip the breaker.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10000),
+  defaultValue: 300,
+  bounds: { min: 1, max: 10000 },
+};
+
 export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   retryDelays,
   providerTimeout,
@@ -196,6 +256,11 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   fetchHeaderName,
   fetchHeaderValue,
   fetchHeaderHosts,
+  mcpCapMessage,
+  mcpCapEdit,
+  mcpCapMemberRole,
+  mcpCapStructure,
+  mcpCapPinReact,
 ];
 
 export interface InstanceSettingValues {
@@ -211,6 +276,11 @@ export interface InstanceSettingValues {
   readonly 'resources.fetchHeaderName': string | null;
   readonly 'resources.fetchHeaderValue': string | null;
   readonly 'resources.fetchHeaderHosts': string[];
+  readonly 'mcp.cap.message': number;
+  readonly 'mcp.cap.edit': number;
+  readonly 'mcp.cap.member_role': number;
+  readonly 'mcp.cap.structure': number;
+  readonly 'mcp.cap.pin_react': number;
 }
 
 export type InstanceSettingKey = keyof InstanceSettingValues;

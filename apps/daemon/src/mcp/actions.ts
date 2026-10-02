@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { GuildId, Logger, McpActionAuditInput, McpActionDeps } from '@bananasaurs/core';
+import {
+  MCP_ACTION_CAPS,
+  type GuildId,
+  type InstanceSettingKey,
+  type Logger,
+  type McpActionAuditInput,
+  type McpActionDeps,
+  type McpCapGroup,
+} from '@bananasaurs/core';
 import { effectRepo, guildRepo, mcpActionsRepo, type GuildScope } from '@bananasaurs/storage';
 
 /**
@@ -23,7 +31,25 @@ export interface McpActionEnv {
   readonly scopes: { forGuild(guildId: GuildId): GuildScope };
   readonly logger: Logger;
   readonly now: () => number;
+  /**
+   * ADR 0119 §4: the live instance settings (the same `get` other settings
+   * use). `get` is optional so the limited tuning port (`HttpDeps`) still
+   * satisfies this env with no change to the MCP wiring call sites (`list`
+   * keeps the weak-type overlap); at runtime the daemon hands in the full
+   * store, whose `get` reads live. Absent (or without `get`) caps fall back
+   * to `MCP_ACTION_CAPS`.
+   */
+  readonly instanceSettings?:
+    { get?(key: InstanceSettingKey): unknown; list?(): readonly unknown[] } | undefined;
 }
+
+const MCP_CAP_KEY_FOR_GROUP: Readonly<Record<McpCapGroup, InstanceSettingKey>> = {
+  message: 'mcp.cap.message',
+  edit: 'mcp.cap.edit',
+  member_role: 'mcp.cap.member_role',
+  structure: 'mcp.cap.structure',
+  pin_react: 'mcp.cap.pin_react',
+};
 
 /** The audit action per write kind. Extended as new tools move onto the pipeline. */
 const AUDIT_ACTION_FOR_KIND: Readonly<Record<string, string>> = {
@@ -48,6 +74,13 @@ export const mcpActionDepsFor = (
     logger: env.logger,
     now: env.now,
     newActionId: () => randomUUID(),
+    // Live on every call: the store's `get` reads the current row (or the
+    // registry default), so an owner edit applies to the next action with no
+    // restart. Absent store (isolated tests) falls back to the defaults.
+    capFor: (capGroup) => {
+      const raw = env.instanceSettings?.get?.(MCP_CAP_KEY_FOR_GROUP[capGroup]);
+      return typeof raw === 'number' ? raw : MCP_ACTION_CAPS[capGroup];
+    },
     state: {
       read: () => guildRepo.readSafetyState(scope),
     },

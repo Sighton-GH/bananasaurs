@@ -52,6 +52,7 @@ import {
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
+import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { FakeDiscord, BOT_USER_ID } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
@@ -1079,6 +1080,64 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.text).toContain('kill switch');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
     expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'kill-send')).toBeUndefined();
+  });
+
+  it('(Review Focus 4) a cap edited in settings takes effect on the next call with no restart', async () => {
+    const store = createInstanceSettingsStore({
+      instance: t.scopes.instance(),
+      logger: silentLogger,
+    });
+    expect(store.set('mcp.cap.message', 2, 'owner', clock).ok).toBe(true);
+    await app.close();
+    deps = { ...deps, instanceSettings: store };
+    app = buildDashboardApp(deps);
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+
+    const first = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ content: `${CONTENT}-cap-1`, idempotencyKey: 'cap-1' }),
+        )
+      ).body,
+    );
+    expect(first.isError).not.toBe(true);
+    const second = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ content: `${CONTENT}-cap-2`, idempotencyKey: 'cap-2' }),
+        )
+      ).body,
+    );
+    expect(second.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(2);
+
+    const capped = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ content: `${CONTENT}-cap-3`, idempotencyKey: 'cap-3' }),
+        )
+      ).body,
+    );
+    expect(capped.isError).toBe(true);
+    expect(capped.text).toContain('budget');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(2);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'cap-3')).toBeUndefined();
+
+    expect(store.set('mcp.cap.message', 5, 'owner', clock).ok).toBe(true);
+    const fourth = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ content: `${CONTENT}-cap-4`, idempotencyKey: 'cap-4' }),
+        )
+      ).body,
+    );
+    expect(fourth.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(3);
   });
 });
 

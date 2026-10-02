@@ -4,8 +4,9 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import { effectRepo, guildRepo, mcpActionsRepo, type GuildScope } from '@bananasaurs/storage';
-import { parseGuildId, type GuildId } from '@bananasaurs/core';
+import { MCP_ACTION_CAPS, parseGuildId, type GuildId } from '@bananasaurs/core';
 import { mcpActionDepsFor } from './actions.js';
+import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
 
 /**
  * Task 4 Step 2: the `McpActionDeps` factory over the storage repos — the
@@ -178,6 +179,31 @@ describe('mcpActionDepsFor ledger', () => {
     expect(typeof first).toBe('string');
     expect(first.length).toBeGreaterThan(0);
     expect(second).not.toBe(first);
+  });
+
+  it('capFor falls back to the defaults without a store', () => {
+    const deps = depsFor(GUILD_A);
+    expect(deps.capFor('message')).toBe(MCP_ACTION_CAPS.message);
+    expect(deps.capFor('edit')).toBe(MCP_ACTION_CAPS.edit);
+    expect(deps.capFor('member_role')).toBe(MCP_ACTION_CAPS.member_role);
+    expect(deps.capFor('structure')).toBe(MCP_ACTION_CAPS.structure);
+    expect(deps.capFor('pin_react')).toBe(MCP_ACTION_CAPS.pin_react);
+  });
+
+  it('capFor reads the live setting on every call', () => {
+    const store = createInstanceSettingsStore({
+      instance: t.scopes.instance(),
+      logger: silentLogger,
+    });
+    const live = mcpActionDepsFor({ ...env(), instanceSettings: store }, GUILD_A, {
+      clientId: CLIENT_ID,
+      tokenId: TOKEN_ID,
+    });
+    expect(live.capFor('message')).toBe(300);
+    expect(store.set('mcp.cap.message', 2, 'owner-acct', clock).ok).toBe(true);
+    expect(live.capFor('message')).toBe(2);
+    expect(store.set('mcp.cap.message', 5, 'owner-acct', clock).ok).toBe(true);
+    expect(live.capFor('message')).toBe(5);
   });
 });
 
