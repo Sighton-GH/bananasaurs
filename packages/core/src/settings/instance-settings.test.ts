@@ -85,6 +85,7 @@ describe('instance settings registry', () => {
       expect(def?.schema.safeParse(10001).success, key).toBe(false);
       expect(def?.schema.safeParse(1).success, key).toBe(true);
       expect(def?.schema.safeParse(10000).success, key).toBe(true);
+      expect(def?.schema.safeParse(2.5).success, key).toBe(false);
       expect(def?.help).toContain('per rolling hour per guild');
       expect(def?.help).toContain('never trip the breaker');
     }

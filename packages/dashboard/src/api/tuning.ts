@@ -22,7 +22,12 @@ export type TuningDisplay =
   | 'host-list';
 
 export type TuningGroup =
-  'Assistant retries' | 'Assistant tool loop' | 'Assistant context' | 'Network' | 'Resources';
+  | 'Assistant retries'
+  | 'Assistant tool loop'
+  | 'Assistant context'
+  | 'Network'
+  | 'Resources'
+  | 'MCP connector';
 
 export interface TuningSetting {
   readonly key: string;
