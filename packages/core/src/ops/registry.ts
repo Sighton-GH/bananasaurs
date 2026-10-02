@@ -51,6 +51,11 @@ import {
   mcpDisallowChannelCommand,
   mcpSendsCommand,
 } from './commands/mcp-allowlist.js';
+import {
+  mcpAllowRoleCommand,
+  mcpDisallowRoleCommand,
+  mcpRolePolicyCommand,
+} from './commands/mcp-role-policy.js';
 import { killswitchCommand } from './commands/killswitch.js';
 import {
   auditTailCommand,
@@ -132,6 +137,9 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpAllowCategoryCommand,
   mcpDisallowCategoryCommand,
   mcpDisallowChannelCommand,
+  mcpRolePolicyCommand,
+  mcpAllowRoleCommand,
+  mcpDisallowRoleCommand,
   panelCreateCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather

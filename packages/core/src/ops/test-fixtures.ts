@@ -127,6 +127,11 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   disallowSendChannel: unstubbed('disallowSendChannel'),
   listSendAllowlist: unstubbed('listSendAllowlist'),
   listSends: unstubbed('listSends'),
+  readRolePolicy: unstubbed('readRolePolicy'),
+  setRolePolicy: unstubbed('setRolePolicy'),
+  allowRole: unstubbed('allowRole'),
+  disallowRole: unstubbed('disallowRole'),
+  listRoleAllowlist: unstubbed('listRoleAllowlist'),
   ...over,
 });
 

@@ -1358,7 +1358,83 @@ export interface OpsPorts {
     sinceMs?: number | undefined;
     limit?: number | undefined;
   }): readonly OpsSendRecord[];
+
+  // --- mcp role policy (slice 5 task 6, ADR 0117 §2) ---------------------------
+  /**
+   * The guild's role-policy modes. Absent row means both are `below-bot`
+   * (ADR 0117, consequences) — the repository answers the default, never
+   * `undefined`, so callers never branch on "no row".
+   */
+  readRolePolicy(): OpsRolePolicy;
+  /**
+   * Upserts the policy row, keeping the mode no input named. Returns before
+   * and after, so the command can audit both halves of the change.
+   */
+  setRolePolicy(input: {
+    readonly grantMode?: OpsRolePolicyMode;
+    readonly pingMode?: OpsRolePolicyMode;
+  }): { readonly before: OpsRolePolicy; readonly after: OpsRolePolicy };
+  /**
+   * What `mcp allow-role` did.
+   *
+   * Five refusals besides the two successes, each distinct: the operator
+   * needs to hear which of "allowed", "already allowed", "no such role in
+   * this guild", "`@everyone`", "managed", or "dangerous" happened.
+   * `'no-such-role'`, `'everyone'`, `'managed'` and `'dangerous'` write
+   * nothing — the live Discord check runs before the repository sees the id.
+   *
+   * Async where `allowSendChannel` is synchronous: the role is fetched live
+   * from the guild, not read from the cache alone, and a REST fetch is a
+   * promise. Above-bot roles MAY be allowlisted — hierarchy is checked at
+   * use time by the grant and ping paths, never here.
+   */
+  allowRole(input: {
+    readonly roleId: string;
+    readonly purpose: OpsRoleAllowlistPurpose;
+    readonly accountId: string;
+  }): Promise<OpsAllowRoleOutcome>;
+  /**
+   * What `mcp disallow-role` did. `'not-allowed'` is a real answer, the same
+   * shape `disallowSendChannel`'s is: nothing to remove is not a fault.
+   */
+  disallowRole(input: {
+    readonly roleId: string;
+    readonly purpose: OpsRoleAllowlistPurpose;
+  }): 'removed' | 'not-allowed';
+  /** Every allowlisted role of this guild. Ids and purposes only — never role names. */
+  listRoleAllowlist(): readonly OpsRoleAllowlistEntry[];
 }
+
+/** `mcp_role_policy`'s two modes, re-declared here rather than imported (ADR 0014). */
+export type OpsRolePolicyMode = 'below-bot' | 'allowlist';
+
+/** `mcp_role_allowlist`'s purpose, re-declared here rather than imported (ADR 0014). */
+export type OpsRoleAllowlistPurpose = 'grant' | 'ping';
+
+export interface OpsRolePolicy {
+  readonly grantMode: OpsRolePolicyMode;
+  readonly pingMode: OpsRolePolicyMode;
+}
+
+/** One row of `mcp_role_allowlist`, as `mcp role-policy` renders it. Ids only. */
+export interface OpsRoleAllowlistEntry {
+  readonly roleId: string;
+  readonly purpose: OpsRoleAllowlistPurpose;
+  readonly addedByAccountId: string;
+  readonly addedAt: number;
+}
+
+/**
+ * What `mcp allow-role` did: allowed, already allowed, or one of four
+ * distinct refusals — unknown role, `@everyone`, managed, dangerous.
+ */
+export type OpsAllowRoleOutcome =
+  | 'allowed'
+  | 'already-allowed'
+  | 'no-such-role'
+  | 'everyone'
+  | 'managed'
+  | 'dangerous';
 
 /** What `mcp allow-channel` did: allowed, already allowed, or refused. */
 export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';
