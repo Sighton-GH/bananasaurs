@@ -83,12 +83,14 @@ interface Harness {
   readonly updated: { definition: PanelDefinition; newlyAllowlisted: readonly string[] }[];
 }
 
-const harness = (options: {
-  panel?: OpsPanelDetail | undefined;
-  managedRoleIds?: readonly string[];
-  roles?: OpsGuildRoleInfo[];
-  botPosition?: number | undefined;
-} = {}): Harness => {
+const harness = (
+  options: {
+    panel?: OpsPanelDetail | undefined;
+    managedRoleIds?: readonly string[];
+    roles?: OpsGuildRoleInfo[];
+    botPosition?: number | undefined;
+  } = {},
+): Harness => {
   const audit: OpsAuditWrite[] = [];
   const updated: Harness['updated'] = [];
   const managed = new Set(options.managedRoleIds ?? [ROLE_LOW]);
@@ -275,9 +277,7 @@ describe('panel edit', () => {
     const response = await h.run({
       definition: json({
         ...MANAGED,
-        options: [
-          { optionId: 'ghost', roleId: '999999999999999999', label: 'Ghost', position: 0 },
-        ],
+        options: [{ optionId: 'ghost', roleId: '999999999999999999', label: 'Ghost', position: 0 }],
       }),
     });
     expect(response.ok).toBe(true);

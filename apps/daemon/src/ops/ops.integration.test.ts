@@ -1086,7 +1086,9 @@ describe('the operator CLI, end to end', () => {
         seed();
         seedManaged();
 
-        const unknown = await cli(`panel edit --definition ${editJson({ panelId: 'ghost' })} --confirm`);
+        const unknown = await cli(
+          `panel edit --definition ${editJson({ panelId: 'ghost' })} --confirm`,
+        );
         expect(unknown.code, unknown.err).toBe(0);
         expect(unknown.out).toMatch(/no panel 'ghost'/);
 
@@ -1101,7 +1103,9 @@ describe('the operator CLI, end to end', () => {
             kind: 'adopted',
             component: 'reaction',
             messageId: MESSAGE,
-            options: [{ optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 }],
+            options: [
+              { optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 },
+            ],
           })} --confirm`,
         );
         expect(flipped.code, flipped.err).toBe(0);
@@ -1127,7 +1131,9 @@ describe('the operator CLI, end to end', () => {
 
         const result = await cli(
           `panel edit --definition ${editJson({
-            options: [{ optionId: 'ghost', roleId: '999999999999999999', label: 'Ghost', position: 0 }],
+            options: [
+              { optionId: 'ghost', roleId: '999999999999999999', label: 'Ghost', position: 0 },
+            ],
           })} --confirm`,
         );
         expect(result.code, result.err).toBe(0);
@@ -1176,7 +1182,10 @@ describe('the operator CLI, end to end', () => {
         seedManaged();
         discord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE, authorId: MEMBER });
         panelRepo.setPanelMessage(scope(), 'buttons', MESSAGE, discord.now());
-        discord.failNext('deleteMessage', new DiscordApiError(500, undefined, 'Internal Server Error'));
+        discord.failNext(
+          'deleteMessage',
+          new DiscordApiError(500, undefined, 'Internal Server Error'),
+        );
 
         const result = await cli('panel delete buttons --confirm');
         expect(result.code).toBe(1);

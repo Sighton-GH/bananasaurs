@@ -51,8 +51,8 @@ export const panelDeleteCommand = defineCommand<z.infer<typeof panelDeleteArgs>>
       // message. Somebody else's message is not ours to remove.
       text =
         `Deleted panel ${args.panelId}'s configuration, and left its message in place: ` +
-          `it is adopted, so message ${panel.messageId} belongs to someone else.\n` +
-          `  Its roles stay allowlisted and members keep whatever they hold.`;
+        `it is adopted, so message ${panel.messageId} belongs to someone else.\n` +
+        `  Its roles stay allowlisted and members keep whatever they hold.`;
     } else {
       text =
         `Deleted panel ${args.panelId}'s configuration. It was never posted, ` +

@@ -46,10 +46,12 @@ interface Harness {
   readonly unpublished: string[];
 }
 
-const harness = (options: {
-  panel?: OpsPanelDetail | undefined;
-  unpublish?: (panelId: string) => Promise<void>;
-} = {}): Harness => {
+const harness = (
+  options: {
+    panel?: OpsPanelDetail | undefined;
+    unpublish?: (panelId: string) => Promise<void>;
+  } = {},
+): Harness => {
   const audit: OpsAuditWrite[] = [];
   const unpublished: string[] = [];
 

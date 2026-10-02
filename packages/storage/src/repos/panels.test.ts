@@ -382,7 +382,11 @@ describe('updatePanel', () => {
     );
 
     expect(findManagedRole(a, ROLE_C)).toBeDefined();
-    expect(findPanel(a, 'roles')?.options.map((o) => o.optionId).sort()).toEqual(['a', 'c']);
+    expect(
+      findPanel(a, 'roles')
+        ?.options.map((o) => o.optionId)
+        .sort(),
+    ).toEqual(['a', 'c']);
   });
 
   it('touches only its own guild', () => {
