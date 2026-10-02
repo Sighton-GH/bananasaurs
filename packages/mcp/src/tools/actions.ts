@@ -109,6 +109,7 @@ export type McpUndoRefusal =
   | 'not-undoable'
   | 'undo-in-progress'
   | 'target-unavailable'
+  | 'role-unavailable'
   | 'killswitch'
   | 'breaker-open'
   | 'rate-cap';
@@ -230,6 +231,13 @@ const undoRefusalText = (
         'longer one this connector may write to' +
         `${detail !== undefined ? ` (${detail})` : ''}. An operator must restore send scope or ` +
         "the bot's permission there before the undo can run."
+      );
+    case 'role-unavailable':
+      return (
+        `Action ${actionId} in guild ${guildId} was not undone: ` +
+        `${detail ?? 'its role or member is no longer available'}. ` +
+        'The member, the role or the grant policy changed since the action ran — ' +
+        'change it back by hand if the undo is still wanted.'
       );
     case 'killswitch':
       return (

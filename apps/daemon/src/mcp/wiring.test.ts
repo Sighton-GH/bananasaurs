@@ -7394,3 +7394,656 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     ).toBeUndefined();
   });
 });
+
+describe('/mcp grant_role and remove_role through the real composition', () => {
+  const OWNER = '345678901234567890';
+  const MEMBER = '633333333333333333';
+  const MEMBER2 = '634444444444444444';
+  const LOW_ROLE = '522222222222222222';
+  const HIGH_ROLE = '533333333333333333';
+  const DANGEROUS_ROLE = '566666666666666666';
+  const UNLISTED_ROLE = '577777777777777777';
+  const BOT_ROLE = '511111111111111111';
+  /** Distinctive names: must never reach an audit row, which carries ids only. */
+  const MEMBER_NAME = 'SammyZZ MemberQ';
+  const ROLE_NAME = 'helpersZZ';
+  const GID = '111111111111111111';
+
+  interface RoleDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const buildRoleClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT_USER_ID));
+    const internals = client as unknown as RoleDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [],
+      // Distinct raw positions: discord.js computes Role.position from their
+      // ordering, so the comments name the order each role lands in. The bot
+      // sits at 10; HIGH_ROLE at 12 is above it, the rest below.
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: DANGEROUS_ROLE, name: 'floor-watch', position: 2, permissions: '0' },
+        { id: UNLISTED_ROLE, name: 'lurkers', position: 3, permissions: '0' },
+        { id: LOW_ROLE, name: ROLE_NAME, position: 4, permissions: '0' },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 10,
+          permissions: botPermissions,
+          managed: true,
+        },
+        { id: HIGH_ROLE, name: 'admins', position: 12, permissions: '0' },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: OWNER, username: 'owner', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER, username: 'samwise', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER2, username: 'sam2', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  /** Serves the tool's member resolution: one short page, then the loop stops. */
+  const serveMembers = (client: Client): void => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('fake guild did not land in the cache');
+    const profiles = [
+      { id: OWNER, username: 'owner', displayName: 'Owner' },
+      { id: MEMBER, username: 'samwise', displayName: MEMBER_NAME },
+      { id: MEMBER2, username: 'sam2', displayName: 'Sam the second' },
+    ];
+    guild.members.list = (async () => {
+      const members = profiles.map(
+        (profile) =>
+          ({
+            id: profile.id,
+            user: { id: profile.id, username: profile.username },
+            displayName: profile.displayName,
+            nickname: null,
+            roles: { cache: new Collection() },
+            joinedAt: new Date('2024-05-01T00:00:00.000Z'),
+          }) as unknown as GuildMember,
+      );
+      return new Collection(members.map((member) => [member.id, member] as const));
+    }) as typeof guild.members.list;
+  };
+
+  const buildRoleApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
+    createServer({
+      deps: { ...deps },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+
+  const seedDiscord = (discord: FakeDiscord): void => {
+    discord.defineRole({ id: LOW_ROLE, name: ROLE_NAME, position: 4 });
+    discord.defineRole({ id: HIGH_ROLE, name: 'admins', position: 2 });
+    discord.defineRole({ id: DANGEROUS_ROLE, name: 'floor-watch', position: 2 });
+    discord.defineRole({ id: UNLISTED_ROLE, name: 'lurkers', position: 3 });
+    discord.defineMember(MEMBER, []);
+    discord.defineMember(MEMBER2, []);
+    discord.defineMember(OWNER, [], true);
+  };
+
+  const seedRoleScope = (input: { mutate?: boolean; allowlisted?: string[] } = {}): void => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    guildRepo.setDryRun(scope, false, clock);
+    if (input.mutate !== false) {
+      authzRepo.grantAccountCapability(scope, {
+        accountId: ACCOUNT,
+        capability: 'roles.mutate',
+        grantedBy: 'test',
+        now: clock,
+      });
+    }
+    for (const roleId of input.allowlisted ?? [LOW_ROLE, HIGH_ROLE, DANGEROUS_ROLE]) {
+      roleRepo.allowlistRole(scope, roleId);
+    }
+  };
+
+  const roleCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const grantArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    member: MEMBER,
+    role: LOW_ROLE,
+    idempotencyKey: 'grant-k1',
+    ...over,
+  });
+
+  const effectBatches = (): { batch_id: string; source: string; actor_type: string }[] =>
+    t.raw.prepare('SELECT batch_id, source, actor_type FROM effect_batches').all() as {
+      batch_id: string;
+      source: string;
+      actor_type: string;
+    }[];
+
+  const roleEffectsCount = (): number =>
+    (t.raw.prepare('SELECT COUNT(*) AS n FROM role_effects').get() as { n: number }).n;
+
+  it('a grant runs end-to-end: Discord, ledger, batch, effect and audit rows', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const granted = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      expect(granted.isError).not.toBe(true);
+      expect(granted.text).toContain('Granted');
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+
+      // One ledger row: the role kind in the member_role cap group, done, with
+      // the remove-role inverse and no channel target.
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      expect(row).toMatchObject({ kind: 'role.grant', capGroup: 'member_role', status: 'done' });
+      expect(row?.targetChannelId).toBeUndefined();
+      expect(row?.undoJson).toBe(JSON.stringify({ op: 'remove-role' }));
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      // One batch row: source mcp, actor mcp_operator, batch id = the action id.
+      expect(effectBatches()).toEqual([
+        { batch_id: row.actionId, source: 'mcp', actor_type: 'mcp_operator' },
+      ]);
+
+      // One effect row: the grant, applied, under that batch.
+      expect(
+        t.raw.prepare('SELECT batch_id, user_id, role_id, action, state FROM role_effects').all(),
+      ).toEqual([
+        {
+          batch_id: row.actionId,
+          user_id: MEMBER,
+          role_id: LOW_ROLE,
+          action: 'grant',
+          state: 'applied',
+        },
+      ]);
+
+      // The audit row is mcp_operator, naming the grant and the before/after —
+      // ids only, never the member's name or anything with content in it.
+      const trail = effectRepo.tailAudit(scope, { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'role.grant');
+      expect(audit).toMatchObject({ actorType: 'mcp_operator', via: 'http', actorId: ACCOUNT });
+      expect(JSON.stringify(trail)).not.toContain(MEMBER_NAME);
+      expect(JSON.stringify(trail)).not.toContain(ROLE_NAME);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a removal runs end-to-end and records the add-role inverse', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    discord.defineMember(MEMBER, [LOW_ROLE]);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const removed = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'remove_role',
+            grantArgs({ idempotencyKey: 'remove-k1' }),
+          )
+        ).body,
+      );
+      expect(removed.isError).not.toBe(true);
+      expect(removed.text).toContain('Removed');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'remove-k1');
+      expect(row).toMatchObject({ kind: 'role.remove', capGroup: 'member_role', status: 'done' });
+      expect(row?.undoJson).toBe(JSON.stringify({ op: 'add-role' }));
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'role.revoke');
+      expect(audit).toMatchObject({ actorType: 'mcp_operator', actorId: ACCOUNT });
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a grant by member and role name resolves both', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const granted = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ member: MEMBER_NAME, role: ROLE_NAME, idempotencyKey: 'grant-name-k1' }),
+          )
+        ).body,
+      );
+      expect(granted.isError).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('floor is live: a role that gains ManageRoles between calls is refused with no Discord call', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      const callsAfterGrant = discord.restCalls().length;
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+
+      // Between calls the role gains a dangerous permission in the live cache.
+      const cached = client.guilds.cache.get(GUILD_A)?.roles.cache.get(LOW_ROLE) as unknown as {
+        permissions: PermissionsBitField;
+      };
+      if (cached === undefined) throw new Error('test setup: role missing from cache');
+      cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ member: MEMBER2, idempotencyKey: 'grant-floor-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('dangerous');
+      // Refused before any Discord call: the REST log is exactly what the
+      // first grant left, and the second grant added one addRole short of it.
+      expect(discord.restCalls()).toHaveLength(callsAfterGrant);
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+      expect(discord.memberRoles(MEMBER2)).not.toContain(LOW_ROLE);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('an account without roles.mutate is refused, with no role_effects row and no effect_batches row', async () => {
+    seedRoleScope({ mutate: false });
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('roles.mutate');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(roleEffectsCount()).toBe(0);
+      expect(effectBatches()).toEqual([]);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a role not in managed_roles is refused, naming the allowlist', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ role: UNLISTED_ROLE, idempotencyKey: 'grant-unlisted-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('not on the bot');
+      expect(refused.text).toContain('allowlist');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-unlisted-k1'),
+      ).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('the guild owner as target is protected', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ member: OWNER, idempotencyKey: 'grant-owner-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('guild owner');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-owner-k1')).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('an above-bot role on the allowlist names the policy reason', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ role: HIGH_ROLE, idempotencyKey: 'grant-high-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('above the bot');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('the two-guild gate refuses the other guild with no Discord call', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ guildId: '222222222222222222', idempotencyKey: 'grant-foreign-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toBe(GUILD_REFUSAL_MESSAGE);
+      expect(discord.restCalls()).toHaveLength(0);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('replaying the key answers the same action with one Discord call', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const first = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      expect(first.isError).not.toBe(true);
+      const second = callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body);
+      expect(second.isError).not.toBe(true);
+      expect(second.text).toContain('Already recorded under this idempotency key');
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('the kill switch refuses with no Discord call and no ledger row', async () => {
+    seedRoleScope();
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const send = await mintToken('bananasaurs:roles');
+      const refused = callText((await roleCall(roleApp, send, 'grant_role', grantArgs())).body);
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('kill switch');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-k1')).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('undo of a grant removes the role and marks the original', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      expect(
+        callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const undone = callText(
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('role.grant');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      expect(discord.restCalls('removeRole')).toHaveLength(1);
+
+      const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+      expect(reread?.undoneByActionId).toBeDefined();
+      const undoRow = mcpActionsRepo.findAction(scope, `undo:${row.actionId}`);
+      expect(undoRow?.actionId).toBe(reread?.undoneByActionId);
+      expect(undoRow).toMatchObject({ kind: 'role.remove', capGroup: 'member_role' });
+      expect(undoRow?.targetChannelId).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('undo of a removal re-adds the role and marks the original', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    discord.defineMember(MEMBER, [LOW_ROLE]);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      expect(
+        callText(
+          (await roleCall(roleApp, roles, 'remove_role', grantArgs({ idempotencyKey: 'remove-k1' })))
+            .body,
+        ).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'remove-k1');
+      if (row === undefined) throw new Error('removal left no ledger row');
+
+      const undone = callText(
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('role.remove');
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeDefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a skipped grant completes as already-had and is not undoable', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    discord.defineMember(MEMBER, [LOW_ROLE]);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      const granted = callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body);
+      expect(granted.isError).not.toBe(true);
+      expect(granted.text).toContain('already had');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      expect(row?.status).toBe('done');
+      expect(row?.undoJson).toBeUndefined();
+
+      const undone = callText(
+        (
+          await roleCall(
+            roleApp,
+            send,
+            'undo_action',
+            { guildId: GID, actionId: row?.actionId ?? '' },
+          )
+        ).body,
+      );
+      expect(undone.isError).toBe(true);
+      expect(undone.text).toContain('cannot be undone');
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('an undo re-checks live: a floor change after the grant refuses the undo', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      expect(
+        callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const cached = client.guilds.cache.get(GUILD_A)?.roles.cache.get(LOW_ROLE) as unknown as {
+        permissions: PermissionsBitField;
+      };
+      if (cached === undefined) throw new Error('test setup: role missing from cache');
+      cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+
+      const refused = callText(
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('dangerous');
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.restCalls('removeRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+});

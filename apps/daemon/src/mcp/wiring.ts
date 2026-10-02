@@ -13,22 +13,27 @@ import {
 import {
   CLUB_ASSISTANT_SKILLS,
   argsHashFor,
+  authorize,
   contentHashFor,
   customEmojiKey,
   effectiveSkillScope,
   isInScope,
   parseSnowflakeId,
+  RateLimiter,
   runMcpAction,
   safeLogFields,
   skillScopeAllows,
   unicodeEmojiKey,
+  type Authorized,
   type DiscordPort,
   type GuildId,
   type Logger,
   type McpActionOutcome,
   type OpsJobRow,
+  type RefusalReason,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
+import { mcpRoleGatewayFor, roleGrantRefusal } from './roles-gateway.js';
 import { resolvePings, resolveSendTarget, type SendTarget, type TargetNeed } from './targets.js';
 import { protectedMessageReason } from './protected.js';
 import { resolveChannel } from '../channels/resolver.js';
@@ -61,10 +66,14 @@ import {
   type SendEmbed,
   type McpMessageWriteOutcome,
   type McpMessageWritesPort,
+  type McpRoleWriteOutcome,
+  type McpRoleWriteRefusal,
+  type McpRoleWritesPort,
   type McpThreadsPort,
   type McpThreadWritesPort,
   type McpThreadWriteOutcome,
   type McpThreadWriteRefusal,
+  type McpUndoOutcome,
   type ThreadFirstMessage,
   type McpTaskDetailPort,
   type McpTaskPort,
@@ -74,7 +83,10 @@ import {
   archiveSearchRepo,
   assistantRepo,
   automodAdminRepo,
+  authzStoreFor,
   effectRepo,
+  guildRepo,
+  isTargetProtected,
   loggingRepo,
   modCaseRepo,
   panelRepo,
@@ -2439,6 +2451,356 @@ const messageWritesPortFor = (
 };
 
 /**
+ * The MCP gateway's per-guild rate limiter, shared across the requests one
+ * daemon serves. One limiter per guild (buckets are per source, not per
+ * guild, so a single limiter would let one guild spend another's budget);
+ * created lazily at the guild's standing per-minute rate. Lives in the
+ * `registerMcpRoutes` closure rather than the module so every app — and every
+ * test app — starts with full buckets.
+ */
+const mcpRateLimiterFor = (
+  limiters: Map<GuildId, RateLimiter>,
+  scope: GuildScope,
+): RateLimiter => {
+  const existing = limiters.get(scope.guildId);
+  if (existing !== undefined) return existing;
+  const created = new RateLimiter(guildRepo.findGuild(scope)?.roleRatePerMin ?? 20);
+  limiters.set(scope.guildId, created);
+  return created;
+};
+
+const mcpGatewayFor = (
+  limiters: Map<GuildId, RateLimiter>,
+  deps: HttpDeps,
+  client: Client,
+  discord: DiscordPort,
+  scope: GuildScope,
+) =>
+  mcpRoleGatewayFor(
+    {
+      authz: authzStoreFor(scope),
+      rateLimiter: mcpRateLimiterFor(limiters, scope),
+      logger: deps.logger,
+      now: deps.now,
+    },
+    client,
+    discord,
+    scope,
+  );
+
+/**
+ * The `roles.mutate` witness for one MCP role change (ADR 0118 §2). The actor
+ * is the token's dashboard account with no Discord roles — `authorize` drops
+ * dashboard role ids by construction, so a Discord grant can never satisfy
+ * this. `undefined` on denial: the caller refuses with the account's own
+ * refusal rather than falling back to anything else.
+ */
+const authorizeRoleChange = (
+  scope: GuildScope,
+  guildId: GuildId,
+  accountId: string,
+): Authorized<'roles.mutate'> | undefined => {
+  const result = authorize(
+    {
+      store: authzStoreFor(scope),
+      guildId,
+      actor: { type: 'dashboard', id: accountId, roleIds: [] },
+    },
+    'roles.mutate',
+  );
+  return result.ok ? result.value : undefined;
+};
+
+type RolePrecheck =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly outcome: McpRoleWriteOutcome };
+
+/**
+ * The target and policy pre-checks for one role change, live and before the
+ * claim — a refusal writes no ledger row. In task order: the member exists,
+ * the role exists, the role is in `managed_roles`, the role passes the MCP
+ * grant policy with the live floor, and the target is neither the guild owner
+ * nor protected. The gateway re-checks all of these itself; these exist so
+ * the refusal names its reason instead of surfacing as an unknown Discord
+ * result, and so the undo can re-run the same set live.
+ *
+ * Reads are cache-first: the role cache is complete once the guild is READY
+ * and a member-cache hit proves membership, so the common path makes no
+ * Discord call at all — which is what makes the floor test's "no Discord
+ * call" true rather than aspirational.
+ */
+const precheckRoleTarget = async (
+  client: Client,
+  discord: DiscordPort,
+  scope: GuildScope,
+  guildId: GuildId,
+  memberId: string,
+  roleId: string,
+): Promise<RolePrecheck> => {
+  const guild = client.guilds.cache.get(guildId);
+  const cachedMember = guild?.members.cache.get(memberId);
+  let memberIsOwner: boolean;
+  if (cachedMember !== undefined) {
+    memberIsOwner = guild !== undefined && cachedMember.user.id === guild.ownerId;
+  } else {
+    try {
+      memberIsOwner = (await discord.fetchMember(guildId, memberId)).isGuildOwner;
+    } catch {
+      return {
+        ok: false,
+        outcome: { status: 'refused', reason: 'unknown-member', detail: memberId },
+      };
+    }
+  }
+  if (guild?.roles.cache.get(roleId) === undefined) {
+    let found = false;
+    try {
+      found = (await discord.fetchRoles(guildId)).some((role) => role.id === roleId);
+    } catch {
+      found = false;
+    }
+    if (!found) {
+      return { ok: false, outcome: { status: 'refused', reason: 'unknown-role', detail: roleId } };
+    }
+  }
+  // ADR 0118 amendment: the role must already be in `managed_roles` AND pass
+  // the MCP grant policy. The MCP never inserts into `managed_roles` itself.
+  if (!roleRepo.isAllowlisted(scope, roleId)) {
+    return {
+      ok: false,
+      outcome: { status: 'refused', reason: 'role-not-allowlisted', detail: roleId },
+    };
+  }
+  const grantRefusal = roleGrantRefusal(client, scope, roleId);
+  if (grantRefusal !== true) {
+    return {
+      ok: false,
+      outcome: { status: 'refused', reason: 'role-not-permitted', detail: grantRefusal },
+    };
+  }
+  if (memberIsOwner) {
+    return {
+      ok: false,
+      outcome: { status: 'refused', reason: 'protected-target', detail: 'guild-owner' },
+    };
+  }
+  if (isTargetProtected(scope, { userId: memberId, roleId })) {
+    return {
+      ok: false,
+      outcome: { status: 'refused', reason: 'protected-target', detail: 'protected' },
+    };
+  }
+  return { ok: true };
+};
+
+/**
+ * A gateway refusal that slipped past the pre-checks (a race: the hierarchy
+ * moved, the breaker opened, or the bucket filled between the check and the
+ * call) back onto the role tools' vocabulary.
+ */
+const mapRoleGatewayRefusal = (
+  reason: RefusalReason,
+  roleId: string,
+): McpRoleWriteOutcome => {
+  switch (reason) {
+    case 'killswitch':
+      return { status: 'refused', reason: 'killswitch' };
+    case 'breaker-open':
+      return { status: 'refused', reason: 'breaker-open' };
+    case 'rate-cap':
+      return { status: 'refused', reason: 'rate-cap' };
+    case 'protected-target':
+      return { status: 'refused', reason: 'protected-target', detail: 'protected' };
+    case 'role-not-allowlisted':
+      return { status: 'refused', reason: 'role-not-allowlisted', detail: roleId };
+    case 'unauthorized':
+      return { status: 'refused', reason: 'unauthorized' };
+    case 'role-above-bot':
+      return { status: 'refused', reason: 'role-not-permitted', detail: 'above-bot' };
+    case 'role-managed':
+    case 'role-is-everyone':
+      return { status: 'refused', reason: 'role-not-permitted', detail: 'managed-or-everyone' };
+    case 'role-missing':
+      return { status: 'refused', reason: 'unknown-role', detail: roleId };
+    case 'panel-disabled':
+    case 'guild-unknown':
+      // Unreachable: role changes never name a panel, and the guild gate
+      // already answered the guild.
+      throw new Error(GUILD_REFUSAL_MESSAGE);
+  }
+};
+
+/**
+ * The `McpRoleWritesPort` behind `grant_role` / `remove_role` (slice 4,
+ * Task 3), field by field like `sendPortFor` above. Each method runs the
+ * live pre-checks, then the one `runMcpAction` pipeline — kind `role.grant` /
+ * `role.remove`, cap group `member_role`, with `targetChannelId` undefined (a
+ * role change has no channel target) — whose execute authorizes
+ * `roles.mutate`, opens the `effect_batches` row (source `mcp`, batch id =
+ * the claim's action id, actor `mcp_operator`) and calls the MCP role gateway
+ * with trigger ref `mcp:<actionId>`.
+ *
+ * A gateway `skipped` (`no-change-needed`: the member already had the role,
+ * or did not have it) still completes as `done` but records no undo, so it
+ * is not undoable — and renders as already-had. A fault leaves one
+ * allowlisted-fields error line via `loggedCallAsync` above, never a member
+ * name (rule 4).
+ *
+ * Undo (ADR 0116 §5, for `undo_action`): a grant stores `{op:'remove-role'}`
+ * and a removal `{op:'add-role'}`. The member and role ids are re-resolved
+ * live at undo time from the effect row the forward call claimed (batch id =
+ * the forward action id), through the same pre-check set.
+ */
+const roleWritesPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read: the grant policy and the floor
+   * answer from its role cache, so a role that gained a dangerous permission
+   * is refused before any Discord call.
+   */
+  client: Client,
+  mcpLimiters: Map<GuildId, RateLimiter>,
+): McpRoleWritesPort => {
+  const runRoleWrite = async (
+    action: 'grant' | 'remove',
+    guildId: GuildId,
+    input: {
+      readonly memberId: string;
+      readonly roleId: string;
+      readonly dryRun: boolean;
+      readonly idempotencyKey: string;
+    },
+  ): Promise<McpRoleWriteOutcome> => {
+    const scope = deps.scopes.forGuild(guildId);
+    const target = await precheckRoleTarget(
+      client,
+      discord,
+      scope,
+      guildId,
+      input.memberId,
+      input.roleId,
+    );
+    if (!target.ok) return target.outcome;
+    const kind = action === 'grant' ? 'role.grant' : 'role.remove';
+    // The action id up front: the `effect_batches` row opened inside
+    // `execute` carries batch id = the claim's action id, the way
+    // `create_thread` overrides `newActionId` for its private-thread rows.
+    const claimId = randomUUID();
+    const actionDeps = {
+      ...mcpActionDepsFor(deps, guildId, principal, {}),
+      newActionId: () => claimId,
+    };
+    let denied = false;
+    let skipped = false;
+    let gatewayRefusal: RefusalReason | undefined;
+    const outcome = await runMcpAction(
+      actionDeps,
+      {
+        kind,
+        capGroup: 'member_role',
+        idempotencyKey: input.idempotencyKey,
+        tokenId: principal.tokenId,
+        argsHash: argsHashFor(kind, { member: input.memberId, role: input.roleId }),
+        targetChannelId: undefined,
+        dryRun: input.dryRun,
+        duplicateContentGuard: false,
+      },
+      true,
+      async () => {
+        const witness = authorizeRoleChange(scope, guildId, principal.accountId);
+        if (witness === undefined) {
+          // A denial is its own refusal ("this account lacks
+          // roles.mutate"), recorded as a failed claim with no effect row
+          // and no batch row — the flag below maps it back to a refusal.
+          denied = true;
+          throw new Error('roles.mutate denied');
+        }
+        effectRepo.openBatch(scope, {
+          batchId: claimId,
+          source: 'mcp',
+          actorType: 'mcp_operator',
+          actorId: principal.accountId,
+          now: deps.now(),
+        });
+        const result = await mcpGatewayFor(mcpLimiters, deps, client, discord, scope).applyRoleEffect(
+          witness,
+          {
+            userId: parseSnowflakeId(input.memberId),
+            roleId: parseSnowflakeId(input.roleId),
+            action,
+            panelId: undefined,
+            triggerRef: `mcp:${claimId}`,
+            source: 'mcp',
+            batchId: claimId,
+            reason: action === 'grant' ? 'mcp grant_role' : 'mcp remove_role',
+          },
+        );
+        switch (result.status) {
+          case 'applied':
+            return { undo: { op: action === 'grant' ? 'remove-role' : 'add-role' } };
+          case 'dry-run':
+            // Unreachable: the pipeline answers dry runs before execute runs.
+            throw new Error('mcp gateway dry-ran inside a live action');
+          case 'skipped':
+            skipped = true;
+            return {};
+          case 'refused':
+            gatewayRefusal = result.reason;
+            throw new Error(`mcp gateway refused: ${result.reason}`);
+          case 'failed':
+            throw new Error(`mcp gateway failed: ${result.code}`);
+        }
+      },
+    );
+    switch (outcome.status) {
+      case 'done':
+        return { status: 'done', actionId: outcome.actionId, alreadyHad: skipped };
+      case 'dry-run':
+        return { status: 'dry-run', actionId: outcome.actionId };
+      case 'replayed':
+        return { status: 'replayed', actionId: outcome.actionId };
+      case 'refused':
+        switch (outcome.reason) {
+          case 'killswitch':
+            return { status: 'refused', reason: 'killswitch' };
+          case 'breaker-open':
+            return { status: 'refused', reason: 'breaker-open' };
+          case 'rate-cap':
+            return {
+              status: 'refused',
+              reason: 'rate-cap',
+              ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+            };
+          case 'key-reused-with-other-args':
+            return { status: 'refused', reason: 'duplicate-key-different-content' };
+          case 'duplicate-content-recently':
+          case 'guild-unknown':
+          case 'target':
+            // Unreachable: the duplicate-content guard is off, the guild
+            // gate already answered, and `targetCheck` is always `true` here.
+            throw new Error(GUILD_REFUSAL_MESSAGE);
+        }
+        break;
+      case 'failed':
+        if (denied) return { status: 'refused', reason: 'unauthorized' };
+        if (gatewayRefusal !== undefined) {
+          return mapRoleGatewayRefusal(gatewayRefusal, input.roleId);
+        }
+        return { status: 'failed' };
+    }
+  };
+
+  return {
+    grant: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'roleGrant', () => runRoleWrite('grant', guildId, input)),
+    remove: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'roleRemove', () => runRoleWrite('remove', guildId, input)),
+  };
+};
+
+/**
  * The undo_json shapes, exactly as the ports above write them (slice 3,
  * Tasks 5–6): an edit stores the previous `{content, embeds}`, a pin stores
  * `{op:'unpin'}` and an unpin `{op:'pin'}`, a reaction add stores
@@ -2509,6 +2871,12 @@ const undoThreadStateSchema = z.union([
   z.object({ archived: z.boolean() }).strict(),
   z.object({ locked: z.boolean() }).strict(),
 ]);
+/**
+ * A role change stores only its direction: the member and role ids live in
+ * the effect row the forward call claimed (batch id = the forward action
+ * id), and the undo re-resolves them live through the same pre-check set.
+ */
+const undoRoleOpSchema = z.object({ op: z.enum(['remove-role', 'add-role']) }).strict();
 
 /** Kinds with an inverse. Everything else cannot be undone (ADR 0116 §5). */
 const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
@@ -2519,6 +2887,8 @@ const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
   'reaction.remove',
   'thread.members.add',
   'thread.state',
+  'role.grant',
+  'role.remove',
 ]);
 
 const parseUndoJson = (raw: string): unknown => {
@@ -2684,6 +3054,264 @@ const planUndo = (
 };
 
 /**
+ * A failed live pre-check at undo time, onto the `role-unavailable` detail:
+ * the member, the role or the policy moved since the forward call ran.
+ */
+const roleUnavailableDetail = (
+  outcome: Extract<McpRoleWriteOutcome, { readonly status: 'refused' }>,
+  guildId: GuildId,
+  memberId: string,
+  roleId: string,
+): string => {
+  switch (outcome.reason) {
+    case 'unknown-member':
+      return `member ${memberId} is no longer in guild ${guildId}`;
+    case 'unknown-role':
+      return `role ${roleId} no longer exists in guild ${guildId}`;
+    case 'role-not-allowlisted':
+      return `role ${roleId} is no longer on the bot's role allowlist`;
+    case 'role-not-permitted':
+      return `the grant policy now refuses role ${roleId} (${outcome.detail ?? 'unknown reason'})`;
+    case 'protected-target':
+      return (
+        outcome.detail === 'guild-owner'
+          ? `member ${memberId} is the guild owner`
+          : `member ${memberId} or role ${roleId} is now protected`
+      );
+    default:
+      return `role ${roleId} for member ${memberId} can no longer be changed (${outcome.reason})`;
+  }
+};
+
+/** A gateway refusal inside an undo's execute, onto the same detail. */
+const roleUnavailableGateway = (
+  reason: RefusalReason,
+  memberId: string,
+  roleId: string,
+): string => {
+  switch (reason) {
+    case 'protected-target':
+      return `member ${memberId} or role ${roleId} is now protected`;
+    case 'role-not-allowlisted':
+      return `role ${roleId} is no longer on the bot's role allowlist`;
+    case 'role-above-bot':
+      return `the grant policy now refuses role ${roleId} (above-bot)`;
+    case 'role-managed':
+    case 'role-is-everyone':
+      return `the grant policy now refuses role ${roleId} (managed-or-everyone)`;
+    case 'role-missing':
+      return `role ${roleId} no longer exists`;
+    case 'unauthorized':
+      return 'this account lacks roles.mutate';
+    default:
+      return `role ${roleId} for member ${memberId} can no longer be changed (${reason})`;
+  }
+};
+
+/**
+ * The inverse of a `role.grant` / `role.remove` ledger row: a removal
+ * re-grants, a grant removes. The stored op names the direction; the effect
+ * row the forward call claimed (batch id = the forward action id) names the
+ * member and role, re-resolved live through the same pre-check set as the
+ * forward call. The inverse runs through the one `runMcpAction` pipeline with
+ * key `undo:<actionId>`, cap group `member_role` and no channel target, and
+ * records no undo of its own: each action inverts once. A `skipped` forward
+ * call recorded no undo, so it answers `not-undoable` here.
+ */
+const undoRoleChange = async (
+  env: {
+    readonly deps: HttpDeps;
+    readonly principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string };
+    readonly discord: DiscordPort;
+    readonly client: Client;
+    readonly mcpLimiters: Map<GuildId, RateLimiter>;
+  },
+  guildId: GuildId,
+  scope: GuildScope,
+  row: { readonly kind: string; readonly actionId: string; readonly undoJson: string | undefined },
+): Promise<McpUndoOutcome> => {
+  const { deps, principal, discord, client, mcpLimiters } = env;
+  const expectedOp = row.kind === 'role.grant' ? 'remove-role' : 'add-role';
+  const forwardAction = row.kind === 'role.grant' ? 'grant' : 'revoke';
+  const parsed = row.undoJson === undefined ? undefined : parseUndoJson(row.undoJson);
+  const op = parsed === undefined ? undefined : undoRoleOpSchema.safeParse(parsed);
+  if (op === undefined || !op.success || op.data.op !== expectedOp) {
+    return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+  }
+  const effect = effectRepo
+    .effectsInBatch(scope, row.actionId)
+    .find((entry) => entry.action === forwardAction);
+  if (effect === undefined) {
+    return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+  }
+  const memberId = effect.userId;
+  const roleId = effect.roleId;
+  const target = await precheckRoleTarget(client, discord, scope, guildId, memberId, roleId);
+  if (!target.ok) {
+    return {
+      status: 'refused',
+      reason: 'role-unavailable',
+      detail: roleUnavailableDetail(target.outcome, guildId, memberId, roleId),
+    };
+  }
+  const inverseKind = row.kind === 'role.grant' ? 'role.remove' : 'role.grant';
+  const inverseAction = row.kind === 'role.grant' ? 'revoke' : 'grant';
+  const undoKey = nextUndoKey(scope, row.actionId, deps.now());
+  if (undoKey === undefined) {
+    return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+  }
+  const claimUndoId = randomUUID();
+  const actionDeps = {
+    ...mcpActionDepsFor(deps, guildId, principal, {}),
+    newActionId: () => claimUndoId,
+  };
+  let denied = false;
+  let gatewayRefusal: RefusalReason | undefined;
+  const outcome = await runMcpAction(
+    actionDeps,
+    {
+      kind: inverseKind,
+      capGroup: 'member_role',
+      idempotencyKey: undoKey,
+      tokenId: principal.tokenId,
+      argsHash: argsHashFor(inverseKind, { member: memberId, role: roleId }),
+      targetChannelId: undefined,
+      dryRun: false,
+      duplicateContentGuard: false,
+    },
+    true,
+    async () => {
+      const witness = authorizeRoleChange(scope, guildId, principal.accountId);
+      if (witness === undefined) {
+        denied = true;
+        throw new Error('roles.mutate denied');
+      }
+      effectRepo.openBatch(scope, {
+        batchId: claimUndoId,
+        source: 'mcp',
+        actorType: 'mcp_operator',
+        actorId: principal.accountId,
+        now: deps.now(),
+      });
+      const result = await mcpGatewayFor(mcpLimiters, deps, client, discord, scope).applyRoleEffect(
+        witness,
+        {
+          userId: parseSnowflakeId(memberId),
+          roleId: parseSnowflakeId(roleId),
+          action: inverseAction,
+          panelId: undefined,
+          triggerRef: `mcp:${claimUndoId}`,
+          source: 'mcp',
+          batchId: claimUndoId,
+          reason: `mcp undo ${row.kind}`,
+        },
+      );
+      switch (result.status) {
+        case 'applied':
+        case 'skipped':
+          // An undo records no undo of its own: each action inverts once.
+          return {};
+        case 'dry-run':
+          // Unreachable: the pipeline answers dry runs before execute runs,
+          // and an undo never asks for one.
+          throw new Error('mcp gateway dry-ran inside a live undo');
+        case 'refused':
+          gatewayRefusal = result.reason;
+          throw new Error(`mcp gateway refused: ${result.reason}`);
+        case 'failed':
+          throw new Error(`mcp gateway failed: ${result.code}`);
+      }
+    },
+  );
+  switch (outcome.status) {
+    case 'done': {
+      // Only the first undo wins: a lost race finds the mark taken and
+      // answers already-undone with the winner's id rather than
+      // inverting twice.
+      const marked = mcpActionsRepo.markUndone(scope, row.actionId, outcome.actionId);
+      if (!marked) {
+        const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+        return {
+          status: 'refused',
+          reason: 'already-undone',
+          detail: reread?.undoneByActionId ?? outcome.actionId,
+        };
+      }
+      return {
+        status: 'done',
+        actionId: outcome.actionId,
+        undoneActionId: row.actionId,
+        kind: row.kind,
+      };
+    }
+    case 'dry-run': {
+      // Dry run records without executing, so the original stays
+      // undoable: nothing was restored, and nothing is marked.
+      return {
+        status: 'dry-run',
+        actionId: outcome.actionId,
+        undoneActionId: row.actionId,
+        kind: row.kind,
+      };
+    }
+    case 'replayed': {
+      const prior = mcpActionsRepo.findActionById(scope, outcome.actionId);
+      if (prior?.status !== 'done') {
+        return { status: 'refused', reason: 'undo-in-progress', detail: outcome.actionId };
+      }
+      mcpActionsRepo.markUndone(scope, row.actionId, outcome.actionId);
+      const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+      return {
+        status: 'refused',
+        reason: 'already-undone',
+        detail: reread?.undoneByActionId ?? outcome.actionId,
+      };
+    }
+    case 'refused':
+      switch (outcome.reason) {
+        case 'killswitch':
+          return { status: 'refused', reason: 'killswitch' };
+        case 'breaker-open':
+          return { status: 'refused', reason: 'breaker-open' };
+        case 'rate-cap':
+          return {
+            status: 'refused',
+            reason: 'rate-cap',
+            ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+          };
+        case 'key-reused-with-other-args':
+        case 'duplicate-content-recently':
+          // Unreachable: the key is derived from the action id and the
+          // hash from the stored inverse, so one action always hashes one
+          // way — and the duplicate-content guard is off.
+          return { status: 'failed' };
+        case 'guild-unknown':
+        case 'target':
+          // Unreachable: the guild gate above already answered that, and
+          // `targetCheck` is always `true` here.
+          throw new Error(GUILD_REFUSAL_MESSAGE);
+      }
+      break;
+    case 'failed':
+      if (denied) {
+        return {
+          status: 'refused',
+          reason: 'role-unavailable',
+          detail: 'this account lacks roles.mutate',
+        };
+      }
+      if (gatewayRefusal !== undefined) {
+        return {
+          status: 'refused',
+          reason: 'role-unavailable',
+          detail: roleUnavailableGateway(gatewayRefusal, memberId, roleId),
+        };
+      }
+      return { status: 'failed' };
+  }
+};
+
+/**
  * The `McpActionsPort` behind `undo_action` and `list_actions` (slice 3,
  * Task 7), field by field like `healthPortFor` above.
  *
@@ -2764,6 +3392,8 @@ const actionsPortFor = (
   discord: DiscordPort,
   /** Live target policy for the inverse: send scope ∩ the bot's permission now. */
   client: Client,
+  /** The MCP gateway's per-guild rate limiters, shared with the role port. */
+  mcpLimiters: Map<GuildId, RateLimiter>,
 ): McpActionsPort => ({
   undo: (guildId, input) =>
     loggedCallAsync(deps.logger, 'undoAction', async () => {
@@ -2780,6 +3410,17 @@ const actionsPortFor = (
       if (row.status === 'dry_run') return { status: 'refused', reason: 'action-dry-run' };
       if (row.status === 'failed') return { status: 'refused', reason: 'action-failed' };
       if (row.status !== 'done') return { status: 'refused', reason: 'action-incomplete' };
+      // Role changes carry no channel target: their inverse re-resolves the
+      // member and role live from the effect row and re-runs the same
+      // pre-check set, rather than resolving a send target.
+      if (row.kind === 'role.grant' || row.kind === 'role.remove') {
+        return undoRoleChange(
+          { deps, principal, discord, client, mcpLimiters },
+          guildId,
+          scope,
+          row,
+        );
+      }
       const plan = planUndo(guildId, discord, row);
       if (plan === undefined || row.targetChannelId === undefined) {
         return { status: 'refused', reason: 'not-undoable', detail: row.kind };
