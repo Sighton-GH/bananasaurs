@@ -9870,6 +9870,47 @@ describe('/mcp create_role and edit_role through the real composition', () => {
     expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
   });
 
+  it('a role.edit undo refused by the floor speaks of the role, never a channel', async () => {
+    allow();
+    grantMutate();
+    const scope = t.scopes.forGuild(GUILD_A);
+    roleRepo.allowlistRole(scope, LOW_ROLE);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const edited = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          color: 0x12_34_56,
+          idempotencyKey: 'edit-floor-undo',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const row = mcpActionsRepo.findAction(scope, 'edit-floor-undo');
+    if (row === undefined) throw new Error('edit left no ledger row');
+
+    // Between calls the role gains a dangerous permission in the live cache.
+    const cached = deps.client.guilds.cache.get(GUILD_A)?.roles.cache.get(LOW_ROLE) as unknown as {
+      permissions: PermissionsBitField;
+    };
+    if (cached === undefined) throw new Error('test setup: role missing from cache');
+    cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+
+    const refused = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(refused.isError).toBe(true);
+    // `role-unavailable`: the role's cause and the grant policy — never the
+    // channel/send-scope words `target-unavailable` carries.
+    expect(refused.text).toContain('dangerous permission');
+    expect(refused.text).toContain('grant policy');
+    expect(refused.text).not.toContain('channel or thread');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+  });
+
   it('the kill switch refuses both tools with no Discord call and no row', async () => {
     allow();
     grantMutate();

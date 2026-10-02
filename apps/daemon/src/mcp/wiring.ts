@@ -5136,7 +5136,7 @@ const actionsPortFor = (
         if (grant !== true) {
           return {
             status: 'refused',
-            reason: 'target-unavailable',
+            reason: 'role-unavailable',
             detail: `role ${plan.roleId} is ${grantReasonText(grant)}`,
           };
         }
@@ -5151,7 +5151,7 @@ const actionsPortFor = (
         if (!auth.ok) {
           return {
             status: 'refused',
-            reason: 'target-unavailable',
+            reason: 'role-unavailable',
             detail: 'this account lacks roles.mutate',
           };
         }
