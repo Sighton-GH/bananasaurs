@@ -9,7 +9,7 @@
 - tune every MCP rate cap and switch the role policies from the dashboard or the CLI.
 
 **Architecture:** ADR 0119.
-- Scheduled sends are `assistant_reminders` rows with `origin='mcp'` (migration `0094`), delivered by the existing worker with a delivery-time re-check.
+- Scheduled sends are `assistant_reminders` rows with `origin='mcp'` (migration `0095`), delivered by the existing worker with a delivery-time re-check.
 - Events and polls use the port methods from parallel task P1.
 - Caps become instance settings (ADR 0080).
 - Policy controls are ops commands with dashboard parity.
@@ -32,7 +32,7 @@
 
 ---
 
-### Task 1: Migration 0094 `origin` + reminder repo
+### Task 1: Migration 0095 `origin` + reminder repo
 
 - Add `origin` to `assistant_reminders` with the CHECK, default `'assistant'`.
 - `insertReminder` accepts `origin`, and the list, edit and cancel functions filter by origin.

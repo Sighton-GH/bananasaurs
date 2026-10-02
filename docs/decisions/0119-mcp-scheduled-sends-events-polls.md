@@ -10,7 +10,7 @@ Spec: `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` §5.1 (even
    - **Storage:** `schedule_message` stores an `assistant_reminders` row with
      `creator_id` = `BANANASAURS_OWNER_USER_ID` and a new column
      `origin TEXT NOT NULL DEFAULT 'assistant' CHECK IN ('assistant','mcp')`
-     (migration `0094`).
+     (migration `0095`).
    - **Content:** text, destination, one-shot or recurrence, and explicit
      role and user pings. `everyone` and `here` are always false for
      `origin='mcp'`.

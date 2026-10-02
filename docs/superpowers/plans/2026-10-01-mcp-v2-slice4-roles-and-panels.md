@@ -77,7 +77,7 @@ All of it goes through the existing role chokepoint, under the D1 grant policy a
 
 ### Task 3: `grant_role` / `remove_role` + undo
 
-**Files:** create `packages/mcp/src/tools/role-writes.ts` + `.test.ts`; modify `packages/mcp/src/server.ts`, `packages/mcp/src/index.ts`, `apps/daemon/src/mcp/wiring.ts` + `.test.ts`, `apps/daemon/src/mcp/actions.ts`.
+**Files:** create `packages/mcp/src/tools/role-writes.ts` + `.test.ts`, `drizzle/0094_effect_batches_mcp_source.sql` + snapshot + journal entry; modify `packages/mcp/src/server.ts`, `packages/mcp/src/index.ts`, `apps/daemon/src/mcp/wiring.ts` + `.test.ts`, `apps/daemon/src/mcp/actions.ts`, `apps/daemon/src/mcp/roles-gateway.ts` + `.test.ts`, `packages/storage/src/schema.ts` (the CHECK only), `packages/storage/src/db.test.ts` (the migration test).
 
 - Params: `{guildId, member (id or name, via search_members' resolver), role (id or name), idempotencyKey, dryRun?}`.
 - Behaviour:
@@ -87,6 +87,10 @@ All of it goes through the existing role chokepoint, under the D1 grant policy a
   - undo is the inverse.
 
   Extend Task 7 of slice 3's `undo_action` to dispatch the `role.*` inverses, and extend the registration test for the `roles` scope.
+- **ADR 0118 amendment (2026-10-01), binding:**
+  - **The role must already be in `managed_roles`.** The MCP gateway's `isRoleAllowlisted` is `roleRepo.isAllowlisted(scope, roleId) && roleGrantRefusal(...) === true`. The tool pre-checks both, so that its refusal names which one failed; a missing `managed_roles` row reads "role X is not on the bot's role allowlist; an operator must allowlist it". The MCP never inserts into `managed_roles`.
+  - **Migration `0094_effect_batches_mcp_source`:** widen the `effect_batches_source` CHECK to admit `'mcp'`. It is a drizzle-kit table rebuild; read the generated SQL, and it must preserve every row. Add a migration test that seeds `effect_batches` and `role_effects` rows before migrating and asserts that they survive. `db:generate` afterwards reports no changes.
+  - Each grant or removal opens an `effect_batches` row, with `source 'mcp'`, batch id = the action id, and actor `mcp_operator`.
 - Tests:
   - **floor is live**;
   - an account without `roles.mutate` is refused, with no `role_effects` row;
