@@ -9,6 +9,7 @@ import {
   countActionsSince,
   findAction,
   findActionById,
+  isMcpCreatedThread,
   listActions,
   markUndone,
   recentSameContent,
@@ -134,6 +135,38 @@ describe('completeAction', () => {
     completeAction(a, 'act-k1', { status: 'done', resultMessageId: MESSAGE_ID, now: 2000 });
     expect(findActionById(a, 'act-k1')?.status).toBe('done');
     expect(findActionById(b, 'act-k1')?.status).toBe('claimed');
+  });
+});
+
+describe('isMcpCreatedThread', () => {
+  it('is true only for a done thread.create or forum.post naming the thread', () => {
+    claim(a, { idempotencyKey: 'create', kind: 'thread.create', capGroup: 'structure' });
+    expect(isMcpCreatedThread(a, THREAD_ID)).toBe(false);
+    completeAction(a, 'act-create', { status: 'done', resultThreadId: THREAD_ID, now: 2000 });
+    expect(isMcpCreatedThread(a, THREAD_ID)).toBe(true);
+
+    claim(a, { idempotencyKey: 'post', kind: 'forum.post' });
+    completeAction(a, 'act-post', {
+      status: 'done',
+      resultThreadId: '666666666666666667',
+      now: 2000,
+    });
+    expect(isMcpCreatedThread(a, '666666666666666667')).toBe(true);
+  });
+
+  it('ignores failed rows and other kinds that carry a thread id', () => {
+    claim(a, { idempotencyKey: 'failed', kind: 'thread.create', capGroup: 'structure' });
+    completeAction(a, 'act-failed', { status: 'failed', resultThreadId: THREAD_ID, now: 2000 });
+    claim(a, { idempotencyKey: 'send', kind: 'message.send' });
+    completeAction(a, 'act-send', { status: 'done', resultThreadId: THREAD_ID, now: 2000 });
+    expect(isMcpCreatedThread(a, THREAD_ID)).toBe(false);
+  });
+
+  it("does not see the other guild's creations", () => {
+    claim(b, { idempotencyKey: 'create', kind: 'thread.create', capGroup: 'structure' });
+    completeAction(b, 'act-create', { status: 'done', resultThreadId: THREAD_ID, now: 2000 });
+    expect(isMcpCreatedThread(a, THREAD_ID)).toBe(false);
+    expect(isMcpCreatedThread(b, THREAD_ID)).toBe(true);
   });
 });
 

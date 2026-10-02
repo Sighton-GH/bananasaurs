@@ -58,7 +58,12 @@ const NEED_BITS: Record<TargetNeed, readonly NeedBit[]> = {
     BIT(PermissionFlagsBits.ViewChannel, 'ViewChannel'),
     BIT(PermissionFlagsBits.SendMessages, 'SendMessages'),
   ],
-  'post-in-thread': [BIT(PermissionFlagsBits.SendMessagesInThreads, 'SendMessagesInThreads')],
+  // A thread inherits sight from its parent: without ViewChannel there the
+  // bot cannot reach the thread at all.
+  'post-in-thread': [
+    BIT(PermissionFlagsBits.ViewChannel, 'ViewChannel'),
+    BIT(PermissionFlagsBits.SendMessagesInThreads, 'SendMessagesInThreads'),
+  ],
   'create-public-thread': [BIT(PermissionFlagsBits.CreatePublicThreads, 'CreatePublicThreads')],
   'create-private-thread': [BIT(PermissionFlagsBits.CreatePrivateThreads, 'CreatePrivateThreads')],
   // PinMessages alone pins; ManageMessages alone pins too. Checked in

@@ -19,4 +19,9 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   '- Discord renders Markdown: **bold**, *italics*, __underline__, ~~strike~~, # / ## / ### headings, -# subtext, - lists, 1. numbered lists, > quotes, `inline code`, ```fenced code```, [masked links](https://example.com), ||spoilers||.\n' +
   '- Timestamps that show in each reader\'s time zone: <t:UNIX:F> for a full date, <t:UNIX:R> for "in 2 hours".\n' +
   '- Mentions look like <@USER_ID>, <@&ROLE_ID>, <#CHANNEL_ID>.\n' +
-  '- Tables do not render; use lists. A message is at most 2,000 characters.';
+  '- Tables do not render; use lists. A message is at most 2,000 characters.\n' +
+  '\n' +
+  'Writes (when these tools are present):\n' +
+  '- Every write needs an idempotencyKey: reuse the same key when you retry a call, or the action happens twice. Pass dryRun to record without changing anything.\n' +
+  '- undo_action reverses one reversible action (an edit, a pin, a reaction, a thread-member add or a thread state change); posts, deletes, thread creation and forum posts cannot be undone. list_actions shows recent actions with ids, never content.\n' +
+  '- Pings happen only through pingRoles and pingUsers: mentions typed into text never notify anyone. Private threads created through these tools stay readable and postable.';

@@ -44,6 +44,7 @@ export const MCP_READ_SEARCH_RESOURCES = 'mcp.read.search_resources';
 export const MCP_READ_OPEN_RESOURCE = 'mcp.read.open_resource';
 export const MCP_READ_READ_DIGEST = 'mcp.read.read_digest';
 export const MCP_READ_LIST_UNANSWERED = 'mcp.read.list_unanswered';
+export const MCP_READ_LIST_ACTIONS = 'mcp.read.list_actions';
 
 /**
  * One durable audit row for a read that returned member content or

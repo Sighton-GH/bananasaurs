@@ -172,6 +172,21 @@ const connectPair = async (
       send: () =>
         Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
     },
+    // Required since slice 3 Task 6; never called by the resource pinned here.
+    messageWrites: {
+      edit: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      delete: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      pin: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      unpin: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      addReaction: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      removeReaction: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+    },
     readAudit: noopReadAudit,
     threadWrites: stubThreadWrites(),
     jobs: stubJobs(),

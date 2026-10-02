@@ -32,6 +32,7 @@ import type { McpContextPort } from './context.js';
 import type { McpResourcesPort } from './resources.js';
 import type { McpThreadsPort } from './threads.js';
 import type { McpReadAuditPort } from '../read-audit.js';
+import type { McpMessageWritesPort } from './message-writes.js';
 
 /**
  * Task 5, tool layer: the six thread/forum write tools against a fake
@@ -261,6 +262,34 @@ describe('create_thread argument boundary (hard rule 3)', () => {
         }),
       ),
     ).toBe(INVALID_ARGUMENTS_MESSAGE);
+    expect(port.calls).toBe(0);
+  });
+});
+
+describe('thread-write ids are snowflakes before any port call (REST path safety)', () => {
+  // Ids go into REST route paths unencoded and a URL resolves `..`: a
+  // traversal id must die at the argument boundary (whole-branch review).
+  const TRAVERSAL = '../../../guilds/111111111111111111/members/222222222222222222';
+  it.each([
+    ['create_thread fromMessageId', createThreadText, createArgs({ fromMessageId: TRAVERSAL })],
+    ['add_thread_members userIds', addThreadMembersText, membersArgs({ userIds: [TRAVERSAL] })],
+    [
+      'remove_thread_members userIds',
+      removeThreadMembersText,
+      membersArgs({ userIds: [USER, TRAVERSAL] }),
+    ],
+    [
+      'remove_thread_members threadId',
+      removeThreadMembersText,
+      membersArgs({ threadId: TRAVERSAL }),
+    ],
+    ['archive_thread threadId', archiveThreadText, archiveArgs({ threadId: TRAVERSAL })],
+    ['lock_thread threadId', lockThreadText, lockArgs({ threadId: TRAVERSAL })],
+  ] as const)('%s refuses a path-traversal id', async (_label, text, args) => {
+    const port = fakeThreadPort({ status: 'done', actionId: ACTION, threadId: THREAD });
+    expect(messageOf(await text(principalWith([GUILD_A]), port, args))).toBe(
+      INVALID_ARGUMENTS_MESSAGE,
+    );
     expect(port.calls).toBe(0);
   });
 });
@@ -613,6 +642,18 @@ const stubThreads = (): McpThreadsPort => ({
   liveThreadMessages: () => Promise.resolve([]),
 });
 
+/** Required since slice 3 Task 6; never called by the thread-write tools pinned here. */
+const stubMessageWrites = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
@@ -625,6 +666,7 @@ const connectPair = async (
     records: stubRecords(),
     send: stubSend(),
     threadWrites: stubThreadWrites(),
+    messageWrites: stubMessageWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),
@@ -648,7 +690,10 @@ describe('thread-write scope filtering (ruling M4-D17)', () => {
     const { client, close } = await connectPair(principalWith([GUILD_A]));
     try {
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual([
+      // The message-write tools (Task 6) share the scope; this file pins its own six.
+      const names = list.tools.map((tool) => tool.name);
+      expect(names).toHaveLength(13);
+      expect(names.slice(0, 7)).toEqual([
         'send_message',
         CREATE_THREAD_TOOL_NAME,
         ADD_THREAD_MEMBERS_TOOL_NAME,

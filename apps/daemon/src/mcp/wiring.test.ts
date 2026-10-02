@@ -30,12 +30,18 @@ import {
   mcpActionsRepo,
   mcpRolePolicyRepo,
   mcpSendRepo,
+  panelRepo,
   resourceCacheRepo,
   roleRepo,
   taskNudgeRepo,
   taskRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId, DiscordApiError, contentHashFor } from '@bananasaurs/core';
+import {
+  parseGuildId,
+  DiscordApiError,
+  contentHashFor,
+  panelDefinitionSchema,
+} from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -46,7 +52,7 @@ import {
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
-import { FakeDiscord } from '@bananasaurs/testkit';
+import { FakeDiscord, BOT_USER_ID } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -344,7 +350,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(row?.after).not.toContain('Measure chassis');
   });
 
-  it('answers a valid read-scope token with tools/list containing all twenty-six tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty-seven tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -352,7 +358,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(26);
+    expect(names).toHaveLength(27);
     expect(names).toEqual([
       'list_tasks',
       'get_task_details',
@@ -380,6 +386,7 @@ describe('/mcp behind the bearer guard', () => {
       'get_server_context',
       'search_resources',
       'open_resource',
+      'list_actions',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -430,8 +437,10 @@ describe('/mcp behind the bearer guard', () => {
     //
     // Since M5 Task 4 the daemon always threads the real send port (ruling
     // M5-D11), so a send-scoped token lists `send_message` plus the six
-    // thread-write tools (slice 3 Task 5, same scope) — the eleven read tools
-    // stay behind the read scope it does not carry.
+    // thread-write tools (slice 3 Task 5), the six message-write tools
+    // (Task 6) and `undo_action` (Task 7), all the same scope — the eleven
+    // read tools stay behind the read scope it does not carry, and the
+    // task-tracking write tools stay behind the tasks scope (ADR 0114).
     const accessToken = await mintToken('bananasaurs:send');
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -446,31 +455,13 @@ describe('/mcp behind the bearer guard', () => {
       'create_forum_post',
       'archive_thread',
       'lock_thread',
-      'create_task_team',
-      'configure_task_team',
-      'delete_task_team',
-      'set_task_president_role',
-      'clear_task_president_role',
-      'add_task_team_member',
-      'remove_task_team_member',
-      'create_club_task',
-      'edit_club_task',
-      'append_task_child',
-      'edit_task_child',
-      'complete_task_child',
-      'delete_task_child',
-      'record_task_progress',
-      'delete_task_report',
-      'request_task_completion',
-      'approve_task_completion',
-      'reject_task_completion',
-      'set_task_status',
-      'archive_task',
-      'unarchive_task',
-      'delete_club_task',
-      'add_task_reminder',
-      'cancel_task_reminder',
-      'configure_task_quiet_hours',
+      'edit_message',
+      'delete_message',
+      'pin_message',
+      'unpin_message',
+      'add_reaction',
+      'remove_reaction',
+      'undo_action',
     ]);
   });
 
@@ -1584,7 +1575,7 @@ describe('/mcp thread writes through the real composition', () => {
     }
   });
 
-  it('archive then undo restores, and lock then unlock restores', async () => {
+  it('archive then restore works on an owned thread, and a lock still needs ManageThreads', async () => {
     seed();
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const client = buildThreadClient();
@@ -1637,19 +1628,12 @@ describe('/mcp thread writes through the real composition', () => {
           })
         ).body,
       );
-      expect(locked.isError).not.toBe(true);
-      expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: true });
-      const unlocked = callText(
-        (
-          await mcpCall(threadApp, accessToken, 'lock_thread', {
-            guildId: '111111111111111111',
-            threadId,
-            locked: false,
-            idempotencyKey: 'lock-k2',
-          })
-        ).body,
-      );
-      expect(unlocked.isError).not.toBe(true);
+      // Discord lets a thread's owner archive it but only ManageThreads
+      // locks: owning the thread never relaxes a lock, so this bot (no
+      // ManageThreads) is refused before any Discord call.
+      expect(locked.isError).toBe(true);
+      expect(locked.text).toContain('ManageThreads');
+      expect(discord.restCalls('setThreadState')).toHaveLength(2);
       expect(discord.threadState(threadId)).toMatchObject({ archived: false, locked: false });
     } finally {
       await threadApp.close();
@@ -1693,6 +1677,68 @@ describe('/mcp thread writes through the real composition', () => {
       expect(discord.restCalls('addThreadMember')).toEqual([]);
       expect(discord.restCalls('setThreadState')).toEqual([]);
       expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'add-other')).toBeUndefined();
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a thread the bot opened outside the MCP still needs ManageThreads', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    discord.defineThread({ threadId: OTHER_THREAD, name: 'other', parentId: PLANNING });
+    const client = buildThreadClient();
+    // The bot is the cached owner (another module opened it), but no ledger
+    // row says the MCP created it: ownership must not relax the need.
+    injectThread(client, OTHER_THREAD, PLANNING, ChannelType.GuildPublicThread, BOT);
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId: OTHER_THREAD,
+            archived: true,
+            idempotencyKey: 'archive-bot-other',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('ManageThreads');
+      expect(discord.restCalls('setThreadState')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a public thread the MCP created is managed without ManageThreads', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      expect(
+        callText(
+          (await mcpCall(threadApp, accessToken, 'create_thread', createArgs({ type: 'public' })))
+            .body,
+        ).isError,
+      ).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      // A member-owned cache entry: only the ledger can carry ownership here.
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPublicThread, MEMBER);
+      const archived = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId,
+            archived: true,
+            idempotencyKey: 'archive-public',
+          })
+        ).body,
+      );
+      expect(archived.isError).not.toBe(true);
+      expect(discord.restCalls('setThreadState')).toHaveLength(1);
     } finally {
       await threadApp.close();
     }
@@ -1937,6 +1983,551 @@ describe('/mcp thread writes through the real composition', () => {
     } finally {
       await threadApp.close();
     }
+  });
+});
+
+/**
+ * Task 6 Step 2, daemon side: the six message-write tools through the real
+ * composition — target resolution, the protected-message guard, the live
+ * authorship check, then the single `runMcpAction` pipeline each.
+ *
+ * The composed client's bot id is the testkit bot id, so a message
+ * `defineMessage`d as authored by `BOT_USER_ID` is the bot's own and any
+ * other author is a member's — the same authorship the wiring checks live.
+ */
+describe('/mcp message writes through the real composition', () => {
+  const CHANNEL = '711111111111111111';
+  const PANEL_MESSAGE = '722222222222222222';
+  const ANCHOR_MESSAGE = '733333333333333333';
+  const MEMBER_MESSAGE = '744444444444444444';
+  const BOT_MESSAGE = '755555555555555555';
+  const PIN_MESSAGE = '766666666666666666';
+  const EMOJI_ID = '777777777777777777';
+  const FOREIGN_EMOJI_ID = '788888888888888888';
+  const MEMBER_USER = '799999999999999999';
+  const BOT_ROLE = '811111111111111111';
+  const TASK_ROLE = '822222222222222222';
+  /** Distinctive bot-written text: must reach the undo row, never the audit row. */
+  const ORIGINAL = 'picnic-probe-original-bot-text-that-must-never-reach-audit-zz9';
+
+  interface WritesDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  /**
+   * The message-write guild: one text channel, a bot member whose role
+   * carries the given permission bits, and optionally guild emoji. The bot
+   * user is the testkit bot, so `defineMessage`d bot authorship agrees with
+   * the wiring's live `client.user.id` check.
+   */
+  const seedWritesGuild = (
+    botPermissions: bigint,
+    emojis: readonly { readonly id: string; readonly name: string }[] = [],
+  ): void => {
+    const internals = deps.client as unknown as WritesDiscordInternals;
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions.toString(),
+          managed: true,
+        },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: MEMBER_USER, username: 'member', discriminator: '0' }, roles: [] },
+      ],
+      emojis: emojis.map((emoji) => ({ id: emoji.id, name: emoji.name })),
+      unavailable: false,
+    });
+  };
+
+  /** Base permissions: post and react, but neither pin half. */
+  const BASE_PERMS =
+    PermissionsBitField.Flags.ViewChannel |
+    PermissionsBitField.Flags.SendMessages |
+    PermissionsBitField.Flags.SendMessagesInThreads |
+    PermissionsBitField.Flags.AddReactions;
+
+  const allowWrites = (
+    botPermissions: bigint = BASE_PERMS,
+    emojis: readonly { readonly id: string; readonly name: string }[] = [],
+  ): void => {
+    seedWritesGuild(botPermissions, emojis);
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const writeCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      accessToken,
+    );
+
+  const readCall = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const editArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: '111111111111111111',
+    channelId: CHANNEL,
+    messageId: BOT_MESSAGE,
+    content: 'edited through the mcp',
+    idempotencyKey: 'write-k1',
+    ...over,
+  });
+
+  /** No Discord write call of any kind — the eligibility refusal precedes every one. */
+  const expectNoDiscordWrites = (): void => {
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+  };
+
+  const seedPanel = (): void => {
+    panelRepo.createPanel(
+      t.scopes.forGuild(GUILD_A),
+      panelDefinitionSchema.parse({
+        panelId: 'roles',
+        kind: 'adopted',
+        channelId: CHANNEL,
+        messageId: PANEL_MESSAGE,
+        behaviour: 'toggle',
+        component: 'reaction',
+        options: [{ optionId: 'a', roleId: TASK_ROLE, emojiKey: 'u:1f9e0', position: 0 }],
+      }),
+      clock,
+      [TASK_ROLE],
+    );
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: PANEL_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+  };
+
+  const seedAnchor = (): void => {
+    const teamId = taskRepo.createTeam(
+      t.scopes.forGuild(GUILD_A),
+      { name: 'Tech', categoryId: CHANNEL, kind: 'subteam' },
+      ACTOR,
+      clock,
+    );
+    const taskId = taskRepo.createTask(
+      t.scopes.forGuild(GUILD_A),
+      {
+        teamId,
+        title: 'Project',
+        assignmentKind: 'team',
+        dueAt: clock + 86_400_000,
+        timezone: 'America/Vancouver',
+        destinationId: CHANNEL,
+        createdBy: 'owner',
+      },
+      ACTOR,
+      clock,
+    );
+    expect(
+      taskRepo.recordTaskAnchor(t.scopes.forGuild(GUILD_A), taskId, CHANNEL, ANCHOR_MESSAGE, clock),
+    ).toBe('recorded');
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: ANCHOR_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+  };
+
+  it('a role-panel message is refused before any Discord call', async () => {
+    allowWrites();
+    seedPanel();
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ messageId: PANEL_MESSAGE, idempotencyKey: 'panel-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('role-panel');
+    // The protected check runs before the live authorship read: not even
+    // `fetchMessageAuthor` reached Discord.
+    expectNoDiscordWrites();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-edit')).toBeUndefined();
+  });
+
+  it('a task post is refused before any Discord call', async () => {
+    allowWrites();
+    seedAnchor();
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(accessToken, 'delete_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: ANCHOR_MESSAGE,
+          idempotencyKey: 'anchor-delete',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('task post');
+    expectNoDiscordWrites();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'anchor-delete')).toBeUndefined();
+  });
+
+  it("a member's message is refused with no Discord write call", async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: MEMBER_MESSAGE,
+      authorId: MEMBER_USER,
+      content: 'a member wrote this',
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ messageId: MEMBER_MESSAGE, idempotencyKey: 'member-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('someone else');
+    // The live authorship read ran (one read), but no write did.
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('deleteMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('createReaction')).toHaveLength(0);
+    expect(fakeDiscord.restCalls('deleteOwnReaction')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'member-edit')).toBeUndefined();
+  });
+
+  it('an edit records the previous content for undo, never in the audit row', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = readCall((await writeCall(accessToken, 'edit_message', editArgs())).body);
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Edited message');
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(1);
+
+    // The undo row keeps the bot's own previous text — for `undo_action`.
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'write-k1');
+    expect(row?.status).toBe('done');
+    expect(row?.resultMessageId).toBe(BOT_MESSAGE);
+    const undo = JSON.parse(row?.undoJson ?? '{}') as Record<string, unknown>;
+    expect(undo['content']).toBe(ORIGINAL);
+    expect(undo['embeds']).toEqual([]);
+
+    // The edit can never ping, even when the new text carries a mention.
+    const sent = fakeDiscord.restCalls('editMessage')[0]?.args[2] as {
+      allowedMentions?: unknown;
+    };
+    expect(sent.allowedMentions).toEqual({ parse: [], roles: [], users: [] });
+
+    // The audit row carries ids and the outcome — never either text (rule 4).
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+    const audit = trail.find((entry) => entry.action === 'mcp.message.edit');
+    expect(audit).toBeDefined();
+    expect(audit?.actorType).toBe('mcp_operator');
+    expect(audit?.via).toBe('http');
+    expect(JSON.stringify(trail)).not.toContain(ORIGINAL);
+    expect(JSON.stringify(trail)).not.toContain('edited through the mcp');
+  });
+
+  it('a delete reports that it cannot be undone', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = readCall(
+      (
+        await writeCall(accessToken, 'delete_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          idempotencyKey: 'write-delete',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('cannot be undone');
+    expect(fakeDiscord.restCalls('deleteMessage')).toHaveLength(1);
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'write-delete');
+    expect(row?.status).toBe('done');
+    expect(row?.undoJson).toBeUndefined();
+  });
+
+  it('a pin without PinMessages and ManageMessages is refused naming both', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: PIN_MESSAGE,
+      authorId: MEMBER_USER,
+      content: 'pin me',
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(accessToken, 'pin_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: PIN_MESSAGE,
+          idempotencyKey: 'pin-denied',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('PinMessages');
+    expect(refused.text).toContain('ManageMessages');
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'pin-denied')).toBeUndefined();
+  });
+
+  it('a pin with only PinMessages passes, on any in-scope message', async () => {
+    allowWrites(BASE_PERMS | PermissionsBitField.Flags.PinMessages);
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: PIN_MESSAGE,
+      authorId: MEMBER_USER,
+      content: 'pin me',
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = readCall(
+      (
+        await writeCall(accessToken, 'pin_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: PIN_MESSAGE,
+          idempotencyKey: 'pin-ok',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Pinned message');
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(1);
+    const pinRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'pin-ok');
+    expect(JSON.parse(pinRow?.undoJson ?? '{}')).toEqual({ op: 'unpin' });
+
+    const unpinned = readCall(
+      (
+        await writeCall(accessToken, 'unpin_message', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: PIN_MESSAGE,
+          idempotencyKey: 'unpin-ok',
+        })
+      ).body,
+    );
+    expect(unpinned.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    const unpinRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'unpin-ok');
+    expect(JSON.parse(unpinRow?.undoJson ?? '{}')).toEqual({ op: 'pin' });
+  });
+
+  it("a foreign guild's custom emoji is refused with no Discord call", async () => {
+    allowWrites(BASE_PERMS, [{ id: EMOJI_ID, name: 'party' }]);
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (
+        await writeCall(accessToken, 'add_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: `party:${FOREIGN_EMOJI_ID}`,
+          idempotencyKey: 'react-foreign',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not usable in guild');
+    expect(fakeDiscord.restCalls('createReaction')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'react-foreign')).toBeUndefined();
+  });
+
+  it('a unicode emoji and this guild emoji react, with canonical keys', async () => {
+    allowWrites(BASE_PERMS, [{ id: EMOJI_ID, name: 'party' }]);
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const first = readCall(
+      (
+        await writeCall(accessToken, 'add_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: '👍',
+          idempotencyKey: 'react-unicode',
+        })
+      ).body,
+    );
+    expect(first.isError).not.toBe(true);
+    const second = readCall(
+      (
+        await writeCall(accessToken, 'add_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: 'party:777777777777777777',
+          idempotencyKey: 'react-custom',
+        })
+      ).body,
+    );
+    expect(second.isError).not.toBe(true);
+    const reacted = fakeDiscord.restCalls('createReaction');
+    expect(reacted).toHaveLength(2);
+    expect(reacted[0]?.args[2]).toBe('u:1f44d');
+    expect(reacted[1]?.args[2]).toBe(`c:${EMOJI_ID}`);
+    const reactRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'react-unicode');
+    expect(JSON.parse(reactRow?.undoJson ?? '{}')).toEqual({
+      op: 'remove-reaction',
+      emoji: 'u:1f44d',
+    });
+
+    const removed = readCall(
+      (
+        await writeCall(accessToken, 'remove_reaction', {
+          guildId: '111111111111111111',
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          emoji: '👍',
+          idempotencyKey: 'unreact-unicode',
+        })
+      ).body,
+    );
+    expect(removed.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('deleteOwnReaction')).toHaveLength(1);
+    const unreactRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'unreact-unicode');
+    expect(JSON.parse(unreactRow?.undoJson ?? '{}')).toEqual({
+      op: 'add-reaction',
+      emoji: 'u:1f44d',
+    });
+  });
+
+  it('a write for the other guild is refused with no Discord call', async () => {
+    allowWrites();
+    const accessToken = await mintToken('bananasaurs:send');
+    // The token reaches guild A only (`mcp.authorize` is granted there and
+    // nowhere else), so naming guild B fails the tool-layer guild gate
+    // before the port — and Discord — is ever reached.
+    const refused = readCall(
+      (
+        await writeCall(
+          accessToken,
+          'edit_message',
+          editArgs({ guildId: '222222222222222222', idempotencyKey: 'other-guild-edit' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain(GUILD_REFUSAL_MESSAGE);
+    expectNoDiscordWrites();
+    expect(
+      mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_B), 'other-guild-edit'),
+    ).toBeUndefined();
+  });
+
+  it('the same idempotency key twice edits once and answers the second as a replay', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+    const first = readCall((await writeCall(accessToken, 'edit_message', editArgs())).body);
+    expect(first.isError).not.toBe(true);
+    const second = readCall((await writeCall(accessToken, 'edit_message', editArgs())).body);
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toContain('Already recorded under this idempotency key');
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(1);
+  });
+
+  it('the kill switch refuses the edit with no Discord write', async () => {
+    allowWrites();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = readCall(
+      (await writeCall(accessToken, 'edit_message', editArgs({ idempotencyKey: 'kill-edit' })))
+        .body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('kill switch');
+    expect(fakeDiscord.restCalls('editMessage')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'kill-edit')).toBeUndefined();
   });
 });
 
@@ -5008,7 +5599,7 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     clock,
   );
   const read = await mintToken('bananasaurs:read');
-  const send = await mintToken('bananasaurs:send');
+  const send = await mintToken('bananasaurs:send bananasaurs:tasks');
   const url = await app.listen({ port: 0, host: '127.0.0.1' });
   const connect = async (token: string) => {
     const client = new McpClient({ name: 'simulated-ai-agent', version: '1.0.0' });
@@ -5354,7 +5945,9 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('advertises every write tool to the owner and none of the task tools to a non-owner', async () => {
     seedTaskWorld();
-    const ownerSend = await mintToken('bananasaurs:send');
+    // The task-tracking writes need the tasks scope on top of ownership
+    // (ADR 0114): send alone no longer shows them.
+    const ownerSend = await mintToken('bananasaurs:send bananasaurs:tasks');
     const listed = await mcpPost(
       app,
       { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
@@ -5405,6 +5998,13 @@ describe('MCP task admin full surface (owner-only)', () => {
       'create_forum_post',
       'archive_thread',
       'lock_thread',
+      'edit_message',
+      'delete_message',
+      'pin_message',
+      'unpin_message',
+      'add_reaction',
+      'remove_reaction',
+      'undo_action',
     ]);
 
     // The port still rechecks per call: a non-owner token that names a hidden
@@ -5439,7 +6039,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('create (multi-assignee) → edit → request → approve ends done with mcp_operator audit', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     for (const discordUserId of [MEMBER_A, MEMBER_B]) {
@@ -5534,7 +6134,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('reject returns an awaiting task to in_progress', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
@@ -5573,7 +6173,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('archive hides from list_tasks and includeArchived shows it again', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const read = await mintToken('bananasaurs:read');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
@@ -5607,7 +6207,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('record_task_progress twice with one requestId writes one report', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
@@ -5640,7 +6240,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('create_club_task twice with one requestId makes one task and one announce slot', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const args = {
@@ -5669,7 +6269,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('delete_club_task removes the task with CAS; delete_task_report removes one update', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
@@ -5713,7 +6313,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('complete_task_child with a stale version is refused', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
     const appended = text(
@@ -5822,7 +6422,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     };
     const anchoredApp = buildDashboardApp({ ...deps, portsFor });
     try {
-      const send = await mintToken('bananasaurs:send', anchoredApp);
+      const send = await mintToken('bananasaurs:send bananasaurs:tasks', anchoredApp);
       const teamId = await createTeam(send);
       const taskId = await createTeamTask(send, teamId);
       expect(
@@ -5870,7 +6470,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('complete_task_child is refused when the team category no longer resolves', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     // Seeded straight through the repository: this category was never
     // injected into the gateway cache, so the live team check fails exactly
@@ -5921,7 +6521,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('delete_task_team with tasks is refused; an empty team deletes', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     await createTeamTask(send, teamId);
     const refused = text((await call(send, 'delete_task_team', { guildId: gid(), teamId })).body);
@@ -5938,7 +6538,7 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('cancel_task_reminder on a pending custom reminder succeeds, then refuses', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const read = await mintToken('bananasaurs:read');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
@@ -5978,7 +6578,7 @@ describe('MCP task admin full surface (owner-only)', () => {
   it('list_task_teams returns the member role id, members, president and quiet hours', async () => {
     seedTaskWorld();
     fakeDiscord.defineMember(MEMBER_A, [LEAD_ROLE]);
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     const read = await mintToken('bananasaurs:read');
     const teamId = await createTeam(send, { leadRoleId: LEAD_ROLE, memberRoleId: MEMBER_ROLE });
     const president = text(
@@ -6040,10 +6640,757 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('a duplicate category is refused with the team text', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send');
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
     await createTeam(send);
     const duplicate = text((await call(send, 'create_task_team', teamArgs())).body);
     expect(duplicate.isError).toBe(true);
     expect(duplicate.text).toContain('That category already has a team.');
+  });
+});
+
+/**
+ * Slice 3 Task 7, daemon side: `undo_action` and `list_actions` through the
+ * real stack — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * `actionsPortFor` over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow.
+ *
+ * Seeded ledger rows go straight through `mcpActionsRepo.claimAction` /
+ * `completeAction` (like the pre-migration test above): the undo_json
+ * shapes under test are exactly what Tasks 5–6 wrote, and seeding them
+ * directly is what lets the missing-state and malformed cases exist at all.
+ * The edit round-trip goes through the real `edit_message` tool first, so
+ * the stored undo is read back, never re-typed. The composed client's bot
+ * id is the testkit bot id, matching the message-writes describe above.
+ */
+describe('/mcp undo_action and list_actions through the real composition', () => {
+  const CHANNEL = '911111111111111111';
+  const BOT_MESSAGE = '922222222222222222';
+  const MEMBER = '933333333333333333';
+  const THREAD = '944444444444444444';
+  const BOT_ROLE = '955555555555555555';
+  /** Distinctive bot-written text: must reach the undo row, never the audit row or the list. */
+  const ORIGINAL = 'undo-probe-original-bot-text-that-must-never-reach-audit-zz7';
+  const GID = '111111111111111111';
+
+  interface UndoDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  const seedUndoGuild = (): void => {
+    const internals = deps.client as unknown as UndoDiscordInternals;
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel |
+      PermissionsBitField.Flags.SendMessages |
+      PermissionsBitField.Flags.SendMessagesInThreads |
+      PermissionsBitField.Flags.AddReactions |
+      // The undo re-resolves its target live (whole-branch review), so the
+      // bot needs every inverse's permission: pin for pin/unpin, and
+      // ManageThreads for thread inverses on a thread the MCP did not create.
+      PermissionsBitField.Flags.PinMessages |
+      PermissionsBitField.Flags.ManageThreads
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      threads: [
+        {
+          id: THREAD,
+          guild_id: GUILD_A,
+          parent_id: CHANNEL,
+          owner_id: MEMBER,
+          type: ChannelType.PublicThread,
+          name: 'undo-thread',
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 1440,
+            archive_timestamp: new Date().toISOString(),
+            locked: false,
+          },
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions,
+          managed: true,
+        },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: MEMBER, username: 'member', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+  };
+
+  const allow = (): void => {
+    seedUndoGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const undoCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  type SeedCap = 'message' | 'edit' | 'structure' | 'pin_react';
+
+  /** One completed ledger row, exactly as a forward write leaves it. */
+  const seedAction = (input: {
+    readonly actionId: string;
+    readonly kind: string;
+    readonly capGroup: SeedCap;
+    readonly targetChannelId?: string | undefined;
+    readonly resultMessageId?: string | undefined;
+    readonly resultThreadId?: string | undefined;
+    readonly undoJson?: string | undefined;
+    readonly dryRun?: boolean | undefined;
+    readonly failed?: boolean | undefined;
+    readonly claimOnly?: boolean | undefined;
+  }): string => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    mcpActionsRepo.claimAction(scope, {
+      actionId: input.actionId,
+      idempotencyKey: `key-${input.actionId}`,
+      kind: input.kind,
+      capGroup: input.capGroup,
+      argsHash: `hash-${input.actionId}`,
+      tokenId: 'tok_test',
+      ...(input.targetChannelId !== undefined ? { targetChannelId: input.targetChannelId } : {}),
+      now: clock,
+      dryRun: input.dryRun ?? false,
+    });
+    if (input.claimOnly !== true && input.dryRun !== true) {
+      mcpActionsRepo.completeAction(scope, input.actionId, {
+        status: input.failed === true ? 'failed' : 'done',
+        ...(input.resultMessageId !== undefined ? { resultMessageId: input.resultMessageId } : {}),
+        ...(input.resultThreadId !== undefined ? { resultThreadId: input.resultThreadId } : {}),
+        ...(input.undoJson !== undefined ? { undoJson: input.undoJson } : {}),
+        now: clock,
+      });
+    }
+    return input.actionId;
+  };
+
+  const seedActionB = (actionId: string): void => {
+    const scope = t.scopes.forGuild(GUILD_B);
+    mcpActionsRepo.claimAction(scope, {
+      actionId,
+      idempotencyKey: `key-${actionId}`,
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      argsHash: `hash-${actionId}`,
+      tokenId: 'tok_test',
+      targetChannelId: CHANNEL,
+      now: clock,
+      dryRun: false,
+    });
+    mcpActionsRepo.completeAction(scope, actionId, {
+      status: 'done',
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+      now: clock,
+    });
+  };
+
+  it('an edit undoes end-to-end: the stored text returns, mentions stay off, the row is marked', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const edited = callText(
+      (
+        await undoCall(send, 'edit_message', {
+          guildId: GID,
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          content: 'edited-through-undo-probe-zz7',
+          idempotencyKey: 'undo-edit-k1',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const scope = t.scopes.forGuild(GUILD_A);
+    const row = mcpActionsRepo.findAction(scope, 'undo-edit-k1');
+    expect(row?.kind).toBe('message.edit');
+    if (row === undefined) throw new Error('forward edit left no ledger row');
+
+    const undone = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(undone.text).toContain(row.actionId);
+    expect(undone.text).toContain('message.edit');
+
+    // The inverse ran over FakeDiscord with the stored previous text — and
+    // the undo edit keeps the same empty mentions as a forward edit.
+    const edits = fakeDiscord.restCalls('editMessage');
+    expect(edits).toHaveLength(2);
+    expect((edits[1]?.args[2] as { content?: unknown }).content).toBe(ORIGINAL);
+    expect((edits[1]?.args[2] as { allowedMentions?: unknown }).allowedMentions).toEqual({
+      parse: [],
+      roles: [],
+      users: [],
+    });
+
+    // The original is marked with the undo's id, and the undo ran under the
+    // derived key with the inverse kind.
+    const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+    expect(reread?.undoneByActionId).toBeDefined();
+    const undoRow = mcpActionsRepo.findAction(scope, `undo:${row.actionId}`);
+    expect(undoRow?.actionId).toBe(reread?.undoneByActionId);
+    expect(undoRow?.kind).toBe('message.edit');
+
+    // The audit trail names the inverse action, never either text (rule 4).
+    const trail = effectRepo.tailAudit(scope, { limit: 50 });
+    expect(trail.filter((entry) => entry.action === 'mcp.message.edit')).toHaveLength(2);
+    expect(JSON.stringify(trail)).not.toContain(ORIGINAL);
+    expect(JSON.stringify(trail)).not.toContain('edited-through-undo-probe-zz7');
+  });
+
+  it('every reversible kind undoes over FakeDiscord with its row marked', async () => {
+    allow();
+    // The message inverses address a live message: the fake throws
+    // unknown-message for anything it was never told about, like Discord.
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    fakeDiscord.defineThread({ threadId: THREAD, parentId: CHANNEL });
+    fakeDiscord.addThreadMember(THREAD, MEMBER);
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    const cases: ReadonlyArray<{
+      readonly actionId: string;
+      readonly kind: string;
+      readonly capGroup: SeedCap;
+      readonly undoJson: string;
+    }> = [
+      {
+        actionId: 'undo-pin',
+        kind: 'message.pin',
+        capGroup: 'pin_react',
+        undoJson: JSON.stringify({ op: 'unpin' }),
+      },
+      {
+        actionId: 'undo-unpin',
+        kind: 'message.unpin',
+        capGroup: 'pin_react',
+        undoJson: JSON.stringify({ op: 'pin' }),
+      },
+      {
+        actionId: 'undo-react-add',
+        kind: 'reaction.add',
+        capGroup: 'pin_react',
+        undoJson: JSON.stringify({ op: 'remove-reaction', emoji: '👍' }),
+      },
+      {
+        actionId: 'undo-react-remove',
+        kind: 'reaction.remove',
+        capGroup: 'pin_react',
+        undoJson: JSON.stringify({ op: 'add-reaction', emoji: '👍' }),
+      },
+      {
+        actionId: 'undo-members-add',
+        kind: 'thread.members.add',
+        capGroup: 'structure',
+        undoJson: JSON.stringify({ userIds: [MEMBER] }),
+      },
+      {
+        actionId: 'undo-state',
+        kind: 'thread.state',
+        capGroup: 'structure',
+        undoJson: JSON.stringify({ archived: false }),
+      },
+    ];
+    for (const entry of cases) {
+      seedAction({
+        actionId: entry.actionId,
+        kind: entry.kind,
+        capGroup: entry.capGroup,
+        targetChannelId: entry.kind.startsWith('thread.') ? THREAD : CHANNEL,
+        ...(entry.kind.startsWith('thread.') ? {} : { resultMessageId: BOT_MESSAGE }),
+        undoJson: entry.undoJson,
+      });
+      const found = callText(
+        (await undoCall(send, 'undo_action', { guildId: GID, actionId: entry.actionId })).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(entry.kind);
+      expect(mcpActionsRepo.findActionById(scope, entry.actionId)?.undoneByActionId).toBeDefined();
+    }
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    expect(fakeDiscord.restCalls('pinMessage')).toHaveLength(1);
+    expect(fakeDiscord.restCalls('deleteOwnReaction')).toHaveLength(1);
+    expect(fakeDiscord.restCalls('createReaction')).toHaveLength(1);
+    expect(fakeDiscord.restCalls('removeThreadMember')).toHaveLength(1);
+    expect(await fakeDiscord.isThreadMember(GUILD_A, THREAD, MEMBER)).toBe(false);
+    expect(fakeDiscord.restCalls('setThreadState')).toHaveLength(1);
+    expect(fakeDiscord.threadState(THREAD)).toMatchObject({ archived: false });
+  });
+
+  it('a replayed undo answers already undone with the undo action id', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-replay',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    const first = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-replay' })).body,
+    );
+    expect(first.isError).not.toBe(true);
+    const undoId = mcpActionsRepo.findActionById(scope, 'undo-replay')?.undoneByActionId;
+    expect(undoId).toBeDefined();
+    const second = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-replay' })).body,
+    );
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain('already undone');
+    expect(second.text).toContain(undoId ?? '');
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+  });
+
+  it("undo of another guild's action is not found", async () => {
+    allow();
+    seedActionB('undo-foreign');
+    const send = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-foreign' })).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('No MCP action undo-foreign');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+  });
+
+  it('a dry-run, failed or still-claimed action refuses with a distinct text', async () => {
+    allow();
+    const send = await mintToken('bananasaurs:send');
+    seedAction({
+      actionId: 'undo-dry',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      dryRun: true,
+    });
+    seedAction({
+      actionId: 'undo-failed',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      failed: true,
+    });
+    seedAction({
+      actionId: 'undo-claimed',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      claimOnly: true,
+    });
+    const dry = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-dry' })).body,
+    );
+    expect(dry.isError).toBe(true);
+    expect(dry.text).toContain('was a dry run');
+    const failed = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-failed' })).body,
+    );
+    expect(failed.isError).toBe(true);
+    expect(failed.text).toContain('failed with an unknown result');
+    const claimed = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-claimed' })).body,
+    );
+    expect(claimed.isError).toBe(true);
+    expect(claimed.text).toContain('has not completed yet');
+    expect(new Set([dry.text, failed.text, claimed.text]).size).toBe(3);
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+  });
+
+  it('kinds with no inverse, missing state and unreadable state cannot be undone', async () => {
+    allow();
+    const send = await mintToken('bananasaurs:send');
+    const kinds: ReadonlyArray<{
+      readonly actionId: string;
+      readonly kind: string;
+      readonly cap: SeedCap;
+    }> = [
+      { actionId: 'undo-send', kind: 'message.send', cap: 'message' },
+      { actionId: 'undo-delete', kind: 'message.delete', cap: 'edit' },
+      { actionId: 'undo-create', kind: 'thread.create', cap: 'structure' },
+      { actionId: 'undo-forum', kind: 'forum.post', cap: 'message' },
+      { actionId: 'undo-remove', kind: 'thread.members.remove', cap: 'structure' },
+    ];
+    for (const entry of kinds) {
+      seedAction({
+        actionId: entry.actionId,
+        kind: entry.kind,
+        capGroup: entry.cap,
+        targetChannelId: CHANNEL,
+        resultMessageId: BOT_MESSAGE,
+      });
+    }
+    // A reversible kind whose row recorded no previous state (Task 6 leaves
+    // `thread.state` without undo_json when the previous state was unknown).
+    seedAction({
+      actionId: 'undo-state-bare',
+      kind: 'thread.state',
+      capGroup: 'structure',
+      targetChannelId: THREAD,
+    });
+    // A row whose undo_json fails its kind's schema is never guessed at.
+    seedAction({
+      actionId: 'undo-malformed',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: '{oops',
+    });
+    seedAction({
+      actionId: 'undo-wrong-shape',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    for (const actionId of [
+      ...kinds.map((entry) => entry.actionId),
+      'undo-state-bare',
+      'undo-malformed',
+      'undo-wrong-shape',
+    ]) {
+      const refused = callText(
+        (await undoCall(send, 'undo_action', { guildId: GID, actionId })).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('cannot be undone');
+    }
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+  });
+
+  it('list_actions shows kinds, statuses, ids and undoable flags — never content, only this guild', async () => {
+    allow();
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'list-edit',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ content: ORIGINAL, embeds: [] }),
+    });
+    seedAction({
+      actionId: 'list-send',
+      kind: 'message.send',
+      capGroup: 'message',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+    });
+    seedActionB('list-foreign');
+    const read = await mintToken('bananasaurs:read');
+    const found = callText((await undoCall(read, 'list_actions', { guildId: GID })).body);
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('list-edit | message.edit | done');
+    expect(found.text).toContain(`target ${CHANNEL}`);
+    expect(found.text).toContain(`message ${BOT_MESSAGE}`);
+    expect(found.text).toContain('undoable yes');
+    expect(found.text).toContain('list-send | message.send | done');
+    expect(found.text).toContain('undoable no');
+    // The bot's own previous text lives in the undo row and must never
+    // reach the listing; neither does the other guild's row.
+    expect(found.text).not.toContain(ORIGINAL);
+    expect(found.text).not.toContain('list-foreign');
+    // A structural read: no audit row, only the allowlisted log line.
+    expect(
+      effectRepo.tailAudit(scopeA).some((entry) => entry.action === 'mcp.read.list_actions'),
+    ).toBe(false);
+
+    const other = callText(
+      (await undoCall(read, 'list_actions', { guildId: '222222222222222222' })).body,
+    );
+    expect(other.isError).toBe(true);
+    expect(other.text).toBe(GUILD_REFUSAL_MESSAGE);
+  });
+
+  it('an undo while dry run is on records without changing and stays undoable', async () => {
+    seedUndoGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-dryrun-guild',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    const found = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-dryrun-guild' })).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Dry run');
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(0);
+    expect(
+      mcpActionsRepo.findActionById(scope, 'undo-dryrun-guild')?.undoneByActionId,
+    ).toBeUndefined();
+  });
+
+  it('a dry-run undo never blocks the real one: dry run off, the undo runs and marks', async () => {
+    // Whole-branch review: the dry-run row used to sit on `undo:<id>`, the
+    // real undo replayed it, marked the original undone, and restored nothing.
+    seedUndoGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-dry-then-real',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    const dry = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-dry-then-real' })).body,
+    );
+    expect(dry.text).toContain('Dry run');
+    guildRepo.setDryRun(scope, false, clock);
+    const real = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-dry-then-real' })).body,
+    );
+    expect(real.isError).not.toBe(true);
+    expect(real.text).toContain('Undid');
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    const marked = mcpActionsRepo.findActionById(scope, 'undo-dry-then-real')?.undoneByActionId;
+    expect(marked).toBeDefined();
+    expect(mcpActionsRepo.findActionById(scope, marked ?? '')?.status).toBe('done');
+  });
+
+  it('a failed undo retried with the same action id runs again and only then marks', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-fail-then-retry',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    fakeDiscord.failNext('unpinMessage', new DiscordApiError(500, undefined, 'discord is on fire'));
+    const failed = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-fail-then-retry' }))
+        .body,
+    );
+    expect(failed.isError).toBe(true);
+    expect(failed.text).toContain('unknown result');
+    expect(
+      mcpActionsRepo.findActionById(scope, 'undo-fail-then-retry')?.undoneByActionId,
+    ).toBeUndefined();
+    const retried = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-fail-then-retry' }))
+        .body,
+    );
+    expect(retried.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(2);
+    const marked = mcpActionsRepo.findActionById(scope, 'undo-fail-then-retry')?.undoneByActionId;
+    expect(mcpActionsRepo.findActionById(scope, marked ?? '')?.status).toBe('done');
+  });
+
+  it('an edit undo restores rich embeds only, with authorable fields only', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    seedAction({
+      actionId: 'undo-embeds',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({
+        content: ORIGINAL,
+        embeds: [
+          {
+            type: 'rich',
+            title: 'Agenda',
+            color: 3447003,
+            fields: [{ name: 'When', value: 'Friday', inline: true }],
+            footer: { text: 'club', proxy_icon_url: 'https://media.example/x.png' },
+          },
+          { type: 'link', url: 'https://example.com', provider: { name: 'example' } },
+        ],
+      }),
+    });
+    const undone = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-embeds' })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    const body = fakeDiscord.restCalls('editMessage')[0]?.args[2] as { embeds?: unknown };
+    expect(body.embeds).toEqual([
+      {
+        title: 'Agenda',
+        color: 3447003,
+        fields: [{ name: 'When', value: 'Friday', inline: true }],
+        footer: { text: 'club' },
+      },
+    ]);
+  });
+
+  it('an undo stranded at claimed by a crash is retried once its claim is stale', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const send = await mintToken('bananasaurs:send');
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedAction({
+      actionId: 'undo-stranded',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    // The crashed undo: claimed eleven minutes ago, never completed.
+    mcpActionsRepo.claimAction(scope, {
+      actionId: 'undo-crashed',
+      idempotencyKey: 'undo:undo-stranded',
+      kind: 'message.unpin',
+      capGroup: 'pin_react',
+      argsHash: 'hash-crashed',
+      tokenId: 'tok_test',
+      targetChannelId: CHANNEL,
+      now: clock - 11 * 60 * 1000,
+      dryRun: false,
+    });
+    const undone = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-stranded' })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('unpinMessage')).toHaveLength(1);
+    const marked = mcpActionsRepo.findActionById(scope, 'undo-stranded')?.undoneByActionId;
+    expect(marked).toBeDefined();
+    expect(marked).not.toBe('undo-crashed');
+  });
+
+  it('an undo whose channel left send scope refuses with no Discord call', async () => {
+    seedUndoGuild();
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    // No allowlist row for CHANNEL: the forward pin was allowed, the undo is not.
+    const send = await mintToken('bananasaurs:send');
+    seedAction({
+      actionId: 'undo-out-of-scope',
+      kind: 'message.pin',
+      capGroup: 'pin_react',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ op: 'unpin' }),
+    });
+    const refused = callText(
+      (await undoCall(send, 'undo_action', { guildId: GID, actionId: 'undo-out-of-scope' })).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('no longer one this connector may write to');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+    expect(
+      mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'undo:undo-out-of-scope'),
+    ).toBeUndefined();
   });
 });
