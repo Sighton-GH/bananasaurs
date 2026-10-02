@@ -6,6 +6,7 @@ import {
   PermissionFlagsBits,
   type Client,
   type Guild,
+  type GuildBasedChannel,
   type GuildMember,
 } from 'discord.js';
 import {
@@ -72,6 +73,7 @@ import {
   resourceCacheRepo,
   roleRepo,
   accountRepo,
+  mcpActionsRepo,
   mcpRolePolicyRepo,
   mcpSendRepo,
   taskBindingRepo,
@@ -1384,39 +1386,46 @@ const liveGuildMember = async (
 
 /**
  * Whether the bot owns the thread, in which case member and state edits need
- * only `post-in-thread` rather than `ManageThreads` (Task 5 rulings): either
- * the MCP created it — the `mcp_private_threads` row — or the cached thread
- * names the bot as its creator. Anything else needs the permission, checked
- * live against the parent like every other `resolveSendTarget` need.
+ * only `post-in-thread` rather than `ManageThreads` (Task 5 ruling: "created
+ * by the bot via MCP"). Only the ledger says so — the `mcp_private_threads`
+ * row or a completed `thread.create`/`forum.post`. A thread the bot opened
+ * for another module (a task post, a panel) is not the MCP's to manage, so a
+ * cached `ownerId` is deliberately not consulted.
  */
-const botOwnsThread = (
-  scope: GuildScope,
+const botOwnsThread = (scope: GuildScope, threadId: string): boolean =>
+  mcpRolePolicyRepo.isMcpPrivateThread(scope, threadId) ||
+  mcpActionsRepo.isMcpCreatedThread(scope, threadId);
+
+/**
+ * The guild channel object, cache first with one fetch on miss — the same
+ * fallback `resolveChannel` uses, so a thread or forum it resolved by fetch
+ * is never treated as unknown here. `undefined` for another guild's channel.
+ */
+const liveGuildChannel = async (
   client: Client,
   guildId: GuildId,
-  threadId: string,
-): boolean => {
-  if (mcpRolePolicyRepo.isMcpPrivateThread(scope, threadId)) return true;
-  const botUserId = client.user?.id;
-  if (botUserId === undefined) return false;
-  const channel = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
-  return channel !== undefined && 'ownerId' in channel && channel.ownerId === botUserId;
+  channelId: string,
+): Promise<GuildBasedChannel | undefined> => {
+  const cached = client.channels.cache.get(channelId);
+  const channel = cached ?? (await client.channels.fetch(channelId).catch(() => null));
+  if (channel === null || channel === undefined || channel.isDMBased()) return undefined;
+  return channel.guildId === guildId ? channel : undefined;
 };
 
 /**
- * The thread's live archive/lock state from the gateway cache, for the
- * `thread.state` undo record (ADR 0116 §5: an archive or lock records the
- * previous state). `undefined` when the cache does not know the thread — the
- * change then records no undo, and Task 7's `undo_action` refuses it rather
- * than guessing.
+ * The thread's live archive/lock state, for the `thread.state` undo record
+ * (ADR 0116 §5: an archive or lock records the previous state). `undefined`
+ * only when Discord cannot produce the thread at all — the change then
+ * records no undo, and Task 7's `undo_action` refuses it rather than guessing.
  */
-const cachedThreadState = (
+const liveThreadState = async (
   client: Client,
   guildId: GuildId,
   threadId: string,
-):
-  | { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined }
-  | undefined => {
-  const channel = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
+): Promise<
+  { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined } | undefined
+> => {
+  const channel = await liveGuildChannel(client, guildId, threadId);
   if (channel === undefined || !channel.isThread()) return undefined;
   const archived = channel.archived ?? undefined;
   const locked = channel.locked ?? undefined;
@@ -1525,7 +1534,9 @@ const resolveForumTarget = async (
   if (grantId === undefined) return { ok: false, reason: 'not-in-send-scope' };
   const me: GuildMember | null = client.guilds.cache.get(guildId)?.members.me ?? null;
   if (me === null) return { ok: false, reason: 'bot-lacks-permission', missing: 'ViewChannel' };
-  const channel = client.channels.cache.get(resolved.channelId) as
+  // The resolved channel itself, not a cache probe: a forum `resolveChannel`
+  // fetched on a cache miss must not refuse as if the bot could not see it.
+  const channel = (await liveGuildChannel(client, guildId, resolved.channelId)) as
     { permissionsFor(member: GuildMember): { has(bit: bigint): boolean } | null } | undefined;
   const perms = channel?.permissionsFor(me) ?? null;
   if (perms === null) return { ok: false, reason: 'bot-lacks-permission', missing: 'ViewChannel' };
@@ -1778,7 +1789,7 @@ const threadWritesPortFor = (
         if (resolved === undefined || !resolved.isThread) {
           return { status: 'refused', reason: 'thread-not-found' };
         }
-        const owned = botOwnsThread(scope, client, guildId, resolved.channelId);
+        const owned = botOwnsThread(scope, resolved.channelId);
         const target = await resolveSendTarget(
           client,
           scope,
@@ -1824,7 +1835,7 @@ const threadWritesPortFor = (
         if (resolved === undefined || !resolved.isThread) {
           return { status: 'refused', reason: 'thread-not-found' };
         }
-        const owned = botOwnsThread(scope, client, guildId, resolved.channelId);
+        const owned = botOwnsThread(scope, resolved.channelId);
         const target = await resolveSendTarget(
           client,
           scope,
@@ -1935,7 +1946,7 @@ const threadWritesPortFor = (
         if (resolved === undefined || !resolved.isThread) {
           return { status: 'refused', reason: 'thread-not-found' };
         }
-        const owned = botOwnsThread(scope, client, guildId, resolved.channelId);
+        const owned = botOwnsThread(scope, resolved.channelId);
         const target = await resolveSendTarget(
           client,
           scope,
@@ -1944,7 +1955,7 @@ const threadWritesPortFor = (
           owned ? 'post-in-thread' : 'manage-thread',
         );
         if (!target.ok) return targetRefusalFor(target, 'thread-not-found');
-        const previous = cachedThreadState(client, guildId, target.channelId);
+        const previous = await liveThreadState(client, guildId, target.channelId);
         const state =
           input.archived !== undefined ? { archived: input.archived } : { locked: input.locked };
         const outcome = await runMcpAction(

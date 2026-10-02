@@ -143,6 +143,31 @@ export const completeAction = (
   });
 
 /**
+ * Whether the MCP created this thread (Task 5 ruling: the bot owns a thread
+ * only when the MCP created it). A completed `thread.create` or `forum.post`
+ * naming the thread; a failed or still-claimed row does not count.
+ */
+export const isMcpCreatedThread = (scope: GuildScope, threadId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ actionId: mcpActions.actionId })
+        .from(mcpActions)
+        .where(
+          scope.only(
+            mcpActions,
+            and(
+              eq(mcpActions.resultThreadId, threadId),
+              eq(mcpActions.status, 'done'),
+              inArray(mcpActions.kind, ['thread.create', 'forum.post']),
+            ),
+          ),
+        )
+        .get() !== undefined,
+  );
+
+/**
  * Names the undo action for a reversible action. Only the first undo wins:
  * already undone (or unknown) returns false and changes nothing.
  */

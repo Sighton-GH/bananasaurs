@@ -1698,6 +1698,68 @@ describe('/mcp thread writes through the real composition', () => {
     }
   });
 
+  it('a thread the bot opened outside the MCP still needs ManageThreads', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    discord.defineThread({ threadId: OTHER_THREAD, name: 'other', parentId: PLANNING });
+    const client = buildThreadClient();
+    // The bot is the cached owner (another module opened it), but no ledger
+    // row says the MCP created it: ownership must not relax the need.
+    injectThread(client, OTHER_THREAD, PLANNING, ChannelType.GuildPublicThread, BOT);
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId: OTHER_THREAD,
+            archived: true,
+            idempotencyKey: 'archive-bot-other',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('ManageThreads');
+      expect(discord.restCalls('setThreadState')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a public thread the MCP created is managed without ManageThreads', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      expect(
+        callText(
+          (await mcpCall(threadApp, accessToken, 'create_thread', createArgs({ type: 'public' })))
+            .body,
+        ).isError,
+      ).not.toBe(true);
+      const threadId = resultThreadIdOf('thread-k1');
+      // A member-owned cache entry: only the ledger can carry ownership here.
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPublicThread, MEMBER);
+      const archived = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'archive_thread', {
+            guildId: '111111111111111111',
+            threadId,
+            archived: true,
+            idempotencyKey: 'archive-public',
+          })
+        ).body,
+      );
+      expect(archived.isError).not.toBe(true);
+      expect(discord.restCalls('setThreadState')).toHaveLength(1);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
   it('adding a user who is not in the guild is refused with no Discord call', async () => {
     seed();
     const discord = new FakeDiscord({ guildId: GUILD_A });

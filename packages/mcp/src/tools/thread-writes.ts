@@ -551,7 +551,8 @@ const refusalText = (
       );
     case 'rate-cap':
       return (
-        `Guild ${guildId} has used its thread budget of 100 thread actions per rolling hour, ` +
+        `Guild ${guildId} has used its rolling-hour budget for this kind of action ` +
+        '(100 thread changes, or 300 messages and forum posts), ' +
         `so ${nothingHappened}. Wait for the window to pass before retrying` +
         `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
         'answering an already-recorded idempotency key still works meanwhile.'
