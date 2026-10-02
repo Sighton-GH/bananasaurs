@@ -463,15 +463,16 @@ const refusalText = (
         `so nothing was ${noun}. Wait for an operator to clear it; do not retry in a loop.`
       );
     case 'rate-cap':
-      // Edits and deletes share the 300-per-hour edit group; pins, unpins
-      // and reactions share the 300-per-hour pin_react group (ruling).
+      // Edits and deletes share the `edit` cap group; pins, unpins and
+      // reactions share `pin_react` (ruling). The numbers are owner-tunable
+      // settings (ADR 0119 §4), so the text names the setting, not a number.
       return kind === 'edit' || kind === 'delete'
-        ? `Guild ${guildId} has used its edit budget of 300 edits and deletes per rolling hour, ` +
+        ? `Guild ${guildId} has used its rolling-hour budget for edits and deletes (setting mcp.cap.edit), ` +
             `so nothing was ${noun}. Wait for the window to pass before retrying` +
             `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
             'answering an already-recorded idempotency key still works meanwhile.'
-        : `Guild ${guildId} has used its pin and reaction budget of 300 pins and reactions ` +
-            `per rolling hour, so nothing was ${noun}. Wait for the window to pass before retrying` +
+        : `Guild ${guildId} has used its rolling-hour budget for pins and reactions ` +
+            `(setting mcp.cap.pin_react), so nothing was ${noun}. Wait for the window to pass before retrying` +
             `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
             'answering an already-recorded idempotency key still works meanwhile.';
     case 'duplicate-key-different-content':

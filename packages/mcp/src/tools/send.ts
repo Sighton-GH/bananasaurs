@@ -375,7 +375,7 @@ const refusalText = (
       // §6); duplicated, not imported, for the same reason the old 200 text
       // was duplicated rather than imported.
       return (
-        `Guild ${guildId} has used its message budget of 300 sends per rolling hour, ` +
+        `Guild ${guildId} has used its rolling-hour message budget (setting mcp.cap.message), ` +
         'so nothing was posted. Wait for the window to pass before retrying' +
         `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
         'answering an already-sent idempotency key still works meanwhile.'
