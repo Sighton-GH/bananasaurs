@@ -3350,6 +3350,12 @@ const roleAdminPortFor = (
         const resolved = resolveRoleRefLive(client, guildId, input.role);
         if (!resolved.ok) return resolved.outcome;
         const roleId = resolved.roleId;
+        // ADR 0118 amendment (owner decision): the role must already be in
+        // `managed_roles`, the same reason `grant_role` uses for a role that
+        // is not on the list — before any Discord call.
+        if (!roleRepo.isAllowlisted(scope, roleId)) {
+          return { status: 'refused', reason: 'role-not-allowlisted', detail: roleId };
+        }
         // The grant policy and the floor, live before the claim: a role that
         // gained a dangerous permission after allowlisting refuses here, with
         // no Discord call.
@@ -5100,6 +5106,16 @@ const actionsPortFor = (
       if (isRoleEdit) {
         if (plan.roleId === undefined) {
           return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+        }
+        // The role must still be in `managed_roles`: one removed since the
+        // edit refuses, like the forward `edit_role` refuses a role that was
+        // never on the list.
+        if (!roleRepo.isAllowlisted(scope, plan.roleId)) {
+          return {
+            status: 'refused',
+            reason: 'role-unavailable',
+            detail: `role ${plan.roleId} is no longer on the bot's role allowlist`,
+          };
         }
         const grant = roleGrantRefusal(client, scope, plan.roleId);
         if (grant !== true) {

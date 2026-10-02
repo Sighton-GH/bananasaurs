@@ -267,6 +267,7 @@ describe('role-admin refusal texts', () => {
     'managed-or-everyone',
     'dangerous',
     'not-allowlisted',
+    'role-not-allowlisted',
     'unauthorized',
     'killswitch',
     'breaker-open',
@@ -281,7 +282,13 @@ describe('role-admin refusal texts', () => {
       const detail =
         reason === 'ambiguous-role'
           ? '111111111111111112, 111111111111111113'
-          : ['above-bot', 'managed-or-everyone', 'dangerous', 'not-allowlisted'].includes(reason)
+          : [
+              'above-bot',
+              'managed-or-everyone',
+              'dangerous',
+              'not-allowlisted',
+              'role-not-allowlisted',
+            ].includes(reason)
             ? ROLE
             : undefined;
       const createOutcome = await createRoleText(

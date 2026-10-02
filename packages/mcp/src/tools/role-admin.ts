@@ -49,7 +49,8 @@ export const CREATE_ROLE_TOOL_DESCRIPTION =
 export const EDIT_ROLE_TOOL_NAME = 'edit_role';
 export const EDIT_ROLE_TOOL_DESCRIPTION =
   'Edits a role\u2019s name, color or mentionable flag in this guild, by id or name. ' +
-  'Only roles that pass the MCP grant policy (below the bot, allowlisted, not managed, without dangerous permissions) can be edited, ' +
+  'Only roles already on the bot\u2019s role allowlist that pass the MCP grant policy ' +
+  '(below the bot, not managed, not @everyone, without dangerous permissions) can be edited, ' +
   'and the previous values are kept for undo. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
   'Pass dryRun to record without editing.';
@@ -96,6 +97,7 @@ export type McpRoleAdminRefusal =
   | 'managed-or-everyone'
   | 'dangerous'
   | 'not-allowlisted'
+  | 'role-not-allowlisted'
   | 'unauthorized'
   | 'killswitch'
   | 'breaker-open'
@@ -237,6 +239,13 @@ const refusalText = (
         `Role ${id} in guild ${guildId} is not allowlisted for MCP role changes, ` +
         `so ${created}. An operator must allowlist it before the MCP can change it.`
       );
+    case 'role-not-allowlisted':
+      // The bot's role allowlist (`managed_roles`), the same refusal
+      // `grant_role` gives: the role id is the daemon-resolved id in `detail`.
+      return (
+        `Role ${id} in guild ${guildId} is not on the bot's role allowlist, ` +
+        `so ${created}. An operator must allowlist it before the MCP can change it.`
+      );
     case 'unauthorized':
       return (
         `This account lacks roles.mutate in guild ${guildId}, so ${created}. ` +
@@ -316,6 +325,7 @@ const renderRefused = (
     'managed-or-everyone',
     'dangerous',
     'not-allowlisted',
+    'role-not-allowlisted',
   ]);
   const roleId =
     outcome.reason === 'ambiguous-role'

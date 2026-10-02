@@ -9526,6 +9526,11 @@ describe('/mcp create_role and edit_role through the real composition', () => {
   it('editing a dangerous or above-bot role is refused with no Discord call and no row', async () => {
     allow();
     grantMutate();
+    // Allowlisted in `managed_roles`, so the refusal comes from the grant
+    // policy and the floor — not from the allowlist check under test below.
+    for (const roleId of [DANGEROUS_ROLE, ABOVE_ROLE, MANAGED_ROLE]) {
+      roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), roleId);
+    }
     const roles = await mintToken('bananasaurs:roles');
 
     const dangerous = callText(
@@ -9606,9 +9611,35 @@ describe('/mcp create_role and edit_role through the real composition', () => {
     expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
   });
 
+  it('an edit of a role missing from managed_roles is refused with no Discord call', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    // LOW_ROLE is below the bot and passes the grant policy and the floor —
+    // the only thing missing is the `managed_roles` row.
+    expect(roleRepo.isAllowlisted(t.scopes.forGuild(GUILD_A), LOW_ROLE)).toBe(false);
+    const refused = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-unlisted',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain(LOW_ROLE);
+    expect(refused.text).toContain('allowlist');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-unlisted')).toBeUndefined();
+  });
+
   it('edits by name, restores through undo_action, and marks the original', async () => {
     allow();
     grantMutate();
+    roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), LOW_ROLE);
     const roles = await mintToken('bananasaurs:roles');
 
     const edited = callText(
@@ -9701,9 +9732,50 @@ describe('/mcp create_role and edit_role through the real composition', () => {
     expect(undone.text).toContain('role.create');
   });
 
+  it('an undo of an edit whose role left managed_roles since is refused', async () => {
+    allow();
+    grantMutate();
+    const scope = t.scopes.forGuild(GUILD_A);
+    roleRepo.allowlistRole(scope, LOW_ROLE);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const edited = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          color: 0x12_34_56,
+          idempotencyKey: 'edit-unlisted-undo',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const row = mcpActionsRepo.findAction(scope, 'edit-unlisted-undo');
+    if (row === undefined) throw new Error('edit left no ledger row');
+
+    // An operator removes the role from `managed_roles` after the edit.
+    // No `role_effects` row references it (edits never claim one), so the
+    // delete is clean.
+    t.raw
+      .prepare('DELETE FROM managed_roles WHERE guild_id = ? AND role_id = ?')
+      .run(String(GUILD_A), LOW_ROLE);
+    expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(false);
+
+    const refused = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('allowlist');
+    expect(refused.text).toContain(LOW_ROLE);
+    // The stored values were not restored: only the forward edit ran.
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+  });
+
   it('the kill switch refuses both tools with no Discord call and no row', async () => {
     allow();
     grantMutate();
+    roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), LOW_ROLE);
     guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
     const roles = await mintToken('bananasaurs:roles');
 
