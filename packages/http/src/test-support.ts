@@ -529,11 +529,16 @@ export const testPortsFor = (
 
   createPanel: (definition, newlyAllowlistedRoleIds = []) =>
     panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds),
+  updatePanel: (definition, newlyAllowlistedRoleIds = []) =>
+    panelRepo.updatePanel(scope, definition, now(), newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
   // Matches the fixture hierarchy: the bot's own role sits at position 4.
   botHighestRolePosition: () => 4,
   publishPanel: () => {
+    throw new Error('not used by the dashboard routes under test — needs a real Discord client');
+  },
+  unpublishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },
   enqueueReconcile: () => {
