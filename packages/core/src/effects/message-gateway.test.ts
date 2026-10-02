@@ -175,6 +175,15 @@ class MinimalSendDiscord implements DiscordPort {
   async setThreadState(): Promise<void> {
     this.notUsed('setThreadState');
   }
+  async createRole(): Promise<never> {
+    this.notUsed('createRole');
+  }
+  async setRolePosition(): Promise<void> {
+    this.notUsed('setRolePosition');
+  }
+  async editRole(): Promise<void> {
+    this.notUsed('editRole');
+  }
   async fetchMessageAuthor(): Promise<never> {
     this.notUsed('fetchMessageAuthor');
   }

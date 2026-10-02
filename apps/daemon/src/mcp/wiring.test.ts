@@ -22,12 +22,14 @@ import {
   archiveRepo,
   assistantRepo,
   authzRepo,
+  authzStoreFor,
   computeDocId,
   effectRepo,
   guildRepo,
   jobRepo,
   loggingRepo,
   mcpActionsRepo,
+  mcpBulkRepo,
   mcpRolePolicyRepo,
   mcpSendRepo,
   panelRepo,
@@ -35,12 +37,19 @@ import {
   roleRepo,
   taskNudgeRepo,
   taskRepo,
+  type GuildScope,
 } from '@bananasaurs/storage';
 import {
   parseGuildId,
+  authorize,
   DiscordApiError,
   contentHashFor,
+  editManagedPanel,
   panelDefinitionSchema,
+  RateLimiter,
+  postManagedPanel,
+  seedPanelReactions,
+  type OpsPublishResult,
 } from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
@@ -49,9 +58,12 @@ import {
   ARCHIVE_PURGED_MARKER,
   GUILD_REFUSAL_MESSAGE,
   PRIVATE_THREAD_REFUSAL,
+  bulkArgsHashFor,
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
+import { mcpRoleGatewayFor, resetMcpRateLimiters } from './roles-gateway.js';
+import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
 import { FakeDiscord, BOT_USER_ID } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
@@ -98,6 +110,9 @@ const silentLogger = {
 beforeEach(async () => {
   t = openMigratedTestDatabase();
   clock = 1_700_000_000_000;
+  // The MCP role gateway's per-guild limiters are process-wide (shared by
+  // the HTTP ports and the bulk job): start every test with full buckets.
+  resetMcpRateLimiters();
 
   dir = mkdtempSync(path.join(tmpdir(), 'bananasaurs-mcp-'));
   writeFileSync(path.join(dir, 'index.html'), '<html>spa shell</html>');
@@ -350,7 +365,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(row?.after).not.toContain('Measure chassis');
   });
 
-  it('answers a valid read-scope token with tools/list containing all twenty-seven tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty-nine tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -358,7 +373,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(27);
+    expect(names).toHaveLength(29);
     expect(names).toEqual([
       'list_tasks',
       'get_task_details',
@@ -375,6 +390,8 @@ describe('/mcp behind the bearer guard', () => {
       'list_threads',
       'list_roles',
       'list_members',
+      'list_panels',
+      'get_panel',
       'list_mod_cases',
       'get_mod_case',
       'list_audit_events',
@@ -6779,7 +6796,7 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
   };
 
-  type SeedCap = 'message' | 'edit' | 'structure' | 'pin_react';
+  type SeedCap = 'message' | 'edit' | 'structure' | 'pin_react' | 'member_role';
 
   /** One completed ledger row, exactly as a forward write leaves it. */
   const seedAction = (input: {
@@ -7154,7 +7171,7 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
       resultMessageId: BOT_MESSAGE,
     });
     seedActionB('list-foreign');
-    const read = await mintToken('bananasaurs:read');
+    const read = await mintToken('bananasaurs:read bananasaurs:send');
     const found = callText((await undoCall(read, 'list_actions', { guildId: GID })).body);
     expect(found.isError).not.toBe(true);
     expect(found.text).toContain('list-edit | message.edit | done');
@@ -7392,5 +7409,3514 @@ describe('/mcp undo_action and list_actions through the real composition', () =>
     expect(
       mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'undo:undo-out-of-scope'),
     ).toBeUndefined();
+  });
+
+  it('a send+roles token undoes a message edit end-to-end', async () => {
+    allow();
+    fakeDiscord.defineMessage({
+      channelId: CHANNEL,
+      messageId: BOT_MESSAGE,
+      authorId: BOT_USER_ID,
+      content: ORIGINAL,
+    });
+    const both = await mintToken('bananasaurs:send bananasaurs:roles');
+    const edited = callText(
+      (
+        await undoCall(both, 'edit_message', {
+          guildId: GID,
+          channelId: CHANNEL,
+          messageId: BOT_MESSAGE,
+          content: 'edited-by-both-scope-probe-zz7',
+          idempotencyKey: 'undo-both-k1',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const scope = t.scopes.forGuild(GUILD_A);
+    const row = mcpActionsRepo.findAction(scope, 'undo-both-k1');
+    if (row === undefined) throw new Error('forward edit left no ledger row');
+
+    const undone = callText(
+      (await undoCall(both, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(undone.text).toContain('message.edit');
+    expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeDefined();
+  });
+
+  it('list_actions lists every kind but never offers an out-of-scope kind as undoable', async () => {
+    allow();
+    seedAction({
+      actionId: 'list-scope-edit',
+      kind: 'message.edit',
+      capGroup: 'edit',
+      targetChannelId: CHANNEL,
+      resultMessageId: BOT_MESSAGE,
+      undoJson: JSON.stringify({ content: ORIGINAL, embeds: [] }),
+    });
+    seedAction({
+      actionId: 'list-scope-grant',
+      kind: 'role.grant',
+      capGroup: 'member_role',
+      undoJson: JSON.stringify({ op: 'remove-role' }),
+    });
+
+    const send = await mintToken('bananasaurs:read bananasaurs:send');
+    const sendList = callText((await undoCall(send, 'list_actions', { guildId: GID })).body);
+    expect(sendList.isError).not.toBe(true);
+    // Both rows are listed, but only the message row is offered as undoable.
+    expect(sendList.text).toContain('list-scope-edit');
+    expect(sendList.text).toContain('list-scope-grant');
+    const sendLines = sendList.text.split('\n');
+    expect(sendLines.find((line) => line.startsWith('list-scope-edit'))).toContain('undoable yes');
+    expect(sendLines.find((line) => line.startsWith('list-scope-grant'))).toContain('undoable no');
+
+    const roles = await mintToken('bananasaurs:read bananasaurs:roles');
+    const rolesList = callText((await undoCall(roles, 'list_actions', { guildId: GID })).body);
+    expect(rolesList.isError).not.toBe(true);
+    const rolesLines = rolesList.text.split('\n');
+    expect(rolesLines.find((line) => line.startsWith('list-scope-edit'))).toContain('undoable no');
+    expect(rolesLines.find((line) => line.startsWith('list-scope-grant'))).toContain(
+      'undoable yes',
+    );
+  });
+});
+
+describe('/mcp grant_role and remove_role through the real composition', () => {
+  const OWNER = '345678901234567890';
+  const MEMBER = '633333333333333333';
+  const MEMBER2 = '634444444444444444';
+  const LOW_ROLE = '522222222222222222';
+  const HIGH_ROLE = '533333333333333333';
+  const DANGEROUS_ROLE = '566666666666666666';
+  const UNLISTED_ROLE = '577777777777777777';
+  const BOT_ROLE = '511111111111111111';
+  /** Distinctive names: must never reach an audit row, which carries ids only. */
+  const MEMBER_NAME = 'SammyZZ MemberQ';
+  const ROLE_NAME = 'helpersZZ';
+  const GID = '111111111111111111';
+
+  interface RoleDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const buildRoleClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT_USER_ID));
+    const internals = client as unknown as RoleDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({
+      id: BOT_USER_ID,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [],
+      // Distinct raw positions: discord.js computes Role.position from their
+      // ordering, so the comments name the order each role lands in. The bot
+      // sits at 10; HIGH_ROLE at 12 is above it, the rest below.
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: DANGEROUS_ROLE, name: 'floor-watch', position: 2, permissions: '0' },
+        { id: UNLISTED_ROLE, name: 'lurkers', position: 3, permissions: '0' },
+        { id: LOW_ROLE, name: ROLE_NAME, position: 4, permissions: '0' },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 10,
+          permissions: botPermissions,
+          managed: true,
+        },
+        { id: HIGH_ROLE, name: 'admins', position: 12, permissions: '0' },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: OWNER, username: 'owner', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER, username: 'samwise', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER2, username: 'sam2', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  /** Serves the tool's member resolution: one short page, then the loop stops. */
+  const serveMembers = (client: Client): void => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('fake guild did not land in the cache');
+    const profiles = [
+      { id: OWNER, username: 'owner', displayName: 'Owner' },
+      { id: MEMBER, username: 'samwise', displayName: MEMBER_NAME },
+      { id: MEMBER2, username: 'sam2', displayName: 'Sam the second' },
+    ];
+    guild.members.list = async () => {
+      const members = profiles.map(
+        (profile) =>
+          ({
+            id: profile.id,
+            user: { id: profile.id, username: profile.username },
+            displayName: profile.displayName,
+            nickname: null,
+            roles: { cache: new Collection() },
+            joinedAt: new Date('2024-05-01T00:00:00.000Z'),
+          }) as unknown as GuildMember,
+      );
+      return new Collection(members.map((member) => [member.id, member] as const));
+    };
+  };
+
+  const buildRoleApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
+    createServer({
+      deps: { ...deps },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+
+  const seedDiscord = (discord: FakeDiscord): void => {
+    discord.defineRole({ id: LOW_ROLE, name: ROLE_NAME, position: 4 });
+    discord.defineRole({ id: HIGH_ROLE, name: 'admins', position: 2 });
+    discord.defineRole({ id: DANGEROUS_ROLE, name: 'floor-watch', position: 2 });
+    discord.defineRole({ id: UNLISTED_ROLE, name: 'lurkers', position: 3 });
+    discord.defineMember(MEMBER, []);
+    discord.defineMember(MEMBER2, []);
+    discord.defineMember(OWNER, [], true);
+  };
+
+  const seedRoleScope = (input: { mutate?: boolean; allowlisted?: string[] } = {}): void => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    guildRepo.setDryRun(scope, false, clock);
+    if (input.mutate !== false) {
+      authzRepo.grantAccountCapability(scope, {
+        accountId: ACCOUNT,
+        capability: 'roles.mutate',
+        grantedBy: 'test',
+        now: clock,
+      });
+    }
+    for (const roleId of input.allowlisted ?? [LOW_ROLE, HIGH_ROLE, DANGEROUS_ROLE]) {
+      roleRepo.allowlistRole(scope, roleId);
+    }
+  };
+
+  const roleCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const grantArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    member: MEMBER,
+    role: LOW_ROLE,
+    idempotencyKey: 'grant-k1',
+    ...over,
+  });
+
+  const effectBatches = (): { batch_id: string; source: string; actor_type: string }[] =>
+    t.raw.prepare('SELECT batch_id, source, actor_type FROM effect_batches').all() as {
+      batch_id: string;
+      source: string;
+      actor_type: string;
+    }[];
+
+  const roleEffectsCount = (): number =>
+    (t.raw.prepare('SELECT COUNT(*) AS n FROM role_effects').get() as { n: number }).n;
+
+  it('a grant runs end-to-end: Discord, ledger, batch, effect and audit rows', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const granted = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
+      expect(granted.isError).not.toBe(true);
+      expect(granted.text).toContain('Granted');
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+
+      // One ledger row: the role kind in the member_role cap group, done, with
+      // the remove-role inverse and no channel target.
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      expect(row).toMatchObject({ kind: 'role.grant', capGroup: 'member_role', status: 'done' });
+      expect(row?.targetChannelId).toBeUndefined();
+      expect(row?.undoJson).toBe(JSON.stringify({ op: 'remove-role' }));
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      // One batch row: source mcp, actor mcp_operator, batch id = the action id.
+      expect(effectBatches()).toEqual([
+        { batch_id: row.actionId, source: 'mcp', actor_type: 'mcp_operator' },
+      ]);
+
+      // One effect row: the grant, applied, under that batch.
+      expect(
+        t.raw.prepare('SELECT batch_id, user_id, role_id, action, state FROM role_effects').all(),
+      ).toEqual([
+        {
+          batch_id: row.actionId,
+          user_id: MEMBER,
+          role_id: LOW_ROLE,
+          action: 'grant',
+          state: 'applied',
+        },
+      ]);
+
+      // The audit row is mcp_operator, naming the grant and the before/after —
+      // ids only, never the member's name or anything with content in it.
+      const trail = effectRepo.tailAudit(scope, { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'role.grant');
+      expect(audit).toMatchObject({ actorType: 'mcp_operator', via: 'http', actorId: ACCOUNT });
+      expect(JSON.stringify(trail)).not.toContain(MEMBER_NAME);
+      expect(JSON.stringify(trail)).not.toContain(ROLE_NAME);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a removal runs end-to-end and records the add-role inverse', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    discord.defineMember(MEMBER, [LOW_ROLE]);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const removed = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'remove_role',
+            grantArgs({ idempotencyKey: 'remove-k1' }),
+          )
+        ).body,
+      );
+      expect(removed.isError).not.toBe(true);
+      expect(removed.text).toContain('Removed');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'remove-k1');
+      expect(row).toMatchObject({ kind: 'role.remove', capGroup: 'member_role', status: 'done' });
+      expect(row?.undoJson).toBe(JSON.stringify({ op: 'add-role' }));
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'role.revoke');
+      expect(audit).toMatchObject({ actorType: 'mcp_operator', actorId: ACCOUNT });
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a grant by member and role name resolves both', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const granted = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ member: MEMBER_NAME, role: ROLE_NAME, idempotencyKey: 'grant-name-k1' }),
+          )
+        ).body,
+      );
+      expect(granted.isError).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('floor is live: a role that gains ManageRoles between calls is refused with no Discord call', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      const callsAfterGrant = discord.restCalls().length;
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+
+      // Between calls the role gains a dangerous permission in the live cache.
+      const cached = client.guilds.cache.get(GUILD_A)?.roles.cache.get(LOW_ROLE) as unknown as {
+        permissions: PermissionsBitField;
+      };
+      if (cached === undefined) throw new Error('test setup: role missing from cache');
+      cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ member: MEMBER2, idempotencyKey: 'grant-floor-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('dangerous');
+      // Refused before any Discord call: the REST log is exactly what the
+      // first grant left, and the second grant added one addRole short of it.
+      expect(discord.restCalls()).toHaveLength(callsAfterGrant);
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+      expect(discord.memberRoles(MEMBER2)).not.toContain(LOW_ROLE);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('an account without roles.mutate is refused, with no role_effects row and no effect_batches row', async () => {
+    seedRoleScope({ mutate: false });
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('roles.mutate');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(roleEffectsCount()).toBe(0);
+      expect(effectBatches()).toEqual([]);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a role not in managed_roles is refused, naming the allowlist', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ role: UNLISTED_ROLE, idempotencyKey: 'grant-unlisted-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('not on the bot');
+      expect(refused.text).toContain('allowlist');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-unlisted-k1'),
+      ).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('the guild owner as target is protected', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ member: OWNER, idempotencyKey: 'grant-owner-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('guild owner');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-owner-k1'),
+      ).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('an above-bot role on the allowlist names the policy reason', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ role: HIGH_ROLE, idempotencyKey: 'grant-high-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('above the bot');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('the two-guild gate refuses the other guild with no Discord call', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await roleCall(
+            roleApp,
+            accessToken,
+            'grant_role',
+            grantArgs({ guildId: '222222222222222222', idempotencyKey: 'grant-foreign-k1' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toBe(GUILD_REFUSAL_MESSAGE);
+      expect(discord.restCalls()).toHaveLength(0);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('replaying the key answers the same action with one Discord call', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const first = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
+      expect(first.isError).not.toBe(true);
+      const second = callText(
+        (await roleCall(roleApp, accessToken, 'grant_role', grantArgs())).body,
+      );
+      expect(second.isError).not.toBe(true);
+      expect(second.text).toContain('Already recorded under this idempotency key');
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('the kill switch refuses with no Discord call and no ledger row', async () => {
+    seedRoleScope();
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const send = await mintToken('bananasaurs:roles');
+      const refused = callText((await roleCall(roleApp, send, 'grant_role', grantArgs())).body);
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('kill switch');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'grant-k1')).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('undo of a grant removes the role and marks the original', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const undone = callText(
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('role.grant');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      expect(discord.restCalls('removeRole')).toHaveLength(1);
+
+      const reread = mcpActionsRepo.findActionById(scope, row.actionId);
+      expect(reread?.undoneByActionId).toBeDefined();
+      const undoRow = mcpActionsRepo.findAction(scope, `undo:${row.actionId}`);
+      expect(undoRow?.actionId).toBe(reread?.undoneByActionId);
+      expect(undoRow).toMatchObject({ kind: 'role.remove', capGroup: 'member_role' });
+      expect(undoRow?.targetChannelId).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('undo of a removal re-adds the role and marks the original', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    discord.defineMember(MEMBER, [LOW_ROLE]);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      expect(
+        callText(
+          (
+            await roleCall(
+              roleApp,
+              roles,
+              'remove_role',
+              grantArgs({ idempotencyKey: 'remove-k1' }),
+            )
+          ).body,
+        ).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'remove-k1');
+      if (row === undefined) throw new Error('removal left no ledger row');
+
+      const undone = callText(
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('role.remove');
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.restCalls('addRole')).toHaveLength(1);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeDefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a skipped grant completes as already-had and is not undoable', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    discord.defineMember(MEMBER, [LOW_ROLE]);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const granted = callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body);
+      expect(granted.isError).not.toBe(true);
+      expect(granted.text).toContain('already had');
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      expect(row?.status).toBe('done');
+      expect(row?.undoJson).toBeUndefined();
+
+      const undone = callText(
+        (
+          await roleCall(roleApp, roles, 'undo_action', {
+            guildId: GID,
+            actionId: row?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(undone.isError).toBe(true);
+      expect(undone.text).toContain('cannot be undone');
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('an undo re-checks live: a floor change after the grant refuses the undo', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const cached = client.guilds.cache.get(GUILD_A)?.roles.cache.get(LOW_ROLE) as unknown as {
+        permissions: PermissionsBitField;
+      };
+      if (cached === undefined) throw new Error('test setup: role missing from cache');
+      cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+
+      const refused = callText(
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('dangerous');
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.restCalls('removeRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a send-only token cannot undo a role grant: refused, the role still held, nothing marked', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      expect(
+        callText((await roleCall(roleApp, roles, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const refused = callText(
+        (await roleCall(roleApp, send, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('bananasaurs:roles');
+      // Nothing changed: the role is still held, no inverse ran, the row is
+      // still undoable, and no undo row was claimed.
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.restCalls('removeRole')).toHaveLength(0);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+      expect(mcpActionsRepo.findAction(scope, `undo:${row.actionId}`)).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a roles-only token cannot undo a message edit: refused before any target read', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'scope-edit-1',
+        idempotencyKey: 'scope-edit-k1',
+        kind: 'message.edit',
+        capGroup: 'edit',
+        argsHash: 'hash-scope-edit-1',
+        tokenId: 'tok_test',
+        targetChannelId: '911111111111111111',
+        now: clock,
+        dryRun: false,
+      });
+      mcpActionsRepo.completeAction(scope, 'scope-edit-1', {
+        status: 'done',
+        resultMessageId: '922222222222222222',
+        undoJson: JSON.stringify({ content: 'prior text', embeds: [] }),
+        now: clock,
+      });
+
+      const refused = callText(
+        (await roleCall(roleApp, roles, 'undo_action', { guildId: GID, actionId: 'scope-edit-1' }))
+          .body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('bananasaurs:send');
+      expect(discord.restCalls('editMessage')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findActionById(scope, 'scope-edit-1')?.undoneByActionId,
+      ).toBeUndefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+
+  it('a send+roles token undoes a role grant end-to-end', async () => {
+    seedRoleScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedDiscord(discord);
+    const client = buildRoleClient();
+    serveMembers(client);
+    const roleApp = buildRoleApp(client, discord);
+    try {
+      const both = await mintToken('bananasaurs:send bananasaurs:roles');
+      expect(
+        callText((await roleCall(roleApp, both, 'grant_role', grantArgs())).body).isError,
+      ).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const row = mcpActionsRepo.findAction(scope, 'grant-k1');
+      if (row === undefined) throw new Error('grant left no ledger row');
+
+      const undone = callText(
+        (await roleCall(roleApp, both, 'undo_action', { guildId: GID, actionId: row.actionId }))
+          .body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('role.grant');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeDefined();
+    } finally {
+      await roleApp.close();
+    }
+  });
+});
+/**
+ * Slice 4 Task 4, daemon side: `bulk_role_change` through the real stack —
+ * Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * `bulkRolesPortFor` over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow, and the durable
+ * `mcp.bulk_role` job driven through the real MCP gateway.
+ *
+ * What this proves: a preview stores the row (token hashed, 10-minute
+ * expiry) and writes no ledger row; a confirm checks guild, single use,
+ * expiry and the args hash with a distinct refusal each, then claims one
+ * `role.bulk` row and enqueues the job; the job walks the previewed set —
+ * never a fresh query — through the gateway with per-member outcomes; the
+ * `member_role` cap counts members; and the token reaches neither an audit
+ * row nor any other stored row.
+ */
+describe('/mcp bulk_role_change through the real composition', () => {
+  const OWNER = '345678901234567890';
+  const MEMBER = '633333333333333333';
+  const MEMBER2 = '634444444444444444';
+  const MEMBER3 = '635555555555555555';
+  const LOW_ROLE = '522222222222222222';
+  const OTHER_ROLE = '544444444444444444';
+  const BOT_ROLE = '511111111111111111';
+  const GID = '111111111111111111';
+  /** Distinctive names: must never reach an audit row, which carries ids only. */
+  const MEMBER_NAME = 'SammyZZ MemberQ';
+  const ROLE_NAME = 'helpersZZ';
+
+  interface BulkDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const buildBulkClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT_USER_ID));
+    const internals = client as unknown as BulkDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({
+      id: BOT_USER_ID,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: OTHER_ROLE, name: 'ushers', position: 2, permissions: '0' },
+        { id: LOW_ROLE, name: ROLE_NAME, position: 4, permissions: '0' },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 10,
+          permissions: botPermissions,
+          managed: true,
+        },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: OWNER, username: 'owner', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER, username: 'samwise', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER2, username: 'sam2', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  /** Serves the tool's member resolution: one short page, then the loop stops. */
+  const serveBulkMembers = (client: Client): void => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('fake guild did not land in the cache');
+    const profiles = [
+      { id: OWNER, username: 'owner', displayName: 'Owner' },
+      { id: MEMBER, username: 'samwise', displayName: MEMBER_NAME },
+      { id: MEMBER2, username: 'sam2', displayName: 'Sam the second' },
+    ];
+    guild.members.list = async () => {
+      const members = profiles.map(
+        (profile) =>
+          ({
+            id: profile.id,
+            user: { id: profile.id, username: profile.username },
+            displayName: profile.displayName,
+            nickname: null,
+            roles: { cache: new Collection() },
+            joinedAt: new Date('2024-05-01T00:00:00.000Z'),
+          }) as unknown as GuildMember,
+      );
+      return new Collection(members.map((member) => [member.id, member] as const));
+    };
+  };
+
+  const buildBulkApp = (
+    client: Client,
+    discord: FakeDiscord,
+    logger: DashboardAppDeps['logger'] = deps.logger,
+  ): FastifyInstance =>
+    createServer({
+      deps: { ...deps, logger },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+
+  const seedBulkDiscord = (discord: FakeDiscord): void => {
+    discord.defineRole({ id: LOW_ROLE, name: ROLE_NAME, position: 4 });
+    discord.defineRole({ id: OTHER_ROLE, name: 'ushers', position: 3 });
+    discord.defineMember(MEMBER, []);
+    discord.defineMember(MEMBER2, []);
+    discord.defineMember(MEMBER3, []);
+    discord.defineMember(OWNER, [], true);
+  };
+
+  const seedBulkScope = (): void => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    guildRepo.setDryRun(scope, false, clock);
+    authzRepo.grantAccountCapability(scope, {
+      accountId: ACCOUNT,
+      capability: 'roles.mutate',
+      grantedBy: 'test',
+      now: clock,
+    });
+    roleRepo.allowlistRole(scope, LOW_ROLE);
+    roleRepo.allowlistRole(scope, OTHER_ROLE);
+  };
+
+  const bulkCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+      }),
+    });
+
+  const bulkText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const previewArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    action: 'add',
+    role: LOW_ROLE,
+    members: [MEMBER, MEMBER2],
+    idempotencyKey: 'bulk-preview-k1',
+    ...over,
+  });
+
+  const extractToken = (text: string): string => {
+    const match = /confirmToken "([0-9a-f]{32})"/.exec(text);
+    if (match?.[1] === undefined) throw new Error('preview answer carried no token');
+    return match[1];
+  };
+
+  const extractJobId = (text: string): number => {
+    const match = /job (\d+) is applying/.exec(text);
+    if (match?.[1] === undefined) throw new Error('confirm answer carried no job id');
+    return Number(match[1]);
+  };
+
+  /**
+   * Drives the durable job the way the per-guild worker does: the handler
+   * from `runtime/guild.ts`'s registration, over the real MCP gateway and
+   * the test's fakes, with a capturing logger for the per-member outcomes.
+   */
+  const runBulkJob = async (
+    client: Client,
+    discord: FakeDiscord,
+    input: { previewId: string; actionId: string; jobId: number; cursor?: string | null },
+  ): Promise<{
+    readonly lines: string[];
+    readonly saved: (string | null)[];
+    readonly logged: { readonly fields: unknown; readonly msg: string }[];
+  }> => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    const lines: string[] = [];
+    const saved: (string | null)[] = [];
+    const logged: { readonly fields: unknown; readonly msg: string }[] = [];
+    const logger = {
+      info: (fields: unknown, message: string) => {
+        lines.push(message);
+        logged.push({ fields, msg: message });
+      },
+      warn: (fields: unknown, message: string) => {
+        lines.push(message);
+        logged.push({ fields, msg: message });
+      },
+      error: (fields: unknown, message: string) => {
+        lines.push(message);
+        logged.push({ fields, msg: message });
+      },
+    } as never;
+    await mcpBulkRoleHandler({
+      scope,
+      logger,
+      now: () => clock,
+      gateway: mcpRoleGatewayFor(
+        {
+          authz: authzStoreFor(scope),
+          rateLimiter: new RateLimiter(1000),
+          logger,
+          now: () => clock,
+        },
+        client,
+        discord,
+        scope,
+      ),
+      authorizeAccount: (accountId) => {
+        const result = authorize(
+          {
+            store: authzStoreFor(scope),
+            guildId: GUILD_A,
+            actor: { type: 'dashboard', id: accountId, roleIds: [] },
+          },
+          'roles.mutate',
+        );
+        return result.ok ? result.value : undefined;
+      },
+      findPreview: (previewId) => mcpBulkRepo.findPreviewById(scope, previewId),
+    }).run(
+      {
+        guildId: GID,
+        previewId: input.previewId,
+        actionId: input.actionId,
+        accountId: ACCOUNT,
+      },
+      {
+        jobId: input.jobId,
+        attempts: 1,
+        cursor: input.cursor ?? null,
+        saveCursor: (cursor) => {
+          saved.push(cursor);
+        },
+      },
+    );
+    return { lines, saved, logged };
+  };
+
+  const storedTrail = (): string => {
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 100 });
+    const actions = t.raw
+      .prepare('SELECT action_id, kind, args_hash, token_id FROM mcp_actions')
+      .all();
+    const jobs = t.raw.prepare('SELECT kind, payload FROM jobs').all();
+    return JSON.stringify({ trail, actions, jobs });
+  };
+
+  it('a preview stores the row and renders count, names, token and expiry, with no ledger row', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const preview = bulkText(
+        (await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body,
+      );
+      expect(preview.isError).not.toBe(true);
+      expect(preview.text).toContain('2 members');
+      expect(preview.text).toContain(MEMBER_NAME);
+      expect(preview.text).toContain('Sam the second');
+      const token = extractToken(preview.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      expect(stored).toMatchObject({
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        memberIds: [MEMBER, MEMBER2],
+      });
+      expect(stored?.expiresAt).toBeGreaterThan(clock);
+      expect(stored?.consumedAt).toBeUndefined();
+      // A preview writes no mcp_actions row.
+      expect(mcpActionsRepo.findAction(scope, 'bulk-preview-k1')).toBeUndefined();
+      // The token reaches neither an audit row nor any other stored row.
+      expect(storedTrail()).not.toContain(token);
+      expect(storedTrail()).not.toContain(MEMBER_NAME);
+      expect(storedTrail()).not.toContain(ROLE_NAME);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a confirm consumes the preview, claims role.bulk and enqueues mcp.bulk_role', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      expect(confirmed.text).toContain('get_job');
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      expect(stored?.consumedAt).toBe(clock);
+      expect(stored?.jobId).toBe(jobId);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      expect(row).toMatchObject({ kind: 'role.bulk', capGroup: 'member_role', status: 'done' });
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      expect(confirmed.text).toContain(row.actionId);
+      // One batch row: source mcp, batch id = the action id.
+      expect(
+        t.raw
+          .prepare('SELECT batch_id, source FROM effect_batches WHERE batch_id = ?')
+          .get(row.actionId),
+      ).toEqual({ batch_id: row.actionId, source: 'mcp' });
+      // One job row: the bulk kind, carrying preview and action ids — never the token.
+      const job = jobRepo.findJob(scope, jobId);
+      expect(job?.kind).toBe('mcp.bulk_role');
+      expect(job?.payload).toContain(stored.previewId);
+      expect(job?.payload).toContain(row.actionId);
+      expect(job?.payload).not.toContain(token);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a same-key retry after a successful confirm replays with the original job id', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const scope = t.scopes.forGuild(GUILD_A);
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-retry-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      const jobId = extractJobId(confirmed.text);
+      const jobsAfterConfirm = jobRepo.listJobs(scope, {}).length;
+
+      // The answer was lost: the same confirm runs again with the same key.
+      const replayed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-retry-k1' }),
+          )
+        ).body,
+      );
+      expect(replayed.isError).not.toBe(true);
+      // The original job id, from the preview — not a fresh job.
+      expect(extractJobId(replayed.text)).toBe(jobId);
+      expect(jobRepo.listJobs(scope, {}).length).toBe(jobsAfterConfirm);
+      // Still one ledger row for the key: the retry replayed it.
+      expect(mcpActionsRepo.findAction(scope, 'bulk-retry-k1')?.status).toBe('done');
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a different key after a successful confirm is preview-used', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-used-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-used-k2' }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('already used');
+      // The failed retry claimed a row but consumed nothing new: the preview
+      // still names the first confirm's job.
+      const scope = t.scopes.forGuild(GUILD_A);
+      expect(mcpBulkRepo.findPreviewByToken(scope, token)?.jobId).toBe(
+        extractJobId(confirmed.text),
+      );
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the job applies the previewed set through the gateway, with per-member outcomes', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      const { lines } = await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.memberRoles(MEMBER2)).toContain(LOW_ROLE);
+      expect(lines.join('\n')).toContain('2/2 applied');
+      // One effect row per member, under the confirm's batch.
+      expect(
+        t.raw.prepare('SELECT user_id, role_id, action, state FROM role_effects').all(),
+      ).toEqual([
+        { user_id: MEMBER, role_id: LOW_ROLE, action: 'grant', state: 'applied' },
+        { user_id: MEMBER2, role_id: LOW_ROLE, action: 'grant', state: 'applied' },
+      ]);
+      // The audit trail names ids and the bulk reason — never a name or the token.
+      const trail = effectRepo.tailAudit(scope, { limit: 25 });
+      expect(trail.filter((entry) => entry.action === 'role.grant')).toHaveLength(2);
+      expect(storedTrail()).not.toContain(token);
+      expect(storedTrail()).not.toContain(MEMBER_NAME);
+      expect(storedTrail()).not.toContain(ROLE_NAME);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the token reaches no log line across preview, confirm and the job', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const captured: { readonly fields: unknown; readonly msg: string }[] = [];
+    const captureLogger = {
+      info(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      warn(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      error(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as never;
+    const bulkApp = buildBulkApp(client, discord, captureLogger);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      const { logged } = await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      // The token authenticates the confirm: it must reach neither the HTTP
+      // layer's log lines nor the job's, fields and messages alike — and
+      // neither do member display names, which live in responses only.
+      const dump = JSON.stringify({ captured, logged });
+      expect(dump).not.toContain(token);
+      expect(dump).not.toContain(MEMBER_NAME);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the job applies the previewed set even after membership changed', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      // After the preview: MEMBER already holds the role (a grant behind the
+      // job's back), and MEMBER3 appeared in Discord (never previewed).
+      discord.defineMember(MEMBER, [LOW_ROLE]);
+      const { lines } = await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      expect(discord.memberRoles(MEMBER2)).toContain(LOW_ROLE);
+      // MEMBER3 was never in the previewed set: the job never re-resolves.
+      expect(discord.memberRoles(MEMBER3)).not.toContain(LOW_ROLE);
+      expect(lines.join('\n')).toContain(`${MEMBER}:already-had`);
+      expect(lines.join('\n')).toContain('1/2 applied');
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a selector preview confirms and applies without re-listing at confirm', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const args = previewArgs({ members: undefined, selector: {} });
+      const preview = bulkText(
+        (await bulkCall(bulkApp, accessToken, 'bulk_role_change', args)).body,
+      );
+      expect(preview.isError).not.toBe(true);
+      // The stub listing holds three members: the selector matches all three.
+      expect(preview.text).toContain('3 members');
+      const token = extractToken(preview.text);
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: undefined,
+              selector: {},
+              confirmToken: token,
+              idempotencyKey: 'bulk-selector-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      expect(stored.memberIds).toHaveLength(3);
+      const row = mcpActionsRepo.findAction(scope, 'bulk-selector-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      // The owner is protected: refused per member, while the others apply.
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.memberRoles(MEMBER2)).toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a tampered argument at confirm is args-changed, with no new row and no job', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const jobsBefore = jobRepo.listJobs(t.scopes.forGuild(GUILD_A), {}).length;
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: [MEMBER],
+              confirmToken: token,
+              idempotencyKey: 'bulk-tampered-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('do not match the preview');
+      expect(refused.text).not.toContain(token);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-tampered-k1'),
+      ).toBeUndefined();
+      expect(jobRepo.listJobs(t.scopes.forGuild(GUILD_A), {}).length).toBe(jobsBefore);
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('an expired token is preview-expired', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const token = 'tok-expired-zz0000000000000001';
+      mcpBulkRepo.createPreview(scope, {
+        previewId: 'preview-expired',
+        token,
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: bulkArgsHashFor({ action: 'add', roleId: LOW_ROLE, members: [MEMBER] }),
+        memberIds: [MEMBER],
+        createdAt: clock - 700_000,
+        expiresAt: clock - 100_000,
+      });
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: [MEMBER],
+              confirmToken: token,
+              idempotencyKey: 'bulk-expired-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('expired');
+      expect(refused.text).not.toContain(token);
+      expect(mcpActionsRepo.findAction(scope, 'bulk-expired-k1')).toBeUndefined();
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a reused token is preview-used', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const first = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-reuse-k1' }),
+          )
+        ).body,
+      );
+      expect(first.isError).not.toBe(true);
+      const second = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-reuse-k2' }),
+          )
+        ).body,
+      );
+      expect(second.isError).toBe(true);
+      expect(second.text).toContain('already used');
+      expect(second.text).not.toContain(token);
+      // A reused token under a new key refuses before the pipeline: no ledger
+      // row, so no job and no cap weight.
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2'),
+      ).toBeUndefined();
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a confirm that loses the consume race leaves no runnable bulk job', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const previewId = mcpBulkRepo.findPreviewByToken(scope, token)?.previewId;
+      if (previewId === undefined) throw new Error('preview was not stored');
+      // The race, made deterministic: the role is out of the cache, so the
+      // confirm's live pre-check awaits a role fetch. While it waits, another
+      // confirm wins the single-use consume, and the role is back in the
+      // cache for the grant policy — this confirm passes every pre-check and
+      // only `consumePreview` inside `execute` can stop it.
+      const guild = client.guilds.cache.get(GUILD_A);
+      const role = guild?.roles.cache.get(LOW_ROLE);
+      if (guild === undefined || role === undefined) throw new Error('role not cached');
+      guild.roles.cache.delete(LOW_ROLE);
+      const fetchRoles = discord.fetchRoles.bind(discord);
+      discord.fetchRoles = async (guildId) => {
+        mcpBulkRepo.consumePreview(scope, previewId, 987654, clock);
+        guild.roles.cache.set(LOW_ROLE, role);
+        return fetchRoles(guildId);
+      };
+      const loser = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-race-k1' }),
+          )
+        ).body,
+      );
+      expect(loser.isError).toBe(true);
+      expect(loser.text).toContain('already used');
+      const bulkJobs = jobRepo
+        .listJobs(scope, { limit: 100 })
+        .filter((job) => job.kind === 'mcp.bulk_role');
+      // The loser enqueued before its consume failed; that job is cancelled,
+      // never left queued to run.
+      expect(bulkJobs.length).toBeGreaterThan(0);
+      expect(bulkJobs.filter((job) => job.state === 'queued')).toHaveLength(0);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it("another guild's token is unknown", async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scopeB = t.scopes.forGuild(GUILD_B);
+      const token = 'tok-foreign-zz0000000000000001';
+      mcpBulkRepo.createPreview(scopeB, {
+        previewId: 'preview-foreign',
+        token,
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: bulkArgsHashFor({ action: 'add', roleId: LOW_ROLE, members: [MEMBER] }),
+        memberIds: [MEMBER],
+        createdAt: clock,
+        expiresAt: clock + 600_000,
+      });
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: [MEMBER],
+              confirmToken: token,
+              idempotencyKey: 'bulk-foreign-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('No bulk preview matches that token');
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-foreign-k1'),
+      ).toBeUndefined();
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a dry-run confirm records without a job and leaves the preview usable', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      const scope = t.scopes.forGuild(GUILD_A);
+      const jobsBefore = jobRepo.listJobs(scope, {}).length;
+      const dry = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-dry-k1', dryRun: true }),
+          )
+        ).body,
+      );
+      expect(dry.isError).not.toBe(true);
+      expect(dry.text).toContain('Dry run');
+      expect(dry.text).not.toContain('get_job');
+      expect(jobRepo.listJobs(scope, {}).length).toBe(jobsBefore);
+      expect(mcpBulkRepo.findPreviewByToken(scope, token)?.consumedAt).toBeUndefined();
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('undo_action on role.bulk answers that it cannot be undone', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body)
+          .text,
+      );
+      bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-undo-k1' }),
+          )
+        ).body,
+      );
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-undo-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      const undone = bulkText(
+        (
+          await bulkCall(bulkApp, accessToken, 'undo_action', {
+            guildId: GID,
+            actionId: row.actionId,
+          })
+        ).body,
+      );
+      expect(undone.isError).toBe(true);
+      expect(undone.text).toContain('opposite bulk change');
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the cap counts members: 100 previewed plus 901 singles refuse the next grant', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpBulkRepo.createPreview(scope, {
+        previewId: 'preview-cap',
+        token: 'tok-cap-zz0000000000000001',
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: 'args-cap',
+        memberIds: Array.from({ length: 100 }, (_, i) => `6${String(10000000000000000 + i)}`),
+        createdAt: clock,
+        expiresAt: clock + 600_000,
+      });
+      expect(mcpBulkRepo.consumePreview(scope, 'preview-cap', 7, clock)).toBe(true);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'act-cap-bulk',
+        idempotencyKey: 'k-cap-bulk',
+        kind: 'role.bulk',
+        capGroup: 'member_role',
+        argsHash: 'args-cap',
+        tokenId: 'tok_testtoken',
+        now: clock,
+        dryRun: false,
+      });
+      for (let i = 0; i < 901; i += 1) {
+        mcpActionsRepo.claimAction(scope, {
+          actionId: `act-cap-single-${String(i)}`,
+          idempotencyKey: `k-cap-single-${String(i)}`,
+          kind: 'role.grant',
+          capGroup: 'member_role',
+          argsHash: `h-cap-single-${String(i)}`,
+          tokenId: 'tok_testtoken',
+          now: clock,
+          dryRun: false,
+        });
+      }
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = bulkText(
+        (
+          await bulkCall(bulkApp, accessToken, 'grant_role', {
+            guildId: GID,
+            member: MEMBER,
+            role: LOW_ROLE,
+            idempotencyKey: 'grant-capped-k1',
+          })
+        ).body,
+      );
+      // 901 singles minus the bulk row plus its 100 members = 1000: full.
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('member-role budget');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the cap still admits a grant at 899 singles plus the 100-member bulk', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpBulkRepo.createPreview(scope, {
+        previewId: 'preview-cap-ok',
+        token: 'tok-cap-ok-zz000000000001',
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: 'args-cap-ok',
+        memberIds: Array.from({ length: 100 }, (_, i) => `6${String(10000000000000000 + i)}`),
+        createdAt: clock,
+        expiresAt: clock + 600_000,
+      });
+      expect(mcpBulkRepo.consumePreview(scope, 'preview-cap-ok', 7, clock)).toBe(true);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'act-cap-ok-bulk',
+        idempotencyKey: 'k-cap-ok-bulk',
+        kind: 'role.bulk',
+        capGroup: 'member_role',
+        argsHash: 'args-cap-ok',
+        tokenId: 'tok_testtoken',
+        now: clock,
+        dryRun: false,
+      });
+      for (let i = 0; i < 899; i += 1) {
+        mcpActionsRepo.claimAction(scope, {
+          actionId: `act-cap-ok-single-${String(i)}`,
+          idempotencyKey: `k-cap-ok-single-${String(i)}`,
+          kind: 'role.grant',
+          capGroup: 'member_role',
+          argsHash: `h-cap-ok-single-${String(i)}`,
+          tokenId: 'tok_testtoken',
+          now: clock,
+          dryRun: false,
+        });
+      }
+      const accessToken = await mintToken('bananasaurs:roles');
+      const granted = bulkText(
+        (
+          await bulkCall(bulkApp, accessToken, 'grant_role', {
+            guildId: GID,
+            member: MEMBER,
+            role: LOW_ROLE,
+            idempotencyKey: 'grant-ok-k1',
+          })
+        ).body,
+      );
+      // 899 singles minus the bulk row plus its 100 members = 999: one more fits.
+      expect(granted.isError).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+});
+/**
+ * Slice 4 Task 5, daemon side: `create_role` and `edit_role` through the
+ * real stack — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * `roleAdminPortFor` over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow.
+ *
+ * What this proves: a created role always carries permissions `"0"` and
+ * lands directly below the bot; both tools enforce `roles.mutate`; the grant
+ * policy and the floor refuse before any Discord call; an edit restores
+ * through `undo_action`; a creation never does; and neither the audit row
+ * nor the tool answer carries a role name.
+ */
+describe('/mcp create_role and edit_role through the real composition', () => {
+  const BOT_ROLE = '511111111111111111';
+  const LOW_ROLE = '522222222222222222';
+  const ABOVE_ROLE = '533333333333333333';
+  const MANAGED_ROLE = '555555555555555555';
+  const DANGEROUS_ROLE = '566666666666666666';
+  const GHOST_ROLE = '599999999999999999';
+  const GID = '111111111111111111';
+  /** Distinctive role name: must reach Discord, must never reach the audit row or an answer. */
+  const SENTINEL = 'SentinelRoleNamezz9';
+  /** Distinct raw positions: discord.js computes `Role.position` from their ordering. */
+  const BOT_TOP_RAW = 10;
+
+  interface RoleDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  const seedRoleGuild = (): void => {
+    const internals = deps.client as unknown as RoleDiscordInternals;
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: MANAGED_ROLE,
+          name: 'integration',
+          position: 1,
+          permissions: '0',
+          managed: true,
+          color: 0,
+          mentionable: false,
+        },
+        {
+          id: DANGEROUS_ROLE,
+          name: 'janitors',
+          position: 2,
+          permissions: String(PermissionsBitField.Flags.ManageRoles),
+          color: 0,
+          mentionable: false,
+        },
+        {
+          id: LOW_ROLE,
+          name: 'helpers',
+          position: 4,
+          permissions: '0',
+          color: 0,
+          mentionable: false,
+        },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: BOT_TOP_RAW,
+          permissions: (
+            PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+          ).toString(),
+          managed: true,
+          color: 0,
+          mentionable: false,
+        },
+        {
+          id: ABOVE_ROLE,
+          name: 'admins',
+          position: BOT_TOP_RAW + 2,
+          permissions: '0',
+          color: 0,
+          mentionable: false,
+        },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    for (const role of [LOW_ROLE, ABOVE_ROLE, MANAGED_ROLE, DANGEROUS_ROLE]) {
+      fakeDiscord.defineRole({
+        id: role,
+        name: role === LOW_ROLE ? 'helpers' : `role-${role}`,
+        position: 2,
+        managed: role === MANAGED_ROLE,
+      });
+    }
+  };
+
+  const allow = (): void => {
+    seedRoleGuild();
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const grantMutate = (): void => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: ACCOUNT,
+      capability: 'roles.mutate',
+      grantedBy: 'test',
+      now: clock,
+    });
+  };
+
+  const roleCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  /** The bot's live top position, the same cache read the port uses. */
+  const botTop = (): number => {
+    const top = deps.client.guilds.cache.get(GUILD_A)?.members.me?.roles.highest.position;
+    if (top === undefined) throw new Error('test setup: bot top missing from cache');
+    return top;
+  };
+
+  const createArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    name: SENTINEL,
+    idempotencyKey: 'create-k1',
+    ...over,
+  });
+
+  it('creates with no permissions, below the bot, and names the allowlisting step', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const created = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(created.isError).not.toBe(true);
+    expect(created.text).toContain('no permissions');
+    expect(created.text).toContain('allowlist');
+
+    // The REST input carries no permissions key at all: the adapter always
+    // sends `'0'`, so no permission bit can travel.
+    const creates = fakeDiscord.restCalls('createRole');
+    expect(creates).toHaveLength(1);
+    expect(creates[0]?.args[0]).toBe(GUILD_A);
+    expect(creates[0]?.args[1]).toMatchObject({ name: SENTINEL });
+    expect('permissions' in (creates[0]?.args[1] as Record<string, unknown>)).toBe(false);
+
+    // The created role reads back with permissions `"0"`, positioned
+    // directly below the bot's live top — create first, move second.
+    const fetched = await fakeDiscord.fetchRoles(GUILD_A);
+    const role = fetched.find((entry) => entry.name === SENTINEL);
+    expect(role?.permissions).toBe('0');
+    expect(role?.position).toBe(botTop() - 1);
+    expect(fakeDiscord.restCalls().map((call) => call.method)).toEqual([
+      'createRole',
+      'setRolePosition',
+      'fetchRoles',
+    ]);
+
+    // The ledger row lands with no undo: a creation is not undoable.
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1');
+    expect(row?.kind).toBe('role.create');
+    expect(row?.status).toBe('done');
+    expect(row?.targetChannelId).toBeUndefined();
+    expect(row?.undoJson).toBeUndefined();
+
+    // The audit row holds ids and the outcome — never the role name.
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+    const audit = trail.find((entry) => entry.action === 'mcp.role.create');
+    expect(audit).toBeDefined();
+    expect(audit?.actorType).toBe('mcp_operator');
+    expect(JSON.stringify(audit)).not.toContain(SENTINEL);
+
+    // The MCP never inserts into `managed_roles`: the new role is not on the
+    // bot's role allowlist until an operator allowlists it.
+    expect(role?.id).toBeDefined();
+    expect(roleRepo.isAllowlisted(t.scopes.forGuild(GUILD_A), role?.id ?? '')).toBe(false);
+  });
+
+  it('replays a creation under its key with one createRole call', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const first = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(first.isError).not.toBe(true);
+    const second = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toContain('Already recorded');
+    expect(fakeDiscord.restCalls('createRole')).toHaveLength(1);
+    expect(fakeDiscord.restCalls('setRolePosition')).toHaveLength(1);
+  });
+
+  it('an account without roles.mutate is refused with no Discord call and no row', async () => {
+    allow();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const refusedCreate = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(refusedCreate.isError).toBe(true);
+    expect(refusedCreate.text).toContain('roles.mutate');
+    const refusedEdit = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-denied',
+        })
+      ).body,
+    );
+    expect(refusedEdit.isError).toBe(true);
+    expect(refusedEdit.text).toContain('roles.mutate');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-denied')).toBeUndefined();
+  });
+
+  it('editing a dangerous or above-bot role is refused with no Discord call and no row', async () => {
+    allow();
+    grantMutate();
+    // Allowlisted in `managed_roles`, so the refusal comes from the grant
+    // policy and the floor — not from the allowlist check under test below.
+    for (const roleId of [DANGEROUS_ROLE, ABOVE_ROLE, MANAGED_ROLE]) {
+      roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), roleId);
+    }
+    const roles = await mintToken('bananasaurs:roles');
+
+    const dangerous = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: DANGEROUS_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-dangerous',
+        })
+      ).body,
+    );
+    expect(dangerous.isError).toBe(true);
+    expect(dangerous.text).toContain('dangerous');
+    expect(dangerous.text).toContain(DANGEROUS_ROLE);
+
+    const above = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: ABOVE_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-above',
+        })
+      ).body,
+    );
+    expect(above.isError).toBe(true);
+    expect(above.text).toContain('above');
+
+    const managed = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: MANAGED_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-managed',
+        })
+      ).body,
+    );
+    expect(managed.isError).toBe(true);
+
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-dangerous')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-above')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-managed')).toBeUndefined();
+  });
+
+  it('an unknown role and a traversal-shaped ref are refused with no Discord call', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    const ghost = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: GHOST_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-ghost',
+        })
+      ).body,
+    );
+    expect(ghost.isError).toBe(true);
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+
+    const traversal = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: '../../etc/passwd',
+          name: 'renamed',
+          idempotencyKey: 'edit-traversal',
+        })
+      ).body,
+    );
+    expect(traversal.isError).toBe(true);
+    expect(traversal.text).not.toContain('..');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+  });
+
+  it('an edit of a role missing from managed_roles is refused with no Discord call', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+
+    // LOW_ROLE is below the bot and passes the grant policy and the floor —
+    // the only thing missing is the `managed_roles` row.
+    expect(roleRepo.isAllowlisted(t.scopes.forGuild(GUILD_A), LOW_ROLE)).toBe(false);
+    const refused = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-unlisted',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain(LOW_ROLE);
+    expect(refused.text).toContain('allowlist');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-unlisted')).toBeUndefined();
+  });
+
+  it('edits by name, restores through undo_action, and marks the original', async () => {
+    allow();
+    grantMutate();
+    roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), LOW_ROLE);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const edited = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: 'helpers',
+          color: 0x12_34_56,
+          mentionable: true,
+          idempotencyKey: 'edit-k1',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    expect(edited.text).toContain(LOW_ROLE);
+
+    // Only the given fields moved in FakeDiscord; the row holds the role id
+    // and exactly those fields' previous values.
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    // The PATCH carries only the given fields: no name was asked for, so none is sent.
+    const patch = fakeDiscord.restCalls('editRole')[0]?.args[2] as Record<string, unknown>;
+    expect(patch).toEqual({ color: 0x12_34_56, mentionable: true });
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-k1');
+    expect(row?.kind).toBe('role.edit');
+    expect(JSON.parse(row?.undoJson ?? '')).toEqual({
+      roleId: LOW_ROLE,
+      previous: { color: 0, mentionable: false },
+    });
+    const editAudit = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+      .find((entry) => entry.action === 'mcp.role.edit');
+    expect(editAudit).toBeDefined();
+    expect(JSON.stringify(editAudit)).not.toContain('helpers');
+
+    const undone = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row?.actionId ?? '' })).body,
+    );
+    expect(undone.isError).not.toBe(true);
+    expect(undone.text).toContain('role.edit');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(2);
+    expect(fakeDiscord.roleDetails(LOW_ROLE)).toMatchObject({ color: 0, mentionable: false });
+
+    const reread = mcpActionsRepo.findActionById(t.scopes.forGuild(GUILD_A), row?.actionId ?? '');
+    expect(reread?.undoneByActionId).toBeDefined();
+
+    const again = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row?.actionId ?? '' })).body,
+    );
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain('already undone');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(2);
+  });
+
+  it('a failed move after creation fails naming the created role id', async () => {
+    allow();
+    grantMutate();
+    const roles = await mintToken('bananasaurs:roles');
+    fakeDiscord.failNext(
+      'setRolePosition',
+      new DiscordApiError(500, undefined, 'discord is on fire'),
+    );
+    const failed = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(failed.isError).toBe(true);
+    expect(fakeDiscord.restCalls('createRole')).toHaveLength(1);
+    // The role exists in Discord now; the failure text must name it so an operator can find it.
+    const newRoles = (await fakeDiscord.fetchRoles(GUILD_A)).filter(
+      (role) => role.permissions === '0' && role.id !== GUILD_A,
+    );
+    const createdId = newRoles.map((role) => role.id).find((id) => failed.text.includes(id));
+    expect(createdId).toBeDefined();
+  });
+
+  it('a creation is not undoable', async () => {
+    allow();
+    grantMutate();
+    // Both scopes: a roles-only token would refuse on the kind's scope
+    // before ever reaching the not-undoable answer under test.
+    const roles = await mintToken('bananasaurs:send bananasaurs:roles');
+
+    const created = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(created.isError).not.toBe(true);
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1');
+    expect(row).toBeDefined();
+
+    const undone = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row?.actionId ?? '' })).body,
+    );
+    expect(undone.isError).toBe(true);
+    expect(undone.text).toContain('cannot be undone');
+    expect(undone.text).toContain('role.create');
+  });
+
+  it('an undo of an edit whose role left managed_roles since is refused', async () => {
+    allow();
+    grantMutate();
+    const scope = t.scopes.forGuild(GUILD_A);
+    roleRepo.allowlistRole(scope, LOW_ROLE);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const edited = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          color: 0x12_34_56,
+          idempotencyKey: 'edit-unlisted-undo',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const row = mcpActionsRepo.findAction(scope, 'edit-unlisted-undo');
+    if (row === undefined) throw new Error('edit left no ledger row');
+
+    // An operator removes the role from `managed_roles` after the edit.
+    // No `role_effects` row references it (edits never claim one), so the
+    // delete is clean.
+    t.raw
+      .prepare('DELETE FROM managed_roles WHERE guild_id = ? AND role_id = ?')
+      .run(String(GUILD_A), LOW_ROLE);
+    expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(false);
+
+    const refused = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('allowlist');
+    expect(refused.text).toContain(LOW_ROLE);
+    // The stored values were not restored: only the forward edit ran.
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+  });
+
+  it('a role.edit undo refused by the floor speaks of the role, never a channel', async () => {
+    allow();
+    grantMutate();
+    const scope = t.scopes.forGuild(GUILD_A);
+    roleRepo.allowlistRole(scope, LOW_ROLE);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const edited = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          color: 0x12_34_56,
+          idempotencyKey: 'edit-floor-undo',
+        })
+      ).body,
+    );
+    expect(edited.isError).not.toBe(true);
+    const row = mcpActionsRepo.findAction(scope, 'edit-floor-undo');
+    if (row === undefined) throw new Error('edit left no ledger row');
+
+    // Between calls the role gains a dangerous permission in the live cache.
+    const cached = deps.client.guilds.cache.get(GUILD_A)?.roles.cache.get(LOW_ROLE) as unknown as {
+      permissions: PermissionsBitField;
+    };
+    if (cached === undefined) throw new Error('test setup: role missing from cache');
+    cached.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+
+    const refused = callText(
+      (await roleCall(roles, 'undo_action', { guildId: GID, actionId: row.actionId })).body,
+    );
+    expect(refused.isError).toBe(true);
+    // `role-unavailable`: the role's cause and the grant policy — never the
+    // channel/send-scope words `target-unavailable` carries.
+    expect(refused.text).toContain('dangerous permission');
+    expect(refused.text).toContain('grant policy');
+    expect(refused.text).not.toContain('channel or thread');
+    expect(fakeDiscord.restCalls('editRole')).toHaveLength(1);
+    expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
+  });
+
+  it('the kill switch refuses both tools with no Discord call and no row', async () => {
+    allow();
+    grantMutate();
+    roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), LOW_ROLE);
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD_A), true, clock);
+    const roles = await mintToken('bananasaurs:roles');
+
+    const refusedCreate = callText((await roleCall(roles, 'create_role', createArgs())).body);
+    expect(refusedCreate.isError).toBe(true);
+    expect(refusedCreate.text).toContain('kill switch');
+    const refusedEdit = callText(
+      (
+        await roleCall(roles, 'edit_role', {
+          guildId: GID,
+          role: LOW_ROLE,
+          name: 'renamed',
+          idempotencyKey: 'edit-killed',
+        })
+      ).body,
+    );
+    expect(refusedEdit.isError).toBe(true);
+    expect(refusedEdit.text).toContain('kill switch');
+    expect(fakeDiscord.restCalls()).toHaveLength(0);
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'create-k1')).toBeUndefined();
+    expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'edit-killed')).toBeUndefined();
+  });
+});
+/**
+ * Slice 4 Task 6b, daemon side: `list_panels` / `get_panel` reads and
+ * `create_panel` / `edit_panel` / `delete_panel` writes through the real
+ * stack — Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * panels port over the real repositories and the fake Discord port — with
+ * tokens minted through the real OAuth flow.
+ *
+ * What this proves: every option role passes the grant policy and the floor
+ * before any write (a dangerous role refuses with no role created, no
+ * `managed_roles` row, no panel row and no Discord call); a `{create}`
+ * option mints a zero-permission role below the bot, allowlists it and
+ * posts the panel; `roles.mutate` gates all three writes; an edit adds an
+ * option and republishes while a channel move refuses; a reorder names the
+ * kept options only with added ones last, and naming an added id refuses as
+ * a bad reorder; allowlist grant mode refuses `{create}` options before any
+ * Discord call; a failure after a mint names every minted role id; a delete
+ * removes the message and the rows but keeps the roles; panel messages stay
+ * protected from `edit_message` / `delete_message`; a replay posts once; and
+ * the kill switch refuses all three writes.
+ */
+describe('/mcp panel tools through the real composition', () => {
+  const CHANNEL = '444444444444444444';
+  const OTHER_CHANNEL = '455555555555555555';
+  const LOW_ROLE = '522222222222222222';
+  const LOW_ROLE_2 = '524444444444444444';
+  const LOW_ROLE_3 = '525555555555555555';
+  const HIGH_ROLE = '533333333333333333';
+  const DANGEROUS_ROLE = '566666666666666666';
+  const BOT_ROLE = '511111111111111111';
+  const OWNER = '345678901234567890';
+  const GID = '111111111111111111';
+  /** Distinctive names: must reach Discord, must never reach an audit row. */
+  const ROLE_NAME = 'helpersZZ';
+  const FRESH_NAME = 'FreshPanelRolezz9';
+  const TITLE = 'Pick a role zz9';
+
+  interface PanelDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const seedPanelGuild = (): void => {
+    const internals = deps.client as unknown as PanelDiscordInternals;
+    const mutable = deps.client as unknown as { user: unknown };
+    mutable.user = (
+      deps.client as unknown as { users: { _add: (data: object) => unknown } }
+    ).users._add({ id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: OTHER_CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'lounge',
+          position: 1,
+          permission_overwrites: [],
+        },
+      ],
+      // Distinct raw positions: discord.js computes Role.position from their
+      // ordering. The bot sits above LOW_ROLE and below HIGH_ROLE; the
+      // dangerous role sits below the bot but carries ManageRoles.
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: DANGEROUS_ROLE,
+          name: 'floor-watch',
+          position: 2,
+          permissions: String(PermissionsBitField.Flags.ManageRoles),
+        },
+        { id: LOW_ROLE, name: ROLE_NAME, position: 4, permissions: '0' },
+        { id: LOW_ROLE_2, name: 'ushers', position: 5, permissions: '0' },
+        { id: LOW_ROLE_3, name: 'greeters', position: 6, permissions: '0' },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 10,
+          permissions: botPermissions,
+          managed: true,
+        },
+        { id: HIGH_ROLE, name: 'admins', position: 12, permissions: '0' },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: OWNER, username: 'owner', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+  };
+
+  const seedPanelDiscord = (discord: FakeDiscord): void => {
+    for (const roleId of [LOW_ROLE, LOW_ROLE_2, LOW_ROLE_3, HIGH_ROLE, DANGEROUS_ROLE]) {
+      discord.defineRole({ id: roleId, name: `role-${roleId}`, position: 2 });
+    }
+  };
+
+  const allowPanel = (input: { mutate?: boolean } = {}): void => {
+    seedPanelGuild();
+    const scope = t.scopes.forGuild(GUILD_A);
+    guildRepo.setDryRun(scope, false, clock);
+    mcpSendRepo.allowChannel(scope, {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    if (input.mutate !== false) {
+      authzRepo.grantAccountCapability(scope, {
+        accountId: ACCOUNT,
+        capability: 'roles.mutate',
+        grantedBy: 'test',
+        now: clock,
+      });
+    }
+  };
+
+  /**
+   * The suite's `portsFor` with working panel publish doubles: the shared
+   * `testPortsFor` throws for `publishPanel` / `unpublishPanel` (they need a
+   * real Discord client), so this wraps it with the real core publish
+   * functions over the fake Discord port — the same calls production's ops
+   * wiring makes, against the same storage.
+   */
+  const buildPanelApp = (discord: FakeDiscord): FastifyInstance =>
+    createServer({
+      deps: {
+        ...deps,
+        portsFor: (scope: GuildScope) => {
+          const ports = testPortsFor(scope, () => clock);
+          return {
+            ...ports,
+            publishPanel: async (panelId: string): Promise<OpsPublishResult> => {
+              const panel = panelRepo.findPanel(scope, panelId);
+              if (panel === undefined) throw new Error(`no panel ${panelId}`);
+              const publishDeps = {
+                guildId: scope.guildId,
+                discord,
+                logger: silentLogger,
+                setPanelMessage: (id: string, messageId: string) =>
+                  panelRepo.setPanelMessage(scope, id, messageId, clock),
+              };
+              let action: OpsPublishResult['action'];
+              if (panel.messageId === undefined) {
+                await postManagedPanel(panel, publishDeps);
+                action = 'posted';
+              } else {
+                await editManagedPanel(panel, publishDeps);
+                action = 'edited';
+              }
+              const posted = panelRepo.findPanel(scope, panelId);
+              const seed =
+                posted?.messageId === undefined
+                  ? { seeded: 0, failed: [] as { emojiKey: string; error: string }[] }
+                  : await seedPanelReactions(posted, {
+                      guildId: scope.guildId,
+                      discord,
+                      logger: silentLogger,
+                    });
+              return {
+                action,
+                messageId: posted?.messageId,
+                reactionsSeeded: seed.seeded,
+                reactionsFailed: seed.failed,
+              };
+            },
+            unpublishPanel: async (panelId: string): Promise<void> => {
+              const panel = panelRepo.findPanel(scope, panelId);
+              if (panel === undefined) throw new Error(`no panel ${panelId}`);
+              if (panel.kind === 'managed' && panel.messageId !== undefined) {
+                try {
+                  await discord.deleteMessage(
+                    scope.guildId,
+                    { channelId: panel.channelId, messageId: panel.messageId },
+                    `panel delete ${panelId}`,
+                  );
+                } catch (err) {
+                  if (!(err instanceof DiscordApiError && err.isGone)) throw err;
+                }
+              }
+              panelRepo.deletePanel(scope, panelId);
+            },
+          };
+        },
+      },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, deps.client, discord);
+      },
+    });
+
+  const panelCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const createArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    channel: CHANNEL,
+    title: TITLE,
+    behaviour: 'toggle',
+    component: 'button',
+    options: [{ role: LOW_ROLE, label: 'Helpers' }],
+    idempotencyKey: 'panel-k1',
+    ...over,
+  });
+
+  /** The bot's live top position, the same cache read the port uses. */
+  const botTop = (): number => {
+    const top = deps.client.guilds.cache.get(GUILD_A)?.members.me?.roles.highest.position;
+    if (top === undefined) throw new Error('test setup: bot top missing from cache');
+    return top;
+  };
+
+  const panelsOf = (): string[] =>
+    panelRepo.listPanels(t.scopes.forGuild(GUILD_A)).map((panel) => panel.panelId);
+
+  /** Allowlist grant mode: a fresh role can never be on the grant allowlist. */
+  const seedAllowlistGrantMode = (): void => {
+    t.raw
+      .prepare(
+        `INSERT INTO mcp_role_policy (guild_id, grant_mode, ping_mode, updated_at) VALUES ('${GUILD_A}', 'allowlist', 'below-bot', ${String(clock)})`,
+      )
+      .run();
+  };
+
+  const managedRolesCount = (): number =>
+    (t.raw.prepare('SELECT COUNT(*) AS n FROM managed_roles').get() as { n: number }).n;
+
+  const discordRoleCount = async (discord: FakeDiscord): Promise<number> =>
+    (await discord.fetchRoles(GUILD_A)).length;
+
+  it('a dangerous role in the options is refused before any write', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({
+              options: [{ role: DANGEROUS_ROLE, label: 'Janitors' }],
+              idempotencyKey: 'panel-dangerous-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('dangerous');
+      // The refusal names the grant-policy cause, not the role: a panel
+      // names several option roles and the outcome carries no single id.
+      expect(refused.text).toContain('grant policy');
+      // Refused before any write: no role created, no `managed_roles` row,
+      // no panel row, no Discord call.
+      expect(discord.restCalls()).toHaveLength(0);
+      expect(roleRepo.isAllowlisted(t.scopes.forGuild(GUILD_A), DANGEROUS_ROLE)).toBe(false);
+      expect(panelsOf()).toEqual([]);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-dangerous-k1'),
+      ).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('a new role created through a panel option is zero-permission, allowlisted and posted', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const roles = await mintToken('bananasaurs:roles');
+      const created = callText(
+        (
+          await panelCall(
+            panelApp,
+            roles,
+            'create_panel',
+            createArgs({
+              options: [{ role: { create: { name: FRESH_NAME } }, label: 'Fresh faces' }],
+              idempotencyKey: 'panel-fresh-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      expect(created.text).toContain('Created panel mcp-');
+
+      // Zero permissions: the REST input carries no permissions key at all,
+      // and the role reads back with permissions `"0"`, directly below the bot.
+      const creates = discord.restCalls('createRole');
+      expect(creates).toHaveLength(1);
+      expect(creates[0]?.args[1]).toMatchObject({ name: FRESH_NAME });
+      expect('permissions' in (creates[0]?.args[1] as Record<string, unknown>)).toBe(false);
+      const fetched = await discord.fetchRoles(GUILD_A);
+      const role = fetched.find((entry) => entry.name === FRESH_NAME);
+      expect(role?.permissions).toBe('0');
+      expect(role?.position).toBe(botTop() - 1);
+      if (role === undefined) throw new Error('panel left no created role');
+
+      // Allowlisted and used: the panel's only option names the new role, the
+      // panel is posted, and exactly one message went out.
+      expect(roleRepo.isAllowlisted(t.scopes.forGuild(GUILD_A), role.id)).toBe(true);
+      const stored = panelRepo.findPanel(t.scopes.forGuild(GUILD_A), panelsOf()[0] ?? '');
+      expect(stored?.options.map((option) => option.roleId)).toEqual([role.id]);
+      expect(stored?.messageId).toBeDefined();
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+      expect(created.text).toContain(stored?.messageId ?? 'missing-message');
+
+      // The audit trail carries ids and the outcome — never the role name or
+      // the option label.
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      expect(trail.some((entry) => entry.action === 'mcp.panel.create')).toBe(true);
+      expect(JSON.stringify(trail)).not.toContain(FRESH_NAME);
+      expect(JSON.stringify(trail)).not.toContain('Fresh faces');
+
+      // The reads see it: `list_panels` names the panel, `get_panel` shows
+      // the option's role id and label but never the role name.
+      const read = await mintToken('bananasaurs:read');
+      const listed = callText(
+        (await panelCall(panelApp, read, 'list_panels', { guildId: GID })).body,
+      );
+      expect(listed.isError).not.toBe(true);
+      expect(listed.text).toContain(stored?.panelId ?? 'missing-panel');
+      expect(listed.text).toContain(TITLE);
+      const shown = callText(
+        (await panelCall(panelApp, read, 'get_panel', { guildId: GID, panelId: stored?.panelId }))
+          .body,
+      );
+      expect(shown.isError).not.toBe(true);
+      expect(shown.text).toContain(role.id);
+      expect(shown.text).toContain('Fresh faces');
+      expect(shown.text).not.toContain(FRESH_NAME);
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('an existing below-bot role is allowlisted and used', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(false);
+      const accessToken = await mintToken('bananasaurs:roles');
+      const created = callText(
+        (await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body,
+      );
+      expect(created.isError).not.toBe(true);
+      expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(true);
+      const stored = panelRepo.findPanel(scope, panelsOf()[0] ?? '');
+      expect(stored?.options.map((option) => option.roleId)).toEqual([LOW_ROLE]);
+      expect(stored?.messageId).toBeDefined();
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('an above-bot role is refused with no Discord call and no rows', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({
+              options: [{ role: HIGH_ROLE, label: 'Admins' }],
+              idempotencyKey: 'panel-high-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('above');
+      expect(refused.text).toContain('grant policy');
+      expect(discord.restCalls()).toHaveLength(0);
+      expect(panelsOf()).toEqual([]);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-high-k1'),
+      ).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('an account without roles.mutate is refused with no Discord call and no row', async () => {
+    allowPanel({ mutate: false });
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('roles.mutate');
+      expect(discord.restCalls()).toHaveLength(0);
+      expect(panelsOf()).toEqual([]);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-k1')).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('edit_panel adds an option and republishes the message', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      const created = callText(
+        (await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+      const before = panelRepo.findPanel(scope, panelId)?.messageId;
+      expect(before).toBeDefined();
+
+      const edited = callText(
+        (
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            addOptions: [{ role: LOW_ROLE_2, label: 'Ushers' }],
+            idempotencyKey: 'panel-edit-k1',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain(`Edited panel ${panelId}`);
+      // Republished in place: one send, one edit, same message id, both roles.
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+      expect(discord.restCalls('editMessage')).toHaveLength(1);
+      const stored = panelRepo.findPanel(scope, panelId);
+      expect(stored?.messageId).toBe(before);
+      expect(stored?.options.map((option) => option.roleId)).toEqual([LOW_ROLE, LOW_ROLE_2]);
+      expect(roleRepo.isAllowlisted(scope, LOW_ROLE_2)).toBe(true);
+      const row = mcpActionsRepo.findAction(scope, 'panel-edit-k1');
+      expect(row).toMatchObject({ kind: 'panel.edit', capGroup: 'structure', status: 'done' });
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('edit_panel adds a role and reorders the kept options, with the added one last', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      const created = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({
+              options: [
+                { role: LOW_ROLE, label: 'Helpers' },
+                { role: LOW_ROLE_2, label: 'Ushers' },
+              ],
+              idempotencyKey: 'panel-reorder-create',
+            }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+
+      // A reorder names the kept options only; the added role lands last.
+      const edited = callText(
+        (
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            addOptions: [{ role: LOW_ROLE_3, label: 'Greeters' }],
+            reorder: [LOW_ROLE_2, LOW_ROLE],
+            idempotencyKey: 'panel-reorder-edit',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain(`Edited panel ${panelId}`);
+      const stored = panelRepo.findPanel(scope, panelId);
+      expect(stored?.options.map((option) => option.roleId)).toEqual([
+        LOW_ROLE_2,
+        LOW_ROLE,
+        LOW_ROLE_3,
+      ]);
+      // Republished in place: one send, one edit.
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+      expect(discord.restCalls('editMessage')).toHaveLength(1);
+      const row = mcpActionsRepo.findAction(scope, 'panel-reorder-edit');
+      expect(row).toMatchObject({ kind: 'panel.edit', capGroup: 'structure', status: 'done' });
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('a reorder naming an added id is refused as a bad reorder', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+      const optionsBefore = panelRepo
+        .findPanel(scope, panelId)
+        ?.options.map((option) => option.roleId);
+      discord.resetCalls();
+
+      const refused = callText(
+        (
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            addOptions: [{ role: LOW_ROLE_2, label: 'Ushers' }],
+            reorder: [LOW_ROLE, LOW_ROLE_2],
+            idempotencyKey: 'panel-bad-reorder-k1',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      // The reorder refusal names the panel's current options (after
+      // removals) and says added options go at the end.
+      expect(refused.text).toContain('current options');
+      expect(refused.text).toContain('after removals');
+      expect(refused.text).toContain('go at the end');
+      // Refused before any write: the options are unchanged, nothing posted.
+      expect(panelRepo.findPanel(scope, panelId)?.options.map((option) => option.roleId)).toEqual(
+        optionsBefore,
+      );
+      expect(discord.restCalls('sendMessage')).toHaveLength(0);
+      expect(discord.restCalls('editMessage')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-bad-reorder-k1'),
+      ).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('allowlist grant mode refuses a {create} option before any Discord call', async () => {
+    allowPanel();
+    seedAllowlistGrantMode();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const rolesBefore = await discordRoleCount(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({
+              options: [{ role: { create: { name: FRESH_NAME } }, label: 'Fresh faces' }],
+              idempotencyKey: 'panel-allowlist-create',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('allowlist');
+      expect(refused.text).toContain('create_role');
+      // Refused before any write or Discord call: no role minted, no
+      // `managed_roles` row, no panel row, no post.
+      expect(discord.restCalls('createRole')).toHaveLength(0);
+      expect(await discordRoleCount(discord)).toBe(rolesBefore);
+      expect(managedRolesCount()).toBe(0);
+      expect(panelsOf()).toEqual([]);
+      expect(discord.restCalls('sendMessage')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-allowlist-create'),
+      ).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('allowlist grant mode refuses an edit adding a {create} option with no new role', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+      const optionsBefore = panelRepo
+        .findPanel(scope, panelId)
+        ?.options.map((option) => option.roleId);
+      const rolesBefore = await discordRoleCount(discord);
+      discord.resetCalls();
+      seedAllowlistGrantMode();
+
+      const refused = callText(
+        (
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            addOptions: [{ role: { create: { name: FRESH_NAME } }, label: 'Fresh faces' }],
+            idempotencyKey: 'panel-allowlist-edit',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('allowlist');
+      expect(refused.text).toContain('create_role');
+      // No role minted, the panel unchanged, nothing republished.
+      expect(discord.restCalls('createRole')).toHaveLength(0);
+      expect(await discordRoleCount(discord)).toBe(rolesBefore);
+      expect(panelRepo.findPanel(scope, panelId)?.options.map((option) => option.roleId)).toEqual(
+        optionsBefore,
+      );
+      expect(discord.restCalls('sendMessage')).toHaveLength(0);
+      expect(discord.restCalls('editMessage')).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-allowlist-edit'),
+      ).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('a second mint failing names the first minted role and leaves no panel', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    // The second `createRole` throws; the first mint already exists in
+    // Discord, so the failure must name it.
+    const innerCreate = discord.createRole.bind(discord);
+    let createCalls = 0;
+    discord.createRole = async (...args: Parameters<FakeDiscord['createRole']>) => {
+      createCalls += 1;
+      if (createCalls === 2) throw new Error('boom-second-mint');
+      return innerCreate(...args);
+    };
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const failed = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({
+              options: [
+                { role: { create: { name: 'MintAzz9' } }, label: 'First mint' },
+                { role: { create: { name: 'MintBzz9' } }, label: 'Second mint' },
+              ],
+              idempotencyKey: 'panel-mint-fail-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(failed.isError).toBe(true);
+      const minted = (await discord.fetchRoles(GUILD_A)).find((role) => role.name === 'MintAzz9');
+      expect(minted).toBeDefined();
+      expect(failed.text).toContain(minted?.id ?? 'missing-mint');
+      expect(panelsOf()).toEqual([]);
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('a publish failing after a mint names the minted role', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    discord.failNext('sendMessage', FakeDiscord.rateLimited());
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const failed = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({
+              options: [{ role: { create: { name: FRESH_NAME } }, label: 'Fresh faces' }],
+              idempotencyKey: 'panel-publish-fail-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(failed.isError).toBe(true);
+      const minted = (await discord.fetchRoles(GUILD_A)).find((role) => role.name === FRESH_NAME);
+      expect(minted).toBeDefined();
+      expect(failed.text).toContain(minted?.id ?? 'missing-mint');
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('a channel change is refused with no Discord call and no row', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+      discord.resetCalls();
+
+      const refused = callText(
+        (
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            channel: OTHER_CHANNEL,
+            title: 'Moved panel',
+            idempotencyKey: 'panel-move-k1',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('immutable');
+      expect(discord.restCalls()).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'panel-move-k1'),
+      ).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('delete_panel removes the message and the rows, and the roles stay', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+
+      const deleted = callText(
+        (
+          await panelCall(panelApp, accessToken, 'delete_panel', {
+            guildId: GID,
+            panelId,
+            idempotencyKey: 'panel-del-k1',
+          })
+        ).body,
+      );
+      expect(deleted.isError).not.toBe(true);
+      expect(deleted.text).toContain(`Deleted panel ${panelId}`);
+      expect(discord.restCalls('deleteMessage')).toHaveLength(1);
+      expect(panelRepo.findPanel(scope, panelId)).toBeUndefined();
+      expect(panelsOf()).toEqual([]);
+      // The roles stay allowlisted: deleting a panel revokes nothing.
+      expect(roleRepo.isAllowlisted(scope, LOW_ROLE)).toBe(true);
+      const row = mcpActionsRepo.findAction(scope, 'panel-del-k1');
+      expect(row).toMatchObject({ kind: 'panel.delete', capGroup: 'structure', status: 'done' });
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('edit_message and delete_message on the posted panel message stay refused', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const roles = await mintToken('bananasaurs:roles');
+      const send = await mintToken('bananasaurs:send');
+      expect(
+        callText((await panelCall(panelApp, roles, 'create_panel', createArgs())).body).isError,
+      ).not.toBe(true);
+      const messageId = panelRepo.findPanel(scope, panelsOf()[0] ?? '')?.messageId;
+      if (messageId === undefined) throw new Error('create left no posted message');
+
+      const editRefused = callText(
+        (
+          await panelCall(panelApp, send, 'edit_message', {
+            guildId: GID,
+            channelId: CHANNEL,
+            messageId,
+            content: 'hijacked panel text',
+            idempotencyKey: 'prot-edit-k1',
+          })
+        ).body,
+      );
+      expect(editRefused.isError).toBe(true);
+      expect(editRefused.text).toContain('role-panel');
+
+      const deleteRefused = callText(
+        (
+          await panelCall(panelApp, send, 'delete_message', {
+            guildId: GID,
+            channelId: CHANNEL,
+            messageId,
+            idempotencyKey: 'prot-del-k1',
+          })
+        ).body,
+      );
+      expect(deleteRefused.isError).toBe(true);
+      expect(deleteRefused.text).toContain('role-panel');
+
+      expect(discord.restCalls('editMessage')).toHaveLength(0);
+      expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('replaying the key answers the same panel with one post', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const first = callText(
+        (await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body,
+      );
+      expect(first.isError).not.toBe(true);
+      const second = callText(
+        (await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body,
+      );
+      expect(second.isError).not.toBe(true);
+      expect(second.text).toContain('Already recorded under this idempotency key');
+      // One panel row and one Discord post across both calls.
+      expect(panelsOf()).toHaveLength(1);
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+    } finally {
+      await panelApp.close();
+    }
+  });
+
+  it('the kill switch refuses all three write tools with no Discord call and no rows', async () => {
+    allowPanel();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedPanelDiscord(discord);
+    const panelApp = buildPanelApp(discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const accessToken = await mintToken('bananasaurs:roles');
+      expect(
+        callText((await panelCall(panelApp, accessToken, 'create_panel', createArgs())).body)
+          .isError,
+      ).not.toBe(true);
+      const panelId = panelsOf()[0];
+      if (panelId === undefined) throw new Error('create left no panel');
+      guildRepo.setKillswitch(scope, true, clock);
+      discord.resetCalls();
+
+      const refusedCreate = callText(
+        (
+          await panelCall(
+            panelApp,
+            accessToken,
+            'create_panel',
+            createArgs({ idempotencyKey: 'panel-ks-create' }),
+          )
+        ).body,
+      );
+      expect(refusedCreate.isError).toBe(true);
+      expect(refusedCreate.text).toContain('kill switch');
+      const refusedEdit = callText(
+        (
+          await panelCall(panelApp, accessToken, 'edit_panel', {
+            guildId: GID,
+            panelId,
+            title: 'Blocked edit',
+            idempotencyKey: 'panel-ks-edit',
+          })
+        ).body,
+      );
+      expect(refusedEdit.isError).toBe(true);
+      expect(refusedEdit.text).toContain('kill switch');
+      const refusedDelete = callText(
+        (
+          await panelCall(panelApp, accessToken, 'delete_panel', {
+            guildId: GID,
+            panelId,
+            idempotencyKey: 'panel-ks-del',
+          })
+        ).body,
+      );
+      expect(refusedDelete.isError).toBe(true);
+      expect(refusedDelete.text).toContain('kill switch');
+
+      expect(discord.restCalls()).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(scope, 'panel-ks-create')).toBeUndefined();
+      expect(mcpActionsRepo.findAction(scope, 'panel-ks-edit')).toBeUndefined();
+      expect(mcpActionsRepo.findAction(scope, 'panel-ks-del')).toBeUndefined();
+    } finally {
+      await panelApp.close();
+    }
   });
 });

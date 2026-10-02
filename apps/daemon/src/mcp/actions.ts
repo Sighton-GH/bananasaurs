@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { GuildId, Logger, McpActionAuditInput, McpActionDeps } from '@bananasaurs/core';
-import { effectRepo, guildRepo, mcpActionsRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  effectRepo,
+  guildRepo,
+  mcpActionsRepo,
+  mcpBulkRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 
 /**
  * The `McpActionDeps` factory (Task 4 Step 2): core's `runMcpAction` pipeline
@@ -73,7 +79,25 @@ export const mcpActionDepsFor = (
           ...(result.undo !== undefined ? { undoJson: JSON.stringify(result.undo) } : {}),
           now: result.now,
         }),
-      countSince: (capGroup, sinceMs) => mcpActionsRepo.countActionsSince(scope, capGroup, sinceMs),
+      /**
+       * The `member_role` cap counts members, not actions (ADR 0118 §8, no
+       * migration): the ledger holds one `role.bulk` row per consumed
+       * preview — every confirm claims exactly one row and consumes exactly
+       * one preview inside its execute — so the count subtracts those rows
+       * and adds the consumed previews' member total instead. Every other
+       * cap group counts ledger rows unchanged.
+       */
+      countSince: (capGroup, sinceMs) => {
+        if (capGroup !== 'member_role') {
+          return mcpActionsRepo.countActionsSince(scope, capGroup, sinceMs);
+        }
+        // `role.bulk` rows carry no weight of their own: a bulk change counts
+        // as the members of its consumed preview, whatever its row's state.
+        const singles = mcpActionsRepo.countActionsSince(scope, capGroup, sinceMs, {
+          excludeKind: 'role.bulk',
+        });
+        return singles + mcpBulkRepo.sumConsumedMembers(scope, sinceMs).memberTotal;
+      },
       recentSameContent: (argsHash, channelId, sinceMs) =>
         channelId === undefined
           ? false

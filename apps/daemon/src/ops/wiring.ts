@@ -499,11 +499,18 @@ export const opsPortsFor = (
   // here. Nothing reaches Discord — publishing stays publishPanel's job.
   createPanel: (definition, newlyAllowlistedRoleIds) =>
     operations.createPanel(definition, newlyAllowlistedRoleIds),
+  // Storage-only write, like `createPanel` above: `panel edit` replaces the
+  // definition, and the change goes live with `panel sync`.
+  updatePanel: (definition, newlyAllowlistedRoleIds) =>
+    operations.updatePanel(definition, newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
+  // `panel delete`: the message first, then the rows, so a Discord failure
+  // leaves the rows for a retry.
+  unpublishPanel: (panelId) => operations.unpublishPanel(panelId),
   grantAdoptionAllowance: (count) => {
     operations.grantAdoptionAllowance(count);
   },

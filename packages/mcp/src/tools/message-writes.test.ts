@@ -16,6 +16,7 @@ import type { McpThreadsPort } from './threads.js';
 import type { McpSendPort } from './send.js';
 import type { McpReadAuditPort } from '../read-audit.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
+import type { McpRoleWritesPort } from './role-writes.js';
 import {
   ADD_REACTION_TOOL_NAME,
   DELETE_MESSAGE_TOOL_NAME,
@@ -519,6 +520,12 @@ const stubThreadWrites = (): McpThreadWritesPort => ({
   setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
 });
 
+/** Required since slice 4 Task 3; never called by the message-write tools pinned here. */
+const stubRoleWrites = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
@@ -532,6 +539,7 @@ const connectPair = async (
     send: stubSend(),
     messageWrites: stubWrites(),
     threadWrites: stubThreadWrites(),
+    roleWrites: stubRoleWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
     members: stubMembers(),

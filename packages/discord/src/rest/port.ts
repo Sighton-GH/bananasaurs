@@ -19,6 +19,9 @@ import {
   type APIRole,
   type APIUser,
   type REST,
+  type RESTPatchAPIGuildRoleJSONBody,
+  type RESTPatchAPIGuildRolePositionsJSONBody,
+  type RESTPostAPIGuildRoleJSONBody,
 } from 'discord.js';
 import { DiscordApiError, unicodeEmojiChars } from '@bananasaurs/core';
 import type {
@@ -169,6 +172,57 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         if (held.has(role.id) && role.position > highest) highest = role.position;
       }
       return highest;
+    },
+
+    /**
+     * Role creation (MCP slice 4): `POST` on the guild-roles route. The
+     * `permissions: '0'` is not a caller choice — the port input has no
+     * permissions field, and this body always carries `'0'`, so no caller
+     * can create a role with a permission bit (review focus 6).
+     */
+    async createRole(guildId, input) {
+      const created = (await mapErrors(() =>
+        rest.post(Routes.guildRoles(guildId), {
+          body: {
+            name: input.name,
+            permissions: '0',
+            ...(input.color === undefined ? {} : { color: input.color }),
+            ...(input.hoist === undefined ? {} : { hoist: input.hoist }),
+            ...(input.mentionable === undefined ? {} : { mentionable: input.mentionable }),
+          } satisfies RESTPostAPIGuildRoleJSONBody,
+        }),
+      )) as APIRole;
+      return { roleId: created.id };
+    },
+
+    /**
+     * Role moves (MCP slice 4): `PATCH` on the guild-roles route with one
+     * `{ id, position }` entry — `RESTPatchAPIGuildRolePositionsJSONBody`'s
+     * array form, a single-element batch rather than a whole-list rewrite.
+     */
+    async setRolePosition(guildId, roleId, position) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildRoles(guildId), {
+          body: [{ id: roleId, position }] satisfies RESTPatchAPIGuildRolePositionsJSONBody,
+        }),
+      );
+    },
+
+    /**
+     * Role edits (MCP slice 4): `PATCH` on the guild-role route with only
+     * the fields given — the way `setThreadState` carries only its fields —
+     * so a rename never disturbs the colour and vice versa.
+     */
+    async editRole(guildId, roleId, patch) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildRole(guildId, roleId), {
+          body: {
+            ...(patch.name === undefined ? {} : { name: patch.name }),
+            ...(patch.color === undefined ? {} : { color: patch.color }),
+            ...(patch.mentionable === undefined ? {} : { mentionable: patch.mentionable }),
+          } satisfies RESTPatchAPIGuildRoleJSONBody,
+        }),
+      );
     },
 
     // --- members ---------------------------------------------------------
@@ -871,6 +925,10 @@ function toDiscordRole(role: APIRole): DiscordRole {
     // Integration-managed roles cannot be assigned at any position, which is a
     // separate refusal from hierarchy and must not be confused with it.
     managed: role.managed,
+    // The bitfield as Discord sends it (a decimal string). Slice 4's role
+    // reads need it live; absent in older recorded fixtures, which is why
+    // `DiscordRole.permissions` is optional.
+    permissions: role.permissions,
   };
 }
 

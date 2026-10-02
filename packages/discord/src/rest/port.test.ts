@@ -170,6 +170,51 @@ describe('roles', () => {
   });
 });
 
+describe('role writes (MCP slice 4)', () => {
+  const NEW_ROLE = '999999999999999998';
+
+  it('creates a role with permissions always "0" — the input has no permissions field', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: NEW_ROLE } }]);
+    await expect(
+      port.createRole(GUILD, { name: 'helpers', color: 0xff0000, hoist: true, mentionable: true }),
+    ).resolves.toEqual({ roleId: NEW_ROLE });
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/roles`);
+    expect(last(requests).body).toEqual({
+      name: 'helpers',
+      permissions: '0',
+      color: 0xff0000,
+      hoist: true,
+      mentionable: true,
+    });
+  });
+
+  it('sends only the name plus permissions "0" when no option is given', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: NEW_ROLE } }]);
+    await port.createRole(GUILD, { name: 'helpers' });
+    expect(last(requests).body).toEqual({ name: 'helpers', permissions: '0' });
+  });
+
+  it('moves a role with a one-entry positions PATCH on the guild-roles route', async () => {
+    const { port, requests } = harness();
+    await port.setRolePosition(GUILD, ROLE, 5);
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/roles`);
+    expect(last(requests).body).toEqual([{ id: ROLE, position: 5 }]);
+  });
+
+  it('patches only the role fields given', async () => {
+    const { port, requests } = harness();
+    await port.editRole(GUILD, ROLE, { name: 'renamed' });
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/roles/${ROLE}`);
+    expect(last(requests).body).toEqual({ name: 'renamed' });
+
+    await port.editRole(GUILD, ROLE, { color: 0x00ff00, mentionable: true });
+    expect(last(requests).body).toEqual({ color: 0x00ff00, mentionable: true });
+  });
+});
+
 describe('members', () => {
   it('maps a member to the port shape', async () => {
     const { port } = harness([

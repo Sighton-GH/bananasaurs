@@ -222,6 +222,30 @@ describe('countActionsSince', () => {
     expect(countActionsSince(b, 'message', 0)).toBe(1);
     expect(countActionsSince(b, 'edit', 0)).toBe(0);
   });
+
+  it('leaves an excluded kind out of the row count, whatever its state', () => {
+    claim(a, {
+      idempotencyKey: 'grant',
+      actionId: 'act-grant',
+      capGroup: 'member_role',
+      kind: 'role.grant',
+    });
+    claim(a, {
+      idempotencyKey: 'bulk',
+      actionId: 'act-bulk',
+      capGroup: 'member_role',
+      kind: 'role.bulk',
+    });
+    claim(a, {
+      idempotencyKey: 'bulk-dry',
+      actionId: 'act-bulk-dry',
+      capGroup: 'member_role',
+      kind: 'role.bulk',
+      dryRun: true,
+    });
+    expect(countActionsSince(a, 'member_role', 0)).toBe(3);
+    expect(countActionsSince(a, 'member_role', 0, { excludeKind: 'role.bulk' })).toBe(1);
+  });
 });
 
 describe('recentSameContent', () => {

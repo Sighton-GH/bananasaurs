@@ -124,6 +124,13 @@ export interface McpActionIntent {
   readonly dryRun: boolean;
   /** M5-D8 layer B: message posts only. */
   readonly duplicateContentGuard: boolean;
+  /**
+   * How many cap units this action costs (ADR 0118 §8: a bulk role change
+   * costs its member count). Absent means 1, so every existing caller keeps
+   * the old `countSince >= cap` behaviour exactly — `count + 1 > cap` is the
+   * same comparison.
+   */
+  readonly weight?: number | undefined;
 }
 
 export type McpActionRefusal =
@@ -308,9 +315,12 @@ export const runMcpAction = async <
   // is not a new action — only genuinely new actions reach this line. The
   // detail is the reset time: with a rolling window the ledger cannot name
   // the exact freeing row through this port, so it is the conservative upper
-  // bound, one full window out. It never trips the breaker (M5-D12).
+  // bound, one full window out. It never trips the breaker (M5-D12). A bulk
+  // role change carries its member count as the weight, so one confirm of 100
+  // members costs 100 units of the member_role cap (ADR 0118 §8).
+  const weight = intent.weight ?? 1;
   if (
-    deps.ledger.countSince(intent.capGroup, now - MCP_ACTION_WINDOW_MS) >=
+    deps.ledger.countSince(intent.capGroup, now - MCP_ACTION_WINDOW_MS) + weight >
     MCP_ACTION_CAPS[intent.capGroup]
   ) {
     return refuse('rate-cap', new Date(now + MCP_ACTION_WINDOW_MS).toISOString());
