@@ -5,10 +5,14 @@ import type { GuildScope } from '../scope.js';
 import * as schema from '../schema.js';
 import { upsertGuild } from './guilds.js';
 import {
+  allowRole,
+  disallowRole,
   isMcpPrivateThread,
   isRoleAllowlisted,
+  listRoleAllowlist,
   readRolePolicy,
   recordPrivateThread,
+  upsertRolePolicy,
 } from './mcp-role-policy.js';
 
 const GUILD_A = parseGuildId('111111111111111111');
@@ -91,6 +95,71 @@ describe('isRoleAllowlisted', () => {
     seedAllowlist(a, { roleId: ROLE_A, purpose: 'ping' });
     expect(isRoleAllowlisted(b, ROLE_A, 'ping')).toBe(false);
     expect(isRoleAllowlisted(a, '777777777777777777', 'ping')).toBe(false);
+  });
+});
+
+describe('upsertRolePolicy', () => {
+  it('creates the row from the default and reports before and after', () => {
+    const result = upsertRolePolicy(a, { grantMode: 'allowlist', now: 1000 });
+    expect(result).toEqual({
+      before: { grantMode: 'below-bot', pingMode: 'below-bot' },
+      after: { grantMode: 'allowlist', pingMode: 'below-bot' },
+    });
+    expect(readRolePolicy(a)).toEqual({ grantMode: 'allowlist', pingMode: 'below-bot' });
+  });
+
+  it('keeps the mode no input named, and guild B is isolated', () => {
+    upsertRolePolicy(a, { grantMode: 'allowlist', pingMode: 'allowlist', now: 1000 });
+    const result = upsertRolePolicy(a, { pingMode: 'below-bot', now: 2000 });
+    expect(result).toEqual({
+      before: { grantMode: 'allowlist', pingMode: 'allowlist' },
+      after: { grantMode: 'allowlist', pingMode: 'below-bot' },
+    });
+    expect(readRolePolicy(a)).toEqual({ grantMode: 'allowlist', pingMode: 'below-bot' });
+    // Guild B never wrote: the default, not A's modes.
+    expect(readRolePolicy(b)).toEqual({ grantMode: 'below-bot', pingMode: 'below-bot' });
+  });
+});
+
+describe('allowRole / disallowRole / listRoleAllowlist', () => {
+  it('allows once: a repeat is a no-op reported as false', () => {
+    expect(
+      allowRole(a, { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', now: 1000 }),
+    ).toBe(true);
+    expect(
+      allowRole(a, { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', now: 2000 }),
+    ).toBe(false);
+    expect(listRoleAllowlist(a)).toHaveLength(1);
+    expect(isRoleAllowlisted(a, ROLE_A, 'ping')).toBe(true);
+  });
+
+  it('is scoped by purpose: the same role allowed for both has two rows', () => {
+    allowRole(a, { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', now: 1000 });
+    allowRole(a, { roleId: ROLE_A, purpose: 'grant', addedByAccountId: 'acct-1', now: 1000 });
+    expect(listRoleAllowlist(a)).toEqual([
+      { roleId: ROLE_A, purpose: 'grant', addedByAccountId: 'acct-1', addedAt: 1000 },
+      { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', addedAt: 1000 },
+    ]);
+  });
+
+  it('disallows a row; a row that was never allowed reports false', () => {
+    expect(disallowRole(a, ROLE_A, 'ping')).toBe(false);
+    allowRole(a, { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', now: 1000 });
+    expect(disallowRole(a, ROLE_A, 'ping')).toBe(true);
+    expect(disallowRole(a, ROLE_A, 'ping')).toBe(false);
+    expect(isRoleAllowlisted(a, ROLE_A, 'ping')).toBe(false);
+    // The grant row for the same role is untouched.
+    allowRole(a, { roleId: ROLE_A, purpose: 'grant', addedByAccountId: 'acct-1', now: 1000 });
+    allowRole(a, { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', now: 1000 });
+    expect(disallowRole(a, ROLE_A, 'ping')).toBe(true);
+    expect(isRoleAllowlisted(a, ROLE_A, 'grant')).toBe(true);
+  });
+
+  it('is scoped by guild: guild B sees none of guild A rows', () => {
+    allowRole(a, { roleId: ROLE_A, purpose: 'ping', addedByAccountId: 'acct-1', now: 1000 });
+    expect(listRoleAllowlist(b)).toEqual([]);
+    expect(disallowRole(b, ROLE_A, 'ping')).toBe(false);
+    expect(isRoleAllowlisted(a, ROLE_A, 'ping')).toBe(true);
   });
 });
 

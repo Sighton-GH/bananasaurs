@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChannelType, Client, PermissionsBitField, Status, type Guild } from 'discord.js';
+import {
+  ChannelType,
+  Client,
+  PermissionsBitField,
+  Status,
+  type Guild,
+  type Role,
+} from 'discord.js';
 import { JOB_KINDS, parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import { REQUIRED_PERMISSIONS } from '../runtime/doctor.js';
@@ -370,6 +377,147 @@ describe('allowSendChannel (C2 allow-time)', () => {
     expect(sendPorts().allowSendChannel({ channelId: DM_SHAPED, accountId: 'tester' })).toBe(
       'no-such-channel',
     );
+  });
+});
+
+describe('role policy ports (slice 5 task 6, ADR 0117 §2)', () => {
+  const PLAIN = '811111111111111111';
+  const ABOVE_BOT = '822222222222222222';
+  const MANAGED = '833333333333333333';
+  const DANGEROUS = '844444444444444444';
+  const UNKNOWN = '899999999999999999';
+
+  const rolePorts = () =>
+    opsPortsFor(scope, t.scopes.instance(), operations, () => NOW, client, true);
+
+  /**
+   * The live role the daemon's `allowRole` sees. `roles.fetch` runs with
+   * `force: true` in the wiring, which would hit REST against this
+   * never-logged-in client — so each test names the role its fetch returns
+   * instead. Only the three fields the wiring reads are shaped here.
+   */
+  const fakeRole = (id: string, over: { managed?: boolean; bitfield?: bigint } = {}) =>
+    ({
+      id,
+      managed: over.managed ?? false,
+      permissions: { bitfield: over.bitfield ?? 0n },
+    }) as unknown as Role;
+
+  const stubFetch = (role: Role | null): void => {
+    const guild = client.guilds.cache.get(GUILD);
+    expect(guild, 'fake guild in cache').toBeDefined();
+    if (guild === undefined) throw new Error('fake guild missing from cache');
+    vi.spyOn(guild.roles, 'fetch').mockImplementation(
+      () => Promise.resolve(role) as unknown as ReturnType<typeof guild.roles.fetch>,
+    );
+  };
+
+  it('reads the default policy as both below-bot', () => {
+    expect(rolePorts().readRolePolicy()).toEqual({ grantMode: 'below-bot', pingMode: 'below-bot' });
+    expect(rolePorts().listRoleAllowlist()).toEqual([]);
+  });
+
+  it('a policy write keeps the mode no input named', () => {
+    const ports = rolePorts();
+    expect(ports.setRolePolicy({ grantMode: 'allowlist' })).toEqual({
+      before: { grantMode: 'below-bot', pingMode: 'below-bot' },
+      after: { grantMode: 'allowlist', pingMode: 'below-bot' },
+    });
+    expect(ports.setRolePolicy({ pingMode: 'allowlist' })).toEqual({
+      before: { grantMode: 'allowlist', pingMode: 'below-bot' },
+      after: { grantMode: 'allowlist', pingMode: 'allowlist' },
+    });
+    expect(ports.readRolePolicy()).toEqual({ grantMode: 'allowlist', pingMode: 'allowlist' });
+  });
+
+  it('allows a plain role and records the actor', async () => {
+    stubFetch(fakeRole(PLAIN));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: PLAIN, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('allowed');
+    // A `grant` row never satisfies `ping`: one purpose, one row.
+    expect(ports.listRoleAllowlist()).toEqual([
+      { roleId: PLAIN, purpose: 'grant', addedByAccountId: 'tester', addedAt: NOW },
+    ]);
+  });
+
+  it('allows an above-bot, non-dangerous role: hierarchy is checked at use time, never here', async () => {
+    // Deliberately no position on the stub: the wiring never reads one, so
+    // there is nothing whose rank could refuse this role.
+    stubFetch(fakeRole(ABOVE_BOT));
+    await expect(
+      rolePorts().allowRole({ roleId: ABOVE_BOT, purpose: 'ping', accountId: 'tester' }),
+    ).resolves.toBe('allowed');
+  });
+
+  it('answers already-allowed on a repeat without duplicating the row', async () => {
+    stubFetch(fakeRole(PLAIN));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: PLAIN, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('allowed');
+    await expect(
+      ports.allowRole({ roleId: PLAIN, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('already-allowed');
+    expect(ports.listRoleAllowlist()).toHaveLength(1);
+  });
+
+  it('refuses an unknown role and writes no row', async () => {
+    stubFetch(null);
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: UNKNOWN, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('no-such-role');
+    expect(ports.listRoleAllowlist()).toEqual([]);
+  });
+
+  it('refuses a role the live fetch cannot reach and writes no row', async () => {
+    const guild = client.guilds.cache.get(GUILD);
+    vi.spyOn(guild!.roles, 'fetch').mockRejectedValue(new Error('rest is unreachable'));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: PLAIN, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('no-such-role');
+    expect(ports.listRoleAllowlist()).toEqual([]);
+  });
+
+  it('refuses @everyone and writes no row', async () => {
+    stubFetch(fakeRole(GUILD));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: GUILD, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('everyone');
+    expect(ports.listRoleAllowlist()).toEqual([]);
+  });
+
+  it('refuses a managed role and writes no row', async () => {
+    stubFetch(fakeRole(MANAGED, { managed: true }));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: MANAGED, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('managed');
+    expect(ports.listRoleAllowlist()).toEqual([]);
+  });
+
+  it('refuses a dangerous role live and writes no row', async () => {
+    stubFetch(fakeRole(DANGEROUS, { bitfield: PermissionsBitField.Flags.Administrator }));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: DANGEROUS, purpose: 'grant', accountId: 'tester' }),
+    ).resolves.toBe('dangerous');
+    expect(ports.listRoleAllowlist()).toEqual([]);
+  });
+
+  it('disallows a row, then answers not-allowed', async () => {
+    stubFetch(fakeRole(PLAIN));
+    const ports = rolePorts();
+    await expect(
+      ports.allowRole({ roleId: PLAIN, purpose: 'ping', accountId: 'tester' }),
+    ).resolves.toBe('allowed');
+    expect(ports.disallowRole({ roleId: PLAIN, purpose: 'ping' })).toBe('removed');
+    expect(ports.disallowRole({ roleId: PLAIN, purpose: 'ping' })).toBe('not-allowed');
+    expect(ports.listRoleAllowlist()).toEqual([]);
   });
 });
 

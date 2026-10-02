@@ -90,6 +90,7 @@ const GUILD_ROUTES = [
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
+  '/api/role-policy',
   '/api/mcp/sends',
 ] as const;
 
