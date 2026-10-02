@@ -3261,6 +3261,23 @@ const checkPanelRoles = (
   return { ok: true };
 };
 
+/**
+ * A `{create}` option in allowlist grant mode, refused before any write or
+ * Discord call. A brand-new role is never on the MCP grant allowlist (the
+ * MCP never inserts there, ADR 0118 Amendment), so minting first would refuse
+ * only after a Discord role was created and orphan it — and the port has no
+ * `deleteRole` to clean up. The whole call refuses instead.
+ */
+const allowlistCreateRefusal = (
+  scope: GuildScope,
+  options: readonly McpPanelOptionInput[] | undefined,
+): PanelRefused | undefined => {
+  const wantsCreate = (options ?? []).some((option) => typeof option.role !== 'string');
+  if (!wantsCreate) return undefined;
+  if (mcpRolePolicyRepo.readRolePolicy(scope).grantMode !== 'allowlist') return undefined;
+  return { status: 'refused', reason: 'create-not-allowed-in-allowlist-mode' };
+};
+
 const mapPanelTargetRefusal = (target: Extract<SendTarget, { ok: false }>): PanelRefused => {
   switch (target.reason) {
     case 'not-in-guild':
@@ -3396,13 +3413,20 @@ const resolvePanelOptionRef = (
  *   role and the reason. `{create}` roles mint through the shared
  *   `createRoleBelowBot` (zero permissions, directly below the bot) and join
  *   `managed_roles` with the panel row in the one `createPanel` transaction.
+ *   In allowlist grant mode `{create}` options refuse before any write or
+ *   Discord call (`create-not-allowed-in-allowlist-mode`): a fresh role
+ *   could never be on the grant allowlist, so minting would only orphan it.
+ *   Any failure after the first mint names every role id this call minted,
+ *   so the operator can delete them.
  * - `create_panel` generates `mcp-` plus 8 random hex inside `execute`, so a
  *   replay never mints a second id; the id travels back through the closure
  *   like `create_role`'s role id, never through `undo_json`. None of the
  *   three writes records an undo: the text points at `delete_panel` instead.
  * - `edit_panel` rebuilds the definition from `findPanel` plus the changes
- *   and refuses a channel change as `panel edit` does; the posted message is
- *   republished in place. `delete_panel` removes the message and the rows
+ *   and refuses a channel change as `panel edit` does; a reorder names the
+ *   kept options only, after any removals, and added options go at the end
+ *   in the order given. The posted message is republished in place.
+ * - `delete_panel` removes the message and the rows
  *   with the `panel delete` semantics (an already-gone message counts as
  *   success), and the roles stay allowlisted.
  *
@@ -3439,6 +3463,14 @@ const panelsPortFor = (
       undo?: unknown;
     }>,
     panelId: string | undefined,
+    /**
+     * Every role id this call minted before `execute` threw. A failure with a
+     * non-empty list names the ids (comma-joined in `detail`) so the
+     * operator can delete the orphaned roles — the same precedent as
+     * `create_role`'s failed move. A side effect did happen, so this answers
+     * `failed` even when closure state also names a grant or input refusal.
+     */
+    mintedRoleIds: readonly string[] = [],
   ): McpPanelOutcome => {
     switch (outcome.status) {
       case 'done': {
@@ -3486,6 +3518,15 @@ const panelsPortFor = (
         // Set on closure state beside each throw below, the way
         // `roleWritesPortFor` carries its gateway refusal: the pipeline
         // reports only the error name, not the reason and role it refused.
+        // But a call that minted roles first names every minted id instead:
+        // the operator must find and delete them.
+        if (mintedRoleIds.length > 0) {
+          return {
+            status: 'failed',
+            ...(panelId !== undefined ? { panelId } : {}),
+            detail: mintedRoleIds.join(', '),
+          };
+        }
         if (grantRefusal !== undefined) {
           return { status: 'refused', reason: grantRefusal.reason, detail: grantRefusal.roleId };
         }
@@ -3641,6 +3682,10 @@ const panelsPortFor = (
         const scope = deps.scopes.forGuild(guildId);
         const ports = deps.portsFor(scope);
         if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
+        // Allowlist grant mode never mints inline: refused before any write
+        // or Discord call, so no role is orphaned.
+        const createBlocked = allowlistCreateRefusal(scope, input.options);
+        if (createBlocked !== undefined) return createBlocked;
         // Every existing option role passes live before any write: one
         // failing role refuses the whole call with no row and no Discord
         // call. `{create}` specs name nothing yet and are checked after
@@ -3659,6 +3704,11 @@ const panelsPortFor = (
         // Through the closure like `create_role`'s role id: generated inside
         // `execute`, so a replay never mints a second id.
         let createdPanelId: string | undefined;
+        // Every role id this call minted, in mint order. `onCreated` fires
+        // between the creation and the move, so even a later failure — a
+        // second mint, the move, a post-mint check, the rows or the post —
+        // still names what now exists in Discord.
+        const mintedRoleIds: string[] = [];
         const outcome = await runMcpAction(
           mcpActionDepsFor(
             deps,
@@ -3690,15 +3740,21 @@ const panelsPortFor = (
             const createdByIndex = new Map<number, string>();
             for (const [index, option] of input.options.entries()) {
               if (typeof option.role === 'string') continue;
-              createdByIndex.set(
-                index,
-                await createRoleBelowBot(discord, guildId, botTop, {
+              const minted = await createRoleBelowBot(
+                discord,
+                guildId,
+                botTop,
+                {
                   name: option.role.create.name,
                   ...(option.role.create.color !== undefined
                     ? { color: option.role.create.color }
                     : {}),
-                }),
+                },
+                (roleId) => {
+                  mintedRoleIds.push(roleId);
+                },
               );
+              createdByIndex.set(index, minted);
             }
             const roleIds = input.options.map((option, index) => {
               if (typeof option.role === 'string') return option.role;
@@ -3752,7 +3808,7 @@ const panelsPortFor = (
               : { resultMessageId: published.messageId };
           },
         );
-        return mapPipelineOutcome(outcome, createdPanelId);
+        return mapPipelineOutcome(outcome, createdPanelId, mintedRoleIds);
       }),
     edit: (guildId, input) =>
       loggedCallAsync(deps.logger, 'panelEdit', async () => {
@@ -3763,6 +3819,10 @@ const panelsPortFor = (
         if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
         const existing = ports.findPanel(input.panelId);
         if (existing === undefined) return { status: 'refused', reason: 'unknown-panel' };
+        // Allowlist grant mode never mints inline: refused before any write
+        // or Discord call, so no role is orphaned.
+        const editCreateBlocked = allowlistCreateRefusal(scope, input.addOptions);
+        if (editCreateBlocked !== undefined) return editCreateBlocked;
         // A panel's channel is immutable: the posted message lives in it, so
         // a different channel refuses rather than orphaning the message.
         if (input.channel !== undefined) {
@@ -3801,11 +3861,16 @@ const panelsPortFor = (
           if (!removeIds.includes(resolved.roleId)) removeIds.push(resolved.roleId);
         }
         const keptIds = remainingIds.filter((roleId) => !removeIds.includes(roleId));
-        // A reorder names exactly the remaining roles plus the added
-        // existing ones: a `{create}` name cannot resolve yet, so minted
-        // roles keep their place at the end (see `execute`).
+        // A reorder names the kept options only, after any removals. Added
+        // options — existing or minted — are appended at the end in the order
+        // given (see `execute`). Added ids still resolve, so naming one is
+        // the reorder refusal rather than an unknown role — but the exact-set
+        // check below runs against the kept ids, so any added id refuses as
+        // `bad-reorder`. A `{create}` name cannot resolve yet (it names
+        // nothing live), so it refuses as an unknown role.
         const addedIds = [...addExisting];
-        const reorderBase = new Set([...keptIds, ...addedIds]);
+        const resolvable = new Set([...keptIds, ...addedIds]);
+        const keptSet = new Set(keptIds);
         let order: readonly string[] | undefined;
         if (input.reorder !== undefined) {
           const ids: string[] = [];
@@ -3814,21 +3879,21 @@ const panelsPortFor = (
               client,
               guildId,
               existing.panelId,
-              reorderBase,
+              resolvable,
               ref,
             );
             if (!resolved.ok) return resolved.outcome;
             ids.push(resolved.roleId);
           }
           const same =
-            ids.length === reorderBase.size &&
+            ids.length === keptSet.size &&
             new Set(ids).size === ids.length &&
-            ids.every((roleId) => reorderBase.has(roleId));
+            ids.every((roleId) => keptSet.has(roleId));
           if (!same) {
             return {
               status: 'refused',
               reason: 'bad-reorder',
-              detail: `panel ${existing.panelId} has ${String(reorderBase.size)} role(s): ${[...reorderBase].sort().join(', ')}`,
+              detail: `panel ${existing.panelId} has ${String(keptSet.size)} current option(s) after removals: ${[...keptSet].sort().join(', ')}; added options go at the end and are not named here`,
             };
           }
           order = ids;
@@ -3837,6 +3902,8 @@ const panelsPortFor = (
         if (!target.ok) return mapPanelTargetRefusal(target);
         const botTop = client.guilds.cache.get(guildId)?.members.me?.roles.highest.position;
         if (botTop === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
+        // Every role id this call minted, in mint order — see `create`.
+        const mintedRoleIds: string[] = [];
         const outcome = await runMcpAction(
           mcpActionDepsFor(
             deps,
@@ -3871,15 +3938,21 @@ const panelsPortFor = (
             const addOptions = input.addOptions ?? [];
             for (const [index, option] of addOptions.entries()) {
               if (typeof option.role === 'string') continue;
-              createdByIndex.set(
-                index,
-                await createRoleBelowBot(discord, guildId, botTop, {
+              const minted = await createRoleBelowBot(
+                discord,
+                guildId,
+                botTop,
+                {
                   name: option.role.create.name,
                   ...(option.role.create.color !== undefined
                     ? { color: option.role.create.color }
                     : {}),
-                }),
+                },
+                (roleId) => {
+                  mintedRoleIds.push(roleId);
+                },
               );
+              createdByIndex.set(index, minted);
             }
             const added: {
               readonly roleId: string;
@@ -3908,8 +3981,10 @@ const panelsPortFor = (
               finalIds.filter((roleId) => !createdSet.has(roleId)),
             );
             for (const roleId of createdSet) checkCreatedRole(scope, guildId, botTop, roleId);
-            // Kept options keep their ids, labels and emoji; added ones are
-            // minted, in place after the kept ones (or the reorder).
+            // Kept options keep their ids, labels and emoji, in the reorder
+            // when one was given (it names kept ids only, so the lookup
+            // below cannot miss); added ones are minted after the kept ones,
+            // in the order given.
             const taken = new Set(
               keptIds.flatMap((roleId) => {
                 const kept = byRoleId.get(roleId);
@@ -3981,7 +4056,7 @@ const panelsPortFor = (
               : { resultMessageId: published.messageId };
           },
         );
-        return mapPipelineOutcome(outcome, existing.panelId);
+        return mapPipelineOutcome(outcome, existing.panelId, mintedRoleIds);
       }),
     remove: (guildId, input) =>
       loggedCallAsync(deps.logger, 'panelDelete', async () => {

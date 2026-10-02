@@ -66,15 +66,20 @@ export const CREATE_PANEL_TOOL_DESCRIPTION =
   'a behaviour, a component, and 1 to 25 options. Each option names a role by id or name, ' +
   'or asks for a new zero-permission role with {create:{name, color?}}, plus a label and, for reaction panels, an emoji. ' +
   'Every option role must pass the MCP grant policy (below the bot, not managed, no dangerous permissions) ' +
-  'and is allowlisted on creation. A creation cannot be undone; delete it with `delete_panel`. ' +
+  'and is allowlisted on creation. In allowlist grant mode new roles cannot be created inline: ' +
+  'create them with `create_role`, have an operator put them on the grant allowlist ' +
+  '(`mcp allow-role … --purpose grant`), then name them by id. ' +
+  'A creation cannot be undone; delete it with `delete_panel`. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
   'Pass dryRun to record without creating.';
 
 export const EDIT_PANEL_TOOL_NAME = 'edit_panel';
 export const EDIT_PANEL_TOOL_DESCRIPTION =
   'Edits a managed role panel and republishes its message: title, body, behaviour, component, ' +
-  'added, removed or reordered options. Options added like in `create_panel`, removals and the new order ' +
-  'as role ids or names. A panel\u2019s channel is immutable: passing a different channel refuses. ' +
+  'added or removed options, or a new order for the kept options. A reorder names the kept options ' +
+  'only, after any removals; added options go at the end in the order given. ' +
+  'In allowlist grant mode added options cannot create roles inline (see `create_panel`). ' +
+  'A panel\u2019s channel is immutable: passing a different channel refuses. ' +
   'An edit cannot be undone. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
   'Pass dryRun to record without editing.';
@@ -198,7 +203,12 @@ export type McpPanelOutcome =
       readonly messageId?: string | undefined;
     }
   | { readonly status: 'refused'; readonly reason: McpPanelRefusal; readonly detail?: string }
-  | { readonly status: 'failed'; readonly panelId?: string | undefined };
+  | {
+      readonly status: 'failed';
+      readonly panelId?: string | undefined;
+      /** When set, the comma-joined ids of roles this call minted before failing. */
+      readonly detail?: string | undefined;
+    };
 
 export type McpPanelRefusal =
   | 'unknown-channel'
@@ -214,6 +224,7 @@ export type McpPanelRefusal =
   | 'managed-or-everyone'
   | 'dangerous'
   | 'not-allowlisted'
+  | 'create-not-allowed-in-allowlist-mode'
   | 'invalid-definition'
   | 'bad-reorder'
   | 'channel-change'
@@ -430,7 +441,10 @@ export const editPanelParams = {
   reorder: z
     .array(z.string())
     .optional()
-    .describe('Every remaining role in the desired display order, each as an id or a name.'),
+    .describe(
+      'The panel\u2019s kept options (after removals) in the desired display order, each as an id or a name. ' +
+        'Added options are not named here; they go at the end in the order given.',
+    ),
   dryRun: z.boolean().optional().describe('Record without editing: nothing reaches Discord.'),
   idempotencyKey: z
     .string()
@@ -550,6 +564,12 @@ const refusalText = (
         `Role ${detail ?? 'that role'} in guild ${guildId} is not allowlisted for MCP grants, ` +
         `so ${undone}. An operator must allow it for MCP grants first.`
       );
+    case 'create-not-allowed-in-allowlist-mode':
+      return (
+        `Guild ${guildId} is in allowlist grant mode, so new roles cannot be created inline and ` +
+        `${undone}. Create the role with \`create_role\`, have an operator put it on the grant ` +
+        'allowlist (`mcp allow-role … --purpose grant`), then name it by id.'
+      );
     case 'invalid-definition':
       return (
         `${kind === 'create' ? 'That panel definition' : `The new definition for ${panel}`} ` +
@@ -559,9 +579,10 @@ const refusalText = (
       );
     case 'bad-reorder':
       return (
-        `That order does not name exactly the panel\u2019s remaining roles in guild ${guildId}` +
+        `That order does not name exactly the panel\u2019s current options (after removals) in guild ${guildId}` +
         `${detail !== undefined ? ` (${detail})` : ''}, so ${undone}. ` +
-        'Pass every remaining role id or name once, in the desired display order.'
+        'Pass every current option role id or name once, in the desired display order. ' +
+        'Added options are not named here; they go at the end in the order given.'
       );
     case 'channel-change':
       return (
@@ -689,22 +710,34 @@ const renderOutcome = (
       };
     case 'refused':
       return renderRefused(kind, guildId, panelId, outcome);
-    case 'failed':
+    case 'failed': {
+      // A call that minted roles before failing names every minted id, so
+      // the operator can delete them — the same precedent as `create_role`'s
+      // failed move.
+      const minted =
+        outcome.detail !== undefined
+          ? `The call minted ${outcome.detail} before it failed; those roles still exist ` +
+            'in Discord, so delete them there if they are not wanted. '
+          : '';
       return {
         ok: false,
         message:
           kind === 'create'
             ? `The Discord call creating ${panelId ?? 'a panel'} in guild ${guildId} failed with an unknown result: ` +
               'the panel may or may not have been created. ' +
+              minted +
               'Check `list_panels` before retrying, and retry with the same idempotency key — never a fresh one.'
             : kind === 'edit'
               ? `The Discord call editing ${panelId ?? 'that panel'} in guild ${guildId} failed with an unknown result: ` +
-                'the panel may or may not have been changed. Check `get_panel` before retrying, ' +
+                'the panel may or may not have been changed. ' +
+                minted +
+                'Check `get_panel` before retrying, ' +
                 'and retry with the same idempotency key — never a fresh one.'
               : `The Discord call deleting ${panelId ?? 'that panel'} in guild ${guildId} failed with an unknown result: ` +
                 'the panel may or may not be gone. Check `list_panels` before retrying, ' +
                 'and retry with the same idempotency key — never a fresh one.',
       };
+    }
   }
 };
 

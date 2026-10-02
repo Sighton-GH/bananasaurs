@@ -756,6 +756,7 @@ describe('panel refusals are distinct and content-free', () => {
     'managed-or-everyone',
     'dangerous',
     'not-allowlisted',
+    'create-not-allowed-in-allowlist-mode',
     'invalid-definition',
     'bad-reorder',
     'channel-change',
@@ -807,6 +808,48 @@ describe('panel refusals are distinct and content-free', () => {
     expect(
       messageOf(await editPanelText(principalWith([GUILD_A]), port, guild, editArgs())),
     ).toContain('immutable');
+  });
+
+  it('the allowlist-mode creation refusal points at create_role and the grant allowlist', async () => {
+    const port = fakePanelsPort({
+      status: 'refused',
+      reason: 'create-not-allowed-in-allowlist-mode',
+    });
+    for (const message of [
+      messageOf(await createPanelText(principalWith([GUILD_A]), port, guild, createArgs())),
+      messageOf(await editPanelText(principalWith([GUILD_A]), port, guild, editArgs())),
+    ]) {
+      expect(message).toContain('allowlist');
+      expect(message).toContain('create_role');
+      expect(message).toContain('mcp allow-role');
+      expect(message).toContain('--purpose grant');
+      expect(message).toContain('by id');
+    }
+  });
+
+  it('a post-mint failure names every minted role id', async () => {
+    const minted = '633333333333333333, 644444444444444444';
+    const create = messageOf(
+      await createPanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'failed', panelId: PANEL, detail: minted }),
+        guild,
+        createArgs(),
+      ),
+    );
+    expect(create).toContain('633333333333333333');
+    expect(create).toContain('644444444444444444');
+    expect(create).toContain('same idempotency key');
+    const edit = messageOf(
+      await editPanelText(
+        principalWith([GUILD_A]),
+        fakePanelsPort({ status: 'failed', panelId: PANEL, detail: '633333333333333333' }),
+        guild,
+        editArgs(),
+      ),
+    );
+    expect(edit).toContain('633333333333333333');
+    expect(edit).toContain('same idempotency key');
   });
 });
 
