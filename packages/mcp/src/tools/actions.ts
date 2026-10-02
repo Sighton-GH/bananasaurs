@@ -46,8 +46,9 @@ export const UNDO_ACTION_TOOL_DESCRIPTION =
   'Undoes one reversible MCP action in this guild: an edit restores the previous text, ' +
   'a pin or unpin does the opposite, a reaction add or remove does the opposite, ' +
   'a thread-member add removes the same members, a thread archive or lock restores ' +
-  'the previous state, and a role grant removes the same role while a role removal re-grants it. ' +
-  'Posts, deletes, thread creation, forum posts and member removals ' +
+  'the previous state, a role grant removes the same role while a role removal re-grants it, ' +
+  'and a role edit restores the previous name, color and mentionable. ' +
+  'Posts, deletes, thread creation, forum posts, member removals and role creation ' +
   'cannot be undone, and neither can a role change that changed nothing. Each action undoes at most once: repeating this call answers that ' +
   'it is already undone. Takes an actionId from list_actions; the undo runs as its own ' +
   'action with key undo:<actionId>.';
@@ -214,8 +215,8 @@ const undoRefusalText = (
       return (
         `Action ${actionId} in guild ${guildId} cannot be undone` +
         `${detail !== undefined ? ` (kind ${detail})` : ''}: only edits, pins, reactions, ` +
-        'thread-member adds, thread state changes, role grants and role removals are reversible — posts, deletes, thread ' +
-        'creation, forum posts and member removals never are — a role change that changed nothing ' +
+        'thread-member adds, thread state changes, role grants, role removals and role edits are reversible — posts, deletes, thread ' +
+        'creation, forum posts, member removals and role creation never are — a role change that changed nothing ' +
         '(the member already had the role, or did not have it) records no undo, and a reversible action whose ' +
         'stored previous state is missing or unreadable cannot be restored either.'
       );

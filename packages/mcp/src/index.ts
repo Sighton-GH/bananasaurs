@@ -269,6 +269,22 @@ export {
   type RoleWriteOutcomeText,
 } from './tools/role-writes.js';
 export {
+  CREATE_ROLE_TOOL_DESCRIPTION,
+  CREATE_ROLE_TOOL_NAME,
+  createRoleParams,
+  createRoleText,
+  EDIT_ROLE_TOOL_DESCRIPTION,
+  EDIT_ROLE_TOOL_NAME,
+  editRoleParams,
+  editRoleText,
+  ROLE_COLOR_MAX,
+  ROLE_NAME_MAX,
+  type McpRoleAdminOutcome,
+  type McpRoleAdminPort,
+  type McpRoleAdminRefusal,
+  type RoleAdminOutcomeText,
+} from './tools/role-admin.js';
+export {
   LIST_ACTIONS_DEFAULT_LIMIT,
   LIST_ACTIONS_LIMIT_MAX,
   LIST_ACTIONS_TOOL_DESCRIPTION,

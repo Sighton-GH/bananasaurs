@@ -69,6 +69,7 @@ import {
 } from './tools/resources.js';
 import { READ_THREAD_TOOL_NAME, type McpThreadsPort } from './tools/threads.js';
 import { LIST_UNANSWERED_TOOL_NAME, READ_DIGEST_TOOL_NAME } from './tools/digest.js';
+import type { McpRoleAdminPort } from './tools/role-admin.js';
 
 /** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
 const noopReadAudit: McpReadAuditPort = {
@@ -226,6 +227,14 @@ const stubThreads = (): McpThreadsPort => ({
 });
 
 /** One connected client/server pair over the in-memory transport. */
+/** Minimal role-admin port: this file pins registration, never the role writes themselves. */
+const stubRoleAdmin = (): McpRoleAdminPort => ({
+  createRole: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', roleId: '511111111111111111' }),
+  editRole: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', roleId: '511111111111111111' }),
+});
+
 const connectPair = async (
   principal: McpPrincipal,
   send: McpSendPort = stubSend(),
@@ -249,6 +258,7 @@ const connectPair = async (
     messageWrites: stubMessageWrites(),
     roleWrites: stubRoleWrites(),
     actions: stubActions(),
+    roleAdmin: stubRoleAdmin(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -436,14 +446,21 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ADR 0114) a roles-only principal sees the two role tools and no resources', async () => {
-    // Slice 4 registers `grant_role` / `remove_role` under the roles scope,
-    // so a token carrying only `bananasaurs:roles` sees exactly those two —
-    // never the read/send tools and never the overview resource.
+  it('(ADR 0114) a roles-only principal sees the role tools and no resources', async () => {
+    // Slice 4 registers `grant_role` / `remove_role` (Task 3), `create_role` /
+    // `edit_role` (Task 5) and `undo_action` (which serves send and roles)
+    // under the roles scope — never the read/send tools and never the
+    // overview resource.
     const { client, close } = await connectPair(principalWith([GUILD], [MCP_ROLES_SCOPE]));
     try {
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name).sort()).toEqual(['grant_role', 'remove_role']);
+      expect(list.tools.map((tool) => tool.name).sort()).toEqual([
+        'create_role',
+        'edit_role',
+        'grant_role',
+        'remove_role',
+        'undo_action',
+      ]);
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();

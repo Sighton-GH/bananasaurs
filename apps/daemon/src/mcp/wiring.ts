@@ -31,6 +31,7 @@ import {
   type McpActionOutcome,
   type OpsJobRow,
   type RefusalReason,
+  type RolePingRefusal,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
 import { mcpRoleGatewayFor, roleGrantRefusal } from './roles-gateway.js';
@@ -43,7 +44,9 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import {
   createMcpServer,
   GUILD_REFUSAL_MESSAGE,
+  isSnowflake,
   MEMBER_LISTING_CAP,
+  normalizeRef,
   type McpActionView,
   type McpActionsPort,
   type McpArchiveMessage,
@@ -62,6 +65,8 @@ import {
   type McpRecordsPort,
   type McpResourcesPort,
   type McpResourceSummary,
+  type McpRoleAdminOutcome,
+  type McpRoleAdminPort,
   type McpSendPort,
   type SendEmbed,
   type McpMessageWriteOutcome,
@@ -2456,6 +2461,10 @@ const messageWritesPortFor = (
  * created lazily at the guild's standing per-minute rate. Lives in the
  * `registerMcpRoutes` closure rather than the module so every app — and every
  * test app — starts with full buckets.
+ *
+ * The rate is read once, when the guild's limiter is first built: a later
+ * change to `roleRatePerMin` applies after a daemon restart, exactly as the
+ * production gateway's limiter in `runtime/guild.ts` behaves.
  */
 const mcpRateLimiterFor = (limiters: Map<GuildId, RateLimiter>, scope: GuildScope): RateLimiter => {
   const existing = limiters.get(scope.guildId);
@@ -2801,6 +2810,308 @@ const roleWritesPortFor = (
 };
 
 /**
+ * The error name marking an authorization denial raised inside a role action's
+ * `execute`. `runMcpAction` reports a throw's error name as the failure code,
+ * so the port maps this code back to the `unauthorized` refusal — a denial
+ * that refused before any Discord call, unlike a Discord fault. The common
+ * case never reaches `execute`: the pre-check below refuses first and claims
+ * no ledger row, and only a grant revoked in between takes this path.
+ */
+class McpRoleAuthzDenied extends Error {
+  constructor() {
+    super('roles.mutate denied inside the action');
+    this.name = 'McpRoleAuthzDenied';
+  }
+}
+
+/**
+ * A live role reference (an id or a name) to a role id, against the
+ * discord.js client cache — the daemon-side half of `resolveRoleRef` in
+ * `packages/mcp` (which cannot run here: it speaks `McpGuildRole`, not live
+ * roles). A snowflake passes through when the cache holds it; anything else
+ * matches case-insensitively against names after one leading `@` is
+ * stripped, with the same normaliser. Zero matches is `unknown-role` and
+ * several matches is `ambiguous-role` with the id list the tool renders —
+ * ids only, never role names.
+ */
+const resolveRoleRefLive = (
+  client: Client,
+  guildId: GuildId,
+  ref: string,
+):
+  | { readonly ok: true; readonly roleId: string }
+  | {
+      readonly ok: false;
+      readonly outcome: Extract<McpRoleAdminOutcome, { status: 'refused' }>;
+    } => {
+  const trimmed = ref.trim();
+  const roles = client.guilds.cache.get(guildId)?.roles.cache;
+  if (isSnowflake(trimmed)) {
+    return roles?.has(trimmed) === true
+      ? { ok: true, roleId: trimmed }
+      : { ok: false, outcome: { status: 'refused', reason: 'unknown-role' } };
+  }
+  const needle = normalizeRef(trimmed, '@');
+  const matches =
+    roles === undefined
+      ? []
+      : [...roles.values()]
+          .filter((role) => role.name.toLowerCase() === needle)
+          .sort((a, b) => (a.id < b.id ? -1 : 1));
+  if (matches.length === 1 && matches[0] !== undefined) return { ok: true, roleId: matches[0].id };
+  if (matches.length === 0) {
+    return { ok: false, outcome: { status: 'refused', reason: 'unknown-role' } };
+  }
+  return {
+    ok: false,
+    outcome: {
+      status: 'refused',
+      reason: 'ambiguous-role',
+      detail: matches
+        .slice(0, 10)
+        .map((role) => role.id)
+        .join(', '),
+    },
+  };
+};
+
+/** A grant-policy refusal in words, for the role-edit undo's refusal detail. */
+const grantReasonText = (reason: RolePingRefusal): string => {
+  switch (reason) {
+    case 'above-bot':
+      return 'above the bot\u2019s highest role';
+    case 'managed-or-everyone':
+      return 'managed or @everyone';
+    case 'dangerous':
+      return 'holding a dangerous permission';
+    case 'not-allowlisted':
+      return 'not on the MCP grant allowlist';
+  }
+};
+
+/**
+ * The `McpRoleAdminPort` behind `create_role` and `edit_role` (slice 4,
+ * Task 5), field by field like `sendPortFor` above. Each method authorizes
+ * `roles.mutate` and runs the one `runMcpAction` pipeline — kind
+ * `role.create` / `role.edit`, cap group `structure` — with the
+ * duplicate-content guard off (it is a message-post rule) and the audit
+ * action defaulting to `mcp.role.create` / `mcp.role.edit`.
+ *
+ * - `create_role`: authorizes, creates the role (the port type has no
+ *   permissions field and the adapter always sends `'0'`, so no permission
+ *   bit can travel), then moves it directly below the bot's highest role —
+ *   read live from the client cache before the claim, so a guild the cache
+ *   does not know refuses with the shared refusal and claims nothing. The
+ *   new role id travels back through the port outcome, never through
+ *   `undo_json`: a creation records no undo and is not undoable. When the
+ *   move throws after the creation succeeded, the pipeline fails with an
+ *   unknown result and the port names the created role id. The MCP never
+ *   inserts into `managed_roles` — an operator allowlists the role before
+ *   the MCP can grant it (ADR 0118 Amendment).
+ * - `edit_role`: resolves the ref live, refuses an unknown role and any
+ *   role failing the grant policy or the floor before the claim, then
+ *   authorizes and edits only the given fields. The undo record holds the
+ *   role id and the previous values of exactly the changed fields, read live
+ *   from the client cache before the edit.
+ *
+ * Audit rows hold ids, the credential and the outcome — never role names
+ * (rule 4): the name lives in the Discord call and, for an edit, in the
+ * undo row's previous values, which `list_actions` never exposes. A fault
+ * leaves one allowlisted-fields error line via `loggedCallAsync` above.
+ */
+const roleAdminPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read: role resolution, the grant
+   * policy, the floor and the bot's top position all read the cache, so a
+   * stale row or a role Discord changed after allowlisting refuses before
+   * any Discord call.
+   */
+  client: Client,
+): McpRoleAdminPort => {
+  /** `roles.mutate` for this token's account, live. A denial claims nothing. */
+  const authorizedMutate = (scope: GuildScope): boolean =>
+    authorize(
+      {
+        store: authzStoreFor(scope),
+        guildId: scope.guildId,
+        actor: { type: 'dashboard', id: principal.accountId, roleIds: [] },
+      },
+      'roles.mutate',
+    ).ok;
+
+  /** The gateway's outcomes onto the role-admin outcome, ids only. */
+  const gatewayRefusal = (
+    outcome: Extract<McpActionOutcome<unknown>, { status: 'refused' }>,
+  ): McpRoleAdminOutcome => {
+    switch (outcome.reason) {
+      case 'killswitch':
+        return { status: 'refused', reason: 'killswitch' };
+      case 'breaker-open':
+        return { status: 'refused', reason: 'breaker-open' };
+      case 'rate-cap':
+        return {
+          status: 'refused',
+          reason: 'rate-cap',
+          ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+        };
+      case 'key-reused-with-other-args':
+        return { status: 'refused', reason: 'duplicate-key-different-content' };
+      case 'duplicate-content-recently':
+        return { status: 'refused', reason: 'duplicate-content-recently' };
+      case 'guild-unknown':
+      case 'target':
+        // Unreachable: every target refusal above returned before the
+        // pipeline ran, so `targetCheck` is always `true` here.
+        throw new Error(GUILD_REFUSAL_MESSAGE);
+    }
+  };
+
+  return {
+    createRole: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'roleCreate', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
+        // The bot's top position, live from the cache before the claim: the
+        // new role lands one below it. A guild the cache does not know throws
+        // the shared refusal — the same answer every cache-reading port here
+        // gives — and claims no row.
+        const botTop = client.guilds.cache.get(guildId)?.members.me?.roles.highest.position;
+        if (botTop === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
+        // The new role id, through the closure rather than the ledger: the
+        // row holds no role id by design (only an edit's undo row names one),
+        // so a replay cannot name it and points at `list_roles` instead. Set
+        // before the move, so a move failure still names what was created.
+        let createdRoleId: string | undefined;
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal),
+          {
+            kind: 'role.create',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('role.create', {
+              name: input.name,
+              color: input.color,
+              hoist: input.hoist,
+              mentionable: input.mentionable,
+            }),
+            targetChannelId: undefined,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            // Live re-check first: a grant revoked after the pre-check still
+            // refuses before any Discord call.
+            if (!authorizedMutate(scope)) throw new McpRoleAuthzDenied();
+            const created = await discord.createRole(guildId, {
+              name: input.name,
+              ...(input.color !== undefined ? { color: input.color } : {}),
+              ...(input.hoist !== undefined ? { hoist: input.hoist } : {}),
+              ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
+            });
+            createdRoleId = created.roleId;
+            await discord.setRolePosition(guildId, created.roleId, botTop - 1);
+            // No undo (ADR 0118 §6 as amended): a creation is not undoable.
+            return {};
+          },
+        );
+        switch (outcome.status) {
+          case 'done': {
+            if (createdRoleId === undefined) {
+              throw new Error('role.create completed without a role id');
+            }
+            return { status: 'done', actionId: outcome.actionId, roleId: createdRoleId };
+          }
+          case 'dry-run':
+            return { status: 'dry-run', actionId: outcome.actionId };
+          case 'replayed':
+            return { status: 'replayed', actionId: outcome.actionId };
+          case 'refused':
+            return gatewayRefusal(outcome);
+          case 'failed':
+            // The in-execute denial by its error name: it refused before any
+            // Discord call, unlike a Discord fault.
+            if (outcome.code === 'McpRoleAuthzDenied') {
+              return { status: 'refused', reason: 'unauthorized' };
+            }
+            return createdRoleId === undefined
+              ? { status: 'failed' }
+              : { status: 'failed', roleId: createdRoleId };
+        }
+      }),
+    editRole: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'roleEdit', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        if (!authorizedMutate(scope)) return { status: 'refused', reason: 'unauthorized' };
+        const resolved = resolveRoleRefLive(client, guildId, input.role);
+        if (!resolved.ok) return resolved.outcome;
+        const roleId = resolved.roleId;
+        // The grant policy and the floor, live before the claim: a role that
+        // gained a dangerous permission after allowlisting refuses here, with
+        // no Discord call.
+        const grant = roleGrantRefusal(client, scope, roleId);
+        if (grant !== true) return { status: 'refused', reason: grant, detail: roleId };
+        const live = client.guilds.cache.get(guildId)?.roles.cache.get(roleId);
+        if (live === undefined) return { status: 'refused', reason: 'unknown-role' };
+        // Only the given fields move — a rename never disturbs the color —
+        // and only their previous values are recorded for the undo.
+        const previous = {
+          ...(input.name !== undefined ? { name: live.name } : {}),
+          ...(input.color !== undefined ? { color: live.color } : {}),
+          ...(input.mentionable !== undefined ? { mentionable: live.mentionable } : {}),
+        };
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal),
+          {
+            kind: 'role.edit',
+            capGroup: 'structure',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('role.edit', {
+              role: roleId,
+              name: input.name,
+              color: input.color,
+              mentionable: input.mentionable,
+            }),
+            targetChannelId: undefined,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          async () => {
+            if (!authorizedMutate(scope)) throw new McpRoleAuthzDenied();
+            await discord.editRole(guildId, roleId, {
+              ...(input.name !== undefined ? { name: input.name } : {}),
+              ...(input.color !== undefined ? { color: input.color } : {}),
+              ...(input.mentionable !== undefined ? { mentionable: input.mentionable } : {}),
+            });
+            return { undo: { roleId, previous } };
+          },
+        );
+        switch (outcome.status) {
+          case 'done':
+            return { status: 'done', actionId: outcome.actionId, roleId };
+          case 'dry-run':
+            return { status: 'dry-run', actionId: outcome.actionId, roleId };
+          case 'replayed':
+            return { status: 'replayed', actionId: outcome.actionId, roleId };
+          case 'refused':
+            return gatewayRefusal(outcome);
+          case 'failed':
+            if (outcome.code === 'McpRoleAuthzDenied') {
+              return { status: 'refused', reason: 'unauthorized' };
+            }
+            return { status: 'failed', roleId };
+        }
+      }),
+  };
+};
+
+/**
  * The undo_json shapes, exactly as the ports above write them (slice 3,
  * Tasks 5–6): an edit stores the previous `{content, embeds}`, a pin stores
  * `{op:'unpin'}` and an unpin `{op:'pin'}`, a reaction add stores
@@ -2878,6 +3189,32 @@ const undoThreadStateSchema = z.union([
  */
 const undoRoleOpSchema = z.object({ op: z.enum(['remove-role', 'add-role']) }).strict();
 
+/**
+ * A `role.edit` undo row (slice 4, Task 5): the role id plus the previous
+ * values of exactly the changed fields. Parsed strictly, like every other
+ * kind: a row missing the id or carrying an empty previous state is not
+ * undoable.
+ */
+const undoRoleEditSchema = z
+  .object({
+    roleId: z.string().min(1),
+    previous: z
+      .object({
+        name: z.string().min(1).max(100).optional(),
+        color: z.number().int().min(0).max(0xff_ff_ff).optional(),
+        mentionable: z.boolean().optional(),
+      })
+      .strict()
+      .refine(
+        (previous) =>
+          previous.name !== undefined ||
+          previous.color !== undefined ||
+          previous.mentionable !== undefined,
+        { message: 'empty previous' },
+      ),
+  })
+  .strict();
+
 /** Kinds with an inverse. Everything else cannot be undone (ADR 0116 §5). */
 const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
   'message.edit',
@@ -2889,6 +3226,7 @@ const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
   'thread.state',
   'role.grant',
   'role.remove',
+  'role.edit',
 ]);
 
 const parseUndoJson = (raw: string): unknown => {
@@ -2907,6 +3245,12 @@ interface UndoPlan {
    * or unlocks, whoever owns the thread.
    */
   readonly need?: TargetNeed;
+  /**
+   * Set for a role inverse (slice 4, Task 5): the role id the undo restores.
+   * A role kind has no channel target, so the undo path re-runs the grant
+   * policy against this id instead of resolving a send target.
+   */
+  readonly roleId?: string | undefined;
   readonly capGroup: 'edit' | 'pin_react' | 'structure';
   readonly argsHash: string;
   readonly execute: () => Promise<{ resultMessageId?: string; resultThreadId?: string }>;
@@ -3045,6 +3389,22 @@ const planUndo = (
         execute: async () => {
           await discord.setThreadState(guildId, threadId, state);
           return { resultThreadId: threadId };
+        },
+      };
+    }
+    case 'role.edit': {
+      const undo = undoRoleEditSchema.safeParse(parsed);
+      if (!undo.success) return undefined;
+      const roleId = undo.data.roleId;
+      const previous = { ...undo.data.previous };
+      return {
+        kind: 'role.edit',
+        roleId,
+        capGroup: 'structure',
+        argsHash: argsHashFor('role.edit', { role: roleId, ...previous }),
+        execute: async () => {
+          await discord.editRole(guildId, roleId, previous);
+          return {};
         },
       };
     }
@@ -3420,25 +3780,64 @@ const actionsPortFor = (
         );
       }
       const plan = planUndo(guildId, discord, row);
-      if (plan === undefined || row.targetChannelId === undefined) {
+      // A role kind has no channel target (slice 4, Task 5; Task 3 adds
+      // `role.grant` / `role.remove` alongside on its branch): it skips the
+      // send-target resolution below and re-runs the grant policy live
+      // instead. Every other kind keeps the channel path unchanged.
+      const isRoleEdit = row.kind === 'role.edit';
+      if (plan === undefined || (!isRoleEdit && row.targetChannelId === undefined)) {
         return { status: 'refused', reason: 'not-undoable', detail: row.kind };
       }
-      // The target policy again, live: a channel dropped from send scope or
-      // a permission revoked since the forward write refuses cleanly here
-      // rather than surfacing as an unknown Discord result.
-      const target = await resolveSendTarget(
-        client,
-        scope,
-        guildId,
-        row.targetChannelId,
-        plan.need ?? undoNeedFor(scope, plan.kind, row.targetChannelId),
-      );
-      if (!target.ok) {
-        return {
-          status: 'refused',
-          reason: 'target-unavailable',
-          detail: target.missing !== undefined ? `missing ${target.missing}` : target.reason,
-        };
+      // The live policy for the inverse. A role edit re-runs the grant
+      // policy against the stored role id and authorizes `roles.mutate` —
+      // a refusal names the reason in the detail.
+      let grantedByChannelId: string | undefined;
+      if (isRoleEdit) {
+        if (plan.roleId === undefined) {
+          return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+        }
+        const grant = roleGrantRefusal(client, scope, plan.roleId);
+        if (grant !== true) {
+          return {
+            status: 'refused',
+            reason: 'target-unavailable',
+            detail: `role ${plan.roleId} is ${grantReasonText(grant)}`,
+          };
+        }
+        const auth = authorize(
+          {
+            store: authzStoreFor(scope),
+            guildId: scope.guildId,
+            actor: { type: 'dashboard', id: principal.accountId, roleIds: [] },
+          },
+          'roles.mutate',
+        );
+        if (!auth.ok) {
+          return {
+            status: 'refused',
+            reason: 'target-unavailable',
+            detail: 'this account lacks roles.mutate',
+          };
+        }
+      } else {
+        // The target policy again, live: a channel dropped from send scope or
+        // a permission revoked since the forward write refuses cleanly here
+        // rather than surfacing as an unknown Discord result.
+        const target = await resolveSendTarget(
+          client,
+          scope,
+          guildId,
+          row.targetChannelId as string,
+          plan.need ?? undoNeedFor(scope, plan.kind, row.targetChannelId as string),
+        );
+        if (!target.ok) {
+          return {
+            status: 'refused',
+            reason: 'target-unavailable',
+            detail: target.missing !== undefined ? `missing ${target.missing}` : target.reason,
+          };
+        }
+        grantedByChannelId = target.derivedGrant ? target.grantId : undefined;
       }
       const undoKey = nextUndoKey(scope, row.actionId, deps.now());
       if (undoKey === undefined) {
@@ -3449,7 +3848,7 @@ const actionsPortFor = (
           deps,
           guildId,
           principal,
-          target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+          grantedByChannelId !== undefined ? { grantedByChannelId } : {},
         ),
         {
           kind: plan.kind,
@@ -3905,6 +4304,7 @@ export const registerMcpRoutes = (
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
       roleWrites: roleWritesPortFor(principal, deps, discord, client, mcpLimiters),
+      roleAdmin: roleAdminPortFor(principal, deps, discord, client),
       actions: actionsPortFor(principal, deps, discord, client, mcpLimiters),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
