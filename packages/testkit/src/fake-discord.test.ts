@@ -547,6 +547,68 @@ describe('thread writes (MCP slice 3)', () => {
   });
 });
 
+describe('role writes (MCP slice 4)', () => {
+  const UNKNOWN_ROLE = '777777777777777776';
+
+  it('createRole appears in fetchRoles with permissions "0", and keeps the display fields', async () => {
+    const { roleId } = await d.createRole(GUILD, {
+      name: 'helpers',
+      color: 0xff0000,
+      hoist: true,
+      mentionable: true,
+    });
+    await expect(d.fetchRoles(GUILD)).resolves.toContainEqual({
+      id: roleId,
+      name: 'helpers',
+      position: 1,
+      managed: false,
+      permissions: '0',
+    });
+    expect(d.roleDetails(roleId)).toEqual({ color: 0xff0000, hoist: true, mentionable: true });
+    expect(d.restCalls('createRole')).toHaveLength(1);
+  });
+
+  it('setRolePosition moves the role fetchRoles reports, and 404s an unknown role', async () => {
+    const { roleId } = await d.createRole(GUILD, { name: 'helpers' });
+    await d.setRolePosition(GUILD, roleId, 5);
+    await expect(d.fetchRoles(GUILD)).resolves.toContainEqual(
+      expect.objectContaining({ id: roleId, position: 5 }),
+    );
+    expect(d.restCalls('setRolePosition')).toHaveLength(1);
+    await expect(d.setRolePosition(GUILD, UNKNOWN_ROLE, 5)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('editRole applies only the fields given, and 404s an unknown role', async () => {
+    const { roleId } = await d.createRole(GUILD, { name: 'helpers', color: 0xff0000 });
+    await d.editRole(GUILD, roleId, { name: 'renamed' });
+    await expect(d.fetchRoles(GUILD)).resolves.toContainEqual(
+      expect.objectContaining({ id: roleId, name: 'renamed', permissions: '0' }),
+    );
+    // The rename left the colour alone.
+    expect(d.roleDetails(roleId)).toEqual({
+      color: 0xff0000,
+      hoist: undefined,
+      mentionable: undefined,
+    });
+
+    await d.editRole(GUILD, roleId, { color: 0x00ff00, mentionable: true });
+    expect(d.roleDetails(roleId)).toEqual({ color: 0x00ff00, hoist: undefined, mentionable: true });
+    // And the colour edit left the rename alone.
+    await expect(d.fetchRoles(GUILD)).resolves.toContainEqual(
+      expect.objectContaining({ id: roleId, name: 'renamed' }),
+    );
+    expect(d.restCalls('editRole')).toHaveLength(2);
+
+    await expect(d.editRole(GUILD, UNKNOWN_ROLE, { name: 'x' })).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('defineRole seeds carry no details and no permissions', () => {
+    expect(d.roleDetails(ROLE)).toBeUndefined();
+  });
+});
+
 describe('scheduled event writes (MCP slice 5)', () => {
   const START_AT = Date.parse('2026-09-25T19:00:00.000Z');
   const UNKNOWN_EVENT = '777777777777777775';

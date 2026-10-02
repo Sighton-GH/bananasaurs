@@ -80,7 +80,10 @@ export const createPreview = (
   });
 
 /** The preview holding this token in this guild, if any. Hashes the input. */
-export const findPreviewByToken = (scope: GuildScope, token: string): McpBulkPreviewRow | undefined =>
+export const findPreviewByToken = (
+  scope: GuildScope,
+  token: string,
+): McpBulkPreviewRow | undefined =>
   read(scope, (db) => {
     const row = db
       .select()
