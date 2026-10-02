@@ -148,6 +148,13 @@ import {
   type McpRoleAdminPort,
 } from './tools/role-admin.js';
 import {
+  BULK_ROLE_CHANGE_TOOL_DESCRIPTION,
+  BULK_ROLE_CHANGE_TOOL_NAME,
+  bulkRoleChangeParams,
+  bulkRoleChangeText,
+  type McpBulkRolesPort,
+} from './tools/bulk-roles.js';
+import {
   LIST_ACTIONS_TOOL_DESCRIPTION,
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_DESCRIPTION,
@@ -284,6 +291,14 @@ export interface McpServerDeps {
    * principal carries the roles scope.
    */
   readonly roleAdmin?: McpRoleAdminPort | undefined;
+  /**
+   * The daemon's per-request bulk-roles port (slice 4, Task 4): the
+   * preview → confirm handshake behind `bulk_role_change`. Optional like
+   * the role-admin port: a server without it simply does not advertise the
+   * tool, and the daemon always provides it. Registers only when the
+   * principal carries the roles scope.
+   */
+  readonly bulkRoles?: McpBulkRolesPort | undefined;
   /**
    * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
    * ledger behind `undo_action` and `list_actions`. Optional like the task
@@ -574,6 +589,38 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
           };
         }
       });
+    }
+    // Slice 4, Task 4: `bulk_role_change` under the same roles scope — the
+    // same handler shape. The text function already answers every malformed
+    // argument and every port fault, so the try/catch here only fires on
+    // something the tool layer did not foresee.
+    if (deps.bulkRoles !== undefined) {
+      const bulkRoles = deps.bulkRoles;
+      server.tool(
+        BULK_ROLE_CHANGE_TOOL_NAME,
+        BULK_ROLE_CHANGE_TOOL_DESCRIPTION,
+        bulkRoleChangeParams,
+        async (args: unknown) => {
+          try {
+            const outcome = await bulkRoleChangeText(
+              deps.principal,
+              bulkRoles,
+              deps.guild,
+              deps.members,
+              args,
+            );
+            if (!outcome.ok) {
+              return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+            }
+            return { content: [{ type: 'text' as const, text: outcome.text }] };
+          } catch {
+            return {
+              content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+              isError: true,
+            };
+          }
+        },
+      );
     }
   }
   // ADR 0114 (ADR 0101's follow-up): the task-tracking write tools register

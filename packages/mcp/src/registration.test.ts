@@ -13,6 +13,7 @@ import type { McpSendPort } from './tools/send.js';
 import type { McpThreadWritesPort } from './tools/thread-writes.js';
 import type { McpMessageWritesPort } from './tools/message-writes.js';
 import type { McpRoleWritesPort } from './tools/role-writes.js';
+import type { McpBulkRolesPort } from './tools/bulk-roles.js';
 import type { McpRoleAdminPort } from './tools/role-admin.js';
 import type { McpActionsPort } from './tools/actions.js';
 import type { McpJobsPort } from './tools/jobs.js';
@@ -98,6 +99,10 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     grant: () => Promise.resolve({ status: 'done', actionId: 'act', alreadyHad: false }),
     remove: () => Promise.resolve({ status: 'done', actionId: 'act', alreadyHad: false }),
   };
+  const bulkRoles: McpBulkRolesPort = {
+    preview: () => Promise.resolve({ status: 'done', token: 'tok', expiresAt: 1 }),
+    confirm: () => Promise.resolve({ status: 'done', actionId: 'act', jobId: 1 }),
+  };
   const roleAdmin: McpRoleAdminPort = {
     createRole: () => Promise.resolve({ status: 'done', actionId: 'act', roleId: 'role' }),
     editRole: () => Promise.resolve({ status: 'done', actionId: 'act', roleId: 'role' }),
@@ -133,6 +138,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     messageWrites,
     roleWrites,
     roleAdmin,
+    bulkRoles,
     actions,
     tasks,
     taskDetail,
@@ -216,8 +222,14 @@ const SEND_TOOLS: readonly string[] = [
   'undo_action',
 ];
 
-/** The roles-scope set: role changes (slice 4, Task 3) and role creation and editing (Task 5), sorted. */
-const ROLES_TOOLS: readonly string[] = ['create_role', 'edit_role', 'grant_role', 'remove_role'];
+/** The roles-scope set: role changes (slice 4, Task 3), bulk changes (Task 4) and role creation and editing (Task 5), sorted. */
+const ROLES_TOOLS: readonly string[] = [
+  'bulk_role_change',
+  'create_role',
+  'edit_role',
+  'grant_role',
+  'remove_role',
+];
 
 /** The tasks-scope set: main's task-tracking write tools, sorted. */
 const TASK_TOOLS: readonly string[] = [
@@ -302,7 +314,7 @@ describe('registration pins every scope subset', () => {
   it('the four scope sets have the expected sizes', () => {
     expect(READ_TOOLS).toHaveLength(27);
     expect(SEND_TOOLS).toHaveLength(14);
-    expect(ROLES_TOOLS).toHaveLength(4);
+    expect(ROLES_TOOLS).toHaveLength(5);
     expect(TASK_TOOLS).toHaveLength(25);
     // The hardcoded task list is the whole registrar: no drift between this
     // file and the tools main registers.
@@ -338,9 +350,16 @@ describe('registration pins every scope subset', () => {
     }
   });
 
-  it('roles-only sees the four role tools and undo_action, and nothing else writable', async () => {
+  it('roles-only sees the five role tools and undo_action, and nothing else writable', async () => {
     const names = await toolNamesFor(['roles']);
-    expect(names).toEqual(['create_role', 'edit_role', 'grant_role', 'remove_role', 'undo_action']);
+    expect(names).toEqual([
+      'bulk_role_change',
+      'create_role',
+      'edit_role',
+      'grant_role',
+      'remove_role',
+      'undo_action',
+    ]);
   });
 
   it('task write tools appear only with the tasks scope', async () => {

@@ -5,6 +5,7 @@ import {
   BULK_ROLE_CHANGE_TOOL_NAME,
   bulkArgsHashFor,
   bulkRoleChangeText,
+  type BulkRoleOutcomeText,
   type McpBulkConfirmOutcome,
   type McpBulkConfirmRefusal,
   type McpBulkPreviewOutcome,
@@ -118,13 +119,13 @@ const fakeBulkPort = (input: {
   };
 };
 
-const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): string => {
+const textOf = (outcome: BulkRoleOutcomeText): string => {
   expect(outcome.ok).toBe(true);
   if (!outcome.ok) throw new Error('unreachable');
   return outcome.text;
 };
 
-const messageOf = (outcome: { readonly ok: boolean; readonly message?: string }): string => {
+const messageOf = (outcome: BulkRoleOutcomeText): string => {
   expect(outcome.ok).toBe(false);
   if (outcome.ok) throw new Error('unreachable');
   return outcome.message;

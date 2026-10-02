@@ -212,6 +212,13 @@ const undoRefusalText = (
         'to undo yet. Wait for it to complete, then retry this call.'
       );
     case 'not-undoable':
+      if (detail === 'role.bulk') {
+        return (
+          `Action ${actionId} in guild ${guildId} is a bulk role change, which cannot be undone: ` +
+          'run the opposite bulk change (`bulk_role_change` with the other action over the same set) ' +
+          'to reverse it.'
+        );
+      }
       return (
         `Action ${actionId} in guild ${guildId} cannot be undone` +
         `${detail !== undefined ? ` (kind ${detail})` : ''}: only edits, pins, reactions, ` +
