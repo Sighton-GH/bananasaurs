@@ -67,7 +67,6 @@ import {
   type McpMessageWriteOutcome,
   type McpMessageWritesPort,
   type McpRoleWriteOutcome,
-  type McpRoleWriteRefusal,
   type McpRoleWritesPort,
   type McpThreadsPort,
   type McpThreadWritesPort,
@@ -2513,7 +2512,10 @@ const authorizeRoleChange = (
 
 type RolePrecheck =
   | { readonly ok: true }
-  | { readonly ok: false; readonly outcome: McpRoleWriteOutcome };
+  | {
+      readonly ok: false;
+      readonly outcome: Extract<McpRoleWriteOutcome, { readonly status: 'refused' }>;
+    };
 
 /**
  * The target and policy pre-checks for one role change, live and before the
@@ -2729,7 +2731,8 @@ const roleWritesPortFor = (
           {
             userId: parseSnowflakeId(input.memberId),
             roleId: parseSnowflakeId(input.roleId),
-            action,
+            // The gateway names a removal `revoke`, not `remove`.
+            action: action === 'grant' ? 'grant' : 'revoke',
             panelId: undefined,
             triggerRef: `mcp:${claimId}`,
             source: 'mcp',
@@ -3851,6 +3854,9 @@ export const registerMcpRoutes = (
    */
   discord: DiscordPort,
 ): void => {
+  // One rate-limiter set per app, shared across its requests: buckets are
+  // per guild source, so refilling them per request would never cap anything.
+  const mcpLimiters = new Map<GuildId, RateLimiter>();
   app.all(MCP_ROUTE_PATH, async (request, reply) => {
     // The opt-in, in the shape of `registerOAuthRoutes`' early return
     // (ruling PR-116): without a public origin there is nothing truthful to
@@ -3903,7 +3909,8 @@ export const registerMcpRoutes = (
       send: sendPortFor(principal, deps, discord, client),
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
-      actions: actionsPortFor(principal, deps, discord, client),
+      roleWrites: roleWritesPortFor(principal, deps, discord, client, mcpLimiters),
+      actions: actionsPortFor(principal, deps, discord, client, mcpLimiters),
       readAudit: readAuditPortFor(principal, deps),
       jobs: jobsPortFor(deps),
       members: membersPortFor(deps, client),
