@@ -312,6 +312,18 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'A behaviour outside direct commands must mention a role.',
     hint: 'Pick which role mentions it.',
   },
+  'mention-role-is-bot-role': {
+    title: "That is the bot's own role",
+    explanation:
+      'Discord made this role for the bot. Tagging it already reaches the bot, like tagging the bot itself.',
+    hint: 'Pick or create a different role for this desk.',
+  },
+  'mention-role-name-clash': {
+    title: 'That role is named like the bot',
+    explanation:
+      "Members could not tell this role apart from the bot's own tag in Discord's mention list.",
+    hint: 'Rename the role in Discord, or pick a different one.',
+  },
   'invalid-definition': {
     title: 'The panel is not valid',
     explanation: 'The role panel definition has a mistake.',

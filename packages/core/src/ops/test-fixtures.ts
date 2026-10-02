@@ -43,6 +43,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   createPanel: unstubbed('createPanel'),
   isManagedRole: unstubbed('isManagedRole'),
   botHighestRolePosition: () => 100,
+  botMentionIdentity: () => undefined,
   fetchGuildMembers: () => Promise.resolve([]),
   allowlistRole: () => undefined,
   listUnassignableRoles: unstubbed('listUnassignableRoles'),

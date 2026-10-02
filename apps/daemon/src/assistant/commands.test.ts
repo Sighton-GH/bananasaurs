@@ -60,6 +60,7 @@ const harness = (
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
   reportEnqueued = true,
   isTaskPost?: (messageId: string) => boolean,
+  botRoleId?: () => string | undefined,
 ) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
@@ -117,6 +118,7 @@ const harness = (
       sendTyping,
       ...(lookupMessage === undefined ? {} : { lookupMessage }),
       ...(isTaskPost === undefined ? {} : { isTaskPost }),
+      ...(botRoleId === undefined ? {} : { botRoleId }),
     }),
   };
 };
@@ -564,6 +566,44 @@ describe('assistant command subscriber', () => {
     expect(h.invoke).not.toHaveBeenCalled();
     await h.subscriber.handle(pinged('<@901234567890123456> is this clear?'));
     expect(h.queued).toHaveLength(1);
+  });
+
+  it("answers a tag of the bot's integration role like a bot tag (ADR 0125)", async () => {
+    const botRole = '912345678901234567';
+    const h = harness(
+      [direct, { ...club, answersBotTag: true }],
+      undefined,
+      true,
+      undefined,
+      () => botRole,
+    );
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012348',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${botRole}> when is the next meeting?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [botRole],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toEqual([
+      expect.objectContaining({
+        behaviourId: 'club',
+        input: { question: 'when is the next meeting?' },
+        source: 'mention',
+      }),
+    ]);
   });
 
   it('fails closed on an ambiguous mention without calling the service', async () => {

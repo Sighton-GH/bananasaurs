@@ -19,6 +19,7 @@ import {
   type AssistantSkill,
   type ClubResource,
   type JsonValue,
+  type OpsPorts,
   type ReminderRecurrence,
   type SkillScopeMode,
 } from '@bananasaurs/core';
@@ -84,6 +85,27 @@ const behaviour = z.object({
   // answers; explicit null clears them; an object must validate.
   promptWizard: promptWizardAnswers.nullable().optional(),
 });
+/**
+ * ADR 0125: a tag of the bot's integration role already reaches the bot-tag
+ * behaviour, so a desk mapped to it would shadow that, and a desk role named
+ * like the bot is one members cannot tell apart from it in the mention
+ * picker. Names compare trimmed, case-folded and without a leading `@`.
+ * Unknown when the guild is not cached; the check then has nothing to say.
+ */
+const normaliseRoleName = (name: string): string =>
+  name.normalize('NFKC').trim().replace(/^@\s*/, '').toLowerCase();
+const botTagClash = (
+  ports: OpsPorts,
+  roleId: string,
+): 'mention-role-is-bot-role' | 'mention-role-name-clash' | undefined => {
+  const identity = ports.botMentionIdentity();
+  if (identity === undefined) return undefined;
+  if (identity.roleId === roleId) return 'mention-role-is-bot-role';
+  const role = ports.listGuildRoles().find((candidate) => candidate.roleId === roleId);
+  if (role === undefined) return undefined;
+  const botNames = new Set(identity.names.map(normaliseRoleName));
+  return botNames.has(normaliseRoleName(role.name)) ? 'mention-role-name-clash' : undefined;
+};
 const botTag = z.object({ behaviourId: z.string().min(1).max(64).nullable() }).strict();
 const providerConfig = z.object({
   provider: z.enum(['off', 'gemini', 'openrouter', 'nvidia-nim']),
@@ -390,6 +412,10 @@ export const registerAssistantRoutes = (
     const existing = behaviours.find((item) => item.id === parsed.data.id);
     if (parsed.data.surface !== 'direct-command' && parsed.data.mentionRoleId === undefined)
       return reply.status(400).send({ error: 'mention-role-required' });
+    if (parsed.data.surface !== 'direct-command' && parsed.data.mentionRoleId !== undefined) {
+      const clash = botTagClash(deps.portsFor(session.scope), parsed.data.mentionRoleId);
+      if (clash !== undefined) return reply.status(400).send({ error: clash });
+    }
     if (parsed.data.enabled) {
       const conflict = behaviours.find(
         (item) =>

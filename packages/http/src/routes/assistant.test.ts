@@ -137,6 +137,57 @@ describe('assistant routes', () => {
     );
   });
 
+  describe("a desk role that collides with the bot's own tag (ADR 0125)", () => {
+    const BOT_ROLE = '888888888888888888';
+    const withRoles = (roles: { roleId: string; name: string }[]) => {
+      deps = {
+        ...deps,
+        portsFor: (scope) => {
+          const ports = testPortsFor(scope, () => clock);
+          return {
+            ...ports,
+            listGuildRoles: () => [
+              ...ports.listGuildRoles(),
+              ...roles.map((r) => ({ ...r, colour: 0, position: 2, managed: false })),
+            ],
+          };
+        },
+      };
+    };
+    const rebuild = async () => {
+      await app.close();
+      app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    };
+
+    it("refuses the bot's integration role as a desk role", async () => {
+      grant('config.write');
+      const { cookie, csrf } = await signIn();
+      const response = await put(cookie, csrf, body({ mentionRoleId: BOT_ROLE }));
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'mention-role-is-bot-role' });
+      expect(assistantRepo.listBehaviours(t.scopes.forGuild(GUILD))).toEqual([]);
+    });
+
+    it('refuses a desk role named like the bot, ignoring case, spaces and a leading @', async () => {
+      withRoles([{ roleId: ROLE_B, name: ' @BANANASAURS ' }]);
+      await rebuild();
+      grant('config.write');
+      const { cookie, csrf } = await signIn();
+      const response = await put(cookie, csrf, body({ mentionRoleId: ROLE_B }));
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'mention-role-name-clash' });
+      expect(assistantRepo.listBehaviours(t.scopes.forGuild(GUILD))).toEqual([]);
+    });
+
+    it('still accepts a differently named desk role', async () => {
+      withRoles([{ roleId: ROLE_B, name: 'it-services' }]);
+      await rebuild();
+      grant('config.write');
+      const { cookie, csrf } = await signIn();
+      expect((await put(cookie, csrf, body({ mentionRoleId: ROLE_B }))).statusCode).toBe(200);
+    });
+  });
+
   it('requires a mention role outside direct command and refuses ambiguous enabled routes', async () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();

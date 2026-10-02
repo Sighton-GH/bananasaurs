@@ -533,6 +533,8 @@ export const testPortsFor = (
   allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
   // Matches the fixture hierarchy: the bot's own role sits at position 4.
   botHighestRolePosition: () => 4,
+  // The fixture's managed 'Bananasaurs' role is the bot's integration role.
+  botMentionIdentity: () => ({ roleId: '888888888888888888', names: ['Bananasaurs'] }),
   publishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },

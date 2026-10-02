@@ -210,6 +210,12 @@ export interface AssistantCommandDeps {
    */
   readonly isTaskPost?: (messageId: string) => boolean;
   /**
+   * ADR 0125: the id of the role Discord created for the bot on install, read
+   * live so a reinstall is picked up. A tag of it routes like a tag of the bot
+   * user. Optional; omitting it (or the guild not being cached) ignores it.
+   */
+  readonly botRoleId?: () => string | undefined;
+  /**
    * Task 20: member 👍/👎 reactions on bot answers. Guild-scoped closures
    * over `conversationRepo.setFeedback` and `traceRepo.addTraceFlag` (wired
    * in `runtime/guild.ts`), so this subscriber stays storage-free like the
@@ -281,6 +287,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     deps.botUserId,
     deps.lookupMessage,
     deps.isTaskPost,
+    deps.botRoleId?.(),
   );
   if (route.kind === 'not-addressed') return;
   if (route.kind === 'ambiguous') {
