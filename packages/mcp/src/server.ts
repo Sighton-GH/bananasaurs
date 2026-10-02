@@ -126,6 +126,17 @@ import {
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
 import {
+  CREATE_ROLE_TOOL_DESCRIPTION,
+  CREATE_ROLE_TOOL_NAME,
+  createRoleParams,
+  createRoleText,
+  EDIT_ROLE_TOOL_DESCRIPTION,
+  EDIT_ROLE_TOOL_NAME,
+  editRoleParams,
+  editRoleText,
+  type McpRoleAdminPort,
+} from './tools/role-admin.js';
+import {
   LIST_ACTIONS_TOOL_DESCRIPTION,
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_DESCRIPTION,
@@ -168,6 +179,7 @@ import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './
 import {
   GUILD_REFUSAL_MESSAGE,
   hasReadScope,
+  hasRolesScope,
   hasSendScope,
   hasTasksScope,
   type McpPrincipal,
@@ -244,6 +256,14 @@ export interface McpServerDeps {
    * principal carries the send scope.
    */
   readonly messageWrites: McpMessageWritesPort;
+  /**
+   * The daemon's per-request role-admin port (slice 4, Task 5): role creation
+   * and role edits behind `create_role` and `edit_role`. Optional like the
+   * actions port: a server without it simply does not advertise either tool,
+   * and the daemon always provides it. The tools still register only when the
+   * principal carries the roles scope.
+   */
+  readonly roleAdmin?: McpRoleAdminPort | undefined;
   /**
    * The daemon's per-request actions port (slice 3, Task 7): the `mcp_actions`
    * ledger behind `undo_action` and `list_actions`. Optional like the task
@@ -450,32 +470,61 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
-    // Task 7: `undo_action`, same handler shape — the text function answers
-    // every outcome and the try/catch only fires on something it did not
-    // foresee. Registers under send (slice 4 extends it with the role-kind
-    // inverses under the roles scope); the read half, `list_actions`, lives
-    // in the read block below.
-    if (deps.actions !== undefined) {
-      const actions = deps.actions;
-      server.tool(
-        UNDO_ACTION_TOOL_NAME,
-        UNDO_ACTION_TOOL_DESCRIPTION,
-        undoActionParams,
-        async (args: unknown) => {
-          try {
-            const outcome = await undoActionText(deps.principal, actions, args);
-            if (!outcome.ok) {
-              return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-            }
-            return { content: [{ type: 'text' as const, text: outcome.text }] };
-          } catch {
-            return {
-              content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-              isError: true,
-            };
+  }
+  // Slice 4, Task 5: `undo_action`, same handler shape — the text function
+  // answers every outcome and the try/catch only fires on something it did
+  // not foresee. Registers under send or roles, whichever the principal
+  // carries (slice 4 extends it with the role-kind inverses under the roles
+  // scope); the read half, `list_actions`, lives in the read block below.
+  // Registered once: a token with both scopes must not see it twice.
+  if ((hasSendScope(deps.principal) || hasRolesScope(deps.principal)) && deps.actions !== undefined) {
+    const actions = deps.actions;
+    server.tool(
+      UNDO_ACTION_TOOL_NAME,
+      UNDO_ACTION_TOOL_DESCRIPTION,
+      undoActionParams,
+      async (args: unknown) => {
+        try {
+          const outcome = await undoActionText(deps.principal, actions, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
           }
-        },
-      );
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
+  // Slice 4, Task 5: `create_role` and `edit_role` under the roles scope
+  // (ADR 0114) — the same handler shape as `send_message` above. Each text
+  // function already answers every malformed argument and every port fault,
+  // so the try/catch here only fires on something the tool layer did not
+  // foresee.
+  if (hasRolesScope(deps.principal) && deps.roleAdmin !== undefined) {
+    const roleAdmin = deps.roleAdmin;
+    const roleAdminTools = [
+      [CREATE_ROLE_TOOL_NAME, CREATE_ROLE_TOOL_DESCRIPTION, createRoleParams, createRoleText],
+      [EDIT_ROLE_TOOL_NAME, EDIT_ROLE_TOOL_DESCRIPTION, editRoleParams, editRoleText],
+    ] as const;
+    for (const [name, description, params, text] of roleAdminTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, roleAdmin, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
     }
   }
   // ADR 0114 (ADR 0101's follow-up): the task-tracking write tools register
