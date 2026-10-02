@@ -22,12 +22,14 @@ import {
   archiveRepo,
   assistantRepo,
   authzRepo,
+  authzStoreFor,
   computeDocId,
   effectRepo,
   guildRepo,
   jobRepo,
   loggingRepo,
   mcpActionsRepo,
+  mcpBulkRepo,
   mcpRolePolicyRepo,
   mcpSendRepo,
   panelRepo,
@@ -38,9 +40,11 @@ import {
 } from '@bananasaurs/storage';
 import {
   parseGuildId,
+  authorize,
   DiscordApiError,
   contentHashFor,
   panelDefinitionSchema,
+  RateLimiter,
 } from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
@@ -49,9 +53,12 @@ import {
   ARCHIVE_PURGED_MARKER,
   GUILD_REFUSAL_MESSAGE,
   PRIVATE_THREAD_REFUSAL,
+  bulkArgsHashFor,
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
+import { mcpRoleGatewayFor } from './roles-gateway.js';
+import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
 import { FakeDiscord, BOT_USER_ID } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
@@ -8065,6 +8072,867 @@ describe('/mcp grant_role and remove_role through the real composition', () => {
       expect(mcpActionsRepo.findActionById(scope, row.actionId)?.undoneByActionId).toBeUndefined();
     } finally {
       await roleApp.close();
+    }
+  });
+});
+/**
+ * Slice 4 Task 4, daemon side: `bulk_role_change` through the real stack —
+ * Fastify + `registerMcpRoutes` + `createMcpServer` + the real
+ * `bulkRolesPortFor` over the real repositories and the fake Discord port —
+ * with tokens minted through the real OAuth flow, and the durable
+ * `mcp.bulk_role` job driven through the real MCP gateway.
+ *
+ * What this proves: a preview stores the row (token hashed, 10-minute
+ * expiry) and writes no ledger row; a confirm checks guild, single use,
+ * expiry and the args hash with a distinct refusal each, then claims one
+ * `role.bulk` row and enqueues the job; the job walks the previewed set —
+ * never a fresh query — through the gateway with per-member outcomes; the
+ * `member_role` cap counts members; and the token reaches neither an audit
+ * row nor any other stored row.
+ */
+describe('/mcp bulk_role_change through the real composition', () => {
+  const OWNER = '345678901234567890';
+  const MEMBER = '633333333333333333';
+  const MEMBER2 = '634444444444444444';
+  const MEMBER3 = '635555555555555555';
+  const LOW_ROLE = '522222222222222222';
+  const OTHER_ROLE = '544444444444444444';
+  const BOT_ROLE = '511111111111111111';
+  const GID = '111111111111111111';
+  /** Distinctive names: must never reach an audit row, which carries ids only. */
+  const MEMBER_NAME = 'SammyZZ MemberQ';
+  const ROLE_NAME = 'helpersZZ';
+
+  interface BulkDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const buildBulkClient = (): Client => {
+    const client = new Client(buildClientOptions(() => BOT_USER_ID));
+    const internals = client as unknown as BulkDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({
+      id: BOT_USER_ID,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel | PermissionsBitField.Flags.SendMessages
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: OWNER,
+      channels: [],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: OTHER_ROLE, name: 'ushers', position: 2, permissions: '0' },
+        { id: LOW_ROLE, name: ROLE_NAME, position: 4, permissions: '0' },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 10,
+          permissions: botPermissions,
+          managed: true,
+        },
+      ],
+      members: [
+        {
+          user: { id: BOT_USER_ID, username: 'bananasaurs', discriminator: '0' },
+          roles: [BOT_ROLE],
+        },
+        { user: { id: OWNER, username: 'owner', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER, username: 'samwise', discriminator: '0' }, roles: [] },
+        { user: { id: MEMBER2, username: 'sam2', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    return client;
+  };
+
+  /** Serves the tool's member resolution: one short page, then the loop stops. */
+  const serveBulkMembers = (client: Client): void => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('fake guild did not land in the cache');
+    const profiles = [
+      { id: OWNER, username: 'owner', displayName: 'Owner' },
+      { id: MEMBER, username: 'samwise', displayName: MEMBER_NAME },
+      { id: MEMBER2, username: 'sam2', displayName: 'Sam the second' },
+    ];
+    guild.members.list = async () => {
+      const members = profiles.map(
+        (profile) =>
+          ({
+            id: profile.id,
+            user: { id: profile.id, username: profile.username },
+            displayName: profile.displayName,
+            nickname: null,
+            roles: { cache: new Collection() },
+            joinedAt: new Date('2024-05-01T00:00:00.000Z'),
+          }) as unknown as GuildMember,
+      );
+      return new Collection(members.map((member) => [member.id, member] as const));
+    };
+  };
+
+  const buildBulkApp = (client: Client, discord: FakeDiscord): FastifyInstance =>
+    createServer({
+      deps: { ...deps },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+
+  const seedBulkDiscord = (discord: FakeDiscord): void => {
+    discord.defineRole({ id: LOW_ROLE, name: ROLE_NAME, position: 4 });
+    discord.defineRole({ id: OTHER_ROLE, name: 'ushers', position: 3 });
+    discord.defineMember(MEMBER, []);
+    discord.defineMember(MEMBER2, []);
+    discord.defineMember(MEMBER3, []);
+    discord.defineMember(OWNER, [], true);
+  };
+
+  const seedBulkScope = (): void => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    guildRepo.setDryRun(scope, false, clock);
+    authzRepo.grantAccountCapability(scope, {
+      accountId: ACCOUNT,
+      capability: 'roles.mutate',
+      grantedBy: 'test',
+      now: clock,
+    });
+    roleRepo.allowlistRole(scope, LOW_ROLE);
+    roleRepo.allowlistRole(scope, OTHER_ROLE);
+  };
+
+  const bulkCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+      }),
+    });
+
+  const bulkText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const previewArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: GID,
+    action: 'add',
+    role: LOW_ROLE,
+    members: [MEMBER, MEMBER2],
+    idempotencyKey: 'bulk-preview-k1',
+    ...over,
+  });
+
+  const extractToken = (text: string): string => {
+    const match = /confirmToken "([0-9a-f]{32})"/.exec(text);
+    if (match?.[1] === undefined) throw new Error('preview answer carried no token');
+    return match[1];
+  };
+
+  const extractJobId = (text: string): number => {
+    const match = /job (\d+) is applying/.exec(text);
+    if (match?.[1] === undefined) throw new Error('confirm answer carried no job id');
+    return Number(match[1]);
+  };
+
+  /**
+   * Drives the durable job the way the per-guild worker does: the handler
+   * from `runtime/guild.ts`'s registration, over the real MCP gateway and
+   * the test's fakes, with a capturing logger for the per-member outcomes.
+   */
+  const runBulkJob = async (
+    client: Client,
+    discord: FakeDiscord,
+    input: { previewId: string; actionId: string; jobId: number; cursor?: string | null },
+  ): Promise<{ readonly lines: string[]; readonly saved: (string | null)[] }> => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    const lines: string[] = [];
+    const saved: (string | null)[] = [];
+    const logger = {
+      info: (_fields: unknown, message: string) => {
+        lines.push(message);
+      },
+      warn: (_fields: unknown, message: string) => {
+        lines.push(message);
+      },
+      error: (_fields: unknown, message: string) => {
+        lines.push(message);
+      },
+    } as never;
+    await mcpBulkRoleHandler({
+      scope,
+      logger,
+      now: () => clock,
+      gateway: mcpRoleGatewayFor(
+        { authz: authzStoreFor(scope), rateLimiter: new RateLimiter(1000), logger, now: () => clock },
+        client,
+        discord,
+        scope,
+      ),
+      authorizeAccount: (accountId) => {
+        const result = authorize(
+          {
+            store: authzStoreFor(scope),
+            guildId: GUILD_A,
+            actor: { type: 'dashboard', id: accountId, roleIds: [] },
+          },
+          'roles.mutate',
+        );
+        return result.ok ? result.value : undefined;
+      },
+      findPreview: (previewId) => mcpBulkRepo.findPreviewById(scope, previewId),
+    }).run(
+      {
+        guildId: GID,
+        previewId: input.previewId,
+        actionId: input.actionId,
+        accountId: ACCOUNT,
+      },
+      {
+        jobId: input.jobId,
+        attempts: 1,
+        cursor: input.cursor ?? null,
+        saveCursor: (cursor) => {
+          saved.push(cursor);
+        },
+      },
+    );
+    return { lines, saved };
+  };
+
+  const storedTrail = (): string => {
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 100 });
+    const actions = t.raw
+      .prepare('SELECT action_id, kind, args_hash, token_id FROM mcp_actions')
+      .all();
+    const jobs = t.raw.prepare('SELECT kind, payload FROM jobs').all();
+    return JSON.stringify({ trail, actions, jobs });
+  };
+
+  it('a preview stores the row and renders count, names, token and expiry, with no ledger row', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const preview = bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body);
+      expect(preview.isError).not.toBe(true);
+      expect(preview.text).toContain('2 members');
+      expect(preview.text).toContain(MEMBER_NAME);
+      expect(preview.text).toContain('Sam the second');
+      const token = extractToken(preview.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      expect(stored).toMatchObject({
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        memberIds: [MEMBER, MEMBER2],
+      });
+      expect(stored?.expiresAt).toBeGreaterThan(clock);
+      expect(stored?.consumedAt).toBeUndefined();
+      // A preview writes no mcp_actions row.
+      expect(mcpActionsRepo.findAction(scope, 'bulk-preview-k1')).toBeUndefined();
+      // The token reaches neither an audit row nor any other stored row.
+      expect(storedTrail()).not.toContain(token);
+      expect(storedTrail()).not.toContain(MEMBER_NAME);
+      expect(storedTrail()).not.toContain(ROLE_NAME);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a confirm consumes the preview, claims role.bulk and enqueues mcp.bulk_role', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      expect(confirmed.text).toContain('get_job');
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      expect(stored?.consumedAt).toBe(clock);
+      expect(stored?.jobId).toBe(jobId);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      expect(row).toMatchObject({ kind: 'role.bulk', capGroup: 'member_role', status: 'done' });
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      expect(confirmed.text).toContain(row.actionId);
+      // One batch row: source mcp, batch id = the action id.
+      expect(
+        t.raw.prepare("SELECT batch_id, source FROM effect_batches WHERE batch_id = ?").get(row.actionId),
+      ).toEqual({ batch_id: row.actionId, source: 'mcp' });
+      // One job row: the bulk kind, carrying preview and action ids — never the token.
+      const job = jobRepo.findJob(scope, jobId);
+      expect(job?.kind).toBe('mcp.bulk_role');
+      expect(job?.payload).toContain(stored.previewId);
+      expect(job?.payload).toContain(row.actionId);
+      expect(job?.payload).not.toContain(token);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the job applies the previewed set through the gateway, with per-member outcomes', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      const { lines } = await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.memberRoles(MEMBER2)).toContain(LOW_ROLE);
+      expect(lines.join('\n')).toContain('2/2 applied');
+      // One effect row per member, under the confirm's batch.
+      expect(
+        t.raw.prepare('SELECT user_id, role_id, action, state FROM role_effects').all(),
+      ).toEqual([
+        { user_id: MEMBER, role_id: LOW_ROLE, action: 'grant', state: 'applied' },
+        { user_id: MEMBER2, role_id: LOW_ROLE, action: 'grant', state: 'applied' },
+      ]);
+      // The audit trail names ids and the bulk reason — never a name or the token.
+      const trail = effectRepo.tailAudit(scope, { limit: 25 });
+      expect(trail.filter((entry) => entry.action === 'role.grant')).toHaveLength(2);
+      expect(storedTrail()).not.toContain(token);
+      expect(storedTrail()).not.toContain(MEMBER_NAME);
+      expect(storedTrail()).not.toContain(ROLE_NAME);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the job applies the previewed set even after membership changed', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-confirm-k1' }),
+          )
+        ).body,
+      );
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      const row = mcpActionsRepo.findAction(scope, 'bulk-confirm-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      // After the preview: MEMBER already holds the role (a grant behind the
+      // job's back), and MEMBER3 appeared in Discord (never previewed).
+      discord.defineMember(MEMBER, [LOW_ROLE]);
+      const { lines } = await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      expect(discord.memberRoles(MEMBER2)).toContain(LOW_ROLE);
+      // MEMBER3 was never in the previewed set: the job never re-resolves.
+      expect(discord.memberRoles(MEMBER3)).not.toContain(LOW_ROLE);
+      expect(lines.join('\n')).toContain(`${MEMBER}:already-had`);
+      expect(lines.join('\n')).toContain('1/2 applied');
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a selector preview confirms and applies without re-listing at confirm', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const args = previewArgs({ members: undefined, selector: {} });
+      const preview = bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', args)).body);
+      expect(preview.isError).not.toBe(true);
+      // The stub listing holds three members: the selector matches all three.
+      expect(preview.text).toContain('3 members');
+      const token = extractToken(preview.text);
+      const confirmed = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: undefined,
+              selector: {},
+              confirmToken: token,
+              idempotencyKey: 'bulk-selector-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(confirmed.isError).not.toBe(true);
+      const jobId = extractJobId(confirmed.text);
+      const scope = t.scopes.forGuild(GUILD_A);
+      const stored = mcpBulkRepo.findPreviewByToken(scope, token);
+      if (stored === undefined) throw new Error('confirm left no preview row');
+      expect(stored.memberIds).toHaveLength(3);
+      const row = mcpActionsRepo.findAction(scope, 'bulk-selector-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      await runBulkJob(client, discord, {
+        previewId: stored.previewId,
+        actionId: row.actionId,
+        jobId,
+      });
+      // The owner is protected: refused per member, while the others apply.
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+      expect(discord.memberRoles(MEMBER2)).toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a tampered argument at confirm is args-changed, with no new row and no job', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      const jobsBefore = jobRepo.listJobs(t.scopes.forGuild(GUILD_A), {}).length;
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: [MEMBER],
+              confirmToken: token,
+              idempotencyKey: 'bulk-tampered-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('do not match the preview');
+      expect(refused.text).not.toContain(token);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-tampered-k1')).toBeUndefined();
+      expect(jobRepo.listJobs(t.scopes.forGuild(GUILD_A), {}).length).toBe(jobsBefore);
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('an expired token is preview-expired', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      const token = 'tok-expired-zz0000000000000001';
+      mcpBulkRepo.createPreview(scope, {
+        previewId: 'preview-expired',
+        token,
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: bulkArgsHashFor({ action: 'add', roleId: LOW_ROLE, members: [MEMBER] }),
+        memberIds: [MEMBER],
+        createdAt: clock - 700_000,
+        expiresAt: clock - 100_000,
+      });
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: [MEMBER],
+              confirmToken: token,
+              idempotencyKey: 'bulk-expired-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('expired');
+      expect(refused.text).not.toContain(token);
+      expect(mcpActionsRepo.findAction(scope, 'bulk-expired-k1')).toBeUndefined();
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a reused token is preview-used', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      const first = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-reuse-k1' }),
+          )
+        ).body,
+      );
+      expect(first.isError).not.toBe(true);
+      const second = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-reuse-k2' }),
+          )
+        ).body,
+      );
+      expect(second.isError).toBe(true);
+      expect(second.text).toContain('already used');
+      expect(second.text).not.toContain(token);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-reuse-k2')).toBeUndefined();
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it("another guild's token is unknown", async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scopeB = t.scopes.forGuild(GUILD_B);
+      const token = 'tok-foreign-zz0000000000000001';
+      mcpBulkRepo.createPreview(scopeB, {
+        previewId: 'preview-foreign',
+        token,
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: bulkArgsHashFor({ action: 'add', roleId: LOW_ROLE, members: [MEMBER] }),
+        memberIds: [MEMBER],
+        createdAt: clock,
+        expiresAt: clock + 600_000,
+      });
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({
+              members: [MEMBER],
+              confirmToken: token,
+              idempotencyKey: 'bulk-foreign-k1',
+            }),
+          )
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('No bulk preview matches that token');
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-foreign-k1')).toBeUndefined();
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('a dry-run confirm records without a job and leaves the preview usable', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      const scope = t.scopes.forGuild(GUILD_A);
+      const jobsBefore = jobRepo.listJobs(scope, {}).length;
+      const dry = bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-dry-k1', dryRun: true }),
+          )
+        ).body,
+      );
+      expect(dry.isError).not.toBe(true);
+      expect(dry.text).toContain('Dry run');
+      expect(dry.text).not.toContain('get_job');
+      expect(jobRepo.listJobs(scope, {}).length).toBe(jobsBefore);
+      expect(mcpBulkRepo.findPreviewByToken(scope, token)?.consumedAt).toBeUndefined();
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('undo_action on role.bulk answers that it cannot be undone', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:roles');
+      const token = extractToken(
+        bulkText((await bulkCall(bulkApp, accessToken, 'bulk_role_change', previewArgs())).body).text,
+      );
+      bulkText(
+        (
+          await bulkCall(
+            bulkApp,
+            accessToken,
+            'bulk_role_change',
+            previewArgs({ confirmToken: token, idempotencyKey: 'bulk-undo-k1' }),
+          )
+        ).body,
+      );
+      const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'bulk-undo-k1');
+      if (row === undefined) throw new Error('confirm left no ledger row');
+      const undone = bulkText(
+        (
+          await bulkCall(bulkApp, accessToken, 'undo_action', {
+            guildId: GID,
+            actionId: row.actionId,
+          })
+        ).body,
+      );
+      expect(undone.isError).toBe(true);
+      expect(undone.text).toContain('opposite bulk change');
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the cap counts members: 100 previewed plus 901 singles refuse the next grant', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpBulkRepo.createPreview(scope, {
+        previewId: 'preview-cap',
+        token: 'tok-cap-zz0000000000000001',
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: 'args-cap',
+        memberIds: Array.from({ length: 100 }, (_, i) => `6${String(10000000000000000 + i)}`),
+        createdAt: clock,
+        expiresAt: clock + 600_000,
+      });
+      expect(mcpBulkRepo.consumePreview(scope, 'preview-cap', 7, clock)).toBe(true);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'act-cap-bulk',
+        idempotencyKey: 'k-cap-bulk',
+        kind: 'role.bulk',
+        capGroup: 'member_role',
+        argsHash: 'args-cap',
+        tokenId: 'tok_testtoken',
+        now: clock,
+        dryRun: false,
+      });
+      for (let i = 0; i < 901; i += 1) {
+        mcpActionsRepo.claimAction(scope, {
+          actionId: `act-cap-single-${String(i)}`,
+          idempotencyKey: `k-cap-single-${String(i)}`,
+          kind: 'role.grant',
+          capGroup: 'member_role',
+          argsHash: `h-cap-single-${String(i)}`,
+          tokenId: 'tok_testtoken',
+          now: clock,
+          dryRun: false,
+        });
+      }
+      const accessToken = await mintToken('bananasaurs:roles');
+      const refused = bulkText(
+        (
+          await bulkCall(bulkApp, accessToken, 'grant_role', {
+            guildId: GID,
+            member: MEMBER,
+            role: LOW_ROLE,
+            idempotencyKey: 'grant-capped-k1',
+          })
+        ).body,
+      );
+      // 901 singles minus the bulk row plus its 100 members = 1000: full.
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('member-role budget');
+      expect(discord.memberRoles(MEMBER)).not.toContain(LOW_ROLE);
+      expect(discord.restCalls('addRole')).toHaveLength(0);
+    } finally {
+      await bulkApp.close();
+    }
+  });
+
+  it('the cap still admits a grant at 899 singles plus the 100-member bulk', async () => {
+    seedBulkScope();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedBulkDiscord(discord);
+    const client = buildBulkClient();
+    serveBulkMembers(client);
+    const bulkApp = buildBulkApp(client, discord);
+    try {
+      const scope = t.scopes.forGuild(GUILD_A);
+      mcpBulkRepo.createPreview(scope, {
+        previewId: 'preview-cap-ok',
+        token: 'tok-cap-ok-zz000000000001',
+        actionKind: 'add',
+        roleId: LOW_ROLE,
+        argsHash: 'args-cap-ok',
+        memberIds: Array.from({ length: 100 }, (_, i) => `6${String(10000000000000000 + i)}`),
+        createdAt: clock,
+        expiresAt: clock + 600_000,
+      });
+      expect(mcpBulkRepo.consumePreview(scope, 'preview-cap-ok', 7, clock)).toBe(true);
+      mcpActionsRepo.claimAction(scope, {
+        actionId: 'act-cap-ok-bulk',
+        idempotencyKey: 'k-cap-ok-bulk',
+        kind: 'role.bulk',
+        capGroup: 'member_role',
+        argsHash: 'args-cap-ok',
+        tokenId: 'tok_testtoken',
+        now: clock,
+        dryRun: false,
+      });
+      for (let i = 0; i < 899; i += 1) {
+        mcpActionsRepo.claimAction(scope, {
+          actionId: `act-cap-ok-single-${String(i)}`,
+          idempotencyKey: `k-cap-ok-single-${String(i)}`,
+          kind: 'role.grant',
+          capGroup: 'member_role',
+          argsHash: `h-cap-ok-single-${String(i)}`,
+          tokenId: 'tok_testtoken',
+          now: clock,
+          dryRun: false,
+        });
+      }
+      const accessToken = await mintToken('bananasaurs:roles');
+      const granted = bulkText(
+        (
+          await bulkCall(bulkApp, accessToken, 'grant_role', {
+            guildId: GID,
+            member: MEMBER,
+            role: LOW_ROLE,
+            idempotencyKey: 'grant-ok-k1',
+          })
+        ).body,
+      );
+      // 899 singles minus the bulk row plus its 100 members = 999: one more fits.
+      expect(granted.isError).not.toBe(true);
+      expect(discord.memberRoles(MEMBER)).toContain(LOW_ROLE);
+    } finally {
+      await bulkApp.close();
     }
   });
 });

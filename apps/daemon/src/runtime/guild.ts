@@ -8,6 +8,7 @@ import {
   archiveBackfillDedupeKey,
   archiveBackfillHandler,
   archiveExpiryHandler,
+  authorize,
   createArchiveSubscriber,
   createAutomodSubscriber,
   createInteractionSubscriber,
@@ -61,6 +62,7 @@ import {
   jobRepo,
   jobStoreFor,
   loggingRepo,
+  mcpBulkRepo,
   modCaseRepo,
   modPendingRepo,
   panelRepo,
@@ -76,6 +78,8 @@ import {
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
+import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
+import { mcpRoleGatewayFor } from '../mcp/roles-gateway.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
@@ -250,6 +254,18 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const botUserId = parseSnowflakeId(config.DISCORD_APPLICATION_ID);
 
   const rateLimiter = new RateLimiter(config.BANANASAURS_ROLE_RATE_LIMIT_PER_MIN);
+
+  /**
+   * Slice 4, Task 4: the bulk job's Discord throttle. A separate object from
+   * both the moderation `rateLimiter` above and the MCP HTTP layer's
+   * per-guild map in `mcp/wiring.ts` (that map lives in the request
+   * composition root, unreachable from this per-guild worker) — same DB
+   * rate, same `mcp` source bucket shape, but its own spend. The shared
+   * budget is the `member_role` ledger cap, which is storage-backed and
+   * counts the job's members at confirm time whatever surface spends the
+   * per-minute throttle.
+   */
+  const mcpBulkLimiter = new RateLimiter(guildRepo.findGuild(scope)?.roleRatePerMin ?? 20);
 
   const gateway = new EffectGateway({
     guildId,
@@ -1188,6 +1204,32 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
+      // Slice 4, Task 4: the durable bulk role walk, through the MCP's own
+      // gateway instance (same policy, same no-op breaker, same `mcp` audit
+      // rows as the interactive role tools).
+      mcpBulkRoleHandler({
+        scope,
+        logger,
+        now,
+        gateway: mcpRoleGatewayFor(
+          { authz: authzStoreFor(scope), rateLimiter: mcpBulkLimiter, logger, now },
+          client,
+          discord,
+          scope,
+        ),
+        authorizeAccount: (accountId) => {
+          const result = authorize(
+            {
+              store: authzStoreFor(scope),
+              guildId,
+              actor: { type: 'dashboard', id: accountId, roleIds: [] },
+            },
+            'roles.mutate',
+          );
+          return result.ok ? result.value : undefined;
+        },
+        findPreview: (previewId) => mcpBulkRepo.findPreviewById(scope, previewId),
+      }),
       logMessageDeleteHandler(deletionAttributionPorts),
       modPurgeHandler(purgePorts),
       archiveBackfillHandler(archiveBackfillPorts),

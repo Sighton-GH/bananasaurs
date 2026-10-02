@@ -81,6 +81,12 @@ export interface McpBulkPreviewInput {
   readonly action: 'add' | 'remove';
   readonly roleId: string;
   readonly memberIds: readonly string[];
+  /**
+   * Which member set this preview resolves: present for a selector preview
+   * (resolved role ids), absent for an explicit list. The daemon hashes the
+   * same form the confirm will, so a selector confirm hashes equal.
+   */
+  readonly selector: McpBulkSelector | undefined;
   readonly argsHash: string;
   readonly idempotencyKey: string;
   readonly dryRun: boolean;
@@ -403,6 +409,7 @@ const bulkRoleChangeInner = async (
     // names; a selector filters the listing by role.
     let resolved: readonly McpMemberProfile[];
     let previewHash: string;
+    let previewSelector: McpBulkSelector | undefined;
     if (input.members !== undefined) {
       if (!idsAreWellFormed(input.members)) return refuseInvalidArgs();
       const { members: listing } = await members.listAllMembers(guildId);
@@ -422,6 +429,7 @@ const bulkRoleChangeInner = async (
       }
       resolved = found;
       previewHash = bulkArgsHashFor({ action: input.action, roleId, members: input.members });
+      previewSelector = undefined;
     } else {
       const selector = input.selector;
       if (selector === undefined) return refuseInvalidArgs();
@@ -450,6 +458,7 @@ const bulkRoleChangeInner = async (
         roleId,
         selector: { hasRoles: hasIds, lacksRoles: lacksIds },
       });
+      previewSelector = { hasRoles: hasIds, lacksRoles: lacksIds };
     }
     if (resolved.length > BULK_MEMBERS_MAX) {
       return {
@@ -464,6 +473,7 @@ const bulkRoleChangeInner = async (
       action: input.action,
       roleId,
       memberIds: resolved.map((profile) => profile.id),
+      selector: previewSelector,
       argsHash,
       idempotencyKey: input.idempotencyKey,
       dryRun,

@@ -3,7 +3,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { effectRepo, guildRepo, mcpActionsRepo, type GuildScope } from '@bananasaurs/storage';
+import { effectRepo, guildRepo, mcpActionsRepo, mcpBulkRepo, type GuildScope } from '@bananasaurs/storage';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import { mcpActionDepsFor } from './actions.js';
 
@@ -128,6 +128,51 @@ describe('mcpActionDepsFor ledger', () => {
     deps.ledger.complete('act-done', { status: 'done', resultMessageId: MESSAGE_ID, now: clock });
     deps.ledger.complete('act-failed', { status: 'failed', now: clock });
     expect(deps.ledger.countSince('message', 0)).toBe(2);
+  });
+
+  it('member_role counts members: one bulk row of 100 plus 899 singles fills the cap at 999', () => {
+    const deps = depsFor(GUILD_A);
+    const scope = t.scopes.forGuild(GUILD_A);
+    // One consumed 100-member preview plus its one role.bulk ledger row: the
+    // row is subtracted, the members added — the bulk costs 100, not 1.
+    mcpBulkRepo.createPreview(scope, {
+      previewId: 'preview-1',
+      token: 'token-1',
+      actionKind: 'add',
+      roleId: '522222222222222222',
+      argsHash: 'args-1',
+      memberIds: Array.from({ length: 100 }, (_, i) => `6${String(10000000000000000 + i)}`),
+      createdAt: clock,
+      expiresAt: clock + 600_000,
+    });
+    expect(mcpBulkRepo.consumePreview(scope, 'preview-1', 7, clock)).toBe(true);
+    deps.ledger.claim({
+      actionId: 'act-bulk',
+      idempotencyKey: 'k-bulk',
+      kind: 'role.bulk',
+      capGroup: 'member_role',
+      argsHash: 'args-1',
+      tokenId: TOKEN_ID,
+      now: clock,
+      dryRun: false,
+    });
+    for (let i = 0; i < 899; i += 1) {
+      deps.ledger.claim({
+        actionId: `act-single-${String(i)}`,
+        idempotencyKey: `k-single-${String(i)}`,
+        kind: 'role.grant',
+        capGroup: 'member_role',
+        argsHash: `h-single-${String(i)}`,
+        tokenId: TOKEN_ID,
+        now: clock,
+        dryRun: false,
+      });
+    }
+    // 899 singles + 100 bulk members = 999: one more unit of weight still
+    // fits (999 + 1 <= 1000), while one more single would fill it exactly.
+    expect(deps.ledger.countSince('member_role', 0)).toBe(999);
+    // Another guild's preview never leaks in.
+    expect(depsFor(GUILD_B).ledger.countSince('member_role', 0)).toBe(0);
   });
 
   it('recentSameContent delegates to the ledger window', () => {
