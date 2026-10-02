@@ -238,6 +238,11 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   disallowSendChannel: notNeeded('disallowSendChannel'),
   listSendAllowlist: notNeeded('listSendAllowlist'),
   listSends: notNeeded('listSends'),
+  readRolePolicy: notNeeded('readRolePolicy'),
+  setRolePolicy: notNeeded('setRolePolicy'),
+  allowRole: notNeeded('allowRole'),
+  disallowRole: notNeeded('disallowRole'),
+  listRoleAllowlist: notNeeded('listRoleAllowlist'),
 });
 
 const instance: OpsInstance = {

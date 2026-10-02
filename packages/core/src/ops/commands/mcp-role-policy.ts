@@ -90,16 +90,22 @@ export const mcpRolePolicyCommand = defineCommand<z.infer<typeof rolePolicyArgs>
       ...(args.ping !== undefined && { pingMode: args.ping }),
     });
     const changed = before.grantMode !== after.grantMode || before.pingMode !== after.pingMode;
+    // Fresh literals, not the `OpsRolePolicy` interface: a named interface
+    // carries no index signature, so it is not a `JsonValue`, while an
+    // object literal is — the same reason every other command builds its
+    // audit halves inline.
+    const beforeJson = { grantMode: before.grantMode, pingMode: before.pingMode };
+    const afterJson = { grantMode: after.grantMode, pingMode: after.pingMode };
     return {
       text: changed
         ? `role policy is now grant=${after.grantMode} ping=${after.pingMode}`
         : `role policy is already grant=${after.grantMode} ping=${after.pingMode}; nothing changed`,
-      data: { before, after, changed },
+      data: { before: beforeJson, after: afterJson, changed },
       audit: {
         action: 'mcp.role_policy.updated',
         subjectType: 'mcp_role_policy',
-        before,
-        after: { ...after, changed },
+        before: beforeJson,
+        after: { ...afterJson, changed },
       },
     };
   },
