@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type {
   AssistantBehaviour,
   ClubResource,
@@ -793,13 +793,14 @@ export const cancelReminder = (
  * Restores a cancelled reminder to `scheduled`, keeping its due time. The
  * `schedule.cancel` undo path — `cancelReminder` above has no inverse, and
  * Task 1 added no restore, which is why this exists. Returns false for a row
- * in any other state. Due-ness is the caller's check (an undo past the due
- * time refuses as expired); this function stays a dumb guarded transition
- * like `cancelReminder`.
+ * in any other state, and for one whose due time is not after `now` — the
+ * due check sits in the same UPDATE, so a restore can never put a past-due
+ * send back on the queue.
  */
 export const restoreReminder = (
   scope: GuildScope,
   id: string,
+  now: number,
   origin: ReminderOrigin = 'assistant',
 ): boolean =>
   write(scope, ({ db }) => {
@@ -812,6 +813,7 @@ export const restoreReminder = (
           eq(assistantReminders.reminderId, id),
           eq(assistantReminders.origin, origin),
           eq(assistantReminders.status, 'cancelled'),
+          gt(assistantReminders.dueAt, now),
         ),
       )
       .run();

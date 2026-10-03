@@ -5295,7 +5295,10 @@ const schedulePortFor = (
                 ...(input.content === undefined ? {} : { text: input.content }),
                 ...(input.at === undefined && input.recurrence === undefined
                   ? {}
-                  : { dueAt, recurrence }),
+                  : // `null`, not `undefined`: the store reads `undefined` as
+                    // "leave the pattern alone", so a re-time to `at` would
+                    // keep the old series instead of clearing to one-shot.
+                    { dueAt, recurrence: recurrence ?? null }),
                 ...(input.pingRoles === undefined && input.pingUsers === undefined
                   ? {}
                   : { mentions }),
@@ -5806,11 +5809,13 @@ const planUndo = (
         argsHash: argsHashFor('schedule.cancel', { reminder: reminderId }),
         // Synchronous store write, so a plain function: nothing here awaits.
         execute: () => {
-          // Back to `scheduled` with its due time kept. The due check lives
-          // in the undo port below (expired refuses before the pipeline
-          // runs); a row that is no longer cancelled here is the concurrent
-          // race, failed honestly.
-          const restored = assistantRepo.restoreReminder(env.scope, reminderId, 'mcp');
+          // Back to `scheduled` with its due time kept. The undo port below
+          // answers `expired` before the pipeline runs; the store re-checks
+          // `dueAt > now` in the same UPDATE, so a due time crossed in
+          // between fails here instead of restoring a past-due send. A row
+          // that is no longer cancelled is the concurrent race, failed
+          // honestly.
+          const restored = assistantRepo.restoreReminder(env.scope, reminderId, env.now, 'mcp');
           if (!restored) throw new Error('schedule cancel undo lost its row');
           return Promise.resolve({});
         },
@@ -6236,10 +6241,11 @@ const actionsPortFor = (
       // waiting to send. The executes above re-check the same transitions,
       // so these early answers are the common path, not the race.
       if (row.kind === 'schedule.cancel' || row.kind === 'schedule.edit') {
+        const undoJson = parseUndoJson(row.undoJson ?? '');
         const reparsed =
           row.kind === 'schedule.cancel'
-            ? undoScheduleCancelSchema.safeParse(parseUndoJson(row.undoJson ?? ''))
-            : undoScheduleEditSchema.safeParse(parseUndoJson(row.undoJson ?? ''));
+            ? undoScheduleCancelSchema.safeParse(undoJson)
+            : undoScheduleEditSchema.safeParse(undoJson);
         if (!reparsed.success) {
           return { status: 'refused', reason: 'not-undoable', detail: row.kind };
         }
@@ -6255,8 +6261,21 @@ const actionsPortFor = (
               detail: new Date(stored.dueAt).toISOString(),
             };
           }
-        } else if (stored === undefined || stored.status !== 'scheduled') {
-          return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+        } else {
+          if (stored === undefined || stored.status !== 'scheduled') {
+            return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+          }
+          // A re-time undo that would restore a due time already behind us
+          // would send at once — refuse it as expired, like a cancel undo.
+          const edit = undoScheduleEditSchema.safeParse(undoJson);
+          const previousDueAt = edit.success ? edit.data.previous.dueAt : undefined;
+          if (previousDueAt !== undefined && previousDueAt <= deps.now()) {
+            return {
+              status: 'refused',
+              reason: 'expired',
+              detail: new Date(previousDueAt).toISOString(),
+            };
+          }
         }
       }
       // The live policy for the inverse. A role edit re-runs the grant

@@ -12433,6 +12433,129 @@ describe('/mcp scheduled sends through the real composition', () => {
     }
   });
 
+  it('re-timing a recurring send to `at` clears it to one-shot, and the undo restores the series', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        recurrence: { pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' },
+        idempotencyKey: 'sched-retime-at',
+      });
+      const before = mcpRows()[0];
+      expect(before?.recurrence?.pattern.kind).toBe('daily');
+      const reminderId = before?.id ?? '';
+      const newAt = clock + 7_200_000;
+      const edited = callText(
+        (
+          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+            guildId: '111111111111111111',
+            reminderId,
+            at: new Date(newAt).toISOString(),
+            idempotencyKey: 'sched-retime-at-do',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(mcpRows()[0]?.dueAt).toBe(newAt);
+      expect(mcpRows()[0]?.recurrence).toBeUndefined();
+      const undone = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-retime-at-do'),
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(mcpRows()[0]?.dueAt).toBe(before?.dueAt);
+      expect(mcpRows()[0]?.recurrence).toEqual(before?.recurrence);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('re-timing a one-shot send to a recurrence sets the series, and the undo clears it back', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(3_600_000),
+        idempotencyKey: 'sched-retime-rec',
+      });
+      const before = mcpRows()[0];
+      expect(before?.recurrence).toBeUndefined();
+      const reminderId = before?.id ?? '';
+      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        recurrence: { pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' },
+        idempotencyKey: 'sched-retime-rec-do',
+      });
+      expect(mcpRows()[0]?.recurrence?.pattern.kind).toBe('daily');
+      const undone = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-retime-rec-do'),
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(mcpRows()[0]?.dueAt).toBe(before?.dueAt);
+      expect(mcpRows()[0]?.recurrence).toBeUndefined();
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('an undo of a re-time that would restore a past due time refuses as expired', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(60_000),
+        idempotencyKey: 'sched-retime-expired',
+      });
+      const reminderId = mcpRows()[0]?.id ?? '';
+      const originalDue = mcpRows()[0]?.dueAt ?? 0;
+      const newAt = clock + 7_200_000;
+      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        at: new Date(newAt).toISOString(),
+        idempotencyKey: 'sched-retime-expired-do',
+      });
+      // The original due time is now behind us: restoring it would send at once.
+      clock += 120_000;
+      const refused = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-retime-expired-do'),
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('expired');
+      expect(refused.text).toContain(new Date(originalDue).toISOString());
+      expect(mcpRows()[0]?.dueAt).toBe(newAt);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
   it('an assistant-origin reminder id is not found by the schedule tools', async () => {
     allow();
     const schedApp = buildScheduleApp();
