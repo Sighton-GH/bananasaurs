@@ -1113,6 +1113,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       // ADR 0112 decision 4: a pinged reply to a task post is a progress
       // update for the reply subscriber, never a general assistant question.
       isTaskPost: (messageId) => taskNudgeRepo.isTaskPost(scope, messageId),
+      // ADR 0125: a tag of the bot's integration role is a tag of the bot.
+      botRoleId: () => client.guilds.cache.get(guildId)?.roles.botRoleFor(botUserId)?.id,
       // Task 20: member 👍/👎 on a bot answer sets feedback and a trace
       // flag; anything else (and the bot's own reactions) is ignored inside.
       feedback: {

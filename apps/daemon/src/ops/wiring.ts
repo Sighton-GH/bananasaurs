@@ -829,6 +829,18 @@ export const opsPortsFor = (
     const guild = client.guilds.cache.get(scope.guildId);
     return guild?.members.me?.roles.highest.rawPosition;
   },
+  // ADR 0125: live, so a reinstall's new integration role is picked up.
+  botMentionIdentity: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const user = client.user;
+    if (guild === undefined || user === null) return undefined;
+    const role = guild.roles.botRoleFor(user.id);
+    const names = [role?.name, user.username, user.globalName, guild.members.me?.nickname];
+    return {
+      roleId: role?.id,
+      names: names.filter((name): name is string => typeof name === 'string' && name !== ''),
+    };
+  },
   // The same paginated REST read the MCP port makes (ruling M4-D10): the
   // 50-entry member cache would silently truncate, and `cache: false` keeps
   // the listing from churning it. No presence, activity or status fields.

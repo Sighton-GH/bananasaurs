@@ -798,6 +798,14 @@ export interface OpsPorts {
    */
   listGuildRoles(): readonly OpsGuildRoleInfo[];
   /**
+   * ADR 0125: what a member's tag of the bot can look like. `roleId` is the
+   * role Discord created for the bot on install (a tag of it routes like a
+   * tag of the bot user), and `names` are the bot's role, user and nickname
+   * names. A desk role may be neither. Undefined when the guild is not cached.
+   */
+  botMentionIdentity():
+    { readonly roleId: string | undefined; readonly names: readonly string[] } | undefined;
+  /**
    * The bot's own highest role position in the live hierarchy, from the
    * gateway cache. Discord decides manageability from this number right now
    * — a role is manageable exactly when it sits below it and is not

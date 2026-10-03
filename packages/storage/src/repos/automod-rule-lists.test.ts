@@ -95,6 +95,7 @@ const notNeeded = (name: string) => (): never => {
 const portsFor = (s: GuildScope): OpsPorts => ({
   guildName: notNeeded('guildName'),
   botHighestRolePosition: notNeeded('botHighestRolePosition'),
+  botMentionIdentity: notNeeded('botMentionIdentity'),
   fetchGuildMembers: notNeeded('fetchGuildMembers'),
   allowlistRole: notNeeded('allowlistRole'),
   safetyState: notNeeded('safetyState'),

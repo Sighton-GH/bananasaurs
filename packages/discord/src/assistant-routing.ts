@@ -26,7 +26,10 @@ const userMention = (userId: string): RegExp => new RegExp(`<@!?${userId}>`, 'g'
  * Tagging the bot user itself (not a mapped role) routes to the one enabled
  * behaviour flagged `answersBotTag` (ADR 0063), or nowhere when none is. A
  * mapped role tag in the same message wins, so a member can still pick a
- * specialised desk. Neither path checks caller roles here: like `/ask`, the
+ * specialised desk. A tag of the bot's Discord integration role (`botRoleId`,
+ * the role Discord creates for the bot on install) counts as a tag of the bot
+ * user (ADR 0125); members cannot tell the two apart in the mention picker.
+ * Neither path checks caller roles here: like `/ask`, the
  * service does, exempting the owner and answering a refusal through the keyed
  * job instead of dropping it silently (ADR 0064).
  *
@@ -44,6 +47,7 @@ export const routeAssistantMention = (
   botUserId: string,
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
   isTaskPost?: (messageId: string) => boolean,
+  botRoleId?: string,
 ): MentionRoute => {
   if (event.kind !== 'messageCreate' || event.authorIsBot || event.authorId === undefined)
     return { kind: 'not-addressed' };
@@ -59,13 +63,19 @@ export const routeAssistantMention = (
     ),
   );
   const mentioned = new Set(event.mentionedRoleIds.filter((id) => configuredRoleIds.has(id)));
-  const botTagged = event.mentionedUserIds.includes(botUserId);
+  // A desk mapped to the integration role keeps its desk route instead.
+  const botRoleTagged =
+    botRoleId !== undefined &&
+    !configuredRoleIds.has(botRoleId) &&
+    event.mentionedRoleIds.includes(botRoleId);
+  const botTagged = event.mentionedUserIds.includes(botUserId) || botRoleTagged;
   // ADR 0112 decision 4: a pinged reply to a task post is not a tag.
   // discord.js puts the replied-to user into `mentions.users` on a reply
-  // ping, so the reply alone looks tagged. Only an explicit `<@bot>` in the
-  // text still routes; an explicit assistant role tag routes below as usual.
+  // ping, so the reply alone looks tagged. Only an explicit `<@bot>` or bot
+  // role tag in the text still routes; an assistant role tag routes below.
   if (
     botTagged &&
+    !botRoleTagged &&
     mentioned.size === 0 &&
     event.referencedMessageId !== undefined &&
     (isTaskPost?.(event.referencedMessageId) ?? false) &&
@@ -128,6 +138,7 @@ export const routeAssistantMention = (
 
   let prompt = (event.content ?? '').replace(userMention(botUserId), ' ');
   for (const roleId of mentioned) prompt = prompt.replace(roleMention(roleId), ' ');
+  if (botRoleTagged) prompt = prompt.replace(roleMention(botRoleId), ' ');
   prompt = prompt.replace(/\s+/g, ' ').trim();
   if (prompt.length === 0) {
     return { kind: 'ambiguous', message: 'Add a question after the assistant tag.' };

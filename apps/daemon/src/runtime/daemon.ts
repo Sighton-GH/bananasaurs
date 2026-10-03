@@ -47,6 +47,7 @@ import { taskNudgeRepo } from '@bananasaurs/storage';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
+import { ensureOwnerGuildAccess } from './owner-guild-access.js';
 import { createProviderConfigStore, providerKeyFrom } from '../assistant/provider-config.js';
 import { openWithKey, sealWithKey } from '../crypto/seal.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
@@ -277,6 +278,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   for (const guildId of guildIds) {
     const scope = scopes.forGuild(guildId);
     applyConfiguredDryRun(scope, config, logger, now());
+    // ADR 0124: after the guild row exists, which the access table's key needs.
+    ensureOwnerGuildAccess({
+      scope,
+      instance: scopes.instance(),
+      readonly: config.BANANASAURS_READONLY,
+      logger,
+      now: now(),
+    });
     seedAutomodDefaults(scope, config, logger, now());
     byGuild.set(guildId, {
       scope,
