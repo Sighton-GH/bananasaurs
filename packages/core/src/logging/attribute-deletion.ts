@@ -102,7 +102,7 @@ export async function attributeAndLogDeletion(
     throw err;
   }
 
-  let firstError: unknown;
+  let firstError: Error | undefined;
   for (const route of pending) {
     const dedupeKind = routeDedupeKind(route.routeId, 'message_delete');
     try {
@@ -131,7 +131,7 @@ export async function attributeAndLogDeletion(
         }),
         'failed to post a deletion log line; released the claim for a future retry',
       );
-      if (firstError === undefined) firstError = err;
+      firstError ??= err instanceof Error ? err : new Error(String(err));
     }
   }
   if (firstError !== undefined) throw firstError;

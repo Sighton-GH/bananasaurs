@@ -45,7 +45,7 @@ describe('formatAuditValue', () => {
 
   it('renders arrays and objects as compact JSON', () => {
     expect(formatAuditValue([1, 'a', null] as never)).toBe('[1,"a",null]');
-    expect(formatAuditValue({ a: 1, b: [true] } as never)).toBe('{"a":1,"b":[true]}');
+    expect(formatAuditValue({ a: 1, b: [true] })).toBe('{"a":1,"b":[true]}');
   });
 
   it('truncates results longer than 100 characters with …', () => {

@@ -331,7 +331,7 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
         channelId: event.channelId,
         parentChannelId: event.parentChannelId,
       };
-      if (isSourceExcluded(source, ports.isChannelExcluded)) return;
+      if (isSourceExcluded(source, (id) => ports.isChannelExcluded(id))) return;
       const routes = ports.listEnabledRoutesFor('message_delete').filter((r) => routeAccepts(r, source));
       if (routes.length === 0) return;
 
@@ -513,10 +513,10 @@ async function postItems(
   ports: LoggingPorts,
   items: readonly LogItem[],
   gatewayKind: string,
-): Promise<unknown> {
-  let firstError: unknown;
+): Promise<Error | undefined> {
+  let firstError: Error | undefined;
   for (const item of items) {
-    if (isSourceExcluded(item.source, ports.isChannelExcluded)) continue;
+    if (isSourceExcluded(item.source, (id) => ports.isChannelExcluded(id))) continue;
     const routes = ports
       .listEnabledRoutesFor(item.eventKind)
       .filter((r) => routeAccepts(r, item.source));
@@ -544,7 +544,7 @@ async function postItems(
           }),
           'failed to post a log line; released the claim for a future retry',
         );
-        if (firstError === undefined) firstError = err;
+        firstError ??= err instanceof Error ? err : new Error(String(err));
       }
     }
   }
