@@ -243,10 +243,10 @@ const undoRefusalText = (
       );
     case 'expired':
       return (
-        `Action ${actionId} in guild ${guildId} cancelled a scheduled message that has since fallen due` +
+        `Undoing action ${actionId} in guild ${guildId} would restore a time that has since passed` +
         `${detail !== undefined ? ` (${detail})` : ''}, so the undo expired and nothing was restored. ` +
-        'A cancelled send can only be un-cancelled while it is still in the future: ' +
-        'schedule the message again instead.'
+        'An undo can only restore a scheduled message or event time that is still in the future: ' +
+        'make the change again with a future time instead.'
       );
     case 'scope-mismatch':
       return (
@@ -281,7 +281,8 @@ const undoRefusalText = (
       );
     case 'rate-cap':
       return (
-        `Guild ${guildId} has used its rolling-hour budget for this kind of action, ` +
+        `Guild ${guildId} has used its rolling-hour budget for this kind of action ` +
+        '(the matching mcp.cap.* setting), ' +
         `so action ${actionId} was not undone. Wait for the window to pass before retrying` +
         `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
         'listing actions still works meanwhile.'

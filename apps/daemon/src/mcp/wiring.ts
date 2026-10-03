@@ -4439,18 +4439,22 @@ const eventWritesPortFor = (
   type EventTargetRefusal = Extract<SendTarget, { readonly ok: false }>;
 
   /** The target layer's reasons onto the event tools' refusals. */
-  const targetRefusalFor = (target: EventTargetRefusal): McpEventWriteOutcome => {
+  const targetRefusalFor = (
+    target: EventTargetRefusal,
+    channelId: string,
+  ): McpEventWriteOutcome => {
     switch (target.reason) {
       case 'not-in-guild':
-        return { status: 'refused', reason: 'channel-not-in-guild' };
+        return { status: 'refused', reason: 'channel-not-in-guild', channelId };
       case 'not-in-send-scope':
-        return { status: 'refused', reason: 'channel-not-allowlisted' };
+        return { status: 'refused', reason: 'channel-not-allowlisted', channelId };
       case 'private-thread-not-allowed':
-        return { status: 'refused', reason: 'private-thread' };
+        return { status: 'refused', reason: 'private-thread', channelId };
       case 'bot-lacks-permission':
         return {
           status: 'refused',
           reason: 'bot-lacks-permission',
+          channelId,
           ...(target.missing !== undefined ? { detail: target.missing } : {}),
         };
     }
@@ -4564,7 +4568,7 @@ const eventWritesPortFor = (
             checked.channelId,
             'manage-events',
           );
-          if (!target.ok) return targetRefusalFor(target);
+          if (!target.ok) return targetRefusalFor(target, checked.channelId);
           targetChannelId = target.channelId;
           if (target.derivedGrant) grantedByChannelId = target.grantId;
           location = { kind: checked.kind, channelId: target.channelId };
@@ -4626,6 +4630,24 @@ const eventWritesPortFor = (
         let targetChannelId: string | undefined;
         let grantedByChannelId: string | undefined;
         let location: EventLocationInput | undefined;
+        // The event's current home is always checked — an edit acts on the
+        // event where it is, and a move must not carry an event out of a
+        // channel the connector could not otherwise touch.
+        if (current.channelId !== undefined) {
+          const target = await resolveSendTarget(
+            client,
+            scope,
+            guildId,
+            current.channelId,
+            'manage-events',
+          );
+          if (!target.ok) return targetRefusalFor(target, current.channelId);
+          targetChannelId = target.channelId;
+          if (target.derivedGrant) grantedByChannelId = target.grantId;
+        } else if (!botHasGuildManageEvents(client, guildId)) {
+          return guildManageEventsRefusal();
+        }
+        // A move is checked at its destination too.
         if (input.location !== undefined) {
           if ('channelId' in input.location) {
             const checked = await checkVoiceOrStage(guildId, input.location.channelId);
@@ -4637,27 +4659,17 @@ const eventWritesPortFor = (
               checked.channelId,
               'manage-events',
             );
-            if (!target.ok) return targetRefusalFor(target);
+            if (!target.ok) return targetRefusalFor(target, checked.channelId);
             targetChannelId = target.channelId;
-            if (target.derivedGrant) grantedByChannelId = target.grantId;
+            grantedByChannelId = target.derivedGrant ? target.grantId : undefined;
             location = { kind: checked.kind, channelId: target.channelId };
           } else {
             if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
+            if (input.endAt === undefined && current.scheduledEndAt === undefined) {
+              return { status: 'refused', reason: 'external-needs-end' };
+            }
             location = { kind: 'external', place: input.location.place };
           }
-        } else if (current.channelId !== undefined) {
-          const target = await resolveSendTarget(
-            client,
-            scope,
-            guildId,
-            current.channelId,
-            'manage-events',
-          );
-          if (!target.ok) return targetRefusalFor(target);
-          targetChannelId = target.channelId;
-          if (target.derivedGrant) grantedByChannelId = target.grantId;
-        } else {
-          if (!botHasGuildManageEvents(client, guildId)) return guildManageEventsRefusal();
         }
         // The previous values of the changed fields, for the `event.edit`
         // undo row. A description added to an event that had none records
@@ -4757,7 +4769,7 @@ const eventWritesPortFor = (
             current.channelId,
             'manage-events',
           );
-          if (!target.ok) return targetRefusalFor(target);
+          if (!target.ok) return targetRefusalFor(target, current.channelId);
           targetChannelId = target.channelId;
           if (target.derivedGrant) grantedByChannelId = target.grantId;
         } else {
@@ -4794,7 +4806,7 @@ const eventWritesPortFor = (
       loggedCallAsync(deps.logger, 'pollPost', async () => {
         const scope = deps.scopes.forGuild(guildId);
         const target = await resolveSendTarget(client, scope, guildId, input.channelId, 'post');
-        if (!target.ok) return targetRefusalFor(target);
+        if (!target.ok) return targetRefusalFor(target, input.channelId);
         const outcome = await runMcpAction(
           mcpActionDepsFor(
             deps,
@@ -5572,6 +5584,14 @@ interface UndoPlan {
    * policy against this id instead of resolving a send target.
    */
   readonly roleId?: string | undefined;
+  /**
+   * Set for an `event.edit` inverse: the location it moves the event back
+   * to, and the start time it restores. The undo path re-checks the
+   * location live (it is not the row's target) and refuses a start time
+   * already behind us as expired.
+   */
+  readonly restoresLocation?: EventLocationInput | undefined;
+  readonly restoresStartAt?: number | undefined;
   readonly capGroup: 'edit' | 'pin_react' | 'structure';
   readonly argsHash: string;
   readonly execute: () => Promise<{ resultMessageId?: string; resultThreadId?: string }>;
@@ -5748,6 +5768,8 @@ const planUndo = (
       const previous = undo.data.previous;
       return {
         kind: 'event.edit',
+        restoresLocation: previous.location,
+        restoresStartAt: previous.startAt,
         capGroup: 'structure',
         argsHash: argsHashFor('event.edit', { event: eventId, ...previous }),
         execute: async () => {
@@ -6349,6 +6371,43 @@ const actionsPortFor = (
         }
         undoTargetChannelId = target.channelId;
         grantedByChannelId = target.derivedGrant ? target.grantId : undefined;
+      }
+      // An event edit's inverse may move the event back to where it was:
+      // that place is checked live too, not just the row's target (the
+      // forward edit's destination), so an undo never restores an event
+      // into a channel that has left send scope since.
+      if (plan.restoresLocation !== undefined) {
+        if (plan.restoresLocation.kind === 'external') {
+          if (!botHasGuildManageEvents(client, guildId)) {
+            return {
+              status: 'refused',
+              reason: 'target-unavailable',
+              detail: 'missing ManageEvents',
+            };
+          }
+        } else {
+          const back = await resolveSendTarget(
+            client,
+            scope,
+            guildId,
+            plan.restoresLocation.channelId,
+            'manage-events',
+          );
+          if (!back.ok) {
+            return {
+              status: 'refused',
+              reason: 'target-unavailable',
+              detail: back.missing !== undefined ? `missing ${back.missing}` : back.reason,
+            };
+          }
+        }
+      }
+      if (plan.restoresStartAt !== undefined && plan.restoresStartAt <= deps.now()) {
+        return {
+          status: 'refused',
+          reason: 'expired',
+          detail: new Date(plan.restoresStartAt).toISOString(),
+        };
       }
       const undoKey = nextUndoKey(scope, row.actionId, deps.now());
       if (undoKey === undefined) {

@@ -171,6 +171,8 @@ export type McpEventWriteOutcome =
       readonly status: 'refused';
       readonly reason: McpEventWriteRefusal;
       readonly detail?: string;
+      /** The channel that failed a target check, when it is not the one the caller passed. */
+      readonly channelId?: string;
     }
   | { readonly status: 'failed' };
 
@@ -181,6 +183,7 @@ export type McpEventWriteRefusal =
   | 'bot-lacks-permission'
   | 'event-not-found'
   | 'not-voice-or-stage'
+  | 'external-needs-end'
   | 'killswitch'
   | 'breaker-open'
   | 'rate-cap'
@@ -506,6 +509,11 @@ const refusalText = (
         `so ${nothingHappened}. Pass a voice or stage channel, ` +
         'or leave the channel out and pass a place for an external event.'
       );
+    case 'external-needs-end':
+      return (
+        `Event ${target.eventId ?? '?'} in guild ${guildId} has no end time, and an external ` +
+        `event needs one, so ${nothingHappened}. Retry with endAt alongside the place.`
+      );
     case 'killswitch':
       return (
         `The kill switch is on for guild ${guildId}, so ${nothingHappened}. ` +
@@ -646,7 +654,7 @@ const renderOutcome = (
         message: refusalText(
           kind,
           guildId,
-          target,
+          outcome.channelId !== undefined ? { ...target, channelId: outcome.channelId } : target,
           outcome.reason,
           outcome.detail,
           nothingHappened,

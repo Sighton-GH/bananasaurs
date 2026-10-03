@@ -378,9 +378,11 @@ bot holds ManageEvents on the voice channel; the connector is authorised with
 `bananasaurs:read` and `bananasaurs:send`. Record the run with timestamps.
 
 1. **A one-shot `schedule_message`.** Schedule a short text three minutes
-   ahead with the low role in `pingRoles`. Confirm `list_scheduled` shows it
-   as scheduled; at the due time confirm it posts in the channel, the role is
-   notified, and `list_scheduled` now shows it delivered.
+   ahead that mentions the low role (`<@&id>`) with the role also in
+   `pingRoles`. Confirm `list_scheduled` shows it as scheduled; at the due
+   time confirm it posts in the channel exactly as written (no reminder
+   framing), the role is notified, and `list_scheduled` now shows it
+   delivered.
 2. **A recurring schedule, cancelled and undone.** Schedule a daily send.
    Confirm `list_scheduled` shows its first occurrence. `cancel_scheduled`
    it, then `undo_action` the cancel: it is scheduled again. Cancel it once
@@ -390,7 +392,7 @@ bot holds ManageEvents on the voice channel; the connector is authorised with
    text and time; `undo_action` the edit and confirm the old text and time
    are back. Cancel it.
 4. **A ping dropped at send time.** Schedule a send three minutes ahead
-   pinging the low role, then switch `bananasaurs mcp role-policy --ping
+   pinging the low role as in step 1, then switch `bananasaurs mcp role-policy --ping
    allowlist` with the role not allowlisted. At the due time confirm the
    message posts with the role mention rendered but nobody notified, and the
    journal has one `mcp reminder ping dropped` line carrying only ids.

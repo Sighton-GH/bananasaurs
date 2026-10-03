@@ -186,8 +186,12 @@ export const createReminderDelivery = (
   async send(reminder) {
     const row = reminder as DeliverableReminder;
     // Assistant rows go exactly through today's code: no live client, no
-    // policy, no log lines.
-    if (row.origin !== 'mcp') {
+    // policy, no log lines. The branch is on `'assistant'`, not on "not
+    // mcp": a row whose origin went missing on the way here (an adapter
+    // that stopped passing it through) must never post unchecked.
+    if (row.origin !== 'assistant' && row.origin !== 'mcp')
+      throw new ReminderDeliveryError('reminder origin unknown', true, true);
+    if (row.origin === 'assistant') {
       try {
         const rendered = renderReminder(row);
         await discord.sendMessage(guildId, reminder.destinationId, {
@@ -201,7 +205,7 @@ export const createReminderDelivery = (
     }
     // No AI anywhere below: two policy reads and one post, nothing else.
     if (mcp === undefined)
-      throw new ReminderDeliveryError('mcp delivery requires live checks', true);
+      throw new ReminderDeliveryError('mcp delivery requires live checks', true, true);
     // The row's guild governs every check — never the closure guild, which
     // only equals it when the wiring is right. A row for another guild can
     // therefore never borrow this guild's scope.
@@ -224,9 +228,10 @@ export const createReminderDelivery = (
         }),
         'mcp reminder target out of scope',
       );
-      // Terminal: the scope row is gone, so retrying cannot change the
-      // answer — the pass fails the reminder with nothing posted.
-      throw new ReminderDeliveryError('target-out-of-scope', true);
+      // Terminal for the whole series (ADR 0119 §2): the scope row is gone,
+      // so neither a retry nor the next occurrence can change the answer —
+      // the pass fails the reminder with nothing posted.
+      throw new ReminderDeliveryError('target-out-of-scope', true, true);
     }
     const filtered = await filterPings(mcp.client, mcp.scope, rowGuildId, {
       roles: row.mentions.roleIds,
@@ -244,24 +249,20 @@ export const createReminderDelivery = (
         'mcp reminder ping dropped',
       );
     }
-    // The content renders whole — a dropped mention still reads as typed
-    // text, it just no longer notifies — and only `allowedMentions` narrows
-    // to the surviving pings. The render also re-asserts the mcp
-    // no-`@everyone`/`@here` rule, so `parse` here is always empty.
     // A row that broke the no-`@everyone`/`@here` guard is poisoned for
     // good: fail it at once as permanent, rather than retrying it as a
     // transient fault until the terminal window closes.
-    let rendered: ReturnType<typeof renderReminder>;
+    if (row.mentions.everyone || row.mentions.here)
+      throw new ReminderDeliveryError('mcp reminders cannot ping everyone or here', true, true);
     try {
-      rendered = renderReminder(row);
-    } catch {
-      throw new ReminderDeliveryError('mcp reminders cannot ping everyone or here', true);
-    }
-    try {
+      // A scheduled send is the fixed text `send_message` would have posted:
+      // verbatim (capped at 2,000 when scheduled, so never cut here), with
+      // no reminder framing. As there, a mention typed into the text renders
+      // but notifies only when its id survived the filter above.
       await discord.sendMessage(rowGuildId, row.destinationId, {
-        content: rendered.content,
+        content: row.text,
         allowedMentions: {
-          parse: rendered.allowedMentions.parse,
+          parse: [],
           ...(filtered.roleIds.length > 0 ? { roles: [...filtered.roleIds] } : {}),
           ...(filtered.userIds.length > 0 ? { users: [...filtered.userIds] } : {}),
         },

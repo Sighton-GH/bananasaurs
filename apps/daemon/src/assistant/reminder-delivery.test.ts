@@ -45,6 +45,12 @@ const reminder = (over: Partial<Reminder> = {}): Reminder => ({
   ...over,
 });
 
+/** An assistant row as the store hands it over: the claim always carries `origin`. */
+const assistantReminder = (over: Partial<Reminder> = {}): Reminder & { origin: 'assistant' } => ({
+  ...reminder(over),
+  origin: 'assistant',
+});
+
 let t: ReturnType<typeof openMigratedTestDatabase>;
 let scope: GuildScope;
 
@@ -293,6 +299,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
 
     await createReminderDelivery(GUILD, port, { client, scope, logger }).send(
       mcpReminder({
+        text: `<@&${LOW_ROLE}> <@&${EVIL_ROLE}> ${MCP_TEXT}`,
         mentions: { userIds: [], roleIds: [LOW_ROLE, EVIL_ROLE], everyone: false, here: false },
       }),
     );
@@ -301,10 +308,9 @@ describe('mcp scheduled sends (origin mcp)', () => {
     expect(calls).toHaveLength(1);
     const sent = calls[0]?.args[2] as { content: string; allowedMentions: unknown };
     expect(sent.allowedMentions).toEqual({ parse: [], roles: [LOW_ROLE] });
-    // The rendered content is unchanged: the dropped mention renders as typed
-    // text but no longer notifies.
-    expect(sent.content).toContain(`<@&${LOW_ROLE}>`);
-    expect(sent.content).toContain(`<@&${EVIL_ROLE}>`);
+    // The stored text posts verbatim, with no reminder framing: the dropped
+    // mention renders as typed text but no longer notifies.
+    expect(sent.content).toBe(`<@&${LOW_ROLE}> <@&${EVIL_ROLE}> ${MCP_TEXT}`);
     const fields = loggedFields(lines);
     expect(fields).toHaveLength(1);
     expect(fields[0]).toMatchObject({
@@ -388,6 +394,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
 
     await createReminderDelivery(GUILD, port, { client, scope, logger }).send(
       mcpReminder({
+        text: `<@${MEMBER}> <@${STRANGER}> ${MCP_TEXT}`,
         mentions: { userIds: [MEMBER, STRANGER], roleIds: [], everyone: false, here: false },
       }),
     );
@@ -396,8 +403,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
     expect(calls).toHaveLength(1);
     const sent = calls[0]?.args[2] as { content: string; allowedMentions: unknown };
     expect(sent.allowedMentions).toEqual({ parse: [], users: [MEMBER] });
-    expect(sent.content).toContain(`<@${MEMBER}>`);
-    expect(sent.content).toContain(`<@${STRANGER}>`);
+    expect(sent.content).toBe(`<@${MEMBER}> <@${STRANGER}> ${MCP_TEXT}`);
     const fields = loggedFields(lines);
     expect(fields).toHaveLength(1);
     expect(fields[0]).toMatchObject({
@@ -485,27 +491,113 @@ describe('assistant reminders are untouched by the re-check', () => {
     const { logger, lines } = capturingLogger();
     const delivery = createReminderDelivery(GUILD, port, { client, scope, logger });
 
-    for (const row of [
-      reminder({
+    await delivery.send(
+      assistantReminder({
         mentions: { userIds: [], roleIds: [EVIL_ROLE], everyone: false, here: false },
       }),
-      {
-        ...reminder({
-          mentions: { userIds: [], roleIds: [EVIL_ROLE], everyone: false, here: false },
-        }),
-        origin: 'assistant' as const,
-      },
-    ]) {
-      await delivery.send(row);
-    }
+    );
 
     const calls = port.restCalls('sendMessage');
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     for (const call of calls) {
       const sent = call.args[2] as { allowedMentions: unknown };
       expect(sent.allowedMentions).toEqual({ parse: [], roles: [EVIL_ROLE] });
     }
     expect(lines).toHaveLength(0);
+  });
+});
+
+describe('a reminder whose origin is missing', () => {
+  it('fails closed as permanent for the whole series, with nothing posted', async () => {
+    allowChannel(scope, CHANNEL);
+    const client = makeDeliveryClient();
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    const delivery = createReminderDelivery(GUILD, port, { client, scope, logger });
+
+    // A row an adapter handed over without its origin: neither the assistant
+    // path nor the mcp path may guess.
+    const error = await delivery.send(reminder()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect((error as ReminderDeliveryError).endsSeries).toBe(true);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+  });
+});
+
+describe('stored rows through the real store and the real pass', () => {
+  it('an mcp row inserted in SQLite reaches the re-check, and a destination out of scope fails it', async () => {
+    // No allowlist row: the destination is out of send scope at delivery.
+    const client = makeDeliveryClient();
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    assistantRepo.insertReminder(scope, mcpReminder(), 'mcp');
+
+    const result = await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, { client, scope, logger }),
+      NOW,
+    );
+
+    expect(result.failed).toBe(1);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+    const stored = assistantRepo.getReminder(scope, 'r1', 'mcp');
+    expect(stored?.status).toBe('failed');
+    expect(stored?.failureReason).toBe('target-out-of-scope');
+  });
+
+  it('a recurring mcp row whose destination left scope fails instead of moving to its next occurrence', async () => {
+    const client = makeDeliveryClient();
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    assistantRepo.insertReminder(
+      scope,
+      mcpReminder({ recurrence: { pattern: { kind: 'daily' }, timeZone: 'UTC' } }),
+      'mcp',
+    );
+
+    await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, { client, scope, logger }),
+      NOW,
+    );
+
+    expect(assistantRepo.getReminder(scope, 'r1', 'mcp')?.status).toBe('failed');
+  });
+
+  it('an assistant row inserted in SQLite still posts through the old path', async () => {
+    const client = makeDeliveryClient();
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    assistantRepo.insertReminder(scope, reminder());
+
+    const result = await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, { client, scope, logger }),
+      NOW,
+    );
+
+    expect(result.delivered).toBe(1);
+    expect(port.restCalls('sendMessage')).toHaveLength(1);
+  });
+
+  it('an mcp scheduled send of 2,000 characters posts whole', async () => {
+    allowChannel(scope, CHANNEL);
+    const client = makeDeliveryClient();
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    const text = 'x'.repeat(2_000);
+    assistantRepo.insertReminder(scope, mcpReminder({ text }), 'mcp');
+
+    await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, { client, scope, logger }),
+      NOW,
+    );
+
+    const sent = port.restCalls('sendMessage')[0]?.args[2] as { content: string };
+    expect(sent.content).toBe(text);
   });
 });
 
@@ -516,11 +608,33 @@ describe('no model in the scheduled-send path', () => {
       ...source.matchAll(/from\s+['"]([^'"]+)['"]/g),
       ...source.matchAll(/import\(\s*['"]([^'"]+)['"]/g),
     ].map((match) => match[1] ?? '');
-    expect(
-      specifiers.filter((specifier) =>
-        /provider|model-chain|quota-ledger|web-search|generateText/i.test(specifier),
-      ),
-    ).toEqual([]);
+    // An exact allowlist, not a denylist of provider-ish names: any new
+    // module, or any new name pulled from `@bananasaurs/core` (which also
+    // exports the provider layer), fails here and has to be looked at.
+    expect([...new Set(specifiers)].sort()).toEqual([
+      '../mcp/targets.js',
+      './reminder-summary.js',
+      '@bananasaurs/core',
+      '@bananasaurs/storage',
+      'discord.js',
+    ]);
+    const coreNames = (/import\s*\{([^}]*)\}\s*from\s*'@bananasaurs\/core'/.exec(source)?.[1] ?? '')
+      .split(',')
+      .map((name) => name.replace(/^\s*type\s+/, '').trim())
+      .filter((name) => name !== '')
+      .sort();
+    expect(coreNames).toEqual([
+      'DiscordApiError',
+      'DiscordPort',
+      'Logger',
+      'OutgoingMessage',
+      'Reminder',
+      'ReminderDelivery',
+      'ReminderDeliveryError',
+      'ReminderStore',
+      'parseGuildId',
+      'safeLogFields',
+    ]);
     expect(source).not.toContain('generateText');
   });
 });
@@ -541,7 +655,7 @@ describe('createReminderDelivery', () => {
   it('sends the rendered reminder to the destination channel', async () => {
     const discord = new FakeDiscord({ guildId: GUILD });
     const delivery = createReminderDelivery(GUILD, discord);
-    const due = reminder({
+    const due = assistantReminder({
       mentions: { userIds: [USER], roleIds: [], everyone: false, here: false },
       context: 'why it matters',
     });
@@ -559,9 +673,10 @@ describe('createReminderDelivery', () => {
     discord.failNext('sendMessage', FakeDiscord.missingPermissions());
     const delivery = createReminderDelivery(GUILD, discord);
 
-    const error = await delivery.send(reminder()).catch((e: unknown) => e);
+    const error = await delivery.send(assistantReminder()).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(ReminderDeliveryError);
     expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect((error as ReminderDeliveryError).message).not.toBe('reminder origin unknown');
   });
 });

@@ -65,6 +65,7 @@ const fakePort = (over: { sealedSecrets?: boolean } = {}) => {
     };
   };
   return {
+    get: (key: string) => values.get(key)?.value ?? settingDefinition(key)?.defaultValue,
     list: () => INSTANCE_SETTINGS.map((def) => viewOf(def.key)),
     set: (key: string, value: unknown, by: string, now: number) => {
       const def = settingDefinition(key);

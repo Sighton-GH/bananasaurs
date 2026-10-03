@@ -11661,6 +11661,155 @@ describe('/mcp event writes through the real composition', () => {
     }
   });
 
+  it('a move out of a channel that left send scope is refused, even to an allowlisted channel', async () => {
+    allowEventChannel(VOICE);
+    allowEventChannel(STAGE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const eventId = createdEventIdOf(
+        callText((await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body)
+          .text,
+      );
+      mcpSendRepo.disallowChannel(t.scopes.forGuild(GUILD_A), VOICE, 'channel');
+      for (const [key, move] of [
+        ['event-move-stage', { channel: STAGE }],
+        ['event-move-place', { place: 'Room 1' }],
+      ] as const) {
+        const refused = callText(
+          (
+            await eventCall(eventApp, accessToken, 'edit_event', {
+              guildId: '111111111111111111',
+              eventId,
+              ...move,
+              idempotencyKey: key,
+            })
+          ).body,
+        );
+        expect(refused.isError).toBe(true);
+        expect(refused.text).toContain(VOICE);
+      }
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an undo that would move an event back into a channel that left send scope is refused', async () => {
+    allowEventChannel(VOICE);
+    allowEventChannel(STAGE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const eventId = createdEventIdOf(
+        callText((await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body)
+          .text,
+      );
+      const moved = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            channel: STAGE,
+            idempotencyKey: 'event-move-back',
+          })
+        ).body,
+      );
+      expect(moved.isError).not.toBe(true);
+      mcpSendRepo.disallowChannel(t.scopes.forGuild(GUILD_A), VOICE, 'channel');
+      const editRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'event-move-back');
+      const refused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(1);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('an undo that would restore a start time already behind us refuses as expired', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const eventId = createdEventIdOf(
+        callText((await eventCall(eventApp, accessToken, 'create_event', createVoiceArgs())).body)
+          .text,
+      );
+      await eventCall(eventApp, accessToken, 'edit_event', {
+        guildId: '111111111111111111',
+        eventId,
+        startAt: '2030-06-01T19:00:00.000Z',
+        idempotencyKey: 'event-retime',
+      });
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(1);
+      // The original start has passed: restoring it would hand Discord a past time.
+      clock = Date.parse(START) + 60_000;
+      // The jump outlives the first token; a fresh one is minted at the new time.
+      const laterToken = await mintToken('bananasaurs:send');
+      const editRow = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'event-retime');
+      const refused = callText(
+        (
+          await eventCall(eventApp, laterToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: editRow?.actionId ?? '',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('expired');
+      expect(refused.text).toContain(START);
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(1);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
+  it('a move to a place for an event with no end time is refused, naming endAt', async () => {
+    allowEventChannel(VOICE);
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const eventApp = buildEventApp(buildEventClient(true), discord);
+    const accessToken = await mintToken('bananasaurs:send');
+    try {
+      const eventId = createdEventIdOf(
+        callText(
+          (
+            await eventCall(
+              eventApp,
+              accessToken,
+              'create_event',
+              createVoiceArgs({ endAt: undefined }),
+            )
+          ).body,
+        ).text,
+      );
+      const refused = callText(
+        (
+          await eventCall(eventApp, accessToken, 'edit_event', {
+            guildId: '111111111111111111',
+            eventId,
+            place: 'Room 1',
+            idempotencyKey: 'event-place-no-end',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('endAt');
+      expect(discord.restCalls('editScheduledEvent')).toHaveLength(0);
+    } finally {
+      await eventApp.close();
+    }
+  });
+
   it('an unknown event id is refused as event-not-found', async () => {
     guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
     const discord = new FakeDiscord({ guildId: GUILD_A });

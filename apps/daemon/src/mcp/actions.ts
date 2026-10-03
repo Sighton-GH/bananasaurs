@@ -39,14 +39,12 @@ export interface McpActionEnv {
   readonly now: () => number;
   /**
    * ADR 0119 §4: the live instance settings (the same `get` other settings
-   * use). `get` is optional so the limited tuning port (`HttpDeps`) still
-   * satisfies this env with no change to the MCP wiring call sites (`list`
-   * keeps the weak-type overlap); at runtime the daemon hands in the full
-   * store, whose `get` reads live. Absent (or without `get`) caps fall back
-   * to `MCP_ACTION_CAPS`.
+   * use). `get` is required, so a port that cannot read a setting live does
+   * not type-check here and cannot silently freeze the caps at their
+   * defaults; at runtime the daemon hands in the full store. Only an absent
+   * store (isolated tests) falls back to `MCP_ACTION_CAPS`.
    */
-  readonly instanceSettings?:
-    { get?(key: InstanceSettingKey): unknown; list?(): readonly unknown[] } | undefined;
+  readonly instanceSettings?: { get(key: InstanceSettingKey): unknown } | undefined;
 }
 
 const MCP_CAP_KEY_FOR_GROUP: Readonly<Record<McpCapGroup, InstanceSettingKey>> = {
@@ -84,7 +82,7 @@ export const mcpActionDepsFor = (
     // registry default), so an owner edit applies to the next action with no
     // restart. Absent store (isolated tests) falls back to the defaults.
     capFor: (capGroup) => {
-      const raw = env.instanceSettings?.get?.(MCP_CAP_KEY_FOR_GROUP[capGroup]);
+      const raw = env.instanceSettings?.get(MCP_CAP_KEY_FOR_GROUP[capGroup]);
       return typeof raw === 'number' ? raw : MCP_ACTION_CAPS[capGroup];
     },
     state: {
