@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AuditLogEntryEvent } from '../discord/events.js';
-import {
-  AUDIT_EVENT_KINDS,
-  auditItemsFor,
-  formatAuditValue,
-} from './audit-items.js';
+import { AUDIT_EVENT_KINDS, auditItemsFor, formatAuditValue } from './audit-items.js';
 
 const GUILD = '000000000000000001';
 const ACTOR = '111111111111111111';

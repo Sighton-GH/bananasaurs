@@ -664,8 +664,9 @@ function normaliseAuditChanges(
 ): AuditLogChange[] {
   if (!Array.isArray(changes)) return [];
   return changes
-    .filter((change): change is { key: unknown; old?: unknown; new?: unknown } =>
-      typeof change === 'object' && change !== null,
+    .filter(
+      (change): change is { key: unknown; old?: unknown; new?: unknown } =>
+        typeof change === 'object' && change !== null,
     )
     .map((change) => ({
       key: String(change.key),

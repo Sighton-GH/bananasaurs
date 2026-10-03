@@ -264,14 +264,10 @@ describe('deleteRoute', () => {
     expect(getRoute(a, created.routeId)).toBeUndefined();
     expect(listRoutes(a)).toEqual([]);
     expect(
-      read(a, (db) =>
-        db.select().from(logRouteEvents).where(a.only(logRouteEvents)).all(),
-      ),
+      read(a, (db) => db.select().from(logRouteEvents).where(a.only(logRouteEvents)).all()),
     ).toEqual([]);
     expect(
-      read(a, (db) =>
-        db.select().from(logRouteExclusions).where(a.only(logRouteExclusions)).all(),
-      ),
+      read(a, (db) => db.select().from(logRouteExclusions).where(a.only(logRouteExclusions)).all()),
     ).toEqual([]);
   });
 
@@ -308,10 +304,7 @@ describe('listEnabledRoutesFor', () => {
       eventKinds: ['message_delete', 'member_join'],
       createdAtMs: 2001,
     });
-    expect(listEnabledRoutesFor(a, 'message_delete').map((r) => r.routeId)).toEqual([
-      older,
-      newer,
-    ]);
+    expect(listEnabledRoutesFor(a, 'message_delete').map((r) => r.routeId)).toEqual([older, newer]);
   });
 });
 
@@ -354,7 +347,10 @@ describe('member snapshots', () => {
 
   it('upsert then get returns the snapshot with roleIds sorted', () => {
     upsertMemberSnapshot(a, SNAPSHOT);
-    expect(getMemberSnapshot(a, USER_A)).toEqual({ ...SNAPSHOT, roleIds: [...SNAPSHOT.roleIds].sort() });
+    expect(getMemberSnapshot(a, USER_A)).toEqual({
+      ...SNAPSHOT,
+      roleIds: [...SNAPSHOT.roleIds].sort(),
+    });
   });
 
   it('a second upsert replaces the row', () => {

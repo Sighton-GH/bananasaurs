@@ -252,9 +252,15 @@ describe('POST /api/log-routes', () => {
   });
 
   it.each([
-    { name: 'an unknown event kind', body: { channelId: CHANNEL, eventKinds: ['not-a-real-kind'] } },
+    {
+      name: 'an unknown event kind',
+      body: { channelId: CHANNEL, eventKinds: ['not-a-real-kind'] },
+    },
     { name: 'an empty event-kind list', body: { channelId: CHANNEL, eventKinds: [] } },
-    { name: 'a non-snowflake channel', body: { channelId: 'not-a-channel', eventKinds: ['message_delete'] } },
+    {
+      name: 'a non-snowflake channel',
+      body: { channelId: 'not-a-channel', eventKinds: ['message_delete'] },
+    },
     {
       name: 'the destination among the exclusions',
       body: { channelId: CHANNEL, eventKinds: ['message_delete'], excludedChannelIds: [CHANNEL] },

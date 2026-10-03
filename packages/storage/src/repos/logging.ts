@@ -75,9 +75,7 @@ const assembleRoute = (
   excludedChannelIds: exclusionsByRoute.get(row.routeId) ?? [],
 });
 
-const groupChildren = (
-  rows: { routeId: string; value: string }[],
-): Map<string, string[]> => {
+const groupChildren = (rows: { routeId: string; value: string }[]): Map<string, string[]> => {
   const byRoute = new Map<string, Set<string>>();
   for (const row of rows) {
     let set = byRoute.get(row.routeId);
@@ -90,10 +88,7 @@ const groupChildren = (
   return new Map([...byRoute].map(([routeId, set]) => [routeId, [...set].sort()]));
 };
 
-const loadRouteMap = (
-  db: Db,
-  scope: GuildScope,
-): Map<string, LogRoute> => {
+const loadRouteMap = (db: Db, scope: GuildScope): Map<string, LogRoute> => {
   const parents = db
     .select()
     .from(logRoutes)
@@ -143,9 +138,7 @@ export const createRoute = (
     const eventKinds = normalizeList(input.eventKinds);
     if (eventKinds.length > 0) {
       db.insert(logRouteEvents)
-        .values(
-          eventKinds.map((eventKind) => ({ guildId: scope.guildId, routeId, eventKind })),
-        )
+        .values(eventKinds.map((eventKind) => ({ guildId: scope.guildId, routeId, eventKind })))
         .run();
     }
     const excludedChannelIds = normalizeList(input.excludedChannelIds);
@@ -195,9 +188,7 @@ export const updateRoute = (
     const eventKinds = normalizeList(input.eventKinds);
     if (eventKinds.length > 0) {
       db.insert(logRouteEvents)
-        .values(
-          eventKinds.map((eventKind) => ({ guildId: scope.guildId, routeId, eventKind })),
-        )
+        .values(eventKinds.map((eventKind) => ({ guildId: scope.guildId, routeId, eventKind })))
         .run();
     }
     const excludedChannelIds = normalizeList(input.excludedChannelIds);
@@ -212,11 +203,7 @@ export const updateRoute = (
   });
 
 /** Returns whether a route existed to change. */
-export const setRouteEnabled = (
-  scope: GuildScope,
-  routeId: string,
-  enabled: boolean,
-): boolean =>
+export const setRouteEnabled = (scope: GuildScope, routeId: string, enabled: boolean): boolean =>
   write(scope, ({ db }) => {
     const result = db
       .update(logRoutes)
@@ -311,15 +298,11 @@ const parseRoleIds = (raw: string): string[] => {
   } catch {
     return [];
   }
-  if (!Array.isArray(parsed) || !parsed.every((v): v is string => typeof v === 'string'))
-    return [];
+  if (!Array.isArray(parsed) || !parsed.every((v): v is string => typeof v === 'string')) return [];
   return [...parsed].sort();
 };
 
-export const getMemberSnapshot = (
-  scope: GuildScope,
-  userId: string,
-): MemberSnapshot | undefined =>
+export const getMemberSnapshot = (scope: GuildScope, userId: string): MemberSnapshot | undefined =>
   read(scope, (db) => {
     const row = db
       .select()

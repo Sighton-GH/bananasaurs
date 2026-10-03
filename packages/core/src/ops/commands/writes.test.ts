@@ -445,10 +445,11 @@ describe('log routing create', () => {
   it('refuses the destination listed in --exclude', async () => {
     const h = harness({ routes: [] });
     const message = errMessage(
-      await h.run(
-        'log routing create',
-        { channel: CHANNEL, events: 'member_join', exclude: CHANNEL },
-      ),
+      await h.run('log routing create', {
+        channel: CHANNEL,
+        events: 'member_join',
+        exclude: CHANNEL,
+      }),
     );
     expect(message).toContain('cannot also be an excluded channel');
     expect(h.routes).toEqual([]);
@@ -460,10 +461,11 @@ describe('log routing update', () => {
   it('replaces the route and records before and after', async () => {
     const h = harness({ routes: [route()] });
     const text = okText(
-      await h.run(
-        'log routing update',
-        { route: ROUTE_ID, channel: OTHER_CHANNEL, events: 'member_join,member_leave' },
-      ),
+      await h.run('log routing update', {
+        route: ROUTE_ID,
+        channel: OTHER_CHANNEL,
+        events: 'member_join,member_leave',
+      }),
     );
     expect(text).toContain('Updated route');
     expect(text).toContain(`<#${OTHER_CHANNEL}>`);
@@ -491,10 +493,11 @@ describe('log routing update', () => {
   it('refuses an unknown route id rather than reporting success', async () => {
     const h = harness({ routes: [route()] });
     const message = errMessage(
-      await h.run(
-        'log routing update',
-        { route: UNKNOWN_ROUTE_ID, channel: OTHER_CHANNEL, events: 'member_join' },
-      ),
+      await h.run('log routing update', {
+        route: UNKNOWN_ROUTE_ID,
+        channel: OTHER_CHANNEL,
+        events: 'member_join',
+      }),
     );
     expect(message).toContain('nothing to update');
     expect(h.routes).toHaveLength(1);

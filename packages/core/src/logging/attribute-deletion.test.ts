@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { pino } from 'pino';
-import { attributeAndLogDeletion, type MessageDeleteAttributionPorts } from './attribute-deletion.js';
+import {
+  attributeAndLogDeletion,
+  type MessageDeleteAttributionPorts,
+} from './attribute-deletion.js';
 import type { LogRoute } from './routing.js';
 import type { LogMessageDeletePayload } from '../jobs/kinds.js';
 import { parseSnowflakeId } from '../ids.js';

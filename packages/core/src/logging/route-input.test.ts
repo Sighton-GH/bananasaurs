@@ -86,9 +86,7 @@ describe('logRouteInputSchema', () => {
 
 describe('logRouteIdSchema', () => {
   it('accepts a UUID', () => {
-    expect(
-      logRouteIdSchema.safeParse('123e4567-e89b-12d3-a456-426614174000').success,
-    ).toBe(true);
+    expect(logRouteIdSchema.safeParse('123e4567-e89b-12d3-a456-426614174000').success).toBe(true);
   });
 
   it("rejects 'abc'", () => {

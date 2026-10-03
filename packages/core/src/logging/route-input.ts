@@ -2,11 +2,12 @@ import { z } from 'zod';
 import { snowflakeIdSchema } from '../ids.js';
 import { LOG_EVENT_KINDS } from './subscriber.js';
 
-export const logEventKindSchema = z
-  .string()
-  .refine((k) => LOG_EVENT_KINDS.includes(k), (k) => ({
+export const logEventKindSchema = z.string().refine(
+  (k) => LOG_EVENT_KINDS.includes(k),
+  (k) => ({
     message: `no such log event kind: ${k}`,
-  }));
+  }),
+);
 
 /**
  * What a client sends to create or replace a route (ADR 0123). Shared by the

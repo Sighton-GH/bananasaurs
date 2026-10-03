@@ -166,7 +166,11 @@ describe('GET /api/log-routes — routes with kinds and exclusions plus excluded
     loggingRepo.excludeChannel(t.scopes.forGuild(GUILD), '666666666666666666');
 
     const { cookie } = await signIn();
-    const response = await app.inject({ method: 'GET', url: '/api/log-routes', headers: { cookie } });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/log-routes',
+      headers: { cookie },
+    });
     expect(response.statusCode).toBe(200);
     const body = response.json<{
       routes: {

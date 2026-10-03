@@ -124,7 +124,8 @@ export function memberChanges(baseline: MemberBaseline, event: MemberEvent): Mem
   if (baseline.knownUserFields) {
     const usernameChanged =
       baseline.username !== undefined && baseline.username !== profile.username;
-    const globalNameChanged = (baseline.globalName ?? undefined) !== (profile.globalName ?? undefined);
+    const globalNameChanged =
+      (baseline.globalName ?? undefined) !== (profile.globalName ?? undefined);
     if (usernameChanged || globalNameChanged) {
       const text = formatMemberUsernameChanged({
         userId: event.userId,

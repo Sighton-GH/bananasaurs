@@ -235,7 +235,9 @@ const parseRouteInput = (
   if (!parsed.success) {
     throw new Error(
       parsed.error.issues
-        .map((issue) => (issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
+        .map((issue) =>
+          issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message,
+        )
         .join('; '),
     );
   }
@@ -426,7 +428,7 @@ export const logRoutingOffCommand = defineCommand<z.infer<typeof logRoutingOffAr
     return {
       text:
         `Route ${args.route.slice(0, 8)} "${before.name}" no longer logs to Discord.\n` +
-          `  The route is kept, so \`log routing on ${args.route}\` turns it back on.`,
+        `  The route is kept, so \`log routing on ${args.route}\` turns it back on.`,
       data: { routeId: args.route, enabled: false },
       audit: {
         action: 'log_route.disabled',
@@ -512,7 +514,8 @@ export const logRoutingUnexcludeCommand = defineCommand<z.infer<typeof channelAr
   run(ctx: OpsContext, args): OpsWriteResult {
     const removed = ctx.ports.unexcludeChannel(args.channel);
     return {
-      text: `<#${args.channel}> is no longer excluded from every route${removed ? '' : ' (it was not)'}.\n` +
+      text:
+        `<#${args.channel}> is no longer excluded from every route${removed ? '' : ' (it was not)'}.\n` +
         `  That was the guild-wide No access list; a route that excludes the channel itself still skips it.`,
       data: { channelId: args.channel, excluded: false, changed: removed },
       audit: {

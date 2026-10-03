@@ -185,10 +185,12 @@ function logItemsFor(event: HandleEvent): LogItem[] {
 
   if (event.kind === 'messageCreate') {
     if (event.authorIsBot) return [];
-    const source: LogSource = { channelId: event.channelId, parentChannelId: event.parentChannelId };
+    const source: LogSource = {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+    };
     const fingerprint =
-      fingerprintFor(event) ??
-      `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
     return [
       {
         eventKind: routeKind,
@@ -201,10 +203,12 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'messageUpdate') {
-    const source: LogSource = { channelId: event.channelId, parentChannelId: event.parentChannelId };
+    const source: LogSource = {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+    };
     const fingerprint =
-      fingerprintFor(event) ??
-      `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
     return [
       {
         eventKind: routeKind,
@@ -242,7 +246,8 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'roleCreate') {
-    const fingerprint = fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
     return [
       {
         eventKind: routeKind,
@@ -254,7 +259,8 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'roleUpdate') {
-    const fingerprint = fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
     return [
       {
         eventKind: routeKind,
@@ -266,7 +272,8 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'roleDelete') {
-    const fingerprint = fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
     return [
       {
         eventKind: routeKind,
@@ -278,7 +285,8 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'guildCreate') {
-    const fingerprint = fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
     return [
       {
         eventKind: routeKind,
@@ -290,7 +298,8 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'guildDelete') {
-    const fingerprint = fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
     return [
       {
         eventKind: routeKind,
@@ -302,7 +311,8 @@ function logItemsFor(event: HandleEvent): LogItem[] {
   }
 
   if (event.kind === 'autoModerationAction') {
-    const fingerprint = fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
     return [
       {
         eventKind: routeKind,
@@ -332,7 +342,9 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
         parentChannelId: event.parentChannelId,
       };
       if (isSourceExcluded(source, (id) => ports.isChannelExcluded(id))) return;
-      const routes = ports.listEnabledRoutesFor('message_delete').filter((r) => routeAccepts(r, source));
+      const routes = ports
+        .listEnabledRoutesFor('message_delete')
+        .filter((r) => routeAccepts(r, source));
       if (routes.length === 0) return;
 
       const now = ports.now();

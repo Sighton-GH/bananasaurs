@@ -26,9 +26,7 @@ describe('routeAccepts', () => {
 
   it('rejects an excluded source channel', () => {
     const r = route({ excludedChannelIds: ['excluded'] });
-    expect(
-      routeAccepts(r, { channelId: 'excluded', parentChannelId: undefined }),
-    ).toBe(false);
+    expect(routeAccepts(r, { channelId: 'excluded', parentChannelId: undefined })).toBe(false);
   });
 
   it('rejects a thread whose parent is excluded', () => {
@@ -48,9 +46,7 @@ describe('routeAccepts', () => {
   });
 
   it('accepts an unrelated channel', () => {
-    expect(
-      routeAccepts(route(), { channelId: 'other', parentChannelId: undefined }),
-    ).toBe(true);
+    expect(routeAccepts(route(), { channelId: 'other', parentChannelId: undefined })).toBe(true);
   });
 
   it('accepts an undefined source for an enabled route and rejects for a disabled one', () => {
@@ -61,9 +57,9 @@ describe('routeAccepts', () => {
 
 describe('isSourceExcluded', () => {
   it('is true for a channel on the list', () => {
-    expect(isSourceExcluded({ channelId: 'x', parentChannelId: undefined }, (id) => id === 'x')).toBe(
-      true,
-    );
+    expect(
+      isSourceExcluded({ channelId: 'x', parentChannelId: undefined }, (id) => id === 'x'),
+    ).toBe(true);
   });
 
   it('is true for a thread parent on the list', () => {
@@ -77,9 +73,7 @@ describe('isSourceExcluded', () => {
   });
 
   it('is false when neither channel nor parent is listed', () => {
-    expect(
-      isSourceExcluded({ channelId: 'a', parentChannelId: 'b' }, () => false),
-    ).toBe(false);
+    expect(isSourceExcluded({ channelId: 'a', parentChannelId: 'b' }, () => false)).toBe(false);
   });
 });
 

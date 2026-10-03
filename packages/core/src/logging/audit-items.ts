@@ -168,14 +168,17 @@ function memberTimeoutItems(event: AuditLogEntryEvent): AuditItem[] {
 
 function inviteCreateItem(event: AuditLogEntryEvent): AuditItem {
   const codeChange = findChange(event, 'code');
-  const code =
-    changeString(codeChange?.new) ?? changeString(codeChange?.old) ?? 'unknown';
+  const code = changeString(codeChange?.new) ?? changeString(codeChange?.old) ?? 'unknown';
   const channelChange = findChange(event, 'channel_id');
   const channelId = changeString(channelChange?.new) ?? changeString(channelChange?.old);
   const channelPart = channelId === undefined ? '(unknown channel)' : `<#${channelId}>`;
   const maxAge = changeNumber(findChange(event, 'max_age')?.new);
   const expiry =
-    maxAge === undefined ? 'unknown' : maxAge === 0 ? 'never' : `in ${Math.round(maxAge / 3600)} hours`;
+    maxAge === undefined
+      ? 'unknown'
+      : maxAge === 0
+        ? 'never'
+        : `in ${Math.round(maxAge / 3600)} hours`;
   const maxUses = changeNumber(findChange(event, 'max_uses')?.new);
   const uses = maxUses === undefined ? 'unknown' : maxUses === 0 ? 'unlimited' : String(maxUses);
   return makeItem(
@@ -198,11 +201,23 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
       return memberTimeoutItems(event);
     case AUDIT_ACTION_CHANNEL_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'channel_create', `Channel created: ${channelTarget(event)} (${truncateInline(name)})`, [])];
+      return [
+        makeItem(
+          event,
+          'channel_create',
+          `Channel created: ${channelTarget(event)} (${truncateInline(name)})`,
+          [],
+        ),
+      ];
     }
     case AUDIT_ACTION_CHANNEL_UPDATE:
       return [
-        makeItem(event, 'channel_update', `Channel changed: ${channelTarget(event)}`, changeLinesFor(event.changes)),
+        makeItem(
+          event,
+          'channel_update',
+          `Channel changed: ${channelTarget(event)}`,
+          changeLinesFor(event.changes),
+        ),
       ];
     case AUDIT_ACTION_CHANNEL_DELETE: {
       const name =
@@ -213,7 +228,14 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
     }
     case AUDIT_ACTION_THREAD_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'thread_create', `Thread created: ${channelTarget(event)} (${truncateInline(name)})`, [])];
+      return [
+        makeItem(
+          event,
+          'thread_create',
+          `Thread created: ${channelTarget(event)} (${truncateInline(name)})`,
+          [],
+        ),
+      ];
     }
     case AUDIT_ACTION_THREAD_DELETE: {
       const name =
@@ -223,14 +245,17 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
       return [makeItem(event, 'thread_delete', `Thread deleted: ${truncateInline(name)}`, [])];
     }
     case AUDIT_ACTION_GUILD_UPDATE:
-      return [makeItem(event, 'guild_update', 'Server settings changed', changeLinesFor(event.changes))];
+      return [
+        makeItem(event, 'guild_update', 'Server settings changed', changeLinesFor(event.changes)),
+      ];
     case AUDIT_ACTION_INVITE_CREATE:
       return [inviteCreateItem(event)];
     case AUDIT_ACTION_INVITE_DELETE: {
       const codeChange = findChange(event, 'code');
-      const code =
-        changeString(codeChange?.old) ?? changeString(codeChange?.new) ?? 'unknown';
-      return [makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${truncateInline(code)}`, [])];
+      const code = changeString(codeChange?.old) ?? changeString(codeChange?.new) ?? 'unknown';
+      return [
+        makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${truncateInline(code)}`, []),
+      ];
     }
     case AUDIT_ACTION_EMOJI_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
@@ -239,7 +264,14 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
     case AUDIT_ACTION_EMOJI_UPDATE: {
       const oldName = changeString(findChange(event, 'name')?.old) ?? 'unknown';
       const newName = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'emoji_update', `Emoji renamed: :${truncateInline(oldName)}: → :${truncateInline(newName)}:`, [])];
+      return [
+        makeItem(
+          event,
+          'emoji_update',
+          `Emoji renamed: :${truncateInline(oldName)}: → :${truncateInline(newName)}:`,
+          [],
+        ),
+      ];
     }
     case AUDIT_ACTION_EMOJI_DELETE: {
       const oldName =
@@ -260,7 +292,14 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         changeString(findChange(event, 'name')?.new) ??
         changeString(findChange(event, 'name')?.old) ??
         'unknown';
-      return [makeItem(event, 'sticker_update', `Sticker changed: ${truncateInline(name)}`, changeLinesFor(event.changes))];
+      return [
+        makeItem(
+          event,
+          'sticker_update',
+          `Sticker changed: ${truncateInline(name)}`,
+          changeLinesFor(event.changes),
+        ),
+      ];
     }
     case AUDIT_ACTION_STICKER_DELETE: {
       const name =

@@ -145,9 +145,7 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot({ nickname: 'Old' }), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_nickname_changed']);
-    expect(changes[0]?.render()).toBe(
-      `Nickname changed: <@${USER}>  "Old" → "New"`,
-    );
+    expect(changes[0]?.render()).toBe(`Nickname changed: <@${USER}>  "Old" → "New"`);
   });
 
   it('uses (none) for an absent nickname on either side', () => {
@@ -277,9 +275,7 @@ describe('memberChanges with a snapshot', () => {
       event,
     );
     expect(changes.map((c) => c.eventKind)).toEqual(['member_roles_changed']);
-    expect(changes[0]?.render()).toBe(
-      `Roles changed: <@${USER}>  +<@&${ROLE_B}>  −<@&${ROLE_C}>`,
-    );
+    expect(changes[0]?.render()).toBe(`Roles changed: <@${USER}>  +<@&${ROLE_B}>  −<@&${ROLE_C}>`);
   });
 
   it('an identical profile produces no changes', () => {

@@ -588,9 +588,10 @@ export const logRouteEvents = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.routeId, t.eventKind] }),
-    foreignKey(
-      { columns: [t.guildId, t.routeId], foreignColumns: [logRoutes.guildId, logRoutes.routeId] },
-    ).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.routeId],
+      foreignColumns: [logRoutes.guildId, logRoutes.routeId],
+    }).onDelete('cascade'),
     check('log_route_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
   ],
 );
@@ -611,9 +612,10 @@ export const logRouteExclusions = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.routeId, t.channelId] }),
-    foreignKey(
-      { columns: [t.guildId, t.routeId], foreignColumns: [logRoutes.guildId, logRoutes.routeId] },
-    ).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.routeId],
+      foreignColumns: [logRoutes.guildId, logRoutes.routeId],
+    }).onDelete('cascade'),
     check('log_route_exclusions_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('log_route_exclusions_channel_id_snowflake', snowflakeCheck(t.channelId)),
   ],
