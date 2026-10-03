@@ -7,7 +7,7 @@ import {
 } from '@bananasaurs/storage/test-support';
 import { guildRepo, loggingRepo, mcpSendRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
-import { resolvePings, resolveSendTarget } from './targets.js';
+import { checkRolePing, filterPings, resolvePings, resolveSendTarget } from './targets.js';
 
 /**
  * Task 4 Step 1: target resolution — send scope ∩ the bot's live Discord
@@ -458,6 +458,128 @@ describe('resolvePings', () => {
       Promise.reject(new Error('connection reset'))) as typeof guild.members.fetch;
     await expect(
       resolvePings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [],
+        users: [STRANGER_USER],
+      }),
+    ).rejects.toThrow('connection reset');
+  });
+});
+
+describe('checkRolePing', () => {
+  it('passes a role below the bot with its resolved id', () => {
+    expect(
+      checkRolePing(
+        makeClient({ roles: defaultRoles() }),
+        t.scopes.forGuild(GUILD_A),
+        GUILD_A,
+        LOW_ROLE,
+      ),
+    ).toEqual({ ok: true, id: LOW_ROLE });
+  });
+
+  it('refuses a role above the bot with the same reason resolvePings reports', () => {
+    expect(
+      checkRolePing(
+        makeClient({ roles: defaultRoles() }),
+        t.scopes.forGuild(GUILD_A),
+        GUILD_A,
+        HIGH_ROLE,
+      ),
+    ).toEqual({ ok: false, reason: 'role-above-bot', ref: HIGH_ROLE, id: HIGH_ROLE });
+  });
+
+  it('reports an unknown ref as role-unknown', () => {
+    expect(
+      checkRolePing(
+        makeClient({ roles: defaultRoles() }),
+        t.scopes.forGuild(GUILD_A),
+        GUILD_A,
+        'no-such-role',
+      ),
+    ).toEqual({ ok: false, reason: 'role-unknown', ref: 'no-such-role', id: 'no-such-role' });
+  });
+});
+
+describe('filterPings', () => {
+  const fetchUnknownMember = (client: Client): { fetches: () => number } => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    let fetches = 0;
+    guild.members.fetch = (() => {
+      fetches += 1;
+      return Promise.reject(
+        Object.assign(new Error('Unknown Member'), { code: 10007, status: 404 }),
+      );
+    }) as typeof guild.members.fetch;
+    return { fetches: () => fetches };
+  };
+
+  it('keeps the pingable roles and users, dropping each refusal with its reason', async () => {
+    const client = makeClient({
+      roles: defaultRoles(),
+      members: [{ id: MEMBER_USER, roles: [] }],
+    });
+    const counted = fetchUnknownMember(client);
+    const filtered = await filterPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+      roles: [LOW_ROLE, LOW_ROLE, HIGH_ROLE, MANAGED_ROLE, 'no-such-role'],
+      users: [MEMBER_USER, MEMBER_USER, STRANGER_USER],
+    });
+    expect(filtered.roleIds).toEqual([LOW_ROLE]);
+    expect(filtered.userIds).toEqual([MEMBER_USER]);
+    expect(filtered.dropped).toEqual([
+      { kind: 'role', id: HIGH_ROLE, reason: 'role-above-bot' },
+      { kind: 'role', id: MANAGED_ROLE, reason: 'role-managed-or-everyone' },
+      { kind: 'role', id: 'no-such-role', reason: 'role-unknown' },
+      { kind: 'user', id: STRANGER_USER, reason: 'user-not-member' },
+    ]);
+    expect(counted.fetches()).toBe(1);
+  });
+
+  it('drops a role that turned dangerous after scheduling, keeping the rest', async () => {
+    const client = makeClient({ roles: defaultRoles() });
+    const scope = t.scopes.forGuild(GUILD_A);
+    expect(await filterPings(client, scope, GUILD_A, { roles: [LOW_ROLE], users: [] })).toEqual({
+      roleIds: [LOW_ROLE],
+      userIds: [],
+      dropped: [],
+    });
+    const guild = client.guilds.cache.get(GUILD_A);
+    const role = guild?.roles.cache.get(LOW_ROLE) as unknown as {
+      permissions: PermissionsBitField;
+    };
+    role.permissions = new PermissionsBitField(PermissionsBitField.Flags.ManageRoles);
+    expect(await filterPings(client, scope, GUILD_A, { roles: [LOW_ROLE], users: [] })).toEqual({
+      roleIds: [],
+      userIds: [],
+      dropped: [{ kind: 'role', id: LOW_ROLE, reason: 'role-dangerous' }],
+    });
+  });
+
+  it('passes empty pings through with no drops', async () => {
+    await expect(
+      filterPings(makeClient(), t.scopes.forGuild(GUILD_A), GUILD_A, { roles: [], users: [] }),
+    ).resolves.toEqual({ roleIds: [], userIds: [], dropped: [] });
+  });
+
+  it('uses the row guild only: roles of another guild are unknown there', async () => {
+    const filtered = await filterPings(
+      makeClient({ roles: defaultRoles() }),
+      t.scopes.forGuild(GUILD_B),
+      GUILD_B,
+      { roles: [LOW_ROLE], users: [] },
+    );
+    expect(filtered.roleIds).toEqual([]);
+    expect(filtered.dropped).toEqual([{ kind: 'role', id: LOW_ROLE, reason: 'role-unknown' }]);
+  });
+
+  it('a transport fault on the membership lookup throws instead of dropping', async () => {
+    const client = makeClient({ members: [{ id: MEMBER_USER, roles: [] }] });
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    guild.members.fetch = (() =>
+      Promise.reject(new Error('connection reset'))) as typeof guild.members.fetch;
+    await expect(
+      filterPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
         roles: [],
         users: [STRANGER_USER],
       }),
