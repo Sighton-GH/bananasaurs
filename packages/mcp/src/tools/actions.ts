@@ -45,11 +45,13 @@ export const UNDO_ACTION_TOOL_NAME = 'undo_action';
 export const UNDO_ACTION_TOOL_DESCRIPTION =
   'Undoes one reversible MCP action in this guild: a message edit restores the previous text, ' +
   'an event edit restores the previous values, ' +
+  'a scheduled-message edit restores the previous values, ' +
+  'a scheduled-message cancellation restores the send while it is still due, ' +
   'a pin or unpin does the opposite, a reaction add or remove does the opposite, ' +
   'a thread-member add removes the same members, a thread archive or lock restores ' +
   'the previous state, a role grant removes the same role while a role removal re-grants it, ' +
   'and a role edit restores the previous name, color and mentionable. ' +
-  'Posts, deletes, event creation, event cancellation, thread creation, forum posts, ' +
+  'Posts, deletes, scheduled-message creation, event creation, event cancellation, thread creation, forum posts, ' +
   'member removals, role creation, panel creation, panel edits and panel deletion ' +
   'cannot be undone, and neither can a role change that changed nothing. Each action undoes at most once: repeating this call answers that ' +
   'it is already undone. Takes an actionId from list_actions; the undo runs as its own ' +
@@ -110,6 +112,7 @@ export type McpUndoRefusal =
   | 'action-failed'
   | 'action-incomplete'
   | 'not-undoable'
+  | 'expired'
   | 'undo-in-progress'
   | 'scope-mismatch'
   | 'target-unavailable'
@@ -225,8 +228,8 @@ const undoRefusalText = (
       return (
         `Action ${actionId} in guild ${guildId} cannot be undone` +
         `${detail !== undefined ? ` (kind ${detail})` : ''}: only message edits, event edits, ` +
-        'pins, reactions, thread-member adds, thread state changes, role grants, role removals ' +
-        'and role edits are reversible — posts, deletes, event creation, event cancellation, ' +
+        'scheduled-message edits and cancellations, pins, reactions, thread-member adds, thread state changes, role grants, role removals ' +
+        'and role edits are reversible — posts, deletes, scheduled-message creation, event creation, event cancellation, ' +
         'thread creation, forum posts, member removals, role creation, panel creation, panel ' +
         'edits and panel deletion never are — a role change that changed nothing ' +
         '(the member already had the role, or did not have it) records no undo, and a reversible action whose ' +
@@ -237,6 +240,13 @@ const undoRefusalText = (
         `An undo of action ${actionId} in guild ${guildId} is already running` +
         `${detail !== undefined ? ` as action ${detail}` : ''}, so no second one was started. ` +
         'Check `list_actions` for its outcome before retrying.'
+      );
+    case 'expired':
+      return (
+        `Action ${actionId} in guild ${guildId} cancelled a scheduled message that has since fallen due` +
+        `${detail !== undefined ? ` (${detail})` : ''}, so the undo expired and nothing was restored. ` +
+        'A cancelled send can only be un-cancelled while it is still in the future: ' +
+        'schedule the message again instead.'
       );
     case 'scope-mismatch':
       return (

@@ -13,6 +13,7 @@ import {
   listReminders,
   listRemindersForCreator,
   rescheduleReminder,
+  restoreReminder,
   retryReminder,
   updateReminder,
 } from './assistant.js';
@@ -316,5 +317,33 @@ describe('reminder origin', () => {
     const claimed = claimDueReminders(scope(), 1_000, 25, STALE_MS);
     expect(claimed.map((r) => r.id)).toEqual(['a', 'm']);
     expect(claimed.map((r) => r.origin).sort()).toEqual(['assistant', 'mcp']);
+  });
+});
+
+describe('restoreReminder', () => {
+  it('moves a cancelled row of its origin back to scheduled while it is still due ahead', () => {
+    insertReminder(scope(), reminder('m', { dueAt: 5_000 }), 'mcp');
+    expect(cancelReminder(scope(), 'm', 'mcp')).toBe(true);
+    expect(restoreReminder(scope(), 'm', 4_999, 'mcp')).toBe(true);
+    expect(getReminder(scope(), 'm', 'mcp')?.status).toBe('scheduled');
+    expect(getReminder(scope(), 'm', 'mcp')?.dueAt).toBe(5_000);
+  });
+
+  it('refuses a row whose due time is not after now, in the same UPDATE', () => {
+    insertReminder(scope(), reminder('m', { dueAt: 5_000 }), 'mcp');
+    cancelReminder(scope(), 'm', 'mcp');
+    expect(restoreReminder(scope(), 'm', 5_000, 'mcp')).toBe(false);
+    expect(restoreReminder(scope(), 'm', 6_000, 'mcp')).toBe(false);
+    expect(getReminder(scope(), 'm', 'mcp')?.status).toBe('cancelled');
+  });
+
+  it('refuses the other origin and any state but cancelled', () => {
+    insertReminder(scope(), reminder('a', { dueAt: 5_000 }));
+    insertReminder(scope(), reminder('m', { dueAt: 5_000 }), 'mcp');
+    cancelReminder(scope(), 'a');
+    expect(restoreReminder(scope(), 'a', 1, 'mcp')).toBe(false);
+    expect(getReminder(scope(), 'a')?.status).toBe('cancelled');
+    // Still scheduled: nothing to restore.
+    expect(restoreReminder(scope(), 'm', 1, 'mcp')).toBe(false);
   });
 });

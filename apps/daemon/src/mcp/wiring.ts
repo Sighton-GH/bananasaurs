@@ -17,8 +17,10 @@ import {
   customEmojiKey,
   effectiveSkillScope,
   isInScope,
+  nextOccurrence,
   panelDefinitionSchema,
   parseSnowflakeId,
+  reminderRecurrence,
   rolePingAllowed,
   runMcpAction,
   safeLogFields,
@@ -33,6 +35,7 @@ import {
   type OpsJobRow,
   type PanelDefinition,
   type RefusalReason,
+  type ReminderRecurrence,
   type RolePingRefusal,
 } from '@bananasaurs/core';
 import { taskAdminPortFor } from './task-admin-port.js';
@@ -107,6 +110,13 @@ import {
   type EventLocationInput,
   type McpEventWriteOutcome,
   type McpEventWritesPort,
+  LIST_SCHEDULED_LIMIT_MAX,
+  SCHEDULE_PAST_GRACE_MS,
+  SCHEDULE_PREVIEW_MAX,
+  parseScheduleAt,
+  type McpScheduleOutcome,
+  type McpSchedulePort,
+  type McpScheduledView,
 } from '@bananasaurs/mcp';
 import {
   archiveRepo,
@@ -4873,6 +4883,483 @@ const eventWritesPortFor = (
 };
 
 /**
+ * The `McpSchedulePort` behind `schedule_message`, `list_scheduled`,
+ * `edit_scheduled` and `cancel_scheduled` (slice 5, Task 3), field by field
+ * like `sendPortFor` above. Storage is the existing `assistant_reminders`
+ * table with `origin='mcp'` (ADR 0119); the daemon's reminder worker
+ * delivers the rows, and nothing here touches delivery.
+ *
+ * Each write runs the one `runMcpAction` pipeline — kind `schedule.create`
+ * in cap group `message`, `schedule.edit` / `schedule.cancel` in cap group
+ * `edit`, with no duplicate-content guard (a re-schedule is a distinct send,
+ * not a double post). Creates record no undo (cancel it instead); edits
+ * store the previous values of the changed fields, cancels store the
+ * reminder id.
+ *
+ * Schedule-time checks, for the changed fields on edit:
+ *
+ * - the destination resolves against send scope and the bot's live
+ *   permissions (`resolveSendTarget` with `post`, or `post-in-thread` when
+ *   the ref names a thread — the same need `send_message` would use);
+ * - every ping resolves under the role policy (`resolvePings`), so a role
+ *   that turned dangerous, or a member that left, refuses the call;
+ * - a past `at` is refused (30-second grace for caller/daemon clock skew);
+ *   a recurrence whose series already ended refuses as past-due too, and a
+ *   recurrence re-anchors the due time to its first occurrence from now.
+ *
+ * Audit actions default to `mcp.<kind>` in `mcpActionDepsFor` — so
+ * `mcp.schedule.create` and friends land without a new audit vocabulary
+ * entry — holding ids, the outcome and `actionId`, never content (rule 4).
+ * A fault leaves one allowlisted-fields error line via `loggedCallAsync`
+ * above, never content: the channel or reminder id and the outcome name
+ * what happened.
+ */
+const schedulePortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  /**
+   * The same live client the guild tools read: channel-name resolution, the
+   * thread-vs-channel probe and the ping policy all answer from its cache,
+   * so a stale row for a channel outside the guild is refused before any
+   * store write.
+   */
+  client: Client,
+): McpSchedulePort => {
+  type ScheduleTargetRefusal = Extract<SendTarget, { readonly ok: false }>;
+
+  /** The target layer's reasons onto the schedule tools' refusals. */
+  const targetRefusalFor = (target: ScheduleTargetRefusal): McpScheduleOutcome => {
+    switch (target.reason) {
+      case 'not-in-guild':
+        return { status: 'refused', reason: 'channel-not-in-guild' };
+      case 'not-in-send-scope':
+        return { status: 'refused', reason: 'channel-not-allowlisted' };
+      case 'private-thread-not-allowed':
+        return { status: 'refused', reason: 'private-thread' };
+      case 'bot-lacks-permission':
+        return {
+          status: 'refused',
+          reason: 'bot-lacks-permission',
+          ...(target.missing !== undefined ? { detail: target.missing } : {}),
+        };
+    }
+  };
+
+  /** The gateway's outcomes onto the schedule tools' vocabulary, ids only. */
+  const gatewayOutcome = (
+    outcome: McpActionOutcome<{ undo?: unknown }>,
+    ids: { readonly reminderId?: string | undefined } = {},
+  ): McpScheduleOutcome => {
+    switch (outcome.status) {
+      case 'done':
+        return {
+          status: 'done',
+          actionId: outcome.actionId,
+          ...(ids.reminderId !== undefined ? { reminderId: ids.reminderId } : {}),
+        };
+      case 'dry-run':
+        return { status: 'dry-run', actionId: outcome.actionId };
+      case 'replayed':
+        // The ledger holds no reminder-id column, so a replay names the
+        // action; the model finds the row through `list_scheduled`.
+        return { status: 'replayed', actionId: outcome.actionId };
+      case 'refused':
+        switch (outcome.reason) {
+          case 'killswitch':
+            return { status: 'refused', reason: 'killswitch' };
+          case 'breaker-open':
+            return { status: 'refused', reason: 'breaker-open' };
+          case 'rate-cap':
+            return {
+              status: 'refused',
+              reason: 'rate-cap',
+              ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+            };
+          case 'key-reused-with-other-args':
+            return { status: 'refused', reason: 'duplicate-key-different-content' };
+          case 'duplicate-content-recently':
+            return { status: 'refused', reason: 'duplicate-content-recently' };
+          case 'guild-unknown':
+          case 'target':
+            // Unreachable: the guild gate above already answered that, and
+            // every target refusal returns before the pipeline runs, so
+            // `targetCheck` is always `true` here.
+            throw new Error(GUILD_REFUSAL_MESSAGE);
+        }
+        break;
+      case 'failed':
+        return { status: 'failed' };
+    }
+  };
+
+  /**
+   * The channel-or-thread ref onto a live channel id, with the need
+   * `send_message` would use for it: names resolve against the guild cache
+   * (the `resolveThreadChannelRef` helper the thread tools share), and a
+   * thread becomes `post-in-thread` while a channel stays `post`.
+   */
+  const resolveScheduleTarget = async (
+    guildId: GuildId,
+    scope: GuildScope,
+    ref: string,
+  ): Promise<
+    | {
+        readonly ok: true;
+        readonly channelId: string;
+        readonly grantId: string;
+        readonly derivedGrant: boolean;
+      }
+    | { readonly ok: false; readonly outcome: McpScheduleOutcome }
+  > => {
+    const named = resolveThreadChannelRef(client, guildId, ref);
+    if (!named.ok) {
+      return {
+        ok: false,
+        outcome:
+          named.reason === 'ambiguous-channel'
+            ? {
+                status: 'refused',
+                reason: 'ambiguous-channel',
+                ...(named.detail !== undefined ? { detail: named.detail } : {}),
+              }
+            : { status: 'refused', reason: 'channel-not-in-guild' },
+      };
+    }
+    // The thread probe, cache first with one fetch on miss: a ref that
+    // names no live channel of this guild is not-in-guild, whatever the
+    // allowlist holds.
+    const live = await liveGuildChannel(client, guildId, named.channelId);
+    if (live === undefined) {
+      return { ok: false, outcome: { status: 'refused', reason: 'channel-not-in-guild' } };
+    }
+    const target = await resolveSendTarget(
+      client,
+      scope,
+      guildId,
+      named.channelId,
+      live.isThread() ? 'post-in-thread' : 'post',
+    );
+    if (!target.ok) return { ok: false, outcome: targetRefusalFor(target) };
+    return {
+      ok: true,
+      channelId: target.channelId,
+      grantId: target.grantId,
+      derivedGrant: target.derivedGrant,
+    };
+  };
+
+  /**
+   * The one-shot or first-occurrence due time for the caller's `at` /
+   * `recurrence`, on the daemon's clock. A past `at` (past the grace) and
+   * an ended series both refuse as `past-due`; the two `failed` returns are
+   * unreachable through the tool boundary, which parses `at` and requires
+   * exactly one of the two.
+   */
+  const dueTimeFor = (
+    now: number,
+    at: string | number | undefined,
+    recurrence: ReminderRecurrence | undefined,
+  ):
+    | { readonly ok: true; readonly dueAt: number }
+    | { readonly ok: false; readonly outcome: McpScheduleOutcome } => {
+    if (recurrence !== undefined) {
+      const first = nextOccurrence(recurrence, now, now, 0);
+      if (first === undefined) {
+        return {
+          ok: false,
+          outcome: { status: 'refused', reason: 'past-due', detail: 'recurrence-ended' },
+        };
+      }
+      return { ok: true, dueAt: first };
+    }
+    if (at !== undefined) {
+      const ms = parseScheduleAt(at);
+      if (ms === undefined) return { ok: false, outcome: { status: 'failed' } };
+      if (ms < now - SCHEDULE_PAST_GRACE_MS) {
+        return { ok: false, outcome: { status: 'refused', reason: 'past-due' } };
+      }
+      return { ok: true, dueAt: ms };
+    }
+    return { ok: false, outcome: { status: 'failed' } };
+  };
+
+  return {
+    scheduleMessage: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'scheduleCreate', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const now = deps.now();
+        const target = await resolveScheduleTarget(guildId, scope, input.channel);
+        if (!target.ok) return target.outcome;
+        const pings = await resolvePings(client, scope, guildId, {
+          roles: input.pingRoles,
+          users: input.pingUsers,
+        });
+        if (!pings.ok) return { status: 'refused', reason: pings.reason, detail: pings.ref };
+        // ADR 0119: the owner authors every scheduled send. Absent owner
+        // config fails closed before anything is claimed — no ledger row, no
+        // cap room, no reminder.
+        const creatorId = ownerUserId(deps);
+        if (creatorId === undefined) return { status: 'failed' };
+        const due = dueTimeFor(now, input.at, input.recurrence);
+        if (!due.ok) return due.outcome;
+        // The dedupe key derives from the claimed action id, so a replay —
+        // which the pipeline answers before `execute` ever runs — inserts
+        // nothing. The claim happens before `execute`, so the id is always
+        // set here; a missing one is an impossible state, failed honestly.
+        let claimedActionId: string | undefined;
+        let createdReminderId: string | undefined;
+        const actionDeps = {
+          ...mcpActionDepsFor(
+            deps,
+            guildId,
+            principal,
+            target.derivedGrant ? { grantedByChannelId: target.grantId } : {},
+          ),
+          newActionId: () => (claimedActionId = randomUUID()),
+        };
+        const outcome = await runMcpAction(
+          actionDeps,
+          {
+            kind: 'schedule.create',
+            capGroup: 'message',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('schedule.create', {
+              channel: target.channelId,
+              content: input.content,
+              at: input.at,
+              recurrence: input.recurrence,
+              pingRoles: pings.roleIds,
+              pingUsers: pings.userIds,
+            }),
+            targetChannelId: target.channelId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          // Synchronous store write, so a plain function: nothing here
+          // awaits, and the throw below still lands in the pipeline's
+          // try/catch around `execute()`.
+          () => {
+            const actionId = claimedActionId;
+            if (actionId === undefined) throw new Error('schedule create claimed no action id');
+            const reminderId = randomUUID();
+            const inserted = assistantRepo.insertReminder(
+              scope,
+              {
+                id: reminderId,
+                guildId,
+                creatorId,
+                destinationId: target.channelId,
+                text: input.content,
+                dueAt: due.dueAt,
+                createdAt: now,
+                status: 'scheduled',
+                dedupeKey: `mcp:${actionId}`,
+                // The resolved mention ids, never everyone or here (the
+                // repo asserts the same on `origin='mcp'` rows).
+                mentions: {
+                  userIds: [...pings.userIds],
+                  roleIds: [...pings.roleIds],
+                  everyone: false,
+                  here: false,
+                },
+                ...(input.recurrence === undefined ? {} : { recurrence: input.recurrence }),
+                deliveredCount: 0,
+              },
+              'mcp',
+            );
+            // Unreachable: the key is a fresh UUID per action, so only a
+            // hand-edited ledger collides — failed, never a silent swallow.
+            if (inserted === 'duplicate') throw new Error('schedule create hit its own dedupe key');
+            createdReminderId = reminderId;
+            // Not undoable (cancel it instead): no undo row.
+            return Promise.resolve({});
+          },
+        );
+        return gatewayOutcome(
+          outcome,
+          createdReminderId !== undefined ? { reminderId: createdReminderId } : {},
+        );
+      }),
+    listScheduled: (guildId, input) =>
+      loggedCall(deps.logger, 'listScheduled', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const limit = Math.min(Math.max(1, Math.floor(input.limit)), LIST_SCHEDULED_LIMIT_MAX);
+        return assistantRepo
+          .listReminders(scope, 'mcp')
+          .filter((row) => input.status === undefined || row.status === input.status)
+          .slice(0, limit)
+          .map((row): McpScheduledView => ({
+            reminderId: row.id,
+            channelId: row.destinationId,
+            dueAt: row.dueAt,
+            recurrence:
+              row.recurrence === undefined
+                ? 'one-shot'
+                : `${row.recurrence.pattern.kind} (${row.recurrence.timeZone})`,
+            status: row.status,
+            preview: row.text.slice(0, SCHEDULE_PREVIEW_MAX),
+          }));
+      }),
+    editScheduled: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'scheduleEdit', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const now = deps.now();
+        // The id is validated before any repo call: outside the storable
+        // shape it can never name a row, so not-found is truthful, not a
+        // lie. The same filter answers assistant rows as not-found — only
+        // `origin='mcp'` rows of this guild are ever visible here.
+        if (!isReminderIdWellFormed(input.reminderId)) {
+          return { status: 'refused', reason: 'reminder-not-found' };
+        }
+        const stored = assistantRepo.getReminder(scope, input.reminderId, 'mcp');
+        if (stored === undefined) return { status: 'refused', reason: 'reminder-not-found' };
+        if (stored.status !== 'scheduled') {
+          return { status: 'refused', reason: 'reminder-not-editable' };
+        }
+        // The same checks as creation, for the changed fields: unchecked
+        // fields keep their stored values.
+        let mentions = stored.mentions;
+        if (input.pingRoles !== undefined || input.pingUsers !== undefined) {
+          const pings = await resolvePings(client, scope, guildId, {
+            roles: input.pingRoles ?? [...stored.mentions.roleIds],
+            users: input.pingUsers ?? [...stored.mentions.userIds],
+          });
+          if (!pings.ok) return { status: 'refused', reason: pings.reason, detail: pings.ref };
+          mentions = {
+            userIds: pings.userIds,
+            roleIds: pings.roleIds,
+            everyone: false,
+            here: false,
+          };
+        }
+        let dueAt = stored.dueAt;
+        let recurrence = stored.recurrence;
+        if (input.at !== undefined || input.recurrence !== undefined) {
+          const due = dueTimeFor(now, input.at, input.recurrence);
+          if (!due.ok) return due.outcome;
+          dueAt = due.dueAt;
+          // Setting `at` clears the pattern back to one-shot; setting a
+          // pattern re-anchors the due time to its first occurrence.
+          recurrence = input.recurrence;
+        }
+        // The previous values of the changed fields, for the `schedule.edit`
+        // undo row.
+        const previous: {
+          content?: string;
+          dueAt?: number;
+          mentions?: { userIds: string[]; roleIds: string[]; everyone: boolean; here: boolean };
+          recurrence?: ReminderRecurrence | null;
+        } = {};
+        if (input.content !== undefined) previous.content = stored.text;
+        if (input.at !== undefined || input.recurrence !== undefined) {
+          previous.dueAt = stored.dueAt;
+          previous.recurrence = stored.recurrence ?? null;
+        }
+        if (input.pingRoles !== undefined || input.pingUsers !== undefined) {
+          previous.mentions = {
+            userIds: [...stored.mentions.userIds],
+            roleIds: [...stored.mentions.roleIds],
+            everyone: stored.mentions.everyone,
+            here: stored.mentions.here,
+          };
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal, {}),
+          {
+            kind: 'schedule.edit',
+            capGroup: 'edit',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('schedule.edit', {
+              reminder: input.reminderId,
+              content: input.content,
+              at: input.at,
+              recurrence: input.recurrence,
+              pingRoles: input.pingRoles ?? [...stored.mentions.roleIds],
+              pingUsers: input.pingUsers ?? [...stored.mentions.userIds],
+            }),
+            targetChannelId: stored.destinationId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          // Synchronous store write, so a plain function like the create
+          // above.
+          () => {
+            const result = assistantRepo.updateReminder(
+              scope,
+              input.reminderId,
+              {
+                ...(input.content === undefined ? {} : { text: input.content }),
+                ...(input.at === undefined && input.recurrence === undefined
+                  ? {}
+                  : // `null`, not `undefined`: the store reads `undefined` as
+                    // "leave the pattern alone", so a re-time to `at` would
+                    // keep the old series instead of clearing to one-shot.
+                    { dueAt, recurrence: recurrence ?? null }),
+                ...(input.pingRoles === undefined && input.pingUsers === undefined
+                  ? {}
+                  : { mentions }),
+              },
+              now,
+              'mcp',
+            );
+            // The row was scheduled when checked above; anything else means
+            // another pass moved it concurrently — failed, never a silent
+            // swallow.
+            if (result !== 'updated') throw new Error('schedule edit lost its row');
+            return Promise.resolve({ undo: { reminderId: input.reminderId, previous } });
+          },
+        );
+        return gatewayOutcome(outcome, { reminderId: input.reminderId });
+      }),
+    cancelScheduled: (guildId, input) =>
+      loggedCallAsync(deps.logger, 'scheduleCancel', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        if (!isReminderIdWellFormed(input.reminderId)) {
+          return { status: 'refused', reason: 'reminder-not-found' };
+        }
+        const stored = assistantRepo.getReminder(scope, input.reminderId, 'mcp');
+        if (stored === undefined) return { status: 'refused', reason: 'reminder-not-found' };
+        if (stored.status !== 'scheduled') {
+          return { status: 'refused', reason: 'reminder-not-editable' };
+        }
+        const outcome = await runMcpAction(
+          mcpActionDepsFor(deps, guildId, principal, {}),
+          {
+            kind: 'schedule.cancel',
+            capGroup: 'edit',
+            idempotencyKey: input.idempotencyKey,
+            tokenId: principal.tokenId,
+            argsHash: argsHashFor('schedule.cancel', { reminder: input.reminderId }),
+            targetChannelId: stored.destinationId,
+            dryRun: input.dryRun,
+            duplicateContentGuard: false,
+          },
+          true,
+          // Synchronous store write, so a plain function like the create
+          // above.
+          () => {
+            const cancelled = assistantRepo.cancelReminder(scope, input.reminderId, 'mcp');
+            if (!cancelled) throw new Error('schedule cancel lost its row');
+            return Promise.resolve({ undo: { reminderId: input.reminderId } });
+          },
+        );
+        return gatewayOutcome(outcome, { reminderId: input.reminderId });
+      }),
+  };
+};
+
+/**
+ * A reminder id outside the storable shape (`z.string().min(1).max(128)` in
+ * the assistant tools) can never name a row. Checked before any repo call
+ * in the schedule ports above, so the check is one helper, not three copies.
+ */
+const isReminderIdWellFormed = (id: string): boolean => id.length >= 1 && id.length <= 128;
+
+/**
  * The undo_json shapes, exactly as the ports above write them (slice 3,
  * Tasks 5–6, plus slice 5 Task 5): an edit stores the previous `{content,
  * embeds}`, a pin stores `{op:'unpin'}` and an unpin `{op:'pin'}`, a
@@ -5006,6 +5493,46 @@ const undoEventEditSchema = z
   })
   .strict();
 
+/**
+ * The `schedule.edit` undo row: the edited send's id and the previous values
+ * of exactly the changed fields, in the reminder patch's shape — `null` is a
+ * send that had no recurrence when one was set. Strict like every other undo
+ * shape: an extra field refuses rather than guesses, and an empty previous
+ * state is not undoable.
+ */
+const undoScheduleEditSchema = z
+  .object({
+    reminderId: z.string().min(1).max(128),
+    previous: z
+      .object({
+        content: z.string().optional(),
+        dueAt: z.number().optional(),
+        mentions: z
+          .object({
+            userIds: z.array(z.string().min(1)),
+            roleIds: z.array(z.string().min(1)),
+            everyone: z.boolean(),
+            here: z.boolean(),
+          })
+          .strict()
+          .optional(),
+        recurrence: reminderRecurrence.nullable().optional(),
+      })
+      .strict()
+      .refine(
+        (previous) =>
+          previous.content !== undefined ||
+          previous.dueAt !== undefined ||
+          previous.mentions !== undefined ||
+          previous.recurrence !== undefined,
+        { message: 'empty previous' },
+      ),
+  })
+  .strict();
+
+/** The `schedule.cancel` undo row: the cancelled send's id. Strict, like the rest. */
+const undoScheduleCancelSchema = z.object({ reminderId: z.string().min(1).max(128) }).strict();
+
 /** Kinds with an inverse. Everything else cannot be undone (ADR 0116 §5). */
 const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
   'message.edit',
@@ -5019,6 +5546,8 @@ const REVERSIBLE_ACTION_KINDS: ReadonlySet<string> = new Set([
   'role.remove',
   'role.edit',
   'event.edit',
+  'schedule.edit',
+  'schedule.cancel',
 ]);
 
 const parseUndoJson = (raw: string): unknown => {
@@ -5055,6 +5584,9 @@ interface UndoPlan {
  * whose `undo_json` fails its kind's schema, or a row missing the ids the
  * inverse needs. Never guesses — every one of those answers `not-undoable`
  * at the call site.
+ *
+ * Schedule inverses need the guild scope and the clock for their store
+ * writes, so those ride in on `env` — every other kind ignores it.
  */
 const planUndo = (
   guildId: GuildId,
@@ -5065,6 +5597,7 @@ const planUndo = (
     readonly resultMessageId: string | undefined;
     readonly undoJson: string | undefined;
   },
+  env: { readonly scope: GuildScope; readonly now: number },
 ): UndoPlan | undefined => {
   if (row.undoJson === undefined) return undefined;
   const parsed = parseUndoJson(row.undoJson);
@@ -5220,6 +5753,71 @@ const planUndo = (
         execute: async () => {
           await discord.editScheduledEvent(guildId, eventId, { ...previous });
           return {};
+        },
+      };
+    }
+    case 'schedule.edit': {
+      const undo = undoScheduleEditSchema.safeParse(parsed);
+      if (!undo.success) return undefined;
+      const reminderId = undo.data.reminderId;
+      const previous = undo.data.previous;
+      return {
+        kind: 'schedule.edit',
+        capGroup: 'edit',
+        argsHash: argsHashFor('schedule.edit', { reminder: reminderId, ...previous }),
+        // Synchronous store write, so a plain function: nothing here awaits.
+        execute: () => {
+          // Restores the previous values of the changed fields, each present
+          // field independently — a re-time stored `dueAt` together with the
+          // recurrence it replaced (`null` clears back to one-shot). A row
+          // that moved on (cancelled, delivered) since refuses here as a
+          // failure; the undo port pre-checks the state first, so this throw
+          // is the concurrent-move race, never the common path.
+          const result = assistantRepo.updateReminder(
+            env.scope,
+            reminderId,
+            {
+              ...(previous.content === undefined ? {} : { text: previous.content }),
+              ...(previous.dueAt === undefined ? {} : { dueAt: previous.dueAt }),
+              ...(previous.mentions === undefined
+                ? {}
+                : {
+                    mentions: {
+                      userIds: [...previous.mentions.userIds],
+                      roleIds: [...previous.mentions.roleIds],
+                      everyone: previous.mentions.everyone,
+                      here: previous.mentions.here,
+                    },
+                  }),
+              ...(previous.recurrence === undefined ? {} : { recurrence: previous.recurrence }),
+            },
+            env.now,
+            'mcp',
+          );
+          if (result !== 'updated') throw new Error('schedule edit undo lost its row');
+          return Promise.resolve({});
+        },
+      };
+    }
+    case 'schedule.cancel': {
+      const undo = undoScheduleCancelSchema.safeParse(parsed);
+      if (!undo.success) return undefined;
+      const reminderId = undo.data.reminderId;
+      return {
+        kind: 'schedule.cancel',
+        capGroup: 'edit',
+        argsHash: argsHashFor('schedule.cancel', { reminder: reminderId }),
+        // Synchronous store write, so a plain function: nothing here awaits.
+        execute: () => {
+          // Back to `scheduled` with its due time kept. The undo port below
+          // answers `expired` before the pipeline runs; the store re-checks
+          // `dueAt > now` in the same UPDATE, so a due time crossed in
+          // between fails here instead of restoring a past-due send. A row
+          // that is no longer cancelled is the concurrent race, failed
+          // honestly.
+          const restored = assistantRepo.restoreReminder(env.scope, reminderId, env.now, 'mcp');
+          if (!restored) throw new Error('schedule cancel undo lost its row');
+          return Promise.resolve({});
         },
       };
     }
@@ -5543,6 +6141,8 @@ const nextUndoKey = (scope: GuildScope, actionId: string, nowMs: number): string
 const undoNeedFor = (scope: GuildScope, inverseKind: string, channelId: string): TargetNeed => {
   switch (inverseKind) {
     case 'message.edit':
+    case 'schedule.edit':
+    case 'schedule.cancel':
       return 'post';
     case 'message.pin':
     case 'message.unpin':
@@ -5620,7 +6220,7 @@ const actionsPortFor = (
       if (row.kind === 'role.grant' || row.kind === 'role.remove') {
         return undoRoleChange({ deps, principal, discord, client }, guildId, scope, row);
       }
-      const plan = planUndo(guildId, discord, row);
+      const plan = planUndo(guildId, discord, row, { scope, now: deps.now() });
       // A role kind has no channel target (slice 4, Task 5; Task 3 adds
       // `role.grant` / `role.remove` alongside on its branch): it skips the
       // send-target resolution below and re-runs the grant policy live
@@ -5634,6 +6234,49 @@ const actionsPortFor = (
         (!isRoleEdit && !isExternalEventEdit && row.targetChannelId === undefined)
       ) {
         return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+      }
+      // Schedule pre-checks, before the pipeline claims anything: a cancel
+      // restores `scheduled` only while the send is still due — past it, the
+      // undo refuses as expired — and an edit restores only onto a row still
+      // waiting to send. The executes above re-check the same transitions,
+      // so these early answers are the common path, not the race.
+      if (row.kind === 'schedule.cancel' || row.kind === 'schedule.edit') {
+        const undoJson = parseUndoJson(row.undoJson ?? '');
+        const reparsed =
+          row.kind === 'schedule.cancel'
+            ? undoScheduleCancelSchema.safeParse(undoJson)
+            : undoScheduleEditSchema.safeParse(undoJson);
+        if (!reparsed.success) {
+          return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+        }
+        const stored = assistantRepo.getReminder(scope, reparsed.data.reminderId, 'mcp');
+        if (row.kind === 'schedule.cancel') {
+          if (stored === undefined || stored.status !== 'cancelled') {
+            return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+          }
+          if (stored.dueAt <= deps.now()) {
+            return {
+              status: 'refused',
+              reason: 'expired',
+              detail: new Date(stored.dueAt).toISOString(),
+            };
+          }
+        } else {
+          if (stored === undefined || stored.status !== 'scheduled') {
+            return { status: 'refused', reason: 'not-undoable', detail: row.kind };
+          }
+          // A re-time undo that would restore a due time already behind us
+          // would send at once — refuse it as expired, like a cancel undo.
+          const edit = undoScheduleEditSchema.safeParse(undoJson);
+          const previousDueAt = edit.success ? edit.data.previous.dueAt : undefined;
+          if (previousDueAt !== undefined && previousDueAt <= deps.now()) {
+            return {
+              status: 'refused',
+              reason: 'expired',
+              detail: new Date(previousDueAt).toISOString(),
+            };
+          }
+        }
       }
       // The live policy for the inverse. A role edit re-runs the grant
       // policy against the stored role id and authorizes `roles.mutate` —
@@ -5681,13 +6324,21 @@ const actionsPortFor = (
       } else {
         // The target policy again, live: a channel dropped from send scope or
         // a permission revoked since the forward write refuses cleanly here
-        // rather than surfacing as an unknown Discord result.
+        // rather than surfacing as an unknown Discord result. Schedule
+        // inverses re-check the reminder's destination with the same need
+        // the forward schedule used — a thread destination needs
+        // post-in-thread, like `send_message` into it.
+        let need = plan.need ?? undoNeedFor(scope, plan.kind, row.targetChannelId as string);
+        if (row.kind === 'schedule.edit' || row.kind === 'schedule.cancel') {
+          const live = await liveGuildChannel(client, guildId, row.targetChannelId as string);
+          if (live !== undefined && live.isThread()) need = 'post-in-thread';
+        }
         const target = await resolveSendTarget(
           client,
           scope,
           guildId,
           row.targetChannelId as string,
-          plan.need ?? undoNeedFor(scope, plan.kind, row.targetChannelId as string),
+          need,
         );
         if (!target.ok) {
           return {
@@ -6168,6 +6819,7 @@ export const registerMcpRoutes = (
       messageWrites: messageWritesPortFor(principal, deps, discord, client),
       threadWrites: threadWritesPortFor(principal, deps, discord, client),
       eventWrites: eventWritesPortFor(principal, deps, discord, client),
+      schedule: schedulePortFor(principal, deps, client),
       roleWrites: roleWritesPortFor(principal, deps, discord, client),
       roleAdmin: roleAdminPortFor(principal, deps, discord, client),
       bulkRoles: bulkRolesPortFor(principal, deps, discord, client),

@@ -633,6 +633,16 @@ const connectPair = async (
       createPoll: () =>
         Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
     },
+    // Required for the four schedule tools; never called by the tools pinned here.
+    schedule: {
+      scheduleMessage: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+      listScheduled: () => [],
+      editScheduled: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+      cancelScheduled: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+    },
     roleWrites: stubRoleWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),

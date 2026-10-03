@@ -456,7 +456,8 @@ describe('/mcp behind the bearer guard', () => {
     // Since M5 Task 4 the daemon always threads the real send port (ruling
     // M5-D11), so a send-scoped token lists `send_message` plus the six
     // thread-write tools (slice 3 Task 5), the six message-write tools
-    // (Task 6), the four event tools (slice 5 Task 5) and `undo_action`
+    // (Task 6), the four event tools (slice 5 Task 5), the four schedule
+    // tools (slice 5 Task 3) and `undo_action`
     // (Task 7), all the same scope — the eleven
     // read tools stay behind the read scope it does not carry, and the
     // task-tracking write tools stay behind the tasks scope (ADR 0114).
@@ -484,6 +485,10 @@ describe('/mcp behind the bearer guard', () => {
       'edit_event',
       'cancel_event',
       'create_poll',
+      'schedule_message',
+      'edit_scheduled',
+      'cancel_scheduled',
+      'list_scheduled',
       'undo_action',
     ]);
   });
@@ -6089,6 +6094,10 @@ describe('MCP task admin full surface (owner-only)', () => {
       'edit_event',
       'cancel_event',
       'create_poll',
+      'schedule_message',
+      'edit_scheduled',
+      'cancel_scheduled',
+      'list_scheduled',
       'undo_action',
     ]);
 
@@ -11821,6 +11830,790 @@ describe('/mcp event writes through the real composition', () => {
       expect(discord.restCalls('sendMessage')).toHaveLength(0);
     } finally {
       await eventApp.close();
+    }
+  });
+});
+
+/**
+ * Slice 5 Task 3, daemon side: `schedule_message`, `list_scheduled`,
+ * `edit_scheduled` and `cancel_scheduled` through the real stack — Fastify +
+ * `registerMcpRoutes` + `createMcpServer` + the real schedule port over the
+ * real repositories — with tokens minted through the real OAuth flow.
+ *
+ * What this proves that a unit test could not: that the daemon actually
+ * threads the port rather than a test supplying it by hand, that the
+ * destination and the pings are checked at schedule time, that a replay
+ * inserts exactly one reminder row with `origin='mcp'`, that assistant rows
+ * are invisible to all four tools, and that the undo arms restore the
+ * previous content and the `scheduled` state (or refuse as expired).
+ *
+ * Setup reaches past `buildDashboardApp` the way the send tests do: the
+ * allowlist row is written through the same repository `bananasaurs mcp
+ * allow-channel` writes, dry-run is turned off (guilds default to dry-run
+ * on, under which a schedule records without storing), and the instance's
+ * redacted config carries the owner id the schedule port stores as the
+ * reminder's creator. Tokens are minted on the dashboard `app` and spent on
+ * the MCP-only `schedApp`: bearer validation reads the shared test database,
+ * so the token works on either.
+ */
+describe('/mcp scheduled sends through the real composition', () => {
+  const OWNER = '345678901234567890';
+  const BOT = '123456789012345678';
+  const CHANNEL = '555555555555555555';
+  /** In the guild cache but never allowlisted: the allowlist refusal shape. */
+  const LOUNGE = '544444444444444444';
+  const BOT_ROLE = '511111111111111111';
+  const LOW_ROLE = '522222222222222222';
+  const DANGEROUS_ROLE = '577777777777777777';
+  const MEMBER_USER = '633333333333333333';
+  /** Distinctive text: must reach the reminder row, must never reach an audit row or log. */
+  const CONTENT = 'sched-probe-content-that-must-never-reach-audit-zz7';
+  const CONTENT_EDITED = 'sched-probe-edited-content-that-must-never-reach-audit-zz8';
+
+  interface ScheduleDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+
+  const seedScheduleGuild = (client: Client): void => {
+    const internals = client as unknown as ScheduleDiscordInternals;
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals.users._add({ id: BOT, username: 'bananasaurs', discriminator: '0' });
+    const botPermissions = (
+      PermissionsBitField.Flags.ViewChannel |
+      PermissionsBitField.Flags.SendMessages |
+      PermissionsBitField.Flags.SendMessagesInThreads
+    ).toString();
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: LOUNGE,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'lounge',
+          position: 1,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: BOT_ROLE,
+          name: 'bananasaurs',
+          position: 7,
+          permissions: botPermissions,
+          managed: true,
+        },
+        { id: LOW_ROLE, name: 'helpers', position: 3, permissions: '0', managed: false },
+        {
+          id: DANGEROUS_ROLE,
+          name: 'floor-watch',
+          position: 2,
+          permissions: String(PermissionsBitField.Flags.Administrator),
+          managed: false,
+        },
+      ],
+      members: [
+        { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        { user: { id: MEMBER_USER, username: 'member', discriminator: '0' }, roles: [] },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+  };
+
+  const buildScheduleApp = (): FastifyInstance => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = new Client(buildClientOptions(() => BOT));
+    seedScheduleGuild(client);
+    return createServer({
+      deps: {
+        ...deps,
+        instance: {
+          ...deps.instance,
+          redactedConfig: () => ({ BANANASAURS_OWNER_USER_ID: OWNER }),
+        },
+      },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, client, discord);
+      },
+    });
+  };
+
+  const allow = (): void => {
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const schedCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const futureIso = (aheadMs: number): string => new Date(clock + aheadMs).toISOString();
+
+  const mcpRows = () => assistantRepo.listReminders(t.scopes.forGuild(GUILD_A), 'mcp');
+
+  const actionIdFor = (key: string): string => {
+    const row = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), key);
+    expect(row?.status).toBe('done');
+    return row?.actionId ?? '';
+  };
+
+  it('schedule, then list, then edit, then cancel, end to end', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+
+      const scheduled = callText(
+        (
+          await schedCall(schedApp, accessToken, 'schedule_message', {
+            guildId: '111111111111111111',
+            channel: CHANNEL,
+            content: CONTENT,
+            at: futureIso(3_600_000),
+            pingRoles: ['helpers'],
+            pingUsers: [MEMBER_USER],
+            idempotencyKey: 'sched-flow',
+          })
+        ).body,
+      );
+      expect(scheduled.isError).not.toBe(true);
+      expect(scheduled.text).toContain('Scheduled message');
+      expect(scheduled.text).toContain(CHANNEL);
+
+      // Exactly one reminder row, with origin 'mcp', the owner as creator,
+      // the resolved destination and the resolved mention ids — never
+      // everyone or here — and a dedupe key derived from the action id.
+      const rows = mcpRows();
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      expect(row).toBeDefined();
+      expect(row?.origin).toBe('mcp');
+      expect(row?.creatorId).toBe(OWNER);
+      expect(row?.destinationId).toBe(CHANNEL);
+      expect(row?.text).toBe(CONTENT);
+      expect(row?.status).toBe('scheduled');
+      expect(row?.mentions).toEqual({
+        userIds: [MEMBER_USER],
+        roleIds: [LOW_ROLE],
+        everyone: false,
+        here: false,
+      });
+      const actionId = actionIdFor('sched-flow');
+      expect(scheduled.text).toContain(actionId);
+      expect(scheduled.text).toContain(row?.id ?? '');
+      expect(row?.dedupeKey).toBe(`mcp:${actionId}`);
+      const action = mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'sched-flow');
+      expect(action?.kind).toBe('schedule.create');
+      expect(action?.targetChannelId).toBe(CHANNEL);
+
+      // The audit row carries the channel, the credential and the outcome —
+      // never the content (rule 4).
+      const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+      const audit = trail.find((entry) => entry.action === 'mcp.schedule.create');
+      expect(audit).toBeDefined();
+      expect(audit?.actorType).toBe('mcp_operator');
+      expect(audit?.via).toBe('http');
+      expect(audit?.subjectType).toBe('channel');
+      expect(audit?.subjectId).toBe(CHANNEL);
+      expect(JSON.stringify(trail)).not.toContain(CONTENT);
+
+      const listed = callText(
+        (
+          await schedCall(schedApp, accessToken, 'list_scheduled', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(listed.isError).not.toBe(true);
+      expect(listed.text).toContain(row?.id ?? '');
+      expect(listed.text).toContain(CHANNEL);
+      expect(listed.text).toContain(new Date(row?.dueAt ?? 0).toISOString());
+      expect(listed.text).toContain('one-shot');
+      expect(listed.text).toContain('scheduled');
+      const listAudit = effectRepo
+        .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+        .find((entry) => entry.action === 'mcp.read.list_scheduled');
+      expect(listAudit).toBeDefined();
+      expect(listAudit?.actorType).toBe('mcp_operator');
+      expect(JSON.stringify(listAudit)).not.toContain(CONTENT);
+
+      const reminderId = row?.id ?? '';
+      const edited = callText(
+        (
+          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+            guildId: '111111111111111111',
+            reminderId,
+            content: CONTENT_EDITED,
+            idempotencyKey: 'sched-flow-edit',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(edited.text).toContain('Edited scheduled message');
+      expect(mcpRows()[0]?.text).toBe(CONTENT_EDITED);
+
+      const cancelled = callText(
+        (
+          await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+            guildId: '111111111111111111',
+            reminderId,
+            idempotencyKey: 'sched-flow-cancel',
+          })
+        ).body,
+      );
+      expect(cancelled.isError).not.toBe(true);
+      expect(cancelled.text).toContain('Cancelled scheduled message');
+      expect(mcpRows()[0]?.status).toBe('cancelled');
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('a recurring schedule stores the pattern and lists its first occurrence', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const scheduled = callText(
+        (
+          await schedCall(schedApp, accessToken, 'schedule_message', {
+            guildId: '111111111111111111',
+            channel: 'planning',
+            content: CONTENT,
+            recurrence: { pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' },
+            idempotencyKey: 'sched-recurring',
+          })
+        ).body,
+      );
+      expect(scheduled.isError).not.toBe(true);
+      // The channel rode in as a name and resolved to the allowlisted id.
+      const rows = mcpRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.destinationId).toBe(CHANNEL);
+      expect(rows[0]?.recurrence?.pattern.kind).toBe('daily');
+      expect(rows[0]?.dueAt ?? 0).toBeGreaterThan(clock);
+      const listed = callText(
+        (
+          await schedCall(schedApp, accessToken, 'list_scheduled', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(listed.isError).not.toBe(true);
+      expect(listed.text).toContain('daily');
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('a past at is refused and stores nothing', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await schedCall(schedApp, accessToken, 'schedule_message', {
+            guildId: '111111111111111111',
+            channel: CHANNEL,
+            content: CONTENT,
+            at: new Date(clock - 60_000).toISOString(),
+            idempotencyKey: 'sched-past',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('past');
+      expect(mcpRows()).toHaveLength(0);
+      expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'sched-past')).toBeUndefined();
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('pings are checked at schedule time: a dangerous role and an unknown role refuse', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const dangerous = callText(
+        (
+          await schedCall(schedApp, accessToken, 'schedule_message', {
+            guildId: '111111111111111111',
+            channel: CHANNEL,
+            content: CONTENT,
+            at: futureIso(3_600_000),
+            pingRoles: [DANGEROUS_ROLE],
+            idempotencyKey: 'sched-dangerous-ping',
+          })
+        ).body,
+      );
+      expect(dangerous.isError).toBe(true);
+      expect(dangerous.text).toContain('never allows');
+      expect(dangerous.text).toContain(DANGEROUS_ROLE);
+      const unknown = callText(
+        (
+          await schedCall(schedApp, accessToken, 'schedule_message', {
+            guildId: '111111111111111111',
+            channel: CHANNEL,
+            content: CONTENT,
+            at: futureIso(3_600_000),
+            pingRoles: ['no-such-role'],
+            idempotencyKey: 'sched-unknown-ping',
+          })
+        ).body,
+      );
+      expect(unknown.isError).toBe(true);
+      expect(unknown.text).toContain('No role');
+      expect(mcpRows()).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'sched-dangerous-ping'),
+      ).toBeUndefined();
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('a non-allowlisted channel is refused with no row and no Discord call', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const refused = callText(
+        (
+          await schedCall(schedApp, accessToken, 'schedule_message', {
+            guildId: '111111111111111111',
+            channel: LOUNGE,
+            content: CONTENT,
+            at: futureIso(3_600_000),
+            idempotencyKey: 'sched-outside',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('not on the send allowlist');
+      expect(mcpRows()).toHaveLength(0);
+      expect(
+        mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'sched-outside'),
+      ).toBeUndefined();
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('the two-guild gate: guild B answers the shared refusal and stores nothing there', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      // The token carries mcp.authorize in guild A only, so guild B is
+      // unreachable — the same principal shape the send tests use.
+      const accessToken = await mintToken('bananasaurs:send');
+      for (const [name, args] of [
+        [
+          'schedule_message',
+          {
+            guildId: '222222222222222222',
+            channel: CHANNEL,
+            content: CONTENT,
+            at: futureIso(3_600_000),
+            idempotencyKey: 'sched-b',
+          },
+        ],
+        ['list_scheduled', { guildId: '222222222222222222' }],
+        [
+          'edit_scheduled',
+          {
+            guildId: '222222222222222222',
+            reminderId: 'rem-b',
+            content: CONTENT,
+            idempotencyKey: 'sched-b-edit',
+          },
+        ],
+        [
+          'cancel_scheduled',
+          {
+            guildId: '222222222222222222',
+            reminderId: 'rem-b',
+            idempotencyKey: 'sched-b-cancel',
+          },
+        ],
+      ] as const) {
+        const refused = callText((await schedCall(schedApp, accessToken, name, { ...args })).body);
+        expect(refused.isError).toBe(true);
+        expect(refused.text).toBe(GUILD_REFUSAL_MESSAGE);
+      }
+      expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD_B), 'mcp')).toHaveLength(0);
+      expect(mcpRows()).toHaveLength(0);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('a replay inserts one reminder', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const args = {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(3_600_000),
+        idempotencyKey: 'sched-replay',
+      };
+      const first = callText(
+        (await schedCall(schedApp, accessToken, 'schedule_message', args)).body,
+      );
+      expect(first.isError).not.toBe(true);
+      const second = callText(
+        (await schedCall(schedApp, accessToken, 'schedule_message', args)).body,
+      );
+      expect(second.isError).not.toBe(true);
+      expect(second.text).toContain('Already recorded');
+      expect(mcpRows()).toHaveLength(1);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('an undo of the cancel restores scheduled', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(3_600_000),
+        idempotencyKey: 'sched-undo-cancel',
+      });
+      const reminderId = mcpRows()[0]?.id ?? '';
+      await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        idempotencyKey: 'sched-undo-cancel-do',
+      });
+      expect(mcpRows()[0]?.status).toBe('cancelled');
+      const undone = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-undo-cancel-do'),
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('schedule.cancel');
+      expect(mcpRows()[0]?.status).toBe('scheduled');
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('an undo of the cancel past its due time refuses as expired', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(60_000),
+        idempotencyKey: 'sched-undo-expired',
+      });
+      const row = mcpRows()[0];
+      const reminderId = row?.id ?? '';
+      const dueIso = new Date(row?.dueAt ?? 0).toISOString();
+      await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        idempotencyKey: 'sched-undo-expired-do',
+      });
+      // Past the due time, the send can no longer be restored.
+      clock += 120_000;
+      const refused = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-undo-expired-do'),
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('expired');
+      expect(refused.text).toContain(dueIso);
+      expect(mcpRows()[0]?.status).toBe('cancelled');
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('an undo of the edit restores the previous content', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(3_600_000),
+        idempotencyKey: 'sched-undo-edit',
+      });
+      const reminderId = mcpRows()[0]?.id ?? '';
+      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        content: CONTENT_EDITED,
+        idempotencyKey: 'sched-undo-edit-do',
+      });
+      expect(mcpRows()[0]?.text).toBe(CONTENT_EDITED);
+      const undone = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-undo-edit-do'),
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(undone.text).toContain('schedule.edit');
+      expect(mcpRows()[0]?.text).toBe(CONTENT);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('re-timing a recurring send to `at` clears it to one-shot, and the undo restores the series', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        recurrence: { pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' },
+        idempotencyKey: 'sched-retime-at',
+      });
+      const before = mcpRows()[0];
+      expect(before?.recurrence?.pattern.kind).toBe('daily');
+      const reminderId = before?.id ?? '';
+      const newAt = clock + 7_200_000;
+      const edited = callText(
+        (
+          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+            guildId: '111111111111111111',
+            reminderId,
+            at: new Date(newAt).toISOString(),
+            idempotencyKey: 'sched-retime-at-do',
+          })
+        ).body,
+      );
+      expect(edited.isError).not.toBe(true);
+      expect(mcpRows()[0]?.dueAt).toBe(newAt);
+      expect(mcpRows()[0]?.recurrence).toBeUndefined();
+      const undone = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-retime-at-do'),
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(mcpRows()[0]?.dueAt).toBe(before?.dueAt);
+      expect(mcpRows()[0]?.recurrence).toEqual(before?.recurrence);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('re-timing a one-shot send to a recurrence sets the series, and the undo clears it back', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(3_600_000),
+        idempotencyKey: 'sched-retime-rec',
+      });
+      const before = mcpRows()[0];
+      expect(before?.recurrence).toBeUndefined();
+      const reminderId = before?.id ?? '';
+      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        recurrence: { pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' },
+        idempotencyKey: 'sched-retime-rec-do',
+      });
+      expect(mcpRows()[0]?.recurrence?.pattern.kind).toBe('daily');
+      const undone = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-retime-rec-do'),
+          })
+        ).body,
+      );
+      expect(undone.isError).not.toBe(true);
+      expect(mcpRows()[0]?.dueAt).toBe(before?.dueAt);
+      expect(mcpRows()[0]?.recurrence).toBeUndefined();
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('an undo of a re-time that would restore a past due time refuses as expired', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      await schedCall(schedApp, accessToken, 'schedule_message', {
+        guildId: '111111111111111111',
+        channel: CHANNEL,
+        content: CONTENT,
+        at: futureIso(60_000),
+        idempotencyKey: 'sched-retime-expired',
+      });
+      const reminderId = mcpRows()[0]?.id ?? '';
+      const originalDue = mcpRows()[0]?.dueAt ?? 0;
+      const newAt = clock + 7_200_000;
+      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+        guildId: '111111111111111111',
+        reminderId,
+        at: new Date(newAt).toISOString(),
+        idempotencyKey: 'sched-retime-expired-do',
+      });
+      // The original due time is now behind us: restoring it would send at once.
+      clock += 120_000;
+      const refused = callText(
+        (
+          await schedCall(schedApp, accessToken, 'undo_action', {
+            guildId: '111111111111111111',
+            actionId: actionIdFor('sched-retime-expired-do'),
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('expired');
+      expect(refused.text).toContain(new Date(originalDue).toISOString());
+      expect(mcpRows()[0]?.dueAt).toBe(newAt);
+    } finally {
+      await schedApp.close();
+    }
+  });
+
+  it('an assistant-origin reminder id is not found by the schedule tools', async () => {
+    allow();
+    const schedApp = buildScheduleApp();
+    try {
+      assistantRepo.insertReminder(
+        t.scopes.forGuild(GUILD_A),
+        {
+          id: 'assistant-row-1',
+          guildId: String(GUILD_A),
+          creatorId: MEMBER_USER,
+          destinationId: CHANNEL,
+          text: 'assistant reminder text',
+          dueAt: clock + 3_600_000,
+          createdAt: clock,
+          status: 'scheduled',
+          dedupeKey: 'reminder:assistant-row-1',
+          mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+          deliveredCount: 0,
+        },
+        'assistant',
+      );
+      const accessToken = await mintToken('bananasaurs:send');
+      const edited = callText(
+        (
+          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+            guildId: '111111111111111111',
+            reminderId: 'assistant-row-1',
+            content: CONTENT,
+            idempotencyKey: 'sched-assistant-edit',
+          })
+        ).body,
+      );
+      expect(edited.isError).toBe(true);
+      expect(edited.text).toContain('No scheduled message');
+      const cancelled = callText(
+        (
+          await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+            guildId: '111111111111111111',
+            reminderId: 'assistant-row-1',
+            idempotencyKey: 'sched-assistant-cancel',
+          })
+        ).body,
+      );
+      expect(cancelled.isError).toBe(true);
+      expect(cancelled.text).toContain('No scheduled message');
+      // And the outbox listing never shows it either.
+      const listed = callText(
+        (
+          await schedCall(schedApp, accessToken, 'list_scheduled', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(listed.isError).not.toBe(true);
+      expect(listed.text).toContain('No scheduled messages');
+      expect(listed.text).not.toContain('assistant-row-1');
+    } finally {
+      await schedApp.close();
     }
   });
 });
