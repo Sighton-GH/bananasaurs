@@ -276,7 +276,7 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
    * unchanged, so `previousRoleIds` is the member's current set and
    * `previousMember` is read from that same member.
    */
-  client.on(Events.UserUpdate, (oldUser: AnyUser, newUser: AnyUser) => {
+  client.on(Events.UserUpdate, (oldUser: AnyUser, newUser: User) => {
     void oldUser;
     for (const guild of client.guilds.cache.values()) {
       const member = guild.members.cache.get(newUser.id);

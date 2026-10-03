@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { logRouteIdSchema, logRouteInputSchema } from '@bananasaurs/core';
+import { logRouteIdSchema, logRouteInputSchema, type JsonValue } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -32,7 +32,7 @@ const routeAuditShape = (route: {
   readonly enabled: boolean;
   readonly eventKinds: readonly string[];
   readonly excludedChannelIds: readonly string[];
-}): Record<string, unknown> => ({
+}): { [k: string]: JsonValue } => ({
   name: route.name,
   channelId: route.channelId,
   includeContent: route.includeContent,
