@@ -23,7 +23,7 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   '\n' +
   'Writes (when these tools are present):\n' +
   '- Every write needs an idempotencyKey: reuse the same key when you retry a call, or the action happens twice. Pass dryRun to record without changing anything.\n' +
-  '- undo_action reverses one reversible action (an edit, a pin, a reaction, a thread-member add, a thread state change, a role grant, removal or edit); posts, deletes, thread creation, forum posts, bulk changes, role creation and panels cannot be undone. list_actions shows recent actions with ids, never content.\n' +
+  '- undo_action reverses one reversible action (an edit, a pin, a reaction, a thread-member add, a thread state change, a role grant, removal or edit, an event edit, a scheduled-send edit or cancel); posts, deletes, thread creation, forum posts, bulk changes, role creation and panels cannot be undone. list_actions shows recent actions with ids, never content.\n' +
   '- Pings happen only through pingRoles and pingUsers: mentions typed into text never notify anyone. Private threads created through these tools stay readable and postable.\n' +
   '\n' +
   'Roles (when these tools are present):\n' +
@@ -33,4 +33,10 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   '- The change runs as a job (watch it with get_job) and cannot be undone; run the opposite bulk change instead.\n' +
   '- create_role makes a zero-permission role just below the bot, ungrantable until allowlisted; edit_role changes only name, colour and mentionable.\n' +
   '- Panel option roles pass the grant policy first, and creation allowlists them; in allowlist grant mode options cannot use {create}. edit_panel reorder lists the current options; added options go at the end.\n' +
-  '- Panel creation, editing and deletion cannot be undone; delete_panel removes a panel, whose messages the message tools cannot edit or delete.';
+  '- Panel creation, editing and deletion cannot be undone; delete_panel removes a panel, whose messages the message tools cannot edit or delete.\n' +
+  '\n' +
+  'Schedules, events and polls (when these tools are present):\n' +
+  '- schedule_message posts fixed text later, once (at) or on a recurrence. The channel and pings are checked again at send time: a ping the policy no longer allows is dropped, and a channel that left the allowlist fails the send. Scheduled sends never ping @everyone or @here.\n' +
+  '- list_scheduled shows only sends scheduled here; edit_scheduled and cancel_scheduled work until the send goes out.\n' +
+  '- create_event, edit_event and cancel_event manage Discord events; an external event needs a place and an end time. A cancelled event cannot be restored.\n' +
+  '- create_poll posts a native poll through the send path; polls never ping.';
