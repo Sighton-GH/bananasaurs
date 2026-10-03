@@ -244,6 +244,22 @@ export {
   type SendLedgerRow,
 } from './effects/message-gateway.js';
 export {
+  argsHashFor,
+  MCP_ACTION_CAPS,
+  MCP_ACTION_DUPLICATE_WINDOW_MS,
+  MCP_ACTION_WINDOW_MS,
+  runMcpAction,
+  type McpActionLedgerRow,
+  type McpActionAuditInput,
+  type McpActionClaim,
+  type McpActionCompletion,
+  type McpActionDeps,
+  type McpActionIntent,
+  type McpActionOutcome,
+  type McpActionRefusal,
+  type McpCapGroup,
+} from './effects/mcp-action-gateway.js';
+export {
   inverseOf,
   undoBatch,
   type UndoableEffect,
@@ -630,6 +646,7 @@ export {
 } from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,
+  detectWithheldEvidence,
   redactEvidenceText,
   scanOutboundRequest,
   type OutboundSafetyResult,
@@ -686,3 +703,24 @@ export {
   renderSummary,
   type ConversationSummary,
 } from './assistant/conversation-summary.js';
+
+export {
+  ADMINISTRATOR,
+  BAN_MEMBERS,
+  DANGEROUS_PERMISSION_BITS,
+  isDangerousRole,
+  KICK_MEMBERS,
+  MANAGE_CHANNELS,
+  MANAGE_EVENTS,
+  MANAGE_GUILD,
+  MANAGE_GUILD_EXPRESSIONS,
+  MANAGE_MESSAGES,
+  MANAGE_ROLES,
+  MANAGE_THREADS,
+  MANAGE_WEBHOOKS,
+  MENTION_EVERYONE,
+  MODERATE_MEMBERS,
+  rolePingAllowed,
+  type RoleFacts,
+  type RolePingRefusal,
+} from './roles/dangerous.js';

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type {
   AssistantBehaviour,
   ClubResource,
@@ -346,7 +346,16 @@ export interface StoredReminder extends Reminder {
   readonly nextAttemptAt?: number;
   /** When the current delivery pass claimed the row; undefined before any claim. */
   readonly claimedAt?: number;
+  /** ADR 0119: `'assistant'` for chat reminders, `'mcp'` for scheduled sends. */
+  readonly origin: ReminderOrigin;
 }
+/**
+ * ADR 0119: scheduled MCP sends are reminder rows with `origin='mcp'`.
+ * User-facing list, read, edit and cancel calls filter by origin (defaulting
+ * to `'assistant'`, which keeps every existing caller exactly as before);
+ * the delivery claim path ignores origin and delivers both kinds.
+ */
+export type ReminderOrigin = 'assistant' | 'mcp';
 const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder => {
   const recurrence = toJson(r.recurrenceJson, reminderRecurrence);
   return {
@@ -367,14 +376,23 @@ const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder =
     ...(r.failureReason === null ? {} : { failureReason: r.failureReason }),
     ...(r.nextAttemptAt === null ? {} : { nextAttemptAt: r.nextAttemptAt }),
     ...(r.claimedAt === null ? {} : { claimedAt: r.claimedAt }),
+    origin: r.origin as ReminderOrigin,
   };
 };
-export const listReminders = (scope: GuildScope): readonly StoredReminder[] =>
+/** `origin='mcp'` rows can never ping everyone or here (ADR 0119). */
+const assertNoMassPing = (origin: ReminderOrigin, mentions: ReminderMentions): void => {
+  if (origin === 'mcp' && (mentions.everyone || mentions.here))
+    throw new Error('mcp reminders cannot ping everyone or here');
+};
+export const listReminders = (
+  scope: GuildScope,
+  origin: ReminderOrigin = 'assistant',
+): readonly StoredReminder[] =>
   read(scope, (db) =>
     db
       .select()
       .from(assistantReminders)
-      .where(scope.only(assistantReminders))
+      .where(scope.only(assistantReminders, eq(assistantReminders.origin, origin)))
       .orderBy(asc(assistantReminders.dueAt))
       .all()
       .map(toReminder),
@@ -388,8 +406,13 @@ export const listReminders = (scope: GuildScope): readonly StoredReminder[] =>
  */
 export type InsertReminderResult = 'created' | 'duplicate';
 
-export const insertReminder = (scope: GuildScope, r: Reminder): InsertReminderResult =>
+export const insertReminder = (
+  scope: GuildScope,
+  r: Reminder,
+  origin: ReminderOrigin = 'assistant',
+): InsertReminderResult =>
   write(scope, ({ db }) => {
+    assertNoMassPing(origin, r.mentions);
     const inserted = db
       .insert(assistantReminders)
       .values({
@@ -407,6 +430,7 @@ export const insertReminder = (scope: GuildScope, r: Reminder): InsertReminderRe
         context: r.context ?? null,
         deliveredCount: r.deliveredCount,
         updatedAt: r.updatedAt ?? null,
+        origin,
       })
       // Exactly the dedupe constraint, named - any other constraint failure
       // still throws out of `write()`.
@@ -624,12 +648,22 @@ export const rescheduleReminder = (
       throw new Error(`reminder ${id} is not delivering; reschedule refused`);
   });
 
-export const getReminder = (scope: GuildScope, id: string): StoredReminder | undefined =>
+export const getReminder = (
+  scope: GuildScope,
+  id: string,
+  origin: ReminderOrigin = 'assistant',
+): StoredReminder | undefined =>
   read(scope, (db) => {
     const row = db
       .select()
       .from(assistantReminders)
-      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.origin, origin),
+        ),
+      )
       .get();
     return row === undefined ? undefined : toReminder(row);
   });
@@ -638,6 +672,7 @@ export const listRemindersForCreator = (
   scope: GuildScope,
   creatorId: string,
   options: { readonly includeFinished: boolean },
+  origin: ReminderOrigin = 'assistant',
 ): readonly StoredReminder[] =>
   read(scope, (db) =>
     db
@@ -647,6 +682,7 @@ export const listRemindersForCreator = (
         scope.only(
           assistantReminders,
           eq(assistantReminders.creatorId, creatorId),
+          eq(assistantReminders.origin, origin),
           options.includeFinished
             ? undefined
             : inArray(assistantReminders.status, ['scheduled', 'delivering']),
@@ -670,12 +706,20 @@ export const updateReminder = (
     readonly recurrence?: ReminderRecurrence | null;
   },
   now: number,
+  origin: ReminderOrigin = 'assistant',
 ): ReminderUpdateResult =>
   write(scope, ({ db }) => {
+    if (patch.mentions !== undefined) assertNoMassPing(origin, patch.mentions);
     const row = db
       .select({ status: assistantReminders.status })
       .from(assistantReminders)
-      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.origin, origin),
+        ),
+      )
       .get();
     if (row === undefined) return 'not-found';
     if (row.status !== 'scheduled') return 'not-editable';
@@ -698,7 +742,12 @@ export const updateReminder = (
             }),
         updatedAt: now,
       })
-      .where(scope.only(assistantReminders, eq(assistantReminders.reminderId, id)))
+      .where(
+        scope.only(
+          assistantReminders,
+          and(eq(assistantReminders.reminderId, id), eq(assistantReminders.origin, origin)),
+        ),
+      )
       .run();
     return 'updated';
   });
@@ -724,7 +773,11 @@ export const retryReminder = (
  * in any other state — cancelling a reminder mid-send is not a thing this
  * store can do, and a false tells the caller exactly that.
  */
-export const cancelReminder = (scope: GuildScope, id: string): boolean =>
+export const cancelReminder = (
+  scope: GuildScope,
+  id: string,
+  origin: ReminderOrigin = 'assistant',
+): boolean =>
   write(scope, ({ db }) => {
     const result = db
       .update(assistantReminders)
@@ -733,7 +786,39 @@ export const cancelReminder = (scope: GuildScope, id: string): boolean =>
         scope.only(
           assistantReminders,
           eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.origin, origin),
           eq(assistantReminders.status, 'scheduled'),
+        ),
+      )
+      .run();
+    return result.changes === 1;
+  });
+
+/**
+ * Restores a cancelled reminder to `scheduled`, keeping its due time. The
+ * `schedule.cancel` undo path — `cancelReminder` above has no inverse, and
+ * Task 1 added no restore, which is why this exists. Returns false for a row
+ * in any other state, and for one whose due time is not after `now` — the
+ * due check sits in the same UPDATE, so a restore can never put a past-due
+ * send back on the queue.
+ */
+export const restoreReminder = (
+  scope: GuildScope,
+  id: string,
+  now: number,
+  origin: ReminderOrigin = 'assistant',
+): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(assistantReminders)
+      .set({ status: 'scheduled' })
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.origin, origin),
+          eq(assistantReminders.status, 'cancelled'),
+          gt(assistantReminders.dueAt, now),
         ),
       )
       .run();

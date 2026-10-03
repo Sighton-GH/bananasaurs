@@ -197,6 +197,18 @@ describe('beginAuthorization', () => {
     expect(trackFailure(result).error).toBe('invalid_client');
   });
 
+  it("accepts scope 'bananasaurs:read bananasaurs:roles' end to end, minting both scopes", () => {
+    registerClient();
+    const { issued } = fullFlow({ scope: 'bananasaurs:read bananasaurs:roles' });
+    expect(issued.scopes).toEqual(['bananasaurs:read', 'bananasaurs:roles']);
+  });
+
+  it("accepts scope 'bananasaurs:read bananasaurs:tasks' end to end, minting both scopes", () => {
+    registerClient();
+    const { issued } = fullFlow({ scope: 'bananasaurs:read bananasaurs:tasks' });
+    expect(issued.scopes).toEqual(['bananasaurs:read', 'bananasaurs:tasks']);
+  });
+
   it("refuses scope 'bananasaurs:read bananasaurs:admin'", () => {
     registerClient();
     const { challenge } = newPkce();

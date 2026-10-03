@@ -12,10 +12,15 @@ import {
   MCP_READ_LIST_AUDIT_EVENTS,
   MCP_READ_LIST_CHANNELS,
   MCP_READ_LIST_MEMBERS,
-  MCP_READ_LIST_ROLES,
   MCP_READ_LIST_MOD_CASES,
+  MCP_READ_LIST_ROLES,
+  MCP_READ_LIST_UNANSWERED,
+  MCP_READ_OPEN_RESOURCE,
   MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_READ_DIGEST,
+  MCP_READ_READ_THREAD,
   MCP_READ_SEARCH_MESSAGES,
+  MCP_READ_SEARCH_RESOURCES,
   type McpContentReadRecord,
   type McpReadAuditPort,
 } from './read-audit.js';
@@ -44,6 +49,17 @@ import {
 } from './tools/records.js';
 import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
 import type { McpSendPort } from './tools/send.js';
+import type { McpMessageWritesPort } from './tools/message-writes.js';
+import type { McpEventWritesPort } from './tools/event-writes.js';
+import type { McpSchedulePort } from './tools/schedule.js';
+import type { McpJobsPort } from './tools/jobs.js';
+import type { McpMembersPort } from './tools/members.js';
+import type { McpContextPort } from './tools/context.js';
+import { openResourceText, searchResourcesText, type McpResourcesPort } from './tools/resources.js';
+import { readThreadText, type McpThreadsPort } from './tools/threads.js';
+import type { McpThreadWritesPort } from './tools/thread-writes.js';
+import type { McpRoleWritesPort } from './tools/role-writes.js';
+import { listUnansweredText, readDigestText } from './tools/digest.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -72,6 +88,7 @@ const principalWith = (...guilds: readonly GuildId[]): McpPrincipal => ({
 });
 
 const archivePort = (): McpArchivePort => ({
+  now: () => 1,
   listArchiveChannelIds: () => [CHANNEL],
   searchMessages: () => ({
     total: 3,
@@ -89,8 +106,24 @@ const archivePort = (): McpArchivePort => ({
       content: null,
       createdAt: 1,
       contentPurgedAt: undefined,
+      replyToMessageId: undefined,
     },
   ],
+  listMessagesSince: () => [
+    {
+      messageId: MESSAGE,
+      channelId: CHANNEL,
+      threadId: undefined,
+      authorId: undefined,
+      content: null,
+      createdAt: 1,
+      contentPurgedAt: undefined,
+      replyToMessageId: undefined,
+    },
+  ],
+  listUnansweredRoleMentions: () => [],
+  messageMeta: () => Promise.resolve(undefined),
+  botUserId: () => undefined,
 });
 
 const recordsPort = (tailAuditInput?: { captured: unknown }): McpRecordsPort => ({
@@ -177,7 +210,7 @@ const healthPort = (): McpHealthPort => ({
 
 describe('ADR 0050: content-bearing reads annotate an audit record', () => {
   it('search_messages records guild, tool and result count — never the query', () => {
-    const outcome = searchMessagesText(principalWith(GUILD_A), archivePort(), {
+    const outcome = searchMessagesText(principalWith(GUILD_A), archivePort(), guildPort(), {
       guildId: String(GUILD_A),
       query: 'secret operator query text',
     });
@@ -195,7 +228,7 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
   });
 
   it('read_channel_history records the channel as subject', () => {
-    const outcome = readChannelHistoryText(principalWith(GUILD_A), archivePort(), {
+    const outcome = readChannelHistoryText(principalWith(GUILD_A), archivePort(), guildPort(), {
       guildId: String(GUILD_A),
       channelId: CHANNEL,
     });
@@ -210,8 +243,8 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
     });
   });
 
-  it('get_message records the message id, found or not — the read happened either way', () => {
-    const found = getMessageText(principalWith(GUILD_A), archivePort(), {
+  it('get_message records the message id, found or not — the read happened either way', async () => {
+    const found = await getMessageText(principalWith(GUILD_A), archivePort(), {
       guildId: String(GUILD_A),
       messageId: MESSAGE,
     });
@@ -266,6 +299,166 @@ describe('ADR 0050: content-bearing reads annotate an audit record', () => {
       subjectType: 'guild',
     });
     expect(captured.captured).toMatchObject({ excludeActions: [MCP_READ_LIST_AUDIT_EVENTS] });
+  });
+
+  it('search_resources records a guild content read with the hit count', () => {
+    const outcome = searchResourcesText(
+      principalWith(GUILD_A),
+      {
+        listResources: () => [
+          { id: 'handbook', title: 'Handbook', kind: 'document', url: 'https://example.com/h' },
+        ],
+        searchChunks: () => [
+          {
+            chunkId: 'c1',
+            docId: 'd1',
+            resourceId: 'handbook',
+            headingPath: 'H',
+            text: 'secret operator query text',
+          },
+        ],
+        resourceChunks: () => [],
+      },
+      { guildId: String(GUILD_A), query: 'secret operator query text' },
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('expected ok');
+    expect(outcome.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_SEARCH_RESOURCES,
+      guildId: GUILD_A,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: 1,
+    });
+    expect(JSON.stringify(outcome.read)).not.toContain('secret operator query text');
+  });
+
+  it('open_resource records a resource content read keyed by resource id', () => {
+    const port: McpResourcesPort = {
+      listResources: () => [
+        { id: 'handbook', title: 'Handbook', kind: 'document', url: 'https://example.com/h' },
+      ],
+      searchChunks: () => [],
+      resourceChunks: () => [
+        { chunkId: 'c1', docId: 'd1', resourceId: 'handbook', headingPath: 'H', text: 'body' },
+      ],
+    };
+    const outcome = openResourceText(principalWith(GUILD_A), port, {
+      guildId: String(GUILD_A),
+      resourceId: 'handbook',
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('expected ok');
+    expect(outcome.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_OPEN_RESOURCE,
+      guildId: GUILD_A,
+      subjectType: 'resource',
+      subjectId: 'handbook',
+      resultCount: 1,
+    });
+  });
+
+  it('read_digest and list_unanswered record guild content reads', () => {
+    const digestGuild: McpGuildPort = {
+      ...guildPort(),
+      listRoles: () => [
+        {
+          id: '777777777777777777',
+          name: 'help',
+          position: 1,
+          color: 0,
+          managedByBananasaurs: false,
+        },
+      ],
+    };
+    const digest = readDigestText(principalWith(GUILD_A), archivePort(), digestGuild, {
+      guildId: String(GUILD_A),
+      channels: [CHANNEL],
+      since: 0,
+    });
+    expect(digest.ok).toBe(true);
+    if (!digest.ok) throw new Error('expected ok');
+    expect(digest.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_READ_DIGEST,
+      guildId: GUILD_A,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: 1,
+    });
+    const unanswered = listUnansweredText(principalWith(GUILD_A), archivePort(), digestGuild, {
+      guildId: String(GUILD_A),
+      helpRole: 'help',
+    });
+    expect(unanswered.ok).toBe(true);
+    if (!unanswered.ok) throw new Error('expected ok');
+    expect(unanswered.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_LIST_UNANSWERED,
+      guildId: GUILD_A,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: 0,
+    });
+  });
+
+  it('read_thread records a public thread read and a live private read by subject', async () => {
+    const THREAD = '800000000000000001';
+    const PRIVATE = '800000000000000002';
+    const port: McpThreadsPort = {
+      archiveThread: () => [
+        {
+          messageId: MESSAGE,
+          channelId: CHANNEL,
+          threadId: THREAD,
+          authorId: undefined,
+          content: null,
+          createdAt: 1,
+          contentPurgedAt: undefined,
+          replyToMessageId: undefined,
+        },
+      ],
+      threadInfo: (guildId, threadId) => {
+        void guildId;
+        return Promise.resolve(
+          threadId === THREAD
+            ? { id: THREAD, name: 'build night', parentId: CHANNEL, isPrivate: false }
+            : threadId === PRIVATE
+              ? { id: PRIVATE, name: 'secret', parentId: CHANNEL, isPrivate: true }
+              : undefined,
+        );
+      },
+      privateThreadReadable: () => Promise.resolve(true),
+      liveThreadMessages: () => Promise.resolve([]),
+    };
+    const pub = await readThreadText(principalWith(GUILD_A), port, {
+      guildId: String(GUILD_A),
+      threadId: THREAD,
+    });
+    expect(pub.ok).toBe(true);
+    if (!pub.ok) throw new Error('expected ok');
+    expect(pub.read).toEqual({
+      kind: 'content',
+      action: MCP_READ_READ_THREAD,
+      guildId: GUILD_A,
+      subjectType: 'thread',
+      subjectId: THREAD,
+      resultCount: 1,
+    });
+    const priv = await readThreadText(principalWith(GUILD_A), port, {
+      guildId: String(GUILD_A),
+      threadId: PRIVATE,
+    });
+    expect(priv.ok).toBe(true);
+    if (!priv.ok) throw new Error('expected ok');
+    expect(priv.read).toMatchObject({
+      kind: 'content',
+      action: MCP_READ_READ_THREAD,
+      subjectType: 'private_thread',
+      subjectId: PRIVATE,
+    });
   });
 });
 
@@ -342,12 +535,14 @@ describe('ADR 0050: structural reads annotate a log record, never an audit row',
 
 describe('ADR 0050: a refused read annotates nothing', () => {
   it('guild refusal, argument fault and empty reachable set carry no record', () => {
-    const refused = searchMessagesText(principalWith(GUILD_B), archivePort(), {
+    const refused = searchMessagesText(principalWith(GUILD_B), archivePort(), guildPort(), {
       guildId: String(GUILD_A),
       query: 'x',
     });
     expect(refused).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    const invalidArgs = searchMessagesText(principalWith(GUILD_A), archivePort(), { guildId: 7 });
+    const invalidArgs = searchMessagesText(principalWith(GUILD_A), archivePort(), guildPort(), {
+      guildId: 7,
+    });
     expect(invalidArgs.ok).toBe(false);
     if (invalidArgs.ok) throw new Error('expected refusal');
     expect('read' in invalidArgs && invalidArgs.read !== undefined).toBe(false);
@@ -379,11 +574,95 @@ const contentfulArchivePort = (): McpArchivePort => ({
     content: SECRET_MESSAGE_TEXT,
     createdAt: 1,
     contentPurgedAt: undefined,
+    replyToMessageId: undefined,
   }),
 });
 
 const stubSendPort = (): McpSendPort => ({
-  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test', actionId: 'act-test' }),
+});
+
+/** Minimal message-writes port: this file pins read logging, never the write tools. */
+const stubMessageWritesPort = (): McpMessageWritesPort => ({
+  edit: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  delete: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  pin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  unpin: () => Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  addReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+  removeReaction: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
+/** Minimal event-writes port: required for the four event tools; never called by the reads pinned here. */
+const stubEventWritesPort = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test', eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
+/** Minimal schedule port: required for the four schedule tools; never called by the reads pinned here. */
+const stubSchedulePort = (): McpSchedulePort => ({
+  scheduleMessage: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  listScheduled: () => [],
+  editScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  cancelScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+});
+
+/** Minimal jobs port: this file pins read logging, never the jobs tools. */
+const stubJobsPort = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins read logging, never the member tools. */
+const stubMembersPort = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
+
+/** Minimal context port: this file pins read logging, never the context tool. */
+const stubContextPort = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
+/** Minimal resources port: this file pins read logging, never the resource tools. */
+const stubResourcesPort = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins read logging, never the thread tool. */
+const stubThreadsPort = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
+/** Minimal thread-writes port: required since slice 3 Task 5; never called by the reads pinned here. */
+const stubThreadWritesPort = (): McpThreadWritesPort => ({
+  createThread: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createForumPost: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+});
+
+/** Minimal role-writes port: required since slice 4 Task 3; never called by the reads pinned here. */
+const stubRoleWritesPort = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
 });
 
 /** One connected client/server pair whose read-audit port is the one under test. */
@@ -398,7 +677,17 @@ const connectWithReadAudit = async (
     guild: guildPort(),
     records: recordsPort(),
     readAudit,
+    jobs: stubJobsPort(),
+    members: stubMembersPort(),
+    context: stubContextPort(),
+    resources: stubResourcesPort(),
+    threads: stubThreadsPort(),
     send: stubSendPort(),
+    threadWrites: stubThreadWritesPort(),
+    messageWrites: stubMessageWritesPort(),
+    eventWrites: stubEventWritesPort(),
+    schedule: stubSchedulePort(),
+    roleWrites: stubRoleWritesPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

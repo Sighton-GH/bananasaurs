@@ -336,6 +336,22 @@ export const countEnabledOwners = (scope: InstanceScope): number =>
   );
 
 /**
+ * The ids of the owners who can still log in, oldest first — the same
+ * `is_owner = 1 AND disabled = 0` predicate as `countEnabledOwners` above.
+ * ADR 0124: startup gives each of these access to every allowlisted guild.
+ */
+export const listEnabledOwnerIds = (scope: InstanceScope): string[] =>
+  readInstance(scope, (db) =>
+    db
+      .select({ accountId: dashboardAccounts.accountId })
+      .from(dashboardAccounts)
+      .where(and(eq(dashboardAccounts.isOwner, 1), eq(dashboardAccounts.disabled, 0)))
+      .orderBy(asc(dashboardAccounts.createdAt))
+      .all()
+      .map((row) => row.accountId),
+  );
+
+/**
  * Every account, oldest first (`created_at` ascending).
  *
  * An operator listing accounts is auditing provisioning order — "who was

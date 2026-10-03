@@ -34,6 +34,16 @@ export interface UpsertMessageInput {
   readonly createdAt: number;
   readonly editedAt: number | undefined;
   readonly attachments: readonly ArchiveAttachmentInput[];
+  /**
+   * The message this one replies to (slice 2 task 3), from the event's
+   * `referencedMessageId`. Absent when this message is not a reply.
+   */
+  readonly replyToMessageId?: string | undefined;
+  /**
+   * Mentioned roles (slice 2 task 3), from the event's `mentionedRoleIds`.
+   * The repository stores `NULL` for an empty list.
+   */
+  readonly mentionedRoleIds?: readonly string[] | undefined;
 }
 
 export interface ArchivePorts {
@@ -49,6 +59,8 @@ export interface ArchivePorts {
     messageId: Snowflake;
     content: string | undefined;
     editedAt: number;
+    /** Replaces the stored mentioned roles when provided (slice 2 task 3). */
+    mentionedRoleIds?: readonly string[] | undefined;
   }): 'recorded' | 'no-such-message';
   recordDelete(input: {
     messageId: Snowflake;

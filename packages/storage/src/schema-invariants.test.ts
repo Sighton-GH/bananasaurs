@@ -66,6 +66,10 @@ const INSTANCE_LEVEL = new Set<string>([
   // ADR 0081: the per-model call ledger is keyed by shared key; guild_id
   // records which guild spent the call.
   'assistant_model_calls',
+  // ADR 0120: the per-source search keys and their call ledger are keyed by
+  // shared key; guild_id records which guild spent the call.
+  'assistant_search_keys',
+  'assistant_search_calls',
 ]);
 
 /**
@@ -102,11 +106,20 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'role_id',
   'channel_id',
   'message_id',
+  // Slice 2 task 3 (migration 0091): the message a reply answers.
+  'reply_to_message_id',
   'attachment_id',
   'required_role_id',
   'principal_id',
   // ADR 0072: assistant_conversations.started_by.
   'started_by',
+  // Slice 3 task 1 (migration 0092): the mcp_actions targets and results, and
+  // the mcp_private_threads thread and parent channel.
+  'target_channel_id',
+  'result_message_id',
+  'result_thread_id',
+  'thread_id',
+  'parent_channel_id',
 ]);
 
 interface ColumnInfo {
@@ -1162,17 +1175,20 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
     expect(columns(table).map((c) => c.name)).not.toContain('guild_id');
   });
 
-  it('INSTANCE_LEVEL contains exactly the twelve expected names', () => {
-    // The tripwire. A thirteenth table cannot join the exemption without this
+  it('INSTANCE_LEVEL contains exactly the fourteen expected names', () => {
+    // The tripwire. A fifteenth table cannot join the exemption without this
     // failing and a human reading ADR 0045 — or ADR 0044 §7 for
     // provider_eligibility, ADR 0075 for the provider chain tables, ADR 0080
-    // for instance_settings, or ADR 0081 for assistant_model_calls.
+    // for instance_settings, ADR 0081 for assistant_model_calls, or ADR 0120
+    // for the search key tables.
     expect([...INSTANCE_LEVEL].sort()).toEqual(
       [
         'assistant_provider_config',
         'assistant_provider_keys',
         'assistant_model_chain',
         'assistant_model_calls',
+        'assistant_search_keys',
+        'assistant_search_calls',
         'instance_settings',
         'bootstrap_tokens',
         'dashboard_accounts',

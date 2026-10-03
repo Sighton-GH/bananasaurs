@@ -139,6 +139,27 @@ const sendAllowBodySchema = z.object({
   accountId: z.string().min(1),
 });
 
+// Slice 5 task 6 (ADR 0117 §2): the role-policy writers behind
+// `mcp role-policy` / `mcp allow-role` / `mcp disallow-role`. At least one
+// mode is required: a write with neither mode is the read, which lives on
+// `GET /api/role-policy`.
+const rolePolicyBodySchema = z
+  .object({
+    grant: z.enum(['below-bot', 'allowlist']).optional(),
+    ping: z.enum(['below-bot', 'allowlist']).optional(),
+  })
+  .refine((body) => body.grant !== undefined || body.ping !== undefined, {
+    message: 'grant or ping is required',
+  });
+
+const roleAllowBodySchema = z.object({
+  roleId: snowflakeIdSchema,
+  purpose: z.enum(['grant', 'ping']),
+  accountId: z.string().min(1),
+});
+
+const roleDisallowQuerySchema = z.object({ purpose: z.enum(['grant', 'ping']) });
+
 const adoptionAllowanceBodySchema = z.object({
   count: z.number().int().positive().max(100),
 });
@@ -831,6 +852,89 @@ export const registerOpsWriteRoutes = (
       return reply.status(200).send({ ok: true, outcome });
     },
   );
+
+  // `mcp role-policy` (write form) / `mcp allow-role` / `mcp disallow-role`
+  // (slice 5 task 6, ADR 0117 §2): the same ports the CLI calls, behind the
+  // same `config.write` gate the send-allowlist routes above use. Ids and
+  // purposes only in audits and bodies — never role names.
+  app.post('/api/role-policy', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = rolePolicyBodySchema.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+
+    const ports = deps.portsFor(session.scope);
+    const { before, after } = ports.setRolePolicy({
+      ...(parsed.data.grant !== undefined && { grantMode: parsed.data.grant }),
+      ...(parsed.data.ping !== undefined && { pingMode: parsed.data.ping }),
+    });
+    const changed = before.grantMode !== after.grantMode || before.pingMode !== after.pingMode;
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'role_policy.updated',
+      subjectType: 'role_policy',
+      subjectId: undefined,
+      before: { grantMode: before.grantMode, pingMode: before.pingMode },
+      after: { grantMode: after.grantMode, pingMode: after.pingMode, changed },
+    });
+    return reply.status(200).send({ before, after, changed });
+  });
+
+  app.post('/api/role-allowlist', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = roleAllowBodySchema.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = await ports.allowRole(parsed.data);
+    if (outcome === 'no-such-role') {
+      return reply.status(404).send({ error: 'no-such-role' });
+    }
+    if (outcome === 'everyone' || outcome === 'managed' || outcome === 'dangerous') {
+      // Namespaced on the wire: the error catalog is shared across routes,
+      // so a bare `managed` could one day mean something else.
+      return reply.status(409).send({ error: `role-${outcome}` });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'role_allowlist.allowed',
+      subjectType: 'role_allowlist',
+      subjectId: parsed.data.roleId,
+      before: { allowed: outcome === 'already-allowed' },
+      after: { allowed: true, purpose: parsed.data.purpose, accountId: parsed.data.accountId },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.delete<{ Params: { roleId: string } }>('/api/role-allowlist/:roleId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const roleId = snowflakeIdSchema.safeParse(request.params.roleId);
+    if (!roleId.success) return badRequest(reply, roleId.error);
+    const query = roleDisallowQuerySchema.safeParse(request.query);
+    if (!query.success) return badRequest(reply, query.error);
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.disallowRole({ roleId: roleId.data, purpose: query.data.purpose });
+    if (outcome === 'removed') {
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'role_allowlist.disallowed',
+        subjectType: 'role_allowlist',
+        subjectId: roleId.data,
+        before: { allowed: true },
+        after: { allowed: false, purpose: query.data.purpose },
+      });
+    }
+    return reply.status(200).send({ ok: true, outcome });
+  });
 
   app.post('/api/adoption-allowance', (request, reply) => {
     const session = guard.require(request, reply);

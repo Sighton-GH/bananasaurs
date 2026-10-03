@@ -25,6 +25,7 @@ import type { GuildId } from '@bananasaurs/core';
 export const MCP_READ_SEARCH_MESSAGES = 'mcp.read.search_messages';
 export const MCP_READ_READ_CHANNEL_HISTORY = 'mcp.read.read_channel_history';
 export const MCP_READ_GET_MESSAGE = 'mcp.read.get_message';
+export const MCP_READ_READ_THREAD = 'mcp.read.read_thread';
 export const MCP_READ_LIST_MOD_CASES = 'mcp.read.list_mod_cases';
 export const MCP_READ_GET_MOD_CASE = 'mcp.read.get_mod_case';
 export const MCP_READ_LIST_AUDIT_EVENTS = 'mcp.read.list_audit_events';
@@ -34,6 +35,19 @@ export const MCP_READ_LIST_ROLES = 'mcp.read.list_roles';
 export const MCP_READ_LIST_MEMBERS = 'mcp.read.list_members';
 export const MCP_READ_LIST_THREADS = 'mcp.read.list_threads';
 export const MCP_READ_GET_SERVER_OVERVIEW = 'mcp.read.get_server_overview';
+export const MCP_READ_LIST_JOBS = 'mcp.read.list_jobs';
+export const MCP_READ_GET_JOB = 'mcp.read.get_job';
+export const MCP_READ_GET_MEMBER = 'mcp.read.get_member';
+export const MCP_READ_SEARCH_MEMBERS = 'mcp.read.search_members';
+export const MCP_READ_GET_SERVER_CONTEXT = 'mcp.read.get_server_context';
+export const MCP_READ_SEARCH_RESOURCES = 'mcp.read.search_resources';
+export const MCP_READ_OPEN_RESOURCE = 'mcp.read.open_resource';
+export const MCP_READ_READ_DIGEST = 'mcp.read.read_digest';
+export const MCP_READ_LIST_UNANSWERED = 'mcp.read.list_unanswered';
+export const MCP_READ_LIST_ACTIONS = 'mcp.read.list_actions';
+export const MCP_READ_LIST_SCHEDULED = 'mcp.read.list_scheduled';
+export const MCP_READ_LIST_PANELS = 'mcp.read.list_panels';
+export const MCP_READ_GET_PANEL = 'mcp.read.get_panel';
 
 /**
  * One durable audit row for a read that returned member content or

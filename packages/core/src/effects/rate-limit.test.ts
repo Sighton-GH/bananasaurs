@@ -119,4 +119,13 @@ describe('RateLimiter', () => {
     expect(limiter.bucketFor('adoption', T0).allowance).toBe(5);
     expect(limiter.bucketFor('interaction', T0).allowance).toBe(0);
   });
+
+  it('gives mcp its own bucket, isolated from the other sources', () => {
+    // The MCP role gateway spends from the `mcp` bucket, so a moderation
+    // storm cannot throttle it and MCP overflow cannot throttle moderation.
+    const limiter = new RateLimiter(1);
+    expect(limiter.take('mcp', T0)).toBe(true);
+    expect(limiter.take('mcp', T0)).toBe(false);
+    expect(limiter.take('interaction', T0)).toBe(true);
+  });
 });

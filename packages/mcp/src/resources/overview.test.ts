@@ -20,8 +20,21 @@ import {
   getServerOverviewText,
   type McpRecordsPort,
 } from '../tools/records.js';
-import type { McpGuildPort } from '../tools/guild.js';
-import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './overview.js';
+import type { McpGuildChannel, McpGuildPort } from '../tools/guild.js';
+import type { McpJobsPort } from '../tools/jobs.js';
+import type { McpMembersPort } from '../tools/members.js';
+import type { McpContextPort } from '../tools/context.js';
+import type { McpResourcesPort } from '../tools/resources.js';
+import type { McpThreadsPort } from '../tools/threads.js';
+import type { McpThreadWritesPort } from '../tools/thread-writes.js';
+import type { McpRoleWritesPort } from '../tools/role-writes.js';
+import {
+  buildOverviewCard,
+  OVERVIEW_RESOURCE_URI_TEMPLATE,
+  readOverviewResource,
+  type OverviewCardInput,
+} from './overview.js';
+import { STRUCTURED_NOTE } from '../structured.js';
 
 /**
  * Task 6 (absorbing Task 8), resource side: `bananasaurs://guild/{guildId}/overview`
@@ -50,10 +63,15 @@ const stubHealth = (): McpHealthPort => ({
 });
 
 const stubArchive = (): McpArchivePort => ({
+  now: () => 1_700_000_000_000,
   listArchiveChannelIds: () => [],
   searchMessages: () => ({ total: 0, hits: [] }),
   findMessage: () => undefined,
   listChannelHistory: () => [],
+  listMessagesSince: () => [],
+  listUnansweredRoleMentions: () => [],
+  messageMeta: () => Promise.resolve(undefined),
+  botUserId: () => undefined,
 });
 
 const stubGuild = (): McpGuildPort => ({
@@ -94,6 +112,57 @@ const stubRecords = (): McpRecordsPort => ({
   listPanels: () => [{ panelId: 'roles-panel' }],
 });
 
+/** Minimal jobs port: this file pins the overview resource, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins the overview resource, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
+
+/** Minimal context port: this file pins the overview resource, never the context tool. */
+const stubContext = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
+/** Minimal resources port: this file pins the overview resource, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins the overview resource, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
+
+/** Minimal thread-writes port: required since slice 3 Task 5; never called by the resource pinned here. */
+const stubThreadWrites = (): McpThreadWritesPort => ({
+  createThread: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  addThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  removeThreadMembers: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createForumPost: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+});
+
+/** Minimal role-writes port: required since slice 4 Task 3; never called by the resource pinned here. */
+const stubRoleWrites = (): McpRoleWritesPort => ({
+  grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+  remove: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
@@ -106,8 +175,52 @@ const connectPair = async (
     guild: stubGuild(),
     records: stubRecords(),
     // Required since M5 Task 4; never called by the resource pinned here.
-    send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+    send: {
+      send: () =>
+        Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
+    },
+    // Required since slice 3 Task 6; never called by the resource pinned here.
+    messageWrites: {
+      edit: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      delete: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      pin: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      unpin: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      addReaction: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      removeReaction: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+    },
     readAudit: noopReadAudit,
+    threadWrites: stubThreadWrites(),
+    // Required for the four event tools; never called by the resource pinned here.
+    eventWrites: {
+      createEvent: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', eventId: 'evt-test' }),
+      editEvent: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+      cancelEvent: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+      createPoll: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+    },
+    // Required for the four schedule tools; never called by the resource pinned here.
+    schedule: {
+      scheduleMessage: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem-test' }),
+      listScheduled: () => [],
+      editScheduled: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem-test' }),
+      cancelScheduled: () =>
+        Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem-test' }),
+    },
+    roleWrites: stubRoleWrites(),
+    jobs: stubJobs(),
+    members: stubMembers(),
+    context: stubContext(),
+    resources: stubResources(),
+    threads: stubThreads(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -216,7 +329,75 @@ describe('resource and tool serve the same card', () => {
   });
 });
 
+/**
+ * A large fixture modelling the ~125-block guild from the ADR 0113 context:
+ * 6 categories of 10 text channels (each with a 40-character topic), 60
+ * roles, 3 panels and 4 rules.
+ */
+const bigFixture = (): OverviewCardInput => {
+  const channels: McpGuildChannel[] = [];
+  for (let c = 0; c < 6; c += 1) {
+    const categoryId = `40000000000000000${String(c)}`;
+    channels.push({
+      id: categoryId,
+      name: `category-${String(c)}`,
+      type: 'GuildCategory',
+      parentId: undefined,
+      parentName: undefined,
+      topic: undefined,
+      archiveEnabled: false,
+    });
+    for (let t = 0; t < 10; t += 1) {
+      channels.push({
+        id: `500000000000000${String(c)}${String(t)}`,
+        name: `channel-${String(c)}-${String(t)}`,
+        type: 'GuildText',
+        parentId: categoryId,
+        parentName: `category-${String(c)}`,
+        topic: 't'.repeat(40),
+        archiveEnabled: t % 2 === 0,
+      });
+    }
+  }
+  return {
+    guildId: GUILD_A,
+    channels,
+    roles: Array.from({ length: 60 }, (_, i) => ({
+      id: `6000000000000000${String(i).padStart(2, '0')}`,
+      name: `role-${String(i)}`,
+      position: i,
+      color: 0,
+      managedByBananasaurs: i % 3 === 0,
+    })),
+    memberCount: 210,
+    rules: [
+      { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
+      { ruleId: 'rule-observe-1', name: 'Observe one', mode: 'observe', enabled: true },
+      { ruleId: 'rule-observe-2', name: 'Observe two', mode: 'observe', enabled: false },
+      { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+    ],
+    panels: [{ panelId: 'roles-panel' }, { panelId: 'welcome' }, { panelId: 'rules' }],
+  };
+};
+
+// measured with the pre-ADR-0113 evidence-block card
+const PRE_ADR_0110_CARD_LENGTH = 31474;
+
+/** Head line, note line, then the parsed JSON payload. */
+const cardJsonOf = (text: string): Record<string, unknown> => {
+  const lines = text.split('\n');
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toBe(STRUCTURED_NOTE);
+  return JSON.parse(lines[2] ?? '') as Record<string, unknown>;
+};
+
 describe('overview tool on the MCP server', () => {
+  it('the JSON card stays under a quarter of the evidence-block size', () => {
+    expect(buildOverviewCard(bigFixture()).length).toBeLessThan(
+      Math.ceil(PRE_ADR_0110_CARD_LENGTH / 4),
+    );
+  });
+
   it('answers get_server_overview through a tool call', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
@@ -230,5 +411,188 @@ describe('overview tool on the MCP server', () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe('overview card JSON (ADR 0113)', () => {
+  const smallInput = (): OverviewCardInput => ({
+    guildId: GUILD_A,
+    channels: [
+      {
+        id: '333333333333333333',
+        name: 'planning',
+        type: 'GuildText',
+        parentId: '444444444444444444',
+        parentName: 'club',
+        topic: 'plan the picnic',
+        archiveEnabled: true,
+      },
+      {
+        id: '777777777777777777',
+        name: 'lounge',
+        type: 'GuildVoice',
+        parentId: undefined,
+        parentName: undefined,
+        topic: undefined,
+        archiveEnabled: false,
+      },
+    ],
+    roles: [
+      {
+        id: '666666666666666666',
+        name: 'organizer',
+        position: 3,
+        color: 0,
+        managedByBananasaurs: true,
+      },
+    ],
+    memberCount: 210,
+    rules: [
+      { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
+      { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+    ],
+    panels: [{ panelId: 'roles-panel' }],
+  });
+
+  it('is head, note, then one line of JSON with the gateway scalar', () => {
+    const text = buildOverviewCard(smallInput());
+    const [head, note] = text.split('\n');
+    expect(head).toBe(
+      'Server overview for guild 111111111111111111: 210 members, ' +
+        '2 channels, 1 roles, 1 panels, 2 rules. Channels without a type are text channels.',
+    );
+    expect(note).toBe(STRUCTURED_NOTE);
+    const data = cardJsonOf(text);
+    expect(data['guild']).toEqual({ id: '111111111111111111', memberCount: 210 });
+  });
+
+  it('groups channels by category and lists the unparented separately', () => {
+    const data = cardJsonOf(buildOverviewCard(smallInput()));
+    // No GuildCategory channel in the input, so the parent is synthesised
+    // from the child's locator — the grouping still holds.
+    expect(data['categories']).toEqual([
+      {
+        id: '444444444444444444',
+        name: 'club',
+        channels: [{ id: '333333333333333333', name: 'planning', archive: true }],
+      },
+    ]);
+    expect(data['uncategorised']).toEqual([
+      { id: '777777777777777777', name: 'lounge', type: 'GuildVoice' },
+    ]);
+  });
+
+  it('a channel with an unknown parent category lands in a synthesised category', () => {
+    const input = smallInput();
+    const data = cardJsonOf(
+      buildOverviewCard({
+        ...input,
+        channels: [
+          {
+            id: '999999999999999999',
+            name: 'orphan',
+            type: 'GuildText',
+            parentId: '000000000000000001',
+            parentName: undefined,
+            topic: undefined,
+            archiveEnabled: false,
+          },
+        ],
+      }),
+    );
+    expect(data['categories']).toEqual([
+      {
+        id: '000000000000000001',
+        name: '',
+        channels: [{ id: '999999999999999999', name: 'orphan' }],
+      },
+    ]);
+    expect(data['uncategorised']).toEqual([]);
+  });
+
+  it('topics are not in the overview', () => {
+    expect(buildOverviewCard(smallInput())).not.toContain('plan the picnic');
+  });
+
+  it('a text channel omits type while a voice channel keeps it, and the head says so', () => {
+    const text = buildOverviewCard(smallInput());
+    expect(text.split('\n')[0]).toContain('Channels without a type are text channels.');
+    const data = cardJsonOf(text);
+    // planning is GuildText: no type key. lounge is GuildVoice: type kept.
+    const categories = data['categories'] as ReadonlyArray<{
+      channels: ReadonlyArray<Record<string, unknown>>;
+    }>;
+    expect(categories[0]?.channels).toEqual([
+      { id: '333333333333333333', name: 'planning', archive: true },
+    ]);
+    expect(data['uncategorised']).toEqual([
+      { id: '777777777777777777', name: 'lounge', type: 'GuildVoice' },
+    ]);
+  });
+
+  it('lists roles highest-first as id and name, panels and rule counts', () => {
+    const data = cardJsonOf(buildOverviewCard(smallInput()));
+    expect(data['roles']).toEqual([
+      {
+        id: '666666666666666666',
+        name: 'organizer',
+        managed: true,
+      },
+    ]);
+    expect(data['panels']).toEqual([{ id: 'roles-panel' }]);
+    expect(data['rules']).toEqual({
+      test: { total: 1, enabled: 1 },
+      observe: { total: 0, enabled: 0 },
+      enforce: { total: 1, enabled: 1 },
+    });
+  });
+
+  it('an unmanaged role carries no managed key', () => {
+    const input = smallInput();
+    const data = cardJsonOf(
+      buildOverviewCard({
+        ...input,
+        roles: [
+          {
+            id: '666666666666666666',
+            name: 'organizer',
+            position: 3,
+            color: 0,
+            managedByBananasaurs: true,
+          },
+          {
+            id: '777777777777777777',
+            name: 'member',
+            position: 1,
+            color: 0,
+            managedByBananasaurs: false,
+          },
+        ],
+      }),
+    );
+    // Highest position first; only the managed role carries the key.
+    expect(data['roles']).toEqual([
+      { id: '666666666666666666', name: 'organizer', managed: true },
+      { id: '777777777777777777', name: 'member' },
+    ]);
+  });
+
+  it('bigFixture groups six categories of ten with sixty roles', () => {
+    const data = cardJsonOf(buildOverviewCard(bigFixture()));
+    const categories = data['categories'] as ReadonlyArray<{
+      channels: readonly unknown[];
+    }>;
+    expect(categories).toHaveLength(6);
+    for (const category of categories) {
+      expect(category.channels).toHaveLength(10);
+    }
+    expect(data['uncategorised']).toEqual([]);
+    expect(data['roles'] as readonly unknown[]).toHaveLength(60);
+    expect(data['panels'] as readonly unknown[]).toHaveLength(3);
+    expect(data['rules']).toEqual({
+      test: { total: 1, enabled: 1 },
+      observe: { total: 2, enabled: 1 },
+      enforce: { total: 1, enabled: 1 },
+    });
   });
 });

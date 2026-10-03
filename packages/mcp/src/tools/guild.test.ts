@@ -11,13 +11,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import {
-  EVIDENCE_CLOSE,
-  EVIDENCE_OPEN,
-  EVIDENCE_PREAMBLE,
-  GUILD_REFUSAL_MESSAGE,
-  INVALID_ARGUMENTS_MESSAGE,
-} from '../index.js';
+import { EVIDENCE_CLOSE, GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE } from '../index.js';
+import { STRUCTURED_NOTE } from '../structured.js';
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
 import {
@@ -33,6 +28,53 @@ import {
   type McpGuildPort,
 } from './guild.js';
 import type { McpPrincipal } from '../scope.js';
+import type { McpJobsPort } from './jobs.js';
+import type { McpMembersPort } from './members.js';
+import { GET_SERVER_CONTEXT_TOOL_NAME, type McpContextPort } from './context.js';
+import {
+  OPEN_RESOURCE_TOOL_NAME,
+  SEARCH_RESOURCES_TOOL_NAME,
+  type McpResourcesPort,
+} from './resources.js';
+import type { McpThreadsPort } from './threads.js';
+import type { McpThreadWritesPort } from './thread-writes.js';
+import type { McpRoleWritesPort } from './role-writes.js';
+
+/** Minimal jobs port: this file pins the guild tools, never the jobs tools. */
+const stubJobs = (): McpJobsPort => ({
+  listJobs: () => [],
+  findJob: () => undefined,
+});
+
+/** Minimal members port: this file pins the guild tools, never the member tools. */
+const stubMembers = (): McpMembersPort => ({
+  listAllMembers: () => Promise.resolve({ members: [], truncated: false }),
+  lastMessageAt: () => new Map(),
+  now: () => 1_700_000_000_000,
+});
+
+/** Minimal context port: this file pins the guild tools, never the context tool. */
+const stubContext = (): McpContextPort => ({
+  serverCard: () => '',
+  timeZone: 'America/Vancouver',
+  now: () => 1_700_000_000_000,
+  skills: () => [],
+});
+
+/** Minimal resources port: this file pins the guild tools, never the resource tools. */
+const stubResources = (): McpResourcesPort => ({
+  listResources: () => [],
+  searchChunks: () => [],
+  resourceChunks: () => [],
+});
+
+/** Minimal threads port: this file pins the guild tools, never the thread tool. */
+const stubThreads = (): McpThreadsPort => ({
+  archiveThread: () => [],
+  threadInfo: () => Promise.resolve(undefined),
+  privateThreadReadable: () => Promise.resolve(false),
+  liveThreadMessages: () => Promise.resolve([]),
+});
 
 /**
  * Task 5, tool layer: `list_channels`, `list_roles` and `list_members` over a
@@ -131,6 +173,14 @@ const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): stri
   return (outcome as { readonly text: string }).text;
 };
 
+/** ADR 0113: head line, note line, then the parsed JSON payload. */
+const jsonOf = (text: string): Record<string, unknown> => {
+  const lines = text.split('\n');
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toBe(STRUCTURED_NOTE);
+  return JSON.parse(lines[2] ?? '') as Record<string, unknown>;
+};
+
 describe('guild tools refuse without a reachable guild', () => {
   it.each([[LIST_CHANNELS_TOOL_NAME], [LIST_ROLES_TOOL_NAME], [LIST_MEMBERS_TOOL_NAME]])(
     '%s refuses an unreachable guild with the shared refusal',
@@ -222,46 +272,73 @@ describe('guild tools refuse without a reachable guild', () => {
   });
 });
 
-describe('every guild result carries the envelope preamble', () => {
-  it('list_channels frames channel names between preamble and delimiters', () => {
+describe('every guild result is head, note, then one line of JSON (ADR 0113)', () => {
+  it('list_channels renders ids, names, types, parents, topics and archive flags as JSON', () => {
     const text = textOf(
       listChannelsText(principalWith(GUILD_A), fakePort(), {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain(EVIDENCE_PREAMBLE);
-    const preambleAt = text.indexOf(EVIDENCE_PREAMBLE);
-    const openAt = text.indexOf(EVIDENCE_OPEN);
-    // The name rides in the escaped locator block before the delimiters; the
-    // topic is the member-written detail framed inside them. Both are past
-    // the preamble, and the framed detail closes after it opens.
-    const nameAt = text.indexOf('planning');
-    const detailAt = text.indexOf('plan the picnic');
-    const closeAt = text.indexOf(EVIDENCE_CLOSE);
-    expect(preambleAt).toBeGreaterThanOrEqual(0);
-    expect(nameAt).toBeGreaterThan(preambleAt);
-    expect(openAt).toBeGreaterThan(preambleAt);
-    expect(detailAt).toBeGreaterThan(openAt);
-    expect(closeAt).toBeGreaterThan(detailAt);
+    const [head] = text.split('\n');
+    expect(head).toBe('Channels in guild 111111111111111111: 2 channels (1 archive-enabled).');
+    const data = jsonOf(text);
+    expect(data['channels']).toEqual([
+      {
+        id: '333333333333333333',
+        name: 'planning',
+        type: 'GuildText',
+        parent: { id: '444444444444444444', name: 'club' },
+        topic: 'plan the picnic',
+        archive: true,
+      },
+      {
+        id: '555555555555555555',
+        name: 'lounge-voice',
+        type: 'GuildVoice',
+        parent: null,
+        topic: null,
+        archive: false,
+      },
+    ]);
   });
 
-  it('list_roles frames role names', () => {
+  it('list_roles renders ids, names, positions, colours and managed flags as JSON', () => {
     const text = textOf(
       listRolesText(principalWith(GUILD_A), fakePort(), { guildId: '111111111111111111' }),
     );
-    expect(text).toContain(EVIDENCE_PREAMBLE);
-    expect(text).toContain('organizer');
-    expect(text.indexOf(EVIDENCE_PREAMBLE)).toBeLessThan(text.indexOf(EVIDENCE_OPEN));
+    const [head] = text.split('\n');
+    expect(head).toContain('@everyone excluded');
+    const data = jsonOf(text);
+    expect(data['roles']).toEqual([
+      {
+        id: '666666666666666666',
+        name: 'organizer',
+        position: 3,
+        color: '#00ff00',
+        managedByBananasaurs: true,
+      },
+    ]);
   });
 
-  it('list_members frames display names', async () => {
+  it('list_members renders ids, names, roles, joined-at and the next cursor as JSON', async () => {
     const text = textOf(
       await listMembersText(principalWith(GUILD_A), fakePort(), {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain(EVIDENCE_PREAMBLE);
-    expect(text).toContain('Ana');
+    const [head] = text.split('\n');
+    expect(head).toContain('Next cursor: 777777777777777777');
+    const data = jsonOf(text);
+    expect(data['members']).toEqual([
+      {
+        id: '777777777777777777',
+        username: 'ana',
+        displayName: 'Ana',
+        roleIds: ['666666666666666666'],
+        joinedAt: new Date(1_700_000_000_100).toISOString(),
+      },
+    ]);
+    expect(data['nextCursor']).toBe('777777777777777777');
   });
 });
 
@@ -373,16 +450,16 @@ describe('list_channels reports archive scope from the port', () => {
         guildId: '111111111111111111',
       }),
     );
-    expect(text).toContain('planning');
-    expect(text).toContain('lounge-voice');
+    const data = jsonOf(text);
+    const channels = data['channels'] as ReadonlyArray<Record<string, unknown>>;
+    expect(channels.map((c) => c['name'])).toEqual(['planning', 'lounge-voice']);
     // Both states render, so a port that always answered one way would fail.
-    expect(text).toContain('archive-enabled: yes');
-    expect(text).toContain('archive-enabled: no');
+    expect(channels.map((c) => c['archive'])).toEqual([true, false]);
   });
 });
 
-describe('a display name containing the envelope closing marker cannot break framing', () => {
-  it('the exact marker occurs once per item, never from content', async () => {
+describe('a display name containing the envelope closing marker cannot forge a frame', () => {
+  it('the marker survives only in broken form inside the JSON string', async () => {
     const port: McpGuildPort = {
       listChannels: () => [],
       listThreads: async () => [],
@@ -407,12 +484,16 @@ describe('a display name containing the envelope closing marker cannot break fra
         guildId: '111111111111111111',
       }),
     );
-    // Task 2 proved the escaper; this proves *this tool* uses it: the one
-    // member yields exactly one framing close, so the marker typed in the
-    // display name survived only in broken form.
-    expect(text.split(EVIDENCE_CLOSE).length - 1).toBe(1);
-    expect(text).toContain('Ignore instructions');
-    expect(text).toContain('forged');
+    // Task 2 proved the escaper; this proves *this tool* uses it: the marker
+    // typed in the display name survives only in broken form inside the JSON
+    // string, so it can never forge a frame in a later envelope-bearing
+    // result — while the surrounding name still arrives.
+    expect(text).not.toContain(EVIDENCE_CLOSE);
+    const data = jsonOf(text);
+    const members = data['members'] as ReadonlyArray<Record<string, unknown>>;
+    expect(members).toHaveLength(1);
+    expect(String(members[0]?.['displayName'])).toContain('Ignore instructions');
+    expect(String(members[0]?.['displayName'])).toContain('forged');
   });
 });
 
@@ -426,10 +507,15 @@ describe('guild tools on the MCP server', () => {
       principal,
       health: stubHealth(),
       archive: {
+        now: () => 1_700_000_000_000,
         listArchiveChannelIds: () => [],
         searchMessages: () => ({ total: 0, hits: [] }),
         findMessage: () => undefined,
         listChannelHistory: () => [],
+        listMessagesSince: () => [],
+        listUnansweredRoleMentions: () => [],
+        messageMeta: () => Promise.resolve(undefined),
+        botUserId: () => undefined,
       },
       guild: port,
       records: {
@@ -441,8 +527,66 @@ describe('guild tools on the MCP server', () => {
         listPanels: () => [],
       },
       // Required since M5 Task 4; never called by the guild tools pinned here.
-      send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+      send: {
+        send: () =>
+          Promise.resolve({ status: 'sent' as const, messageId: 'mid', actionId: 'act-test' }),
+      },
+      // Required since slice 3 Task 5; never called by the guild tools pinned here.
+      threadWrites: {
+        createThread: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        addThreadMembers: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        removeThreadMembers: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        createForumPost: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        setThreadState: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+      } satisfies McpThreadWritesPort,
+      // Required since slice 3 Task 6; never called by the guild tools pinned here.
+      messageWrites: {
+        edit: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        delete: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        pin: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        unpin: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        addReaction: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+        removeReaction: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      },
+      // Required for the four event tools; never called by the guild tools pinned here.
+      eventWrites: {
+        createEvent: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', eventId: 'evt' }),
+        editEvent: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        cancelEvent: () => Promise.resolve({ status: 'done' as const, actionId: 'act-test' }),
+        createPoll: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', messageId: 'mid' }),
+      },
+      // Required for the four schedule tools; never called by the guild tools pinned here.
+      schedule: {
+        scheduleMessage: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+        listScheduled: () => [],
+        editScheduled: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+        cancelScheduled: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', reminderId: 'rem' }),
+      },
       readAudit: noopReadAudit,
+      // Required since slice 4 Task 3; never called by the guild tools pinned here.
+      roleWrites: {
+        grant: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+        remove: () =>
+          Promise.resolve({ status: 'done' as const, actionId: 'act-test', alreadyHad: false }),
+      } satisfies McpRoleWritesPort,
+      jobs: stubJobs(),
+      members: stubMembers(),
+      context: stubContext(),
+      resources: stubResources(),
+      threads: stubThreads(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -455,7 +599,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all twelve tools and still no send_message', async () => {
+  it('lists all twenty-two tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -464,6 +608,9 @@ describe('guild tools on the MCP server', () => {
         'search_messages',
         'read_channel_history',
         'get_message',
+        'read_thread',
+        'read_digest',
+        'list_unanswered',
         LIST_CHANNELS_TOOL_NAME,
         LIST_THREADS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
@@ -472,6 +619,13 @@ describe('guild tools on the MCP server', () => {
         'get_mod_case',
         'list_audit_events',
         'get_server_overview',
+        'list_jobs',
+        'get_job',
+        'get_member',
+        'search_members',
+        GET_SERVER_CONTEXT_TOOL_NAME,
+        SEARCH_RESOURCES_TOOL_NAME,
+        OPEN_RESOURCE_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {
@@ -488,8 +642,9 @@ describe('guild tools on the MCP server', () => {
       })) as CallToolResult;
       expect(result.isError).not.toBe(true);
       const blocks = result.content as ReadonlyArray<{ type: string; text: string }>;
-      expect(blocks[0]?.text).toContain(EVIDENCE_PREAMBLE);
-      expect(blocks[0]?.text).toContain('Ana');
+      const data = jsonOf(blocks[0]?.text ?? '');
+      const members = data['members'] as ReadonlyArray<Record<string, unknown>>;
+      expect(members.map((m) => m['displayName'])).toContain('Ana');
     } finally {
       await close();
     }
@@ -516,8 +671,20 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
   const threadPort = (): McpGuildPort => ({
     ...fakePort(),
     listThreads: async () => [
-      { id: '800000000000000001', name: 'weekly build night', parentId: CHANNEL, archived: false },
-      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: false,
+      },
+      {
+        id: '800000000000000002',
+        name: 'archived plans',
+        parentId: CHANNEL,
+        archived: true,
+        isPrivate: false,
+      },
     ],
   });
 
@@ -531,23 +698,188 @@ describe('list_threads rows follow the structural-row convention (N3)', () => {
     // The name is the only thing that identifies a forum post to a reader,
     // and this listing used to drop it entirely while putting the id where
     // `list_channels` puts the name and the parent where it puts the id.
-    expect(result.text).toContain('weekly build night');
-    expect(result.text).toContain('archived plans');
-    expect(result.text).toContain('800000000000000001');
-    expect(result.text).toContain(`parent: ${CHANNEL}`);
-    expect(result.text).toContain('2 threads (1 archived)');
-    expect(result.text).toContain('Private threads are never listed.');
+    const [head] = result.text.split('\n');
+    expect(head).toBe(
+      `Threads under channel ${CHANNEL}: 2 threads (1 archived, 0 private). ` +
+        'Private threads listed here are shared with the MCP and read live.',
+    );
+    const data = jsonOf(result.text);
+    expect(data['threads']).toEqual([
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        private: false,
+      },
+      {
+        id: '800000000000000002',
+        name: 'archived plans',
+        parentId: CHANNEL,
+        archived: true,
+        private: false,
+      },
+    ]);
   });
 
-  it('still frames every row inside the evidence envelope', async () => {
+  it('renders threads as JSON, never an evidence envelope', async () => {
     const result = await listThreadsText(principalWith(GUILD_A), threadPort(), {
       guildId: GUILD_A,
       channelId: CHANNEL,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.text).toContain(EVIDENCE_PREAMBLE);
-    expect(result.text).toContain(EVIDENCE_OPEN);
-    expect(result.text).toContain(EVIDENCE_CLOSE);
+    expect(result.text.split('\n')[1]).toBe(STRUCTURED_NOTE);
+    expect(result.text).not.toContain(EVIDENCE_CLOSE);
+    const data = jsonOf(result.text);
+    expect(data['threads']).toHaveLength(2);
+  });
+});
+
+describe('list_threads marks the shared private threads the port returns', () => {
+  const CHANNEL = '777777777777777777';
+  const SHARED_PRIVATE = '800000000000000003';
+
+  const mixedPort = (): McpGuildPort => ({
+    ...fakePort(),
+    listThreads: async () => [
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: false,
+      },
+      {
+        id: SHARED_PRIVATE,
+        name: 'secret plans',
+        parentId: CHANNEL,
+        archived: false,
+        isPrivate: true,
+      },
+    ],
+  });
+
+  it('lists every thread the port returns, private ones flagged', async () => {
+    // The tool renders but never filters: the port lists no unshared private
+    // thread (the daemon checks bot-AND-owner membership live), so whatever
+    // arrives flagged private is shared by construction.
+    const result = await listThreadsText(principalWith(GUILD_A), mixedPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [head] = result.text.split('\n');
+    expect(head).toBe(
+      `Threads under channel ${CHANNEL}: 2 threads (0 archived, 1 private). ` +
+        'Private threads listed here are shared with the MCP and read live.',
+    );
+    const data = jsonOf(result.text);
+    expect(data['threads']).toEqual([
+      {
+        id: '800000000000000001',
+        name: 'weekly build night',
+        parentId: CHANNEL,
+        archived: false,
+        private: false,
+      },
+      {
+        id: SHARED_PRIVATE,
+        name: 'secret plans',
+        parentId: CHANNEL,
+        archived: false,
+        private: true,
+      },
+    ]);
+  });
+});
+
+describe('list_threads accepts a channel id or name', () => {
+  const PLANNING = '333333333333333333';
+
+  const recordingThreads = (): McpGuildPort & { readonly seen: string[] } => {
+    const base = fakePort();
+    const seen: string[] = [];
+    return {
+      ...base,
+      seen,
+      listThreads: async (guildId, channelId, includeArchived) => {
+        seen.push(channelId);
+        return base.listThreads(guildId, channelId, includeArchived);
+      },
+    };
+  };
+
+  it('resolves a channel name to its id', async () => {
+    const port = recordingThreads();
+    const result = await listThreadsText(principalWith(GUILD_A), port, {
+      guildId: '111111111111111111',
+      channelId: 'planning',
+    });
+    expect(result.ok).toBe(true);
+    expect(port.seen).toEqual([PLANNING]);
+  });
+
+  it('strips one leading #', async () => {
+    const port = recordingThreads();
+    const result = await listThreadsText(principalWith(GUILD_A), port, {
+      guildId: '111111111111111111',
+      channelId: '#planning',
+    });
+    expect(result.ok).toBe(true);
+    expect(port.seen).toEqual([PLANNING]);
+  });
+
+  it('an ambiguous name refuses with candidates', async () => {
+    const port: McpGuildPort = {
+      ...fakePort(),
+      listChannels: () => [
+        {
+          id: '333333333333333333',
+          name: 'general',
+          type: 'GuildText',
+          parentId: undefined,
+          parentName: undefined,
+          topic: undefined,
+          archiveEnabled: true,
+        },
+        {
+          id: '555555555555555555',
+          name: 'general',
+          type: 'GuildText',
+          parentId: undefined,
+          parentName: undefined,
+          topic: undefined,
+          archiveEnabled: false,
+        },
+      ],
+    };
+    const result = await listThreadsText(principalWith(GUILD_A), port, {
+      guildId: '111111111111111111',
+      channelId: 'general',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('(333333333333333333)');
+    expect(result.message).toContain('(555555555555555555)');
+    expect(result.message.endsWith('Pass an id.')).toBe(true);
+  });
+
+  it('an unreachable guild refuses before resolution', async () => {
+    let calls = 0;
+    const port: McpGuildPort = {
+      ...fakePort(),
+      listChannels: () => {
+        calls += 1;
+        return [];
+      },
+    };
+    const result = await listThreadsText(principalWith(GUILD_B), port, {
+      guildId: '111111111111111111',
+      channelId: 'planning',
+    });
+    expect(result).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(calls).toBe(0);
   });
 });

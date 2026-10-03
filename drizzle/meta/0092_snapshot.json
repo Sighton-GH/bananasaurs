@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c17ed075-4bb4-4d3c-acb0-85c5f00a1a42",
-  "prevId": "74147412-bef9-46da-8486-7dc644659ee5",
+  "id": "cc166e2e-f280-4e12-b1ee-1cbac032ae33",
+  "prevId": "9c5c73df-dcf4-4782-81b1-5cbb47394354",
   "tables": {
     "account_capabilities": {
       "name": "account_capabilities",
@@ -535,6 +535,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "reply_to_message_id": {
+          "name": "reply_to_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "mentioned_role_ids": {
+          "name": "mentioned_role_ids",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "retention_class": {
           "name": "retention_class",
           "type": "text",
@@ -584,6 +598,15 @@
             "deleted_at"
           ],
           "isUnique": false
+        },
+        "archive_messages_author_created": {
+          "name": "archive_messages_author_created",
+          "columns": [
+            "guild_id",
+            "author_id",
+            "created_at"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -629,6 +652,10 @@
         "archive_messages_thread_id_snowflake": {
           "name": "archive_messages_thread_id_snowflake",
           "value": "(\"archive_messages\".\"thread_id\" IS NULL OR (\"archive_messages\".\"thread_id\" NOT GLOB '*[^0-9]*' AND length(\"archive_messages\".\"thread_id\") BETWEEN 17 AND 20))"
+        },
+        "archive_messages_reply_to_message_id_snowflake": {
+          "name": "archive_messages_reply_to_message_id_snowflake",
+          "value": "(\"archive_messages\".\"reply_to_message_id\" IS NULL OR (\"archive_messages\".\"reply_to_message_id\" NOT GLOB '*[^0-9]*' AND length(\"archive_messages\".\"reply_to_message_id\") BETWEEN 17 AND 20))"
         },
         "archive_messages_retention_class": {
           "name": "archive_messages_retention_class",
@@ -1857,6 +1884,14 @@
           "autoincrement": false,
           "default": 0
         },
+        "search_source": {
+          "name": "search_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'brave'"
+        },
         "github_token_enc": {
           "name": "github_token_enc",
           "type": "text",
@@ -1884,6 +1919,10 @@
         "assistant_provider_config_search_enabled_bool": {
           "name": "assistant_provider_config_search_enabled_bool",
           "value": "\"assistant_provider_config\".\"search_enabled\" IN (0,1)"
+        },
+        "assistant_provider_config_search_source": {
+          "name": "assistant_provider_config_search_source",
+          "value": "\"assistant_provider_config\".\"search_source\" IN ('brave','tavily')"
         },
         "assistant_provider_config_provider": {
           "name": "assistant_provider_config_provider",
@@ -2301,6 +2340,175 @@
         "assistant_resources_fetch_status": {
           "name": "assistant_resources_fetch_status",
           "value": "\"assistant_resources\".\"fetch_status\" IN ('pending','ok','failed','blocked')"
+        }
+      }
+    },
+    "assistant_search_calls": {
+      "name": "assistant_search_calls",
+      "columns": {
+        "call_id": {
+          "name": "call_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "at": {
+          "name": "at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "assistant_search_calls_key_at": {
+          "name": "assistant_search_calls_key_at",
+          "columns": [
+            "key_id",
+            "at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "assistant_search_calls_key_id_assistant_search_keys_key_id_fk": {
+          "name": "assistant_search_calls_key_id_assistant_search_keys_key_id_fk",
+          "tableFrom": "assistant_search_calls",
+          "tableTo": "assistant_search_keys",
+          "columnsFrom": [
+            "key_id"
+          ],
+          "columnsTo": [
+            "key_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_search_calls_guild_id_snowflake": {
+          "name": "assistant_search_calls_guild_id_snowflake",
+          "value": "(\"assistant_search_calls\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_search_calls\".\"guild_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "assistant_search_keys": {
+      "name": "assistant_search_keys",
+      "columns": {
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "api_key_enc": {
+          "name": "api_key_enc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "monthly_limit": {
+          "name": "monthly_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "daily_limit": {
+          "name": "daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_search_keys_source": {
+          "name": "assistant_search_keys_source",
+          "value": "\"assistant_search_keys\".\"source\" IN ('brave','tavily')"
+        },
+        "assistant_search_keys_label_length": {
+          "name": "assistant_search_keys_label_length",
+          "value": "length(\"assistant_search_keys\".\"label\") BETWEEN 1 AND 60"
+        },
+        "assistant_search_keys_enabled_bool": {
+          "name": "assistant_search_keys_enabled_bool",
+          "value": "\"assistant_search_keys\".\"enabled\" IN (0,1)"
+        },
+        "assistant_search_keys_monthly_limit": {
+          "name": "assistant_search_keys_monthly_limit",
+          "value": "\"assistant_search_keys\".\"monthly_limit\" IS NULL OR \"assistant_search_keys\".\"monthly_limit\" BETWEEN 1 AND 1000000"
+        },
+        "assistant_search_keys_daily_limit": {
+          "name": "assistant_search_keys_daily_limit",
+          "value": "\"assistant_search_keys\".\"daily_limit\" IS NULL OR \"assistant_search_keys\".\"daily_limit\" BETWEEN 1 AND 1000000"
         }
       }
     },
@@ -4554,237 +4762,6 @@
         }
       }
     },
-    "log_member_snapshots": {
-      "name": "log_member_snapshots",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "username": {
-          "name": "username",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "global_name": {
-          "name": "global_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "nickname": {
-          "name": "nickname",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "avatar_hash": {
-          "name": "avatar_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "guild_avatar_hash": {
-          "name": "guild_avatar_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "role_ids": {
-          "name": "role_ids",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'[]'"
-        },
-        "updated_at_ms": {
-          "name": "updated_at_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "log_member_snapshots_guild_id_guilds_guild_id_fk": {
-          "name": "log_member_snapshots_guild_id_guilds_guild_id_fk",
-          "tableFrom": "log_member_snapshots",
-          "tableTo": "guilds",
-          "columnsFrom": [
-            "guild_id"
-          ],
-          "columnsTo": [
-            "guild_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "log_member_snapshots_guild_id_user_id_pk": {
-          "columns": [
-            "guild_id",
-            "user_id"
-          ],
-          "name": "log_member_snapshots_guild_id_user_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "log_member_snapshots_guild_id_snowflake": {
-          "name": "log_member_snapshots_guild_id_snowflake",
-          "value": "(\"log_member_snapshots\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"log_member_snapshots\".\"guild_id\") BETWEEN 17 AND 20)"
-        },
-        "log_member_snapshots_user_id_snowflake": {
-          "name": "log_member_snapshots_user_id_snowflake",
-          "value": "(\"log_member_snapshots\".\"user_id\" NOT GLOB '*[^0-9]*' AND length(\"log_member_snapshots\".\"user_id\") BETWEEN 17 AND 20)"
-        }
-      }
-    },
-    "log_route_events": {
-      "name": "log_route_events",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "route_id": {
-          "name": "route_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "event_kind": {
-          "name": "event_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "log_route_events_guild_id_route_id_log_routes_guild_id_route_id_fk": {
-          "name": "log_route_events_guild_id_route_id_log_routes_guild_id_route_id_fk",
-          "tableFrom": "log_route_events",
-          "tableTo": "log_routes",
-          "columnsFrom": [
-            "guild_id",
-            "route_id"
-          ],
-          "columnsTo": [
-            "guild_id",
-            "route_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "log_route_events_guild_id_route_id_event_kind_pk": {
-          "columns": [
-            "guild_id",
-            "route_id",
-            "event_kind"
-          ],
-          "name": "log_route_events_guild_id_route_id_event_kind_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "log_route_events_guild_id_snowflake": {
-          "name": "log_route_events_guild_id_snowflake",
-          "value": "(\"log_route_events\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"log_route_events\".\"guild_id\") BETWEEN 17 AND 20)"
-        }
-      }
-    },
-    "log_route_exclusions": {
-      "name": "log_route_exclusions",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "route_id": {
-          "name": "route_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "channel_id": {
-          "name": "channel_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "log_route_exclusions_guild_id_route_id_log_routes_guild_id_route_id_fk": {
-          "name": "log_route_exclusions_guild_id_route_id_log_routes_guild_id_route_id_fk",
-          "tableFrom": "log_route_exclusions",
-          "tableTo": "log_routes",
-          "columnsFrom": [
-            "guild_id",
-            "route_id"
-          ],
-          "columnsTo": [
-            "guild_id",
-            "route_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "log_route_exclusions_guild_id_route_id_channel_id_pk": {
-          "columns": [
-            "guild_id",
-            "route_id",
-            "channel_id"
-          ],
-          "name": "log_route_exclusions_guild_id_route_id_channel_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "log_route_exclusions_guild_id_snowflake": {
-          "name": "log_route_exclusions_guild_id_snowflake",
-          "value": "(\"log_route_exclusions\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"log_route_exclusions\".\"guild_id\") BETWEEN 17 AND 20)"
-        },
-        "log_route_exclusions_channel_id_snowflake": {
-          "name": "log_route_exclusions_channel_id_snowflake",
-          "value": "(\"log_route_exclusions\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"log_route_exclusions\".\"channel_id\") BETWEEN 17 AND 20)"
-        }
-      }
-    },
     "log_routes": {
       "name": "log_routes",
       "columns": {
@@ -4795,15 +4772,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "route_id": {
-          "name": "route_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
+        "event_kind": {
+          "name": "event_kind",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -4831,13 +4801,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": 1
-        },
-        "created_at_ms": {
-          "name": "created_at_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
         }
       },
       "indexes": {},
@@ -4857,12 +4820,12 @@
         }
       },
       "compositePrimaryKeys": {
-        "log_routes_guild_id_route_id_pk": {
+        "log_routes_guild_id_event_kind_pk": {
           "columns": [
             "guild_id",
-            "route_id"
+            "event_kind"
           ],
-          "name": "log_routes_guild_id_route_id_pk"
+          "name": "log_routes_guild_id_event_kind_pk"
         }
       },
       "uniqueConstraints": {},
@@ -5072,6 +5035,425 @@
         "managed_roles_unassignable_reason": {
           "name": "managed_roles_unassignable_reason",
           "value": "\"managed_roles\".\"unassignable_reason\" IS NULL OR \"managed_roles\".\"unassignable_reason\" IN ('above_bot','managed','deleted')"
+        }
+      }
+    },
+    "mcp_actions": {
+      "name": "mcp_actions",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "action_id": {
+          "name": "action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cap_group": {
+          "name": "cap_group",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "args_hash": {
+          "name": "args_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_id": {
+          "name": "token_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_channel_id": {
+          "name": "target_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "result_message_id": {
+          "name": "result_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "result_thread_id": {
+          "name": "result_thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "undo_json": {
+          "name": "undo_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "undone_by_action_id": {
+          "name": "undone_by_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mcp_actions_cap_created": {
+          "name": "mcp_actions_cap_created",
+          "columns": [
+            "guild_id",
+            "cap_group",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "mcp_actions_target_created": {
+          "name": "mcp_actions_target_created",
+          "columns": [
+            "guild_id",
+            "target_channel_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "mcp_actions_idempotency_once": {
+          "name": "mcp_actions_idempotency_once",
+          "columns": [
+            "guild_id",
+            "idempotency_key"
+          ],
+          "isUnique": true
+        },
+        "mcp_actions_action_once": {
+          "name": "mcp_actions_action_once",
+          "columns": [
+            "guild_id",
+            "action_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "mcp_actions_guild_id_guilds_guild_id_fk": {
+          "name": "mcp_actions_guild_id_guilds_guild_id_fk",
+          "tableFrom": "mcp_actions",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mcp_actions_guild_id_snowflake": {
+          "name": "mcp_actions_guild_id_snowflake",
+          "value": "(\"mcp_actions\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_actions\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_actions_target_channel_id_snowflake": {
+          "name": "mcp_actions_target_channel_id_snowflake",
+          "value": "(\"mcp_actions\".\"target_channel_id\" IS NULL OR (\"mcp_actions\".\"target_channel_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_actions\".\"target_channel_id\") BETWEEN 17 AND 20))"
+        },
+        "mcp_actions_result_message_id_snowflake": {
+          "name": "mcp_actions_result_message_id_snowflake",
+          "value": "(\"mcp_actions\".\"result_message_id\" IS NULL OR (\"mcp_actions\".\"result_message_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_actions\".\"result_message_id\") BETWEEN 17 AND 20))"
+        },
+        "mcp_actions_result_thread_id_snowflake": {
+          "name": "mcp_actions_result_thread_id_snowflake",
+          "value": "(\"mcp_actions\".\"result_thread_id\" IS NULL OR (\"mcp_actions\".\"result_thread_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_actions\".\"result_thread_id\") BETWEEN 17 AND 20))"
+        },
+        "mcp_actions_cap_group": {
+          "name": "mcp_actions_cap_group",
+          "value": "\"mcp_actions\".\"cap_group\" IN ('message','edit','member_role','structure','pin_react')"
+        },
+        "mcp_actions_status": {
+          "name": "mcp_actions_status",
+          "value": "\"mcp_actions\".\"status\" IN ('claimed','done','dry_run','failed')"
+        }
+      }
+    },
+    "mcp_private_threads": {
+      "name": "mcp_private_threads",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "parent_channel_id": {
+          "name": "parent_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_action_id": {
+          "name": "created_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mcp_private_threads_once": {
+          "name": "mcp_private_threads_once",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "mcp_private_threads_guild_id_guilds_guild_id_fk": {
+          "name": "mcp_private_threads_guild_id_guilds_guild_id_fk",
+          "tableFrom": "mcp_private_threads",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mcp_private_threads_guild_id_snowflake": {
+          "name": "mcp_private_threads_guild_id_snowflake",
+          "value": "(\"mcp_private_threads\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_private_threads\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_private_threads_thread_id_snowflake": {
+          "name": "mcp_private_threads_thread_id_snowflake",
+          "value": "(\"mcp_private_threads\".\"thread_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_private_threads\".\"thread_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_private_threads_parent_channel_id_snowflake": {
+          "name": "mcp_private_threads_parent_channel_id_snowflake",
+          "value": "(\"mcp_private_threads\".\"parent_channel_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_private_threads\".\"parent_channel_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "mcp_role_allowlist": {
+      "name": "mcp_role_allowlist",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "role_id": {
+          "name": "role_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "added_by_account_id": {
+          "name": "added_by_account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "added_at": {
+          "name": "added_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mcp_role_allowlist_once": {
+          "name": "mcp_role_allowlist_once",
+          "columns": [
+            "guild_id",
+            "role_id",
+            "purpose"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "mcp_role_allowlist_guild_id_guilds_guild_id_fk": {
+          "name": "mcp_role_allowlist_guild_id_guilds_guild_id_fk",
+          "tableFrom": "mcp_role_allowlist",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mcp_role_allowlist_guild_id_snowflake": {
+          "name": "mcp_role_allowlist_guild_id_snowflake",
+          "value": "(\"mcp_role_allowlist\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_role_allowlist\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_role_allowlist_role_id_snowflake": {
+          "name": "mcp_role_allowlist_role_id_snowflake",
+          "value": "(\"mcp_role_allowlist\".\"role_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_role_allowlist\".\"role_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_role_allowlist_purpose": {
+          "name": "mcp_role_allowlist_purpose",
+          "value": "\"mcp_role_allowlist\".\"purpose\" IN ('grant','ping')"
+        }
+      }
+    },
+    "mcp_role_policy": {
+      "name": "mcp_role_policy",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "grant_mode": {
+          "name": "grant_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'below-bot'"
+        },
+        "ping_mode": {
+          "name": "ping_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'below-bot'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "mcp_role_policy_guild_id_guilds_guild_id_fk": {
+          "name": "mcp_role_policy_guild_id_guilds_guild_id_fk",
+          "tableFrom": "mcp_role_policy",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mcp_role_policy_guild_id_snowflake": {
+          "name": "mcp_role_policy_guild_id_snowflake",
+          "value": "(\"mcp_role_policy\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_role_policy\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_role_policy_grant_mode": {
+          "name": "mcp_role_policy_grant_mode",
+          "value": "\"mcp_role_policy\".\"grant_mode\" IN ('below-bot','allowlist')"
+        },
+        "mcp_role_policy_ping_mode": {
+          "name": "mcp_role_policy_ping_mode",
+          "value": "\"mcp_role_policy\".\"ping_mode\" IN ('below-bot','allowlist')"
         }
       }
     },

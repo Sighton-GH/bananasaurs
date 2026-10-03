@@ -3,9 +3,13 @@ import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   hasReadScope,
+  hasRolesScope,
   hasSendScope,
+  hasTasksScope,
   MCP_READ_SCOPE,
+  MCP_ROLES_SCOPE,
   MCP_SEND_SCOPE,
+  MCP_TASKS_SCOPE,
   requireAnyReachableGuild,
   requireReachableGuild,
   type McpPrincipal,
@@ -131,5 +135,43 @@ describe('hasSendScope (slice M5, the send half of M4-D17)', () => {
   it('refuses a read-only principal and one with no scopes', () => {
     expect(hasSendScope(withScopes(MCP_READ_SCOPE))).toBe(false);
     expect(hasSendScope(withScopes())).toBe(false);
+  });
+});
+
+describe('hasRolesScope (ADR 0114)', () => {
+  const withScopes = (...scopes: readonly string[]): McpPrincipal => ({
+    accountId: 'acct_00000000000000000000000000000000',
+    reachableGuilds: [GUILD_A],
+    scopes,
+  });
+
+  it('accepts a principal carrying the roles scope', () => {
+    expect(hasRolesScope(withScopes(MCP_ROLES_SCOPE))).toBe(true);
+    expect(hasRolesScope(withScopes(MCP_READ_SCOPE, MCP_ROLES_SCOPE))).toBe(true);
+  });
+
+  it('refuses a principal without it, and it is not implied by read or send', () => {
+    expect(hasRolesScope(withScopes())).toBe(false);
+    expect(hasRolesScope(withScopes(MCP_READ_SCOPE))).toBe(false);
+    expect(hasRolesScope(withScopes(MCP_SEND_SCOPE))).toBe(false);
+  });
+});
+
+describe('hasTasksScope (ADR 0114)', () => {
+  const withScopes = (...scopes: readonly string[]): McpPrincipal => ({
+    accountId: 'acct_00000000000000000000000000000000',
+    reachableGuilds: [GUILD_A],
+    scopes,
+  });
+
+  it('accepts a principal carrying the tasks scope', () => {
+    expect(hasTasksScope(withScopes(MCP_TASKS_SCOPE))).toBe(true);
+    expect(hasTasksScope(withScopes(MCP_READ_SCOPE, MCP_TASKS_SCOPE))).toBe(true);
+  });
+
+  it('refuses a principal without it, and it is not implied by read or send', () => {
+    expect(hasTasksScope(withScopes())).toBe(false);
+    expect(hasTasksScope(withScopes(MCP_READ_SCOPE))).toBe(false);
+    expect(hasTasksScope(withScopes(MCP_SEND_SCOPE))).toBe(false);
   });
 });

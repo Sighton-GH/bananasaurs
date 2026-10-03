@@ -252,6 +252,23 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'That channel is not in this server.',
     hint: 'Pick the channel from the list.',
   },
+  'no-such-role': {
+    title: 'No such role',
+    explanation: 'That role is not in this server.',
+    hint: 'Pick the role from the list.',
+  },
+  'role-everyone': {
+    title: 'That role cannot be allowlisted',
+    explanation: 'The @everyone role can never be allowlisted.',
+  },
+  'role-managed': {
+    title: 'That role cannot be allowlisted',
+    explanation: 'That role is managed by an integration and can never be allowlisted.',
+  },
+  'role-dangerous': {
+    title: 'That role cannot be allowlisted',
+    explanation: 'That role holds a dangerous permission and can never be allowlisted.',
+  },
   'no-guild-access': {
     title: 'No access to that server',
     explanation: 'Your account cannot reach that server.',
@@ -311,6 +328,18 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     title: 'A mention role is needed',
     explanation: 'A behaviour outside direct commands must mention a role.',
     hint: 'Pick which role mentions it.',
+  },
+  'mention-role-is-bot-role': {
+    title: "That is the bot's own role",
+    explanation:
+      'Discord made this role for the bot. Tagging it already reaches the bot, like tagging the bot itself.',
+    hint: 'Pick or create a different role for this desk.',
+  },
+  'mention-role-name-clash': {
+    title: 'That role is named like the bot',
+    explanation:
+      "Members could not tell this role apart from the bot's own tag in Discord's mention list.",
+    hint: 'Rename the role in Discord, or pick a different one.',
   },
   'invalid-definition': {
     title: 'The panel is not valid',

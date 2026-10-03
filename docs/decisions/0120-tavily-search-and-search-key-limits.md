@@ -77,8 +77,7 @@ several keys.
    - result redaction as evidence
    - web search in round 1 only (ADR 0071)
    - log-channel links only
-9. `BRAVE_SEARCH_API_KEY` in `.env` keeps working, as before, only while
-   nothing is saved in the dashboard. It is never limited.
+9. `BRAVE_SEARCH_API_KEY` in `.env` is used only when the daemon has no provider key store (no encryption secret), as before; it is never limited. With a key store, search keys come only from the dashboard.
 
 ## Consequences
 

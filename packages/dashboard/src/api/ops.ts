@@ -241,6 +241,50 @@ export interface SendAllowlistEntry {
 /** `POST /api/send-allowlist` outcomes; `no-such-channel` arrives as a 404. */
 export type SendAllowOutcome = 'allowed' | 'already-allowed';
 
+// --- mcp role policy (slice 5 task 6, ADR 0117 §2) ----------------------------
+
+/** `mcp_role_policy`'s two modes — mirrors `OpsRolePolicyMode`. */
+export type RolePolicyMode = 'below-bot' | 'allowlist';
+
+/** `mcp_role_allowlist`'s purpose — mirrors `OpsRoleAllowlistPurpose`. */
+export type RoleAllowlistPurpose = 'grant' | 'ping';
+
+/**
+ * One row of `GET /api/role-policy`'s `entries` — mirrors
+ * `OpsRoleAllowlistEntry`. Ids and purposes only, never role names; the page
+ * resolves names from the live role list.
+ */
+export interface RoleAllowlistEntry {
+  readonly roleId: string;
+  readonly purpose: RoleAllowlistPurpose;
+  readonly addedByAccountId: string;
+  readonly addedAt: number;
+}
+
+/**
+ * `GET /api/role-policy` — mirrors `OpsRolePolicy` plus the allowlist rows:
+ * the read half of `mcp role-policy` (no flags).
+ */
+export interface RolePolicyResponse {
+  readonly grantMode: RolePolicyMode;
+  readonly pingMode: RolePolicyMode;
+  readonly entries: readonly RoleAllowlistEntry[];
+}
+
+/** `POST /api/role-policy` — the write half of `mcp role-policy`: the answer echoes before/after. */
+export interface RolePolicyUpdate {
+  readonly before: { readonly grantMode: RolePolicyMode; readonly pingMode: RolePolicyMode };
+  readonly after: { readonly grantMode: RolePolicyMode; readonly pingMode: RolePolicyMode };
+  readonly changed: boolean;
+}
+
+/**
+ * `POST /api/role-allowlist` outcomes; the four refusals arrive as HTTP
+ * errors instead: `no-such-role` as a 404, `everyone` / `managed` /
+ * `dangerous` as 409s, which the page renders inline.
+ */
+export type RoleAllowOutcome = 'allowed' | 'already-allowed';
+
 // --- guild ----------------------------------------------------------------
 
 /** One row of `GET /api/guild/channels`'s `channels` — mirrors `OpsGuildChannelInfo`. */
@@ -250,6 +294,14 @@ export interface GuildChannelInfo {
   readonly kind: string;
   /** The category this channel sits under; absent on servers that predate the field. */
   readonly parentId?: string | undefined;
+}
+
+/** One row of `GET /api/guild/emojis`'s `emojis` - mirrors `OpsGuildEmojiInfo`. */
+export interface GuildEmojiInfo {
+  readonly emojiId: string;
+  readonly name: string;
+  readonly animated: boolean;
+  readonly url: string;
 }
 
 /**

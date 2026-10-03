@@ -188,6 +188,21 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Connector',
     control: 'remove a category from the send allowlist',
   },
+  'mcp role-policy': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'role policy modes and the role allowlist',
+  },
+  'mcp allow-role': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'allowlist a role for grants or pings, with live refusals',
+  },
+  'mcp disallow-role': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'remove a role from the role allowlist',
+  },
   'panel sync': {
     kind: 'covered',
     page: 'Reaction roles',
@@ -197,6 +212,16 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     kind: 'covered',
     page: 'Reaction roles',
     control: 'role panel builder — channel, behaviour, options, review, then publish',
+  },
+  'panel edit': {
+    kind: 'exception',
+    reason:
+      'Release scope keeps the role panel builder create-only: editing a panel definition and deleting a panel stay CLI (and MCP) operations, which share the panel edit / panel delete ops commands and their audit trail. The Reaction roles page links that scope rather than offering an edit control.',
+  },
+  'panel delete': {
+    kind: 'exception',
+    reason:
+      'Release scope keeps the role panel builder create-only: deleting a panel (its Discord message, then its rows) stays a CLI (and MCP) operation through the panel delete ops command, confirmed and audited. The Reaction roles page links that scope rather than offering a delete control.',
   },
   'adoption allow': {
     kind: 'covered',

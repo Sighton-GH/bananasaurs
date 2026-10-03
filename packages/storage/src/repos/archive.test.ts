@@ -23,9 +23,12 @@ import {
   findChannel,
   findMessage,
   isChannelEnabled,
+  lastMessageAtByAuthor,
   linkToCase,
   listChannelHistory,
   listChannels,
+  listMessagesSince,
+  listUnansweredRoleMentions,
   markPreserve,
   recordBulkDelete,
   recordDelete,
@@ -772,6 +775,39 @@ describe('listChannelHistory', () => {
     }
   });
 
+  it('authorId narrows to one author; without it every message returns', () => {
+    const BOT = '888888888888888888';
+    enable(a, CHANNEL_A);
+    const botIds = [historyId(1), historyId(2)];
+    const memberIds = [historyId(3), historyId(4)];
+    for (const messageId of botIds) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: BOT,
+        content: `bot message ${messageId}`,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    for (const messageId of memberIds) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: MEMBER,
+        content: `member message ${messageId}`,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, authorId: BOT }).map((m) => m.messageId),
+    ).toEqual([...botIds].reverse());
+    expect(listChannelHistory(a, { channelId: CHANNEL_A })).toHaveLength(4);
+  });
+
   it('a purged message is returned as a tombstone, not omitted', () => {
     const ids = seedHistory(a, CHANNEL_A, 3);
     const purgedId = ids[1];
@@ -789,5 +825,390 @@ describe('listChannelHistory', () => {
       authorId: MEMBER,
       retentionClass: 'default',
     });
+  });
+});
+
+describe('lastMessageAtByAuthor', () => {
+  const AUTHOR_X = '600000000000000001';
+  const AUTHOR_Y = '600000000000000002';
+  const AUTHOR_Z = '600000000000000003';
+
+  const seedAuthorMessage = (
+    scope: GuildScope,
+    input: { messageId: string; authorId: string; createdAt: number },
+  ) => {
+    enable(scope, CHANNEL_A);
+    upsertMessage(scope, {
+      messageId: input.messageId,
+      channelId: CHANNEL_A,
+      authorId: input.authorId,
+      content: `from ${input.authorId}`,
+      createdAt: input.createdAt,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  it('returns the newest time per author in this guild only', () => {
+    seedAuthorMessage(a, {
+      messageId: '700000000000000001',
+      authorId: AUTHOR_X,
+      createdAt: 1000,
+    });
+    seedAuthorMessage(a, {
+      messageId: '700000000000000002',
+      authorId: AUTHOR_X,
+      createdAt: 3000,
+    });
+    seedAuthorMessage(a, {
+      messageId: '700000000000000003',
+      authorId: AUTHOR_Y,
+      createdAt: 2000,
+    });
+    seedAuthorMessage(b, { messageId: '700000000000000004', authorId: AUTHOR_X, createdAt: 9000 });
+
+    expect(lastMessageAtByAuthor(a, [AUTHOR_X, AUTHOR_Y, AUTHOR_Z])).toEqual(
+      new Map([
+        [AUTHOR_X, 3000],
+        [AUTHOR_Y, 2000],
+      ]),
+    );
+  });
+
+  it('chunks ids past 500 and still returns the match', () => {
+    seedAuthorMessage(a, {
+      messageId: '700000000000000001',
+      authorId: AUTHOR_X,
+      createdAt: 3000,
+    });
+    const ids: string[] = [AUTHOR_X];
+    for (let i = 0; i < 599; i += 1) {
+      ids.push(String(800000000000000000n + BigInt(i)));
+    }
+    expect(ids).toHaveLength(600);
+    const found = lastMessageAtByAuthor(a, ids);
+    expect(found.get(AUTHOR_X)).toBe(3000);
+    expect(found.size).toBe(1);
+  });
+});
+
+describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
+  const REPLY_TO = '777777777777777777';
+  const ROLE_A = '888888888888888888';
+  const ROLE_B = '999999999999999999';
+
+  const readReplyColumns = (
+    scope: GuildScope,
+    messageId: string,
+  ): { replyTo: string | null; roles: string | null } =>
+    t.raw
+      .prepare(
+        `SELECT reply_to_message_id AS replyTo, mentioned_role_ids AS roles
+         FROM archive_messages WHERE guild_id = ? AND message_id = ?`,
+      )
+      .get(scope.guildId, messageId) as { replyTo: string | null; roles: string | null };
+
+  it('stores the reply link and mentioned roles on upsert', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666661',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'a reply',
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [],
+      replyToMessageId: REPLY_TO,
+      mentionedRoleIds: [ROLE_A, ROLE_B],
+    });
+    expect(readReplyColumns(a, '666666666666666661')).toEqual({
+      replyTo: REPLY_TO,
+      roles: JSON.stringify([ROLE_A, ROLE_B]),
+    });
+  });
+
+  it('stores NULL when there is no reply link and the role list is empty', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666662',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'no reply, no roles',
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [],
+      mentionedRoleIds: [],
+    });
+    expect(readReplyColumns(a, '666666666666666662')).toEqual({ replyTo: null, roles: null });
+  });
+
+  it('an edit updates the mentioned roles', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666663',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'before',
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [],
+      mentionedRoleIds: [ROLE_A],
+    });
+    expect(
+      recordEdit(a, {
+        messageId: '666666666666666663',
+        content: 'after',
+        editedAt: 3000,
+        mentionedRoleIds: [ROLE_B],
+      }),
+    ).toBe('recorded');
+    expect(readReplyColumns(a, '666666666666666663')).toEqual({
+      replyTo: null,
+      roles: JSON.stringify([ROLE_B]),
+    });
+    // An edit that mentions no roles clears them: an empty list is stored as
+    // NULL, never '[]'. Omitting the key instead would leave them untouched.
+    expect(
+      recordEdit(a, {
+        messageId: '666666666666666663',
+        content: 'after again',
+        editedAt: 4000,
+        mentionedRoleIds: [],
+      }),
+    ).toBe('recorded');
+    expect(readReplyColumns(a, '666666666666666663')).toEqual({ replyTo: null, roles: null });
+  });
+});
+
+describe('listMessagesSince (slice 2 task 5: read_digest)', () => {
+  const M1 = '710000000000000001';
+  const M2 = '710000000000000002';
+  const M3 = '710000000000000003';
+  const M4 = '710000000000000004';
+  const THREAD = '710000000000000009';
+
+  const seedAt = (
+    scope: GuildScope,
+    input: {
+      messageId: string;
+      channelId: string;
+      createdAt: number;
+      threadId?: string;
+    },
+  ) => {
+    enable(scope, input.channelId);
+    upsertMessage(scope, {
+      messageId: input.messageId,
+      channelId: input.channelId,
+      ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+      authorId: MEMBER,
+      content: `message ${input.messageId}`,
+      createdAt: input.createdAt,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  beforeEach(() => {
+    seedAt(a, { messageId: M1, channelId: CHANNEL_A, createdAt: 1000 });
+    seedAt(a, { messageId: M2, channelId: CHANNEL_A, createdAt: 2000 });
+    seedAt(a, { messageId: M3, channelId: CHANNEL_B, createdAt: 1500 });
+    seedAt(a, { messageId: M4, channelId: CHANNEL_A, createdAt: 500 });
+  });
+
+  it('returns messages at/after since across the given channels, oldest first', () => {
+    const found = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      limit: 10,
+    });
+    expect(found.map((m) => m.messageId)).toEqual([M1, M3, M2]);
+  });
+
+  it('narrows to the named channels only', () => {
+    const found = listMessagesSince(a, { channelIds: [CHANNEL_B], since: 1000, limit: 10 });
+    expect(found.map((m) => m.messageId)).toEqual([M3]);
+  });
+
+  it('a cursor continues past the limit', () => {
+    const first = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      limit: 2,
+    });
+    expect(first.map((m) => m.messageId)).toEqual([M1, M3]);
+    const last = first[first.length - 1];
+    if (last === undefined) throw new Error('expected a first page');
+    const rest = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      after: { createdAt: last.createdAt, messageId: last.messageId },
+      limit: 2,
+    });
+    expect(rest.map((m) => m.messageId)).toEqual([M2]);
+  });
+
+  it('equal createdAt breaks ties by message id, and the cursor continues to the third', () => {
+    // Inserted out of id order: the page must still read lowest-id first.
+    seedAt(a, { messageId: '740000000000000003', channelId: CHANNEL_A, createdAt: 3000 });
+    seedAt(a, { messageId: '740000000000000001', channelId: CHANNEL_A, createdAt: 3000 });
+    seedAt(a, { messageId: '740000000000000002', channelId: CHANNEL_A, createdAt: 3000 });
+    const first = listMessagesSince(a, { channelIds: [CHANNEL_A], since: 3000, limit: 2 });
+    expect(first.map((m) => m.messageId)).toEqual(['740000000000000001', '740000000000000002']);
+    const last = first[first.length - 1];
+    if (last === undefined) throw new Error('expected a first page');
+    const rest = listMessagesSince(a, {
+      channelIds: [CHANNEL_A],
+      since: 3000,
+      after: { createdAt: last.createdAt, messageId: last.messageId },
+      limit: 2,
+    });
+    expect(rest.map((m) => m.messageId)).toEqual(['740000000000000003']);
+  });
+
+  it('includes thread messages under an included channel, not under an excluded one', () => {
+    seedAt(a, {
+      messageId: '710000000000000011',
+      channelId: CHANNEL_A,
+      createdAt: 1200,
+      threadId: THREAD,
+    });
+    seedAt(a, {
+      messageId: '710000000000000012',
+      channelId: CHANNEL_B,
+      createdAt: 1300,
+      threadId: '710000000000000019',
+    });
+    const found = listMessagesSince(a, { channelIds: [CHANNEL_A], since: 1000, limit: 10 });
+    expect(found.map((m) => m.messageId)).toEqual([M1, '710000000000000011', M2]);
+    expect(found.find((m) => m.messageId === '710000000000000011')?.threadId).toBe(THREAD);
+  });
+
+  it('excludes another guild rows and answers [] for no channels', () => {
+    seedAt(b, { messageId: '720000000000000001', channelId: CHANNEL_A, createdAt: 1100 });
+    const found = listMessagesSince(a, {
+      channelIds: [CHANNEL_A, CHANNEL_B],
+      since: 1000,
+      limit: 10,
+    });
+    expect(found.map((m) => m.messageId)).toEqual([M1, M3, M2]);
+    expect(listMessagesSince(a, { channelIds: [], since: 1000, limit: 10 })).toEqual([]);
+  });
+});
+
+describe('listUnansweredRoleMentions (slice 2 task 5: list_unanswered)', () => {
+  const ASKER = '600000000000000011';
+  const HELPER = '600000000000000012';
+  const HELP = '888888888888888881';
+  /** Shares a prefix with HELP: a LIKE match would wrongly join the two. */
+  const HELP_LONG = '8888888888888888818';
+  const SINCE = 1000;
+  const OLDER_THAN = 9000;
+
+  const seedQuestion = (
+    scope: GuildScope,
+    input: {
+      messageId: string;
+      authorId?: string;
+      createdAt: number;
+      mentionedRoleIds?: readonly string[];
+      replyToMessageId?: string;
+      threadId?: string;
+    },
+  ) => {
+    enable(scope, CHANNEL_A);
+    upsertMessage(scope, {
+      messageId: input.messageId,
+      channelId: CHANNEL_A,
+      ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+      authorId: input.authorId ?? ASKER,
+      content: `question ${input.messageId}`,
+      createdAt: input.createdAt,
+      editedAt: undefined,
+      attachments: [],
+      ...(input.replyToMessageId !== undefined ? { replyToMessageId: input.replyToMessageId } : {}),
+      mentionedRoleIds: input.mentionedRoleIds ?? [HELP],
+    });
+  };
+
+  const unanswered = (scope: GuildScope, roleId = HELP, limit = 50) =>
+    listUnansweredRoleMentions(scope, { roleId, since: SINCE, olderThan: OLDER_THAN, limit }).map(
+      (m) => m.messageId,
+    );
+
+  it('returns a question with no answer, newest first', () => {
+    seedQuestion(a, { messageId: '730000000000000001', createdAt: 2000 });
+    seedQuestion(a, { messageId: '730000000000000002', createdAt: 4000 });
+    expect(unanswered(a)).toEqual(['730000000000000002', '730000000000000001']);
+  });
+
+  it('a reply from another author counts as an answer', () => {
+    seedQuestion(a, { messageId: '730000000000000011', createdAt: 2000 });
+    seedQuestion(a, {
+      messageId: '730000000000000012',
+      authorId: HELPER,
+      createdAt: 3000,
+      mentionedRoleIds: [],
+      replyToMessageId: '730000000000000011',
+    });
+    expect(unanswered(a)).toEqual([]);
+  });
+
+  it('thread reply counts: a message in the thread started from the question answers it', () => {
+    seedQuestion(a, { messageId: '730000000000000021', createdAt: 2000 });
+    seedQuestion(a, {
+      messageId: '730000000000000022',
+      authorId: HELPER,
+      createdAt: 3000,
+      mentionedRoleIds: [],
+      threadId: '730000000000000021',
+    });
+    expect(unanswered(a)).toEqual([]);
+  });
+
+  it('a reply by the author themself does not count as an answer', () => {
+    seedQuestion(a, { messageId: '730000000000000031', createdAt: 2000 });
+    seedQuestion(a, {
+      messageId: '730000000000000032',
+      authorId: ASKER,
+      createdAt: 3000,
+      mentionedRoleIds: [],
+      replyToMessageId: '730000000000000031',
+    });
+    seedQuestion(a, {
+      messageId: '730000000000000033',
+      authorId: ASKER,
+      createdAt: 3500,
+      mentionedRoleIds: [],
+      threadId: '730000000000000031',
+    });
+    expect(unanswered(a)).toEqual(['730000000000000031']);
+  });
+
+  it('prefix-sharing role ids do not cross-match', () => {
+    seedQuestion(a, { messageId: '730000000000000041', createdAt: 2000, mentionedRoleIds: [HELP] });
+    seedQuestion(a, {
+      messageId: '730000000000000042',
+      createdAt: 3000,
+      mentionedRoleIds: [HELP_LONG],
+    });
+    expect(unanswered(a)).toEqual(['730000000000000041']);
+    expect(unanswered(a, HELP_LONG)).toEqual(['730000000000000042']);
+  });
+
+  it('keeps only questions created in [since, olderThan] and excludes other guilds', () => {
+    seedQuestion(a, { messageId: '730000000000000051', createdAt: 2000 });
+    seedQuestion(a, { messageId: '730000000000000052', createdAt: OLDER_THAN + 1 });
+    seedQuestion(a, { messageId: '730000000000000053', createdAt: SINCE - 1 });
+    seedQuestion(b, { messageId: '730000000000000054', createdAt: 2000 });
+    expect(unanswered(a)).toEqual(['730000000000000051']);
+    expect(unanswered(b)).toEqual(['730000000000000054']);
+  });
+
+  it('honours the limit, newest first', () => {
+    seedQuestion(a, { messageId: '730000000000000061', createdAt: 2000 });
+    seedQuestion(a, { messageId: '730000000000000062', createdAt: 3000 });
+    seedQuestion(a, { messageId: '730000000000000063', createdAt: 4000 });
+    expect(unanswered(a, HELP, 2)).toEqual(['730000000000000063', '730000000000000062']);
   });
 });

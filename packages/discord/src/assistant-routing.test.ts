@@ -208,6 +208,78 @@ describe('routeAssistantMention', () => {
     });
   });
 
+  describe("a tag of the bot's Discord integration role (ADR 0125)", () => {
+    const botRole = '912345678901234567';
+    const roleTag = (content: string, over: Partial<MessageEvent> = {}): MessageEvent =>
+      event({ content, mentionedRoleIds: [botRole], mentionedUserIds: [], ...over });
+    const flagged = behaviours.map((b) => (b.id === 'club' ? { ...b, answersBotTag: true } : b));
+    const route = (message: MessageEvent, list = flagged) =>
+      routeAssistantMention(message, list, botUserId, undefined, undefined, botRole);
+
+    it('routes like a bot user tag and strips the role tag', () => {
+      expect(route(roleTag(`<@&${botRole}> where is the handbook?`))).toEqual({
+        kind: 'routed',
+        behaviour: flagged.find((b) => b.id === 'club'),
+        prompt: 'where is the handbook?',
+      });
+    });
+
+    it('strips both tags when the bot user and its role are tagged together', () => {
+      expect(
+        route(
+          roleTag(`<@${botUserId}> <@&${botRole}> hi there`, { mentionedUserIds: [botUserId] }),
+        ),
+      ).toMatchObject({ kind: 'routed', behaviour: { id: 'club' }, prompt: 'hi there' });
+    });
+
+    it('lets a mapped desk role tag win over the integration role tag', () => {
+      expect(
+        route(
+          roleTag(`<@&${botRole}> <@&${itRole}> reset my access`, {
+            mentionedRoleIds: [botRole, itRole],
+          }),
+        ),
+      ).toMatchObject({ kind: 'routed', behaviour: { id: 'it' }, prompt: 'reset my access' });
+    });
+
+    it('is not addressed when no behaviour is flagged', () => {
+      expect(route(roleTag(`<@&${botRole}> hi there`), behaviours)).toEqual({
+        kind: 'not-addressed',
+      });
+    });
+
+    it('refuses an empty question', () => {
+      expect(route(roleTag(`<@&${botRole}>`))).toEqual({
+        kind: 'ambiguous',
+        message: 'Add a question after the assistant tag.',
+      });
+    });
+
+    it('is not addressed when the integration role is unknown', () => {
+      expect(routeAssistantMention(roleTag(`<@&${botRole}> hi there`), flagged, botUserId)).toEqual(
+        { kind: 'not-addressed' },
+      );
+    });
+
+    it('routes an explicit role tag in a reply to a task post', () => {
+      const taskPost = '777777777777777777';
+      expect(
+        routeAssistantMention(
+          roleTag(`<@&${botRole}> is this clear?`, {
+            mentionedUserIds: [botUserId],
+            referencedMessageId: taskPost,
+            referencedAuthorId: botUserId,
+          }),
+          flagged,
+          botUserId,
+          undefined,
+          (id) => id === taskPost,
+          botRole,
+        ),
+      ).toMatchObject({ kind: 'routed', behaviour: { id: 'club' }, prompt: 'is this clear?' });
+    });
+  });
+
   describe('an untagged Discord Reply to a known bot answer (ADR 0072)', () => {
     const untaggedReply = (over: Partial<MessageEvent> = {}): MessageEvent =>
       event({

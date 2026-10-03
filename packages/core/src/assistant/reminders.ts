@@ -78,9 +78,16 @@ export interface ReminderDelivery {
  * retried until the reminder passes the terminal window below.
  */
 export class ReminderDeliveryError extends Error {
+  /**
+   * `endsSeries`: the failure condemns the whole series, not this one
+   * occurrence — a recurring reminder fails instead of moving on to its next
+   * occurrence (an MCP scheduled send whose destination left send scope,
+   * ADR 0119 §2). Implies `permanent`.
+   */
   constructor(
     message: string,
     readonly permanent: boolean,
+    readonly endsSeries = false,
   ) {
     super(message);
     this.name = 'ReminderDeliveryError';
@@ -203,13 +210,15 @@ export const deliverDueReminders = async (
       delivered += 1;
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'delivery failed';
-      const permanent = error instanceof ReminderDeliveryError ? error.permanent : false;
+      const permanent =
+        error instanceof ReminderDeliveryError ? error.permanent || error.endsSeries : false;
       if (permanent || now - reminder.dueAt > REMINDER_DELIVERY_TERMINAL_WINDOW_MS) {
         // One bad delivery must not end a repeating series: move it to its
         // next occurrence with the reason kept. A one-off reminder, or a
         // series with no occurrence left, still goes to `failed`.
+        const endsSeries = error instanceof ReminderDeliveryError && error.endsSeries;
         const next =
-          reminder.recurrence === undefined
+          reminder.recurrence === undefined || endsSeries
             ? undefined
             : nextOccurrence(
                 reminder.recurrence,

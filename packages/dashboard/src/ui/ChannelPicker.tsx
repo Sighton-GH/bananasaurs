@@ -41,15 +41,22 @@ export function ChannelPicker({
   const [focused, setFocused] = useState(false);
 
   const channels = resource.state === 'ready' ? resource.data.channels : undefined;
-  const query = value.trim().toLowerCase();
   const wanted = kinds ?? ['text', 'announcement', 'forum'];
+  const selected = channels?.find((c) => wanted.includes(c.kind) && c.channelId === value.trim());
+  // A chosen channel keeps its name and id in the box ("#general (123...)");
+  // anything else is the user's search text. Editing the shown text leaves a
+  // string that is no longer a channel id, so the search works on the name part.
+  const shown = selected !== undefined ? `#${selected.name} (${selected.channelId})` : value;
+  const query =
+    selected !== undefined
+      ? ''
+      : (value.trim().replace(/^#/, '').split(' (')[0] ?? '').trim().toLowerCase();
   const matches =
     channels === undefined
       ? undefined
       : channels.filter(
           (c) => wanted.includes(c.kind) && (query === '' || c.name.toLowerCase().includes(query)),
         );
-  const selected = channels?.find((c) => wanted.includes(c.kind) && c.channelId === value.trim());
 
   return (
     <div className="text-sm">
@@ -59,19 +66,18 @@ export function ChannelPicker({
         {...(error !== undefined ? { error } : {})}
       >
         <Input
-          value={value}
+          value={shown}
           onChange={(e) => onChange(e.target.value)}
-          onFocus={() => setFocused(true)}
+          onFocus={(e) => {
+            setFocused(true);
+            // Typing over a chosen channel should replace it, not append to it.
+            if (selected !== undefined) e.currentTarget.select();
+          }}
           onBlur={() => setFocused(false)}
           placeholder="Search channel names"
           autoComplete="off"
         />
       </Field>
-      {selected !== undefined && (
-        <p className="mt-1 text-xs text-ink-muted">
-          Selected: #{selected.name} ({selected.kind})
-        </p>
-      )}
       {resource.state === 'error' && (
         <p className="mt-1 text-xs text-ink-muted">
           The channel list is unavailable. Try again after Discord reconnects.
@@ -82,7 +88,7 @@ export function ChannelPicker({
           No channels are available yet. Check the bot's channel access.
         </p>
       )}
-      {matches !== undefined && matches.length > 0 && (focused || query === '') && (
+      {matches !== undefined && matches.length > 0 && (focused || value.trim() === '') && (
         <ul
           aria-label={`${label} choices`}
           className="mt-1 max-h-64 divide-y divide-line overflow-y-auto rounded-sm border border-line bg-panel"

@@ -155,6 +155,13 @@ const ALL_CALLS: readonly Call[] = [
   { method: 'DELETE', url: '/api/send-allowlist/categories/333333333333333333' },
   { method: 'POST', url: '/api/mcp/tokens/t1/revoke' },
   { method: 'POST', url: '/api/mcp/clients/c1/revoke' },
+  { method: 'POST', url: '/api/role-policy', payload: { grant: 'allowlist' } },
+  {
+    method: 'POST',
+    url: '/api/role-allowlist',
+    payload: { roleId: '666666666666666666', purpose: 'grant', accountId: ACCOUNT },
+  },
+  { method: 'DELETE', url: '/api/role-allowlist/666666666666666666?purpose=grant' },
   { method: 'POST', url: '/api/adoption-allowance', payload: { count: 5 } },
   { method: 'POST', url: '/api/automod/rules/r1/ready' },
   { method: 'POST', url: '/api/automod/rules/r1/signoff', payload: { signedOffBy: 'owner' } },

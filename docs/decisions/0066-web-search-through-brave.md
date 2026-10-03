@@ -2,6 +2,7 @@
 
 Date: 2026-09-23
 Status: accepted (owner decision 2026-09-23)
+Amended by ADR 0120 (Tavily as a second source, several keys, per-key limits).
 
 ## Context
 

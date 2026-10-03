@@ -18,6 +18,7 @@ import {
   createServer,
   issueBootstrapTokenIfNeeded,
   registerAssistantProviderRoutes,
+  registerAssistantSearchKeyRoutes,
   registerAssistantTuningRoutes,
   registerAssistantGithubRoutes,
   registerAssistantRoutes,
@@ -40,6 +41,7 @@ import {
 } from '@bananasaurs/http';
 import { envProviderStatus } from '../assistant/provider-config.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
+import type { WebSearchRun } from '../assistant/web-search.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import { createAssistantService } from '../assistant/service.js';
 import { memberChannels } from '../assistant/member-channels.js';
@@ -98,6 +100,8 @@ export interface DashboardApiDeps {
    * allowance reset is shown.
    */
   readonly assistantQuotaLedger?: QuotaLedger | undefined;
+  /** ADR 0120: the web search run for the Try-it panel. Absent in isolated uses. */
+  readonly assistantWebSearch?: ((guildId: string) => WebSearchRun | undefined) | undefined;
 }
 
 export interface DashboardApi {
@@ -139,6 +143,8 @@ export interface DashboardAppDeps {
    * allowance reset is shown.
    */
   readonly assistantQuotaLedger?: QuotaLedger | undefined;
+  /** ADR 0120: the web search run for the Try-it panel. Absent in isolated uses. */
+  readonly assistantWebSearch?: ((guildId: string) => WebSearchRun | undefined) | undefined;
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
   /**
@@ -295,6 +301,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       // carries the Try-it runner, which `HttpDeps` itself never mentions.
       registerAssistantTryRoutes(instance, guard, httpDeps);
       registerAssistantProviderRoutes(instance, guard, routeDeps);
+      registerAssistantSearchKeyRoutes(instance, guard, routeDeps);
       registerAssistantTuningRoutes(instance, guard, routeDeps);
       registerAssistantGithubRoutes(instance, guard, routeDeps);
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
@@ -474,6 +481,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
             },
             () => chain,
             deps.assistantQuotaLedger,
+            undefined,
+            undefined,
+            deps.assistantWebSearch,
           );
           return service.tryIt(input);
         };
@@ -485,6 +495,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     ...(deps.assistantQuotaLedger === undefined
       ? {}
       : { assistantQuotaLedger: deps.assistantQuotaLedger }),
+    ...(deps.assistantWebSearch === undefined
+      ? {}
+      : { assistantWebSearch: deps.assistantWebSearch }),
     ...(tryAssistant === undefined ? {} : { tryAssistant }),
   });
 

@@ -95,6 +95,7 @@ const notNeeded = (name: string) => (): never => {
 const portsFor = (s: GuildScope): OpsPorts => ({
   guildName: notNeeded('guildName'),
   botHighestRolePosition: notNeeded('botHighestRolePosition'),
+  botMentionIdentity: notNeeded('botMentionIdentity'),
   fetchGuildMembers: notNeeded('fetchGuildMembers'),
   allowlistRole: notNeeded('allowlistRole'),
   safetyState: notNeeded('safetyState'),
@@ -106,6 +107,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   listJobs: notNeeded('listJobs'),
   listPanels: notNeeded('listPanels'),
   createPanel: notNeeded('createPanel'),
+  updatePanel: notNeeded('updatePanel'),
   isManagedRole: notNeeded('isManagedRole'),
   listGuildMembers: notNeeded('listGuildMembers'),
   listGuildRoles: notNeeded('listGuildRoles'),
@@ -202,6 +204,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   unexcludeChannel: notNeeded('unexcludeChannel'),
   retryJob: notNeeded('retryJob'),
   publishPanel: notNeeded('publishPanel'),
+  unpublishPanel: notNeeded('unpublishPanel'),
   enqueueReconcile: notNeeded('enqueueReconcile'),
   findBatch: notNeeded('findBatch'),
   countUndoable: notNeeded('countUndoable'),
@@ -228,6 +231,8 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   listAccountCapabilities: notNeeded('listAccountCapabilities'),
   listGuildChannels: notNeeded('listGuildChannels'),
   findGuildMessage: notNeeded('findGuildMessage'),
+  previewGuildMessage: notNeeded('previewGuildMessage'),
+  listGuildEmojis: notNeeded('listGuildEmojis'),
   listTaskDestinations: notNeeded('listTaskDestinations'),
   inspectTaskChannel: notNeeded('inspectTaskChannel'),
   accountGrantGuild: notNeeded('accountGrantGuild'),
@@ -239,6 +244,11 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   disallowSendChannel: notNeeded('disallowSendChannel'),
   listSendAllowlist: notNeeded('listSendAllowlist'),
   listSends: notNeeded('listSends'),
+  readRolePolicy: notNeeded('readRolePolicy'),
+  setRolePolicy: notNeeded('setRolePolicy'),
+  allowRole: notNeeded('allowRole'),
+  disallowRole: notNeeded('disallowRole'),
+  listRoleAllowlist: notNeeded('listRoleAllowlist'),
 });
 
 const instance: OpsInstance = {

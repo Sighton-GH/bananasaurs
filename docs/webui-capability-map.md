@@ -29,6 +29,7 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | MCP `read_channel_history` / `get_message` | Archive page, Browse card (paged history, message detail, purged tombstones) | `GET /api/archive/channels/:channelId/messages`, `GET /api/archive/messages/:messageId` |
 | `mcp allowlist` / `mcp sends` | Connector page | `GET /api/send-allowlist`, `GET /api/mcp/sends` |
 | `mcp clients` / `mcp tokens` | Connector page | `GET /api/mcp/clients`, `GET /api/mcp/tokens` |
+| `mcp role-policy` (no flags) | Connector page (Role policy card) | `GET /api/role-policy` |
 | `account list` | Accounts page — **plus** the capabilities each account holds in this guild (the read half of `account grant`, which the CLI list does not show) | `GET /api/accounts` |
 
 ## Writes (all confirmed in-app, all audited `actor_type='dashboard', via='http'`)
@@ -53,6 +54,7 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `mcp revoke` / `mcp revoke-client` | Connector page | `POST /api/mcp/tokens/:tokenId/revoke`, `POST /api/mcp/clients/:clientId/revoke` |
 | `mcp allow-channel` / `disallow-channel` | Connector page | `POST/DELETE /api/send-allowlist[/:channelId]` |
 | `mcp allow-category` / `disallow-category` | Connector page (category rows show live coverage) | `POST/DELETE /api/send-allowlist/categories[/:channelId]` |
+| `mcp role-policy` / `mcp allow-role` / `mcp disallow-role` | Connector page (Role policy card: mode selectors, role picker with live names, per-row remove; server refusals render inline) | `POST /api/role-policy`, `POST /api/role-allowlist`, `DELETE /api/role-allowlist/:roleId` |
 | `panel sync` | Role panels page (publish + reconcile, dry-run preview) | `POST /api/panels/:id/publish`, `…/reconcile` |
 | `adoption allow` | Cutover page | `POST /api/adoption-allowance` |
 | `undo` | Audit page (reverse one batch) | `POST /api/undo` |
@@ -82,6 +84,13 @@ links this runbook rather than offering a restore control.
 
 ## Terminal-only, by design
 
+- `panel edit` / `panel delete` stay terminal (and MCP) operations in this
+  release: Release scope keeps the role-panel builder create-only, so there is
+  no dashboard edit or delete control. Both run through the shared ops
+  commands — `panel edit` replaces the definition storage-only (publish with
+  `panel sync`), `panel delete` removes the Discord message then the rows —
+  and both land in the audit trail as `panel.edited` / `panel.deleted`. The
+  Role panels page links that scope rather than offering the controls.
 - `bootstrap reissue` re-arms the first-account setup page when **no**
   dashboard account exists — a state in which nobody can sign in to click a
   web button. It stays a host command; the Accounts page's empty state says

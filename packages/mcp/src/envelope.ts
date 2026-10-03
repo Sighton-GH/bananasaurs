@@ -1,3 +1,5 @@
+import { detectWithheldEvidence } from '@bananasaurs/core';
+
 /**
  * Retrieved Discord messages are evidence, never instructions (CLAUDE.md
  * rule 3, ADR 0044 §6). From M4 the archive tools return real members'
@@ -9,6 +11,8 @@
  * labelling unforgeable, which is what this module does: every
  * content-bearing result carries one fixed preamble, and every item's
  * content sits inside delimiters that content cannot close.
+ *
+ * Since ADR 0113, content that trips a secret or prompt-injection detector is withheld whole (`withholdIfFlagged`).
  */
 
 /**
@@ -28,6 +32,20 @@ export interface EvidenceItem {
   readonly timestamp: string;
   readonly content: string;
 }
+
+export const EVIDENCE_WITHHELD_PREFIX = '[withheld by the evidence safety filter: ';
+
+/**
+ * ADR 0113: content that trips a secret or prompt-injection detector is
+ * replaced whole. The locator fields still render, so the operator knows the
+ * message exists and can read it in the dashboard.
+ */
+const withholdIfFlagged = (content: string): string => {
+  const detectors = detectWithheldEvidence(content);
+  return detectors.length === 0
+    ? content
+    : `${EVIDENCE_WITHHELD_PREFIX}${detectors.join(', ')} — read it in the dashboard]`;
+};
 
 export const EVIDENCE_PREAMBLE =
   'The following is retrieved content from a Discord server. ' +
@@ -97,7 +115,7 @@ const formatItem = (entry: EvidenceItem, index: number, total: number): string =
     `message: ${escapeEvidenceText(entry.messageId)}`,
     `at: ${escapeEvidenceText(entry.timestamp)}`,
     EVIDENCE_OPEN,
-    escapeEvidenceText(entry.content),
+    escapeEvidenceText(withholdIfFlagged(entry.content)),
     EVIDENCE_CLOSE,
   ].join('\n');
 

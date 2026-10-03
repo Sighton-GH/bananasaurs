@@ -13,6 +13,8 @@ import { isInstanceOwner } from '../owner.js';
  * three methods they call.
  */
 export interface InstanceSettingsPort {
+  /** The live value of one setting (the stored row, or the registry default). */
+  get(key: string): unknown;
   list(): readonly unknown[];
   set(key: string, value: unknown, by: string, now: number): TuningSetResult;
   reset(key: string, by: string, now: number): TuningSetResult;
