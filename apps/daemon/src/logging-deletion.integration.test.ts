@@ -86,6 +86,12 @@ beforeEach(() => {
         runAfter,
         now: discord.now(),
       }),
+    getMemberSnapshot: (id) => loggingRepo.getMemberSnapshot(scope, id),
+    saveMemberSnapshot: (s) =>
+      loggingRepo.upsertMemberSnapshot(scope, { ...s, roleIds: [...s.roleIds] }),
+    deleteMemberSnapshot: (id) => {
+      loggingRepo.deleteMemberSnapshot(scope, id);
+    },
     now: () => discord.now(),
     logger,
   };
