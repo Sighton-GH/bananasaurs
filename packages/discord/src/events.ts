@@ -712,6 +712,6 @@ function toAuditChangeValue(value: unknown, depth = 0): AuditChangeValue | undef
 
 /** True for objects Discord serialised as JSON — not class instances. */
 function isPlainObject(value: object): value is Record<string, unknown> {
-  const proto = Object.getPrototypeOf(value);
+  const proto: unknown = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
