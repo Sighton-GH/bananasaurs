@@ -116,12 +116,12 @@ const fakeSchedulePort = (
   };
 };
 
-const textOf = (outcome: { readonly ok: boolean }): string => {
+const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): string => {
   expect(outcome.ok).toBe(true);
   return (outcome as { readonly text: string }).text;
 };
 
-const messageOf = (outcome: { readonly ok: boolean }): string => {
+const messageOf = (outcome: { readonly ok: boolean; readonly message?: string }): string => {
   expect(outcome.ok).toBe(false);
   return (outcome as { readonly message: string }).message;
 };
@@ -185,17 +185,20 @@ describe('schedule_message argument boundary (hard rule 3)', () => {
     ['malformed ping user id', { pingUsers: ['not-a-user'] }],
     ['missing guild id', { guildId: undefined }],
     ['non-string content', { content: 42 }],
-  ])('%s is the argument fault and the port was never called', async (_label, over) => {
-    const port = fakeSchedulePort();
-    // An explicit `undefined` unsets the default, exercising the missing and
-    // neither-at-nor-recurrence shapes through the same table.
-    const args = scheduleArgs(
-      over['recurrence'] === 'RECURRENCE' ? { recurrence: recurrenceDaily() } : over,
-    );
-    const outcome = await scheduleMessageText(principalWith([GUILD_A]), port, args);
-    expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
-    expect(port.calls['scheduleMessage']).toBe(0);
-  });
+  ])(
+    '%s is the argument fault and the port was never called',
+    async (_label: string, over: Record<string, unknown>) => {
+      const port = fakeSchedulePort();
+      // An explicit `undefined` unsets the default, exercising the missing and
+      // neither-at-nor-recurrence shapes through the same table.
+      const args = scheduleArgs(
+        over['recurrence'] === 'RECURRENCE' ? { recurrence: recurrenceDaily() } : over,
+      );
+      const outcome = await scheduleMessageText(principalWith([GUILD_A]), port, args);
+      expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+      expect(port.calls['scheduleMessage']).toBe(0);
+    },
+  );
 
   it('an epoch-ms at and a recurrence each reach the port', async () => {
     const seen: Array<Parameters<McpSchedulePort['scheduleMessage']>[1]> = [];

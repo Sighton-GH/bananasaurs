@@ -788,6 +788,35 @@ export const cancelReminder = (
       .run();
     return result.changes === 1;
   });
+
+/**
+ * Restores a cancelled reminder to `scheduled`, keeping its due time. The
+ * `schedule.cancel` undo path — `cancelReminder` above has no inverse, and
+ * Task 1 added no restore, which is why this exists. Returns false for a row
+ * in any other state. Due-ness is the caller's check (an undo past the due
+ * time refuses as expired); this function stays a dumb guarded transition
+ * like `cancelReminder`.
+ */
+export const restoreReminder = (
+  scope: GuildScope,
+  id: string,
+  origin: ReminderOrigin = 'assistant',
+): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(assistantReminders)
+      .set({ status: 'scheduled' })
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.origin, origin),
+          eq(assistantReminders.status, 'cancelled'),
+        ),
+      )
+      .run();
+    return result.changes === 1;
+  });
 export interface SkillActivity {
   readonly id: string;
   readonly at: number;
