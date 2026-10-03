@@ -236,7 +236,9 @@ describe('LoggingPage route form', () => {
     expect(checkOf('Role created').checked).toBe(false);
     const dest = screen.getByLabelText('Post to');
     if (!(dest instanceof HTMLInputElement)) throw new Error('expected the Post to input');
-    expect(dest.value).toBe('42');
+    // The shared channel box shows a known channel by name and id (ADR 0122);
+    // the PUT below proves the stored value is still the bare id.
+    expect(dest.value).toBe('#mod-log (42)');
     expect(checkOf('Include message content').checked).toBe(true);
     fireEvent.click(checkOf('Member joined'));
     await act(async () => {
