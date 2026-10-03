@@ -11729,6 +11729,8 @@ describe('/mcp event writes through the real composition', () => {
         ).body,
       );
       expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('was not undone');
+      expect(refused.text).toContain(`channel ${VOICE}: not-in-send-scope`);
       expect(discord.restCalls('editScheduledEvent')).toHaveLength(1);
     } finally {
       await eventApp.close();

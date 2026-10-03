@@ -171,7 +171,11 @@ export type McpEventWriteOutcome =
       readonly status: 'refused';
       readonly reason: McpEventWriteRefusal;
       readonly detail?: string;
-      /** The channel that failed a target check, when it is not the one the caller passed. */
+      /**
+       * The channel that failed a target check. The daemon always sets it on
+       * a target refusal; it differs from the caller's channel when an edit
+       * is refused over the event's current channel.
+       */
       readonly channelId?: string;
     }
   | { readonly status: 'failed' };

@@ -6397,7 +6397,11 @@ const actionsPortFor = (
             return {
               status: 'refused',
               reason: 'target-unavailable',
-              detail: back.missing !== undefined ? `missing ${back.missing}` : back.reason,
+              // Names the channel the undo would move the event back into —
+              // not the row's target, which passed above.
+              detail:
+                `channel ${plan.restoresLocation.channelId}: ` +
+                (back.missing !== undefined ? `missing ${back.missing}` : back.reason),
             };
           }
         }
