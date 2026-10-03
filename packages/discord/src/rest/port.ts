@@ -752,6 +752,11 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
           name: event.name,
           ...(event.description == null ? {} : { description: event.description }),
           scheduledStartAt: Date.parse(event.scheduled_start_time),
+          // `scheduled_end_time` is `string | null`: null means the event has
+          // no end time, so the field stays absent rather than becoming one.
+          ...(event.scheduled_end_time == null
+            ? {}
+            : { scheduledEndAt: Date.parse(event.scheduled_end_time) }),
           ...(event.channel_id == null ? {} : { channelId: event.channel_id }),
           ...(event.entity_metadata?.location == null
             ? {}
@@ -803,8 +808,11 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
 
     /**
      * Scheduled-event edits (MCP slice 5): PATCH with only the fields given,
-     * the way `setThreadState` carries only its fields. A location change
-     * carries the entity type with it, and an external location clears the
+     * the way `setThreadState` carries only its fields. `description: null`
+     * clears the description (the PATCH body's `description` is nullable in
+     * discord-api-types v10); `scheduled_end_time` is not, so an end time can
+     * only be moved, never cleared. A location change carries the entity type
+     * with it, and an external location clears the
      * channel — Discord hosts an external event at a `location`, not in a
      * channel.
      */

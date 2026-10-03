@@ -189,6 +189,8 @@ export interface ScheduledEvent {
   readonly description?: string | undefined;
   /** From `scheduled_start_time`. */
   readonly scheduledStartAt: number;
+  /** From `scheduled_end_time`; absent when the event has no end time. */
+  readonly scheduledEndAt?: number | undefined;
   readonly channelId?: Snowflake | undefined;
   readonly location?: string | undefined;
 }
@@ -527,13 +529,17 @@ export interface DiscordPort {
    * /guilds/{id}/scheduled-events/{event}` with only the fields given, so a
    * rename never disturbs the time and vice versa. Times are epoch ms on the
    * port and ISO strings on the wire, like `createScheduledEvent`.
+   * `description: null` clears the description (the PATCH body's
+   * `description` is nullable in discord-api-types v10); `scheduled_end_time`
+   * is not, so there is no clearing of the end time — pass a new one or leave
+   * it alone.
    */
   editScheduledEvent(
     guildId: Snowflake,
     eventId: Snowflake,
     patch: {
       readonly name?: string | undefined;
-      readonly description?: string | undefined;
+      readonly description?: string | null | undefined;
       readonly startAt?: number | undefined;
       readonly endAt?: number | undefined;
       readonly location?:

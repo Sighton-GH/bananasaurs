@@ -371,11 +371,11 @@ const refusalText = (
         'so nothing was posted. Wait for an operator to clear it; do not retry in a loop.'
       );
     case 'rate-cap':
-      // Three hundred message actions per guild per rolling hour (ADR 0116
-      // §6); duplicated, not imported, for the same reason the old 200 text
-      // was duplicated rather than imported.
+      // The rolling-hour message budget per guild is the owner-tunable
+      // setting mcp.cap.message (ADR 0116 §6, ADR 0119 §4), so the text names
+      // the setting rather than a number that could drift from it.
       return (
-        `Guild ${guildId} has used its message budget of 300 sends per rolling hour, ` +
+        `Guild ${guildId} has used its rolling-hour message budget (setting mcp.cap.message), ` +
         'so nothing was posted. Wait for the window to pass before retrying' +
         `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
         'answering an already-sent idempotency key still works meanwhile.'

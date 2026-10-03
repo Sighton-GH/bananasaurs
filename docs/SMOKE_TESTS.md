@@ -363,6 +363,74 @@ Record the run with timestamps.
 
 - [ ] Steps 1–15 recorded with timestamps.
 
+## Section I — MCP schedules, events, polls, caps and policy controls on the test guild (slice 5, not yet run)
+
+**Test guild only.** The unit suites prove the schedule-time and send-time
+checks, the undo arms and the cap reads against fakes and a real database;
+what they cannot prove is the live path — the reminder worker posting an
+`origin='mcp'` row, a ping dropped at send time, Discord's event and poll
+behaviour, and a settings edit reaching the next call — so each step below
+runs once against the real test guild from the owner's Claude client through
+the tunnel connector.
+Preconditions: `bananasaurs doctor` is clean; one text channel and one voice
+channel are allowlisted for sends; one low test role sits below the bot; the
+bot holds ManageEvents on the voice channel; the connector is authorised with
+`bananasaurs:read` and `bananasaurs:send`. Record the run with timestamps.
+
+1. **A one-shot `schedule_message`.** Schedule a short text three minutes
+   ahead that mentions the low role (`<@&id>`) with the role also in
+   `pingRoles`. Confirm `list_scheduled` shows it as scheduled; at the due
+   time confirm it posts in the channel exactly as written (no reminder
+   framing), the role is notified, and `list_scheduled` now shows it
+   delivered.
+2. **A recurring schedule, cancelled and undone.** Schedule a daily send.
+   Confirm `list_scheduled` shows its first occurrence. `cancel_scheduled`
+   it, then `undo_action` the cancel: it is scheduled again. Cancel it once
+   more to leave nothing behind.
+3. **`edit_scheduled`, then undo.** Schedule a one-shot an hour ahead, edit
+   its content and re-time it with `at`. Confirm the listing shows the new
+   text and time; `undo_action` the edit and confirm the old text and time
+   are back. Cancel it.
+4. **A ping dropped at send time.** Schedule a send three minutes ahead
+   pinging the low role as in step 1, then switch `bananasaurs mcp role-policy --ping
+   allowlist` with the role not allowlisted. At the due time confirm the
+   message posts with the role mention rendered but nobody notified, and the
+   journal has one `mcp reminder ping dropped` line carrying only ids.
+   Switch the ping mode back.
+5. **A destination that left scope.** Schedule a send three minutes ahead,
+   then `bananasaurs mcp disallow-channel` the channel. At the due time
+   confirm nothing posts, `list_scheduled` shows it failed, and the journal
+   has one `mcp reminder target out of scope` line carrying only ids.
+   Allowlist the channel again.
+6. **Assistant reminders unchanged.** Ask the in-Discord assistant for a
+   reminder two minutes out. Confirm it delivers exactly as before and never
+   appears in `list_scheduled`.
+7. **Events.** `create_event` a voice event on the allowlisted voice
+   channel; confirm it appears in Discord. `edit_event` its name, then
+   `undo_action` the edit and confirm the old name returns. `cancel_event`
+   it and confirm Discord shows it cancelled.
+8. **An external event without an end time refused.** Call `create_event`
+   for an external event with a place and no end time. Confirm the refusal
+   and that no event was created.
+9. **`create_poll`.** Post a two-answer poll to the allowlisted channel.
+   Confirm the native poll renders and nobody was pinged.
+10. **A cap edit takes effect with no restart.** On the dashboard AI tuning
+    page set `mcp.cap.message` to the count of posts already made this hour
+    plus one. Post once (it succeeds), then once more: the second refuses
+    naming `mcp.cap.message`. Restore the default (300).
+11. **Role-policy controls.** `bananasaurs mcp role-policy` shows both modes
+    and the allowlist; `bananasaurs mcp allow-role <low role id> --purpose
+    ping` adds a row the dashboard MCP page also shows; `bananasaurs mcp
+    allow-role` of `@everyone` or a role with a dangerous permission refuses.
+    `bananasaurs mcp disallow-role <low role id> --purpose ping` removes the
+    row.
+12. **The kill switch refuses the slice 5 writes.** `bananasaurs killswitch
+    on --confirm`, then attempt `schedule_message`, `create_event` and
+    `create_poll`: all three refuse naming the kill switch with nothing
+    changed. `killswitch off --confirm` restores normal operation.
+
+- [ ] Steps 1–12 recorded with timestamps.
+
 ## Sign-off
 
 **Release 1 is done — 2026-08-30.** Every box above is checked, run against

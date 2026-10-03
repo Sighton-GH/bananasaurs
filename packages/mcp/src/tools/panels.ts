@@ -617,8 +617,8 @@ const refusalText = (
       );
     case 'rate-cap':
       return (
-        `Guild ${guildId} has used its structure budget of 100 panel, thread and role changes ` +
-        `per rolling hour, so ${undone}. Wait for the window to pass before retrying` +
+        `Guild ${guildId} has used its rolling-hour structure budget (setting mcp.cap.structure) ` +
+        `for panel, thread and role changes, so ${undone}. Wait for the window to pass before retrying` +
         `${detail !== undefined ? ` (resets at ${detail})` : ''}; ` +
         'answering an already-recorded idempotency key still works meanwhile.'
       );

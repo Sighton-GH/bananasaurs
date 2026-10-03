@@ -2314,6 +2314,9 @@ export const assistantReminders = sqliteTable(
     context: text('context'),
     deliveredCount: integer('delivered_count').notNull().default(0),
     updatedAt: integer('updated_at'),
+    // ADR 0119: scheduled MCP sends are reminder rows with `origin='mcp'`.
+    // Pre-0095 rows read back as `assistant` through the column default.
+    origin: text('origin').notNull().default('assistant'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.reminderId] }),
@@ -2326,6 +2329,7 @@ export const assistantReminders = sqliteTable(
       'assistant_reminders_status',
       sql`${t.status} IN ('scheduled','delivering','delivered','cancelled','failed')`,
     ),
+    check('assistant_reminders_origin', sql`${t.origin} IN ('assistant','mcp')`),
     index('assistant_reminders_due').on(t.guildId, t.status, t.dueAt),
   ],
 );

@@ -22,8 +22,20 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
 
   it('stays a short static string', () => {
     // Slice 4 added the Roles section (seven lines for fourteen facts), so
-    // the cap grew from 3000; the string is still one short static text.
-    expect(MCP_SERVER_INSTRUCTIONS.length).toBeLessThan(3500);
+    // the cap grew from 3000; slice 5's Schedules, events and polls section
+    // grew it again from 3500. The string is still one short static text.
+    expect(MCP_SERVER_INSTRUCTIONS.length).toBeLessThan(4500);
+  });
+
+  it('has a Schedules, events and polls section with the send-time re-check and its limits', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Schedules, events and polls');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('schedule_message');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('checked again at send time');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('never ping @everyone or @here');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('list_scheduled');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('cancel_event');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('create_poll');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('a scheduled-send edit or cancel');
   });
 
   it('has a Roles section with the grant policy, bulk preview rules and panel limits', () => {

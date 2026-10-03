@@ -126,6 +126,44 @@ import {
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
 import {
+  CANCEL_EVENT_TOOL_DESCRIPTION,
+  CANCEL_EVENT_TOOL_NAME,
+  CREATE_EVENT_TOOL_DESCRIPTION,
+  CREATE_EVENT_TOOL_NAME,
+  CREATE_POLL_TOOL_DESCRIPTION,
+  CREATE_POLL_TOOL_NAME,
+  EDIT_EVENT_TOOL_DESCRIPTION,
+  EDIT_EVENT_TOOL_NAME,
+  cancelEventParams,
+  cancelEventText,
+  createEventParams,
+  createEventText,
+  createPollParams,
+  createPollText,
+  editEventParams,
+  editEventText,
+  type McpEventWritesPort,
+} from './tools/event-writes.js';
+import {
+  CANCEL_SCHEDULED_TOOL_DESCRIPTION,
+  CANCEL_SCHEDULED_TOOL_NAME,
+  EDIT_SCHEDULED_TOOL_DESCRIPTION,
+  EDIT_SCHEDULED_TOOL_NAME,
+  LIST_SCHEDULED_TOOL_DESCRIPTION,
+  LIST_SCHEDULED_TOOL_NAME,
+  SCHEDULE_MESSAGE_TOOL_DESCRIPTION,
+  SCHEDULE_MESSAGE_TOOL_NAME,
+  cancelScheduledParams,
+  cancelScheduledText,
+  editScheduledParams,
+  editScheduledText,
+  listScheduledParams,
+  listScheduledText,
+  scheduleMessageParams,
+  scheduleMessageText,
+  type McpSchedulePort,
+} from './tools/schedule.js';
+import {
   GRANT_ROLE_TOOL_DESCRIPTION,
   GRANT_ROLE_TOOL_NAME,
   REMOVE_ROLE_TOOL_DESCRIPTION,
@@ -297,6 +335,29 @@ export interface McpServerDeps {
    * principal carries the send scope.
    */
   readonly messageWrites: McpMessageWritesPort;
+  /**
+   * The daemon's per-request event-writes port: scheduled-event creation,
+   * editing and cancellation plus native polls behind the four event tools.
+   * Required like `send`: the daemon always provides it, and a missing port
+   * must fail at construction, not serve tools that always refuse. Required
+   * means the port is always present, not that the tools are always
+   * advertised: the four tools still register only when the principal
+   * carries the send scope.
+   */
+  readonly eventWrites: McpEventWritesPort;
+  /**
+   * The daemon's per-request schedule port (slice 5, Task 3): fixed-text
+   * scheduled sends behind `schedule_message`, `list_scheduled`,
+   * `edit_scheduled` and `cancel_scheduled`, stored as `origin='mcp'`
+   * reminder rows. Required like `send`: the daemon always provides it, and
+   * a missing port must fail at construction, not serve tools that always
+   * refuse. Required means the port is always present, not that the tools
+   * are always advertised: the four tools still register only when the
+   * principal carries the send scope — including `list_scheduled`, which is
+   * a read of the connector's own outbox under the send scope, audited like
+   * the other reads.
+   */
+  readonly schedule: McpSchedulePort;
   /**
    * The daemon's per-request role-writes port (slice 4, Task 3): role grants
    * and removals behind the two role tools. Required like `send`: a missing
@@ -538,6 +599,96 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
+    // The four event/poll write tools, same handler shape as
+    // `send_message` above — each text function already answers every
+    // malformed argument and every port fault, so the try/catch here only
+    // fires on something the tool layer did not foresee.
+    const eventWrites = deps.eventWrites;
+    const eventWriteTools = [
+      [CREATE_EVENT_TOOL_NAME, CREATE_EVENT_TOOL_DESCRIPTION, createEventParams, createEventText],
+      [EDIT_EVENT_TOOL_NAME, EDIT_EVENT_TOOL_DESCRIPTION, editEventParams, editEventText],
+      [CANCEL_EVENT_TOOL_NAME, CANCEL_EVENT_TOOL_DESCRIPTION, cancelEventParams, cancelEventText],
+      [CREATE_POLL_TOOL_NAME, CREATE_POLL_TOOL_DESCRIPTION, createPollParams, createPollText],
+    ] as const;
+    for (const [name, description, params, text] of eventWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, eventWrites, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    // The four schedule tools (slice 5, Task 3), same handler shape as
+    // `send_message` above — each text function already answers every
+    // malformed argument and every port fault, so the try/catch here only
+    // fires on something the tool layer did not foresee. The three writes
+    // render their outcomes directly; `list_scheduled` is a read of the
+    // connector's own outbox under this same send scope, so it passes its
+    // record through the read-audit port like every other read.
+    const schedule = deps.schedule;
+    const scheduleWriteTools = [
+      [
+        SCHEDULE_MESSAGE_TOOL_NAME,
+        SCHEDULE_MESSAGE_TOOL_DESCRIPTION,
+        scheduleMessageParams,
+        scheduleMessageText,
+      ],
+      [
+        EDIT_SCHEDULED_TOOL_NAME,
+        EDIT_SCHEDULED_TOOL_DESCRIPTION,
+        editScheduledParams,
+        editScheduledText,
+      ],
+      [
+        CANCEL_SCHEDULED_TOOL_NAME,
+        CANCEL_SCHEDULED_TOOL_DESCRIPTION,
+        cancelScheduledParams,
+        cancelScheduledText,
+      ],
+    ] as const;
+    for (const [name, description, params, text] of scheduleWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        try {
+          const outcome = await text(deps.principal, schedule, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      });
+    }
+    server.tool(
+      LIST_SCHEDULED_TOOL_NAME,
+      LIST_SCHEDULED_TOOL_DESCRIPTION,
+      listScheduledParams,
+      (args: unknown) => {
+        try {
+          const outcome = listScheduledText(deps.principal, schedule, args);
+          if (!outcome.ok) {
+            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+          }
+          return okReadResult(deps.readAudit, outcome);
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+            isError: true,
+          };
+        }
+      },
+    );
   }
   // Slice 4, Task 5: `undo_action`, same handler shape — the text function
   // answers every outcome and the try/catch only fires on something it did

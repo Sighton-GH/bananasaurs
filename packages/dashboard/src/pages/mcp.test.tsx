@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderWithSession, stubFetch } from '../test-support.js';
+import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { McpPage } from './mcp.js';
 
 const CLIENTS = {
@@ -53,15 +53,43 @@ const SENDS = {
   ],
 };
 
+const ROLE_POLICY = {
+  grantMode: 'below-bot',
+  pingMode: 'allowlist',
+  entries: [{ roleId: 'r-1', purpose: 'grant', addedByAccountId: 'acct-1', addedAt: 0 }],
+};
+
+const ROLES = {
+  roles: [
+    {
+      roleId: 'r-1',
+      name: 'Helpers',
+      colour: 0,
+      position: 3,
+      managed: false,
+      manageable: true,
+      allowlisted: true,
+      optionable: true,
+    },
+  ],
+};
+
 const STUBS = [
   { url: '/api/mcp/clients', body: CLIENTS },
   { url: '/api/mcp/tokens', body: TOKENS },
   { url: '/api/send-allowlist', body: ALLOWLIST },
   { url: '/api/mcp/sends?since=7d', body: SENDS },
+  { url: '/api/role-policy', body: ROLE_POLICY },
+  { url: '/api/guild/roles', body: ROLES },
 ];
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
+
+const selectOf = (element: HTMLElement): HTMLSelectElement => {
+  if (!(element instanceof HTMLSelectElement)) throw new Error('expected a <select>');
+  return element;
+};
 
 describe('McpPage', () => {
   it('renders clients, tokens and the allowlist', async () => {
@@ -99,5 +127,103 @@ describe('McpPage', () => {
       );
       expect(post, 'revoke POST').toBeTruthy();
     });
+  });
+
+  it('renders the role policy card with modes and the allowlist', async () => {
+    stubFetch(STUBS);
+    renderWithSession(<McpPage />);
+    expect(await screen.findByText('Role policy')).toBeTruthy();
+    expect(selectOf(screen.getByLabelText('Grant mode')).value).toBe('below-bot');
+    expect(selectOf(screen.getByLabelText('Ping mode')).value).toBe('allowlist');
+    // The name comes from the live role list, which resolves just after the
+    // policy itself; the id is its own column. The id also appears in the
+    // role picker's suggestion list, so it is a multi-match.
+    expect(await screen.findByText('Helpers')).toBeTruthy();
+    expect(screen.getAllByText('r-1').length).toBeGreaterThan(0);
+  });
+
+  it('saves the modes through the policy route', async () => {
+    const mock = stubFetch([
+      ...STUBS,
+      {
+        method: 'POST',
+        url: '/api/role-policy',
+        body: {
+          before: { grantMode: 'below-bot', pingMode: 'allowlist' },
+          after: { grantMode: 'allowlist', pingMode: 'allowlist' },
+          changed: true,
+        },
+      },
+    ]);
+    renderWithSession(<McpPage />);
+    fireEvent.change(await screen.findByLabelText('Grant mode'), {
+      target: { value: 'allowlist' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save modes' }));
+    await vi.waitFor(() => {
+      const post = mock.mock.calls.find(
+        (c) => (c[0] as string) === '/api/role-policy' && c[1]?.method === 'POST',
+      );
+      expect(post, 'policy POST').toBeTruthy();
+    });
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/role-policy' && c[1]?.method === 'POST',
+    );
+    expect(bodyOf(post!)).toEqual({ grant: 'allowlist', ping: 'allowlist' });
+  });
+
+  it('adds a role through the allowlist route', async () => {
+    const mock = stubFetch([
+      ...STUBS,
+      { method: 'POST', url: '/api/role-allowlist', body: { outcome: 'allowed' } },
+    ]);
+    renderWithSession(<McpPage />);
+    fireEvent.change(await screen.findByPlaceholderText('Search role names'), {
+      target: { value: 'r-2' },
+    });
+    fireEvent.change(screen.getByLabelText('Purpose'), { target: { value: 'ping' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow role' }));
+    await vi.waitFor(() => {
+      const post = mock.mock.calls.find(
+        (c) => (c[0] as string) === '/api/role-allowlist' && c[1]?.method === 'POST',
+      );
+      expect(post, 'allow POST').toBeTruthy();
+    });
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/role-allowlist' && c[1]?.method === 'POST',
+    );
+    expect(bodyOf(post!)).toEqual({ roleId: 'r-2', purpose: 'ping', accountId: 'acct-1' });
+  });
+
+  it('removes an allowlist row through the delete route', async () => {
+    const mock = stubFetch(STUBS);
+    renderWithSession(<McpPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    await vi.waitFor(() => {
+      const call = mock.mock.calls.find(
+        (c) =>
+          (c[0] as string) === '/api/role-allowlist/r-1?purpose=grant' && c[1]?.method === 'DELETE',
+      );
+      expect(call, 'disallow DELETE').toBeTruthy();
+    });
+  });
+
+  it('shows a server refusal inline instead of failing silently', async () => {
+    stubFetch([
+      ...STUBS,
+      {
+        method: 'POST',
+        url: '/api/role-allowlist',
+        status: 409,
+        body: { error: 'role-dangerous' },
+      },
+    ]);
+    renderWithSession(<McpPage />);
+    fireEvent.change(await screen.findByPlaceholderText('Search role names'), {
+      target: { value: 'r-9' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow role' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent ?? '').toMatch(/dangerous permission/);
   });
 });

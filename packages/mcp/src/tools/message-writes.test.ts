@@ -16,6 +16,8 @@ import type { McpThreadsPort } from './threads.js';
 import type { McpSendPort } from './send.js';
 import type { McpReadAuditPort } from '../read-audit.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
+import type { McpEventWritesPort } from './event-writes.js';
+import type { McpSchedulePort } from './schedule.js';
 import type { McpRoleWritesPort } from './role-writes.js';
 import {
   ADD_REACTION_TOOL_NAME,
@@ -520,6 +522,26 @@ const stubThreadWrites = (): McpThreadWritesPort => ({
   setThreadState: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
 });
 
+/** Required for the four event tools; never called by the message-write tools pinned here. */
+const stubEventWrites = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test', eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
+/** Required for the four schedule tools; never called by the message-write tools pinned here. */
+const stubSchedule = (): McpSchedulePort => ({
+  scheduleMessage: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  listScheduled: () => [],
+  editScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  cancelScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+});
+
 /** Required since slice 4 Task 3; never called by the message-write tools pinned here. */
 const stubRoleWrites = (): McpRoleWritesPort => ({
   grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
@@ -539,6 +561,8 @@ const connectPair = async (
     send: stubSend(),
     messageWrites: stubWrites(),
     threadWrites: stubThreadWrites(),
+    eventWrites: stubEventWrites(),
+    schedule: stubSchedule(),
     roleWrites: stubRoleWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
@@ -583,8 +607,9 @@ describe('message-write scope filtering (ruling M4-D17)', () => {
     const { client, close } = await connectPair(principalWith([GUILD_A], ['bananasaurs:send']));
     try {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
-      // The thread-write tools (Task 5) share the scope; this file pins its own six.
-      expect(names).toHaveLength(13);
+      // The thread-write tools (Task 5), the event tools and the schedule
+      // tools share the scope; this file pins its own six.
+      expect(names).toHaveLength(21);
       expect(names).toEqual(expect.arrayContaining(SEND_TOOL_NAMES));
     } finally {
       await close();

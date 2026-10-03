@@ -245,6 +245,23 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ entries: ports.listSendAllowlist() });
   });
 
+  // Slice 5 task 6 (ADR 0117 §2): the role-policy modes and the role
+  // allowlist, the read half of `mcp role-policy`. Ids and purposes only —
+  // the dashboard resolves names from its live role list.
+  app.get('/api/role-policy', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    const policy = ports.readRolePolicy();
+    return reply.status(200).send({
+      grantMode: policy.grantMode,
+      pingMode: policy.pingMode,
+      entries: ports.listRoleAllowlist(),
+    });
+  });
+
   app.get('/api/doctor', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;

@@ -13,6 +13,7 @@ import {
   jobRepo,
   loggingRepo,
   mcpSendRepo,
+  mcpRolePolicyRepo,
   modCaseRepo,
   modMatchReviewRepo,
   oauthRepo,
@@ -665,6 +666,27 @@ export const testPortsFor = (
   listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
+  // Slice 5 task 6: the MCP role policy and role allowlist, the same
+  // real-repo behaviour `apps/daemon/src/ops/wiring.ts` wires. No live Discord
+  // check here: this package may not import a Discord client (ADR 0014), and
+  // no dashboard route under test reaches a refusal — the check lives in the
+  // daemon's `opsPortsFor`, which owns the client. The gap is the same shape
+  // as `allowSendChannel`'s above: test-support allows what the daemon would
+  // refuse, and the use-time grant and ping paths contain any such row.
+  readRolePolicy: () => mcpRolePolicyRepo.readRolePolicy(scope),
+  setRolePolicy: (input) => mcpRolePolicyRepo.upsertRolePolicy(scope, { ...input, now: now() }),
+  allowRole: (input): Promise<'allowed' | 'already-allowed'> => {
+    const added = mcpRolePolicyRepo.allowRole(scope, {
+      roleId: input.roleId,
+      purpose: input.purpose,
+      addedByAccountId: input.accountId,
+      now: now(),
+    });
+    return Promise.resolve(added ? 'allowed' : 'already-allowed');
+  },
+  disallowRole: (input) =>
+    mcpRolePolicyRepo.disallowRole(scope, input.roleId, input.purpose) ? 'removed' : 'not-allowed',
+  listRoleAllowlist: () => mcpRolePolicyRepo.listRoleAllowlist(scope),
   // ADR 0028 / ADR 0045 (ruling PR-102): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires, with the account lookup running
   // through `opts.instanceScope`.

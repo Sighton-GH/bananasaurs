@@ -173,6 +173,21 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Connector',
     control: 'remove a category from the send allowlist',
   },
+  'mcp role-policy': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'role policy modes and the role allowlist',
+  },
+  'mcp allow-role': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'allowlist a role for grants or pings, with live refusals',
+  },
+  'mcp disallow-role': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'remove a role from the role allowlist',
+  },
   'panel sync': {
     kind: 'covered',
     page: 'Reaction roles',

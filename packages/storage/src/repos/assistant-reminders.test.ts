@@ -11,8 +11,11 @@ import {
   hasDeliverableReminders,
   insertReminder,
   listReminders,
+  listRemindersForCreator,
   rescheduleReminder,
+  restoreReminder,
   retryReminder,
+  updateReminder,
 } from './assistant.js';
 
 /**
@@ -205,5 +208,142 @@ describe('state-guarded transitions', () => {
     claimDueReminders(scope(), 1_000, 25, STALE_MS);
     rescheduleReminder(scope(), 'b', 3_000);
     expect(getReminder(scope(), 'b')?.deliveredCount).toBe(1);
+  });
+});
+
+/**
+ * ADR 0119: scheduled MCP sends are `assistant_reminders` rows with
+ * `origin='mcp'`. User-facing list, read, edit and cancel calls filter by
+ * origin — a caller of one origin never sees the other's rows — while the
+ * delivery claim path stays origin-agnostic and delivers both kinds.
+ */
+describe('reminder origin', () => {
+  const GB = parseGuildId('222222222222222222');
+  const scopeB = () => t.scopes.forGuild(GB);
+
+  it('stores assistant by default and reads it back', () => {
+    expect(insertReminder(scope(), reminder('a'))).toBe('created');
+    expect(getReminder(scope(), 'a')?.origin).toBe('assistant');
+    expect(listReminders(scope()).map((r) => r.id)).toEqual(['a']);
+    expect(listReminders(scope(), 'assistant').map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('an MCP list never returns assistant rows, and vice versa', () => {
+    insertReminder(scope(), reminder('a'));
+    insertReminder(scope(), reminder('m'), 'mcp');
+    expect(listReminders(scope(), 'mcp').map((r) => r.id)).toEqual(['m']);
+    expect(listReminders(scope(), 'mcp')[0]?.origin).toBe('mcp');
+    expect(listReminders(scope(), 'assistant').map((r) => r.id)).toEqual(['a']);
+    // The default keeps today's behaviour: assistant callers see only
+    // assistant rows.
+    expect(listReminders(scope()).map((r) => r.id)).toEqual(['a']);
+    expect(getReminder(scope(), 'a', 'mcp')).toBeUndefined();
+    expect(getReminder(scope(), 'm', 'assistant')).toBeUndefined();
+    expect(getReminder(scope(), 'm', 'mcp')?.origin).toBe('mcp');
+    expect(
+      listRemindersForCreator(scope(), CREATOR, { includeFinished: true }, 'mcp').map((r) => r.id),
+    ).toEqual(['m']);
+    expect(
+      listRemindersForCreator(scope(), CREATOR, { includeFinished: true }).map((r) => r.id),
+    ).toEqual(['a']);
+  });
+
+  it('an edit or cancel of the other origin is not found and changes nothing', () => {
+    insertReminder(scope(), reminder('a'));
+    insertReminder(scope(), reminder('m'), 'mcp');
+    expect(updateReminder(scope(), 'a', { text: 'changed' }, 2, 'mcp')).toBe('not-found');
+    expect(updateReminder(scope(), 'm', { text: 'changed' }, 2)).toBe('not-found');
+    expect(getReminder(scope(), 'a')?.text).toBe('text a');
+    expect(getReminder(scope(), 'm', 'mcp')?.text).toBe('text m');
+    expect(cancelReminder(scope(), 'a', 'mcp')).toBe(false);
+    expect(cancelReminder(scope(), 'm')).toBe(false);
+    expect(getReminder(scope(), 'a')?.status).toBe('scheduled');
+    expect(getReminder(scope(), 'm', 'mcp')?.status).toBe('scheduled');
+    // Same-origin edit and cancel still work.
+    expect(updateReminder(scope(), 'm', { text: 'changed' }, 3, 'mcp')).toBe('updated');
+    expect(getReminder(scope(), 'm', 'mcp')?.text).toBe('changed');
+    expect(cancelReminder(scope(), 'm', 'mcp')).toBe(true);
+    expect(getReminder(scope(), 'm', 'mcp')?.status).toBe('cancelled');
+  });
+
+  it('keeps guild B isolated per origin', () => {
+    guildRepo.upsertGuild(scopeB(), { name: 'other', now: 1 });
+    insertReminder(scope(), reminder('a'));
+    insertReminder(
+      scopeB(),
+      { ...reminder('secret'), guildId: GB, dedupeKey: `reminder:${GB}:secret` },
+      'mcp',
+    );
+    expect(listReminders(scope(), 'mcp')).toEqual([]);
+    expect(getReminder(scope(), 'secret', 'mcp')).toBeUndefined();
+    expect(updateReminder(scope(), 'secret', { text: 'x' }, 2, 'mcp')).toBe('not-found');
+    expect(cancelReminder(scope(), 'secret', 'mcp')).toBe(false);
+    expect(listReminders(scopeB(), 'mcp').map((r) => r.id)).toEqual(['secret']);
+  });
+
+  it('refuses everyone and here on mcp rows, in insert and edit, but allows them for assistant', () => {
+    const everyone = { userIds: [], roleIds: [], everyone: true, here: false };
+    const here = { userIds: [], roleIds: [], everyone: false, here: true };
+    expect(() => insertReminder(scope(), reminder('e1', { mentions: everyone }), 'mcp')).toThrow(
+      /everyone or here/,
+    );
+    expect(() => insertReminder(scope(), reminder('e2', { mentions: here }), 'mcp')).toThrow(
+      /everyone or here/,
+    );
+    expect(listReminders(scope(), 'mcp')).toEqual([]);
+    // Assistant rows keep today's behaviour: mass pings are allowed.
+    expect(insertReminder(scope(), reminder('ok', { mentions: everyone }))).toBe('created');
+    insertReminder(scope(), reminder('m'), 'mcp');
+    expect(() => updateReminder(scope(), 'm', { mentions: everyone }, 2, 'mcp')).toThrow(
+      /everyone or here/,
+    );
+    expect(() => updateReminder(scope(), 'm', { mentions: here }, 2, 'mcp')).toThrow(
+      /everyone or here/,
+    );
+    expect(getReminder(scope(), 'm', 'mcp')?.mentions).toEqual({
+      userIds: [],
+      roleIds: [],
+      everyone: false,
+      here: false,
+    });
+    expect(updateReminder(scope(), 'ok', { mentions: here }, 3)).toBe('updated');
+    expect(getReminder(scope(), 'ok')?.mentions).toEqual(here);
+  });
+
+  it('the delivery claim still returns both origins', () => {
+    insertReminder(scope(), reminder('a', { dueAt: 900 }));
+    insertReminder(scope(), reminder('m', { dueAt: 950 }), 'mcp');
+    expect(hasDeliverableReminders(scope(), 1_000, STALE_MS)).toBe(true);
+    const claimed = claimDueReminders(scope(), 1_000, 25, STALE_MS);
+    expect(claimed.map((r) => r.id)).toEqual(['a', 'm']);
+    expect(claimed.map((r) => r.origin).sort()).toEqual(['assistant', 'mcp']);
+  });
+});
+
+describe('restoreReminder', () => {
+  it('moves a cancelled row of its origin back to scheduled while it is still due ahead', () => {
+    insertReminder(scope(), reminder('m', { dueAt: 5_000 }), 'mcp');
+    expect(cancelReminder(scope(), 'm', 'mcp')).toBe(true);
+    expect(restoreReminder(scope(), 'm', 4_999, 'mcp')).toBe(true);
+    expect(getReminder(scope(), 'm', 'mcp')?.status).toBe('scheduled');
+    expect(getReminder(scope(), 'm', 'mcp')?.dueAt).toBe(5_000);
+  });
+
+  it('refuses a row whose due time is not after now, in the same UPDATE', () => {
+    insertReminder(scope(), reminder('m', { dueAt: 5_000 }), 'mcp');
+    cancelReminder(scope(), 'm', 'mcp');
+    expect(restoreReminder(scope(), 'm', 5_000, 'mcp')).toBe(false);
+    expect(restoreReminder(scope(), 'm', 6_000, 'mcp')).toBe(false);
+    expect(getReminder(scope(), 'm', 'mcp')?.status).toBe('cancelled');
+  });
+
+  it('refuses the other origin and any state but cancelled', () => {
+    insertReminder(scope(), reminder('a', { dueAt: 5_000 }));
+    insertReminder(scope(), reminder('m', { dueAt: 5_000 }), 'mcp');
+    cancelReminder(scope(), 'a');
+    expect(restoreReminder(scope(), 'a', 1, 'mcp')).toBe(false);
+    expect(getReminder(scope(), 'a')?.status).toBe('cancelled');
+    // Still scheduled: nothing to restore.
+    expect(restoreReminder(scope(), 'm', 1, 'mcp')).toBe(false);
   });
 });

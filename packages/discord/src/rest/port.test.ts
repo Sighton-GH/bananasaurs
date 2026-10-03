@@ -1700,7 +1700,7 @@ describe('scheduled events', () => {
             name: 'Build night',
             description: 'Bring tools.',
             scheduled_start_time: '2026-09-25T19:00:00.000Z',
-            scheduled_end_time: null,
+            scheduled_end_time: '2026-09-25T21:00:00.000Z',
             entity_type: 2,
             entity_id: null,
             entity_metadata: null,
@@ -1727,6 +1727,7 @@ describe('scheduled events', () => {
         name: 'Build night',
         description: 'Bring tools.',
         scheduledStartAt: Date.parse('2026-09-25T19:00:00.000Z'),
+        scheduledEndAt: Date.parse('2026-09-25T21:00:00.000Z'),
         channelId: CHANNEL,
       },
       {
@@ -1835,6 +1836,17 @@ describe('scheduled events', () => {
       scheduled_start_time: '2026-09-25T19:00:00.000Z',
       entity_type: 2,
       channel_id: CHANNEL,
+    });
+  });
+
+  it('sends description null to clear it and the end time as ISO', async () => {
+    const { port, requests } = harness();
+    await port.editScheduledEvent(GUILD, EVENT, { description: null, endAt: END_AT });
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/scheduled-events/${EVENT}`);
+    expect(last(requests).body).toEqual({
+      description: null,
+      scheduled_end_time: '2026-09-25T21:00:00.000Z',
     });
   });
 

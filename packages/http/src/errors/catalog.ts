@@ -252,6 +252,23 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'That channel is not in this server.',
     hint: 'Pick the channel from the list.',
   },
+  'no-such-role': {
+    title: 'No such role',
+    explanation: 'That role is not in this server.',
+    hint: 'Pick the role from the list.',
+  },
+  'role-everyone': {
+    title: 'That role cannot be allowlisted',
+    explanation: 'The @everyone role can never be allowlisted.',
+  },
+  'role-managed': {
+    title: 'That role cannot be allowlisted',
+    explanation: 'That role is managed by an integration and can never be allowlisted.',
+  },
+  'role-dangerous': {
+    title: 'That role cannot be allowlisted',
+    explanation: 'That role holds a dangerous permission and can never be allowlisted.',
+  },
   'no-guild-access': {
     title: 'No access to that server',
     explanation: 'Your account cannot reach that server.',

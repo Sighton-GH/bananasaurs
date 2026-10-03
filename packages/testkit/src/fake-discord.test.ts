@@ -645,6 +645,7 @@ describe('scheduled event writes (MCP slice 5)', () => {
         id: eventId,
         name: 'Track day',
         scheduledStartAt: START_AT,
+        scheduledEndAt: START_AT + 2 * 60 * 60_000,
         location: 'Mission Raceway',
       },
     ]);
@@ -675,6 +676,40 @@ describe('scheduled event writes (MCP slice 5)', () => {
         id: eventId,
         name: 'Build night 2',
         scheduledStartAt: movedAt,
+        channelId: CHANNEL,
+      },
+    ]);
+    expect(d.restCalls('editScheduledEvent')).toHaveLength(1);
+  });
+
+  it('editScheduledEvent clears the description on null and moves the end time', async () => {
+    const { eventId } = await d.createScheduledEvent(GUILD, {
+      name: 'Build night',
+      description: 'Bring tools.',
+      startAt: START_AT,
+      endAt: START_AT + 2 * 60 * 60_000,
+      location: { kind: 'voice', channelId: CHANNEL },
+    });
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([
+      {
+        id: eventId,
+        name: 'Build night',
+        description: 'Bring tools.',
+        scheduledStartAt: START_AT,
+        scheduledEndAt: START_AT + 2 * 60 * 60_000,
+        channelId: CHANNEL,
+      },
+    ]);
+    await d.editScheduledEvent(GUILD, eventId, {
+      description: null,
+      endAt: START_AT + 3 * 60 * 60_000,
+    });
+    await expect(d.listScheduledEvents(GUILD)).resolves.toEqual([
+      {
+        id: eventId,
+        name: 'Build night',
+        scheduledStartAt: START_AT,
+        scheduledEndAt: START_AT + 3 * 60 * 60_000,
         channelId: CHANNEL,
       },
     ]);

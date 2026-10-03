@@ -55,6 +55,20 @@ import {
 } from './tools/message-writes.js';
 import type { McpRoleWritesPort } from './tools/role-writes.js';
 import {
+  CANCEL_EVENT_TOOL_NAME,
+  CREATE_EVENT_TOOL_NAME,
+  CREATE_POLL_TOOL_NAME,
+  EDIT_EVENT_TOOL_NAME,
+  type McpEventWritesPort,
+} from './tools/event-writes.js';
+import {
+  CANCEL_SCHEDULED_TOOL_NAME,
+  EDIT_SCHEDULED_TOOL_NAME,
+  LIST_SCHEDULED_TOOL_NAME,
+  SCHEDULE_MESSAGE_TOOL_NAME,
+  type McpSchedulePort,
+} from './tools/schedule.js';
+import {
   LIST_ACTIONS_TOOL_NAME,
   UNDO_ACTION_TOOL_NAME,
   type McpActionsPort,
@@ -174,6 +188,26 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
     Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
 });
 
+/** Minimal event-writes port: this file pins registration, never the writes themselves. */
+const stubEventWrites = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test', eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
+/** Minimal schedule port: this file pins registration, never the schedules themselves. */
+const stubSchedule = (): McpSchedulePort => ({
+  scheduleMessage: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  listScheduled: () => [],
+  editScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  cancelScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+});
+
 /** Minimal role-writes port: this file pins registration, never the writes themselves. */
 const stubRoleWrites = (): McpRoleWritesPort => ({
   grant: () => Promise.resolve({ status: 'done', actionId: 'act-test', alreadyHad: false }),
@@ -266,6 +300,8 @@ const connectPair = async (
     send,
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
+    eventWrites: stubEventWrites(),
+    schedule: stubSchedule(),
     roleWrites: stubRoleWrites(),
     actions: stubActions(),
     roleAdmin: stubRoleAdmin(),
@@ -319,13 +355,13 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message and the thirteen write tools first, alongside the twenty-five read tools', async () => {
+  it('lists send_message and the twenty-one send-scope tools first, alongside the twenty-five read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(39);
+      expect(list.tools).toHaveLength(47);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         CREATE_THREAD_TOOL_NAME,
@@ -340,6 +376,14 @@ describe('createMcpServer', () => {
         UNPIN_MESSAGE_TOOL_NAME,
         ADD_REACTION_TOOL_NAME,
         REMOVE_REACTION_TOOL_NAME,
+        CREATE_EVENT_TOOL_NAME,
+        EDIT_EVENT_TOOL_NAME,
+        CANCEL_EVENT_TOOL_NAME,
+        CREATE_POLL_TOOL_NAME,
+        SCHEDULE_MESSAGE_TOOL_NAME,
+        EDIT_SCHEDULED_TOOL_NAME,
+        CANCEL_SCHEDULED_TOOL_NAME,
+        LIST_SCHEDULED_TOOL_NAME,
         UNDO_ACTION_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
@@ -412,14 +456,15 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ruling M4-D17) a send-only principal gets send_message and the thirteen write tools', async () => {
+  it('(ruling M4-D17) a send-only principal gets send_message and the twenty-one send-scope tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
     try {
       // `send_message`, the six thread-write tools (Task 5), the six
-      // message-write tools (Task 6) and `undo_action` (Task 7) register
-      // under the send scope independently of the read-scope block, so a
-      // send-only server lists exactly fourteen tools — and still no
-      // resource, which stays behind the read scope.
+      // message-write tools (Task 6), the four event tools, the four schedule
+      // tools (slice 5 Task 3) and `undo_action` (Task 7) register under the
+      // send scope independently of the read-scope block, so a send-only
+      // server lists exactly twenty-two tools — and still no resource, which
+      // stays behind the read scope.
       const list = await client.listTools();
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
@@ -435,6 +480,14 @@ describe('createMcpServer', () => {
         UNPIN_MESSAGE_TOOL_NAME,
         ADD_REACTION_TOOL_NAME,
         REMOVE_REACTION_TOOL_NAME,
+        CREATE_EVENT_TOOL_NAME,
+        EDIT_EVENT_TOOL_NAME,
+        CANCEL_EVENT_TOOL_NAME,
+        CREATE_POLL_TOOL_NAME,
+        SCHEDULE_MESSAGE_TOOL_NAME,
+        EDIT_SCHEDULED_TOOL_NAME,
+        CANCEL_SCHEDULED_TOOL_NAME,
+        LIST_SCHEDULED_TOOL_NAME,
         UNDO_ACTION_TOOL_NAME,
       ]);
       // The SDK installs its `resources/templates/list` handler lazily on the

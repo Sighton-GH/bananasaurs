@@ -1220,7 +1220,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
       deliverRemindersHandler({
         store: reminderStoreFor(scope),
-        delivery: createReminderDelivery(guildId, discord),
+        delivery: createReminderDelivery(guildId, discord, { client, scope, logger }),
         now,
         logger,
       }),

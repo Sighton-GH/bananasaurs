@@ -1048,6 +1048,142 @@ describe('migration 0094 widens the effect_batches source CHECK to admit mcp', (
   });
 });
 
+describe('migration 0095 adds the reminder origin column (ADR 0119)', () => {
+  const GUILD_ID = '111111111111111111';
+  const CREATOR_ID = '222222222222222222';
+  const CHANNEL_ID = '333333333333333333';
+
+  it('reads pre-0095 rows back as assistant with every other column intact', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0095, seeded the way a
+    // real upgrade would find it: one reminder row with every column set.
+    runMigrations(raw, db, migrationsFolderUpToTag('0094_effect_batches_mcp_source'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO assistant_reminders
+           (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+            next_attempt_at, claimed_at, created_at, status, dedupe_key,
+            failure_reason, mentions_json, recurrence_json, context,
+            delivered_count, updated_at)
+         VALUES (?, 'r1', ?, ?, 'quokka snack', 1000, 1500, NULL, 500,
+            'scheduled', 'reminder:r1',
+            NULL, '{"userIds":[],"roleIds":[],"everyone":false,"here":false}',
+            NULL, 'why', 2, 700)`,
+      )
+      .run(GUILD_ID, CREATOR_ID, CHANNEL_ID);
+
+    // Applies 0095 against the seeded row, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // The carried row reads back as assistant with every other column intact.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, reminder_id, creator_id, destination_id, text, due_at,
+                  next_attempt_at, claimed_at, created_at, status, dedupe_key,
+                  failure_reason, mentions_json, recurrence_json, context,
+                  delivered_count, updated_at, origin
+           FROM assistant_reminders`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        reminder_id: 'r1',
+        creator_id: CREATOR_ID,
+        destination_id: CHANNEL_ID,
+        text: 'quokka snack',
+        due_at: 1000,
+        next_attempt_at: 1500,
+        claimed_at: null,
+        created_at: 500,
+        status: 'scheduled',
+        dedupe_key: 'reminder:r1',
+        failure_reason: null,
+        mentions_json: '{"userIds":[],"roleIds":[],"everyone":false,"here":false}',
+        recurrence_json: null,
+        context: 'why',
+        delivered_count: 2,
+        updated_at: 700,
+        origin: 'assistant',
+      },
+    ]);
+    // The rebuild leaves no dangling reference behind.
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+
+    // The primary key, the guild foreign key, the dedupe unique key and
+    // every CHECK survived the rebuild.
+    const pk = raw.prepare(`PRAGMA table_info(assistant_reminders)`).all() as {
+      pk: number;
+      name: string;
+    }[];
+    expect(
+      pk
+        .filter((c) => c.pk > 0)
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(['guild_id', 'reminder_id']);
+    const fks = raw.prepare(`PRAGMA foreign_key_list(assistant_reminders)`).all() as {
+      table: string;
+    }[];
+    expect(fks.some((fk) => fk.table === 'guilds')).toBe(true);
+    const indexes = raw.prepare(`PRAGMA index_list(assistant_reminders)`).all() as {
+      name: string;
+      unique: number;
+    }[];
+    // The dedupe unique key and the due-date index survive under their names;
+    // the refused duplicate insert below proves the unique one still enforces.
+    expect(indexes.map((i) => i.name)).toEqual(
+      expect.arrayContaining(['assistant_reminders_dedupe', 'assistant_reminders_due']),
+    );
+    expect(indexes.find((i) => i.name === 'assistant_reminders_dedupe')?.unique).toBe(1);
+    // A second row with the same dedupe key in the same guild is refused.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO assistant_reminders
+             (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+              created_at, status, dedupe_key, delivered_count)
+           VALUES (?, 'r2', ?, ?, 'other', 2000, 600, 'scheduled', 'reminder:r1', 0)`,
+        )
+        .run(GUILD_ID, CREATOR_ID, CHANNEL_ID),
+    ).toThrow();
+    // A reminder naming a guild that does not exist is refused.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO assistant_reminders
+             (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+              created_at, status, dedupe_key, delivered_count)
+           VALUES ('999999999999999999', 'r9', ?, ?, 'other', 2000, 600, 'scheduled', 'reminder:r9', 0)`,
+        )
+        .run(CREATOR_ID, CHANNEL_ID),
+    ).toThrow(/FOREIGN KEY/i);
+    // The widened table still refuses a bad status and a bad origin.
+    for (const sql of [
+      `INSERT INTO assistant_reminders
+         (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+          created_at, status, dedupe_key, delivered_count)
+       VALUES (?, 'bad-status', ?, ?, 'other', 2000, 600, 'snoozed', 'reminder:bad-status', 0)`,
+      `INSERT INTO assistant_reminders
+         (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+          created_at, status, dedupe_key, delivered_count, origin)
+       VALUES (?, 'bad-origin', ?, ?, 'other', 2000, 600, 'scheduled', 'reminder:bad-origin', 0, 'sms')`,
+    ])
+      expect(() => raw.prepare(sql).run(GUILD_ID, CREATOR_ID, CHANNEL_ID)).toThrow(/CHECK/i);
+
+    raw.close();
+  });
+});
+
 describe('migration journal ordering (ADR 0115 section 3)', () => {
   interface JournalEntry {
     readonly idx: number;

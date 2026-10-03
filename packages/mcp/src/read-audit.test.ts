@@ -50,6 +50,8 @@ import {
 import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
 import type { McpSendPort } from './tools/send.js';
 import type { McpMessageWritesPort } from './tools/message-writes.js';
+import type { McpEventWritesPort } from './tools/event-writes.js';
+import type { McpSchedulePort } from './tools/schedule.js';
 import type { McpJobsPort } from './tools/jobs.js';
 import type { McpMembersPort } from './tools/members.js';
 import type { McpContextPort } from './tools/context.js';
@@ -592,6 +594,26 @@ const stubMessageWritesPort = (): McpMessageWritesPort => ({
     Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
 });
 
+/** Minimal event-writes port: required for the four event tools; never called by the reads pinned here. */
+const stubEventWritesPort = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test', eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: 'act-test' }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', messageId: 'mid-test' }),
+});
+
+/** Minimal schedule port: required for the four schedule tools; never called by the reads pinned here. */
+const stubSchedulePort = (): McpSchedulePort => ({
+  scheduleMessage: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  listScheduled: () => [],
+  editScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+  cancelScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: 'act-test', reminderId: 'rem-test' }),
+});
+
 /** Minimal jobs port: this file pins read logging, never the jobs tools. */
 const stubJobsPort = (): McpJobsPort => ({
   listJobs: () => [],
@@ -663,6 +685,8 @@ const connectWithReadAudit = async (
     send: stubSendPort(),
     threadWrites: stubThreadWritesPort(),
     messageWrites: stubMessageWritesPort(),
+    eventWrites: stubEventWritesPort(),
+    schedule: stubSchedulePort(),
     roleWrites: stubRoleWritesPort(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

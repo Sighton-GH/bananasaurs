@@ -65,3 +65,21 @@ Spec: `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` §5.1 (even
 - The reminder worker gains one branch for `origin='mcp'`. Assistant
   reminders behave exactly as before.
 - The owner can raise or lower every MCP rate cap without a deploy.
+
+## Amendment (2026-10-02, slice 5 final review)
+
+- **Render.** An `origin='mcp'` row posts its stored text verbatim, as
+  `send_message` would have posted it: no "⏰" prefix, no "Set by" line, no
+  generated pings line. Pings notify only for mentions typed into the text
+  whose ids are in `pingRoles`/`pingUsers` and survive the delivery-time
+  filter. The 2,000-character schedule cap is therefore never cut at send.
+- **A destination out of scope ends the series.** `target-out-of-scope` (and
+  a missing origin, or a poisoned `@everyone`/`@here` row) fails a recurring
+  send outright instead of moving it to its next occurrence
+  (`ReminderDeliveryError.endsSeries`).
+- **Fail closed on origin.** Delivery takes the assistant path only for
+  `origin='assistant'`; a row with any other or no origin fails permanently.
+- **Event edits.** An edit always checks the event's current channel (or
+  guild ManageEvents for an external event) and, for a move, the
+  destination too. An `event.edit` undo re-checks the location it restores
+  and refuses a start time already past as `expired`.

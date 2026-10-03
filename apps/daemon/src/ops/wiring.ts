@@ -3,6 +3,7 @@ import { ChannelType, PermissionsBitField, type Client, type GuildMember } from 
 import {
   archiveBackfillDedupeKey,
   compileRule,
+  isDangerousRole,
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,
@@ -31,6 +32,7 @@ import {
   listBackups,
   loggingRepo,
   mcpSendRepo,
+  mcpRolePolicyRepo,
   modCaseRepo,
   modMatchReviewRepo,
   oauthRepo,
@@ -997,6 +999,45 @@ export const opsPortsFor = (
     })),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
+
+  // Slice 5 task 6 (ADR 0117 §2): the role-policy modes and the role
+  // allowlist. The clock is this composition root's, not the command's, the
+  // same reasoning `recordMatchVerdict` gives.
+  //
+  // The allow-time role check is live: `roles.fetch` with `force: true` goes
+  // to Discord rather than answering from the gateway cache alone, so a role
+  // deleted (or given a dangerous permission) since the cache filled in is
+  // refused rather than allowlisted on stale facts. Each refusal writes
+  // nothing — the repository sees the id only after every check has passed.
+  // Above-bot roles MAY be allowlisted: hierarchy is checked at use time by
+  // the grant and ping paths, never here, so position is not read at all.
+  readRolePolicy: () => mcpRolePolicyRepo.readRolePolicy(scope),
+  setRolePolicy: (input) => mcpRolePolicyRepo.upsertRolePolicy(scope, { ...input, now: now() }),
+  allowRole: async (input) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    let role: { id: string; managed: boolean; permissions: { bitfield: bigint } } | null;
+    try {
+      role = (await guild?.roles.fetch(input.roleId, { force: true })) ?? null;
+    } catch {
+      // Fail closed: without a live role there is nothing to check the floor
+      // against, so the answer is the same as for a role that is not there.
+      return 'no-such-role';
+    }
+    if (role === null) return 'no-such-role';
+    if (role.id === scope.guildId) return 'everyone';
+    if (role.managed) return 'managed';
+    if (isDangerousRole(role.permissions.bitfield)) return 'dangerous';
+    const added = mcpRolePolicyRepo.allowRole(scope, {
+      roleId: input.roleId,
+      purpose: input.purpose,
+      addedByAccountId: input.accountId,
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowRole: (input) =>
+    mcpRolePolicyRepo.disallowRole(scope, input.roleId, input.purpose) ? 'removed' : 'not-allowed',
+  listRoleAllowlist: () => mcpRolePolicyRepo.listRoleAllowlist(scope),
 
   // ADR 0028 / ADR 0045 (ruling PR-102): grant a dashboard account a
   // capability in this guild. `findAccountByUsername` is instance-level while

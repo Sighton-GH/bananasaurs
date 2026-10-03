@@ -38,6 +38,8 @@ import {
 import type { McpThreadsPort } from './threads.js';
 import type { McpThreadWritesPort } from './thread-writes.js';
 import type { McpMessageWritesPort } from './message-writes.js';
+import type { McpEventWritesPort } from './event-writes.js';
+import type { McpSchedulePort } from './schedule.js';
 import type { McpRoleWritesPort } from './role-writes.js';
 
 /**
@@ -608,6 +610,26 @@ const stubMessageWrites = (): McpMessageWritesPort => ({
     Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
 });
 
+/** Minimal event-writes port: this file pins `send_message`, never the event tools. */
+const stubEventWrites = (): McpEventWritesPort => ({
+  createEvent: () => Promise.resolve({ status: 'done', actionId: ACTION, eventId: 'evt-test' }),
+  editEvent: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+  cancelEvent: () => Promise.resolve({ status: 'done', actionId: ACTION }),
+  createPoll: () =>
+    Promise.resolve({ status: 'done', messageId: '444444444444444444', actionId: ACTION }),
+});
+
+/** Minimal schedule port: this file pins `send_message`, never the schedule tools. */
+const stubSchedule = (): McpSchedulePort => ({
+  scheduleMessage: () =>
+    Promise.resolve({ status: 'done', actionId: ACTION, reminderId: 'rem-test' }),
+  listScheduled: () => [],
+  editScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: ACTION, reminderId: 'rem-test' }),
+  cancelScheduled: () =>
+    Promise.resolve({ status: 'done', actionId: ACTION, reminderId: 'rem-test' }),
+});
+
 /** Minimal role-writes port: required since slice 4 Task 3; never called by the send pinned here. */
 const stubRoleWrites = (): McpRoleWritesPort => ({
   grant: () => Promise.resolve({ status: 'done', actionId: ACTION, alreadyHad: false }),
@@ -688,6 +710,8 @@ const connectPair = async (
     send: stubSend(),
     threadWrites: stubThreadWrites(),
     messageWrites: stubMessageWrites(),
+    eventWrites: stubEventWrites(),
+    schedule: stubSchedule(),
     roleWrites: stubRoleWrites(),
     readAudit: noopReadAudit,
     jobs: stubJobs(),
@@ -725,17 +749,17 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
     expect(names).not.toContain(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a send-only token sees send_message plus the six thread-write and six message-write tools', async () => {
+  it('a send-only token sees send_message plus the write tools', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A], ['bananasaurs:send']));
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(21);
     expect(names[0]).toBe(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a token with both scopes sees thirty-five tools', async () => {
+  it('a token with both scopes sees forty-three tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(35);
+    expect(names).toHaveLength(43);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

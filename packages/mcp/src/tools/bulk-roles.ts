@@ -332,8 +332,8 @@ const confirmRefusalText = (guildId: GuildId, reason: McpBulkConfirmRefusal): st
       );
     case 'rate-cap':
       return (
-        `Guild ${guildId} has used its member-role budget of 1000 role changes ` +
-        'per rolling hour, so nothing was changed. Wait for the window to pass before retrying; ' +
+        `Guild ${guildId} has used its rolling-hour member-role budget (setting mcp.cap.member_role) ` +
+        'for role changes, so nothing was changed. Wait for the window to pass before retrying; ' +
         'answering an already-recorded idempotency key still works meanwhile.'
       );
     case 'duplicate-key-different-content':
