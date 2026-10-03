@@ -1163,6 +1163,22 @@ describe('audit-log entries (ADR 0123)', () => {
     expect(h.errors).toEqual([]);
   });
 
+  it('carries channelId when extra.channel.id is set', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000007',
+        action_type: 72, // MessageDelete
+        options: { channel_id: CHANNEL },
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).channelId).toBe(CHANNEL);
+    expect(h.errors).toEqual([]);
+  });
+
   it('reports no actor when Discord names none', () => {
     const h = harness();
     h.packet('GuildAuditLogEntryCreate', auditPacket({ user_id: null }));

@@ -273,6 +273,10 @@ export function LoggingPage() {
     const found = channelDirectory.resource.data.channels.find((c) => c.channelId === id);
     return found === undefined ? id : `#${found.name}`;
   };
+  const displayOf = (id: string): string => {
+    const resolved = channelName(id);
+    return resolved.startsWith('#') ? resolved : `#${id}`;
+  };
 
   const [form, setForm] = useState<{ mode: 'new' } | { mode: 'edit'; route: LogRoute } | undefined>(
     undefined,
@@ -357,7 +361,7 @@ export function LoggingPage() {
                     <p className="text-sm text-ink-muted">
                       {route.excludedChannelIds.length === 0
                         ? 'Skips: nothing'
-                        : `Skips: ${route.excludedChannelIds.map(channelName).join(', ')} (and their threads)`}
+                        : `Skips: ${route.excludedChannelIds.map(displayOf).join(', ')} (and their threads)`}
                     </p>
                     <p className="text-sm text-ink-muted">
                       {`Message content: ${route.includeContent ? 'included' : 'not included'}`}

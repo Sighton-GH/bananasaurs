@@ -39,10 +39,10 @@ export type {
   Snowflake,
 } from './discord/port.js';
 export type {
-  AutoModerationEvent,
   AuditChangeValue,
   AuditLogChange,
   AuditLogEntryEvent,
+  AutoModerationEvent,
   ConnectionEvent,
   DomainEvent,
   DomainEventKind,

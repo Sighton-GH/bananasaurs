@@ -176,7 +176,7 @@ tick only the changes you care about and each line says what happened:
 ```
 Roles changed: @alex  +@Mentor  −@Newcomer
 Nickname changed: @alex  "Alex" → "Alex (CAD lead)"
-Timed out: @alex until 14:30 by @mod (inferred)
+Timed out: @alex until 14:30 by @mod
 Username changed: @alex  alex_old → alex_new
 Avatar changed: @alex  (new avatar link)
 ```

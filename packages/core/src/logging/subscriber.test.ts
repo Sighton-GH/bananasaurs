@@ -332,17 +332,13 @@ describe('member snapshots and change lines', () => {
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
     fake.setRouteKinds('n', ['member_nickname_changed']);
     const subscriber = createLoggingSubscriber(fake.ports);
-    await subscriber.handle(
-      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Nick') }),
-    );
+    await subscriber.handle(memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Nick') }));
     expect(fake.snapshots.has(MEMBER)).toBe(true);
 
     // The owner turns every member-change action off: the next sighting of
     // the member drops the record instead of refreshing it.
     fake.setRouteKinds('n', ['member_join']);
-    await subscriber.handle(
-      memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('Nick') }),
-    );
+    await subscriber.handle(memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('Nick') }));
     expect(fake.sent).toHaveLength(0);
     expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
@@ -371,6 +367,21 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
 
+  it('a join with no member-change route deletes an existing snapshot', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
+    fake.setRouteKinds('n', ['member_nickname_changed']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    await subscriber.handle(memberJoin({ receivedAtMs: 1_000, profile: memberProfile('Nick') }));
+    expect(fake.snapshots.has(MEMBER)).toBe(true);
+
+    // The owner turns every member-change action off: the next sighting of
+    // the member drops the record instead of refreshing it.
+    fake.setRouteKinds('n', ['member_join']);
+    await subscriber.handle(memberJoin({ receivedAtMs: 2_000, profile: memberProfile('Nick') }));
+    expect(fake.snapshots.has(MEMBER)).toBe(false);
+  });
+
   it('a join whose send fails saves no snapshot', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'j', channelId: DEST_A })]);
@@ -390,12 +401,8 @@ describe('member snapshots and change lines', () => {
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
     fake.setRouteKinds('n', ['member_nickname_changed']);
     const subscriber = createLoggingSubscriber(fake.ports);
-    await subscriber.handle(
-      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }),
-    );
-    await subscriber.handle(
-      memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') }),
-    );
+    await subscriber.handle(memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }));
+    await subscriber.handle(memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') }));
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0]?.content).toContain('Nickname changed');
     expect(fake.sent[0]?.content).toContain(`<@${MEMBER}>`);
@@ -410,9 +417,7 @@ describe('member snapshots and change lines', () => {
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
     fake.setRouteKinds('n', ['member_nickname_changed']);
     const subscriber = createLoggingSubscriber(fake.ports);
-    await subscriber.handle(
-      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }),
-    );
+    await subscriber.handle(memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }));
     const change = memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') });
     await subscriber.handle(change);
     expect(fake.sent).toHaveLength(1);
@@ -429,9 +434,7 @@ describe('member snapshots and change lines', () => {
     fake.setRouteKinds('a', ['member_nickname_changed']);
     fake.setRouteKinds('b', ['member_nickname_changed']);
     const subscriber = createLoggingSubscriber(fake.ports);
-    await subscriber.handle(
-      memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }),
-    );
+    await subscriber.handle(memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }));
     expect(fake.sent).toHaveLength(0);
 
     fake.failing.add(DEST_A);
@@ -497,7 +500,9 @@ describe('member snapshots and change lines', () => {
   });
 });
 
-const auditEntry = (over: Partial<AuditLogEntryEvent> & { action: number }): AuditLogEntryEvent => ({
+const auditEntry = (
+  over: Partial<AuditLogEntryEvent> & { action: number },
+): AuditLogEntryEvent => ({
   kind: 'auditLogEntry',
   guildId: GUILD,
   receivedAtMs: 1,
