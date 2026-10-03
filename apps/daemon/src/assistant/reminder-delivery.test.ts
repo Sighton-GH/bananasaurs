@@ -445,12 +445,31 @@ describe('mcp scheduled sends (origin mcp)', () => {
       }),
     ).toThrow('mcp reminders cannot ping everyone or here');
     expect(port.restCalls('sendMessage')).toHaveLength(0);
-    await expect(
-      createReminderDelivery(GUILD, port, { client, scope, logger }).send({
+    const error = await createReminderDelivery(GUILD, port, { client, scope, logger })
+      .send({
         ...mcpReminder(),
         mentions: { userIds: [], roleIds: [], everyone: true, here: false },
-      }),
-    ).rejects.toThrow('mcp reminders cannot ping everyone or here');
+      })
+      .catch((e: unknown) => e);
+    // Permanent: a poisoned row fails at once rather than retrying until the
+    // terminal window closes.
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).message).toBe(
+      'mcp reminders cannot ping everyone or here',
+    );
+    expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('an mcp row with no live-check deps fails closed as permanent, never posting unchecked', async () => {
+    allowChannel(scope, CHANNEL);
+    const port = new FakeDiscord({ guildId: GUILD });
+    const error = await createReminderDelivery(GUILD, port)
+      .send(mcpReminder())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).message).toBe('mcp delivery requires live checks');
+    expect((error as ReminderDeliveryError).permanent).toBe(true);
     expect(port.restCalls('sendMessage')).toHaveLength(0);
   });
 });

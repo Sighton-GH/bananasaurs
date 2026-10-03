@@ -210,25 +210,57 @@ export type RolePingCheck =
   | { readonly ok: true; readonly id: string }
   | { readonly ok: false; readonly reason: PingRefusal; readonly ref: string; readonly id: string };
 
+/**
+ * The per-call facts `checkRolePing` reads for every role: the role-name
+ * table, the guild's ping policy and the bot's top position. Built once per
+ * `resolvePings` / `filterPings` call, so ten pinged roles cost one policy
+ * read, not ten.
+ */
+export interface RolePingContext {
+  readonly guild: Guild;
+  readonly names: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly position: number;
+    readonly color: number;
+    readonly managedByBananasaurs: boolean;
+  }[];
+  readonly pingMode: ReturnType<typeof mcpRolePolicyRepo.readRolePolicy>['pingMode'];
+  readonly botTopPosition: number;
+}
+
+export const rolePingContextFor = (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+): RolePingContext | undefined => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) return undefined;
+  return {
+    guild,
+    // Full `McpGuildRole` rows for `resolveRoleRef` (it reads id and name;
+    // the rest rides along because the resolver owns its input shape, not us).
+    names: [...guild.roles.cache.values()].map((role) => ({
+      id: role.id,
+      name: role.name,
+      position: role.position,
+      color: role.color,
+      managedByBananasaurs: false,
+    })),
+    pingMode: mcpRolePolicyRepo.readRolePolicy(scope).pingMode,
+    botTopPosition: guild.members.me?.roles.highest.position ?? 0,
+  };
+};
+
 export const checkRolePing = (
   client: Client,
   scope: GuildScope,
   guildId: GuildId,
   ref: string,
+  context: RolePingContext | undefined = rolePingContextFor(client, scope, guildId),
 ): RolePingCheck => {
-  const guild = client.guilds.cache.get(guildId);
-  if (guild === undefined) return { ok: false, reason: 'role-unknown', ref, id: ref };
-  // Full `McpGuildRole` rows for `resolveRoleRef` (it reads id and name;
-  // the rest rides along because the resolver owns its input shape, not us).
-  const names = [...guild.roles.cache.values()].map((role) => ({
-    id: role.id,
-    name: role.name,
-    position: role.position,
-    color: role.color,
-    managedByBananasaurs: false,
-  }));
-  const policy = mcpRolePolicyRepo.readRolePolicy(scope);
-  const botTopPosition = guild.members.me?.roles.highest.position ?? 0;
+  if (context === undefined) return { ok: false, reason: 'role-unknown', ref, id: ref };
+  const { guild, names, pingMode, botTopPosition } = context;
   const matched = resolveRoleRef(names, ref);
   if (!matched.ok) return { ok: false, reason: 'role-unknown', ref, id: ref };
   const role = guild.roles.cache.get(matched.id);
@@ -242,7 +274,7 @@ export const checkRolePing = (
       isEveryone: role.id === guild.id,
     },
     botTopPosition,
-    policy.pingMode,
+    pingMode,
     mcpRolePolicyRepo.isRoleAllowlisted(scope, role.id, 'ping'),
   );
   if (allowed === true) return { ok: true, id: role.id };
@@ -290,8 +322,9 @@ export const resolvePings = async (
     return { ok: true, roleIds: [], userIds: [] };
   }
   const roleIds: string[] = [];
+  const context = rolePingContextFor(client, scope, guildId);
   for (const ref of input.roles) {
-    const checked = checkRolePing(client, scope, guildId, ref);
+    const checked = checkRolePing(client, scope, guildId, ref, context);
     if (!checked.ok) return { ok: false, reason: checked.reason, ref: checked.ref };
     if (!roleIds.includes(checked.id)) roleIds.push(checked.id);
   }
@@ -347,8 +380,9 @@ export const filterPings = async (
   const roleIds: string[] = [];
   const userIds: string[] = [];
   const dropped: PingDrop[] = [];
+  const context = rolePingContextFor(client, scope, guildId);
   for (const ref of input.roles) {
-    const checked = checkRolePing(client, scope, guildId, ref);
+    const checked = checkRolePing(client, scope, guildId, ref, context);
     if (!checked.ok) {
       if (!dropped.some((drop) => drop.kind === 'role' && drop.id === checked.id))
         dropped.push({ kind: 'role', id: checked.id, reason: checked.reason });

@@ -248,7 +248,15 @@ export const createReminderDelivery = (
     // text, it just no longer notifies — and only `allowedMentions` narrows
     // to the surviving pings. The render also re-asserts the mcp
     // no-`@everyone`/`@here` rule, so `parse` here is always empty.
-    const rendered = renderReminder(row);
+    // A row that broke the no-`@everyone`/`@here` guard is poisoned for
+    // good: fail it at once as permanent, rather than retrying it as a
+    // transient fault until the terminal window closes.
+    let rendered: ReturnType<typeof renderReminder>;
+    try {
+      rendered = renderReminder(row);
+    } catch {
+      throw new ReminderDeliveryError('mcp reminders cannot ping everyone or here', true);
+    }
     try {
       await discord.sendMessage(rowGuildId, row.destinationId, {
         content: rendered.content,
