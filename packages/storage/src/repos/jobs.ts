@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lt, lte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, lt, lte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { jobs } from '../schema.js';
@@ -345,10 +345,13 @@ export const listJobs = (scope: GuildScope, input: ListJobsInput): JobListRow[] 
 /** For `doctor` and for the worker's own logging. */
 export const countByState = (scope: GuildScope): Record<string, number> =>
   read(scope, (db) => {
-    const rows = db.select(columns).from(jobs).where(scope.only(jobs)).all();
-    const out: Record<string, number> = {};
-    for (const row of rows) out[row.state] = (out[row.state] ?? 0) + 1;
-    return out;
+    const rows = db
+      .select({ state: jobs.state, n: count() })
+      .from(jobs)
+      .where(scope.only(jobs))
+      .groupBy(jobs.state)
+      .all();
+    return Object.fromEntries(rows.map((row) => [row.state, row.n]));
   });
 
 /**

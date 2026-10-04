@@ -563,6 +563,32 @@ describe('retryJob', () => {
   });
 });
 
+describe('countByState', () => {
+  it('counts every state and ignores other guilds', () => {
+    // Each job is transitioned before the next is enqueued, so claimNext
+    // always takes the one intended — it claims the oldest due job.
+    put(a, { dedupeKey: 'ends-running' });
+    claimNext(a, 1000);
+    const done = put(a, { dedupeKey: 'ends-done' });
+    claimNext(a, 1000);
+    completeJob(a, done.jobId ?? -1, 1100);
+    const failed = put(a, { dedupeKey: 'ends-failed', maxAttempts: 1 });
+    claimNext(a, 1000);
+    failJob(a, failed.jobId ?? -1, 'boom', 1100);
+    put(a, { dedupeKey: 'stays-queued' });
+    put(b, { dedupeKey: 'other-queued' });
+    put(b, { dedupeKey: 'other-queued-2' });
+
+    expect(countByState(a)).toEqual({ queued: 1, running: 1, done: 1, failed: 1 });
+    expect(countByState(b)).toEqual({ queued: 2 });
+  });
+
+  it('is empty when the guild has no jobs', () => {
+    put(b);
+    expect(countByState(a)).toEqual({});
+  });
+});
+
 describe('deleteFinishedBatch (ADR 0127)', () => {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const NOW = Date.parse('2026-10-04T00:00:00.000Z');
