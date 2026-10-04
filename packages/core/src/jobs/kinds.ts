@@ -15,6 +15,8 @@ import { assistantTraceSchema } from '../assistant/trace.js';
 export const JOB_KINDS = {
   /** Bounds `event_dedupe`, which otherwise grows one row per event forever. */
   sweepEventDedupe: 'sweep_event_dedupe',
+  /** Deletes finished job rows past retention (ADR 0127). */
+  pruneJobs: 'prune_jobs',
   /** Repairs drift after a gateway gap, or on the periodic timer. */
   reconcileGuild: 'reconcile_guild',
   /** Turns a panel's existing reactions into roles, once an owner sized it. */
@@ -100,8 +102,22 @@ export const reconcileDedupeKey = (
       // not share a key.
       `${JOB_KINDS.reconcileGuild}:${reason}:${panelId}`;
 
-/** One sweep pending at a time is enough; the next run picks up what it missed. */
-export const sweepDedupeKey = (): string => JOB_KINDS.sweepEventDedupe;
+/** ADR 0127: finished, failed and cancelled jobs are kept 14 days. */
+export const JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+/** ADR 0127: event fingerprints are kept 14 days, far past any gateway replay window. */
+export const EVENT_DEDUPE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+export const pruneJobsPayload = z.object({
+  /** Finished rows whose `updated_at` is strictly before this are deleted. */
+  olderThanMs: z.number().int().nonnegative(),
+});
+export type PruneJobsPayload = z.infer<typeof pruneJobsPayload>;
+
+/** One prune per guild per UTC day; enqueued with `oncePerBucket` (ADR 0127). */
+export const pruneJobsDedupeKey = (day: string): string => `${JOB_KINDS.pruneJobs}:${day}`;
+
+/** One sweep per guild per UTC day; enqueued with `oncePerBucket` (ADR 0127). */
+export const sweepDedupeKey = (day: string): string => `${JOB_KINDS.sweepEventDedupe}:${day}`;
 
 export const adoptPanelPayload = z.object({
   panelId: z.string().min(1).max(64),
