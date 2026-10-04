@@ -83,7 +83,7 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 - When someone tags Bananasaurs in a reply to another person's message, that
   replied-to message is sent to the AI provider as context for the answer.
 - When someone tags Bananasaurs, the last messages in that channel (15 by default; the owner can set 0–50) are sent to the AI provider with the question, so it can follow the conversation. These can be from any member, including members who never used the bot. There is no opt-out. If the provider may train on what it receives, that includes these messages.
-- Each assistant reply keeps a diagnostic snapshot of what the AI was given: the instructions, the club-source excerpts, earlier turns, and the full text of what its tools returned, which can include Discord message excerpts. Snapshots can keep a copy of a message after it is deleted from Discord. They are deleted with their conversation (the retention period above), and forgetting a member deletes the snapshots of every conversation they took part in. The replied-to message itself is never kept in a snapshot.
+- Each assistant reply keeps a diagnostic snapshot of what the AI was given: the instructions, the club-source excerpts, earlier turns, and the full text of what its tools returned, which can include Discord message excerpts. Snapshots can keep a copy of a message after it is deleted from Discord. They are deleted with their conversation (the retention period above), and forgetting a member deletes the snapshots of every conversation they took part in. A working copy is also held in the bot's job records for up to 14 days after the reply, and is deleted then, even if the conversation was deleted sooner. The replied-to message itself is never kept in a snapshot.
 - Content from GitHub repositories and organisations the owner adds is fetched
   from GitHub and cached on the club's server so the assistant can answer
   from it. This includes private repositories that the owner's GitHub token
@@ -146,7 +146,8 @@ a member says can cause the bot to post one of these.
 | What | How long |
 |---|---|
 | Messages from enabled channels | Kept until the owner deletes them or changes the policy |
-| Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case |
+| Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case. Exception: when a deletion is logged (a log route covers deleted messages, whether or not it shows their content) or a moderator purges messages, the deleted message's text, if the bot has it, is copied into the moderation audit log, and that copy is kept with no time limit |
+| The bot's background job records | Deleted 14 days after the job finishes or fails. Some hold a working copy of a deleted message or of what the AI was given |
 | Moderation records | Kept as long as the server needs them for consistent moderation |
 | Automod test examples | Kept until the owner removes them. `/forgetme` removes yours. |
 | Bot conversations and answers | Kept until deleted on request |
