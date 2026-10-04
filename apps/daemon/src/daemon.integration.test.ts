@@ -17,10 +17,12 @@ import { buildClientOptions } from '@bananasaurs/discord';
 import {
   assistantRepo,
   automodRuleRepo,
+  channelReadRepo,
   guildRepo,
   jobRepo,
   listBackups,
   loggingRepo,
+  mcpSendRepo,
   panelRepo,
   pipelineRepo,
   roleRepo,
@@ -647,6 +649,93 @@ describe('the bot user id', () => {
 
     expect(fatal).toEqual(['bot-user-id-mismatch']);
     daemon = built;
+  });
+});
+
+describe('the channel scope seed (ADR 0126, Task 14)', () => {
+  /**
+   * Ready seeds Read and Write once, from the live guild cache: the one text
+   * channel in `guildPayload` becomes a Read row and a send-allowlist row
+   * authored by the seed. A second ready changes nothing.
+   */
+  it('seeds Read and Write once at ready', async () => {
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(channelReadRepo.listReadScope(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+    const allowed = mcpSendRepo.listAllowedChannels(scope);
+    expect(allowed.map((r) => r.channelId)).toEqual([CHANNEL]);
+    expect(allowed[0]?.addedByAccountId).toBe(mcpSendRepo.WRITE_SEED_ACCOUNT_ID);
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope)).toHaveLength(1);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toHaveLength(1);
+  });
+
+  /**
+   * A guild uncached at ready claims no marker, so it still seeds once it
+   * becomes available: the `GuildCreate` handler runs the same seed, and the
+   * markers make it a no-op if ready already seeded.
+   */
+  it('seeds on guild-available when the guild was uncached at ready', async () => {
+    client.guilds.cache.delete(GUILD);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(channelReadRepo.listReadScope(scope)).toEqual([]);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toEqual([]);
+
+    const guild = internals(client).guilds._add(guildPayload(GUILD, 'test guild'));
+    client.emit(Events.GuildCreate, guild);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+    expect(mcpSendRepo.listAllowedChannels(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+  });
+
+  /**
+   * A guild that was unavailable at READY is already in the cache with an
+   * empty channel cache, so `GuildCreate` never fires for it — when it
+   * recovers, discord.js emits `GuildAvailable` instead, and the seed runs
+   * there, once.
+   */
+  it('seeds on GuildAvailable when the guild was unavailable at ready', async () => {
+    const unavailable = internals(client).guilds._add({
+      ...guildPayload(GUILD, 'test guild'),
+      channels: [],
+      unavailable: true,
+    });
+    expect(unavailable.available).toBe(false);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(channelReadRepo.listReadScope(scope)).toEqual([]);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toEqual([]);
+
+    client.guilds.cache.delete(GUILD);
+    const guild = internals(client).guilds._add(guildPayload(GUILD, 'test guild'));
+    client.emit(Events.GuildAvailable, guild);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+    expect(mcpSendRepo.listAllowedChannels(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+
+    client.emit(Events.GuildAvailable, guild);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope)).toHaveLength(1);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toHaveLength(1);
   });
 });
 

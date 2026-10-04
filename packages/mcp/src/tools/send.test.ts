@@ -328,7 +328,6 @@ describe('send_message argument boundary (hard rule 3)', () => {
 
 describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
   const ALL_REFUSALS: readonly McpSendRefusal[] = [
-    'private-thread',
     'channel-not-allowlisted',
     'channel-not-in-guild',
     'bot-lacks-permission',
@@ -360,7 +359,6 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
   });
 
   it.each([
-    ['private-thread', 'private thread'],
     ['channel-not-allowlisted', 'allowlist'],
     ['channel-not-in-guild', 'will not help'],
     ['bot-lacks-permission', 'permission'],

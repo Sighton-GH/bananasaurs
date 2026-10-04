@@ -206,7 +206,7 @@ describe('derived archive_channels rows (ADR 0047 amendment)', () => {
     expect(hasCategoryRow(scope, CATEGORY)).toBe(true);
 
     // Review 2 N1: a derived row answers 'derived', not 'wrong-kind' — the
-    // latter drove the operator to disable-category, which refused it back.
+    // latter drove the operator to delete-category, which refused it back.
     expect(disableChannel(scope, CHANNEL)).toBe('derived');
     expect(findChannel(scope, CHANNEL)?.scopeKind).toBe('derived');
     expect(countMessages(scope, CHANNEL)).toBe(1);

@@ -139,6 +139,16 @@ const sendAllowBodySchema = z.object({
   accountId: z.string().min(1),
 });
 
+/**
+ * ADR 0126: the Read scope write body. `{ channelId }` only — the repository
+ * stores no adder, so unlike `sendAllowBodySchema` there is no `accountId`.
+ * The audit row's actor still comes from the request's session, via
+ * `dashboardAuditBase` like every other route here.
+ */
+const readScopeBodySchema = z.object({
+  channelId: snowflakeIdSchema,
+});
+
 // Slice 5 task 6 (ADR 0117 §2): the role-policy writers behind
 // `mcp role-policy` / `mcp allow-role` / `mcp disallow-role`. At least one
 // mode is required: a write with neither mode is the read, which lives on
@@ -505,6 +515,50 @@ export const registerOpsWriteRoutes = (
     return reply.status(200).send({ outcome });
   });
 
+  app.post<{ Params: { channelId: string } }>(
+    '/api/archive/channels/:channelId/pause',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return badRequest(reply, parsed.error);
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archivePauseChannel(parsed.data);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_channel.paused',
+        subjectType: 'channel',
+        subjectId: parsed.data,
+        before: { collecting: outcome === 'already-paused' ? false : true },
+        after: { collecting: false, outcome },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.post<{ Params: { channelId: string } }>(
+    '/api/archive/channels/:channelId/resume',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return badRequest(reply, parsed.error);
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archiveResumeChannel(parsed.data);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_channel.resumed',
+        subjectType: 'channel',
+        subjectId: parsed.data,
+        before: { collecting: outcome === 'already-collecting' },
+        after: { collecting: true, outcome },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
   app.delete<{ Params: { channelId: string } }>(
     '/api/archive/channels/:channelId',
     (request, reply) => {
@@ -532,7 +586,7 @@ export const registerOpsWriteRoutes = (
     },
   );
 
-  // `archive enable-category` / `disable-category` / `set-threads` (the
+  // `archive enable-category` / `delete-category` / `set-threads` (the
   // threads-merge commands): category scope and per-channel thread inclusion,
   // mirroring the channel routes' refusal shapes. A category enable carries
   // no attachment-policy choice because the CLI does not offer one either.
@@ -567,6 +621,52 @@ export const registerOpsWriteRoutes = (
       .status(200)
       .send({ outcome, coverage: ports.archiveCategoryCoverage(parsed.data.channelId) });
   });
+
+  app.post<{ Params: { channelId: string } }>(
+    '/api/archive/categories/:channelId/pause',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return badRequest(reply, parsed.error);
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archivePauseCategory(parsed.data);
+      if (outcome === 'no-such-channel') return reply.status(404).send({ error: outcome });
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_category.paused',
+        subjectType: 'archive_category',
+        subjectId: parsed.data,
+        before: { collecting: outcome === 'already-paused' ? false : true },
+        after: { collecting: false, outcome },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.post<{ Params: { channelId: string } }>(
+    '/api/archive/categories/:channelId/resume',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return badRequest(reply, parsed.error);
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archiveResumeCategory(parsed.data);
+      if (outcome === 'no-such-channel') return reply.status(404).send({ error: outcome });
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_category.resumed',
+        subjectType: 'archive_category',
+        subjectId: parsed.data,
+        before: { collecting: outcome === 'already-collecting' },
+        after: { collecting: true, outcome },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
 
   app.delete<{ Params: { channelId: string } }>(
     '/api/archive/categories/:channelId',
@@ -844,6 +944,123 @@ export const registerOpsWriteRoutes = (
           ...dashboardAuditBase(session, deps.now()),
           action: 'send_category.disallowed',
           subjectType: 'send_category',
+          subjectId: parsed.data,
+          before: { allowed: true },
+          after: { allowed: false },
+        });
+      }
+      return reply.status(200).send({ ok: true, outcome });
+    },
+  );
+
+  // `scope read enable-channel` / `disable-channel`, web half: the Read scope
+  // at channel scope. The same capability, body shape, audit and error
+  // mapping as `/api/send-allowlist` above — minus `accountId`, which the
+  // Read repository does not store. The audit row names the channel, never
+  // message content.
+  app.post('/api/read-scope', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = readScopeBodySchema.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.readScopeAllow({
+      channelId: parsed.data.channelId,
+      scopeKind: 'channel',
+    });
+    if (outcome === 'no-such-channel') {
+      return reply.status(404).send({ error: 'no-such-channel' });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'read_scope.allow',
+      subjectType: 'channel',
+      subjectId: parsed.data.channelId,
+      before: { allowed: outcome === 'already-allowed' },
+      after: { allowed: true, accountId: session.accountId },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.delete<{ Params: { channelId: string } }>('/api/read-scope/:channelId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.readScopeDisallow({
+      channelId: parsed.data,
+      scopeKind: 'channel',
+    });
+    if (outcome === 'removed') {
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'read_scope.disallow',
+        subjectType: 'channel',
+        subjectId: parsed.data,
+        before: { allowed: true },
+        after: { allowed: false },
+      });
+    }
+    return reply.status(200).send({ ok: true, outcome });
+  });
+
+  // `scope read enable-category` / `disable-category`: the same Read scope at
+  // category scope. Fastify's static segment wins over the `:channelId`
+  // parameter above, so these sit beside the channel routes safely.
+  app.post('/api/read-scope/categories', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = readScopeBodySchema.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.readScopeAllow({
+      channelId: parsed.data.channelId,
+      scopeKind: 'category',
+    });
+    if (outcome === 'no-such-channel') {
+      return reply.status(404).send({ error: 'no-such-channel' });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'read_scope.allow',
+      subjectType: 'read_scope_category',
+      subjectId: parsed.data.channelId,
+      before: { allowed: outcome === 'already-allowed' },
+      after: { allowed: true, accountId: session.accountId },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    '/api/read-scope/categories/:channelId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return badRequest(reply, parsed.error);
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.readScopeDisallow({
+        channelId: parsed.data,
+        scopeKind: 'category',
+      });
+      if (outcome === 'removed') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'read_scope.disallow',
+          subjectType: 'read_scope_category',
           subjectId: parsed.data,
           before: { allowed: true },
           after: { allowed: false },

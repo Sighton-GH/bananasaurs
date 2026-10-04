@@ -107,6 +107,24 @@ describe('McpPage', () => {
     expect(screen.queryByText(/no HTTP route yet/)).toBeNull();
   });
 
+  it('renders a write-seed allowlist row as Initial setup, never the raw sentinel', async () => {
+    stubFetch(
+      STUBS.map((s) =>
+        s.url === '/api/send-allowlist'
+          ? {
+              url: s.url,
+              body: {
+                entries: [{ channelId: 'c-9', addedByAccountId: 'system:write-seed', addedAt: 0 }],
+              },
+            }
+          : s,
+      ),
+    );
+    renderWithSession(<McpPage />);
+    expect(await screen.findByText('Initial setup')).toBeTruthy();
+    expect(screen.queryByText('system:write-seed')).toBeNull();
+  });
+
   it('revokes a token through the confirm dialog', async () => {
     const mock = stubFetch([
       ...STUBS,

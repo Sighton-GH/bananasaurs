@@ -51,6 +51,12 @@ export interface ArchivePorts {
   readonly guildArchiveEnabled: boolean;
   isChannelEnabled(channelId: Snowflake): boolean;
   hasCategoryRow(channelId: Snowflake): boolean;
+  /**
+   * ADR 0126 I1: true when the id carries its own operator row (kind
+   * `channel`) with `collecting = 0`. The subscriber's pause veto reads this;
+   * a category or derived row never counts.
+   */
+  hasPausedOwnRow(channelId: Snowflake): boolean;
   parentIncludesThreads(channelId: Snowflake): boolean;
   /** `log_excluded_channels` — the second veto (ADR 0009, standing under 0046 D1). */
   isChannelExcluded(channelId: Snowflake): boolean;

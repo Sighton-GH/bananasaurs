@@ -44,6 +44,7 @@ interface FakeOptions {
   excludedChannels?: readonly string[];
   categoryRows?: readonly string[];
   includeThreads?: Readonly<Record<string, boolean>>;
+  pausedChannels?: readonly string[];
 }
 
 /** Hand-rolled fake `ArchivePorts`: a Map-backed store plus a call list. */
@@ -53,11 +54,13 @@ const fakePorts = (over: FakeOptions = {}) => {
   const enabled = new Set(over.enabledChannels ?? [CHANNEL]);
   const excluded = new Set(over.excludedChannels ?? []);
   const categories = new Set(over.categoryRows ?? []);
+  const paused = new Set(over.pausedChannels ?? []);
   const capture = capturingLogger();
   const ports: ArchivePorts = {
     guildArchiveEnabled: over.guildArchiveEnabled ?? true,
-    isChannelEnabled: (channelId) => enabled.has(channelId),
+    isChannelEnabled: (channelId) => enabled.has(channelId) && !paused.has(channelId),
     hasCategoryRow: (channelId) => categories.has(channelId),
+    hasPausedOwnRow: (channelId) => paused.has(channelId),
     parentIncludesThreads: (channelId) => over.includeThreads?.[channelId] ?? true,
     isChannelExcluded: (channelId) => excluded.has(channelId),
     upsertMessage: (input) => {
@@ -101,7 +104,18 @@ const fakePorts = (over: FakeOptions = {}) => {
     },
     logger: capture.logger,
   };
-  return { ports, messages, calls, lines: capture.lines, logged: () => capture.messages() };
+  const setPaused = (channelId: string, isPaused: boolean): void => {
+    if (isPaused) paused.add(channelId);
+    else paused.delete(channelId);
+  };
+  return {
+    ports,
+    messages,
+    calls,
+    lines: capture.lines,
+    logged: () => capture.messages(),
+    setPaused,
+  };
 };
 
 const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
@@ -188,6 +202,65 @@ describe('archive subscriber vetoes', () => {
     });
 
     expect(f.calls).toEqual([]);
+  });
+
+  it('does not record a paused channel, and records again after resume', async () => {
+    // A paused channel keeps its row but `isChannelEnabled` (Task 1) ignores
+    // paused rows — `collecting = 0` — so the subscriber sees no grant.
+    let collecting = false;
+    const f = fakePorts({ enabledChannels: [] });
+    const ports: ArchivePorts = {
+      ...f.ports,
+      isChannelEnabled: () => collecting,
+    };
+    const subscriber = createArchiveSubscriber(ports);
+
+    await subscriber.handle(messageCreate());
+    expect(f.calls).toEqual([]);
+
+    collecting = true;
+    await subscriber.handle(messageCreate({ messageId: '666666666666666666' }));
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]?.method).toBe('upsertMessage');
+  });
+
+  it('a paused own row under a collecting category records nothing, and resumes', async () => {
+    // The channel was enabled before its category, then paused: its own row
+    // is collecting = 0 while the category still collects. Pause is a veto —
+    // the subscriber must not fall through to the category.
+    const f = fakePorts({ enabledChannels: ['C'], categoryRows: ['CAT'], pausedChannels: ['C'] });
+    const subscriber = createArchiveSubscriber(f.ports);
+
+    await subscriber.handle(messageCreate({ channelId: 'C', categoryId: 'CAT' }));
+    expect(f.calls).toEqual([]);
+
+    f.setPaused('C', false);
+    await subscriber.handle(
+      messageCreate({ channelId: 'C', categoryId: 'CAT', messageId: '666666666666666666' }),
+    );
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]?.method).toBe('upsertMessage');
+  });
+
+  it("a paused parent own row stops its thread's messages too", async () => {
+    const f = fakePorts({
+      enabledChannels: ['P'],
+      categoryRows: ['CAT'],
+      pausedChannels: ['P'],
+    });
+    const subscriber = createArchiveSubscriber(f.ports);
+
+    await subscriber.handle(
+      messageCreate({ channelId: 'T', parentChannelId: 'P', categoryId: 'CAT', messageId: 'm1' }),
+    );
+    expect(f.calls).toEqual([]);
+
+    f.setPaused('P', false);
+    await subscriber.handle(
+      messageCreate({ channelId: 'T', parentChannelId: 'P', categoryId: 'CAT', messageId: 'm2' }),
+    );
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]?.input).toMatchObject({ channelId: 'P', threadId: 'T', messageId: 'm2' });
   });
 });
 

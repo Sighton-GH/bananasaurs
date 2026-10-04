@@ -83,4 +83,5 @@ than listing it as if the operator had enabled it: a derived row materialised by
 the live path carries `backfill:pending` forever, because no backfill is queued
 for it, and an unmarked row invited an operator to chase a job that will never
 run.
+Amended by ADR 0126 (2026-10-02): scope gains a `read` purpose for live Discord fetches, resolved with the same precedence.
 

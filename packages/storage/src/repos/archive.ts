@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { asc, count, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
 import type { Db } from '../db.js';
 import {
   archiveAttachments,
@@ -51,6 +51,8 @@ export interface ArchiveChannel {
   readonly threadsDone: number;
   /** Whether public threads under this channel are archived (schema default: on). */
   readonly includeThreads: boolean;
+  /** ADR 0126: false = Archive off (paused); the row and its messages are kept. */
+  readonly collecting: boolean;
 }
 
 export interface ArchiveAttachmentInput {
@@ -108,6 +110,7 @@ const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChan
   threadsFound: row.threadsFound ?? undefined,
   threadsDone: row.threadsDone,
   includeThreads: row.includeThreads !== 0,
+  collecting: row.collecting !== 0,
 });
 
 /** Inserts the channel row; a replayed enable is a no-op reported as such. */
@@ -222,13 +225,13 @@ export const setIncludeThreads = (
  * attachments cascade in the schema.
  *
  * Kind-scoped (review S1): the predicate names `scope_kind = 'channel'`, so
- * `archive disable-channel <categoryId>` can no longer delete a category row
+ * `archive delete-channel <categoryId>` can no longer delete a category row
  * and report it as a channel. A row of another kind is a refusal, not a
  * silent delete and not a misleading `'not-enabled'`.
  *
  * A derived row answers `'derived'` rather than `'wrong-kind'` (review 2 N1):
- * "this is archived as a category, use disable-category" is false of a
- * derived row, and `disable-category` refused it in turn, so the two verbs
+ * "this is archived as a category, use delete-category" is false of a
+ * derived row, and `delete-category` refused it in turn, so the two verbs
  * sent the operator in a circle with no way to act on the row at all. Only
  * the caller knows whether the channel is still covered — that is a live
  * cache fact, not a stored one — so the decision belongs above this layer.
@@ -265,7 +268,7 @@ export const disableChannel = (
  * would simply be re-materialised by the next message, so destroying its
  * history there would be a delete that disables nothing. ADR 0047's
  * amendment says an orphaned derived row keeps its history "matching what an
- * explicit `disable-channel` would have destroyed only by operator choice";
+ * explicit `delete-channel` would have destroyed only by operator choice";
  * this is the verb that makes that choice available.
  */
 export const disableDerivedChannel = (
@@ -367,7 +370,30 @@ export const isChannelEnabled = (scope: GuildScope, channelId: string): boolean 
         .where(
           scope.only(
             archiveChannels,
-            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'channel'`,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'channel' AND ${archiveChannels.collecting} = 1`,
+          ),
+        )
+        .get() !== undefined,
+  );
+
+/**
+ * ADR 0126 I1: whether the id carries its own operator row (kind `channel`)
+ * with `collecting = 0`. A paused own row vetoes the archive purpose even
+ * under a collecting category; a paused category or derived row never counts
+ * (those resolve through the category row, which `hasCategoryRow` already
+ * ignores while paused).
+ */
+export const hasPausedOwnRow = (scope: GuildScope, channelId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ channelId: archiveChannels.channelId })
+        .from(archiveChannels)
+        .where(
+          scope.only(
+            archiveChannels,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'channel' AND ${archiveChannels.collecting} = 0`,
           ),
         )
         .get() !== undefined,
@@ -383,7 +409,7 @@ export const hasCategoryRow = (scope: GuildScope, channelId: string): boolean =>
         .where(
           scope.only(
             archiveChannels,
-            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'category'`,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'category' AND ${archiveChannels.collecting} = 1`,
           ),
         )
         .get() !== undefined,
@@ -393,7 +419,9 @@ export const hasCategoryRow = (scope: GuildScope, channelId: string): boolean =>
  * The parent channel's own include-threads flag, defaulting to true when it
  * has no explicit row. Derived rows are skipped (review B1): a thread's
  * inheritance is decided by the parent's own row or by the default, never by
- * a row that exists only to satisfy the foreign key.
+ * a row that exists only to satisfy the foreign key. ADR 0126 I1: the flag
+ * holds while the parent row is paused — the opt-out survives Archive off,
+ * and the pause veto itself stops the thread regardless.
  */
 export const parentIncludesThreads = (scope: GuildScope, channelId: string): boolean =>
   read(
@@ -409,6 +437,64 @@ export const parentIncludesThreads = (scope: GuildScope, channelId: string): boo
           ),
         )
         .get()?.includeThreads !== 0,
+  );
+
+/**
+ * Pause and resume (ADR 0126): only `collecting` flips; the row, cursor and
+ * messages are kept. Acts on operator-written rows; a derived row answers
+ * `'derived'` (pause its category instead).
+ */
+const setCollecting = (
+  scope: GuildScope,
+  channelId: string,
+  collecting: 0 | 1,
+): 'changed' | 'unchanged' | 'not-enabled' | 'derived' =>
+  write(scope, ({ db }) => {
+    const row = db
+      .select({ scopeKind: archiveChannels.scopeKind, collecting: archiveChannels.collecting })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+      .get();
+    if (row === undefined) return 'not-enabled';
+    if (row.scopeKind === 'derived') return 'derived';
+    if (row.collecting === collecting) return 'unchanged';
+    db.update(archiveChannels)
+      .set({ collecting })
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+      .run();
+    return 'changed';
+  });
+
+export const pauseChannel = (
+  scope: GuildScope,
+  channelId: string,
+): 'paused' | 'already-paused' | 'not-enabled' | 'derived' => {
+  const outcome = setCollecting(scope, channelId, 0);
+  return outcome === 'changed' ? 'paused' : outcome === 'unchanged' ? 'already-paused' : outcome;
+};
+
+export const resumeChannel = (
+  scope: GuildScope,
+  channelId: string,
+): 'resumed' | 'already-collecting' | 'not-enabled' | 'derived' => {
+  const outcome = setCollecting(scope, channelId, 1);
+  return outcome === 'changed'
+    ? 'resumed'
+    : outcome === 'unchanged'
+      ? 'already-collecting'
+      : outcome;
+};
+
+/** True when an `archive_channels` row of ANY kind exists: the "has archived history" test. Ignores `collecting`. */
+export const hasArchivedChannel = (scope: GuildScope, channelId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ channelId: archiveChannels.channelId })
+        .from(archiveChannels)
+        .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+        .get() !== undefined,
   );
 
 export const listChannels = (scope: GuildScope): ArchiveChannel[] =>
@@ -850,6 +936,55 @@ export const lastMessageAtByAuthor = (
     return out;
   });
 
+/**
+ * Newest archived message time per author, channel and thread in this guild —
+ * the per-channel cut behind `lastMessageAtByAuthor` for callers that must
+ * hide No-access channels and threads first (ADR 0126 Task 15 follow-up).
+ * A thread message is archived under its parent's `channel_id` with
+ * `thread_id` set, so the group carries both ids; a caller drops the rows No
+ * access hides through `withoutNoAccessRows` and collapses to the newest
+ * visible time per author. Same 500-id chunking as `lastMessageAtByAuthor`.
+ */
+export interface AuthorChannelLast {
+  readonly authorId: string;
+  readonly channelId: string;
+  readonly threadId: string | null;
+  readonly last: number;
+}
+
+export const lastMessageAtByAuthorByChannel = (
+  scope: GuildScope,
+  authorIds: readonly string[],
+): AuthorChannelLast[] =>
+  read(scope, (db) => {
+    const out: AuthorChannelLast[] = [];
+    for (let i = 0; i < authorIds.length; i += 500) {
+      const chunk = authorIds.slice(i, i + 500);
+      if (chunk.length === 0) continue;
+      const rows = db
+        .select({
+          authorId: archiveMessages.authorId,
+          channelId: archiveMessages.channelId,
+          threadId: archiveMessages.threadId,
+          last: sql<number>`max(${archiveMessages.createdAt})`,
+        })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, inArray(archiveMessages.authorId, [...chunk])))
+        .groupBy(archiveMessages.authorId, archiveMessages.channelId, archiveMessages.threadId)
+        .all();
+      for (const row of rows) {
+        if (row.authorId === null) continue;
+        out.push({
+          authorId: row.authorId,
+          channelId: row.channelId,
+          threadId: row.threadId,
+          last: row.last,
+        });
+      }
+    }
+    return out;
+  });
+
 export const countMessages = (scope: GuildScope, channelId: string): number =>
   read(
     scope,
@@ -954,6 +1089,12 @@ export const listChannelHistory = (
      * shape.
      */
     readonly includeThreads?: boolean;
+    /**
+     * N5: thread ids No access hides, applied in SQL so the page stays
+     * full-length when an excluded thread's rows interleave: `thread_id IS
+     * NULL OR thread_id NOT IN (…)`. Channel-level filtering is unchanged.
+     */
+    readonly excludeThreadIds?: readonly string[];
   },
 ): readonly ArchiveMessage[] =>
   read(scope, (db) => {
@@ -992,6 +1133,12 @@ export const listChannelHistory = (
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
           input.authorId === undefined ? undefined : eq(archiveMessages.authorId, input.authorId),
+          input.excludeThreadIds === undefined || input.excludeThreadIds.length === 0
+            ? undefined
+            : or(
+                isNull(archiveMessages.threadId),
+                notInArray(archiveMessages.threadId, [...input.excludeThreadIds]),
+              ),
         ),
       )
       .orderBy(sql`length(${archiveMessages.messageId}) DESC`, desc(archiveMessages.messageId))
@@ -1033,6 +1180,12 @@ export const listMessagesSince = (
     readonly since: number;
     readonly after?: { readonly createdAt: number; readonly messageId: string } | undefined;
     readonly limit: number;
+    /**
+     * N5: thread ids No access hides, applied in SQL so the digest probe row
+     * (`limit + 1`) still proves there is more when an excluded thread's row
+     * sits inside the fetched window. Channel-level filtering is unchanged.
+     */
+    readonly excludeThreadIds?: readonly string[];
   },
 ): ArchiveMessage[] =>
   read(scope, (db) => {
@@ -1049,6 +1202,12 @@ export const listMessagesSince = (
           input.after === undefined
             ? undefined
             : sql`(${archiveMessages.createdAt} > ${input.after.createdAt} OR (${archiveMessages.createdAt} = ${input.after.createdAt} AND (length(${archiveMessages.messageId}) > length(${input.after.messageId}) OR (length(${archiveMessages.messageId}) = length(${input.after.messageId}) AND ${archiveMessages.messageId} > ${input.after.messageId}))))`,
+          input.excludeThreadIds === undefined || input.excludeThreadIds.length === 0
+            ? undefined
+            : or(
+                isNull(archiveMessages.threadId),
+                notInArray(archiveMessages.threadId, [...input.excludeThreadIds]),
+              ),
         ),
       )
       .orderBy(
@@ -1060,6 +1219,21 @@ export const listMessagesSince = (
       .all()
       .map(toArchiveMessage);
   });
+
+/**
+ * N5: every distinct thread id with archived rows in this guild. The daemon's
+ * archive reads intersect this with the No-access verdicts once per call and
+ * pass the result as `excludeThreadIds`, so the thread predicate runs in SQL.
+ */
+export const listArchivedThreadIds = (scope: GuildScope): string[] =>
+  read(scope, (db) =>
+    db
+      .selectDistinct({ threadId: archiveMessages.threadId })
+      .from(archiveMessages)
+      .where(scope.only(archiveMessages, isNotNull(archiveMessages.threadId)))
+      .all()
+      .flatMap((row) => (row.threadId === null ? [] : [row.threadId])),
+  );
 
 /**
  * `list_unanswered`'s candidates (plan Task 5; the owner's rule is "should

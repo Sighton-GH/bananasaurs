@@ -10,6 +10,7 @@ import {
   taskRepo,
 } from '@bananasaurs/storage';
 import type { TaskAdminPort, TaskAdminName } from '@bananasaurs/mcp';
+import { channelAccessFor } from '../channels/access.js';
 
 const refused = (message: string): { ok: false; message: string } => ({ ok: false, message });
 const success = (text: string): { ok: true; text: string } => ({ ok: true, text });
@@ -112,6 +113,12 @@ export const taskAdminPortFor = (
           (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)
         )
           return false;
+        // Channel permissions: the digest posts only where Write is allowed.
+        if (
+          !(await channelAccessFor(client, scope).check('write', team.announcementChannelId))
+            .allowed
+        )
+          return false;
       }
       return true;
     };
@@ -140,6 +147,8 @@ export const taskAdminPortFor = (
       if (!team || !(await verifyTeam(team))) return false;
       const channel = await deps.portsFor(scope).inspectTaskChannel(dest);
       if (!channel || channel.categoryId !== team.categoryId) return false;
+      // Channel permissions: a task posts only where Write is allowed.
+      if (!(await channelAccessFor(client, scope).check('write', dest)).allowed) return false;
       return true;
     };
     /** The task's team still resolves live: a deleted category refuses child writes. */

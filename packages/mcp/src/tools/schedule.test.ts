@@ -364,7 +364,6 @@ describe('list_scheduled argument boundary', () => {
 
 describe('schedule refusal rendering', () => {
   const ALL_REFUSALS: readonly McpScheduleRefusal[] = [
-    'private-thread',
     'channel-not-allowlisted',
     'channel-not-in-guild',
     'ambiguous-channel',
@@ -425,7 +424,6 @@ describe('schedule refusal rendering', () => {
   });
 
   it.each([
-    ['private-thread', 'private thread'],
     ['channel-not-allowlisted', 'allowlist'],
     ['channel-not-in-guild', 'will not help'],
     ['ambiguous-channel', 'instead of a name'],

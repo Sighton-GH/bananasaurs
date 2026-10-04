@@ -435,6 +435,20 @@
       "when": 1791040532915,
       "tag": "0097_log_routes",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "6",
+      "when": 1791064410008,
+      "tag": "0098_channel_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "6",
+      "when": 1791075124607,
+      "tag": "0099_channel_write_seeds",
+      "breakpoints": true
     }
   ]
 }

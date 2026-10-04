@@ -6,6 +6,7 @@ import {
   automodAdminRepo,
   automodRuleListsRepo,
   automodRuleRepo,
+  channelReadRepo,
   effectRepo,
   eligibilityRepo,
   enforcementGateRepo,
@@ -58,7 +59,17 @@ export const testPortsFor = (
    * must pass `t.scopes.instance()`, the same handle it builds for
    * `testInstanceFor`.
    */
-  opts: { readonly archiveGuildEnabled?: boolean; readonly instanceScope?: InstanceScope } = {},
+  opts: {
+    readonly archiveGuildEnabled?: boolean;
+    readonly instanceScope?: InstanceScope;
+    /**
+     * ADR 0126 Task 9: the fake No-access set. The daemon's wiring filters
+     * archived history through the live channel cache (`noAccessFromCache`),
+     * which cannot exist here — no Discord client in route tests — so a test
+     * that wants a channel hidden names it here instead.
+     */
+    readonly excludedChannelIds?: readonly string[];
+  } = {},
 ): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
@@ -141,6 +152,9 @@ export const testPortsFor = (
   // Two archived demo messages, newest first, paged like the repository's
   // `before` cursor: the second page starts below the cursor id.
   archiveChannelHistory: (input) => {
+    // The `excludedChannelIds` mirror of the daemon's No-access rule: a
+    // hidden channel reads as empty, the same as a channel with no archive.
+    if ((opts.excludedChannelIds ?? []).includes(input.channelId)) return [];
     const all = [
       {
         messageId: '900000000000000002',
@@ -169,6 +183,9 @@ export const testPortsFor = (
   },
   archiveFindMessage: (messageId) => {
     if (messageId !== '900000000000000002') return undefined;
+    // No oracle, like the daemon: a message in a hidden channel answers like
+    // an unknown id, and the route maps both to its 404.
+    if ((opts.excludedChannelIds ?? []).includes('333333333333333333')) return undefined;
     return {
       messageId: '900000000000000002',
       channelId: '333333333333333333',
@@ -618,6 +635,20 @@ export const testPortsFor = (
     return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
   },
   archiveDisableCategory: (channelId) => archiveRepo.disableCategory(scope, channelId),
+  archivePauseChannel: (channelId) => archiveRepo.pauseChannel(scope, channelId),
+  archiveResumeChannel: (channelId) => archiveRepo.resumeChannel(scope, channelId),
+  // No Discord cache here, so the category check mirrors
+  // `apps/daemon/src/ops/wiring.ts` against the static `listGuildChannels`
+  // fixture below: only '999999999999999999' is a category, and any other id
+  // is refused as 'no-such-channel' before the repository is touched.
+  archivePauseCategory: (channelId) => {
+    if (channelId !== '999999999999999999') return 'no-such-channel';
+    return archiveRepo.pauseChannel(scope, channelId);
+  },
+  archiveResumeCategory: (channelId) => {
+    if (channelId !== '999999999999999999') return 'no-such-channel';
+    return archiveRepo.resumeChannel(scope, channelId);
+  },
   archiveSetThreads: (channelId, include) =>
     archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
   archiveThreads: (channelId) => {
@@ -660,7 +691,11 @@ export const testPortsFor = (
   // visibility set is every archive-enabled channel in this guild, never the
   // caller's input.
   archiveSearch: (input) => {
-    const visibleChannelIds = archiveRepo.listChannels(scope).map((channel) => channel.channelId);
+    const visibleChannelIds = archiveRepo
+      .listChannels(scope)
+      .map((channel) => channel.channelId)
+      // The `excludedChannelIds` mirror of the daemon's No-access filter.
+      .filter((channelId) => !(opts.excludedChannelIds ?? []).includes(channelId));
     const result = archiveSearchRepo.searchMessages(scope, {
       query: input.query,
       visibility: { channelIds: visibleChannelIds },
@@ -709,6 +744,23 @@ export const testPortsFor = (
   listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
+  // ADR 0126: the Read scope, the same real-repo behaviour
+  // `apps/daemon/src/ops/wiring.ts` wires. `now()` is this composition root's
+  // clock, the same reasoning `recordMatchVerdict` gives. No guild-membership
+  // check here: this package may not import a Discord client (ADR 0014), and
+  // no dashboard route under test reaches the refusal — the check lives in
+  // the daemon's `opsPortsFor`, which owns the client.
+  readScopeAllow: (input) => {
+    const added = channelReadRepo.allowRead(scope, {
+      channelId: input.channelId,
+      scopeKind: input.scopeKind,
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  readScopeDisallow: (input) =>
+    channelReadRepo.disallowRead(scope, input.channelId, input.scopeKind),
+  readScopeList: () => channelReadRepo.listReadScope(scope),
   // Slice 5 task 6: the MCP role policy and role allowlist, the same
   // real-repo behaviour `apps/daemon/src/ops/wiring.ts` wires. No live Discord
   // check here: this package may not import a Discord client (ADR 0014), and

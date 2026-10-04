@@ -1,4 +1,5 @@
 import type { RecentMessagesPage, Snowflake } from '../discord/port.js';
+import { isNoAccess } from '../channels/scope.js';
 import { archiveBackfillPayload, JOB_KINDS, type ArchiveBackfillPayload } from '../jobs/kinds.js';
 import type { JobHandler } from '../jobs/worker.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
@@ -32,6 +33,7 @@ export interface ArchiveChannel {
   readonly derivedFrom: Snowflake | undefined;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: BackfillState;
+  readonly collecting: boolean;
 }
 
 export interface BackfillPorts {
@@ -111,6 +113,17 @@ export const archiveBackfillHandler = (
       );
       return;
     }
+    if (!channel.collecting) {
+      ports.logger.info(
+        safeLogFields({
+          component: 'archive',
+          jobKind: JOB_KINDS.archiveBackfill,
+          channelId,
+        }),
+        'archive: backfill channel paused, stopping',
+      );
+      return;
+    }
     if (channel.scopeKind === 'derived') {
       // ADR 0047 amendment 2026-09-20: a derived row is coverage, not a
       // grant, and coverage is dynamic. Re-resolve it at run time: a channel
@@ -129,7 +142,15 @@ export const archiveBackfillHandler = (
         return;
       }
     }
-    if (ports.isChannelExcluded(channelId)) {
+    const categoryId = ports.categoryOf(channelId);
+    if (
+      isNoAccess({
+        channelId,
+        parentChannelId: undefined,
+        categoryId,
+        isExcluded: (id) => ports.isChannelExcluded(id),
+      })
+    ) {
       // Archive-enabled and excluded at once: the subscriber refuses these,
       // so the job must too — otherwise the backfill writes rows the live
       // path would never have written.
@@ -157,6 +178,52 @@ export const archiveBackfillHandler = (
           channelId,
           cursorMessageId: channel.cursorMessageId,
           state: 'done',
+        });
+        return;
+      }
+      // ADR 0126 M6: a thread excluded on its own (or via its parent or
+      // category) is skipped in the walk — never fetched, never stored —
+      // while the sibling threads still backfill.
+      if (
+        isNoAccess({
+          channelId: threadId,
+          parentChannelId: channelId,
+          categoryId: ports.categoryOf(channelId),
+          isExcluded: (id) => ports.isChannelExcluded(id),
+        })
+      ) {
+        ports.logger.info(
+          safeLogFields({
+            component: 'archive',
+            jobKind: JOB_KINDS.archiveBackfill,
+            channelId,
+          }),
+          'archive: backfill thread excluded, skipping',
+        );
+        ports.setThreadProgress({ channelId, found: threadIds.length, done: index + 1 });
+        const nextIndex = index + 1;
+        if (nextIndex >= threadIds.length) {
+          ports.setBackfillCursor({
+            channelId,
+            cursorMessageId: channel.cursorMessageId,
+            state: 'done',
+          });
+          ports.logger.info(
+            safeLogFields({
+              component: 'archive',
+              jobKind: JOB_KINDS.archiveBackfill,
+              channelId,
+              count: threadIds.length,
+            }),
+            'archive: backfill thread walk complete',
+          );
+          return;
+        }
+        ports.enqueueContinuation({
+          channelId,
+          threadWalk: { threadIds, index: nextIndex, before: undefined },
+          jobId,
+          runAfter: ports.now(),
         });
         return;
       }

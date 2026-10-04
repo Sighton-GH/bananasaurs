@@ -108,6 +108,13 @@ export const searchMessages = (
     readonly before?: number;
     readonly after?: number;
     readonly limit?: number;
+    /**
+     * N5: thread ids No access hides, applied in SQL — in the one WHERE the
+     * hits query and the count query share, so the page stays full-length
+     * and the FTS `total` counts visible rows only. Channel-level filtering
+     * (the visibility set above) is unchanged.
+     */
+    readonly excludeThreadIds?: readonly string[];
   },
 ): SearchResult =>
   read(scope, (db) => {
@@ -156,6 +163,14 @@ export const searchMessages = (
     if (input.after !== undefined) {
       where.push('m.created_at > ?');
       params.push(input.after);
+    }
+    const excluded =
+      input.excludeThreadIds === undefined ? [] : [...new Set(input.excludeThreadIds)];
+    if (excluded.length > 0) {
+      where.push(
+        `(m.thread_id IS NULL OR m.thread_id NOT IN (${excluded.map(() => '?').join(', ')}))`,
+      );
+      params.push(...excluded);
     }
     const fromWhere =
       'FROM archive_messages_fts f ' +

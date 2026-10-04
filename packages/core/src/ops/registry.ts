@@ -1,8 +1,12 @@
 import type { RegisteredCommand } from './dispatch.js';
 import {
-  archiveDisableChannelCommand,
+  archiveDeleteChannelCommand,
   archiveEnableCategoryCommand,
-  archiveDisableCategoryCommand,
+  archiveDeleteCategoryCommand,
+  archivePauseCategoryCommand,
+  archivePauseChannelCommand,
+  archiveResumeCategoryCommand,
+  archiveResumeChannelCommand,
   archiveSetThreadsCommand,
   archiveThreadsCommand,
   archiveEnableChannelCommand,
@@ -51,6 +55,13 @@ import {
   mcpDisallowChannelCommand,
   mcpSendsCommand,
 } from './commands/mcp-allowlist.js';
+import {
+  readScopeDisableCategoryCommand,
+  readScopeDisableChannelCommand,
+  readScopeEnableCategoryCommand,
+  readScopeEnableChannelCommand,
+  readScopeListCommand,
+} from './commands/read-scope.js';
 import {
   mcpAllowRoleCommand,
   mcpDisallowRoleCommand,
@@ -108,6 +119,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   archiveSearchCommand,
   mcpAllowlistCommand,
   mcpSendsCommand,
+  readScopeListCommand,
 
   // Writes. Each needs `--confirm` and each records an audit row; the
   // dispatcher enforces both, so the ordering here is for `--help` only.
@@ -129,9 +141,13 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   jobsRetryCommand,
   backupNowCommand,
   archiveEnableChannelCommand,
-  archiveDisableChannelCommand,
+  archiveDeleteChannelCommand,
+  archivePauseChannelCommand,
+  archiveResumeChannelCommand,
   archiveEnableCategoryCommand,
-  archiveDisableCategoryCommand,
+  archiveDeleteCategoryCommand,
+  archivePauseCategoryCommand,
+  archiveResumeCategoryCommand,
   archiveSetThreadsCommand,
   archiveThreadsCommand,
   archivePreserveCommand,
@@ -145,6 +161,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpAllowCategoryCommand,
   mcpDisallowCategoryCommand,
   mcpDisallowChannelCommand,
+  readScopeEnableChannelCommand,
+  readScopeEnableCategoryCommand,
+  readScopeDisableCategoryCommand,
+  readScopeDisableChannelCommand,
   mcpRolePolicyCommand,
   mcpAllowRoleCommand,
   mcpDisallowRoleCommand,

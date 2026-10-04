@@ -33,6 +33,8 @@ const NO_SEND_CHANNEL = '466666666666666666';
 const THREAD = '488888888888888888';
 const PRIVATE_THREAD = '499999999999999999';
 const MISSING_CHANNEL = '400000000000000000';
+const CATEGORY = '433333333333333333';
+const CATCHANNEL = '434444444444444444';
 
 const LOW_ROLE = '511111111111111111';
 const HIGH_ROLE = '522222222222222222';
@@ -60,18 +62,29 @@ interface TestClientOptions {
 const textPayload = (
   id: string,
   overwrites: readonly { id: string; deny: string }[] = [],
+  parentId?: string,
 ): object => ({
   id,
   guild_id: GUILD_A,
   type: ChannelType.GuildText,
   name: `channel-${id}`,
   position: 0,
+  ...(parentId !== undefined ? { parent_id: parentId } : {}),
   permission_overwrites: overwrites.map((overwrite) => ({
     id: overwrite.id,
     type: 0,
     allow: '0',
     deny: overwrite.deny,
   })),
+});
+
+const categoryPayload = (id: string): object => ({
+  id,
+  guild_id: GUILD_A,
+  type: ChannelType.GuildCategory,
+  name: `category-${id}`,
+  position: 0,
+  permission_overwrites: [],
 });
 
 const threadPayload = (id: string, type: ChannelType, parentId: string): object => ({
@@ -112,6 +125,8 @@ const makeClient = (options: TestClientOptions = {}): Client => {
     channels: [
       textPayload(CHANNEL),
       textPayload(OTHER_CHANNEL),
+      categoryPayload(CATEGORY),
+      textPayload(CATCHANNEL, [], CATEGORY),
       textPayload(
         NO_SEND_CHANNEL,
         denySet.has(NO_SEND_CHANNEL)
@@ -171,6 +186,15 @@ const allow = (channelId: string): void => {
   });
 };
 
+const allowCategory = (categoryId: string): void => {
+  mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+    channelId: categoryId,
+    addedByAccountId: ACCOUNT,
+    scopeKind: 'category',
+    now: NOW,
+  });
+};
+
 describe('resolveSendTarget', () => {
   it('an in-scope channel passes with need post', async () => {
     allow(CHANNEL);
@@ -196,7 +220,7 @@ describe('resolveSendTarget', () => {
     expect(resolved).toMatchObject({ ok: true, channelId: THREAD, isThread: true });
   });
 
-  it('a private thread without its own row is refused, even with an allowlisted parent', async () => {
+  it('a private thread without its own row inherits its allowlisted parent', async () => {
     allow(CHANNEL);
     const resolved = await resolveSendTarget(
       makeClient(),
@@ -205,7 +229,23 @@ describe('resolveSendTarget', () => {
       PRIVATE_THREAD,
       'post-in-thread',
     );
-    expect(resolved).toEqual({ ok: false, reason: 'private-thread-not-allowed' });
+    expect(resolved).toMatchObject({
+      ok: true,
+      channelId: PRIVATE_THREAD,
+      isPrivateThread: true,
+      derivedGrant: true,
+    });
+  });
+
+  it('a private thread with no grant anywhere is refused as not-in-send-scope', async () => {
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      PRIVATE_THREAD,
+      'post-in-thread',
+    );
+    expect(resolved).toEqual({ ok: false, reason: 'not-in-send-scope' });
   });
 
   it('a private thread with its own row passes', async () => {
@@ -219,6 +259,52 @@ describe('resolveSendTarget', () => {
       'post-in-thread',
     );
     expect(resolved).toMatchObject({ ok: true, channelId: PRIVATE_THREAD, isPrivateThread: true });
+  });
+
+  it('a channel under a Write category grant passes with a derived grant', async () => {
+    allowCategory(CATEGORY);
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      CATCHANNEL,
+      'post',
+    );
+    expect(resolved).toMatchObject({
+      ok: true,
+      channelId: CATCHANNEL,
+      grantId: CATEGORY,
+      derivedGrant: true,
+    });
+  });
+
+  it('a target under an excluded category is refused as not-in-send-scope', async () => {
+    // The channel's own Write row cannot beat the category exclusion:
+    // No access overrides every grant.
+    allow(CATCHANNEL);
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), CATEGORY);
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      CATCHANNEL,
+      'post',
+    );
+    expect(resolved).toEqual({ ok: false, reason: 'not-in-send-scope' });
+  });
+
+  it('a private thread under an excluded parent is refused as not-in-send-scope', async () => {
+    // The parent's Write grant cannot beat the parent exclusion either.
+    allow(CHANNEL);
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), CHANNEL);
+    const resolved = await resolveSendTarget(
+      makeClient(),
+      t.scopes.forGuild(GUILD_A),
+      GUILD_A,
+      PRIVATE_THREAD,
+      'post-in-thread',
+    );
+    expect(resolved).toEqual({ ok: false, reason: 'not-in-send-scope' });
   });
 
   it('an excluded channel is refused as not-in-send-scope', async () => {

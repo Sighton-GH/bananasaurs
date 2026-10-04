@@ -90,6 +90,7 @@ const GUILD_ROUTES = [
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
+  '/api/read-scope',
   '/api/role-policy',
   '/api/mcp/sends',
 ] as const;
@@ -610,6 +611,27 @@ describe('GET /api/archive/messages/:messageId (get_message parity)', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/archive/messages/900000000000000009',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: 'not-found' });
+  });
+
+  it('answers 404 for a message in a No-access channel', async () => {
+    await app.close();
+    deps = {
+      ...deps,
+      portsFor: (scope) =>
+        testPortsFor(scope, () => clock, {
+          excludedChannelIds: ['333333333333333333'],
+        }),
+    };
+    app = buildApp();
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/archive/messages/900000000000000002',
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);

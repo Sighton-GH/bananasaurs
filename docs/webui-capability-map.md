@@ -28,6 +28,7 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `archive search <query>` | Search page (channel/author filters; a hit's Open link lands on that message in the Archive browse view) | `GET /api/archive/search` |
 | MCP `read_channel_history` / `get_message` | Archive page, Browse card (paged history, message detail, purged tombstones) | `GET /api/archive/channels/:channelId/messages`, `GET /api/archive/messages/:messageId` |
 | `mcp allowlist` / `mcp sends` | Connector page | `GET /api/send-allowlist`, `GET /api/mcp/sends` |
+| `scope read list` | Permissions page (Read column, effective state per channel) | `GET /api/read-scope` |
 | `mcp clients` / `mcp tokens` | Connector page | `GET /api/mcp/clients`, `GET /api/mcp/tokens` |
 | `mcp role-policy` (no flags) | Connector page (Role policy card) | `GET /api/role-policy` |
 | `account list` | Accounts page — **plus** the capabilities each account holds in this guild (the read half of `account grant`, which the CLI list does not show) | `GET /api/accounts` |
@@ -45,8 +46,12 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `log routing exclude` / `unexclude` | Logging page | `POST/DELETE /api/log-exclusions[/:channelId]` |
 | `jobs retry` | Jobs page | `POST /api/jobs/:id/retry` |
 | `backup now` | Backups page | `POST /api/backup-now` |
-| `archive enable-channel` / `disable-channel` | Archive page (backfill state visible) | `POST/DELETE /api/archive/channels[/:channelId]` |
-| `archive enable-category` / `disable-category` | Archive page (category scope, derived coverage marked) | `POST/DELETE /api/archive/categories[/:channelId]` |
+| `archive enable-channel` | Archive page (backfill state visible) | `POST /api/archive/channels` |
+| `archive delete-channel` | Archive page (confirmed deletion) | `DELETE /api/archive/channels/:channelId` |
+| `archive pause-channel` / `resume-channel` | Permissions page (Archive switch) | `POST /api/archive/channels/:channelId/pause`, `POST /api/archive/channels/:channelId/resume` |
+| `archive enable-category` | Archive page (category scope, derived coverage marked) | `POST /api/archive/categories` |
+| `archive delete-category` | Archive page (confirmed deletion) | `DELETE /api/archive/categories/:channelId` |
+| `archive pause-category` / `resume-category` | Permissions page (Archive switch) | `POST /api/archive/categories/:channelId/pause`, `POST /api/archive/categories/:channelId/resume` |
 | `archive set-threads` / `archive threads` | Archive page (per-channel threads toggle and done/found progress) | `POST /api/archive/channels/:channelId/threads`, `GET /api/archive/status` |
 | `archive preserve` | Search page, per hit | `POST /api/archive/messages/:messageId/preserve` |
 | `archive link-case` | Search page, per hit | `POST /api/archive/link-case` |
@@ -54,6 +59,8 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `mcp revoke` / `mcp revoke-client` | Connector page | `POST /api/mcp/tokens/:tokenId/revoke`, `POST /api/mcp/clients/:clientId/revoke` |
 | `mcp allow-channel` / `disallow-channel` | Connector page | `POST/DELETE /api/send-allowlist[/:channelId]` |
 | `mcp allow-category` / `disallow-category` | Connector page (category rows show live coverage) | `POST/DELETE /api/send-allowlist/categories[/:channelId]` |
+| `scope read enable-channel` / `disable-channel` | Permissions page (Read column) | `POST/DELETE /api/read-scope[/:channelId]` |
+| `scope read enable-category` / `disable-category` | Permissions page (Read column) | `POST/DELETE /api/read-scope/categories[/:channelId]` |
 | `mcp role-policy` / `mcp allow-role` / `mcp disallow-role` | Connector page (Role policy card: mode selectors, role picker with live names, per-row remove; server refusals render inline) | `POST /api/role-policy`, `POST /api/role-allowlist`, `DELETE /api/role-allowlist/:roleId` |
 | `panel sync` | Role panels page (publish + reconcile, dry-run preview) | `POST /api/panels/:id/publish`, `…/reconcile` |
 | `adoption allow` | Cutover page | `POST /api/adoption-allowance` |

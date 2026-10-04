@@ -5,6 +5,7 @@ import type {
   ArchiveChannelStatus,
   ArchiveStatus,
   GuildChannelInfo,
+  ReadScopeEntry,
   SendAllowlistEntry,
 } from '../api/ops.js';
 import { useSession } from '../app/session.js';
@@ -12,7 +13,6 @@ import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
-import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -20,25 +20,29 @@ import { useToast } from '../ui/Toast.js';
 
 /**
  * `/permissions`: the central Permissions section (Bryan's lane). One place
- * answers "where may Bananasaurs operate" and controls it directly:
+ * answers "what may Bananasaurs do here" and controls it directly:
  *
- * - **Archive** decides which channels and categories the bot collects and
- *   keeps (`/api/archive/channels`, `/api/archive/categories`).
- * - **Send** decides where the MCP connector may post
+ * - **Read** decides which channels and categories the bot may look up live
+ *   from Discord (`/api/read-scope`).
+ * - **Write** decides where the bot may post
  *   (`/api/send-allowlist`).
- * - **Excluded** channels are out of scope for sending, logging, and archiving
+ * - **Archive** decides which channels and categories the bot records into a
+ *   searchable copy (`/api/archive/channels`, `/api/archive/categories`).
+ *   Turning it off pauses recording; nothing is deleted here — deleting
+ *   archived messages stays on the Archive page.
+ * - **No access** channels are out of scope for read, write and archive
  *   (`/api/log-exclusions`) and override everything else.
  *
  * Every row shows its EFFECTIVE state, not just its stored row: a channel
  * covered by an enabled category reads "via <category>", and an excluded
- * channel reads Excluded even when a row exists. Category enablement covers
- * the channels under it; stopping a category is the lever for those
- * channels, which is why a covered channel offers no per-channel "off".
+ * channel reads No access even when a row exists. Category enablement covers
+ * the channels under it; changing a category is the lever for those
+ * channels, which is why a covered channel offers no per-channel switch.
  *
  * The specialised controls that hang off these scopes stay on their own
- * pages — the connector's tokens and clients on MCP, browsing and backfill
- * on Archive, log routing on Logging, dashboard access on Accounts — and
- * are linked below rather than duplicated here.
+ * pages — the assistant's access and skill grants on Assistant, browsing and
+ * backfill on Archive, log routing on Logging, dashboard access on Accounts —
+ * and are linked below rather than duplicated here.
  */
 
 /** One display row: a category heading or a channel, with its effective state. */
@@ -47,32 +51,36 @@ interface ScopeRow {
   readonly kind: 'channel' | 'category';
   readonly name: string;
   readonly channelKind?: string;
-  /** Effective archive state. */
-  readonly archive: 'on' | 'via-category' | 'off' | 'excluded';
-  /** Name of the category a `via-category` state comes from. */
+  /** Effective archive state. `paused` is collecting === false: off, history kept. */
+  readonly archive: 'on' | 'via-category' | 'off' | 'paused' | 'paused-via-category' | 'excluded';
+  /** Name of the category a `via-category` or `paused-via-category` state comes from. */
   readonly archiveVia?: string;
-  /** Own-row message count, for the destroy confirmation. */
-  readonly archiveMessages?: number;
+  readonly read: 'on' | 'via-category' | 'off' | 'excluded';
+  readonly readVia?: string;
   readonly send: 'on' | 'via-category' | 'off' | 'excluded';
   readonly sendVia?: string;
   readonly excluded: boolean;
   readonly depth: 0 | 1;
 }
 
-/** Build the display rows from the four reads, categories first with their channels beneath. */
+/** Build the display rows from the five reads, categories first with their channels beneath. */
 const buildRows = (
   channels: readonly GuildChannelInfo[],
   archiveChannels: readonly ArchiveChannelStatus[],
   allowlist: readonly SendAllowlistEntry[],
+  readScope: readonly ReadScopeEntry[],
   excludedChannels: readonly string[],
 ): ScopeRow[] => {
   const archiveById = new Map(archiveChannels.map((a) => [a.channelId, a]));
   const allowById = new Map(allowlist.map((e) => [e.channelId, e]));
+  const readById = new Map(readScope.map((e) => [e.channelId, e]));
   const nameOf = (id: string): string => channels.find((c) => c.channelId === id)?.name ?? id;
   const categoryArchiveOn = (id: string | undefined): boolean =>
     id !== undefined && (archiveById.get(id)?.scopeKind ?? 'channel') === 'category';
   const categorySendOn = (id: string | undefined): boolean =>
     id !== undefined && (allowById.get(id)?.scopeKind ?? 'channel') === 'category';
+  const categoryReadOn = (id: string | undefined): boolean =>
+    id !== undefined && (readById.get(id)?.scopeKind ?? 'channel') === 'category';
 
   const rows: ScopeRow[] = [];
   const categories = channels.filter((c) => c.kind === 'category');
@@ -85,22 +93,42 @@ const buildRows = (
     const viaArchive =
       (own?.scopeKind === 'derived' ? own.derivedFrom : undefined) ??
       (categoryArchiveOn(channel.parentId) ? channel.parentId : undefined);
+    const ownPaused = ownRow && own?.collecting === false;
+    const viaPaused = viaArchive !== undefined && archiveById.get(viaArchive)?.collecting === false;
     const allowOwn = allowById.get(channel.channelId);
     const viaSend = categorySendOn(channel.parentId) ? channel.parentId : undefined;
+    const readOwn = readById.get(channel.channelId);
+    const viaRead = categoryReadOn(channel.parentId) ? channel.parentId : undefined;
+    const archive: ScopeRow['archive'] = excluded
+      ? 'excluded'
+      : ownPaused
+        ? 'paused'
+        : ownRow
+          ? 'on'
+          : viaPaused
+            ? 'paused-via-category'
+            : viaArchive !== undefined
+              ? 'via-category'
+              : 'off';
     return {
       id: channel.channelId,
       kind: 'channel',
       name: channel.name,
       channelKind: channel.kind,
-      archive: excluded
+      archive,
+      ...(archive === 'via-category' || archive === 'paused-via-category'
+        ? { archiveVia: nameOf(viaArchive as string) }
+        : {}),
+      read: excluded
         ? 'excluded'
-        : ownRow
+        : readOwn !== undefined
           ? 'on'
-          : viaArchive !== undefined
+          : viaRead !== undefined
             ? 'via-category'
             : 'off',
-      ...(viaArchive !== undefined ? { archiveVia: nameOf(viaArchive) } : {}),
-      ...(ownRow && own !== undefined ? { archiveMessages: own.messageCount } : {}),
+      ...(!excluded && viaRead !== undefined && readOwn === undefined
+        ? { readVia: nameOf(viaRead) }
+        : {}),
       send: excluded
         ? 'excluded'
         : allowOwn !== undefined
@@ -120,13 +148,14 @@ const buildRows = (
   for (const category of categories) {
     const arch = archiveById.get(category.channelId);
     const allow = allowById.get(category.channelId);
+    const read = readById.get(category.channelId);
     const archiveOn = (arch?.scopeKind ?? 'channel') === 'category';
     rows.push({
       id: category.channelId,
       kind: 'category',
       name: category.name,
-      archive: archiveOn ? 'on' : 'off',
-      ...(archiveOn && arch !== undefined ? { archiveMessages: arch.messageCount } : {}),
+      archive: archiveOn ? (arch?.collecting === false ? 'paused' : 'on') : 'off',
+      read: (read?.scopeKind ?? 'channel') === 'category' ? 'on' : 'off',
       send: (allow?.scopeKind ?? 'channel') === 'category' ? 'on' : 'off',
       excluded: false,
       depth: 0,
@@ -142,27 +171,20 @@ const buildRows = (
   return rows;
 };
 
-/** A pending archive stop, channel or category, for the destroy confirmation. */
-interface PendingArchiveStop {
-  readonly id: string;
-  readonly kind: 'channel' | 'category';
-  readonly name: string;
-  readonly messages: number;
-}
-
 export function PermissionsPage() {
   const session = useSession();
   const toast = useToast();
   // One combined load: the page's effective state only makes sense with all
-  // three scope sources plus the channel list together. Exclusions ride the
+  // four scope sources plus the channel list together. Exclusions ride the
   // logging read; an account without logging.manage simply cannot manage
   // that dimension, so it degrades to `undefined` and the column hides its
   // controls honestly.
   const load = useCallback(async () => {
-    const [channelList, archiveStatus, allow, excluded] = await Promise.all([
+    const [channelList, archiveStatus, allow, read, excluded] = await Promise.all([
       session.read<{ channels: GuildChannelInfo[] }>('/api/guild/channels'),
       session.read<ArchiveStatus>('/api/archive/status'),
       session.read<{ entries: SendAllowlistEntry[] }>('/api/send-allowlist'),
+      session.read<{ entries: ReadScopeEntry[] }>('/api/read-scope'),
       session
         .read<{ excludedChannels?: string[] }>('/api/log-routes')
         .then((r) => r.excludedChannels ?? [])
@@ -172,12 +194,12 @@ export function PermissionsPage() {
       channels: channelList.channels,
       archiveChannels: archiveStatus.channels,
       allowlist: allow.entries,
+      readScope: read.entries,
       excluded,
     };
   }, [session]);
   const scope = useResource('the operating scope', load);
 
-  const [stopping, setStopping] = useState<PendingArchiveStop | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   // Attachment policy applies when a channel's archiving is switched on here
   // (categories always enable text-only, matching the CLI). It cannot change
@@ -192,6 +214,7 @@ export function PermissionsPage() {
             scope.resource.data.channels,
             scope.resource.data.archiveChannels,
             scope.resource.data.allowlist,
+            scope.resource.data.readScope,
             scope.resource.data.excluded ?? [],
           )
         : undefined,
@@ -221,23 +244,80 @@ export function PermissionsPage() {
     }
   };
 
-  const confirmArchiveStop = async () => {
-    if (stopping === undefined) return;
+  const archivePause = async (row: ScopeRow) => {
     setBusy(true);
-    const result = await session.write<{ messageCount?: number }>(
-      `/api/archive/${stopping.kind === 'category' ? 'categories' : 'channels'}/${encodeURIComponent(stopping.id)}`,
+    const result = await session.write<{ outcome: string }>(
+      `/api/archive/${row.kind === 'category' ? 'categories' : 'channels'}/${encodeURIComponent(row.id)}/pause`,
       undefined,
-      'DELETE',
+      'POST',
     );
     setBusy(false);
-    setStopping(undefined);
     if (result !== undefined) {
       toast({
         tone: 'ok',
         title:
-          result.messageCount !== undefined && result.messageCount > 0
-            ? `Archiving stopped — ${String(result.messageCount)} archived messages destroyed`
-            : 'Archiving stopped',
+          row.kind === 'category'
+            ? `Archiving off for the ${row.name} category — history kept`
+            : `Archiving off for #${row.name} — history kept`,
+      });
+      reloadAll();
+    }
+  };
+
+  const archiveResume = async (row: ScopeRow) => {
+    setBusy(true);
+    const result = await session.write<{ outcome: string }>(
+      `/api/archive/${row.kind === 'category' ? 'categories' : 'channels'}/${encodeURIComponent(row.id)}/resume`,
+      undefined,
+      'POST',
+    );
+    setBusy(false);
+    if (result !== undefined) {
+      toast({
+        tone: 'ok',
+        title:
+          row.kind === 'category'
+            ? `Archiving on for the ${row.name} category`
+            : `Archiving on for #${row.name}`,
+      });
+      reloadAll();
+    }
+  };
+
+  const readAllow = async (row: ScopeRow) => {
+    setBusy(true);
+    const result = await session.write<{ outcome: string }>(
+      row.kind === 'category' ? '/api/read-scope/categories' : '/api/read-scope',
+      { channelId: row.id },
+    );
+    setBusy(false);
+    if (result !== undefined) {
+      toast({
+        tone: 'ok',
+        title:
+          row.kind === 'category'
+            ? `The bot may read anywhere under ${row.name}`
+            : `The bot may read #${row.name}`,
+      });
+      reloadAll();
+    }
+  };
+
+  const readDisallow = async (row: ScopeRow) => {
+    setBusy(true);
+    const result = await session.write<{ ok: boolean }>(
+      `/api/read-scope/${row.kind === 'category' ? 'categories/' : ''}${encodeURIComponent(row.id)}`,
+      undefined,
+      'DELETE',
+    );
+    setBusy(false);
+    if (result !== undefined) {
+      toast({
+        tone: 'ok',
+        title:
+          row.kind === 'category'
+            ? 'Category removed from the read scope'
+            : `#${row.name} removed from the read scope`,
       });
       reloadAll();
     }
@@ -305,8 +385,41 @@ export function PermissionsPage() {
     <>
       <PageHeader
         title="Permissions"
-        purpose="Set READ, WRITE and ARCHIVE per channel or category. READ means the bot may see current content when Discord sends it; WRITE means it may post; ARCHIVE means it also collects and keeps a searchable copy. Archive is not the same as read."
+        purpose="Choose what Bananasaurs may do in each channel or category. Read, Write and Archive are separate switches; No access overrides all three."
       />
+      <Card title="What each switch means">
+        <dl className="grid gap-2 text-sm">
+          <div>
+            <dt className="font-medium">Read</dt>
+            <dd>
+              May look up recent messages live from Discord. Off: the bot only sees the message that
+              tagged it, the one it replies to, and the archive.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium">Write</dt>
+            <dd>May post here, including answering when tagged. Off: the bot stays silent here.</dd>
+          </div>
+          <div>
+            <dt className="font-medium">Archive</dt>
+            <dd>
+              Records new messages into a searchable copy. Turning it off stops recording; nothing
+              is deleted. Delete archived messages on the Archive page.
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium">No access</dt>
+            <dd>
+              Overrides everything above and hides archived copies. Moderation and automod still
+              work.
+            </dd>
+          </div>
+        </dl>
+        <p className="mt-2 text-sm text-ink-muted">
+          To switch one channel off inside a category that is on, turn the category off and turn on
+          the channels you want, or mark the channel No access.
+        </p>
+      </Card>
       <DataState
         resource={scope.resource}
         isEmpty={(data) => data.channels.length === 0}
@@ -321,11 +434,6 @@ export function PermissionsPage() {
       >
         {(data) => (
           <Card title="Operating scope">
-            <p className="mb-3 text-sm text-ink-muted">
-              Categories start collapsed. Open one to inspect its channels. "No access" replaces the
-              old "Exclude" wording: it turns read, write and archive off together. A channel
-              covered by a category follows that category.
-            </p>
             <label className="mb-3 flex items-center gap-2 text-sm">
               New channels archive attachments as
               <select
@@ -383,15 +491,15 @@ export function PermissionsPage() {
                   ),
                 },
                 {
-                  key: 'archive',
-                  header: 'Archive',
+                  key: 'read',
+                  header: 'Read',
                   cell: (row) =>
-                    row.archive === 'on' ? (
-                      <Badge tone="ok">On</Badge>
-                    ) : row.archive === 'via-category' ? (
-                      <Badge tone="ok">On, via {row.archiveVia}</Badge>
-                    ) : row.archive === 'excluded' ? (
+                    row.read === 'excluded' ? (
                       <Badge tone="hold">No access</Badge>
+                    ) : row.read === 'on' ? (
+                      <Badge tone="ok">On</Badge>
+                    ) : row.read === 'via-category' ? (
+                      <Badge tone="ok">On, via {row.readVia}</Badge>
                     ) : (
                       <Badge>Off</Badge>
                     ),
@@ -411,28 +519,41 @@ export function PermissionsPage() {
                     ),
                 },
                 {
+                  key: 'archive',
+                  header: 'Archive',
+                  cell: (row) =>
+                    row.archive === 'on' ? (
+                      <Badge tone="ok">On</Badge>
+                    ) : row.archive === 'via-category' ? (
+                      <Badge tone="ok">On, via {row.archiveVia}</Badge>
+                    ) : row.archive === 'paused' ? (
+                      <Badge>Off (history kept)</Badge>
+                    ) : row.archive === 'paused-via-category' ? (
+                      <Badge>Off (history kept), via {row.archiveVia}</Badge>
+                    ) : row.archive === 'excluded' ? (
+                      <Badge tone="hold">No access</Badge>
+                    ) : (
+                      <Badge>Off</Badge>
+                    ),
+                },
+                {
+                  key: 'noaccess',
+                  header: 'No access',
+                  cell: (row) => (row.excluded ? <Badge tone="hold">No access</Badge> : null),
+                },
+                {
                   key: 'actions',
                   header: 'Change',
                   cell: (row) => (
                     <span className="flex flex-wrap gap-1">
-                      {row.archive === 'off' && (
-                        <Button busy={busy} onClick={() => void archiveEnable(row)}>
-                          {row.kind === 'category' ? 'Archive category' : 'Archive'}
+                      {row.read === 'off' && (
+                        <Button busy={busy} onClick={() => void readAllow(row)}>
+                          Allow read
                         </Button>
                       )}
-                      {row.archive === 'on' && (
-                        <Button
-                          busy={busy}
-                          onClick={() =>
-                            setStopping({
-                              id: row.id,
-                              kind: row.kind,
-                              name: row.name,
-                              messages: row.archiveMessages ?? 0,
-                            })
-                          }
-                        >
-                          Stop archiving
+                      {row.read === 'on' && (
+                        <Button busy={busy} onClick={() => void readDisallow(row)}>
+                          Stop read
                         </Button>
                       )}
                       {row.send === 'off' && (
@@ -443,6 +564,21 @@ export function PermissionsPage() {
                       {row.send === 'on' && (
                         <Button busy={busy} onClick={() => void sendDisallow(row)}>
                           Stop send
+                        </Button>
+                      )}
+                      {row.archive === 'off' && (
+                        <Button busy={busy} onClick={() => void archiveEnable(row)}>
+                          {row.kind === 'category' ? 'Archive category' : 'Archive'}
+                        </Button>
+                      )}
+                      {row.archive === 'on' && (
+                        <Button busy={busy} onClick={() => void archivePause(row)}>
+                          Stop archiving
+                        </Button>
+                      )}
+                      {row.archive === 'paused' && (
+                        <Button busy={busy} onClick={() => void archiveResume(row)}>
+                          Resume archiving
                         </Button>
                       )}
                       {row.kind === 'channel' && data.excluded !== undefined && (
@@ -465,6 +601,13 @@ export function PermissionsPage() {
         )}
       </DataState>
 
+      <Card title="Not controlled here">
+        <p className="text-sm">
+          The assistant log channel, the escalation channel, panels and logging forwards post to the
+          channels you picked for them. Moderation, automod and purge work in every channel.
+        </p>
+      </Card>
+
       <Card title="Assistant permissions">
         <p className="text-sm">
           Who may tag the assistant and which skills each role/member may use are permission-bearing
@@ -474,12 +617,6 @@ export function PermissionsPage() {
         <Link href="/assistant" className="mt-2 inline-block text-sm text-accent underline">
           Open assistant access and skill grants
         </Link>
-      </Card>
-      <Card title="MCP permissions">
-        <p className="text-sm">
-          The WRITE column above is the MCP send allowlist. Turning WRITE on permits the connector
-          to post there; off means it cannot. Connector clients and tokens stay on MCP.
-        </p>
       </Card>
 
       <Card title="Specialised controls">
@@ -495,8 +632,7 @@ export function PermissionsPage() {
             <Link href="/archive" className="text-accent underline">
               Archive
             </Link>{' '}
-            — browse archived messages, run backfills, set attachment policy and retention. Which
-            channels archive is managed above.
+            — browse archived messages, run backfills, set retention, and delete archived messages.
           </li>
           <li>
             <Link href="/logging" className="text-accent underline">
@@ -524,28 +660,6 @@ export function PermissionsPage() {
           </li>
         </ul>
       </Card>
-
-      <ConfirmDialog
-        open={stopping !== undefined}
-        title={
-          stopping?.kind === 'category'
-            ? `Stop archiving the ${stopping.name} category?`
-            : `Stop archiving #${stopping?.name ?? ''}?`
-        }
-        scope={
-          <p>
-            {stopping !== undefined && stopping.messages > 0
-              ? `This permanently destroys the ${String(stopping.messages)} archived messages ${stopping.kind === 'category' ? 'under this category' : 'in this channel'}.`
-              : 'Nothing has been archived here yet, so nothing is destroyed.'}{' '}
-            New messages stop being collected immediately.
-          </p>
-        }
-        confirmLabel="Stop archiving"
-        danger
-        busy={busy}
-        onConfirm={() => void confirmArchiveStop()}
-        onCancel={() => setStopping(undefined)}
-      />
     </>
   );
 }

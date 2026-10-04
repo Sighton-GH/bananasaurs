@@ -10,6 +10,7 @@ import {
   RetryAfterError,
   scanOutboundRequest,
   type AssistantBehaviour,
+  type ChannelAccess,
   type DiscordMessageRef,
   type JobContext,
   type Logger,
@@ -365,6 +366,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     answer: (
       input: AssistantInvocation,
     ) => AssistantInvocationResult | Promise<AssistantInvocationResult>,
+    channelAccess?: Pick<ChannelAccess, 'check'>,
+    guildReady?: () => boolean,
   ) => {
     const inputs: AssistantInvocation[] = [];
     const svc: AssistantCommandService = {
@@ -411,6 +414,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       fetchMessageContent,
       fetchChannelMessages,
       channelContextMessages,
+      ...(channelAccess === undefined ? {} : { channelAccess }),
+      ...(guildReady === undefined ? {} : { guildReady }),
     });
     const run = async (
       input: Record<string, unknown>,
@@ -1228,6 +1233,145 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     );
     // The channel window itself still reaches the service.
     expect(h.inputs[0]?.channelContext).toContain('the hall opens at seven');
+  });
+
+  /** ADR 0126: Read gates live fetches, Write gates the reply. */
+  const fakeAccess = (
+    denied: Partial<Record<'read' | 'write', 'no-access' | 'not-granted'>>,
+  ): Pick<ChannelAccess, 'check'> => ({
+    check: async (purpose) => {
+      const reason = purpose === 'read' || purpose === 'write' ? denied[purpose] : undefined;
+      return reason === undefined
+        ? { allowed: true, grantedBy: 'grant' }
+        : { allowed: false, reason };
+    },
+  });
+
+  it('a mention in a Write-denied channel never invokes nor sends', async () => {
+    const h = harness(
+      () => ({ ok: true, content: 'answer' }),
+      fakeAccess({ write: 'not-granted' }),
+    );
+    await h.run(mention({ invocationId: 'inv-wd', messageId: '810000000000000062' }));
+
+    expect(h.inputs).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('a mention run before the guild is cached retries instead of being skipped (R1)', async () => {
+    let ready = false;
+    const unknown: Pick<ChannelAccess, 'check'> = {
+      check: async () =>
+        ready
+          ? { allowed: true, grantedBy: 'grant' }
+          : { allowed: false, reason: 'unknown-channel' },
+    };
+    const h = harness(
+      () => ({ ok: true, content: 'answer' }),
+      unknown,
+      () => ready,
+    );
+    const first = await h.run(mention({ invocationId: 'inv-nr', messageId: '810000000000000064' }));
+
+    expect(first.error).toBeInstanceOf(RetryAfterError);
+    expect(h.inputs).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+
+    ready = true;
+    await h.run(mention({ invocationId: 'inv-nr', messageId: '810000000000000064' }), first.cursor);
+    expect(h.inputs).toHaveLength(1);
+    expect(h.send).toHaveBeenCalled();
+  });
+
+  it('a mention in a No-access channel never invokes nor sends', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({ write: 'no-access' }));
+    await h.run(mention({ invocationId: 'inv-na', messageId: '810000000000000063' }));
+
+    expect(h.inputs).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('a retry after Write is turned off posts nothing', async () => {
+    let writeDenied = false;
+    const access: Pick<ChannelAccess, 'check'> = {
+      check: async (purpose) =>
+        purpose === 'write' && writeDenied
+          ? { allowed: false as const, reason: 'not-granted' as const }
+          : { allowed: true as const, grantedBy: 'grant' },
+    };
+    const h = harness(() => ({ ok: true, content: 'answer' }), access);
+    // Attempt 1 invokes, then the delivery throw leaves the cursor at
+    // `invoke-done` with nothing posted.
+    h.send.mockRejectedValueOnce(new Error('delivery boom'));
+    const first = await h.run(
+      mention({ invocationId: 'inv-retry-wo', messageId: '810000000000000066' }),
+    );
+    expect(first.error).toBeInstanceOf(Error);
+    expect(first.cursor).not.toBeNull();
+    expect(h.sent).toHaveLength(0);
+    // Write is turned off before the retry: the staged answer must stay
+    // unposted rather than landing late in a channel it may not enter.
+    writeDenied = true;
+    const second = await h.run(
+      mention({ invocationId: 'inv-retry-wo', messageId: '810000000000000066' }),
+      first.cursor,
+    );
+    expect(second.error).toBeUndefined();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('a mention in a Read-denied channel skips the window and the thread starter, still answers, and flags the trace', async () => {
+    const h = harness(
+      () => ({ ok: true, content: 'answered without context' }),
+      fakeAccess({ read: 'not-granted' }),
+    );
+    h.channelContextMessages.mockReturnValue(15);
+    h.fetchChannelMessages.mockResolvedValue([channelMessage()]);
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the opening post',
+    });
+    await h.run(
+      mention({
+        channelId: '888888888888888888',
+        invocationId: 'inv-rd',
+        messageId: '810000000000000064',
+        threadParentId: CHANNEL_ID,
+      }),
+    );
+
+    expect(h.fetchChannelMessages).not.toHaveBeenCalled();
+    expect(h.fetchMessageContent).not.toHaveBeenCalled();
+    expect(h.sent).toHaveLength(1);
+    expect(h.inputs[0]?.channelContext).toBeUndefined();
+    expect(traceRepo.getTrace(scope(), 'trace_inv-rd')?.flags).toContain('channel-context-denied');
+  });
+
+  it('a mention in a Read-denied channel still fetches the quoted message', async () => {
+    const h = harness(
+      () => ({ ok: true, content: 'yes, that is right' }),
+      fakeAccess({ read: 'no-access' }),
+    );
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the hall opens at seven',
+    });
+    await h.run(
+      mention({
+        invocationId: 'inv-rq',
+        messageId: '810000000000000065',
+        referencedMessageId: '840000000000000021',
+        referencedAuthorId: OTHER_ID,
+        input: { question: 'is that right?' },
+      }),
+    );
+
+    expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, '840000000000000021');
+    expect(h.inputs[0]?.quoteEnvelope).toContain('the hall opens at seven');
+    expect(h.sent).toHaveLength(1);
   });
 
   it('/ask links the respond message id so a later reply continues the conversation', async () => {

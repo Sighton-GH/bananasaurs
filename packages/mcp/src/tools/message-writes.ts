@@ -168,7 +168,6 @@ export type McpMessageWriteOutcome =
 export type McpMessageWriteRefusal =
   | 'channel-not-allowlisted'
   | 'channel-not-in-guild'
-  | 'private-thread'
   | 'bot-lacks-permission'
   | 'protected-role-panel'
   | 'protected-task-post'
@@ -392,8 +391,6 @@ const refusalText = (
               ? 'reacted to'
               : 'had its reaction removed';
   switch (reason) {
-    case 'private-thread':
-      return `Channel ${channelId} in guild ${guildId} is a private thread, so nothing was ${noun}. Private threads never inherit send authorization.`;
     case 'channel-not-allowlisted':
       return (
         `Channel ${channelId} in guild ${guildId} is not on the send allowlist, ` +

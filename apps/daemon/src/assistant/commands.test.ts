@@ -3,8 +3,10 @@ import { pino } from 'pino';
 import type {
   AssistantBehaviour,
   AssistantInvokePayload,
+  ChannelAccess,
   DomainEvent,
   KnownMessage,
+  MessageEvent,
   ReactionEvent,
 } from '@bananasaurs/core';
 import { ProviderError, RetryAfterError } from '@bananasaurs/core';
@@ -60,6 +62,7 @@ const harness = (
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
   reportEnqueued = true,
   isTaskPost?: (messageId: string) => boolean,
+  channelAccess?: Pick<ChannelAccess, 'check'>,
   botRoleId?: () => string | undefined,
 ) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
@@ -118,6 +121,7 @@ const harness = (
       sendTyping,
       ...(lookupMessage === undefined ? {} : { lookupMessage }),
       ...(isTaskPost === undefined ? {} : { isTaskPost }),
+      ...(channelAccess === undefined ? {} : { channelAccess }),
       ...(botRoleId === undefined ? {} : { botRoleId }),
     }),
   };
@@ -574,6 +578,7 @@ describe('assistant command subscriber', () => {
       [direct, { ...club, answersBotTag: true }],
       undefined,
       true,
+      undefined,
       undefined,
       () => botRole,
     );
@@ -1365,7 +1370,6 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
     await d.run(1, null);
     expect(d.send.mock.calls.map(([channel]) => channel)).toEqual([channelId]);
   });
-
   it('logs a failure with its reason, and a broken log channel never re-answers', async () => {
     const d = setup(
       vi.fn(async () => {
@@ -1385,5 +1389,55 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
     expect(logged.fields).toEqual(
       expect.arrayContaining([{ name: 'Reason', value: PROVIDER_FAILURE_LOG_REASON }]),
     );
+  });
+});
+
+describe('assistant mention channel permissions (ADR 0126)', () => {
+  const tagged = (messageId: string): MessageEvent => ({
+    kind: 'messageCreate',
+    guildId,
+    receivedAtMs: 1,
+    channelId,
+    parentChannelId: undefined,
+    categoryId: undefined,
+    isPrivateThread: false,
+    messageId,
+    authorId: userId,
+    authorDisplayName: undefined,
+    authorIsBot: false,
+    content: `<@&${club.mentionRoleId}> where is the handbook?`,
+    editedTimestampMs: undefined,
+    mentionedUserIds: [],
+    authorRoleIds: [],
+    mentionedRoleIds: [club.mentionRoleId!],
+    mentionsEveryone: false,
+    attachments: [],
+  });
+  /** Write denied (or the channel No access); Read stays allowed. */
+  const denyWrite = (
+    reason: 'no-access' | 'not-granted' | 'unknown-channel',
+  ): Pick<ChannelAccess, 'check'> => ({
+    check: async (purpose) =>
+      purpose === 'write' ? { allowed: false, reason } : { allowed: true, grantedBy: 'grant' },
+  });
+
+  it('a mention in a Write-denied channel enqueues nothing and sends no typing', async () => {
+    const h = harness([direct, club], undefined, true, undefined, denyWrite('not-granted'));
+    await h.subscriber.handle(tagged('890123456789012401'));
+    expect(h.queued).toHaveLength(0);
+    expect(h.sendTyping).not.toHaveBeenCalled();
+  });
+
+  it('a mention in a No-access channel enqueues nothing', async () => {
+    const h = harness([direct, club], undefined, true, undefined, denyWrite('no-access'));
+    await h.subscriber.handle(tagged('890123456789012402'));
+    expect(h.queued).toHaveLength(0);
+    expect(h.sendTyping).not.toHaveBeenCalled();
+  });
+
+  it('without channelAccess a mention still enqueues (legacy callers unchanged)', async () => {
+    const h = harness();
+    await h.subscriber.handle(tagged('890123456789012403'));
+    expect(h.queued).toHaveLength(1);
   });
 });

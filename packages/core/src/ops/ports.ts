@@ -417,6 +417,8 @@ export interface OpsArchiveChannelStatus {
   readonly threadsDone?: number;
   /** Whether public threads under the channel are archived; `archive set-threads` flips it. */
   readonly includeThreads?: boolean | undefined;
+  /** ADR 0126: false = Archive off (paused, history kept). Absent on older servers — treat as on. */
+  readonly collecting?: boolean | undefined;
   readonly messageCount: number;
 }
 
@@ -427,7 +429,7 @@ export interface OpsUnreadableArchiveChannel {
 }
 
 /**
- * What `archive disable-channel` destroyed.
+ * What `archive delete-channel` destroyed.
  *
  * A discriminated union rather than a bare `'disabled'` string: disabling
  * cascades away every archived message, edit and attachment for the channel,
@@ -440,11 +442,30 @@ export type OpsArchiveDisableOutcome =
   | { readonly outcome: 'wrong-kind' }
   /**
    * The channel has only a derived row and is still covered by an enabled
-   * category, so there is nothing for `disable-channel` to disable: the next
+   * category, so there is nothing for `delete-channel` to delete: the next
    * message would re-materialise the row. Names the category to act on
    * instead (review 2 N1).
    */
   | { readonly outcome: 'covered-by-category'; readonly categoryId: string };
+
+/**
+ * What `archive pause-channel` / `archive pause-category` did (ADR 0126).
+ *
+ * Pause keeps the row, its cursor and its messages — only `collecting`
+ * flips. `'derived'` means the id names coverage, not a grant: pause the
+ * category instead. The channel verbs answer `'wrong-kind'` for a category
+ * row (the mirror of `archiveDisableChannel`'s refusal); the category verbs
+ * answer `'no-such-channel'` for an id that is not a category of this guild
+ * (the mirror of `archiveEnableCategory`'s refusal).
+ */
+export type OpsArchivePauseOutcome = 'paused' | 'already-paused' | 'not-enabled' | 'derived';
+export type OpsArchivePauseChannelOutcome = OpsArchivePauseOutcome | 'wrong-kind';
+export type OpsArchivePauseCategoryOutcome = OpsArchivePauseOutcome | 'no-such-channel';
+
+/** What `archive resume-channel` / `archive resume-category` did (ADR 0126). */
+export type OpsArchiveResumeOutcome = 'resumed' | 'already-collecting' | 'not-enabled' | 'derived';
+export type OpsArchiveResumeChannelOutcome = OpsArchiveResumeOutcome | 'wrong-kind';
+export type OpsArchiveResumeCategoryOutcome = OpsArchiveResumeOutcome | 'no-such-channel';
 
 /** One archive search hit, as `archive search` renders it. */
 export interface OpsArchiveSearchHit {
@@ -1260,6 +1281,14 @@ export interface OpsPorts {
     attachmentPolicy: ArchiveAttachmentPolicy;
   }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled' | 'no-such-channel';
   archiveDisableCategory(channelId: string): OpsArchiveDisableOutcome;
+  /** ADR 0126: Archive off pauses recording; the row and its messages are kept. */
+  archivePauseChannel(channelId: string): OpsArchivePauseChannelOutcome;
+  /** ADR 0126: resume restarts recording; the gap stays a gap (no backfill). */
+  archiveResumeChannel(channelId: string): OpsArchiveResumeChannelOutcome;
+  /** ADR 0126: pause acting on the category row only. */
+  archivePauseCategory(channelId: string): OpsArchivePauseCategoryOutcome;
+  /** ADR 0126: resume acting on the category row only. */
+  archiveResumeCategory(channelId: string): OpsArchiveResumeCategoryOutcome;
   archiveSetThreads(
     channelId: string,
     include: boolean,
@@ -1401,6 +1430,33 @@ export interface OpsPorts {
     limit?: number | undefined;
   }): readonly OpsSendRecord[];
 
+  // --- read scope (ADR 0126) ---------------------------------------------------
+  /**
+   * What `scope read enable-channel` / `enable-category` did.
+   *
+   * The same three-outcome shape `allowSendChannel` uses: the operator needs
+   * to hear which of "readable", "already readable" or "no such channel in
+   * this guild" happened. `'no-such-channel'` is the allow-time refusal — a
+   * snowflake that is not a channel (or, for the category verb, not a
+   * category) of this guild is refused before any row is written. Unlike the
+   * send allowlist there is no account: the repository stores no adder, only
+   * the channel, its kind and when it was added.
+   */
+  readScopeAllow(input: {
+    channelId: string;
+    scopeKind: 'channel' | 'category';
+  }): OpsReadScopeAllowOutcome;
+  /**
+   * What `scope read disable-channel` / `disable-category` did — kind-scoped
+   * like `disallowSendChannel`, so the wrong verb on the other kind's row is
+   * a distinct answer, never a silent delete.
+   */
+  readScopeDisallow(input: {
+    channelId: string;
+    scopeKind: 'channel' | 'category';
+  }): OpsReadScopeDisallowOutcome;
+  /** Every readable channel and category in this guild, oldest grant first. */
+  readScopeList(): readonly OpsReadScopeEntry[];
   // --- mcp role policy (slice 5 task 6, ADR 0117 §2) ---------------------------
   /**
    * The guild's role-policy modes. Absent row means both are `below-bot`
@@ -1498,6 +1554,24 @@ export interface OpsSendRecord {
   readonly tokenId: string;
   readonly sentAt: number;
   readonly outcome: 'sent' | 'dry_run';
+}
+
+/** What `scope read enable-channel` / `enable-category` did: readable, already readable, or refused. */
+export type OpsReadScopeAllowOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';
+
+/**
+ * What `scope read disable-channel` / `disable-category` did: kind-scoped, so
+ * the wrong verb on the other kind's row is a distinct answer, never a
+ * silent delete — the same shape `OpsDisallowSendOutcome` gives the send
+ * allowlist.
+ */
+export type OpsReadScopeDisallowOutcome = 'removed' | 'not-allowed' | 'wrong-kind';
+
+/** One readable channel or category, as `scope read list` renders it. Never content. */
+export interface OpsReadScopeEntry {
+  readonly channelId: string;
+  readonly scopeKind: 'channel' | 'category';
+  readonly addedAt: number;
 }
 
 /** A job this command queued, or the one already pending that absorbed it. */

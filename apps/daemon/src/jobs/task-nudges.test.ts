@@ -5,6 +5,7 @@ import {
   parseTaskCustomId,
   TASK_REPLY_NOTICE,
   type DiscordPort,
+  type Logger,
 } from '@bananasaurs/core';
 import {
   openMigratedTestDatabase,
@@ -12,6 +13,8 @@ import {
 } from '@bananasaurs/storage/test-support';
 import {
   guildRepo,
+  loggingRepo,
+  mcpSendRepo,
   taskRepo,
   taskNudgeRepo,
   taskBindingRepo,
@@ -36,12 +39,61 @@ const LEAD = '200000000000000001',
 const REPLY_MSG = '777777777777777777';
 const FOLLOWUP_MSG = '555555555555555555';
 let channelMoved = false;
+/**
+ * Channel-permissions Write checks resolve through the client-level channel
+ * cache (`resolveChannel`), not the guild fetch stub below — so the fixture
+ * mirrors the same channels at client level with the shapes the resolver
+ * reads (`guildId`, `isThread()`, `parent`, `isTextBased()`, `isDMBased()`).
+ */
+const clientChannelShape = (id: string): Record<string, unknown> | null => {
+  if (id === CATEGORY || id === CATEGORY2)
+    return {
+      id,
+      guildId: G,
+      type: ChannelType.GuildCategory,
+      parentId: null,
+      parent: null,
+      isThread: () => false,
+      isTextBased: () => false,
+      isDMBased: () => false,
+    };
+  if (id === ANNOUNCEMENTS || id === CHANNEL)
+    return {
+      id,
+      guildId: G,
+      type: ChannelType.GuildText,
+      parentId: channelMoved ? '999999999999999999' : CATEGORY,
+      parent: null,
+      isThread: () => false,
+      isTextBased: () => true,
+      isDMBased: () => false,
+    };
+  if (id === THREAD || id === LOCKED_THREAD)
+    return {
+      id,
+      guildId: G,
+      type: ChannelType.PublicThread,
+      parentId: CHANNEL,
+      parent: clientChannelShape(CHANNEL),
+      isThread: () => true,
+      isTextBased: () => true,
+      isDMBased: () => false,
+    };
+  return null;
+};
 const client = {
+  channels: {
+    cache: new Map(),
+    fetch: async (id: string) => clientChannelShape(id),
+  },
   guilds: {
     cache: new Map([
       [
         G,
         {
+          // N1: the cached guild reads available, so the pass runs; a pass
+          // with no cached guild returns before claiming any slot.
+          available: true,
           channels: {
             fetch: async (id: string) => {
               if (id === CATEGORY || id === CATEGORY2) return { type: ChannelType.GuildCategory };
@@ -97,6 +149,15 @@ beforeEach(() => {
   db = openMigratedTestDatabase();
   scope = db.scopes.forGuild(G);
   guildRepo.upsertGuild(scope, { name: 'A', now: 0 });
+  // Channel permissions: every destination in this file lives under CATEGORY,
+  // so the shared fixture grants Write there — the nudge gate keeps its
+  // meaning and only the denial tests below remove it.
+  mcpSendRepo.allowChannel(scope, {
+    channelId: CATEGORY,
+    scopeKind: 'category',
+    addedByAccountId: 'acct_test',
+    now: 1,
+  });
   channelMoved = false;
   msgSeq = 0;
   send.mockClear();
@@ -382,6 +443,42 @@ it('reacts with a check mark on a follow-up instead of sending', async () => {
   expect(slot.state).toBe('sent');
   expect(slot.destinationId).toBe(CHANNEL);
 });
+it('pauses a follow-up whose channel lost Write instead of reacting', async () => {
+  taskNudgeRepo.schedule(
+    scope,
+    {
+      slotId: `followup:${FOLLOWUP_MSG}`,
+      kind: 'followup',
+      dueAt: monday,
+      payload: JSON.stringify({ channelId: CHANNEL, messageId: FOLLOWUP_MSG }),
+    },
+    monday,
+  );
+  mcpSendRepo.disallowChannel(scope, CATEGORY, 'category');
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(react).not.toHaveBeenCalled();
+  const slot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'followup')!;
+  expect(slot.state).toBe('paused');
+  expect(slot.lastError).toBe('writing is turned off for that channel');
+});
+it('pauses a follow-up whose channel is gone as unavailable, not as Write off (N9)', async () => {
+  const GONE = '299999999999999999';
+  taskNudgeRepo.schedule(
+    scope,
+    {
+      slotId: `followup:${FOLLOWUP_MSG}`,
+      kind: 'followup',
+      dueAt: monday,
+      payload: JSON.stringify({ channelId: GONE, messageId: FOLLOWUP_MSG }),
+    },
+    monday,
+  );
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(react).not.toHaveBeenCalled();
+  const slot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'followup')!;
+  expect(slot.state).toBe('paused');
+  expect(slot.lastError).toBe('destination missing, moved, or unavailable');
+});
 it('supersedes a follow-up with no payload', async () => {
   taskNudgeRepo.schedule(
     scope,
@@ -488,6 +585,49 @@ it('creates durable 48h, weekly, and team digest slots; planning records without
   ]);
   expect(await deliverTaskNudges(scope, client, discord, monday, { enabled: true })).toBe(0);
 });
+it('pauses a nudge whose destination channel has no Write grant', async () => {
+  mcpSendRepo.disallowChannel(scope, CATEGORY, 'category');
+  const teamId = seedTeam();
+  seedTask(teamId, { title: 'Build' });
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(send).not.toHaveBeenCalled();
+  const announceSlot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'announce')!;
+  expect(announceSlot.state).toBe('paused');
+});
+it('a Write denial pauses as write-denied with the channel log line, not as unavailable', async () => {
+  const infos: Array<{ fields: unknown; msg: string }> = [];
+  const logger = {
+    info: (fields: unknown, msg: string): void => {
+      infos.push({ fields, msg });
+    },
+  } as unknown as Logger;
+  mcpSendRepo.disallowChannel(scope, CATEGORY, 'category');
+  const teamId = seedTeam();
+  seedTask(teamId, { title: 'Build' });
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true, logger });
+  expect(send).not.toHaveBeenCalled();
+  const announceSlot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'announce')!;
+  expect(announceSlot.state).toBe('paused');
+  expect(announceSlot.lastError).toBe('writing is turned off for that channel');
+  expect(infos).toHaveLength(1);
+  expect(infos[0]?.fields).toMatchObject({
+    guildId: G,
+    channelId: CHANNEL,
+    purpose: 'write',
+    reason: 'not-granted',
+  });
+});
+it('posts nothing for a nudge under a No access category', async () => {
+  loggingRepo.excludeChannel(scope, CATEGORY);
+  const teamId = seedTeam();
+  seedTask(teamId, { title: 'Build' });
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(send).not.toHaveBeenCalled();
+  const announceSlot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'announce')!;
+  expect(announceSlot.state).toBe('paused');
+  // N9: No access names itself, not "writing is turned off".
+  expect(announceSlot.lastError).toBe('this channel is marked No access');
+});
 it('pauses a moved destination with an audit row, no send', async () => {
   const teamId = seedTeam();
   expect(teamId).toBeTruthy();
@@ -497,6 +637,21 @@ it('pauses a moved destination with an audit row, no send', async () => {
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
   expect(send).not.toHaveBeenCalled();
   expect(taskNudgeRepo.listDeliveries(scope).every((d) => d.outcome === 'paused')).toBe(true);
+  for (const slot of taskNudgeRepo.listSlots(scope))
+    if (slot.state === 'paused')
+      expect(slot.lastError).toBe('destination missing, moved, or unavailable');
+});
+it('a nudge pass with no cached guild claims nothing (N1)', async () => {
+  const teamId = seedTeam();
+  seedTask(teamId, { title: 'Build' });
+  planTaskNudges(scope, monday);
+  const uncached = { ...client, guilds: { cache: new Map() } } as unknown as Client;
+
+  expect(await deliverTaskNudges(scope, uncached, discord, monday, { enabled: true })).toBe(0);
+
+  expect(send).not.toHaveBeenCalled();
+  expect(react).not.toHaveBeenCalled();
+  for (const slot of taskNudgeRepo.listSlots(scope)) expect(slot.state).toBe('pending');
 });
 
 function seedEvaluateWorld(reportId = REPLY_MSG) {

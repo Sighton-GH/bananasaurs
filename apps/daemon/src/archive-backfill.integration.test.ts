@@ -349,7 +349,7 @@ describe('category-covered channels (B2, ADR 0047 amendment)', () => {
     const { source, worker } = buildWorker(() => CATEGORY);
     seedCategoryCoverage(250, source);
     archiveRepo.disableCategory(scope, CATEGORY);
-    // disable-category removed the derived row: the job finds nothing.
+    // delete-category removed the derived row: the job finds nothing.
     const tick = await worker.runOnce();
     expect(tick.status).toBe('completed');
     expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(0);

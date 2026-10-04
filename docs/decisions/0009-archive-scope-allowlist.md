@@ -43,3 +43,4 @@ All values are dashboard-configurable. The defaults above are what `PRIVACY.md` 
 - Storage forecasting matters much less. The alerts in `docs/15` stay, but drop in priority.
 - ADR 0007's rationale survives for moderation evidence; its "indefinite by default for everything deleted" does not.
 - Backfill is bounded and cheap: only enabled channels, and only when the owner asks.
+Amended by ADR 0126 (2026-10-02): turning Archive off now only pauses recording and keeps history until explicitly deleted.

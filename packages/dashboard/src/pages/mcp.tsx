@@ -45,6 +45,15 @@ const ROLE_POLICY_MODES: readonly RolePolicyMode[] = ['below-bot', 'allowlist'];
 const ROLE_ALLOWLIST_PURPOSES: readonly RoleAllowlistPurpose[] = ['grant', 'ping'];
 
 /**
+ * Owner decision 2026-10-03: rows the Write seed wrote carry no human
+ * author. The sentinel value is `WRITE_SEED_ACCOUNT_ID` in
+ * `packages/storage/src/repos/mcp-send.ts` (compared by value here — the
+ * dashboard bundle must not import storage); it renders as `Initial setup`.
+ */
+const formatSendAddedBy = (addedByAccountId: string): string =>
+  addedByAccountId === 'system:write-seed' ? 'Initial setup' : addedByAccountId;
+
+/**
  * A server refusal from the allow-role write, as one inline sentence. The
  * route answers 404 `no-such-role` and 409 `role-everyone` / `role-managed` /
  * `role-dangerous`; anything else falls back to the catalogued error text.
@@ -413,7 +422,11 @@ export function McpPage() {
                   {
                     key: 'addedBy',
                     header: 'Added by',
-                    cell: (e2) => <span className="whitespace-nowrap">{e2.addedByAccountId}</span>,
+                    cell: (e2) => (
+                      <span className="whitespace-nowrap">
+                        {formatSendAddedBy(e2.addedByAccountId)}
+                      </span>
+                    ),
                   },
                   {
                     key: 'addedAt',

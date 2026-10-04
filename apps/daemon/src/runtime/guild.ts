@@ -97,7 +97,12 @@ import { websiteFetchHeaders } from '../assistant/website-fetch-headers.js';
 import { conversationPruneHandler } from '../jobs/conversation-prune.js';
 import { createGitHubClient } from '../assistant/github-client.js';
 import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
-import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
+import {
+  assistantWriteGateFor,
+  createReminderDelivery,
+  reminderStoreFor,
+} from '../assistant/reminder-delivery.js';
+import { channelAccessFor } from '../channels/access.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { assistantSummariseHandler, type SummariseModelPort } from '../jobs/assistant-summarise.js';
@@ -414,6 +419,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
     isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
     hasCategoryRow: (channelId) => archiveRepo.hasCategoryRow(scope, channelId),
+    hasPausedOwnRow: (channelId) => archiveRepo.hasPausedOwnRow(scope, channelId),
     parentIncludesThreads: (channelId) => archiveRepo.parentIncludesThreads(scope, channelId),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
@@ -787,6 +793,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   // Task 7: captured once for the closures below, so neither needs a
   // non-null assertion after its explicit undefined check.
   const settings = deps.instanceSettings;
+  // ADR 0126: one guild-bound `ChannelAccess` for the assistant's three
+  // consumers (the mention subscriber, the invoke job and the service).
+  // Stateless — every check re-resolves, so a moved channel or a changed row
+  // takes effect on the next call.
+  const channelAccess = channelAccessFor(client, scope);
   const assistantService = createAssistantService(
     scope,
     instance,
@@ -979,6 +990,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // ADR 0092 decision 2: the live channel-context window from the AI tuning
     // settings. Absent means off, and the `channel_history` tool stays hidden.
     settings === undefined ? undefined : () => settings.get('assistant.channelContextMessages'),
+    // ADR 0126: Read gates the `channel_history` tool declaration.
+    channelAccess,
     deps.assistantWebSearch,
   );
   const { interactionTokenSealer } = deps;
@@ -1121,6 +1134,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       guildId,
       botUserId,
       service: assistantService,
+      // ADR 0126: Write gates the reply — a mention in a channel the bot may
+      // not post in never reaches the queue.
+      channelAccess,
       enqueue: (input) => {
         const result = jobRepo.enqueue(scope, {
           ...input,
@@ -1211,6 +1227,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         // ADR 0089: channel context for mentions, beside the quote fetch.
         fetchChannelMessages: (channelId, opts) =>
           discord.fetchChannelMessages(guildId, channelId, opts),
+        // ADR 0126: Write re-gates the reply at run time; Read gates the
+        // live channel-context fetches. The quoted message fetch stays
+        // ungated (a handed message).
+        channelAccess,
+        guildReady: () => client.guilds.cache.get(guildId)?.available === true,
         ...(settings === undefined
           ? {}
           : {
@@ -1244,7 +1265,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
       deliverRemindersHandler({
         store: reminderStoreFor(scope),
-        delivery: createReminderDelivery(guildId, discord, { client, scope, logger }),
+        delivery: createReminderDelivery(guildId, discord, assistantWriteGateFor(client, scope), {
+          client,
+          scope,
+          logger,
+        }),
         now,
         logger,
       }),

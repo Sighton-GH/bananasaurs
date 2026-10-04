@@ -598,6 +598,58 @@ describe('audit-log entries and bulk deletes', () => {
   });
 });
 
+describe('No-access veto through the category (ADR 0126)', () => {
+  const THREAD = '555555555555555555';
+  const PARENT = '666666666666666666';
+  const CATEGORY = '777777777777777777';
+
+  const threadEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
+    ...editEvent(),
+    channelId: THREAD,
+    parentChannelId: PARENT,
+    categoryId: CATEGORY,
+    ...over,
+  });
+
+  it('logs a messageCreate in a thread when nothing above it is excluded (control)', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    await createLoggingSubscriber(fake.ports).handle(
+      threadEvent({ kind: 'messageCreate', editedTimestampMs: undefined }),
+    );
+    expect(fake.sent).toHaveLength(1);
+  });
+
+  it('does not log a messageCreate in a thread whose category is excluded', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.excluded.add(CATEGORY);
+    await createLoggingSubscriber(fake.ports).handle(
+      threadEvent({ kind: 'messageCreate', editedTimestampMs: undefined }),
+    );
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.enqueued).toHaveLength(0);
+  });
+
+  it('does not log a messageUpdate in a thread whose category is excluded', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.excluded.add(CATEGORY);
+    await createLoggingSubscriber(fake.ports).handle(threadEvent({ kind: 'messageUpdate' }));
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.enqueued).toHaveLength(0);
+  });
+
+  it('enqueues no attribution job for a messageDelete in a thread whose category is excluded', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.excluded.add(CATEGORY);
+    await createLoggingSubscriber(fake.ports).handle(threadEvent({ kind: 'messageDelete' }));
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.enqueued).toHaveLength(0);
+  });
+});
+
 describe('createLogPoster', () => {
   const warnItem = () => ({
     eventKind: 'member_warn',

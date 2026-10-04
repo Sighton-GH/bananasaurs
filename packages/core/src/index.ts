@@ -615,6 +615,7 @@ export {
 } from './ops/commands/reads.js';
 
 export * from './channels/scope.js';
+export * from './channels/access.js';
 export type {
   GenerateTextRequest,
   GenerateTextResponse,

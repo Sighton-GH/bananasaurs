@@ -262,6 +262,28 @@ describe('mcp allowlist', () => {
     expect(response.ok && response.text).toContain(new Date(NOW - 86_400_000).toISOString());
   });
 
+  it('renders the write-seed sentinel as Initial setup, never the raw id', async () => {
+    const h = harness({
+      listSendAllowlist: () => [
+        { channelId: CHANNEL, addedByAccountId: 'system:write-seed', addedAt: NOW },
+      ],
+    });
+    const response = await h.run('mcp allowlist');
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('Initial setup');
+    expect(response.ok && response.text).not.toContain('system:write-seed');
+    // The JSON data keeps the raw id: the label is presentation only.
+    expect(response.ok && response.data).toEqual([
+      {
+        channelId: CHANNEL,
+        addedByAccountId: 'system:write-seed',
+        addedAt: NOW,
+        scopeKind: 'channel',
+        coverage: 1,
+      },
+    ]);
+  });
+
   it('the JSON data carries scopeKind and coverage alongside the text (M4)', async () => {
     const h = harness({
       listSendAllowlist: () => [

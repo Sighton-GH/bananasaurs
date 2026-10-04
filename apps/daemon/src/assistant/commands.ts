@@ -6,6 +6,7 @@ import {
   type AssistantInvokePayload,
   type AssistantTrace,
   type AssistantTraceIncluded,
+  type ChannelAccess,
   type DomainEvent,
   type GenerationMessage,
   type KnownMessage,
@@ -235,6 +236,13 @@ export interface AssistantCommandDeps {
    * serial per-guild dispatch chain, so a slow Discord call never stalls it.
    */
   readonly sendTyping?: ((channelId: string) => Promise<void>) | undefined;
+  /**
+   * ADR 0126: Write gates the reply. When set, a mention in a channel the
+   * bot may not post in is dropped after routing and before anything is
+   * enqueued — no queue, no reply, no typing. Optional so existing test
+   * fixtures compile; absent means no gate.
+   */
+  readonly channelAccess?: Pick<ChannelAccess, 'check'> | undefined;
 }
 
 export const createAssistantCommandSubscriber = (deps: AssistantCommandDeps): Subscriber => ({
@@ -311,6 +319,28 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
   // 14: the payload also carries the message
   // identity the job needs — the message id for the reply and the link, and
   // the reply reference for the conversation resolver.
+  //
+  // ADR 0126: Write gates the reply. A mention in a channel the bot may not
+  // post in stops here — after routing (so the shape stays "routed then
+  // refused") but before the enqueue, the reply and the typing indicator.
+  // The invoke job re-checks at run time; this early drop just saves the
+  // queue round trip.
+  if (deps.channelAccess !== undefined) {
+    const decision = await deps.channelAccess.check('write', event.channelId);
+    if (!decision.allowed) {
+      deps.logger.info(
+        safeLogFields({
+          component: 'assistant-mention',
+          guildId: event.guildId,
+          channelId: event.channelId,
+          purpose: 'write',
+          reason: decision.reason,
+        }),
+        'assistant mention skipped: channel not writable',
+      );
+      return;
+    }
+  }
   try {
     const queued = deps.enqueue({
       kind: JOB_KINDS.assistantInvoke,

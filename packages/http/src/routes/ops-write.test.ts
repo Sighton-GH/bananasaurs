@@ -6,6 +6,7 @@ import {
 } from '@bananasaurs/storage/test-support';
 import {
   accountRepo,
+  archiveRepo,
   authzRepo,
   effectRepo,
   eligibilityRepo,
@@ -127,6 +128,10 @@ const ALL_CALLS: readonly Call[] = [
   { method: 'DELETE', url: '/api/archive/channels/333333333333333333' },
   { method: 'POST', url: '/api/archive/categories', payload: { channelId: '333333333333333333' } },
   { method: 'DELETE', url: '/api/archive/categories/333333333333333333' },
+  { method: 'POST', url: '/api/archive/channels/333333333333333333/pause' },
+  { method: 'POST', url: '/api/archive/channels/333333333333333333/resume' },
+  { method: 'POST', url: '/api/archive/categories/333333333333333333/pause' },
+  { method: 'POST', url: '/api/archive/categories/333333333333333333/resume' },
   {
     method: 'POST',
     url: '/api/archive/channels/333333333333333333/threads',
@@ -153,6 +158,18 @@ const ALL_CALLS: readonly Call[] = [
     payload: { channelId: '333333333333333333', accountId: ACCOUNT },
   },
   { method: 'DELETE', url: '/api/send-allowlist/categories/333333333333333333' },
+  {
+    method: 'POST',
+    url: '/api/read-scope',
+    payload: { channelId: '333333333333333333' },
+  },
+  { method: 'DELETE', url: '/api/read-scope/333333333333333333' },
+  {
+    method: 'POST',
+    url: '/api/read-scope/categories',
+    payload: { channelId: '333333333333333333' },
+  },
+  { method: 'DELETE', url: '/api/read-scope/categories/333333333333333333' },
   { method: 'POST', url: '/api/mcp/tokens/t1/revoke' },
   { method: 'POST', url: '/api/mcp/clients/c1/revoke' },
   { method: 'POST', url: '/api/role-policy', payload: { grant: 'allowlist' } },
@@ -1073,6 +1090,123 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(response.json()).toMatchObject({ error: 'guild-not-archive-enabled' });
   });
 
+  it('pauses and resumes an archive channel without touching its messages', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const headers = { cookie, [CSRF]: csrf };
+    const scope = t.scopes.forGuild(GUILD);
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels',
+      headers,
+      payload: { channelId: '333333333333333333', attachmentPolicy: 'none' },
+    });
+    expect(enabled.statusCode).toBe(200);
+    // A message to prove the pause keeps history.
+    archiveRepo.upsertMessage(scope, {
+      messageId: '900000000000000010',
+      channelId: '333333333333333333',
+      authorId: '100000000000000001',
+      content: 'kept',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    expect(archiveRepo.countMessages(scope, '333333333333333333')).toBe(1);
+
+    const pause = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels/333333333333333333/pause',
+      headers,
+    });
+    expect(pause.statusCode).toBe(200);
+    expect(pause.json()).toMatchObject({ outcome: 'paused' });
+    expect(archiveRepo.countMessages(scope, '333333333333333333')).toBe(1);
+
+    const resume = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels/333333333333333333/resume',
+      headers,
+    });
+    expect(resume.statusCode).toBe(200);
+    expect(resume.json()).toMatchObject({ outcome: 'resumed' });
+    expect(archiveRepo.countMessages(scope, '333333333333333333')).toBe(1);
+
+    const rows = effectRepo.tailAudit(scope, { limit: 10 });
+    expect(rows.map((row) => row.action)).toContain('archive_channel.paused');
+    expect(rows.map((row) => row.action)).toContain('archive_channel.resumed');
+  });
+
+  it('pauses and resumes an archive category', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories',
+      headers,
+      payload: { channelId: '999999999999999999' },
+    });
+    expect(enabled.statusCode).toBe(200);
+
+    const pause = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories/999999999999999999/pause',
+      headers,
+    });
+    expect(pause.statusCode).toBe(200);
+    expect(pause.json()).toMatchObject({ outcome: 'paused' });
+
+    const resume = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories/999999999999999999/resume',
+      headers,
+    });
+    expect(resume.statusCode).toBe(200);
+    expect(resume.json()).toMatchObject({ outcome: 'resumed' });
+  });
+
+  it('refuses category pause/resume for a non-category id', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    // 333333333333333333 is a text channel in the static fixture, not a
+    // category — the same 'no-such-channel' the daemon wiring returns from
+    // the live guild cache.
+    const pause = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories/333333333333333333/pause',
+      headers,
+    });
+    expect(pause.statusCode).toBe(404);
+    expect(pause.json()).toMatchObject({ error: 'no-such-channel' });
+
+    const resume = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories/333333333333333333/resume',
+      headers,
+    });
+    expect(resume.statusCode).toBe(404);
+    expect(resume.json()).toMatchObject({ error: 'no-such-channel' });
+  });
+
+  it('refuses archive pause without the capability', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels/333333333333333333/pause',
+      headers: { cookie, [CSRF]: csrf },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
   it('sets thread inclusion on an archived channel; unknown channels are 404', async () => {
     await rebuildWithArchive();
     const { cookie, csrf } = await signIn();
@@ -1173,6 +1307,148 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     const repeat = await app.inject({
       method: 'DELETE',
       url: '/api/send-allowlist/categories/999999999999999999',
+      headers,
+    });
+    expect(repeat.json()).toEqual({ ok: true, outcome: 'not-allowed' });
+    expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length).toBe(before);
+  });
+});
+
+describe('read scope routes (ADR 0126)', () => {
+  const rebuildWithReadRoutes = async (): Promise<void> => {
+    await app.close();
+    deps = {
+      ...deps,
+      portsFor: (scope) => testPortsFor(scope, () => clock, { instanceScope: t.scopes.instance() }),
+    };
+    app = createServer({
+      deps,
+      registerRoutes: (instance, guard, d) => {
+        registerOpsReadRoutes(instance, guard, d);
+        registerOpsWriteRoutes(instance, guard, d);
+      },
+    });
+  };
+
+  it('allows, lists and disallows a channel with audit attribution and no content', async () => {
+    await rebuildWithReadRoutes();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write', 'config.read']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const allowed = await app.inject({
+      method: 'POST',
+      url: '/api/read-scope',
+      headers,
+      payload: { channelId: '333333333333333333' },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toEqual({ outcome: 'allowed' });
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain('read_scope.allow');
+    // The audit row names the channel, never message content.
+    expect(JSON.stringify(rows)).not.toContain('content');
+
+    const list = await app.inject({ method: 'GET', url: '/api/read-scope', headers });
+    expect(list.statusCode).toBe(200);
+    const listBody: {
+      entries: { channelId: string; scopeKind: string; addedAt: number }[];
+    } = list.json();
+    expect(listBody.entries).toEqual([
+      { channelId: '333333333333333333', scopeKind: 'channel', addedAt: clock },
+    ]);
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/api/read-scope/333333333333333333',
+      headers,
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toEqual({ ok: true, outcome: 'removed' });
+    const rowsAfter = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rowsAfter.map((row) => row.action)).toContain('read_scope.disallow');
+
+    // A repeat disable changes nothing and audits nothing.
+    const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length;
+    const repeat = await app.inject({
+      method: 'DELETE',
+      url: '/api/read-scope/333333333333333333',
+      headers,
+    });
+    expect(repeat.json()).toEqual({ ok: true, outcome: 'not-allowed' });
+    expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length).toBe(before);
+  });
+
+  it('answers 403 no-grant without the capability on every read-scope route', async () => {
+    await rebuildWithReadRoutes();
+    const { cookie, csrf } = await signIn();
+    const headers = { cookie, [CSRF]: csrf };
+
+    const posts: { method: 'POST'; url: string; payload?: Record<string, unknown> }[] = [
+      { method: 'POST', url: '/api/read-scope', payload: { channelId: '333333333333333333' } },
+      {
+        method: 'POST',
+        url: '/api/read-scope/categories',
+        payload: { channelId: '999999999999999999' },
+      },
+    ];
+    for (const call of posts) {
+      const response = await app.inject({ ...call, headers });
+      expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
+      expect(response.json(), `${call.method} ${call.url}`).toMatchObject({ error: 'no-grant' });
+    }
+    for (const url of [
+      '/api/read-scope',
+      '/api/read-scope/333333333333333333',
+      '/api/read-scope/categories/999999999999999999',
+    ]) {
+      const response = await app.inject({
+        method: url === '/api/read-scope' ? 'GET' : 'DELETE',
+        url,
+        headers,
+      });
+      expect(response.statusCode, url).toBe(403);
+      expect(response.json(), url).toMatchObject({ error: 'no-grant' });
+    }
+  });
+
+  it('allows and disallows a read category with audit attribution', async () => {
+    await rebuildWithReadRoutes();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write', 'config.read']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const allowed = await app.inject({
+      method: 'POST',
+      url: '/api/read-scope/categories',
+      headers,
+      payload: { channelId: '999999999999999999' },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toEqual({ outcome: 'allowed' });
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain('read_scope.allow');
+
+    const list = await app.inject({ method: 'GET', url: '/api/read-scope', headers });
+    const listBody: { entries: { channelId: string; scopeKind?: string }[] } = list.json();
+    expect(listBody.entries.find((e) => e.channelId === '999999999999999999')?.scopeKind).toBe(
+      'category',
+    );
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/api/read-scope/categories/999999999999999999',
+      headers,
+    });
+    expect(removed.json()).toEqual({ ok: true, outcome: 'removed' });
+    const rowsAfter = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rowsAfter.map((row) => row.action)).toContain('read_scope.disallow');
+
+    const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length;
+    const repeat = await app.inject({
+      method: 'DELETE',
+      url: '/api/read-scope/categories/999999999999999999',
       headers,
     });
     expect(repeat.json()).toEqual({ ok: true, outcome: 'not-allowed' });
