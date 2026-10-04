@@ -51,6 +51,7 @@ export {
 export { registerOpsReadRoutes } from './routes/ops-read.js';
 export { registerOpsWriteRoutes } from './routes/ops-write.js';
 export { registerAutomodRoutes } from './routes/automod.js';
+export { registerAutomodStateRoutes } from './routes/automod-state.js';
 export { registerCaseRoutes } from './routes/cases.js';
 export { registerWriteRoutes } from './routes/write.js';
 export { registerOAuthRoutes } from './routes/oauth.js';
