@@ -32,7 +32,6 @@ describe('the link_domain predicate', () => {
   const rule = (domains: { domain: string; listType: 'allow' | 'deny' }[]): AutomodRule => ({
     ruleId: 'r1',
     kind: 'link_domain',
-    mode: 'test' as const,
     config: '{"mode":"deny"}',
     terms: [],
     allowlist: [],

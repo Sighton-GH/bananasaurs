@@ -18,8 +18,8 @@ const indented = (text: string, by = 4): string =>
 
 /**
  * `automod review` / `automod verdict` (ADR 0041 §7, plan ruling PR-6): the
- * headless review path the observe window's first fortnight runs on, before
- * Slice 9's dashboard screen exists.
+ * terminal review path beside the dashboard's Review page. Flags tune a rule
+ * (ADR 0121).
  */
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
@@ -42,41 +42,17 @@ const projectReviewableMatch = (match: OpsReviewableMatch): JsonValue => ({
   matchedSnippet: match.matchedSnippet,
   actionTaken: match.actionTaken,
   trace: match.trace ?? null,
-  fixtureContent: match.fixtureContent ?? null,
 });
 
 /**
  * Renders one match for a human to rule on.
  *
- * CRITICAL-2: the message and the matched snippet are their own lines,
- * printed unconditionally, independent of whether a trace is present, parses,
- * or carries a span. Before this fix both were fetched, carried through
- * `OpsReviewableMatch`, projected into `data` — and only ever reached `text`
- * as a side effect of `renderTrace`'s excerpt line, which is gated on
- * `trace.span !== undefined`. That meant a malformed trace (case 1 below)
- * rendered with no evidence at all, and the first predicate with no natural
- * span — `rapid_spam`, `duplicate_message`, `mention_spam`, `attachment_type`,
- * all landing during this same observe window — would have produced a review
- * queue where no message was ever shown.
- *
- * Rendering rules, neither decorative:
- *
- * - `message` prints whenever `fixtureContent` is present; otherwise "message
- *   no longer stored" — never the matched snippet standing in for the whole
- *   message, because a reviewer judging a false positive from a fragment they
- *   think is the full text would judge wrong.
- * - `matched` prints unconditionally, from `matchedSnippet`/`matchedCategory`
- *   — the documented post-flip and post-`/forgetme` fallback (plan ruling
- *   PR-2, ADR 0041's consequences, `docs/reports/release2-slices-1-6-ledger.md`
- *   handoff item 5) — labelled distinctly from `message` so the two are never
- *   mistaken for each other.
- * - A trace `parseMatchTrace` rejects still renders — as a reason, under the
- *   message and the snippet, not instead of them — because stored JSON is
- *   untrusted input (CLAUDE.md rule 3) and a trace this build cannot parse is
- *   still a match a human must rule on.
- * - `renderTrace`'s excerpt (when a span exists) stays as an *addition* on
- *   top of `message`, highlighting where in it the rule matched — not the
- *   only route to the text itself.
+ * The matched snippet is its own line, printed unconditionally, labelled
+ * `matched` so it is never mistaken for the whole message — Bananasaurs keeps
+ * no copy of that (ADR 0121). A trace `parseMatchTrace` rejects still renders
+ * — as a reason, under the snippet — because stored JSON is untrusted input
+ * (CLAUDE.md rule 3) and a trace this build cannot parse is still a match a
+ * human must rule on.
  *
  * The follow-up `automod verdict` command is printed under every match: the
  * whole point of shipping this before the dashboard is that a human reviews
@@ -89,21 +65,8 @@ const renderReviewableMatch = (match: OpsReviewableMatch): string => {
       `${iso(match.at)}  ${match.actionTaken}`,
   ];
 
-  if (match.fixtureContent === undefined) {
-    lines.push(
-      indented(
-        'message no longer stored (removed at the member’s request, or the rule was enforcing)',
-      ),
-    );
-  } else {
-    // Padded to 16 columns, the same convention `renderTrace` uses for its
-    // own field labels, so the two blend into one reading rather than two
-    // inconsistently-aligned ones.
-    lines.push(indented(`${'message'.padEnd(16)}${match.fixtureContent}`));
-  }
-
-  // Always shown, and always distinct from `message` above: this is the
-  // substring the rule matched on, not the whole message (CRITICAL-2).
+  // Padded to 16 columns, the same convention `renderTrace` uses for its own
+  // field labels, so the two blend into one reading.
   lines.push(
     indented(`${'matched'.padEnd(16)}"${match.matchedSnippet}"  (${match.matchedCategory})`),
   );
@@ -118,7 +81,7 @@ const renderReviewableMatch = (match: OpsReviewableMatch): string => {
     if (!parsed.ok) {
       lines.push(indented(`trace could not be read: ${parsed.detail}`));
     } else {
-      lines.push(indented(renderTrace(parsed.trace, match.fixtureContent)));
+      lines.push(indented(renderTrace(parsed.trace)));
     }
   }
 
@@ -216,39 +179,18 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
       };
     }
 
-    const conflicted = outcome === 'recorded-with-label-conflict';
-
     return {
-      // The verdict is stored either way — this is a success line, not a
-      // warning about a failure. But the reviewer has to be told when the
-      // regression corpus gained nothing from their work, because from their
-      // side the two cases look identical: they ruled on one match and
-      // pressed on. A fixture's label has no rule dimension, so when another
-      // rule's verdict on the same message implies the opposite label there
-      // is no honest single answer and the label resets to unlabelled
-      // (IMPORTANT-1). Saying so here is what stops that being invisible.
-      text: conflicted
-        ? `recorded ${args.verdict} for ${args.eventId} (${reviewedBy})\n` +
-          `note: another rule’s verdict on this same message disagrees, so the saved ` +
-          `example was reset to unlabelled rather than one verdict overwriting the ` +
-          `other — your verdict still counts toward the rule’s false-positive rate, ` +
-          `but this message is no longer part of the regression corpus`
-        : `recorded ${args.verdict} for ${args.eventId} (${reviewedBy})`,
+      text: `recorded ${args.verdict} for ${args.eventId} (${reviewedBy})`,
       data: {
         ok: true,
         eventId: args.eventId,
         verdict: args.verdict,
-        fixtureLabelConflict: conflicted,
       },
       audit: {
         action: 'automod.verdict_recorded',
         subjectType: 'mod_case_event',
         subjectId: args.eventId,
-        // The conflict goes in the audit row too: it is a change to the
-        // corpus (a label removed) made as a side effect of this command,
-        // and an audit trail that recorded only the verdict would not show
-        // where the label went.
-        after: { verdict: args.verdict, fixtureLabelConflict: conflicted },
+        after: { verdict: args.verdict },
       },
     };
   },

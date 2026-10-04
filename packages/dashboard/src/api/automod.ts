@@ -88,8 +88,6 @@ export interface ReviewableMatch {
   readonly actionTaken: string;
   /** Raw JSON, rendered behind a `<details>`; `undefined` should not occur but is not trusted not to. */
   readonly trace: string | undefined;
-  /** The fixture's whole message, when one was captured; `undefined` once `/forgetme` has removed it. */
-  readonly fixtureContent: string | undefined;
   /** Live server identity; null when Discord no longer knows the id. */
   readonly member: { readonly username: string; readonly displayName: string } | null;
 }

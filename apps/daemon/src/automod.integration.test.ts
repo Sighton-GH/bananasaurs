@@ -20,10 +20,7 @@ import {
   write,
   type GuildScope,
 } from '@bananasaurs/storage';
-import {
-  makeRuleEnforceableForTest,
-  openMigratedTestDatabase,
-} from '@bananasaurs/storage/test-support';
+import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { buildClientOptions } from '@bananasaurs/discord';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
@@ -88,7 +85,7 @@ const buildPipeline = (): Pipeline => {
 };
 
 /** Creates one enabled `keyword_filter` rule with a single term, 'badword'. */
-const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
+const seedRule = (): void => {
   automodRuleRepo.createRule(scope, {
     ruleId: RULE_ID,
     kind: 'keyword_filter',
@@ -103,17 +100,6 @@ const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
     defaultAction: 'delete_and_case',
   });
   automodRuleRepo.addTerm(scope, { termId: TERM_ID, categoryId: CATEGORY_ID, text: 'badword' });
-  if (mode !== 'test') {
-    // PR-31 (plan ruling): `setRuleMode`'s enforce path now runs through the
-    // ADR 0042 release gate, which none of this file's tests are about — a
-    // real caller reaches `mode: 'enforce'` through 20 reviewed matches and
-    // a sign-off, and this test-only helper stands in for that so the
-    // subscriber tests below don't have to build one.
-    if (mode === 'enforce') {
-      makeRuleEnforceableForTest(scope, RULE_ID, discord.now());
-    }
-    automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode, now: discord.now() });
-  }
 };
 
 /** Registers a fake message and dispatches it as a real `messageCreate`. */
@@ -171,7 +157,7 @@ afterEach(() => {
 
 describe('automod, end to end on the fake gateway', () => {
   it('deletes a matching message and opens a case when the switch is on', async () => {
-    seedRule('enforce');
+    seedRule();
 
     await sendMessage(MEMBER, 'badword here');
 
@@ -184,11 +170,11 @@ describe('automod, end to end on the fake gateway', () => {
   /**
    * The feedback loop this closes: the bot deletes a flagged message, the
    * `message_delete` logging route posts the deleted content, discord.js
-   * emits that post as a `messageCreate`, and an enforce-mode rule matches
+   * emits that post as a `messageCreate`, and an enabled rule matches
    * the quoted word in the bot's own log entry.
    */
   it('never acts on its own messages', async () => {
-    seedRule('enforce');
+    seedRule();
 
     await sendMessage(BOT_USER_ID, 'badword here');
 
@@ -197,7 +183,7 @@ describe('automod, end to end on the fake gateway', () => {
   });
 
   it('does not delete from an exempt role', async () => {
-    seedRule('enforce');
+    seedRule();
     automodRuleRepo.addRoleExemption(scope, { ruleId: RULE_ID, roleId: EXEMPT_ROLE });
 
     await sendMessage(EXEMPT_MEMBER, 'badword here');
@@ -208,7 +194,7 @@ describe('automod, end to end on the fake gateway', () => {
 
   it('makes no Discord call when the switch is on watch', async () => {
     guildRepo.setAutomodState(scope, 'watch', discord.now());
-    seedRule('test');
+    seedRule();
 
     await sendMessage(MEMBER, 'badword here');
 
@@ -232,7 +218,7 @@ describe('automod, end to end on the fake gateway', () => {
     write(scope, ({ db }) => {
       db.update(schema.guilds).set({ dryRun: 1 }).where(scope.only(schema.guilds)).run();
     });
-    seedRule('enforce');
+    seedRule();
 
     await sendMessage(MEMBER, 'badword here');
 
@@ -250,7 +236,7 @@ describe('automod, end to end on the fake gateway', () => {
    * the same error shape production sees.
    */
   it('treats a message that is already gone as a successful deletion', async () => {
-    seedRule('enforce');
+    seedRule();
     nextMessageId += 1n;
     const messageId = nextMessageId.toString();
     discord.defineMessage({ channelId: CHANNEL, messageId, authorId: MEMBER });
@@ -273,7 +259,7 @@ describe('automod, end to end on the fake gateway', () => {
     write(scope, ({ db }) => {
       db.update(schema.guilds).set({ killswitch: 1 }).where(scope.only(schema.guilds)).run();
     });
-    seedRule('enforce');
+    seedRule();
 
     await sendMessage(MEMBER, 'badword here');
 
@@ -292,7 +278,7 @@ describe('automod, end to end on the fake gateway', () => {
    */
   it('does not carry watch matches into the escalation ladder', async () => {
     guildRepo.setAutomodState(scope, 'watch', discord.now());
-    seedRule('test');
+    seedRule();
 
     for (let i = 0; i < 6; i += 1) {
       await sendMessage(MEMBER, 'badword here');
@@ -317,7 +303,7 @@ describe('automod, end to end on the fake gateway', () => {
   });
 
   it('an escalation against a fake owner member is refused and durably recorded', async () => {
-    seedRule('enforce');
+    seedRule();
 
     // Drive violationCount to 6 (the kick tier, mod-cases.ts's
     // `nextEscalationTier`) via repeated matching messages from the owner.
@@ -325,7 +311,7 @@ describe('automod, end to end on the fake gateway', () => {
       await sendMessage(OWNER, 'badword here');
     }
 
-    // The message deletion happens unconditionally in enforce mode, before
+    // The message deletion happens unconditionally with automod On, before
     // escalation is even attempted, and a refusal does not undo it.
     expect(discord.restCalls('deleteMessage')).toHaveLength(6);
 
@@ -354,7 +340,7 @@ describe('automod, end to end on the fake gateway', () => {
    * is what ADR 0035 left open and ADR 0039 made sharper.
    */
   it('applies a term added after the subscriber has already matched, with no restart', async () => {
-    seedRule('enforce');
+    seedRule();
 
     await sendMessage(MEMBER, 'zapzap incoming');
     expect(discord.restCalls('deleteMessage')).toHaveLength(0);

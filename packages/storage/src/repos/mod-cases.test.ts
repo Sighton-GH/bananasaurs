@@ -12,7 +12,6 @@ import {
   type ModCaseActionTaken,
 } from './mod-cases.js';
 import { modCases } from '../schema.js';
-import { captureObservedFixture, deleteObservedFixturesForMember } from './automod-fixtures.js';
 import { recordVerdict } from './mod-match-reviews.js';
 import type { GuildScope } from '../scope.js';
 
@@ -584,21 +583,18 @@ describe('listCasesForMember', () => {
 /**
  * `listUnreviewedMatches` (ADR 0041 §5, §7, plan ruling PR-7): matches
  * reviewable exactly when they carry a trace, oldest first, excluding
- * anything already reviewed. Two left joins bring in the review state and
- * the captured fixture without ever losing a row that has neither.
+ * anything already reviewed. A left join brings in the review state without
+ * ever losing a row that has none.
  */
 describe('listUnreviewedMatches', () => {
   /**
-   * Seeds a case and one predicate-match event against it — the shape a
-   * `test`/`observe`-mode automod match really writes: a case event carrying
-   * a trace and, when a fixture was captured from the same message, the
-   * fixture's id.
+   * Seeds a case and one predicate-match event against it — the shape an
+   * automod match on Watch really writes: a case event carrying a trace.
    */
   const seedMatchEvent = (
     s: GuildScope,
     input: {
       readonly eventId: string;
-      readonly fixtureId?: string;
       readonly trace: string | undefined;
       readonly ruleId?: string;
       readonly memberId?: string;
@@ -618,7 +614,6 @@ describe('listUnreviewedMatches', () => {
       matchedSnippet: 'snippet',
       actionTaken: input.trace === undefined ? 'manual_applied' : 'would_delete',
       ...(input.trace === undefined ? {} : { trace: input.trace }),
-      ...(input.fixtureId === undefined ? {} : { fixtureId: input.fixtureId }),
     });
   };
 
@@ -635,40 +630,6 @@ describe('listUnreviewedMatches', () => {
     });
 
     expect(listUnreviewedMatches(scope, { limit: 50 }).map((m) => m.eventId)).toEqual(['traced']);
-  });
-
-  it('brings the whole message along when the corpus still has it', () => {
-    const scope = t.scopes.forGuild(GUILD);
-    const fixtureId = captureObservedFixture(scope, {
-      messageId: '900000000000000001',
-      content: 'the whole matched message',
-      authorId: MEMBER,
-      createdAt: 500,
-      attachments: [],
-    });
-    seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
-
-    const [match] = listUnreviewedMatches(scope, { limit: 50 });
-    expect(match?.fixtureId).toBe(fixtureId);
-    expect(match?.fixtureContent).toBe('the whole matched message');
-  });
-
-  it('still lists a match whose fixture was forgotten', () => {
-    const scope = t.scopes.forGuild(GUILD);
-    const fixtureId = captureObservedFixture(scope, {
-      messageId: '900000000000000002',
-      content: 'a message someone later forgot',
-      authorId: MEMBER,
-      createdAt: 500,
-      attachments: [],
-    });
-    seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
-    deleteObservedFixturesForMember(scope, MEMBER);
-
-    const matches = listUnreviewedMatches(scope, { limit: 50 });
-    expect(matches).toHaveLength(1);
-    expect(matches[0]?.eventId).toBe('e1');
-    expect(matches[0]?.fixtureContent).toBeUndefined();
   });
 
   it('does not list another guild’s matches', () => {

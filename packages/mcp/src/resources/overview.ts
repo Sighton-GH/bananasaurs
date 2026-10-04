@@ -30,7 +30,7 @@ export const OVERVIEW_RESOURCE_NAME = 'server_overview';
 export const OVERVIEW_RESOURCE_URI_TEMPLATE = 'bananasaurs://guild/{guildId}/overview';
 export const OVERVIEW_RESOURCE_DESCRIPTION =
   'One compact server card: channels grouped by category, roles, member ' +
-  'count, panels, and rules by mode. The same card `get_server_overview` ' +
+  'count, panels, and automod rule counts. The same card `get_server_overview` ' +
   'returns, for clients that prefer resources. ' +
   'Refuses when the guild is unreachable.';
 
@@ -55,14 +55,6 @@ export interface OverviewCardInput {
 export type OverviewOutcome =
   | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
   | { readonly ok: false; readonly message: string };
-
-const countByMode = (
-  rules: readonly McpOverviewRule[],
-  mode: string,
-): { readonly total: number; readonly enabled: number } => {
-  const inMode = rules.filter((rule) => rule.mode === mode);
-  return { total: inMode.length, enabled: inMode.filter((rule) => rule.enabled).length };
-};
 
 /** One channel row in the card's JSON: names escaped, topics omitted, `archive` only when true, `type` omitted for plain text channels. */
 const channelRow = (
@@ -147,9 +139,8 @@ export const buildOverviewCard = (input: OverviewCardInput): string => {
       })),
     panels: input.panels.map((p) => ({ id: p.panelId })),
     rules: {
-      test: countByMode(input.rules, 'test'),
-      observe: countByMode(input.rules, 'observe'),
-      enforce: countByMode(input.rules, 'enforce'),
+      total: input.rules.length,
+      enabled: input.rules.filter((rule) => rule.enabled).length,
     },
   };
   return structuredText(head, data);

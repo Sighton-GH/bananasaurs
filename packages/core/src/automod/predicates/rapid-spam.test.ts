@@ -6,7 +6,6 @@ const compile = (config: string, kind = 'rapid_spam'): CompiledPredicate => {
   const rule: AutomodRule = {
     ruleId: 'r1',
     kind,
-    mode: 'test',
     config,
     terms: [],
     allowlist: [],
@@ -113,7 +112,6 @@ describe('the rapid_spam predicate', () => {
     const rule: AutomodRule = {
       ruleId: 'r1',
       kind: 'rapid_spam',
-      mode: 'test',
       config: '{"maxMessages":3,"windowMs":10000,"typo":true}',
       terms: [],
       allowlist: [],
@@ -130,7 +128,6 @@ describe('the rapid_spam predicate', () => {
     const rule: AutomodRule = {
       ruleId: 'r1',
       kind: 'rapid_spam',
-      mode: 'test',
       config: '{"maxMessages":3,"windowMs":1}',
       terms: [],
       allowlist: [],

@@ -790,7 +790,8 @@ describe('the cutover-gate migration (0015-0017, ADR 0042) carries child-table r
     // migrations 0-14 are already recorded as applied. Through
     // `runMigrations`, not `migrate()` directly, which is the exact call
     // this guard exists to prove is safe here (ADR 0042 Amendment 1, R-5).
-    runMigrations(raw, db, MIGRATIONS_FOLDER);
+    // Capped at 0017: 0101 (ADR 0121) later drops the columns read below.
+    runMigrations(raw, db, migrationsFolderUpTo(17));
 
     const rule = raw
       .prepare(

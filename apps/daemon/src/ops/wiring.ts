@@ -24,7 +24,6 @@ import {
   automodRuleRepo,
   effectRepo,
   eligibilityRepo,
-  enforcementGateRepo,
   guildRepo,
   jobRepo,
   listBackups,
@@ -244,9 +243,8 @@ export const opsPortsFor = (
   listUnreviewedNativeHits: (query) => automodAdminRepo.listUnreviewedNativeHits(scope, query),
   nativeBlockedCount: () => automodAdminRepo.countNativeBlocked(scope),
 
-  // Slice 8's dashboard pages (Task 2). The `/automod` rules list and the
-  // `/cutover` board read summaries; `/automod/:ruleId` reads the detail and
-  // dry-runs it; `/cases`, `/cases/:caseId` and `/members/:memberId` read
+  // Slice 8's dashboard pages (Task 2). The `/automod` rules list reads
+  // summaries; `/automod/:ruleId` reads the detail; `/cases`, `/cases/:caseId` and `/members/:memberId` read
   // cases. The two tallies come from `automodAdminRepo`'s grouped counts, so
   // a list is three reads, not one per rule.
   listAutomodRules: () => {
@@ -276,7 +274,6 @@ export const opsPortsFor = (
       allowlist: stored?.allowlist ?? [],
       inviteAllowlist: stored?.inviteAllowlist ?? [],
       linkDomains: stored?.linkDomains ?? [],
-      eligibility: enforcementGateRepo.enforcementEligibility(scope, ruleId),
     };
   },
   listRecentCases: (query) =>
@@ -299,7 +296,6 @@ export const opsPortsFor = (
         refusalReason: event.refusalReason,
         actorId: event.actorId,
         trace: event.trace,
-        fixtureId: event.fixtureId,
       })),
     };
   },
@@ -1355,17 +1351,9 @@ const automodRuleSummary = (
   ruleId: rule.ruleId,
   kind: rule.kind,
   name: rule.name,
-  mode: rule.mode,
   enabled: rule.enabled,
   config: rule.config,
-  cutoverState: rule.cutoverState,
-  observeStartedAt: rule.observeStartedAt,
-  legacyRuleRef: rule.legacyRuleRef,
   countsAsViolation: rule.countsAsViolation,
-  maxFalsePositiveRate: rule.maxFalsePositiveRate,
-  minReviewedMatches: rule.minReviewedMatches,
-  enforceSignedOffBy: rule.enforceSignedOffBy,
-  enforceSignedOffAt: rule.enforceSignedOffAt,
   createdAt: rule.createdAt,
   updatedAt: rule.updatedAt,
   matchCount: matchCounts[rule.ruleId] ?? 0,

@@ -44,7 +44,6 @@ export const isRuleKind = (value: string): value is RuleKind =>
 export interface AutomodRule {
   readonly ruleId: string;
   readonly kind: string;
-  readonly mode: 'test' | 'observe' | 'enforce';
   /** Raw JSON text from `mod_rules.config`. Untrusted until parsed. */
   readonly config: string;
   readonly terms: readonly { text: string; categoryId: string }[];
@@ -52,11 +51,9 @@ export interface AutomodRule {
   readonly inviteAllowlist: readonly { code: string; label: string }[];
   readonly linkDomains: readonly { domain: string; listType: 'allow' | 'deny' }[];
   /**
-   * ADR 0042 §2: a property of the rule, not an inference from `mode`. The
-   * subscriber passes this straight to `openOrResolveCase` on the enforce
-   * path instead of hard-coding `true` — a rule that only deletes (`caps`,
-   * held to the 5% false-positive bar rather than the zero bar a
-   * counter-feeding rule must clear) says so here. Mirrors storage's
+   * ADR 0042 §2: a property of the rule. The subscriber passes this straight
+   * to `openOrResolveCase` when automod is On instead of hard-coding `true`
+   * — a rule that only deletes (`caps`) says so here. Mirrors storage's
    * `StoredAutomodRule.countsAsViolation` field for field; re-declared here
    * rather than imported, per ADR 0014 (storage/core boundary).
    *
@@ -151,41 +148,6 @@ export interface PredicateMatch {
   /** What goes into `mod_case_events.matched_snippet`. */
   readonly snippet: string;
   readonly trace: MatchTrace;
-}
-
-/**
- * One corpus row, as `core` sees it.
- *
- * Re-declared here rather than imported from `@bananasaurs/storage`
- * (ADR 0014), the same arrangement `AutomodRule` has. `packages/storage`'s
- * `AutomodFixture` is the authority on the columns; this is the shape the
- * dry-run evaluator needs, which is a subset — `note` is a reviewer's prose
- * and no predicate reads it.
- */
-export interface FixtureRecord {
-  readonly fixtureId: string;
-  /** Zero-width stripped, exactly as the predicate saw it when captured. */
-  readonly content: string;
-  readonly authorId: string | undefined;
-  readonly label: 'should_match' | 'should_not_match' | 'unlabelled';
-  readonly source: 'observed' | 'handwritten';
-  /** The replay clock. `PredicateInput.atMs` comes from here (ADR 0041 §6). */
-  readonly createdAt: number;
-  /**
-   * Filename, declared content type and size for each file on the message
-   * (OD-3).
-   *
-   * `MessageAttachment` is the same shape the live path carries, deliberately:
-   * `attachment_type` must not be able to tell a replayed fixture from a live
-   * message, because the one-code-path invariant (ADR 0041 section 3) is only
-   * worth something if the input it produces is the same on both sides.
-   *
-   * Empty for a handwritten fixture that names no files, and for every
-   * fixture captured before the OD-3 migration — those rows are real evidence
-   * about a message whose attachments were never recorded, and an empty list
-   * is the honest representation of that.
-   */
-  readonly attachments: readonly MessageAttachment[];
 }
 
 /** A rule compiled once, then evaluated against many messages. */

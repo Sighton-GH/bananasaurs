@@ -795,7 +795,7 @@ function applyConfiguredDryRun(
   );
 }
 
-/** The seeded rule's stable id: `setRuleMode`/`doctor` name it by this later. */
+/** The seeded rule's stable id: `setRuleEnabled`/`doctor` name it by this later. */
 const DEFAULT_AUTOMOD_RULE_ID = 'default-word-filter';
 
 /**
@@ -805,20 +805,18 @@ const DEFAULT_AUTOMOD_RULE_ID = 'default-word-filter';
  * Guarded on `ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)` — **not** on "no
  * *enabled* `keyword_filter` rule exists yet", which this used to check.
  * That first version crashed the whole daemon on a second startup: an owner
- * disabling the seeded rule via `setRuleMode({ enabled: false })` (a real,
- * already-shipped capability, and one spec §8 explicitly expects — "review
- * and tune categories" before anything enforces for real) makes
+ * disabling the seeded rule (a real, already-shipped capability, and one
+ * spec §8 explicitly expects — "review and tune categories" before anything
+ * enforces for real) makes
  * `listEnabledKeywordFilterRules` empty again, so the old guard re-entered
  * this whole function on the next restart and `createRule` threw on the
  * `mod_rules` `(guild_id, rule_id)` primary key it collided with. Checking
  * for the specific id, independent of its enabled state, makes seeding
  * idempotent per rule rather than per "is anything currently enabled" —
  * exactly once, ever, and never touching a row that already exists, so a
- * disabled rule stays disabled. `createRule` (Task 5) always inserts
- * `mode: 'test'` regardless of what is asked — spec §8's rollout rule that
- * automod ships observing, not enforcing, until an owner opts a rule into
- * `enforce` — so there is nothing else to pass here to get that; it is the
- * repository's own default, not a parameter this call chooses.
+ * disabled rule stays disabled. Seeding enables the rule but acts on nothing
+ * by itself: the guild's automod switch starts Off (ADR 0121), and only an
+ * owner turns it to Watch or On.
  *
  * Skipped in read-only mode for the same reason `applyConfiguredDryRun` skips:
  * `createRule`/`addCategory`/`addTerm` all write, and a read-only process
@@ -870,7 +868,7 @@ function seedAutomodDefaults(
       ruleId: DEFAULT_AUTOMOD_RULE_ID,
       outcome: 'automod-seeded',
     }),
-    'seeded the default automod word list in test mode; an owner opts it into enforce',
+    'seeded the default automod word list; automod acts only once an owner switches it on',
   );
 }
 

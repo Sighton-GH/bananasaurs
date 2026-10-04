@@ -4,12 +4,7 @@ import { pino } from 'pino';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
-import type {
-  DomainEvent,
-  MessageAttachment,
-  MessageEvent,
-  ReactionEvent,
-} from '../discord/events.js';
+import type { DomainEvent, MessageEvent, ReactionEvent } from '../discord/events.js';
 import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
 import type { AutomodRule } from './predicates/types.js';
 import * as registry from './predicates/registry.js';
@@ -83,7 +78,6 @@ const moderationAuth: Authorized<'moderation.act'> = (() => {
 const rule = (over: Partial<AutomodRule> & { ruleId: string }): AutomodRule => ({
   kind: 'keyword_filter',
   config: '{}',
-  mode: 'enforce',
   terms: [{ text: 'badword', categoryId: 'cat-1' }],
   allowlist: [],
   inviteAllowlist: [],
@@ -147,13 +141,6 @@ interface Harness {
     readSafetyState: number;
     authorRoleIds: string[];
     nextEscalationTier: number[];
-    captureFixture: {
-      messageId: string;
-      content: string;
-      authorId: string;
-      atMs: number;
-      attachments: readonly MessageAttachment[];
-    }[];
   };
 }
 
@@ -185,10 +172,6 @@ function buildHarness(
     /** Thrown by `authorRoleIds`, i.e. `fetchMember` rejecting. */
     authorRoleIdsError?: Error;
     authorRoleIds?: readonly string[];
-    /** What `captureFixture` returns; `undefined` by default (nothing captured). */
-    captureFixtureResult?: string;
-    /** Thrown by `captureFixture`, mimicking a corpus write failure. */
-    captureFixtureError?: Error;
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -201,7 +184,6 @@ function buildHarness(
     readSafetyState: 0,
     authorRoleIds: [],
     nextEscalationTier: [],
-    captureFixture: [],
   };
 
   const exempt = opts.exemptRuleIds ?? new Set<string>();
@@ -255,11 +237,6 @@ function buildHarness(
       calls.readSafetyState += 1;
       const state = opts.safetyState === undefined ? LIVE : opts.safetyState;
       return state ?? undefined;
-    },
-    captureFixture: (input) => {
-      calls.captureFixture.push(input);
-      if (opts.captureFixtureError !== undefined) throw opts.captureFixtureError;
-      return opts.captureFixtureResult;
     },
   };
 
@@ -318,7 +295,7 @@ describe('automod subscriber', () => {
    */
   it('never processes a message authored by a bot, however well it matches', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-bot', mode: 'enforce' })],
+      rules: [rule({ ruleId: 'rule-bot' })],
     });
     const subscriber = createAutomodSubscriber(deps);
 
@@ -331,7 +308,7 @@ describe('automod subscriber', () => {
   });
 
   it('deletes a message that matches a rule', async () => {
-    const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-2', mode: 'enforce' })] });
+    const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-2' })] });
     const subscriber = createAutomodSubscriber(deps);
 
     await subscriber.handle(messageCreate());
@@ -354,7 +331,6 @@ describe('automod subscriber', () => {
         // The predicate's own trace, threaded through unchanged (Task 5):
         // `matchedOn` names the *configured* term, not the possibly-evasive
         // matched spelling, which is what Slice 9's suppression will key on.
-        fixtureId: undefined,
         trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
@@ -376,7 +352,7 @@ describe('automod subscriber', () => {
    */
   it('honours countsAsViolation: false — deletes, but does not feed the counter', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-delete-only', mode: 'enforce', countsAsViolation: false })],
+      rules: [rule({ ruleId: 'rule-delete-only', countsAsViolation: false })],
     });
     const subscriber = createAutomodSubscriber(deps);
 
@@ -414,9 +390,7 @@ describe('automod subscriber', () => {
    */
   it('a delete-only rule does not escalate, even for a member already on a tier', async () => {
     const { deps, calls } = buildHarness({
-      rules: [
-        rule({ ruleId: 'rule-delete-only-tiered', mode: 'enforce', countsAsViolation: false }),
-      ],
+      rules: [rule({ ruleId: 'rule-delete-only-tiered', countsAsViolation: false })],
       // The member is already deep enough that the ladder would fire — earned
       // by *other* rules, since this one never incremented anything.
       violationCount: 6,
@@ -440,7 +414,7 @@ describe('automod subscriber', () => {
 
   it('does not call Discord under watch, but still records what would have happened', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-3', mode: 'test' })],
+      rules: [rule({ ruleId: 'rule-3' })],
       safetyState: WATCH,
     });
     const subscriber = createAutomodSubscriber(deps);
@@ -457,7 +431,7 @@ describe('automod subscriber', () => {
 
   it('does not call Discord under watch either, whatever the rule mode', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-4', mode: 'observe' })],
+      rules: [rule({ ruleId: 'rule-4' })],
       safetyState: WATCH,
     });
     const subscriber = createAutomodSubscriber(deps);
@@ -472,40 +446,9 @@ describe('automod subscriber', () => {
     ]);
   });
 
-  /**
-   * ADR 0121 removed review-evidence capture: the subscriber never calls
-   * `captureFixture`, so a match is recorded with `fixtureId: undefined`
-   * and a message no rule matched records nothing at all.
-   */
-  describe('review evidence', () => {
-    it('does not capture a message it deletes', async () => {
-      const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-enforce-no-capture', mode: 'enforce' })],
-      });
-      const subscriber = createAutomodSubscriber(deps);
-
-      await subscriber.handle(messageCreate());
-
-      expect(calls.captureFixture).toHaveLength(0);
-      expect(calls.deleteMessage).toHaveLength(1);
-    });
-
-    it('does not capture a message no rule matched', async () => {
-      const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-no-match', mode: 'test' })],
-      });
-      const subscriber = createAutomodSubscriber(deps);
-
-      await subscriber.handle(messageCreate({ content: 'nothing to see here' }));
-
-      expect(calls.captureFixture).toHaveLength(0);
-      expect(calls.recordCaseEvent).toHaveLength(0);
-    });
-  });
-
   it('skips an exempt author/channel entirely', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-5', mode: 'enforce' })],
+      rules: [rule({ ruleId: 'rule-5' })],
       exemptRuleIds: new Set(['rule-5']),
     });
     const subscriber = createAutomodSubscriber(deps);
@@ -523,7 +466,7 @@ describe('automod subscriber', () => {
 
   it('escalates and records the applied action when the violation count crosses a tier', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-6', mode: 'enforce' })],
+      rules: [rule({ ruleId: 'rule-6' })],
       violationCount: 3,
       tier: { action: 'timeout', timeoutMs: 600_000 },
       applyActionResult: { status: 'applied' },
@@ -556,7 +499,6 @@ describe('automod subscriber', () => {
         actionTaken: 'deleted_and_escalated',
         escalationAction: 'timeout',
         refusalReason: undefined,
-        fixtureId: undefined,
         trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
@@ -564,7 +506,7 @@ describe('automod subscriber', () => {
 
   it('records a refused escalation durably, not just deletes the message', async () => {
     const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-7', mode: 'enforce' })],
+      rules: [rule({ ruleId: 'rule-7' })],
       violationCount: 6,
       tier: { action: 'kick', timeoutMs: undefined },
       applyActionResult: { status: 'refused', reason: 'discord-owner' },
@@ -589,7 +531,6 @@ describe('automod subscriber', () => {
         actionTaken: 'escalation_refused',
         escalationAction: 'kick',
         refusalReason: 'discord-owner',
-        fixtureId: undefined,
         trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
@@ -601,7 +542,7 @@ describe('automod subscriber', () => {
       ruleId: 'rule-8-broken',
       terms: [{ text: '[unclosed', categoryId: 'cat-x' }],
     });
-    const okRule = rule({ ruleId: 'rule-8-ok', mode: 'enforce' });
+    const okRule = rule({ ruleId: 'rule-8-ok' });
     const { deps, calls } = buildHarness({ rules: [brokenRule, okRule], logger });
     const subscriber = createAutomodSubscriber(deps);
 
@@ -689,7 +630,7 @@ describe('automod subscriber', () => {
   describe('the automod switch (ADR 0121)', () => {
     it('off: evaluates nothing and records nothing', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-switch-off', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-switch-off' })],
         safetyState: OFF,
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -701,12 +642,11 @@ describe('automod subscriber', () => {
       expect(calls.recordCaseEvent).toHaveLength(0);
       expect(calls.openOrResolveCase).toHaveLength(0);
       expect(calls.deleteMessage).toHaveLength(0);
-      expect(calls.captureFixture).toHaveLength(0);
     });
 
     it('unknown guild: fails closed — evaluates nothing and records nothing', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-switch-unknown', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-switch-unknown' })],
         safetyState: null,
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -718,12 +658,11 @@ describe('automod subscriber', () => {
       expect(calls.recordCaseEvent).toHaveLength(0);
       expect(calls.openOrResolveCase).toHaveLength(0);
       expect(calls.deleteMessage).toHaveLength(0);
-      expect(calls.captureFixture).toHaveLength(0);
     });
 
     it('watch: records would_delete without counting a violation or touching Discord', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-switch-watch', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-switch-watch' })],
         safetyState: WATCH,
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -735,7 +674,6 @@ describe('automod subscriber', () => {
       ]);
       expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
       expect(calls.deleteMessage).toHaveLength(0);
-      expect(calls.captureFixture).toHaveLength(0);
       expect(calls.applyAction).toHaveLength(0);
     });
 
@@ -745,7 +683,7 @@ describe('automod subscriber', () => {
       [{ dryRun: true }, 'delete_blocked_dry_run'],
     ] as const)('on blocked (%s): records %s and does not delete', async (over, actionTaken) => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-switch-blocked', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-switch-blocked' })],
         safetyState: { ...LIVE, ...over },
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -760,7 +698,7 @@ describe('automod subscriber', () => {
 
     it('on clear: deletes the message', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-switch-on', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-switch-on' })],
         safetyState: LIVE,
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -768,45 +706,19 @@ describe('automod subscriber', () => {
       await subscriber.handle(messageCreate());
 
       expect(calls.deleteMessage).toHaveLength(1);
-      expect(calls.captureFixture).toHaveLength(0);
     });
 
-    it('ignores per-rule mode: enforce under watch only records, test under on deletes', async () => {
-      const watchHarness = buildHarness({
-        rules: [rule({ ruleId: 'rule-mode-enforce', mode: 'enforce' })],
-        safetyState: WATCH,
-      });
-      await createAutomodSubscriber(watchHarness.deps).handle(messageCreate());
-      expect(watchHarness.calls.recordCaseEvent).toEqual([
-        expect.objectContaining({ ruleId: 'rule-mode-enforce', actionTaken: 'would_delete' }),
-      ]);
-      expect(watchHarness.calls.deleteMessage).toHaveLength(0);
-
-      const onHarness = buildHarness({
-        rules: [rule({ ruleId: 'rule-mode-test', mode: 'test' })],
+    it('on: a message no rule matches records nothing and touches nothing', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-no-match' })],
         safetyState: LIVE,
       });
-      await createAutomodSubscriber(onHarness.deps).handle(messageCreate());
-      expect(onHarness.calls.deleteMessage).toHaveLength(1);
-    });
+      const subscriber = createAutomodSubscriber(deps);
 
-    it('never captures a fixture under watch or on', async () => {
-      const watchHarness = buildHarness({
-        rules: [rule({ ruleId: 'rule-no-fixture-watch', mode: 'test' })],
-        safetyState: WATCH,
-        captureFixtureResult: 'fixture-1',
-      });
-      await createAutomodSubscriber(watchHarness.deps).handle(messageCreate());
-      expect(watchHarness.calls.captureFixture).toHaveLength(0);
+      await subscriber.handle(messageCreate({ content: 'nothing to see here' }));
 
-      const onHarness = buildHarness({
-        rules: [rule({ ruleId: 'rule-no-fixture-on', mode: 'test' })],
-        safetyState: LIVE,
-        captureFixtureResult: 'fixture-1',
-      });
-      await createAutomodSubscriber(onHarness.deps).handle(messageCreate());
-      expect(onHarness.calls.captureFixture).toHaveLength(0);
-      expect(onHarness.calls.deleteMessage).toHaveLength(1);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+      expect(calls.deleteMessage).toHaveLength(0);
     });
   });
 
@@ -828,7 +740,7 @@ describe('automod subscriber', () => {
     for (const [name, safetyState, actionTaken] of blocked) {
       it(`does not delete when ${name}, and records why`, async () => {
         const { deps, calls } = buildHarness({
-          rules: [rule({ ruleId: 'rule-safety', mode: 'enforce' })],
+          rules: [rule({ ruleId: 'rule-safety' })],
           safetyState,
           violationCount: 6,
           tier: { action: 'kick', timeoutMs: undefined },
@@ -849,7 +761,7 @@ describe('automod subscriber', () => {
 
     it('an unknown guild fails closed: nothing is evaluated or recorded', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-safety-unknown', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-safety-unknown' })],
         safetyState: null,
         violationCount: 6,
         tier: { action: 'kick', timeoutMs: undefined },
@@ -867,7 +779,7 @@ describe('automod subscriber', () => {
 
     it('reads the safety state before deleting', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-live', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-live' })],
       });
       const subscriber = createAutomodSubscriber(deps);
 
@@ -879,7 +791,7 @@ describe('automod subscriber', () => {
 
     it('reads the safety state even when the switch is off', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-off', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-off' })],
         safetyState: OFF,
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -901,7 +813,7 @@ describe('automod subscriber', () => {
   describe('watch mode (ADR 0121)', () => {
     it('does not delete or count a violation, but records the match', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-watch', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-watch' })],
         safetyState: WATCH,
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -935,7 +847,7 @@ describe('automod subscriber', () => {
       // acceptable because the killswitch is guild-wide and `doctor` reports
       // it — it was never per-event information.
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-both-levers', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-both-levers' })],
         safetyState: { ...WATCH, killswitch: true },
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -969,7 +881,7 @@ describe('automod subscriber', () => {
 
     it('does not happen when no rule has a role exemption configured', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-no-role-exempt', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-no-role-exempt' })],
       });
       const subscriber = createAutomodSubscriber(deps);
 
@@ -1008,7 +920,7 @@ describe('automod subscriber', () => {
      */
     it('failing leaves the author with no roles rather than crashing the handler', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-fetch-fails', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-fetch-fails' })],
         roleExemptRuleIds: new Set(['rule-fetch-fails']),
         authorRoleIdsError: new Error('unknown member'),
       });
@@ -1033,7 +945,7 @@ describe('automod subscriber', () => {
   describe('when the deletion fails', () => {
     it('treats an already-deleted message as success (design spec §6)', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-gone', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-gone' })],
         deleteMessageError: new DiscordApiError(
           404,
           DiscordErrorCode.UnknownMessage,
@@ -1056,7 +968,7 @@ describe('automod subscriber', () => {
 
     it('records the failure and keeps going on any other error', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-403', mode: 'enforce' }), rule({ ruleId: 'rule-after' })],
+        rules: [rule({ ruleId: 'rule-403' }), rule({ ruleId: 'rule-after' })],
         deleteMessageError: new DiscordApiError(
           403,
           DiscordErrorCode.MissingPermissions,
@@ -1109,7 +1021,7 @@ describe('automod subscriber', () => {
 
     it('does not move when a safety layer blocked the deletion', async () => {
       const { deps, calls } = buildHarness({
-        rules: [rule({ ruleId: 'rule-blocked', mode: 'enforce' })],
+        rules: [rule({ ruleId: 'rule-blocked' })],
         safetyState: { ...LIVE, dryRun: true },
       });
       const subscriber = createAutomodSubscriber(deps);
@@ -1139,7 +1051,7 @@ describe('automod subscriber', () => {
     for (const [outcome, actionTaken] of outcomes) {
       it(`records a ${outcome.status} escalation as ${actionTaken}`, async () => {
         const { deps, calls } = buildHarness({
-          rules: [rule({ ruleId: 'rule-outcome', mode: 'enforce' })],
+          rules: [rule({ ruleId: 'rule-outcome' })],
           violationCount: 3,
           tier: { action: 'timeout', timeoutMs: 600_000 },
           applyActionResult: outcome,

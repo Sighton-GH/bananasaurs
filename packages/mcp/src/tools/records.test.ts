@@ -62,10 +62,10 @@ const caseSummary = (caseId: string, memberId: string): McpModCaseSummary => ({
 });
 
 const seedRules = (): readonly McpOverviewRule[] => [
-  { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
-  { ruleId: 'rule-observe-1', name: 'Observe one', mode: 'observe', enabled: true },
-  { ruleId: 'rule-observe-2', name: 'Observe two', mode: 'observe', enabled: false },
-  { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+  { ruleId: 'rule-test', name: 'Test rule', enabled: true },
+  { ruleId: 'rule-observe-1', name: 'Observe one', enabled: true },
+  { ruleId: 'rule-observe-2', name: 'Observe two', enabled: false },
+  { ruleId: 'rule-enforce', name: 'Enforce rule', enabled: true },
 ];
 
 const seedPanels = (): readonly McpOverviewPanel[] => [
@@ -504,19 +504,15 @@ describe('get_server_overview reports the gateway scalar, not the listing size',
   });
 });
 
-describe('get_server_overview counts rules by mode', () => {
-  it('is right for a seeded mix of modes and enabled flags', () => {
+describe('get_server_overview counts rules', () => {
+  it('is right for a seeded mix of enabled flags (ADR 0121: rules have no mode)', () => {
     const text = textOf(
       getServerOverviewText(principalWith(GUILD_A), fakeGuildPort(210), fakeRecordsPort(), {
         guildId: '111111111111111111',
       }),
     );
     const data = JSON.parse(text.split('\n')[2] ?? '') as Record<string, unknown>;
-    expect(data['rules']).toEqual({
-      test: { total: 1, enabled: 1 },
-      observe: { total: 2, enabled: 1 },
-      enforce: { total: 1, enabled: 1 },
-    });
+    expect(data['rules']).toEqual({ total: 4, enabled: 3 });
   });
 });
 
@@ -526,7 +522,7 @@ describe('M4-D14: records.ts imports named readers only', () => {
     // port (`McpRecordsPort`), never a repository handle — so no storage
     // import of any kind may appear here, reader or writer. The writer-name
     // list below stays as a second assertion, naming the exact paths that
-    // must not be touched while the observe window runs on live guilds.
+    // must not be touched.
     const source = readFileSync(new URL('./records.ts', import.meta.url), 'utf8');
     expect(source).not.toContain('@bananasaurs/storage');
     // A guard against a future edit, not against the author: the moderation

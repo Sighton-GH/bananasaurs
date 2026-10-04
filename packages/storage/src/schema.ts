@@ -5,7 +5,6 @@ import {
   index,
   integer,
   primaryKey,
-  real,
   sqliteTable,
   text,
   unique,
@@ -47,22 +46,11 @@ export const guilds = sqliteTable(
     breakerTrippedAt: integer('breaker_tripped_at'),
     breakerReason: text('breaker_reason'),
 
-    // ADR 0042 §5 — a third lever, distinct from `killswitch` (emergency,
-    // everything) and `dryRun` (guild-wide, everything): automod takes no
-    // Discord action while every other subsystem, role panels above all,
-    // keeps working. Added here, its CHECK in a separate `db:generate` run:
-    // the CHECK forces a table rebuild (SQLite cannot `ALTER TABLE ADD
-    // COLUMN` a CHECK constraint at all), and drizzle-kit 0.31.10 generates
-    // an invalid rebuild — its `INSERT … SELECT` reads the new column from
-    // the *old*, pre-rebuild table — when the column and its CHECK are added
-    // in the same call. Adding the column first, unconstrained, means the
-    // later CHECK-only run's rebuild reads a column the old table already
-    // has, which is what the 0010/0011 precedent for `mod_rules_kind` does
-    // too (add `config` in 0010; widen `kind`'s existing CHECK in 0011).
-    automodTestingMode: integer('automod_testing_mode').notNull().default(0),
-
-    // ADR 0121: the guild-wide automod switch. Off by default; its CHECK
-    // lands in a separate db:generate run (see automodTestingMode above).
+    // ADR 0121: the guild-wide automod switch. Off by default. The column
+    // and its CHECK were added in separate db:generate runs (0100, then
+    // 0101): drizzle-kit 0.31.10 generates an invalid rebuild — its
+    // `INSERT … SELECT` reads the new column from the *old*, pre-rebuild
+    // table — when a column and its CHECK land in the same call.
     automodState: text('automod_state').notNull().default('off'),
 
     createdAt: integer('created_at').notNull(),
@@ -79,7 +67,7 @@ export const guilds = sqliteTable(
       'guilds_positive_limits',
       sql`${t.roleRatePerMin} > 0 AND ${t.reconcileBudget} > 0 AND ${t.breakerThreshold} > 0`,
     ),
-    check('guilds_automod_testing_mode_bool', boolCheck(t.automodTestingMode)),
+    check('guilds_automod_state', sql`${t.automodState} IN ('off','watch','on')`),
   ],
 );
 
@@ -729,28 +717,9 @@ export const modRules = sqliteTable(
      * per predicate.
      */
     config: text('config').notNull().default('{}'),
-    mode: text('mode').notNull().default('test'),
     enabled: integer('enabled').notNull().default(1),
 
-    // ADR 0042 — the cutover state machine's clock (PR-27) and provenance.
-    // Plain nullable columns, added in their own db:generate run: R-6 records
-    // drizzle-kit emitting invalid SQL when a column add and a rebuild land
-    // in one generate call, and the CHECK-constrained columns below force a
-    // rebuild on this table.
-    observeStartedAt: integer('observe_started_at'),
-    legacyRuleRef: text('legacy_rule_ref'),
-    enforceSignedOffBy: text('enforce_signed_off_by'),
-    enforceSignedOffAt: integer('enforce_signed_off_at'),
-
-    // ADR 0042 — added here unconstrained; their CHECKs land in a later,
-    // separate `db:generate` run. See the `automodTestingMode` comment above
-    // on `guilds` for why: adding a column and its CHECK together makes
-    // drizzle-kit 0.31.10 emit a rebuild whose `INSERT … SELECT` reads the
-    // new column from the old, pre-rebuild table, which does not have it.
-    cutoverState: text('cutover_state').notNull().default('not_started'),
     countsAsViolation: integer('counts_as_violation').notNull().default(1),
-    maxFalsePositiveRate: real('max_false_positive_rate').notNull().default(0.05),
-    minReviewedMatches: integer('min_reviewed_matches').notNull().default(20),
 
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
@@ -770,21 +739,8 @@ export const modRules = sqliteTable(
       'mod_rules_kind',
       sql`${t.kind} IN ('keyword_filter','regex','invite','link_domain','mention_spam','rapid_spam','duplicate_message','caps','attachment_type','emoji')`,
     ),
-    check('mod_rules_mode', sql`${t.mode} IN ('test','observe','enforce')`),
     check('mod_rules_enabled_bool', boolCheck(t.enabled)),
-    // PR-27's five cutover states. Distinct from `mod_rules_mode` above.
-    check(
-      'mod_rules_cutover_state',
-      sql`${t.cutoverState} IN ('not_started','observing','ready','cutover','rolled_back')`,
-    ),
     check('mod_rules_counts_as_violation_bool', boolCheck(t.countsAsViolation)),
-    // "At most 5%" (ADR 0042 §4) — inclusive at both ends: exactly 0 and
-    // exactly 1 are valid rates, only outside [0,1] is nonsensical.
-    check(
-      'mod_rules_max_false_positive_rate_range',
-      sql`${t.maxFalsePositiveRate} BETWEEN 0 AND 1`,
-    ),
-    check('mod_rules_min_reviewed_matches_range', sql`${t.minReviewedMatches} >= 0`),
   ],
 );
 
@@ -1201,27 +1157,10 @@ export const modCaseEvents = sqliteTable(
      * `packages/core/src/automod/trace.ts`). It comes back out as raw text
      * and core parses it, the same arrangement `mod_rules.config` has.
      *
-     * **Never carries the whole message.** Whole-message content lives in
-     * `automod_fixtures` under the owner's explicit decision; a second copy
-     * here would put member content somewhere that decision did not reach.
+     * **Never carries the whole message.** Bananasaurs keeps no copy of a
+     * matched message (ADR 0121 removed the fixture corpus).
      */
     trace: text('trace'),
-    /**
-     * The `automod_fixtures` row captured from the same message, when there
-     * was one (plan ruling PR-5).
-     *
-     * This is what makes ADR 0041's "a verdict recorded during the window is
-     * a labelled fixture afterwards" an implementation rather than an
-     * aspiration: recording a verdict follows this link to set the fixture's
-     * label. Null for enforce-mode matches (nothing is captured — PR-2), for
-     * manual events, and for every row written before this slice.
-     *
-     * Deliberately *not* a foreign key. A fixture deleted by `/forgetme`
-     * must not cascade into the moderation record, and `ON DELETE SET NULL`
-     * would be a write to an append-only table. A dangling id resolves to
-     * "no fixture", which is the truthful answer after a deletion.
-     */
-    fixtureId: text('fixture_id'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.eventId] }),
@@ -1272,129 +1211,6 @@ export const modCaseEvents = sqliteTable(
         ('unauthorized','guild-unknown','killswitch','breaker-open','rate-cap','discord-owner','role-above-bot')`,
     ),
     check('mod_case_events_actor_id_snowflake', nullableSnowflakeCheck(t.actorId)),
-  ],
-);
-
-/**
- * The automod review corpus (ADR 0041 §1).
- *
- * Holds whole messages, which is a deliberate, owner-approved extension of
- * what Bananasaurs keeps — `PRIVACY.md`'s retention table carries the
- * matching row, added in the same commit as this table, because a policy
- * that is not true is worse than no policy.
- *
- * Two sources with different rules. An `observed` row is a real member's
- * message, captured because a `test`/`observe` rule matched it, and
- * `deleteObservedFixturesForMember` can remove every one of a member's rows
- * — the path Release 3's `/forgetme` (R3-10) wires up rather than invents.
- * A `handwritten` row is an adversarial case the project wrote itself: not
- * member data, and never deleted by `/forgetme`.
- *
- * `content` is the zero-width-stripped text the predicate actually saw, so a
- * replay reproduces the original evaluation exactly rather than a
- * re-normalised approximation of it.
- */
-export const automodFixtures = sqliteTable(
-  'automod_fixtures',
-  {
-    guildId: snowflake('guild_id').notNull(),
-    /**
-     * For an `observed` fixture, `<messageId>:<first 16 hex of sha256(content)>`
-     * (plan ruling PR-1): a gateway replay of the identical message is the
-     * same fixture and collapses into one row, while an edit that matches
-     * again is different evidence and gets its own. For a `handwritten`
-     * fixture, a UUID.
-     *
-     * TEXT rather than a snowflake column: only half of it is a snowflake,
-     * and a handwritten fixture's id is not one at all.
-     */
-    fixtureId: text('fixture_id').notNull(),
-    content: text('content').notNull(),
-    /**
-     * The message's author, so a member's own rows can be found and removed.
-     * Null for `handwritten` fixtures, which have no member behind them.
-     */
-    authorId: snowflake('author_id'),
-    label: text('label').notNull().default('unlabelled'),
-    source: text('source').notNull(),
-    /** Why a human labelled it this way. Free text, nullable. */
-    note: text('note'),
-    /**
-     * Also the replay clock: `PredicateInput.atMs` comes from here, never
-     * from `Date.now()`, which is what makes the window tier's dry run
-     * deterministic (ADR 0041 §6).
-     */
-    createdAt: integer('created_at').notNull(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.guildId, t.fixtureId] }),
-    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
-    check('automod_fixtures_guild_id_snowflake', snowflakeCheck(t.guildId)),
-    check('automod_fixtures_author_id_snowflake', nullableSnowflakeCheck(t.authorId)),
-    check(
-      'automod_fixtures_label',
-      sql`${t.label} IN ('should_match','should_not_match','unlabelled')`,
-    ),
-    check('automod_fixtures_source', sql`${t.source} IN ('observed','handwritten')`),
-    /**
-     * A `handwritten` fixture has no author and an `observed` one must have
-     * one — the invariant `deleteObservedFixturesForMember` depends on. Left
-     * to the database rather than the repo, so a row inserted by hand in
-     * `sqlite3` cannot break the `/forgetme` promise either.
-     */
-    check(
-      'automod_fixtures_observed_has_author',
-      sql`(${t.source} = 'observed' AND ${t.authorId} IS NOT NULL)
-        OR (${t.source} = 'handwritten' AND ${t.authorId} IS NULL)`,
-    ),
-    /** The dry run reads the whole corpus in `created_at` order (ADR 0041 §6). */
-    index('automod_fixtures_replay').on(t.guildId, t.createdAt),
-    /** `deleteObservedFixturesForMember`'s lookup. */
-    index('automod_fixtures_by_author').on(t.guildId, t.authorId),
-  ],
-);
-
-/**
- * One attachment on a corpus message: filename, declared content type, size
- * (OD-3).
- *
- * A child table rather than columns on `automod_fixtures` because a message
- * carries up to ten attachments, and neither a JSON blob nor an arbitrary
- * three-column cap is a schema.
- *
- * **This stores personal information and the owner was told so before
- * approving it.** Filenames routinely carry it — `Bryan_resume_2026.pdf`,
- * `medical_letter.docx` — and this keeps them for as long as the corpus keeps
- * the message. `PRIVACY.md` names attachments in the same commit that created
- * this table, and the `ON DELETE CASCADE` below is what makes `/forgetme`
- * (R3-10) reach them through `deleteObservedFixturesForMember`. That cascade
- * is tested, not assumed.
- *
- * No `attachment_id` from Discord: the corpus is evidence about a message,
- * not a mirror of Discord's own ids, and the ordinal is enough to keep two
- * identically-named files apart.
- */
-export const automodFixtureAttachments = sqliteTable(
-  'automod_fixture_attachments',
-  {
-    guildId: snowflake('guild_id').notNull(),
-    fixtureId: text('fixture_id').notNull(),
-    /** Position on the message, 0-based. Part of the key: two attachments can share a name. */
-    ordinal: integer('ordinal').notNull(),
-    fileName: text('file_name').notNull(),
-    /** Null when Discord declared none. Never flattened to '' — that is a different fact. */
-    contentType: text('content_type'),
-    sizeBytes: integer('size_bytes').notNull(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.guildId, t.fixtureId, t.ordinal] }),
-    foreignKey({
-      columns: [t.guildId, t.fixtureId],
-      foreignColumns: [automodFixtures.guildId, automodFixtures.fixtureId],
-    }).onDelete('cascade'),
-    check('automod_fixture_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
-    check('automod_fixture_attachments_ordinal_nonnegative', sql`${t.ordinal} >= 0`),
-    check('automod_fixture_attachments_size_nonnegative', sql`${t.sizeBytes} >= 0`),
   ],
 );
 

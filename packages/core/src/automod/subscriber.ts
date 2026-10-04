@@ -8,7 +8,6 @@ import type {
 } from '../effects/moderation-gateway.js';
 import type { Authorized } from '../authz.js';
 import { DiscordApiError } from '../discord/errors.js';
-import type { MessageAttachment } from '../discord/events.js';
 import { parseSnowflakeId } from '../ids.js';
 import {
   createPredicateCache,
@@ -129,16 +128,6 @@ export interface AutomodSubscriberDeps {
     },
   ): boolean;
   deleteMessage(channelId: string, messageId: string, reason: string): Promise<void>;
-  /** @deprecated ADR 0121: no longer called; removed with the fixture tables. */
-  captureFixture(input: {
-    messageId: string;
-    /** Zero-width stripped — what the predicate matched against. */
-    content: string;
-    authorId: string;
-    atMs: number;
-    /** Filename, declared content type and size for each file (OD-3). */
-    attachments: readonly MessageAttachment[];
-  }): string | undefined;
   /**
    * Resolves the member's case so an event can be attached to it, and — only
    * when `countsAsViolation` — moves the per-member violation counter the
@@ -146,11 +135,9 @@ export interface AutomodSubscriberDeps {
    *
    * The counter is what `nextEscalationTier` turns into a timeout or a kick,
    * so it must only ever count violations that were actually *enforced*.
-   * Counting a `test`/`observe` match defeats the documented rollout (spec
-   * §8: ship in test mode, review and tune, then flip to enforce) — every
-   * match during the observation period would have quietly pushed ordinary
-   * members up the ladder, and the first real match after the flip could go
-   * straight to a kick. Counting a match a safety layer blocked has the same
+   * Counting a Watch match (ADR 0121) would quietly push ordinary members up
+   * the ladder while nothing is being enforced, and the first real match after
+   * switching On could go straight to a kick. Counting a match a safety layer blocked has the same
    * failure the moment the kill switch or dry run is turned off.
    */
   openOrResolveCase(
@@ -169,8 +156,6 @@ export interface AutomodSubscriberDeps {
     refusalReason: string | undefined;
     /** Why the predicate matched (ADR 0040, ADR 0041 §4). */
     trace: MatchTrace;
-    /** The corpus row captured from this message, if there was one (PR-5). */
-    fixtureId: string | undefined;
   }): void;
   /**
    * The guild's live safety state — the *same* read
@@ -352,7 +337,6 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
             escalationAction,
             refusalReason,
             trace: hit.trace,
-            fixtureId: undefined,
           });
         };
 

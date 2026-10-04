@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { parseGuildId, parseSnowflakeId } from '@bananasaurs/core';
 import { upsertGuild } from './guilds.js';
-import { addChannelExemption, addRoleExemption, createRule, setRuleMode } from './automod-rules.js';
+import {
+  addChannelExemption,
+  addRoleExemption,
+  createRule,
+  setRuleEnabled,
+} from './automod-rules.js';
 import { openOrResolveCase, recordCaseEvent } from './mod-cases.js';
 import { recordVerdict } from './mod-match-reviews.js';
 import {
@@ -56,7 +61,7 @@ describe('automod admin repo', () => {
       config: '{}',
       now: 1000,
     });
-    setRuleMode(scopeA, { ruleId: 'b-rule', enabled: false, now: 2000 });
+    setRuleEnabled(scopeA, { ruleId: 'b-rule', enabled: false, now: 2000 });
 
     // A rule in the other guild must not leak across, in either direction.
     createRule(t.scopes.forGuild(GUILD_B), {
@@ -73,17 +78,9 @@ describe('automod admin repo', () => {
       ruleId: 'a-rule',
       kind: 'keyword_filter',
       name: 'filter',
-      mode: 'test',
       enabled: true,
       config: '{}',
-      cutoverState: 'not_started',
-      observeStartedAt: null,
-      legacyRuleRef: null,
       countsAsViolation: true,
-      maxFalsePositiveRate: 0.05,
-      minReviewedMatches: 20,
-      enforceSignedOffBy: null,
-      enforceSignedOffAt: null,
       createdAt: 1000,
       updatedAt: 1000,
     });

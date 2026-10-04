@@ -25,13 +25,6 @@ export interface GuildRow {
   breakerState: string;
   breakerTrippedAt: number | null;
   breakerReason: string | null;
-  /**
-   * ADR 0042 §5's third lever: automod takes no Discord action while every
-   * other subsystem keeps working. An INTEGER here, like `enabled`,
-   * `killswitch` and `dryRun` above — this interface mirrors the row, and the
-   * booleans are converted at the point of use, not here.
-   */
-  automodTestingMode: number;
   automodState: string;
   createdAt: number;
   updatedAt: number;
@@ -119,15 +112,6 @@ export interface SafetyState {
   roleRatePerMin: number;
   reconcileBudget: number;
   breakerThreshold: number;
-  /**
-   * ADR 0042 §5's third lever. Added here, not to core's
-   * `ModerationSafetyState` (ruling PR-33): everything that reads
-   * `readSafetyState` structurally, including `ModerationGatewayDeps.state`
-   * and `purge.ts`'s `classifyRefusal`, must keep working unchanged, and
-   * only the automod subscriber's own port (`AutomodSafetyState`, `core`)
-   * declares this field — so it is the only caller that can actually read it.
-   */
-  automodTestingMode: boolean;
   /** ADR 0121's guild-wide automod switch. */
   automodState: AutomodState;
 }
@@ -149,7 +133,6 @@ export const readSafetyState = (scope: GuildScope): SafetyState | undefined => {
     roleRatePerMin: row.roleRatePerMin,
     reconcileBudget: row.reconcileBudget,
     breakerThreshold: row.breakerThreshold,
-    automodTestingMode: row.automodTestingMode === 1,
     automodState: toAutomodState(row.automodState),
   };
 };

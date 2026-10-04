@@ -11,7 +11,6 @@ import type { AutomodRule } from './types.js';
 const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
   ruleId: 'r1',
   kind: 'keyword_filter',
-  mode: 'enforce',
   config: '{}',
   terms: [{ text: 'badword', categoryId: 'slurs' }],
   allowlist: [],

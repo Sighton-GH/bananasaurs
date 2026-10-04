@@ -424,14 +424,15 @@ describe('dry run comes from the environment', () => {
 describe('automod default word list seeding', () => {
   const DEFAULT_AUTOMOD_RULE_ID = 'default-word-filter';
 
-  it('seeds exactly one rule, in test mode, on first start', () => {
+  it('seeds exactly one enabled rule on first start, with automod still off (ADR 0121)', () => {
     daemon = start();
 
     const scope = t.scopes.forGuild(GUILD);
     expect(automodRuleRepo.ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)).toBe(true);
     expect(automodRuleRepo.listEnabledRules(scope)).toEqual([
-      expect.objectContaining({ ruleId: DEFAULT_AUTOMOD_RULE_ID, mode: 'test' }),
+      expect.objectContaining({ ruleId: DEFAULT_AUTOMOD_RULE_ID }),
     ]);
+    expect(guildRepo.readSafetyState(scope)?.automodState).toBe('off');
   });
 
   /**
@@ -467,7 +468,7 @@ describe('automod default word list seeding', () => {
   it('does not crash on a second start and leaves a disabled rule disabled', async () => {
     daemon = start();
     const scope = t.scopes.forGuild(GUILD);
-    automodRuleRepo.setRuleMode(scope, {
+    automodRuleRepo.setRuleEnabled(scope, {
       ruleId: DEFAULT_AUTOMOD_RULE_ID,
       enabled: false,
       now: discord.now(),

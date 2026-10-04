@@ -6,7 +6,6 @@ import type { AutomodRule, PredicateInput } from './types.js';
 const rule = (config: string): AutomodRule => ({
   ruleId: 'r1',
   kind: 'regex',
-  mode: 'test',
   config,
   terms: [],
   allowlist: [],

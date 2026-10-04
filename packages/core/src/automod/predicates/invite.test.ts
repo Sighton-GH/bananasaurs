@@ -31,7 +31,6 @@ describe('the invite predicate', () => {
   const rule = (allowlist: { code: string; label: string }[] = []): AutomodRule => ({
     ruleId: 'r1',
     kind: 'invite',
-    mode: 'test' as const,
     config: '{}',
     terms: [],
     allowlist: [],

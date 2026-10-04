@@ -8,14 +8,13 @@ import {
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import type { CutoverState, RuleKind, RuleMode } from './automod-rules.js';
+import type { RuleKind } from './automod-rules.js';
 import type { ModCase } from './mod-cases.js';
 
 /**
  * Read-mostly queries for the dashboard's automod pages (Slice 8). Kept out
- * of `automod-rules.ts` deliberately: that module owns the state machine
- * (`setRuleMode`) and the subscriber's hot path, and the observe window is
- * running — nothing here changes what a rule does, only what an operator can
+ * of `automod-rules.ts` deliberately: that module owns the subscriber's hot
+ * path, and nothing here changes what a rule does, only what an operator can
  * see about it. The one write, `removeExemption`, is the inverse of two
  * writers that already live there.
  */
@@ -24,17 +23,9 @@ export interface AdminRule {
   readonly ruleId: string;
   readonly kind: RuleKind;
   readonly name: string;
-  readonly mode: RuleMode;
   readonly enabled: boolean;
   readonly config: string;
-  readonly cutoverState: CutoverState;
-  readonly observeStartedAt: number | null;
-  readonly legacyRuleRef: string | null;
   readonly countsAsViolation: boolean;
-  readonly maxFalsePositiveRate: number;
-  readonly minReviewedMatches: number;
-  readonly enforceSignedOffBy: string | null;
-  readonly enforceSignedOffAt: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -43,17 +34,9 @@ const RULE_COLUMNS = {
   ruleId: modRules.ruleId,
   kind: modRules.kind,
   name: modRules.name,
-  mode: modRules.mode,
   enabled: modRules.enabled,
   config: modRules.config,
-  cutoverState: modRules.cutoverState,
-  observeStartedAt: modRules.observeStartedAt,
-  legacyRuleRef: modRules.legacyRuleRef,
   countsAsViolation: modRules.countsAsViolation,
-  maxFalsePositiveRate: modRules.maxFalsePositiveRate,
-  minReviewedMatches: modRules.minReviewedMatches,
-  enforceSignedOffBy: modRules.enforceSignedOffBy,
-  enforceSignedOffAt: modRules.enforceSignedOffAt,
   createdAt: modRules.createdAt,
   updatedAt: modRules.updatedAt,
 };
@@ -62,25 +45,15 @@ const toAdminRule = (row: {
   ruleId: string;
   kind: string;
   name: string;
-  mode: string;
   enabled: number;
   config: string;
-  cutoverState: string;
-  observeStartedAt: number | null;
-  legacyRuleRef: string | null;
   countsAsViolation: number;
-  maxFalsePositiveRate: number;
-  minReviewedMatches: number;
-  enforceSignedOffBy: string | null;
-  enforceSignedOffAt: number | null;
   createdAt: number;
   updatedAt: number;
 }): AdminRule => ({
   ...row,
   kind: row.kind as RuleKind,
-  mode: row.mode as RuleMode,
   enabled: row.enabled === 1,
-  cutoverState: row.cutoverState as CutoverState,
   countsAsViolation: row.countsAsViolation === 1,
 });
 

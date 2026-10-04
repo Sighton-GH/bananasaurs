@@ -773,7 +773,6 @@ const recordsPortFor = (
       automodAdminRepo.listRules(deps.scopes.forGuild(guildId)).map((rule) => ({
         ruleId: rule.ruleId,
         name: rule.name,
-        mode: rule.mode,
         enabled: rule.enabled,
       })),
     ),

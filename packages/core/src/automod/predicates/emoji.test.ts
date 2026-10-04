@@ -12,7 +12,6 @@ const compile = (config: string, kind = 'emoji'): CompiledPredicate => {
   const rule: AutomodRule = {
     ruleId: 'r1',
     kind,
-    mode: 'test',
     config,
     terms: [],
     allowlist: [],

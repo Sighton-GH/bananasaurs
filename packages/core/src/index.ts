@@ -338,8 +338,6 @@ export {
   type PredicateCache,
   type PredicateInputSource,
 } from './automod/evaluate.js';
-// The fixture row shape the composition root hands across this boundary.
-export type { FixtureRecord } from './automod/predicates/types.js';
 export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,
@@ -528,9 +526,6 @@ export type {
   OpsCase,
   OpsCaseDetail,
   OpsCaseEvent,
-  OpsCutoverState,
-  OpsEnforcementEligibility,
-  OpsEnforcementRefusal,
   OpsEnqueued,
   OpsGatewayState,
   OpsInstance,
@@ -544,7 +539,6 @@ export type {
   OpsAutomodState,
   OpsPublishResult,
   OpsRetryOutcome,
-  OpsRuleMode,
   OpsSafetyState,
   OpsSendAllowlistEntry,
   OpsSendRecord,

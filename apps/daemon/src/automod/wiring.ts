@@ -18,7 +18,6 @@ import {
 } from '@bananasaurs/core';
 import {
   authzStoreFor,
-  automodFixtureRepo,
   automodRuleRepo,
   guildRepo,
   modCaseRepo,
@@ -177,12 +176,10 @@ const LAST_RESORT_TRACE_JSON = serialiseTrace({
  * way.** `ruleFingerprint` hashes the rule object's *own runtime keys* — that
  * is its design (a field added to `AutomodRule` is hashed by default, and
  * omitting one is the deliberate act via `EXCLUDED_FIELDS`). Handing it the
- * repository row therefore hashes everything ADR 0042 added too:
- * `cutoverState`, `observeStartedAt`, `enforceSignedOffBy`/`_at`,
- * `minReviewedMatches`, `maxFalsePositiveRate`. None of those changes how a
- * message is matched, so every one of them was a spurious full recompile of
- * every matcher in the guild — including on flip day itself, when a successful
- * enforce moves `cutover_state` from `ready` to `cutover`.
+ * repository row would hash any column the row carries beyond what a
+ * predicate reads — ADR 0042's gate columns were exactly that until ADR 0121
+ * removed them, and every change to one was a spurious full recompile of every
+ * matcher in the guild.
  *
  * It also made the type boundary accidental: structural assignability, not an
  * explicit choice about what a predicate is allowed to know. A future column
@@ -192,7 +189,6 @@ const LAST_RESORT_TRACE_JSON = serialiseTrace({
 export const toAutomodRule = (stored: StoredAutomodRule): AutomodRule => ({
   ruleId: stored.ruleId,
   kind: stored.kind,
-  mode: stored.mode,
   config: stored.config,
   terms: stored.terms,
   allowlist: stored.allowlist,
@@ -325,17 +321,6 @@ export const automodPortsFor = (
         now: now(),
         countsAsViolation: options.countsAsViolation,
       }),
-    captureFixture: (input) =>
-      automodFixtureRepo.captureObservedFixture(scope, {
-        messageId: input.messageId,
-        content: input.content,
-        authorId: input.authorId,
-        createdAt: input.atMs,
-        // `MessageAttachment` (core) and `FixtureAttachment` (storage) are
-        // field-for-field identical, which is what lets this be a direct
-        // pass-through rather than a mapping someone forgot.
-        attachments: input.attachments,
-      }),
     recordCaseEvent: (input) => {
       // Computed once, not once per spread branch below: `serialiseTrace`
       // parses and re-stringifies the trace, so calling it twice would do
@@ -369,7 +354,6 @@ export const automodPortsFor = (
         ...(input.refusalReason !== undefined && {
           refusalReason: input.refusalReason as ModerationRefusalReason,
         }),
-        ...(input.fixtureId !== undefined && { fixtureId: input.fixtureId }),
         trace,
       });
     },

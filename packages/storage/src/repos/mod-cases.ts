@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import { automodFixtures, modCaseEvents, modCases, modMatchReviews } from '../schema.js';
+import { modCaseEvents, modCases, modMatchReviews } from '../schema.js';
 
 /**
  * Per-member violation history, and the events recorded against it.
@@ -209,12 +209,6 @@ export interface RecordCaseEventInput {
    * `mod_rules.config` already has (ADR 0040).
    */
   readonly trace?: string;
-  /**
-   * The `automod_fixtures` row captured from the same message, if one was
-   * (plan ruling PR-5). What lets a verdict recorded during the observe
-   * window become a labelled regression fixture afterwards.
-   */
-  readonly fixtureId?: string;
 }
 
 /**
@@ -265,7 +259,6 @@ export const recordCaseEvent = (scope: GuildScope, input: RecordCaseEventInput):
         refusalReason: input.refusalReason ?? null,
         actorId: input.actorId ?? null,
         trace: input.trace ?? null,
-        fixtureId: input.fixtureId ?? null,
       })
       .onConflictDoNothing({ target: [modCaseEvents.guildId, modCaseEvents.eventId] })
       .run();
@@ -290,8 +283,6 @@ export interface ModCaseEvent {
    * slice. `packages/core`'s `parseMatchTrace` is what reads it.
    */
   readonly trace: string | undefined;
-  /** The `automod_fixtures` row captured from the same message, if one was. */
-  readonly fixtureId: string | undefined;
 }
 
 /**
@@ -335,7 +326,6 @@ export const listCaseEvents = (scope: GuildScope, caseId: string): ModCaseEvent[
         refusalReason: (row.refusalReason ?? undefined) as ModCaseRefusalReason | undefined,
         actorId: row.actorId ?? undefined,
         trace: row.trace ?? undefined,
-        fixtureId: row.fixtureId ?? undefined,
       })),
   );
 
@@ -349,17 +339,6 @@ export interface ReviewableMatch {
   readonly actionTaken: ModCaseActionTaken;
   /** Raw JSON; `packages/core`'s `parseMatchTrace` is what reads it. */
   readonly trace: string | undefined;
-  readonly fixtureId: string | undefined;
-  /**
-   * The whole message, when the corpus still holds it.
-   *
-   * `undefined` after a member's `/forgetme` removed the fixture, and for an
-   * enforce-mode match, which captures nothing (plan ruling PR-2). A reviewer
-   * then judges from the trace and the snippet alone, which is worse but
-   * honest — it is the difference between having the evidence and pretending
-   * to.
-   */
-  readonly fixtureContent: string | undefined;
 }
 
 /**
@@ -370,23 +349,19 @@ export interface ReviewableMatch {
  * native Discord AutoMod events without a hand-maintained list of
  * `action_taken` values to keep in step with the vocabulary.
  *
- * Two left joins, and both are left joins on purpose: an unreviewed match is
- * precisely one with no `mod_match_reviews` row, and a match whose fixture a
- * member has since deleted must still be reviewable. An inner join on either
- * would silently drop rows — reviewed matches would vanish with the wrong
- * one, and a `/forgetme`'d fixture would erase the match with the other. Both
- * are proven in `mod-cases.test.ts` by breaking each join in turn and
- * watching the matching test go red.
+ * A left join on purpose: an unreviewed match is precisely one with no
+ * `mod_match_reviews` row, and an inner join would make every unreviewed
+ * match vanish.
  *
  * The guild predicate lives on the driving table (`modCaseEvents`) via
- * `scope.only`, and both join conditions carry `guild_id` themselves, so a
+ * `scope.only`, and the join condition carries `guild_id` itself, so the
  * join cannot cross guilds even before the WHERE clause is applied.
  *
  * Ordered like `listCaseEvents`: `at` can legitimately tie, and
  * `mod_case_events` has no autoincrement column of its own, so the table's
  * own implicit SQLite `rowid` — assigned once, in insertion order — is the
  * tiebreaker. Qualified with the table name (unlike `listCaseEvents`'s bare
- * `rowid`) because this query joins three tables and an unqualified `rowid`
+ * `rowid`) because this query joins two tables and an unqualified `rowid`
  * would be ambiguous between them.
  */
 export const listUnreviewedMatches = (
@@ -404,8 +379,6 @@ export const listUnreviewedMatches = (
         matchedSnippet: modCaseEvents.matchedSnippet,
         actionTaken: modCaseEvents.actionTaken,
         trace: modCaseEvents.trace,
-        fixtureId: modCaseEvents.fixtureId,
-        fixtureContent: automodFixtures.content,
       })
       .from(modCaseEvents)
       .leftJoin(
@@ -413,13 +386,6 @@ export const listUnreviewedMatches = (
         and(
           eq(modMatchReviews.guildId, modCaseEvents.guildId),
           eq(modMatchReviews.eventId, modCaseEvents.eventId),
-        ),
-      )
-      .leftJoin(
-        automodFixtures,
-        and(
-          eq(automodFixtures.guildId, modCaseEvents.guildId),
-          eq(automodFixtures.fixtureId, modCaseEvents.fixtureId),
         ),
       )
       .where(
@@ -442,8 +408,6 @@ export const listUnreviewedMatches = (
         matchedSnippet: row.matchedSnippet,
         actionTaken: row.actionTaken as ModCaseActionTaken,
         trace: row.trace ?? undefined,
-        fixtureId: row.fixtureId ?? undefined,
-        fixtureContent: row.fixtureContent ?? undefined,
       })),
   );
 

@@ -5,7 +5,6 @@ import type { AutomodRule } from './predicates/types.js';
 const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
   ruleId: 'r1',
   kind: 'keyword_filter',
-  mode: 'enforce',
   config: '{}',
   terms: [{ text: 'badword', categoryId: 'slurs' }],
   allowlist: ['fine phrase'],
@@ -70,14 +69,6 @@ describe('ruleFingerprint', () => {
     expect(ruleFingerprint(rule({ kind: 'caps' }))).not.toBe(ruleFingerprint(rule()));
   });
 
-  it('does NOT change when only the mode changes', () => {
-    // Mode decides what the subscriber *does* with a match, not what the
-    // predicate matches. A mode flip must not throw away a compiled matcher —
-    // flip day flips every rule at once, and rebuilding every matcher in the
-    // guild at that moment is exactly the wrong time to do it.
-    expect(ruleFingerprint(rule({ mode: 'observe' }))).toBe(ruleFingerprint(rule()));
-  });
-
   it('cannot be confused by a separator appearing inside a term', () => {
     // The failure a naive `join(' ')` has: two different rules hashing to
     // the same digest because a term contains the separator. docs/22 records a
@@ -120,7 +111,7 @@ describe('ruleFingerprint', () => {
   it('does not hash ruleId', () => {
     // Already in the subscriber's cache key; hashing it too would be
     // redundant rather than wrong, but the exclusion is deliberate and this
-    // pins it the same way the `mode` exclusion above is pinned.
+    // pins it.
     expect(ruleFingerprint(rule({ ruleId: 'a-different-rule-id' }))).toBe(ruleFingerprint(rule()));
   });
 

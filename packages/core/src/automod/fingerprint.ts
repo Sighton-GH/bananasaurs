@@ -6,11 +6,9 @@ import type { AutomodRule } from './predicates/types.js';
  *
  * `ruleId` is already in the subscriber's cache key
  * (`${guildId}:${ruleId}`), so hashing it too would be redundant, not wrong —
- * excluded anyway so the digest is exactly "what `compile` reads". `mode` is
- * excluded because it decides what the subscriber *does* with a match, not
- * what the predicate matches: a flip-day mode change must not throw away
- * every compiled matcher in the guild at the moment that would be most
- * expensive to rebuild them.
+ * excluded anyway so the digest is exactly "what `compile` reads". (Rules
+ * carried a `mode` here too until ADR 0121 replaced per-rule modes with the
+ * guild's automod switch, which never reaches the digest.)
  *
  * Everything else on `AutomodRule` is hashed, by construction (see below) —
  * this set is the only place a field can opt out, and opting out is meant to
@@ -35,7 +33,7 @@ import type { AutomodRule } from './predicates/types.js';
  * rule differing only in that field keeps its fingerprint (to be written
  * when the field arrives, since it does not exist to test against yet).
  */
-const EXCLUDED_FIELDS: ReadonlySet<string> = new Set(['ruleId', 'mode']);
+const EXCLUDED_FIELDS: ReadonlySet<string> = new Set(['ruleId']);
 
 /**
  * Canonicalises one field's value before it is hashed.

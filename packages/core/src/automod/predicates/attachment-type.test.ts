@@ -11,7 +11,6 @@ const compile = (config: string): CompiledPredicate => {
   const rule: AutomodRule = {
     ruleId: 'r1',
     kind: 'attachment_type',
-    mode: 'test',
     config,
     terms: [],
     allowlist: [],
@@ -167,7 +166,6 @@ describe('the attachment_type predicate', () => {
     const overlongRule: AutomodRule = {
       ruleId: 'r1',
       kind: 'attachment_type',
-      mode: 'test',
       config: JSON.stringify({ blockedExtensions: [], blockedContentTypes: [longType] }),
       terms: [],
       allowlist: [],

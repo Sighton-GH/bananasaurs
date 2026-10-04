@@ -71,17 +71,8 @@ const suppressionDoneTitle = (kind: SuppressionKind): string => {
   }
 };
 
-/** Evidence: the saved test example's whole message when one was captured, else the snippet with a note that it is not the whole message. */
-function EvidenceCell({
-  fixtureContent,
-  matchedSnippet,
-}: {
-  readonly fixtureContent: string | undefined;
-  readonly matchedSnippet: string;
-}) {
-  if (fixtureContent !== undefined) {
-    return <p className="max-w-md text-sm break-words whitespace-pre-wrap">{fixtureContent}</p>;
-  }
+/** Evidence: the matched snippet, with a note that it is not the whole message (ADR 0121 keeps no copy). */
+function EvidenceCell({ matchedSnippet }: { readonly matchedSnippet: string }) {
   return (
     <>
       <p className="max-w-md text-sm break-words whitespace-pre-wrap">{matchedSnippet}</p>
@@ -388,12 +379,7 @@ export function ReviewPage() {
                         {
                           key: 'evidence',
                           header: 'Evidence',
-                          cell: (m) => (
-                            <EvidenceCell
-                              fixtureContent={m.fixtureContent}
-                              matchedSnippet={m.matchedSnippet}
-                            />
-                          ),
+                          cell: (m) => <EvidenceCell matchedSnippet={m.matchedSnippet} />,
                         },
                         {
                           key: 'trace',
@@ -475,12 +461,7 @@ export function ReviewPage() {
                         {
                           key: 'evidence',
                           header: 'Evidence',
-                          cell: (h) => (
-                            <EvidenceCell
-                              fixtureContent={undefined}
-                              matchedSnippet={h.matchedSnippet}
-                            />
-                          ),
+                          cell: (h) => <EvidenceCell matchedSnippet={h.matchedSnippet} />,
                         },
                         {
                           key: 'verdict',

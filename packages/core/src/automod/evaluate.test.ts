@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MessageEvent } from '../discord/events.js';
 import { ruleFingerprint } from './fingerprint.js';
-import type { AutomodRule, FixtureRecord, PredicateInput } from './predicates/types.js';
+import type { AutomodRule, PredicateInput } from './predicates/types.js';
 import {
   createPredicateCache,
   evaluateRule,
@@ -23,7 +23,6 @@ const GUILD = '100000000000000001';
 const ruleWith = (terms: readonly string[]): AutomodRule => ({
   ruleId: 'r1',
   kind: 'keyword_filter',
-  mode: 'test',
   config: '{}',
   terms: terms.map((text) => ({ text, categoryId: 'profanity' })),
   allowlist: [],
@@ -178,138 +177,5 @@ describe('predicateInputFrom', () => {
     expect(
       predicateInputFrom({ from: 'message', event: messageEvent({ authorId: undefined }) }),
     ).toBeUndefined();
-  });
-
-  it('reconstructs mentions from a fixture’s content', () => {
-    // Plan ruling PR-3: Discord mention syntax is literally present in the
-    // message text, so the window tier can replay honestly from a text-only
-    // corpus. This fixture names no files, so attachments stay empty — that
-    // is a fact about the fixture, not about what the corpus can hold (OD-3
-    // superseded PR-3's note that attachments were unrecoverable; see the
-    // dedicated test below for a fixture that has some).
-    const fixture: FixtureRecord = {
-      fixtureId: '300000000000000001:abcdef0123456789',
-      content:
-        'hey <@400000000000000002> and <@!400000000000000003> and <@&500000000000000001> @everyone',
-      authorId: '400000000000000001',
-      label: 'unlabelled',
-      source: 'observed',
-      createdAt: 7_000,
-      attachments: [],
-    };
-    const input = predicateInputFrom({
-      from: 'fixture',
-      guildId: '100000000000000001',
-      fixture,
-    });
-
-    expect(input?.mentionedUserIds).toEqual(['400000000000000002', '400000000000000003']);
-    expect(input?.mentionedRoleIds).toEqual(['500000000000000001']);
-    expect(input?.mentionsEveryone).toBe(true);
-    expect(input?.attachments).toEqual([]);
-  });
-
-  it('reconstructs a fixture’s attachments onto the predicate input', () => {
-    const input = predicateInputFrom({
-      from: 'fixture',
-      guildId: '100000000000000001',
-      fixture: {
-        fixtureId: '900000000000000001:0123456789abcdef',
-        content: 'have a file',
-        authorId: '800000000000000001',
-        label: 'unlabelled',
-        source: 'observed',
-        createdAt: 5_000,
-        attachments: [
-          { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
-        ],
-      },
-    });
-
-    expect(input?.attachments).toEqual([
-      { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
-    ]);
-  });
-
-  it.each([
-    ['an email whose domain starts "here"', 'write to user@heretical.com for help'],
-    ['a longer word beginning "@here"', 'the @hereditary principle'],
-    ['an email at a domain starting "everyone"', 'ping ops@everyonesbusiness.example'],
-  ])('does not read %s as an @everyone mention', (_label, content) => {
-    // `content.includes('@here')` said true for every one of these. On the
-    // replay path that is not cosmetic: Slice 4's `mention_spam` dry run would
-    // report matches on ordinary messages, and the output would be read as
-    // evidence the rule over-fires when the rule is fine.
-    const input = predicateInputFrom({
-      from: 'fixture',
-      guildId: '100000000000000001',
-      fixture: {
-        fixtureId: 'handwritten-1',
-        content,
-        authorId: undefined,
-        label: 'should_not_match',
-        source: 'handwritten',
-        createdAt: 1,
-        attachments: [],
-      },
-    });
-    expect(input?.mentionsEveryone).toBe(false);
-  });
-
-  it.each([
-    ['at the start of a message', '@everyone stand up'],
-    ['after whitespace', 'hey @here look at this'],
-    ['after punctuation', 'right, @everyone: meeting moved'],
-  ])('still reads a real mention %s', (_label, content) => {
-    const input = predicateInputFrom({
-      from: 'fixture',
-      guildId: '100000000000000001',
-      fixture: {
-        fixtureId: 'handwritten-2',
-        content,
-        authorId: undefined,
-        label: 'should_match',
-        source: 'handwritten',
-        createdAt: 1,
-        attachments: [],
-      },
-    });
-    expect(input?.mentionsEveryone).toBe(true);
-  });
-
-  it('takes the replay clock from the fixture, never from the wall clock', () => {
-    const fixture: FixtureRecord = {
-      fixtureId: 'handwritten-1',
-      content: 'ordinary',
-      authorId: undefined,
-      label: 'should_not_match',
-      source: 'handwritten',
-      createdAt: 7_000,
-      attachments: [],
-    };
-    const input = predicateInputFrom({
-      from: 'fixture',
-      guildId: '100000000000000001',
-      fixture,
-    });
-    expect(input?.atMs).toBe(7_000);
-  });
-
-  it('recovers the real message id from an observed fixture’s id', () => {
-    const fixture: FixtureRecord = {
-      fixtureId: '300000000000000001:abcdef0123456789',
-      content: 'x',
-      authorId: '400000000000000001',
-      label: 'unlabelled',
-      source: 'observed',
-      createdAt: 1,
-      attachments: [],
-    };
-    const input = predicateInputFrom({
-      from: 'fixture',
-      guildId: '100000000000000001',
-      fixture,
-    });
-    expect(input?.messageId).toBe('300000000000000001');
   });
 });

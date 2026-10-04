@@ -185,8 +185,6 @@ export interface OpsReviewableMatch {
   readonly actionTaken: string;
   /** Raw JSON; `undefined` should not occur given `listUnreviewedMatches`'s own filter, but is not trusted not to. */
   readonly trace: string | undefined;
-  /** `undefined` once a member's `/forgetme` has removed the fixture. Never the matched snippet standing in for the whole message. */
-  readonly fixtureContent: string | undefined;
 }
 
 export interface OpsLogRoute {
@@ -217,22 +215,10 @@ export interface OpsSafetyState {
 
 // `packages/core` may not import from `@bananasaurs/storage` (ADR 0014;
 // `eslint.config.js` boundary rules) — every shape below is re-declared in
-// core, the way `AutomodRule` and `FixtureRecord` already are, and the daemon
+// core, the way `AutomodRule` already is, and the daemon
 // wiring maps storage rows onto it field by field.
 
-/** A rule's mode, as the dashboard's rules list and cutover board render it. */
-export type OpsRuleMode = 'test' | 'observe' | 'enforce';
-
-/** ADR 0042's cutover state machine, as the cutover board renders it. */
-export type OpsCutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
-
-/**
- * One rule for the dashboard's `/automod` rules list and `/cutover` board.
- *
- * `matchCount` is every recorded match for the rule; `reviewedCount` is how
- * many of those carry a verdict — the two numbers the cutover board reads to
- * say whether a rule has served its observe window.
- */
+/** How a rule's matches have been flagged (ADR 0121: flags are for tuning). */
 export interface OpsVerdictCounts {
   readonly falsePositive: number;
   readonly truePositive: number;
@@ -250,21 +236,18 @@ export interface OpsNativeHit {
   readonly actionTaken: string;
 }
 
+/**
+ * One rule for the dashboard's `/automod` rules list. `matchCount` is every
+ * recorded match for the rule; `reviewedCount` is how many of those carry a
+ * flag.
+ */
 export interface OpsAutomodRuleSummary {
   readonly ruleId: string;
   readonly kind: RuleKind;
   readonly name: string;
-  readonly mode: OpsRuleMode;
   readonly enabled: boolean;
   readonly config: string;
-  readonly cutoverState: OpsCutoverState;
-  readonly observeStartedAt: number | null;
-  readonly legacyRuleRef: string | null;
   readonly countsAsViolation: boolean;
-  readonly maxFalsePositiveRate: number;
-  readonly minReviewedMatches: number;
-  readonly enforceSignedOffBy: string | null;
-  readonly enforceSignedOffAt: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly matchCount: number;
@@ -274,37 +257,8 @@ export interface OpsAutomodRuleSummary {
 }
 
 /**
- * Why the `/automod/:ruleId` mode dialog's `enforce` request was refused —
- * the same four refusals `enforcementEligibility` returns, re-declared here
- * rather than imported (ADR 0014), the way `OpsUnusableAutomodRule.reason`
- * widens `CompileFailure` to a string above.
- */
-export type OpsEnforcementRefusal =
-  | { readonly reason: 'cutover-state'; readonly state: string }
-  | {
-      readonly reason: 'false-positive';
-      readonly falsePositives: number;
-      readonly reviewed: number;
-    }
-  | { readonly reason: 'rate-too-high'; readonly rate: number; readonly threshold: number }
-  | {
-      readonly reason: 'low-volume-unsigned';
-      readonly reviewed: number;
-      readonly required: number;
-    };
-
-/**
- * Whether the `/automod/:ruleId` rule may move to `mode = 'enforce'` right
- * now — shown on the rule detail page beside the mode dialog, and returned
- * by the mode write itself.
- */
-export type OpsEnforcementEligibility =
-  { readonly ok: true } | { readonly ok: false; readonly refusal: OpsEnforcementRefusal };
-
-/**
  * One rule for the dashboard's `/automod/:ruleId` detail page: the summary
- * row plus everything the page edits — exemptions, the relational lists, and
- * the current eligibility verdict the mode dialog mirrors server-side.
+ * row plus everything the page edits — exemptions and the relational lists.
  */
 export interface OpsAutomodRuleDetail extends OpsAutomodRuleSummary {
   readonly exemptions: readonly {
@@ -315,7 +269,6 @@ export interface OpsAutomodRuleDetail extends OpsAutomodRuleSummary {
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly { readonly code: string; readonly label: string }[];
   readonly linkDomains: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
-  readonly eligibility: OpsEnforcementEligibility;
 }
 
 /**
@@ -352,7 +305,6 @@ export interface OpsCaseEvent {
   readonly refusalReason: string | undefined;
   readonly actorId: string | undefined;
   readonly trace: string | undefined;
-  readonly fixtureId: string | undefined;
 }
 
 /** One case with its history, as the `/cases/:caseId` detail page renders it. */
@@ -849,12 +801,12 @@ export interface OpsPorts {
   /** How many native decisions that stopped a message this guild has recorded. */
   nativeBlockedCount(): number;
   /**
-   * Every rule, enabled or disabled, with its match and reviewed tallies —
-   * the dashboard's `/automod` rules list and `/cutover` board.
+   * Every rule, enabled or disabled, with its match and flag tallies — the
+   * dashboard's `/automod` rules list.
    */
   listAutomodRules(): readonly OpsAutomodRuleSummary[];
   /**
-   * One rule with its exemptions, relational lists and eligibility — the
+   * One rule with its exemptions and relational lists — the
    * dashboard's `/automod/:ruleId` detail page. `undefined` for a rule id
    * that names no row in this guild.
    */
@@ -894,18 +846,7 @@ export interface OpsPorts {
     readonly verdict: 'false_positive' | 'true_positive' | 'unclear';
     readonly reviewedBy: string;
     readonly note?: string;
-  }):
-    /**
-     * `'recorded-with-label-conflict'` is a success, not a failure: the verdict
-     * is stored either way. It says the *fixture* this match came from could not
-     * be labelled, because another rule's verdict on the same message implies
-     * the opposite label and a fixture's label has no rule dimension. The
-     * reviewer needs to be told, because from their side nothing looks
-     * different — they ruled on one match and the regression corpus quietly
-     * gained nothing. See `recordVerdict` in
-     * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
-     */
-    'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
+  }): 'recorded' | 'no-such-event';
   /**
    * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
    * PR-19). `'already-present'` is a real answer, not a refusal: the

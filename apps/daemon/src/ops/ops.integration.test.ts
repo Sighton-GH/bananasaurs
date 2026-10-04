@@ -19,7 +19,6 @@ import {
   accountRepo,
   archiveRepo,
   authzRepo,
-  automodFixtureRepo,
   automodRuleRepo,
   effectRepo,
   guildRepo,
@@ -1344,7 +1343,7 @@ describe('automod review / verdict, end to end (IMPORTANT-4)', () => {
   const scope = () => t.scopes.forGuild(GUILD);
   const MEMBER = parseSnowflakeId('456789012345678901');
 
-  it('carries a match through review to a recorded verdict and a propagated fixture label', async () => {
+  it('carries a match through review to a recorded verdict', async () => {
     startDaemon();
     guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
 
@@ -1362,14 +1361,6 @@ describe('automod review / verdict, end to end (IMPORTANT-4)', () => {
       defaultAction: 'log_only',
     });
     automodRuleRepo.addTerm(scope(), { termId: 't1', categoryId: 'c1', text: 'badword' });
-
-    const fixtureId = automodFixtureRepo.captureObservedFixture(scope(), {
-      messageId: '900000000000000001',
-      content: 'hello badword everyone',
-      authorId: MEMBER,
-      createdAt: discord.now(),
-      attachments: [],
-    });
 
     const { caseId } = modCaseRepo.openOrResolveCase(scope(), {
       memberId: MEMBER,
@@ -1391,14 +1382,13 @@ describe('automod review / verdict, end to end (IMPORTANT-4)', () => {
         normalisations: ['lowercased'],
         detail: {},
       }),
-      fixtureId,
     });
 
     // `automod review` — exercises `listUnreviewedMatches`.
     const review = await cli('automod review');
     expect(review.code, review.err).toBe(0);
     expect(review.out).toContain('e1');
-    expect(review.out).toContain('hello badword everyone');
+    expect(review.out).toContain('"badword"');
 
     // `automod verdict e1 true_positive --confirm` — exercises
     // `recordMatchVerdict`.
@@ -1408,9 +1398,6 @@ describe('automod review / verdict, end to end (IMPORTANT-4)', () => {
 
     const storedVerdict = modMatchReviewRepo.findVerdict(scope(), 'e1');
     expect(storedVerdict?.verdict).toBe('true_positive');
-
-    const fixture = automodFixtureRepo.listFixtures(scope()).find((f) => f.fixtureId === fixtureId);
-    expect(fixture?.label).toBe('should_match');
 
     // The match is now reviewed, so a second `automod review` must not
     // still list it — proof the write actually reached the same database

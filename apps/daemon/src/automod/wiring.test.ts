@@ -188,17 +188,14 @@ describe('toAutomodRule', () => {
       'inviteAllowlist',
       'kind',
       'linkDomains',
-      'mode',
       'ruleId',
       'terms',
     ]);
 
-    // The gate's own columns are present on the row and absent from the narrowed
-    // rule — the specific leak this exists to prevent.
-    expect('cutoverState' in stored).toBe(true);
-    expect('cutoverState' in narrowed).toBe(false);
-    expect('enforceSignedOffBy' in narrowed).toBe(false);
-    expect('observeStartedAt' in narrowed).toBe(false);
+    // ADR 0121 removed the gate columns that used to make the row wider than
+    // the rule; a column added to the row later must be a deliberate choice
+    // here, not a silent pass-through or a silent drop.
+    expect(Object.keys(stored).sort()).toEqual(Object.keys(narrowed).sort());
 
     t.close();
   });

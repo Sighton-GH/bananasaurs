@@ -309,11 +309,11 @@ describe('migration 0012 adds the fixture corpus without disturbing existing cas
       )
       .run(GUILD_ID, MEMBER_ID);
 
-    // Applies every migration the real folder carries that is not yet
-    // recorded as applied — 0012 — against the data just inserted. Goes
-    // through `runMigrations`, not `migrate()` directly, exercising the same
+    // Applies 0012 against the data just inserted. Goes through
+    // `runMigrations`, not `migrate()` directly, exercising the same
     // foreign-key-off / foreign_key_check bracket a real upgrade uses.
-    runMigrations(raw, db, MIGRATIONS_FOLDER);
+    // Capped at 0012: 0101 (ADR 0121) later drops `fixture_id`.
+    runMigrations(raw, db, migrationsFolderUpTo(12));
 
     const events = raw.prepare('SELECT event_id, trace, fixture_id FROM mod_case_events').all() as {
       event_id: string;
@@ -1250,5 +1250,217 @@ describe('migration journal ordering (ADR 0115 section 3)', () => {
         { idx: 1, when: 100, tag: '0001_second' },
       ]),
     ).toContain('0001_second');
+  });
+});
+
+describe('migration 0101 removes the staged rollout without losing rules, word lists or flags (ADR 0121)', () => {
+  const GUILD_ID = '111111111111111111';
+  const MEMBER_ID = '222222222222222222';
+  const ROLE_ID = '333333333333333333';
+
+  /** The same journal-prefix folder the 0012 test above builds; see its comment. */
+  const migrationsFolderUpTo = (lastIdx: number): string => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'automod-cleanup-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const entries = journal.entries.filter((e) => e.idx <= lastIdx);
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries) {
+      fs.copyFileSync(
+        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+        path.join(dir, `${entry.tag}.sql`),
+      );
+    }
+    return dir;
+  };
+
+  /** The journal idx of `0100_automod_state`, the switch column migration. */
+  const AUTOMOD_STATE_IDX = (() => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: { idx: number; tag: string }[] };
+    const entry = journal.entries.find((e) => e.tag === '0100_automod_state');
+    if (entry === undefined) throw new Error('0100_automod_state is not in the journal');
+    return entry.idx;
+  })();
+
+  const columnsOf = (raw: Database.Database, table: string): string[] =>
+    (raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+
+  it('keeps rules, their children, case events and flags; drops fixtures; the guild is off', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    runMigrations(raw, db, migrationsFolderUpTo(AUTOMOD_STATE_IDX));
+
+    // Seeded against the staged-rollout shape: a guild in testing mode, a
+    // rule half way through observing, with every child table populated,
+    // and a recorded match with its fixture and a false-positive flag.
+    raw
+      .prepare(
+        `INSERT INTO guilds (guild_id, name, automod_testing_mode, created_at, updated_at)
+         VALUES (?, 'g', 1, 0, 0)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_rules
+           (guild_id, rule_id, kind, name, config, mode, enabled, observe_started_at,
+            legacy_rule_ref, enforce_signed_off_by, enforce_signed_off_at, cutover_state,
+            counts_as_violation, max_false_positive_rate, min_reviewed_matches,
+            created_at, updated_at)
+         VALUES (?, 'kw', 'keyword_filter', 'word filter', '{}', 'observe', 1, 1000,
+                 'legacy-1', 'owner', 2000, 'observing', 1, 0.05, 20, 0, 0)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_categories (guild_id, category_id, rule_id, name, default_action, enabled)
+         VALUES (?, 'c1', 'kw', 'profanity', 'delete', 1)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_terms (guild_id, term_id, category_id, text, enabled)
+         VALUES (?, 't1', 'c1', 'badword', 1)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_allowlist (guild_id, rule_id, phrase) VALUES (?, 'kw', 'assassin')`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_rule_exemptions (guild_id, rule_id, exempt_type, exempt_id)
+         VALUES (?, 'kw', 'role', ?)`,
+      )
+      .run(GUILD_ID, ROLE_ID);
+    raw
+      .prepare(
+        `INSERT INTO automod_fixtures (guild_id, fixture_id, content, author_id, label, source, created_at)
+         VALUES (?, 'm1:abc', 'hello badword everyone', ?, 'should_not_match', 'observed', 0)`,
+      )
+      .run(GUILD_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO automod_fixture_attachments
+           (guild_id, fixture_id, ordinal, file_name, content_type, size_bytes)
+         VALUES (?, 'm1:abc', 0, 'a.png', 'image/png', 10)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_cases (guild_id, case_id, member_id, opened_at) VALUES (?, 'case1', ?, 0)`,
+      )
+      .run(GUILD_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_case_events
+           (guild_id, event_id, case_id, rule_id, member_id, at, matched_category,
+            matched_snippet, action_taken, trace, fixture_id)
+         VALUES (?, 'e1', 'case1', 'kw', ?, 0, 'profanity', 'badword', 'would_delete',
+                 '{"kind":"keyword_filter"}', 'm1:abc')`,
+      )
+      .run(GUILD_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_match_reviews (guild_id, event_id, verdict, reviewed_by, reviewed_at, note)
+         VALUES (?, 'e1', 'false_positive', 'owner', 5, 'a quote, not abuse')`,
+      )
+      .run(GUILD_ID);
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    expect(
+      raw
+        .prepare(`SELECT rule_id, kind, name, config, enabled, counts_as_violation FROM mod_rules`)
+        .all(),
+    ).toEqual([
+      {
+        rule_id: 'kw',
+        kind: 'keyword_filter',
+        name: 'word filter',
+        config: '{}',
+        enabled: 1,
+        counts_as_violation: 1,
+      },
+    ]);
+    expect(raw.prepare(`SELECT category_id, rule_id, name FROM word_categories`).all()).toEqual([
+      { category_id: 'c1', rule_id: 'kw', name: 'profanity' },
+    ]);
+    expect(raw.prepare(`SELECT term_id, text FROM word_terms`).all()).toEqual([
+      { term_id: 't1', text: 'badword' },
+    ]);
+    expect(raw.prepare(`SELECT rule_id, phrase FROM word_allowlist`).all()).toEqual([
+      { rule_id: 'kw', phrase: 'assassin' },
+    ]);
+    expect(
+      raw.prepare(`SELECT rule_id, exempt_type, exempt_id FROM mod_rule_exemptions`).all(),
+    ).toEqual([{ rule_id: 'kw', exempt_type: 'role', exempt_id: ROLE_ID }]);
+    expect(
+      raw.prepare(`SELECT event_id, case_id, action_taken, trace FROM mod_case_events`).all(),
+    ).toEqual([
+      {
+        event_id: 'e1',
+        case_id: 'case1',
+        action_taken: 'would_delete',
+        trace: '{"kind":"keyword_filter"}',
+      },
+    ]);
+    expect(
+      raw.prepare(`SELECT event_id, verdict, reviewed_by, note FROM mod_match_reviews`).all(),
+    ).toEqual([
+      {
+        event_id: 'e1',
+        verdict: 'false_positive',
+        reviewed_by: 'owner',
+        note: 'a quote, not abuse',
+      },
+    ]);
+    expect(raw.prepare(`SELECT case_id FROM mod_cases`).all()).toEqual([{ case_id: 'case1' }]);
+
+    expect(
+      raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE name IN ('automod_fixtures', 'automod_fixture_attachments')`,
+        )
+        .all(),
+    ).toEqual([]);
+    const ruleColumns = columnsOf(raw, 'mod_rules');
+    for (const dropped of [
+      'mode',
+      'cutover_state',
+      'observe_started_at',
+      'legacy_rule_ref',
+      'enforce_signed_off_by',
+      'enforce_signed_off_at',
+      'max_false_positive_rate',
+      'min_reviewed_matches',
+    ]) {
+      expect(ruleColumns).not.toContain(dropped);
+    }
+    expect(columnsOf(raw, 'mod_case_events')).not.toContain('fixture_id');
+    expect(columnsOf(raw, 'guilds')).not.toContain('automod_testing_mode');
+
+    expect(raw.prepare(`SELECT name, automod_state, dry_run FROM guilds`).all()).toEqual([
+      { name: 'g', automod_state: 'off', dry_run: 1 },
+    ]);
+    expect(() =>
+      raw.prepare(`UPDATE guilds SET automod_state = 'enforce' WHERE guild_id = ?`).run(GUILD_ID),
+    ).toThrow(/CHECK constraint failed: guilds_automod_state/);
+    for (const state of ['off', 'watch', 'on']) {
+      raw.prepare(`UPDATE guilds SET automod_state = ? WHERE guild_id = ?`).run(state, GUILD_ID);
+    }
+    expect(raw.pragma('foreign_key_check')).toEqual([]);
+
+    raw.close();
   });
 });

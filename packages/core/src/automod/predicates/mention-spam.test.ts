@@ -12,7 +12,6 @@ const compile = (config: string, kind = 'mention_spam'): CompiledPredicate => {
   const rule: AutomodRule = {
     ruleId: 'r1',
     kind,
-    mode: 'test',
     config,
     terms: [],
     allowlist: [],
@@ -98,7 +97,6 @@ describe('the mention_spam predicate', () => {
     const rule: AutomodRule = {
       ruleId: 'r1',
       kind: 'mention_spam',
-      mode: 'test',
       config: '{"maxMentions":3,"typo":true}',
       terms: [],
       allowlist: [],

@@ -107,44 +107,15 @@ describe('the breaker, opened and closed', () => {
   });
 });
 
-/**
- * ADR 0042 §5: a third lever, distinct from `killswitch` and `dryRun`, so
- * testing one automod rule does not have to disable the role panels too.
- * Task 1 only adds the column and widens `GuildRow`; wiring it into the
- * subscriber as an actual lever is Task 5.
- */
-describe('automod_testing_mode (ADR 0042)', () => {
-  it('defaults off for a newly upserted guild', () => {
-    expect(findGuild(a)?.automodTestingMode).toBe(0);
-  });
-
-  it('rejects a value the boolCheck does not permit, even from a hand-written row', () => {
-    expect(() =>
-      t.raw.prepare(`UPDATE guilds SET automod_testing_mode = 2 WHERE guild_id = ?`).run(GUILD_A),
-    ).toThrow(/CHECK constraint failed/);
-  });
-
-  /**
-   * `readSafetyState` is where the subscriber's `AutomodSafetyState` port
-   * (`core`) actually gets this field — a boolean conversion of the same
-   * INTEGER column the two tests above exercise directly. No setter exists
-   * yet (nothing in this slice adds one), so the row is written directly,
-   * matching the pattern the CHECK test above already uses.
-   */
-  it('readSafetyState surfaces the column as a boolean', () => {
-    expect(readSafetyState(a)?.automodTestingMode).toBe(false);
-
-    t.raw.prepare(`UPDATE guilds SET automod_testing_mode = 1 WHERE guild_id = ?`).run(GUILD_A);
-
-    expect(readSafetyState(a)?.automodTestingMode).toBe(true);
-    // Guild-scoped like every other field on this row.
-    expect(readSafetyState(b)?.automodTestingMode).toBe(false);
-  });
-});
-
 describe('automod state (ADR 0121)', () => {
   it('defaults to off for a newly seen guild', () => {
     expect(readSafetyState(a)?.automodState).toBe('off');
+  });
+
+  it('rejects a value the CHECK does not name, even from a hand-written row', () => {
+    expect(() =>
+      t.raw.prepare(`UPDATE guilds SET automod_state = 'enforce' WHERE guild_id = ?`).run(GUILD_A),
+    ).toThrow(/CHECK constraint failed: guilds_automod_state/);
   });
 
   it('sets one guild without touching another', () => {
@@ -164,7 +135,11 @@ describe('automod state (ADR 0121)', () => {
   });
 
   it('reads an unexpected stored value as off', () => {
+    // The CHECK forbids this row, so the test switches CHECKs off to plant
+    // it: the read must still fail closed if one ever exists.
+    t.raw.pragma('ignore_check_constraints = ON');
     t.raw.prepare("UPDATE guilds SET automod_state = 'bogus' WHERE guild_id = ?").run(GUILD_A);
+    t.raw.pragma('ignore_check_constraints = OFF');
     expect(readSafetyState(a)?.automodState).toBe('off');
   });
 });

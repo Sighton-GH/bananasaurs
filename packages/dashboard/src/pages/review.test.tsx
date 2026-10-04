@@ -36,7 +36,6 @@ function match(overrides: Partial<ReviewableMatch> = {}): ReviewableMatch {
     matchedSnippet: 'badword',
     actionTaken: 'would_delete',
     trace: undefined,
-    fixtureContent: undefined,
     member: { username: 'sasha', displayName: 'Sasha' },
     ...overrides,
   };
@@ -170,15 +169,12 @@ describe('ReviewPage', () => {
     expect(screen.queryByRole('note')).toBeNull();
   });
 
-  it('shows fixture content when present and the snippet note when absent', async () => {
+  it('shows the matched snippet with a note that it is not the whole message', async () => {
     stubFetch([
       {
         url: '/api/automod/review?limit=50',
         body: {
-          matches: [
-            match({ eventId: 'evt-fixture', fixtureContent: 'the whole flagged message' }),
-            match({ eventId: 'evt-no-fixture', fixtureContent: undefined }),
-          ],
+          matches: [match({ eventId: 'evt-1' })],
           nativeHits: [],
           nativeBlocked: 0,
           verdicts: {},
@@ -187,8 +183,7 @@ describe('ReviewPage', () => {
       { url: '/api/automod/rules', body: { rules: [rule()] } },
     ]);
     renderAt('/review');
-    expect(await screen.findByText('the whole flagged message')).toBeTruthy();
-    expect(screen.getAllByText('badword')).toHaveLength(1);
+    expect(await screen.findByText('badword')).toBeTruthy();
     expect(
       screen.getByText(/snippet only — Bananasaurs does not keep a copy of the whole message/),
     ).toBeTruthy();

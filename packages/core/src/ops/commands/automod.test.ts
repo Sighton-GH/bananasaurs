@@ -60,7 +60,7 @@ const driveWrite = (
     unixUserClaimed: options.unixUserClaimed ?? 'bryan',
   });
 
-/** A reviewable match, with a trace and a fixture message present by default. */
+/** A reviewable match, with a trace present by default. */
 const reviewableMatch = (
   over: Partial<OpsReviewableMatch> & { eventId: string },
 ): OpsReviewableMatch => ({
@@ -73,7 +73,6 @@ const reviewableMatch = (
   trace:
     '{"kind":"keyword_filter","matchedOn":"badword","span":[6,13],' +
     '"normalisations":["lowercased"],"detail":{}}',
-  fixtureContent: 'hello badword everyone',
   ...over,
 });
 
@@ -106,27 +105,26 @@ describe('automod review', () => {
     expect(automodReviewCommand.write).toBe(false);
   });
 
-  it('lists unreviewed matches with the message and the rendered trace', async () => {
+  it('lists unreviewed matches with the matched snippet and the rendered trace', async () => {
     const res = await drive(automodReviewCommand, {
       listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1' })],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('e1');
-    expect(res.text).toContain('hello [badword] everyone');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('predicate       keyword_filter');
     expect(res.text).toContain('bananasaurs automod verdict e1');
   });
 
-  it('shows the message and the matched snippet as their own lines, unconditionally', async () => {
-    // CRITICAL-2: before this fix, `matchedSnippet`/`matchedCategory` were
-    // fetched and projected into `data` but never printed in `text` at all —
-    // the excerpt inside `renderTrace` was the only route to the message, and
-    // that route is gated on a span existing.
+  it('shows the matched snippet on its own line, never as though it were the whole message', async () => {
+    // CRITICAL-2: `matchedSnippet`/`matchedCategory` print unconditionally,
+    // labelled `matched`. Bananasaurs keeps no copy of the whole message
+    // (ADR 0121), so nothing may be labelled `message`.
     const res = await drive(automodReviewCommand, {
       listUnreviewedMatches: () => [
         reviewableMatch({
           eventId: 'e1',
-          fixtureContent: 'hello badword everyone',
           matchedSnippet: 'badword',
           matchedCategory: 'profanity',
         }),
@@ -134,49 +132,43 @@ describe('automod review', () => {
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('message');
-    expect(res.text).toContain('hello badword everyone');
+    expect(res.text).not.toMatch(/^\s*message\s/m);
     expect(res.text).toContain('matched');
     expect(res.text).toContain('"badword"');
     expect(res.text).toContain('profanity');
   });
 
-  it('shows the message even when the trace has no span', async () => {
+  it('shows the snippet even when the trace has no span', async () => {
     // `span` is `.optional()` on `MatchTrace`. `keyword_filter` always sets
     // one; Slices 3-5 land predicates during this same observe window
     // (`rapid_spam`, `duplicate_message`, `mention_spam`, `attachment_type`)
     // that judge the whole message rather than a substring of it and so have
     // no span. Before this fix, a spanless trace meant `renderTrace` never
-    // printed the excerpt line, and nothing else printed the message either
-    // — the review queue would show no message at all.
+    // printed the excerpt line, and nothing else printed the evidence either
+    // — the review queue would show nothing to judge.
     const res = await drive(automodReviewCommand, {
       listUnreviewedMatches: () => [
         reviewableMatch({
           eventId: 'e1',
           trace: '{"kind":"keyword_filter","matchedOn":"badword","normalisations":[],"detail":{}}',
-          fixtureContent: 'hello badword everyone',
         }),
       ],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('hello badword everyone');
+    expect(res.text).toContain('"badword"');
   });
 
-  it('renders a match whose trace is malformed without hiding the message or the snippet', async () => {
+  it('renders a match whose trace is malformed without hiding the snippet', async () => {
     // A trace read back from the database is untrusted (CLAUDE.md rule 3).
     // A row this build cannot parse is still a match a human must rule on,
-    // so the trace is replaced by a reason — but the message and the
-    // snippet, which do not come from the trace, must still appear. Before
-    // this fix `match.fixtureContent` sat in scope, unprinted, whenever the
-    // trace failed to parse: an event id, a rule id, a member id, a
-    // timestamp, an error, and then a command inviting a verdict.
+    // so the trace is replaced by a reason — but the snippet, which does not
+    // come from the trace, must still appear.
     const res = await drive(automodReviewCommand, {
       listUnreviewedMatches: () => [
         reviewableMatch({
           eventId: 'e1',
           trace: 'not json',
-          fixtureContent: 'hello badword everyone',
           matchedSnippet: 'badword',
           matchedCategory: 'profanity',
         }),
@@ -186,28 +178,6 @@ describe('automod review', () => {
     if (!res.ok) return;
     expect(res.text).toContain('e1');
     expect(res.text).toContain('trace could not be read');
-    expect(res.text).toContain('hello badword everyone');
-    expect(res.text).toContain('"badword"');
-    expect(res.text).toContain('profanity');
-  });
-
-  it('renders a match whose fixture has been forgotten, still showing the matched snippet', async () => {
-    // /forgetme removed the message. The match is still reviewable from the
-    // trace and the snippet — worse evidence, honestly labelled, and never
-    // printed as though the snippet were the whole message.
-    const res = await drive(automodReviewCommand, {
-      listUnreviewedMatches: () => [
-        reviewableMatch({
-          eventId: 'e1',
-          fixtureContent: undefined,
-          matchedSnippet: 'badword',
-          matchedCategory: 'profanity',
-        }),
-      ],
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain('message no longer stored');
     expect(res.text).toContain('"badword"');
     expect(res.text).toContain('profanity');
   });
@@ -266,61 +236,6 @@ describe('automod verdict', () => {
     expect(res.code).toBe('needs-confirm');
   });
 
-  it('tells the reviewer when their verdict cost the corpus its label', async () => {
-    // IMPORTANT-1: one message matching two rules shares one fixture, and a
-    // fixture's label has no rule dimension — so when a second rule's verdict
-    // disagrees, the label resets to unlabelled rather than one verdict
-    // silently overwriting the other. From the reviewer's side that is
-    // invisible: they ruled on a match and moved on. If the command does not
-    // say so, the regression corpus quietly stops growing and nobody knows
-    // why. The verdict itself is still recorded — this is a success line.
-    const audit: unknown[] = [];
-    const res = await driveWrite(
-      automodVerdictCommand,
-      {
-        recordMatchVerdict: () => 'recorded-with-label-conflict',
-        recordAudit: (input) => {
-          audit.push(input);
-        },
-      },
-      { eventId: 'e1', verdict: 'true_positive' },
-    );
-
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain('recorded true_positive for e1');
-    expect(res.text).toContain('another rule');
-    expect(res.text).toContain('reset to unlabelled');
-    // The verdict still counts toward the gate — say so, or a reviewer reads
-    // this as "my verdict was thrown away".
-    expect(res.text).toContain('your verdict still counts');
-    expect(res.data).toMatchObject({ ok: true, fixtureLabelConflict: true });
-    // The corpus lost a label as a side effect of this command, so the audit
-    // trail has to show where it went.
-    expect(audit).toEqual([
-      expect.objectContaining({
-        after: expect.objectContaining({ fixtureLabelConflict: true }),
-      }),
-    ]);
-  });
-
-  it('says nothing about conflicts on an ordinary verdict', async () => {
-    const res = await driveWrite(
-      automodVerdictCommand,
-      {
-        recordMatchVerdict: () => 'recorded',
-        recordAudit: () => {
-          /* a write command's audit row is written by the dispatcher */
-        },
-      },
-      { eventId: 'e1', verdict: 'true_positive' },
-    );
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).not.toContain('another rule');
-    expect(res.data).toMatchObject({ fixtureLabelConflict: false });
-  });
-
   it('records a verdict and returns an audit record naming the event', async () => {
     const audit: unknown[] = [];
     const res = await driveWrite(
@@ -339,11 +254,7 @@ describe('automod verdict', () => {
         action: 'automod.verdict_recorded',
         subjectType: 'mod_case_event',
         subjectId: 'e1',
-        // `fixtureLabelConflict` is part of the audited `after` because a
-        // conflict removes a label from the corpus as a side effect of this
-        // command, and a trail recording only the verdict would not show
-        // where the label went.
-        after: { verdict: 'false_positive', fixtureLabelConflict: false },
+        after: { verdict: 'false_positive' },
       }),
     ]);
   });

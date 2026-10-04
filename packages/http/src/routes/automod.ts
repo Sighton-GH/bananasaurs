@@ -1,11 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import {
-  RULE_KINDS,
-  snowflakeIdSchema,
-  validateRuleConfig,
-  type OpsAutomodRuleSummary,
-} from '@bananasaurs/core';
+import { RULE_KINDS, snowflakeIdSchema, validateRuleConfig } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -65,30 +60,6 @@ const suppressBodySchema = z.object({
 const INVITE_CODE_PATTERN = /^[\w-]{2,64}$/;
 const LINK_DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/;
 
-/**
- * ADR 0121 removed the per-rule staged rollout, so the dashboard never sees a
- * rule's mode, cutover state, observe clock, legacy ref, sign-off, gate
- * thresholds or eligibility. The port types still carry them until storage drops the
- * columns; this keeps them out of every response.
- */
-const STAGED_FIELDS = [
-  'mode',
-  'cutoverState',
-  'observeStartedAt',
-  'legacyRuleRef',
-  'maxFalsePositiveRate',
-  'minReviewedMatches',
-  'enforceSignedOffBy',
-  'enforceSignedOffAt',
-  'eligibility',
-] as const;
-
-const withoutStagedFields = (rule: OpsAutomodRuleSummary): Record<string, unknown> => {
-  const copy: Record<string, unknown> = { ...rule };
-  for (const field of STAGED_FIELDS) delete copy[field];
-  return copy;
-};
-
 export const registerAutomodRoutes = (
   app: FastifyInstance,
   guard: RouteGuard,
@@ -100,7 +71,7 @@ export const registerAutomodRoutes = (
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
     const ports = deps.portsFor(session.scope);
-    return reply.status(200).send({ rules: ports.listAutomodRules().map(withoutStagedFields) });
+    return reply.status(200).send({ rules: ports.listAutomodRules() });
   });
 
   app.get<{ Params: { ruleId: string } }>('/api/automod/rules/:ruleId', (request, reply) => {
@@ -120,7 +91,7 @@ export const registerAutomodRoutes = (
     } catch {
       return reply.status(500).send({ error: 'internal' });
     }
-    return reply.status(200).send({ ...withoutStagedFields(detail), configObject });
+    return reply.status(200).send({ ...detail, configObject });
   });
 
   app.post('/api/automod/rules', (request, reply) => {

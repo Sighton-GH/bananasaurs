@@ -7,7 +7,6 @@ const compile = (config: string, kind = 'duplicate_message'): CompiledPredicate 
   const rule: AutomodRule = {
     ruleId: 'r1',
     kind,
-    mode: 'test',
     config,
     terms: [],
     allowlist: [],
@@ -197,7 +196,6 @@ describe('the duplicate_message predicate', () => {
     const rule: AutomodRule = {
       ruleId: 'r1',
       kind: 'duplicate_message',
-      mode: 'test',
       config: '{"maxRepeats":1,"windowMs":30000,"typo":true}',
       terms: [],
       allowlist: [],
@@ -243,7 +241,6 @@ describe('the duplicate_message predicate', () => {
     const rule: AutomodRule = {
       ruleId: 'r1',
       kind: 'duplicate_message',
-      mode: 'test',
       config: '{"maxRepeats":1,"windowMs":1}',
       terms: [],
       allowlist: [],

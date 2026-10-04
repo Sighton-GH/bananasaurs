@@ -106,8 +106,8 @@ const stubRecords = (): McpRecordsPort => ({
   listCaseEvents: () => [],
   tailAudit: () => [],
   listRules: () => [
-    { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
-    { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+    { ruleId: 'rule-test', name: 'Test rule', enabled: true },
+    { ruleId: 'rule-enforce', name: 'Enforce rule', enabled: true },
   ],
   listPanels: () => [{ panelId: 'roles-panel' }],
 });
@@ -371,10 +371,10 @@ const bigFixture = (): OverviewCardInput => {
     })),
     memberCount: 210,
     rules: [
-      { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
-      { ruleId: 'rule-observe-1', name: 'Observe one', mode: 'observe', enabled: true },
-      { ruleId: 'rule-observe-2', name: 'Observe two', mode: 'observe', enabled: false },
-      { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+      { ruleId: 'rule-test', name: 'Test rule', enabled: true },
+      { ruleId: 'rule-observe-1', name: 'Observe one', enabled: true },
+      { ruleId: 'rule-observe-2', name: 'Observe two', enabled: false },
+      { ruleId: 'rule-enforce', name: 'Enforce rule', enabled: true },
     ],
     panels: [{ panelId: 'roles-panel' }, { panelId: 'welcome' }, { panelId: 'rules' }],
   };
@@ -448,8 +448,8 @@ describe('overview card JSON (ADR 0113)', () => {
     ],
     memberCount: 210,
     rules: [
-      { ruleId: 'rule-test', name: 'Test rule', mode: 'test', enabled: true },
-      { ruleId: 'rule-enforce', name: 'Enforce rule', mode: 'enforce', enabled: true },
+      { ruleId: 'rule-test', name: 'Test rule', enabled: true },
+      { ruleId: 'rule-enforce', name: 'Enforce rule', enabled: true },
     ],
     panels: [{ panelId: 'roles-panel' }],
   });
@@ -540,11 +540,7 @@ describe('overview card JSON (ADR 0113)', () => {
       },
     ]);
     expect(data['panels']).toEqual([{ id: 'roles-panel' }]);
-    expect(data['rules']).toEqual({
-      test: { total: 1, enabled: 1 },
-      observe: { total: 0, enabled: 0 },
-      enforce: { total: 1, enabled: 1 },
-    });
+    expect(data['rules']).toEqual({ total: 2, enabled: 2 });
   });
 
   it('an unmanaged role carries no managed key', () => {
@@ -589,10 +585,6 @@ describe('overview card JSON (ADR 0113)', () => {
     expect(data['uncategorised']).toEqual([]);
     expect(data['roles'] as readonly unknown[]).toHaveLength(60);
     expect(data['panels'] as readonly unknown[]).toHaveLength(3);
-    expect(data['rules']).toEqual({
-      test: { total: 1, enabled: 1 },
-      observe: { total: 2, enabled: 1 },
-      enforce: { total: 1, enabled: 1 },
-    });
+    expect(data['rules']).toEqual({ total: 4, enabled: 3 });
   });
 });

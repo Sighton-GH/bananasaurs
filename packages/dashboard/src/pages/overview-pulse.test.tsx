@@ -71,7 +71,6 @@ describe('OperatorPulse', () => {
               matchedSnippet: 'x',
               actionTaken: 'none',
               trace: undefined,
-              fixtureContent: undefined,
             },
           ],
           nativeHits: [],

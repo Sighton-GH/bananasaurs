@@ -11,7 +11,6 @@ import {
   wordTerms,
 } from '../schema.js';
 import type { InviteAllowlistEntry, LinkDomainEntry } from './automod-rule-lists.js';
-import { enforcementEligibility, type EnforcementEligibility } from './enforcement-gate.js';
 
 /**
  * Automod rules and the word list `keyword_filter` rules carry.
@@ -35,18 +34,6 @@ import { enforcementEligibility, type EnforcementEligibility } from './enforceme
  * another guild's rule even if a caller tried.
  */
 
-export type RuleMode = 'test' | 'observe' | 'enforce';
-
-/**
- * ADR 0042's cutover state machine (PR-27) — where a rule is in the journey
- * from "nobody has looked at it" to enforcing, and whether it has been pulled
- * back. Deliberately **not** the same axis as `RuleMode`: `mode` says what the
- * rule does to a message right now, `cutoverState` says how much evidence
- * stands behind that. A rule can sit in `mode: 'observe'` forever without ever
- * reaching `ready`, and `rolled_back` records a decision that outlives the
- * `mode: 'test'` it is accompanied by.
- */
-export type CutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
 export type WordAction = 'log_only' | 'delete' | 'delete_and_case';
 
 /** The ten predicate kinds `mod_rules_kind` permits (ADR 0040). */
@@ -78,47 +65,21 @@ export type RuleKind =
 export interface StoredAutomodRule {
   readonly ruleId: string;
   readonly kind: RuleKind;
-  readonly mode: RuleMode;
   readonly config: string;
   readonly terms: readonly { text: string; categoryId: string }[];
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly InviteAllowlistEntry[];
   readonly linkDomains: readonly LinkDomainEntry[];
 
-  /**
-   * ADR 0042's cutover-gate columns. Read on every rule, of every kind: the
-   * gate is a property of a rule's evidence, not of its predicate, and a
-   * `kind` branch here would be a second place to update when a kind is added
-   * (the same reasoning the `hydrate` comment below gives for the lists).
-   *
-   * `countsAsViolation` is a boolean here and an INTEGER in SQLite;
-   * `maxFalsePositiveRate` and `minReviewedMatches` are this rule's own
-   * thresholds rather than constants, because ADR 0042 §4 lets a high-stakes
-   * rule demand a stricter rate than the 5% default.
-   */
-  readonly cutoverState: CutoverState;
-  readonly observeStartedAt: number | null;
-  readonly legacyRuleRef: string | null;
+  /** Whether a match feeds the escalation counter (ADR 0036). SQLite stores it as an INTEGER. */
   readonly countsAsViolation: boolean;
-  readonly maxFalsePositiveRate: number;
-  readonly minReviewedMatches: number;
-  readonly enforceSignedOffBy: string | null;
-  readonly enforceSignedOffAt: number | null;
 }
 
 type RuleRow = {
   ruleId: string;
   kind: string;
-  mode: string;
   config: string;
-  cutoverState: string;
-  observeStartedAt: number | null;
-  legacyRuleRef: string | null;
   countsAsViolation: number;
-  maxFalsePositiveRate: number;
-  minReviewedMatches: number;
-  enforceSignedOffBy: string | null;
-  enforceSignedOffAt: number | null;
 };
 
 /**
@@ -192,20 +153,12 @@ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
     return {
       ruleId: row.ruleId,
       kind: row.kind as RuleKind,
-      mode: row.mode as RuleMode,
       config: row.config,
       terms,
       allowlist,
       inviteAllowlist,
       linkDomains,
-      cutoverState: row.cutoverState as CutoverState,
-      observeStartedAt: row.observeStartedAt,
-      legacyRuleRef: row.legacyRuleRef,
       countsAsViolation: row.countsAsViolation === 1,
-      maxFalsePositiveRate: row.maxFalsePositiveRate,
-      minReviewedMatches: row.minReviewedMatches,
-      enforceSignedOffBy: row.enforceSignedOffBy,
-      enforceSignedOffAt: row.enforceSignedOffAt,
     };
   });
 
@@ -224,16 +177,8 @@ export const listEnabledRules = (scope: GuildScope): readonly StoredAutomodRule[
       .select({
         ruleId: modRules.ruleId,
         kind: modRules.kind,
-        mode: modRules.mode,
         config: modRules.config,
-        cutoverState: modRules.cutoverState,
-        observeStartedAt: modRules.observeStartedAt,
-        legacyRuleRef: modRules.legacyRuleRef,
         countsAsViolation: modRules.countsAsViolation,
-        maxFalsePositiveRate: modRules.maxFalsePositiveRate,
-        minReviewedMatches: modRules.minReviewedMatches,
-        enforceSignedOffBy: modRules.enforceSignedOffBy,
-        enforceSignedOffAt: modRules.enforceSignedOffAt,
       })
       .from(modRules)
       .where(scope.only(modRules, eq(modRules.enabled, 1)))
@@ -246,11 +191,8 @@ export const listEnabledRules = (scope: GuildScope): readonly StoredAutomodRule[
  * One rule by id, enabled or disabled, with its word list assembled.
  *
  * The same select as `listEnabledRules` with `eq(modRules.ruleId, ruleId)`
- * instead of the enabled filter. Exists for the dashboard's dry run (Slice 8,
- * PR-47): an operator edits a disabled rule, dry-runs it, then enables it —
- * the CLI's enabled-only path (`listEnabledRules(...).find(...)` in
- * `apps/daemon/src/ops/wiring.ts`) is unchanged, since a disabled rule will
- * not match a message in production either.
+ * instead of the enabled filter, for the dashboard's rule page, which shows a
+ * disabled rule's word list too.
  */
 export const findRuleIncludingDisabled = (
   scope: GuildScope,
@@ -261,16 +203,8 @@ export const findRuleIncludingDisabled = (
       .select({
         ruleId: modRules.ruleId,
         kind: modRules.kind,
-        mode: modRules.mode,
         config: modRules.config,
-        cutoverState: modRules.cutoverState,
-        observeStartedAt: modRules.observeStartedAt,
-        legacyRuleRef: modRules.legacyRuleRef,
         countsAsViolation: modRules.countsAsViolation,
-        maxFalsePositiveRate: modRules.maxFalsePositiveRate,
-        minReviewedMatches: modRules.minReviewedMatches,
-        enforceSignedOffBy: modRules.enforceSignedOffBy,
-        enforceSignedOffAt: modRules.enforceSignedOffAt,
       })
       .from(modRules)
       .where(scope.only(modRules, eq(modRules.ruleId, ruleId)))
@@ -451,9 +385,8 @@ export interface CreateRuleInput {
 }
 
 /**
- * Creates a rule of any of the ten ADR 0040 kinds, always starting in
- * `mode: 'test'` (spec §8: automod ships observing, not enforcing, until an
- * owner opts in), whatever mode a later `setRuleMode` call moves it to.
+ * Creates an enabled rule of any of the ten ADR 0040 kinds. Whether it acts
+ * is the guild's automod switch (ADR 0121), which starts Off.
  *
  * Callers that might run more than once against the same `ruleId` (the
  * daemon's first-run seeding) must check `ruleExists` first — this function
@@ -473,7 +406,6 @@ export const createRule = (scope: GuildScope, input: CreateRuleInput): void =>
         kind: input.kind,
         name: input.name,
         config: input.config,
-        mode: 'test',
         enabled: 1,
         createdAt: input.now,
         updatedAt: input.now,
@@ -488,20 +420,6 @@ export interface SetRuleConfigInput {
   readonly now: number;
 }
 
-/**
- * Replaces a rule's config wholesale — not a merge. A partial update would
- * need a read-modify-write, and the caller that has a validated config
- * object already has the whole of it.
- *
- * **The caller must call `validateRuleConfig(kind, config)` from
- * `packages/core` first and refuse the write on `{ok: false}`.** This
- * function does not, and cannot: ADR 0014 keeps the per-kind Zod schemas in
- * core and bars storage from importing core's predicate registry, so this is
- * a plain `UPDATE` with no validation of its own. ADR 0040 §2 requires
- * `mod_rules.config` to be validated on write as well as on read (the read
- * side is `compileRule`, called by the subscriber and by `doctor`) — the
- * write-side guard has to live at the call site for exactly that reason.
- */
 export interface SetRuleEnabledInput {
   readonly ruleId: string;
   readonly enabled: boolean;
@@ -523,25 +441,25 @@ export const setRuleEnabled = (scope: GuildScope, input: SetRuleEnabledInput): b
     return result.changes > 0;
   });
 
+/**
+ * Replaces a rule's config wholesale — not a merge. A partial update would
+ * need a read-modify-write, and the caller that has a validated config
+ * object already has the whole of it.
+ *
+ * **The caller must call `validateRuleConfig(kind, config)` from
+ * `packages/core` first and refuse the write on `{ok: false}`.** This
+ * function does not, and cannot: ADR 0014 keeps the per-kind Zod schemas in
+ * core and bars storage from importing core's predicate registry, so this is
+ * a plain `UPDATE` with no validation of its own. ADR 0040 §2 requires
+ * `mod_rules.config` to be validated on write as well as on read (the read
+ * side is `compileRule`, called by the subscriber and by `doctor`) — the
+ * write-side guard has to live at the call site for exactly that reason.
+ */
 export const setRuleConfig = (scope: GuildScope, input: SetRuleConfigInput): void =>
   write(scope, ({ db }) => {
     db.update(modRules)
       .set({
         config: input.config,
-        // The config edit voids any sign-off (ADR 0042 Amendment 2). A sign-off
-        // attests "I replayed *this rule* against the fixture corpus and it was
-        // clean", and this replaces the rule's config wholesale, so the thing
-        // that was replayed no longer exists. Left standing, it let an owner
-        // sign off a narrow pattern, widen it to something matching half the
-        // guild, and enforce on fewer than `min_reviewed_matches` — with
-        // PR-29's machine-checked corpus pass having been run against a
-        // different rule.
-        //
-        // `cutover_state` is deliberately *not* reset here: a config edit is not
-        // a rollback, and the rule has still served whatever observe window it
-        // served. Only the attestation about the config is void.
-        enforceSignedOffBy: null,
-        enforceSignedOffAt: null,
         updatedAt: input.now,
       })
       .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
@@ -635,206 +553,5 @@ export const addChannelExemption = (scope: GuildScope, input: AddChannelExemptio
         exemptType: 'channel',
         exemptId: input.channelId,
       })
-      .run();
-  });
-
-export interface SetRuleModeInput {
-  readonly ruleId: string;
-  /** Omitted leaves the stored mode unchanged. */
-  readonly mode?: RuleMode;
-  /** Omitted leaves enabled/disabled unchanged. */
-  readonly enabled?: boolean;
-  readonly now: number;
-}
-
-/**
- * Updates a rule's mode and/or enabled flag. Both are optional so a caller
- * flipping one does not have to first read the other back — an owner turning
- * a rule off is not making a statement about what mode it should resume in.
- *
- * **The only write path to `mode = 'enforce'` (ADR 0042 §3), and it is
- * gated.** A request for `mode: 'enforce'` is checked against
- * `enforcementEligibility` before anything is written; a refusal writes
- * nothing at all — not the mode, not `enabled`, not `updatedAt` — so a
- * refused request leaves the row exactly as it was. On success, the same
- * write advances `cutover_state` from `ready` (or an already-`cutover` rule)
- * to `cutover` (PR-27): a gate that permitted enforcement without recording
- * that it happened would leave `doctor` unable to tell an enforced rule from
- * one merely eligible.
- *
- * Every other `mode` (`'test'`, `'observe'`, or omitted) bypasses the *gate*,
- * which exists to guard the one transition ADR 0042 is about — but not the
- * state machine. **This function owns three of PR-27's five arrows** besides
- * `ready → cutover`, because `mode` is the only thing that moves them:
- *
- * | From | To | On |
- * | --- | --- | --- |
- * | `not_started` | `observing` | `mode: 'observe'` — stamps `observe_started_at` |
- * | `cutover` | `rolled_back` | any non-`enforce` `mode` |
- * | `rolled_back` | `observing` | `mode: 'observe'` — **resets** `observe_started_at` |
- *
- * Three properties in that table are load-bearing and each has its own test:
- *
- * - **A rule already `observing` does not restart its clock.** `doctor` reports
- *   rules past their observe floor by comparing `observe_started_at` to now, so
- *   a stamp refreshed on every call would hold every rule permanently
- *   just-started and that check would never fire — ADR 0039's shape.
- * - **`cutover` plus `mode: 'observe'` lands on `rolled_back`, not
- *   `observing`.** One step to `observing` would skip the state that carries the
- *   safety property: `automod ready` refuses from `rolled_back`, which is what
- *   stops a rollback being undone by retrying. Returning to `observing` is a
- *   deliberate second call, and *that* call resets the clock, because a rule
- *   pulled back from enforcement has to earn a fresh window.
- * - **A disable is not a rollback.** `setRuleMode({ enabled: false })` is the
- *   daemon's panic path and requests no mode change; `cutover` means "this rule
- *   has been enforced", which stays true across a pause, and the evidence
- *   behind it does not expire.
- */
-export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): EnforcementEligibility =>
-  write(scope, ({ db }) => {
-    let cutoverState: CutoverState | undefined;
-    let observeStartedAt: number | undefined;
-    // `null` writes the column back to NULL; `undefined` leaves it alone.
-    let signedOffBy: string | null | undefined;
-    let signedOffAt: number | null | undefined;
-
-    if (input.mode === 'enforce') {
-      const eligibility = enforcementEligibility(scope, input.ruleId);
-      if (!eligibility.ok) return eligibility;
-      cutoverState = 'cutover';
-    } else if (input.mode !== undefined) {
-      // A mode change was actually requested, so the state machine may move.
-      // Read the current state rather than inferring it: every arrow below
-      // depends on where the rule *is*, and this is the only place that knows.
-      const current = db
-        .select({ cutoverState: modRules.cutoverState })
-        .from(modRules)
-        .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
-        .get()?.cutoverState as CutoverState | undefined;
-
-      if (current === 'cutover') {
-        // Off enforce from `cutover` is a rollback, whatever mode it lands in.
-        cutoverState = 'rolled_back';
-        // And the rollback withdraws the sign-off. `rolled_back` alone only
-        // blocks the direct route back to enforcement; the indirect one —
-        // rolled_back -> observing -> ready -> enforce — stayed open, and since
-        // a sign-off is the one thing that clears the low-volume floor, a stale
-        // one let the rule re-enforce on fewer than `min_reviewed_matches`,
-        // making the fresh window it was sent to serve count for nothing.
-        //
-        // A sign-off attests "I replayed this rule against the corpus and it was
-        // clean". Pulling it out of enforcement says it was not in fact safe, so
-        // the attestation behind that decision cannot outlive it. The owner signs
-        // off again, against whatever the new window produces.
-        signedOffBy = null;
-        signedOffAt = null;
-      } else if (
-        input.mode === 'observe' &&
-        (current === 'not_started' || current === 'rolled_back')
-      ) {
-        // The two states that start a window, and both stamp the clock: a fresh
-        // rule has none yet, and a rolled-back one has to earn a new one.
-        //
-        // `observing` and `ready` are excluded deliberately, not by omission:
-        // re-observing an observing rule must not restart its clock, and a
-        // `ready` rule an owner sends back to `observe` keeps the window it has
-        // already served.
-        cutoverState = 'observing';
-        observeStartedAt = input.now;
-      }
-    }
-
-    db.update(modRules)
-      .set({
-        mode: input.mode,
-        enabled: input.enabled === undefined ? undefined : input.enabled ? 1 : 0,
-        cutoverState,
-        observeStartedAt,
-        enforceSignedOffBy: signedOffBy,
-        enforceSignedOffAt: signedOffAt,
-        updatedAt: input.now,
-      })
-      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
-      .run();
-
-    return { ok: true };
-  });
-
-export interface SetRuleReadyInput {
-  readonly ruleId: string;
-  readonly now: number;
-}
-
-/** The outcome of `automod ready` (Task 6): success, or the actual state that refused it. */
-export type SetRuleReadyOutcome =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: 'not-observing'; readonly state: CutoverState };
-
-/**
- * `automod ready` (ADR 0042 §3/PR-27, Task 6): the fourth of PR-27's five
- * arrows, `observing -> ready` — the explicit human act ADR 0042 exists to
- * require, since a clock elapsing is not the same as a human having looked.
- *
- * **Refused from every state but `observing`, including `ready` itself.**
- * The refusal matters most from `rolled_back`: without this precondition, a
- * rollback could be undone by `ready` then a successful
- * `setRuleMode(mode: 'enforce')` without ever revisiting `observing` — the
- * exact scenario ADR 0042 exists to prevent (PR-27).
- *
- * A rule id with no row reads back as `not_started`, mirroring
- * `enforcementEligibility`'s own treatment of a stale id: no row means no
- * evidence and no state, which is the same refusal a real `not_started` row
- * gets, rather than a distinct "no such rule" branch this function would
- * otherwise have to invent.
- */
-export const setRuleReady = (scope: GuildScope, input: SetRuleReadyInput): SetRuleReadyOutcome =>
-  write(scope, ({ db }) => {
-    const current = db
-      .select({ cutoverState: modRules.cutoverState })
-      .from(modRules)
-      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
-      .get()?.cutoverState as CutoverState | undefined;
-
-    const state = current ?? 'not_started';
-    if (state !== 'observing') {
-      return { ok: false, reason: 'not-observing', state };
-    }
-
-    db.update(modRules)
-      .set({ cutoverState: 'ready', updatedAt: input.now })
-      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
-      .run();
-
-    return { ok: true };
-  });
-
-export interface SetEnforceSignOffInput {
-  readonly ruleId: string;
-  readonly signedOffBy: string;
-  readonly now: number;
-}
-
-/**
- * `automod signoff` (ADR 0042 §4/PR-29, Task 6): records
- * `enforce_signed_off_by`/`_at` on a rule.
- *
- * **Deliberately unconditional**, the same way `setRuleConfig` is a plain
- * `UPDATE` that trusts its caller to have already validated the config: the
- * precondition PR-29 actually requires — a clean dry run against the fixture
- * corpus — needs `runDryRun` from `packages/core`, which `packages/storage`
- * may not import (ADR 0014). The command that calls this port (`packages/core`,
- * which can reach both the rule and the corpus) runs that check and refuses
- * before ever calling this function; duplicating a weaker version of the same
- * check here would only be a second place for the two to drift.
- */
-export const setEnforceSignOff = (scope: GuildScope, input: SetEnforceSignOffInput): void =>
-  write(scope, ({ db }) => {
-    db.update(modRules)
-      .set({
-        enforceSignedOffBy: input.signedOffBy,
-        enforceSignedOffAt: input.now,
-        updatedAt: input.now,
-      })
-      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
       .run();
   });

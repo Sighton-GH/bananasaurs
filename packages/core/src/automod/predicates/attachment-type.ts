@@ -50,10 +50,8 @@ const bareContentType = (contentType: string | undefined): string =>
  * filename itself, so the filename was never the decision basis and does not
  * belong in the record of *why* the rule fired. That record —
  * `mod_case_events`, via `PredicateMatch.snippet` and `.trace.detail` — is a
- * moderation record `/forgetme` does not delete (`PRIVACY.md`), unlike the
- * fixture corpus, whose retention row and `/forgetme` reach OD-3's filenames
- * deliberately. Putting a filename here as well would be a widening the
- * owner was never asked about.
+ * moderation record `/forgetme` does not delete (`PRIVACY.md`). Putting a
+ * filename there would be a widening the owner was never asked about.
  */
 const redactedDescription = (extension: string, contentType: string, sizeBytes: number): string =>
   `${extension === '' ? '(no extension)' : `*.${extension}`} ` +
@@ -99,10 +97,7 @@ export const attachmentTypePredicate: Predicate<AttachmentTypeConfig> = {
             categoryId: 'attachment_type',
             // Redacted (IMPORTANT-4): the extension, declared content type
             // and size, never the filename itself — see
-            // `redactedDescription`'s comment for why. The full filename
-            // stays in the fixture corpus (`automod_fixtures` +
-            // `automod_fixture_attachments`), which OD-3's retention row and
-            // `/forgetme` already cover.
+            // `redactedDescription`'s comment for why.
             snippet: redactedDescription(extension, contentType, attachment.sizeBytes),
             trace: {
               kind: 'attachment_type',
