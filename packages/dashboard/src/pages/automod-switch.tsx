@@ -28,7 +28,13 @@ const CONFIRM: Record<AutomodState, string> = {
 };
 
 /** What the confirmation says will happen if the switch moves to `target`. */
-function Consequence({ target, view }: { target: AutomodState; view: AutomodStateView }): ReactNode {
+function Consequence({
+  target,
+  view,
+}: {
+  target: AutomodState;
+  view: AutomodStateView;
+}): ReactNode {
   if (target === 'off') return <p>Automod stops checking messages. Nothing new is recorded.</p>;
   if (target === 'watch') return <p>Automod records matches for review and deletes nothing.</p>;
   const n = view.enabledRules.length;
@@ -50,8 +56,8 @@ function Consequence({ target, view }: { target: AutomodState; view: AutomodStat
         </>
       )}
       <p className="mt-2">
-        Turn off the matching Carl-bot or Dyno automod first, so two bots don&apos;t act on the
-        same message.
+        Turn off the matching Carl-bot or Dyno automod first, so two bots don&apos;t act on the same
+        message.
       </p>
       {view.dryRun && <p className="mt-2">{DRY_RUN_NOTE}</p>}
     </>

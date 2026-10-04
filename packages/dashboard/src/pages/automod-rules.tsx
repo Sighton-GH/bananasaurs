@@ -115,10 +115,7 @@ export function AutomodRulesPage() {
 
   return (
     <>
-      <PageHeader
-        title="Automod"
-        purpose="The automod switch, and every rule it applies to."
-      />
+      <PageHeader title="Automod" purpose="The automod switch, and every rule it applies to." />
       <div className="mb-4 max-w-4xl">
         <AutomodSwitch />
       </div>

@@ -61,9 +61,7 @@ describe('AutomodSwitch', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(
-      mock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'PUT'),
-    ).toBe(false);
+    expect(mock.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(false);
   });
 
   it('confirming the On dialog sends PUT and re-reads state', async () => {
@@ -80,15 +78,11 @@ describe('AutomodSwitch', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Turn automod on' }));
     });
-    const put = mock.mock.calls.find(
-      (c) => (c[1] as RequestInit | undefined)?.method === 'PUT',
-    );
+    const put = mock.mock.calls.find((c) => c[1]?.method === 'PUT');
     expect(put).toBeTruthy();
     expect(bodyOf(put!)).toEqual({ state: 'on' });
     const gets = mock.mock.calls.filter(
-      (c) =>
-        (c[0] as string) === '/api/automod/state' &&
-        (c[1] as RequestInit | undefined)?.method !== 'PUT',
+      (c) => c[0] === '/api/automod/state' && c[1]?.method !== 'PUT',
     );
     expect(gets).toHaveLength(2);
   });
