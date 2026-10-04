@@ -8,7 +8,9 @@ import { archiveRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage
  * every 24 hours it enqueues one `archive_expiry` job per guild for the
  * current UTC day. The dedupe key is the day, so a second `runOnce` on the
  * same day enqueues nothing — the `(guild_id, dedupe_key)` partial unique
- * index refuses it per guild (ADR 0016).
+ * index refuses it per guild while the job is still pending (ADR 0016),
+ * and `oncePerBucket` (ADR 0127) keeps it refused after the job has
+ * finished.
  *
  * Mirrors `backup-timer.ts` ONLY in its start/stop contract (run once at
  * start, then `setInterval(...).unref()`; `stop` clears). Its deps are its
@@ -74,6 +76,7 @@ export function createArchiveExpiryTimer(deps: ArchiveExpiryTimerDeps): ArchiveE
         kind: JOB_KINDS.archiveExpiry,
         payload: JSON.stringify({ day }),
         dedupeKey: archiveExpiryDedupeKey(day),
+        oncePerBucket: true,
         now,
       });
     }

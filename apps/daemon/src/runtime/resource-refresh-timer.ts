@@ -8,10 +8,11 @@ import { assistantRepo, type GuildScope, type jobRepo } from '@bananasaurs/stora
  * every hour it enqueues one `resource_refresh` job — with no `resourceId`,
  * meaning every resource in the guild — for each guild that actually has a
  * resource. The dedupe key is the current UTC hour bucket, so a tick that
- * lands while the previous hour's job is still `queued`/`running` enqueues
+ * lands while the bucket's job is still `queued`/`running` enqueues
  * nothing — the `(guild_id, dedupe_key)` partial unique index refuses it
- * (ADR 0016) — which is also what makes starting the timer twice inside the
- * same hour a no-op rather than a doubled sweep.
+ * (ADR 0016) — and `oncePerBucket` (ADR 0127) keeps it a no-op after the
+ * job has finished, which is also what makes starting the timer twice
+ * inside the same hour a no-op rather than a doubled sweep.
  *
  * Mirrors `reminder-timer.ts`/`archive-expiry-timer.ts` in its start/stop
  * contract (run once at start, then `setInterval(...).unref()`; `stop`
@@ -71,6 +72,7 @@ export function createResourceRefreshTimer(deps: ResourceRefreshTimerDeps): Reso
         kind: JOB_KINDS.resourceRefresh,
         payload: JSON.stringify({ reason: 'hourly' }),
         dedupeKey: resourceRefreshDedupeKey({ reason: 'hourly', hourBucket: bucket }),
+        oncePerBucket: true,
         now,
       });
       if (result.enqueued) enqueued += 1;
@@ -91,7 +93,8 @@ export function createResourceRefreshTimer(deps: ResourceRefreshTimerDeps): Reso
       // away, not up to an interval later. The recurring tick is every
       // minute; the bucket (the owner's refresh interval) decides when a
       // sweep is actually due, so a tick inside the current bucket enqueues
-      // nothing.
+      // nothing (`oncePerBucket`, ADR 0127 — the partial `jobs_dedupe`
+      // index alone only refuses while the job is still pending).
       runOnce();
       timer = setInterval(runOnce, 60_000);
       // Same reasoning as the other timers: a pending refresh tick must not

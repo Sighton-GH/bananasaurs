@@ -166,8 +166,7 @@ describe('archive expiry timer', () => {
     expect(seen).toEqual([nowMs]);
   });
 
-  it('the real purge wired to runOnce deletes expired OAuth rows and keeps live ones', () => {
-    enableChannels(a, b);
+  it('the real purge wired to runOnce deletes expired OAuth rows and keeps live ones', () => {    enableChannels(a, b);
     const instance = t.scopes.instance();
     oauthRepo.createPendingAuthorization(instance, {
       requestId: 'req-old',
@@ -196,6 +195,42 @@ describe('archive expiry timer', () => {
     ).runOnce();
     expect(oauthRepo.consumePendingAuthorization(instance, 'req-old', nowMs)).toBeUndefined();
     expect(oauthRepo.consumePendingAuthorization(instance, 'req-live', nowMs)).toBeDefined();
+  });
+
+  it('a completed job is not repeated inside the same bucket', () => {
+    enableChannels(a, b);
+    const timer = createArchiveExpiryTimer(depsFor());
+    timer.runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+  });
+
+  it('a restart inside the bucket does not repeat it', () => {
+    enableChannels(a, b);
+    createArchiveExpiryTimer(depsFor()).runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    createArchiveExpiryTimer(depsFor()).runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+  });
+
+  it('the next bucket enqueues again after completion', () => {
+    enableChannels(a, b);
+    const timer = createArchiveExpiryTimer(depsFor());
+    timer.runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    nowMs += DAY_MS;
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(2);
   });
 });
 

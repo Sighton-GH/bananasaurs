@@ -110,4 +110,43 @@ describe('conversation prune timer', () => {
     expect(jobsFor(a)).toHaveLength(1);
     expect(jobsFor(b)).toHaveLength(1);
   });
+
+  it('a completed job is not repeated inside the same bucket', () => {
+    seedConversation(a);
+    seedConversation(b);
+    const timer = createConversationPruneTimer(depsFor());
+    timer.runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+  });
+
+  it('a restart inside the bucket does not repeat it', () => {
+    seedConversation(a);
+    seedConversation(b);
+    createConversationPruneTimer(depsFor()).runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    createConversationPruneTimer(depsFor()).runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+  });
+
+  it('the next bucket enqueues again after completion', () => {
+    seedConversation(a);
+    seedConversation(b);
+    const timer = createConversationPruneTimer(depsFor());
+    timer.runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    nowMs = Date.parse('2026-09-26T01:00:00.000Z');
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(2);
+  });
 });

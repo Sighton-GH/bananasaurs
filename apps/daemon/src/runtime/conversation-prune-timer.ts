@@ -11,11 +11,13 @@ import { conversationRepo, type GuildScope, type jobRepo } from '@bananasaurs/st
  *
  * The job table has no scheduler, so this is the producer: at startup and
  * every 24 hours it enqueues one `conversation_prune` job per guild that
- * actually has a conversation for the current UTC day. The dedupe key is the
- * day, so a second `runOnce` on the same day enqueues nothing — the
- * `(guild_id, dedupe_key)` partial unique index refuses it per guild
- * (ADR 0016). The handler itself reads the guild's retention and prunes
- * nothing for keep-forever, so every guild *with conversations* gets a job.
+ * actually has a conversation for the current UTC day. The dedupe key is
+ * the day, so a second `runOnce` on the same day enqueues nothing: the
+ * `(guild_id, dedupe_key)` partial unique index refuses it per guild while
+ * the job is still pending (ADR 0016), and `oncePerBucket` (ADR 0127)
+ * keeps it refused after the job has finished. The handler itself reads
+ * the guild's retention and prunes nothing for keep-forever, so every
+ * guild *with conversations* gets a job.
  *
  * Mirrors `archive-expiry-timer.ts` in its start/stop contract (run once at
  * start, then `setInterval(...).unref()`; `stop` clears) and nothing else.
@@ -66,6 +68,7 @@ export function createConversationPruneTimer(
         kind: JOB_KINDS.conversationPrune,
         payload: JSON.stringify({ day }),
         dedupeKey: conversationPruneDedupeKey(day),
+        oncePerBucket: true,
         now,
       });
       enqueued += 1;
