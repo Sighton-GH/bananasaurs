@@ -224,9 +224,9 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
       'Release scope keeps the role panel builder create-only: deleting a panel (its Discord message, then its rows) stays a CLI (and MCP) operation through the panel delete ops command, confirmed and audited. The Reaction roles page links that scope rather than offering a delete control.',
   },
   'adoption allow': {
-    kind: 'covered',
-    page: 'Cutover',
-    control: 'approve a sized batch, confirmed',
+    kind: 'exception',
+    reason:
+      'Not yet on the web: this row used to name the Cutover page, which never had the control (ADR 0121 removed that page). The API route POST /api/adoption-allowance exists; the Self-granted roles page shows the adoption state but cannot grant a batch. Terminal-only until a page offers it.',
   },
   undo: { kind: 'covered', page: 'Audit', control: 'reverse one batch from its audit row' },
   killswitch: {

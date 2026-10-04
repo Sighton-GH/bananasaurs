@@ -33,7 +33,6 @@ import { AutomodRulePage } from '../pages/automod-rule.js';
 import { AutomodRulesPage } from '../pages/automod-rules.js';
 import { CasePage } from '../pages/case.js';
 import { CasesPage } from '../pages/cases.js';
-import { CutoverPage } from '../pages/cutover.js';
 import { LoggingPage } from '../pages/logging.js';
 import { MemberPage } from '../pages/member.js';
 import { MembersPage } from '../pages/members.js';
@@ -177,7 +176,6 @@ function Pages() {
       <Route path="/cases/:caseId" component={CasePage} />
       <Route path="/members/:memberId" component={MemberPage} />
       <Route path="/members" component={MembersPage} />
-      <Route path="/cutover" component={CutoverPage} />
       <Route path="/archive" component={ArchivePage} />
       <Route path="/search" component={SearchPage} />
       <Route path="/jobs" component={JobsPage} />

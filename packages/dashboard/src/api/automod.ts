@@ -3,10 +3,9 @@
  *
  * `packages/dashboard` may not import server packages (ADR 0014, ADR 0043 —
  * the dashboard builds to static assets), so these are re-declared by hand
- * from `OpsAutomodRuleSummary` / `OpsAutomodRuleDetail` in
- * `packages/core/src/ops/ports.ts` and `DryRunReport` in
- * `packages/core/src/automod/dry-run.ts`. If a route test changes a server
- * shape, update the mirror here and the page that reads it.
+ * from the JSON `packages/http/src/routes/automod.ts` and
+ * `automod-state.ts` send. If a route test changes a server shape, update the
+ * mirror here and the page that reads it.
  */
 
 export type RuleKind =
@@ -34,10 +33,6 @@ export const RULE_KINDS: readonly RuleKind[] = [
   'emoji',
 ];
 
-export type RuleMode = 'test' | 'observe' | 'enforce';
-
-export type CutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
-
 /** The verdict split for one rule — mirrors `OpsVerdictCounts`. */
 export interface VerdictCounts {
   readonly falsePositive: number;
@@ -45,22 +40,14 @@ export interface VerdictCounts {
   readonly unclear: number;
 }
 
-/** Every `AdminRule` field plus the two counts the cutover board reads. */
+/** One rule as `GET /api/automod/rules` sends it, with its match and flag counts. */
 export interface RuleSummary {
   readonly ruleId: string;
   readonly kind: RuleKind;
   readonly name: string;
-  readonly mode: RuleMode;
   readonly enabled: boolean;
   readonly config: string;
-  readonly cutoverState: CutoverState;
-  readonly observeStartedAt: number | null;
-  readonly legacyRuleRef: string | null;
   readonly countsAsViolation: boolean;
-  readonly maxFalsePositiveRate: number;
-  readonly minReviewedMatches: number;
-  readonly enforceSignedOffBy: string | null;
-  readonly enforceSignedOffAt: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly matchCount: number;
@@ -82,102 +69,7 @@ export interface RuleDetail extends RuleSummary {
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly { readonly code: string; readonly label: string }[];
   readonly linkDomains: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
-  readonly eligibility:
-    | { readonly ok: true }
-    | {
-        readonly ok: false;
-        readonly refusal: { readonly reason: string; readonly [k: string]: unknown };
-      };
 }
-
-export interface DryRunFixtureResult {
-  readonly fixtureId: string;
-  readonly label: 'should_match' | 'should_not_match' | 'unlabelled';
-  readonly matched: boolean;
-  readonly match: unknown;
-  readonly agreement: 'agreed' | 'disagreed' | 'unlabelled';
-  readonly outcome: 'ok' | 'threw';
-}
-
-/** Mirrors `DryRunReport` in `packages/core/src/automod/dry-run.ts` field by field. */
-export interface DryRunReport {
-  readonly ruleId: string;
-  readonly kind: string;
-  readonly usable: boolean;
-  readonly failure: { readonly reason: string; readonly detail: string } | undefined;
-  readonly threw: number;
-  readonly corpusSize: number;
-  readonly total: number;
-  readonly matched: number;
-  readonly falsePositives: number;
-  readonly falseNegatives: number;
-  readonly results: readonly DryRunFixtureResult[];
-}
-
-/** ADR 0042's observe floor: enforcement is never offerable before this many days. */
-export const OBSERVE_FLOOR_DAYS = 14;
-
-const DAY_MS = 86_400_000;
-
-export interface ModeRequest {
-  readonly mode?: RuleMode;
-  readonly enabled?: boolean;
-}
-
-/**
- * The `ConfirmDialog` scope for a mode change, computed client-side from the
- * current cutover state and the request (PR-48). The sentence is chosen by
- * `mode` when one is requested, and by `enabled` only when no `mode` is —
- * the server's precedence: `mode` drives the state machine, `enabled` alone
- * never moves it. When both are requested, a second sentence covers `enabled`.
- */
-export const modeScopeSentence = (
-  current: {
-    readonly cutoverState: CutoverState;
-    readonly mode: RuleMode;
-    readonly enabled: boolean;
-  },
-  request: ModeRequest,
-  now: number,
-): string => {
-  let base: string;
-  if (request.mode === 'enforce') {
-    base =
-      'Enforces this rule for real. Its stage becomes enforcing and the bot starts acting on matches.';
-  } else if (
-    request.mode === 'observe' &&
-    (current.cutoverState === 'not_started' || current.cutoverState === 'rolled_back')
-  ) {
-    const elapses = new Date(now + OBSERVE_FLOOR_DAYS * DAY_MS).toLocaleDateString();
-    base = `Starts this rule's observe window now. The two-week floor elapses on ${elapses}.`;
-  } else if (request.mode === 'test' && current.cutoverState === 'observing') {
-    base =
-      'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its stage stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.';
-  } else if (request.mode !== undefined && current.cutoverState === 'cutover') {
-    base =
-      'Rolls this rule back from enforcement and withdraws its sign-off; it must observe again before it can enforce.';
-  } else if (request.mode !== undefined) {
-    base = `Changes mode from ${current.mode} to ${request.mode}; its stage stays ${CUTOVER_STAGE_LABEL[current.cutoverState]}.`;
-  } else if (request.enabled === false) {
-    return 'Disables the rule. Its cutover state and clock are unchanged.';
-  } else {
-    return `Enables the rule in its current mode, ${current.mode}.`;
-  }
-  if (request.enabled === false) {
-    if (request.mode === 'observe') {
-      return `${base} It also disables the rule, so the observe window will run with the rule matching nothing — the window's evidence will be empty.`;
-    }
-    return `${base} It also disables the rule, so nothing will match while it is disabled.`;
-  }
-  if (request.enabled === true) {
-    return `${base} It also enables the rule.`;
-  }
-  return base;
-};
-
-/** Whole days since the observe clock started, or `null` when it never did. */
-export const daysObserved = (observeStartedAt: number | null, now: number): number | null =>
-  observeStartedAt === null ? null : Math.floor((now - observeStartedAt) / DAY_MS);
 
 /** A human verdict on a match, as `POST /api/automod/review/:eventId/verdict` records it (Slice 9). */
 export type Verdict = 'false_positive' | 'true_positive' | 'unclear';
@@ -290,10 +182,8 @@ export const suppressionFor = (
 };
 
 /* --------------------------------------------------------------------------
- * Plain-language renderings of the automod vocabulary: "cutover state"
- * and "(2 fp)" read like internals, not product. The raw
- * values stay visible in parentheses where the CLI uses the same word.
- * Labels and copy only; behaviour stays above.
+ * Plain-language renderings of the automod vocabulary. Labels and copy
+ * only; behaviour stays above.
  * ------------------------------------------------------------------------ */
 
 export const RULE_KIND_LABEL: Record<RuleKind, string> = {
@@ -309,43 +199,9 @@ export const RULE_KIND_LABEL: Record<RuleKind, string> = {
   duplicate_message: 'Duplicate messages',
 };
 
-/**
- * Where a rule is on the path to enforcement. `cutover` is the server's word
- * for "crossed over to acting", so the dashboard says "enforcing" instead.
- */
-export const CUTOVER_STAGE_LABEL: Record<CutoverState, string> = {
-  not_started: 'not started',
-  observing: 'observing',
-  ready: 'ready to enforce',
-  cutover: 'enforcing',
-  rolled_back: 'rolled back',
-};
-
-export const RULE_MODE_LABEL: Record<RuleMode, string> = {
-  test: 'Test',
-  observe: 'Observe',
-  enforce: 'Enforce',
-};
-
-/** One sentence per mode, shared by the rules table and the detail radios. */
-export const RULE_MODE_HELP: Record<RuleMode, string> = {
-  test: 'matches and records, but deletes nothing. Use it while tuning.',
-  observe:
-    'records matches for a person to review. Enforcement can only be offered after the observe window.',
-  enforce: 'acts on matches for real.',
-};
-
-/** HelpTip body for the Stage / cutover column. */
-export const CUTOVER_STAGE_HELP =
-  'Where the rule sits on the path from watching to acting: not started, observing (collecting matches without acting), ready to enforce, enforcing. Rolled back means it enforced before and was withdrawn; it must observe again before it can enforce.';
-
-/** HelpTip body for the Observed column. */
-export const OBSERVED_HELP =
-  'Whole days since the observe window started. Enforcement cannot be offered before 14 days.';
-
 /** HelpTip body for the Reviewed column. */
 export const REVIEWED_HELP =
-  'Matches a person has ruled on. False positives are messages the rule caught but should not have; too many block enforcement.';
+  'Matches you have flagged as correct or false positive. Flags help you tune a rule.';
 
 /**
  * A starting configuration per kind, grounded in each predicate's Zod schema

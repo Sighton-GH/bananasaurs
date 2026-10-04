@@ -14,17 +14,9 @@ function rule(overrides: Partial<RuleSummary> = {}): RuleSummary {
     ruleId: 'kw-one',
     kind: 'keyword_filter',
     name: 'Keyword one',
-    mode: 'observe',
     enabled: true,
     config: '{}',
-    cutoverState: 'observing',
-    observeStartedAt: null,
-    legacyRuleRef: null,
     countsAsViolation: true,
-    maxFalsePositiveRate: 0,
-    minReviewedMatches: 20,
-    enforceSignedOffBy: null,
-    enforceSignedOffAt: null,
     createdAt: 1,
     updatedAt: 1,
     matchCount: 1,
@@ -198,7 +190,7 @@ describe('ReviewPage', () => {
     expect(await screen.findByText('the whole flagged message')).toBeTruthy();
     expect(screen.getAllByText('badword')).toHaveLength(1);
     expect(
-      screen.getByText(/snippet only — the message is not held: it was deleted in enforce mode/),
+      screen.getByText(/snippet only — Bananasaurs does not keep a copy of the whole message/),
     ).toBeTruthy();
   });
 
@@ -280,7 +272,7 @@ describe('ReviewPage', () => {
     renderAt('/review');
     expect(
       await screen.findByText(
-        'Nothing to review. Matches recorded during the observe window appear here.',
+        'Nothing to review. Matches appear here while automod is on Watch or On.',
       ),
     ).toBeTruthy();
   });

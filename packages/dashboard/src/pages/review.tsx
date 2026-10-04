@@ -86,17 +86,16 @@ function EvidenceCell({
     <>
       <p className="max-w-md text-sm break-words whitespace-pre-wrap">{matchedSnippet}</p>
       <p className="mt-1 text-xs text-ink-muted">
-        (snippet only — the message is not held: it was deleted in enforce mode, or removed at the
-        member&apos;s request)
+        (snippet only — Bananasaurs does not keep a copy of the whole message)
       </p>
     </>
   );
 }
 
 /**
- * `/review`: every match nobody has ruled on yet, the tally the release gate
- * reads (ADR 0042 §4), and the F3.2 warning about what native AutoMod hides
- * from the observe stream. Loads `GET /api/automod/review` and
+ * `/review`: every match nobody has flagged yet, the flag tally per rule
+ * (ADR 0121: flags are for tuning), and the F3.2 warning about what native
+ * AutoMod catches before Bananasaurs sees it. Loads `GET /api/automod/review` and
  * `GET /api/automod/rules` together — the second supplies each rule's kind,
  * which the tally and the bias warning both need.
  */
@@ -258,7 +257,7 @@ export function ReviewPage() {
     <>
       <PageHeader
         title="Review"
-        purpose="Review messages the rule matched. Mark messages that should have been allowed so Bananasaurs can show whether the rule is ready to turn on."
+        purpose="Flag each match as correct or a false positive. Flags help you tune your rules; use Narrow this rule to stop a false positive from matching again."
       />
       <DataState resource={review.resource}>
         {({ queue, rules }) => {
@@ -303,9 +302,8 @@ export function ReviewPage() {
               </div>
               <Card title="Reviewed matches per rule">
                 <p className="mb-3 text-sm text-ink-muted">
-                  Release 2&apos;s gate is measured from these numbers (ADR 0042 §4): zero
-                  false-positive or unclear verdicts for a rule that feeds the escalation counter;
-                  at most 5% for a delete-only rule; at least 20 reviewed or a sign-off.
+                  How each rule&apos;s matches have been flagged. A rule with many false positives
+                  needs narrowing before automod is switched On.
                 </p>
                 <DataTable
                   caption="Reviewed matches per rule"
@@ -359,7 +357,7 @@ export function ReviewPage() {
                 <Card title="Unreviewed matches">
                   {queue.matches.length === 0 ? (
                     <p className="text-sm text-ink-muted">
-                      Nothing to review. Matches recorded during the observe window appear here.
+                      Nothing to review. Matches appear here while automod is on Watch or On.
                     </p>
                   ) : (
                     <DataTable

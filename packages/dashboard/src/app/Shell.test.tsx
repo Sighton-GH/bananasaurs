@@ -62,7 +62,6 @@ describe('Shell', () => {
     ['/automod', 'Automod'],
     ['/review', 'Review'],
     ['/cases', 'Cases'],
-    ['/cutover', 'Turn on moderation'],
   ])('renders the %s page titled %s and marks its rail entry current', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();

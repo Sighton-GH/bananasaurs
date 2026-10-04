@@ -37,7 +37,6 @@ export const NAV: readonly NavEntry[] = [
   { path: '/members', label: 'Members', status: 'built', group: 'Moderation' },
   { path: '/jobs', label: 'Background tasks', status: 'built', group: 'Advanced / System' },
   { path: '/audit', label: 'Audit', status: 'built', group: 'Advanced / System' },
-  { path: '/cutover', label: 'Turn on moderation', status: 'built', group: 'Moderation' },
   { path: '/archive', label: 'Archive', status: 'built', group: 'Messages' },
   { path: '/search', label: 'Search', status: 'built', group: 'Messages' },
   { path: '/doctor', label: 'Doctor', status: 'built', group: 'Advanced / System' },

@@ -2,17 +2,11 @@ import { useCallback, useState } from 'react';
 import { Link } from 'wouter';
 import { ApiError } from '../api.js';
 import {
-  CUTOVER_STAGE_HELP,
-  CUTOVER_STAGE_LABEL,
-  daysObserved,
-  OBSERVED_HELP,
   REVIEWED_HELP,
   RULE_CONFIG_EXAMPLE,
   RULE_KIND_LABEL,
   RULE_KINDS,
-  RULE_MODE_HELP,
   type RuleKind,
-  type RuleMode,
   type RuleSummary,
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
@@ -30,19 +24,9 @@ import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
-const modeTone = (mode: RuleMode): 'hold' | 'danger' | 'neutral' =>
-  mode === 'observe' ? 'hold' : mode === 'enforce' ? 'danger' : 'neutral';
-
-const cutoverTone = (state: string): 'hold' | 'danger' | 'neutral' =>
-  state === 'observing'
-    ? 'hold'
-    : state === 'cutover' || state === 'rolled_back'
-      ? 'danger'
-      : 'neutral';
-
 /**
- * `/automod`: every rule, its mode, and how far through its observe window
- * it is — plus the new-rule form. Creating a rule changes what the bot does
+ * `/automod`: the guild-wide automod switch (ADR 0121), every rule it applies
+ * to, and the new-rule form. Creating a rule changes what the bot does
  * to real messages, so the route needs a fresh password (the re-auth round
  * trip is `apiFetch`'s); the form reads the 400/409 answers itself through
  * `writeOrThrow` rather than `write`'s generic toast.
@@ -125,23 +109,16 @@ export function AutomodRulesPage() {
         empty={<p className="text-sm text-ink-muted">No rules yet. Create one below.</p>}
       >
         {(rows) => {
-          const observing = rows.filter((r) => r.cutoverState === 'observing').length;
-          const enforcing = rows.filter((r) => r.mode === 'enforce').length;
+          const enabled = rows.filter((r) => r.enabled).length;
           return (
             <>
               <div className="mb-4 grid max-w-4xl gap-3 sm:grid-cols-3">
                 <Card title="Rules">
                   <p className="text-2xl font-semibold">{rows.length}</p>
                 </Card>
-                <Card title="Observing">
-                  <p className="text-2xl font-semibold">{observing}</p>
-                  <p className="mt-1 text-xs text-ink-muted">collecting matches without acting</p>
-                </Card>
-                <Card title="Enforcing">
-                  <p className="text-2xl font-semibold">{enforcing}</p>
-                  <p className="mt-1 text-xs text-ink-muted">
-                    a rule acts only after its observe window
-                  </p>
+                <Card title="Enabled">
+                  <p className="text-2xl font-semibold">{enabled}</p>
+                  <p className="mt-1 text-xs text-ink-muted">the rules the switch applies to</p>
                 </Card>
               </div>
               <Card title="All rules">
@@ -168,50 +145,11 @@ export function AutomodRulesPage() {
                     {
                       key: 'enabled',
                       header: 'Enabled',
-                      cell: (r) => <Badge>{r.enabled ? 'on' : 'off'}</Badge>,
-                    },
-                    {
-                      key: 'mode',
-                      header: (
-                        <>
-                          Mode
-                          <HelpTip label="rule modes">
-                            test {RULE_MODE_HELP.test} observe {RULE_MODE_HELP.observe} enforce{' '}
-                            {RULE_MODE_HELP.enforce}
-                          </HelpTip>
-                        </>
-                      ),
-                      mobileLabel: 'Mode',
-                      cell: (r) => <Badge tone={modeTone(r.mode)}>{r.mode}</Badge>,
-                    },
-                    {
-                      key: 'cutover',
-                      header: (
-                        <>
-                          Stage
-                          <HelpTip label="the stage column">{CUTOVER_STAGE_HELP}</HelpTip>
-                        </>
-                      ),
-                      mobileLabel: 'Stage',
                       cell: (r) => (
-                        <Badge tone={cutoverTone(r.cutoverState)}>
-                          {CUTOVER_STAGE_LABEL[r.cutoverState]}
+                        <Badge tone={r.enabled ? 'ok' : 'neutral'}>
+                          {r.enabled ? 'On' : 'Off'}
                         </Badge>
                       ),
-                    },
-                    {
-                      key: 'observed',
-                      header: (
-                        <>
-                          Observed
-                          <HelpTip label="the observed column">{OBSERVED_HELP}</HelpTip>
-                        </>
-                      ),
-                      mobileLabel: 'Observed',
-                      cell: (r) => {
-                        const days = daysObserved(r.observeStartedAt, Date.now());
-                        return days === null ? '—' : `${String(days)} days`;
-                      },
                     },
                     { key: 'matches', header: 'Matches', numeric: true, cell: (r) => r.matchCount },
                     {

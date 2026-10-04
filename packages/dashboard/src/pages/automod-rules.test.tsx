@@ -15,17 +15,9 @@ function rule(overrides: Partial<RuleSummary> = {}): RuleSummary {
     ruleId: 'no-invites',
     kind: 'invite',
     name: 'No invites',
-    mode: 'observe',
     enabled: true,
     config: '{}',
-    cutoverState: 'observing',
-    observeStartedAt: NOW - 3 * DAY_MS,
-    legacyRuleRef: null,
     countsAsViolation: true,
-    maxFalsePositiveRate: 0,
-    minReviewedMatches: 20,
-    enforceSignedOffBy: null,
-    enforceSignedOffAt: null,
     createdAt: NOW - 10 * DAY_MS,
     updatedAt: NOW - 3 * DAY_MS,
     matchCount: 12,
@@ -37,8 +29,7 @@ function rule(overrides: Partial<RuleSummary> = {}): RuleSummary {
 
 describe('AutomodRulesPage', () => {
   beforeEach(() => {
-    // Fake only the clock: `findBy` polls with real timers, while the
-    // Observed column reads `Date.now()`.
+    // Fake only the clock: `findBy` polls with real timers.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(NOW);
   });
@@ -69,8 +60,12 @@ describe('AutomodRulesPage', () => {
     expect(link.getAttribute('href')).toBe('/automod/no-invites');
     expect(within(table).getByText('Invite links')).toBeTruthy();
     expect(within(table).getByText('(invite)')).toBeTruthy();
-    expect(within(table).getByText('observe')).toBeTruthy();
-    expect(within(table).getByText('3 days')).toBeTruthy();
+    expect(within(table).getByText('On')).toBeTruthy();
+    for (const header of ['Mode', 'Stage', 'Observed']) {
+      expect(within(table).queryByRole('columnheader', { name: new RegExp(header) })).toBeNull();
+    }
+    expect(screen.queryByRole('heading', { level: 2, name: 'Observing' })).toBeNull();
+    expect(screen.queryByRole('heading', { level: 2, name: 'Enforcing' })).toBeNull();
     expect(within(table).getByText('12')).toBeTruthy();
     const reviewed = within(table).getByRole('link', { name: '7 (2 false positives)' });
     expect(reviewed.getAttribute('href')).toBe('/review?rule=no-invites');

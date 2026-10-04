@@ -67,23 +67,26 @@ const LINK_DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/;
 
 /**
  * ADR 0121 removed the per-rule staged rollout, so the dashboard never sees a
- * rule's mode, cutover state, observe clock, legacy ref, sign-off or gate
- * thresholds. The port types still carry them until storage drops the
+ * rule's mode, cutover state, observe clock, legacy ref, sign-off, gate
+ * thresholds or eligibility. The port types still carry them until storage drops the
  * columns; this keeps them out of every response.
  */
-const withoutStagedFields = <T extends OpsAutomodRuleSummary>(rule: T) => {
-  const {
-    mode: _mode,
-    cutoverState: _cutoverState,
-    observeStartedAt: _observeStartedAt,
-    legacyRuleRef: _legacyRuleRef,
-    maxFalsePositiveRate: _maxFalsePositiveRate,
-    minReviewedMatches: _minReviewedMatches,
-    enforceSignedOffBy: _enforceSignedOffBy,
-    enforceSignedOffAt: _enforceSignedOffAt,
-    ...rest
-  } = rule;
-  return rest;
+const STAGED_FIELDS = [
+  'mode',
+  'cutoverState',
+  'observeStartedAt',
+  'legacyRuleRef',
+  'maxFalsePositiveRate',
+  'minReviewedMatches',
+  'enforceSignedOffBy',
+  'enforceSignedOffAt',
+  'eligibility',
+] as const;
+
+const withoutStagedFields = (rule: OpsAutomodRuleSummary): Record<string, unknown> => {
+  const copy: Record<string, unknown> = { ...rule };
+  for (const field of STAGED_FIELDS) delete copy[field];
+  return copy;
 };
 
 export const registerAutomodRoutes = (
@@ -117,8 +120,7 @@ export const registerAutomodRoutes = (
     } catch {
       return reply.status(500).send({ error: 'internal' });
     }
-    const { eligibility: _eligibility, ...rest } = detail;
-    return reply.status(200).send({ ...withoutStagedFields(rest), configObject });
+    return reply.status(200).send({ ...withoutStagedFields(detail), configObject });
   });
 
   app.post('/api/automod/rules', (request, reply) => {

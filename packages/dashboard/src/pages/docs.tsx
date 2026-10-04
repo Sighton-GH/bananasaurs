@@ -158,8 +158,8 @@ const featureSections: readonly DocSection[] = [
         <Link href="/automod">Automod</Link> watches for rule-breaking messages.{' '}
         <Link href="/review">Review</Link> shows what rules matched so they can be tuned,{' '}
         <Link href="/cases">Cases</Link> keeps each incident, and{' '}
-        <Link href="/members">Members</Link> shows each person's history.{' '}
-        <Link href="/cutover">Turn on moderation</Link> takes a rule live only after review.
+        <Link href="/members">Members</Link> shows each person's history. Automod has one switch on
+        the Automod page: Off, Watch, or On.
       </p>
     ),
   },
