@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 import { openTestDatabase } from './db.js';
-import { BACKUP_FILENAME_PATTERN, listBackups, performBackup, pruneBackups } from './backup.js';
+import { BACKUP_FILENAME_PATTERN, listBackups, performBackup, pruneBackups, sha256OfFile } from './backup.js';
 
 let dir: string;
 let db: ReturnType<typeof openTestDatabase>;
@@ -67,6 +67,26 @@ describe('performBackup', () => {
     expect(first.fileName).not.toBe(second.fileName);
     expect(fs.existsSync(first.path)).toBe(true);
     expect(fs.existsSync(second.path)).toBe(true);
+  });
+});
+
+describe('sha256OfFile', () => {
+  it('matches a whole-file hash for a multi-chunk file', () => {
+    // 2.5 MiB of random bytes: larger than one 1 MiB chunk, so the loop must
+    // run more than once, and incompressible, so no shortcut hides a bug.
+    const filePath = path.join(dir, 'big.bin');
+    fs.writeFileSync(filePath, crypto.randomBytes(Math.floor(2.5 * 1024 * 1024)));
+
+    const expected = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    expect(sha256OfFile(filePath)).toBe(expected);
+  });
+
+  it('matches a whole-file hash for an empty file', () => {
+    const filePath = path.join(dir, 'empty.bin');
+    fs.writeFileSync(filePath, Buffer.alloc(0));
+
+    const expected = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    expect(sha256OfFile(filePath)).toBe(expected);
   });
 });
 

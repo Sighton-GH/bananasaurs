@@ -52,7 +52,7 @@ export function performBackup(raw: Database.Database, options: BackupOptions): B
 
   raw.prepare('VACUUM INTO ?').run(destPath);
 
-  const sha256 = sha256Of(destPath);
+  const sha256 = sha256OfFile(destPath);
   const checksumPath = `${destPath}${checksumSuffix}`;
   // The format `sha256sum` itself emits, so a human can verify with coreutils
   // alone on a box where nothing in this repository is importable — the exact
@@ -127,8 +127,21 @@ function listBackupFileNames(destDir: string): string[] {
     .sort();
 }
 
-function sha256Of(filePath: string): string {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+/** SHA-256 of a file in 1 MiB chunks: constant memory however large the backup grows. */
+export function sha256OfFile(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    for (;;) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
 }
 
 function formatBackupTimestamp(date: Date): string {
