@@ -85,7 +85,7 @@ import {
   mcpRateLimiterFor,
   mcpRoleGatewayFor,
 } from '../mcp/roles-gateway.js';
-import { sweepEventDedupeHandler } from '../jobs/handlers.js';
+import { pruneJobsHandler, sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
@@ -1300,9 +1300,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         logger,
       }),
       conversationPruneHandler(scope, { now, logger }),
-      // Registered although nothing enqueues one yet: a handler missing when a
-      // job arrives fails the job, and the sweep's producer is a scheduler this
-      // slice does not build (ADR 0020).
+      // Both enqueued daily by `housekeeping-timer.ts` (ADR 0127).
+      pruneJobsHandler(scope, logger),
       sweepEventDedupeHandler(scope, logger),
     ],
     logger,

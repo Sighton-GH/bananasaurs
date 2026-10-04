@@ -587,6 +587,20 @@ describe('the bot user id', () => {
 });
 
 describe('the job worker', () => {
+  it('enqueues the daily housekeeping jobs at startup and runs both to done (ADR 0127)', async () => {
+    daemon = start();
+    await daemon.settle();
+    await daemon.drainJobs();
+
+    // Both housekeeping handlers are registered: a missing handler would fail
+    // the job instead of completing it.
+    const scope = t.scopes.forGuild(GUILD);
+    const byKind = new Map(jobRepo.listJobs(scope, {}).map((job) => [job.kind, job]));
+    for (const kind of [JOB_KINDS.pruneJobs, JOB_KINDS.sweepEventDedupe] as const) {
+      expect(byKind.get(kind)?.state).toBe('done');
+    }
+  });
+
   it('runs a queued job without anything else asking it to', async () => {
     seedPanel(GUILD);
     discord.offlineReactionAdd({

@@ -39,6 +39,7 @@ import {
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createConversationPruneTimer } from './conversation-prune-timer.js';
+import { createHousekeepingTimer } from './housekeeping-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
 import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
@@ -370,6 +371,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     logger,
   });
 
+  // ADR 0127: the daily housekeeping producer. One `prune_jobs` job and one
+  // `sweep_event_dedupe` job per guild per UTC day — every guild gets both,
+  // with no peek, because finished jobs and event fingerprints accumulate
+  // wherever anything ever ran.
+  const housekeepingTimer = createHousekeepingTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
   // Shared by the operator dispatcher and dashboard API so neither builds its
   // own second copy of the process-level facts.
   const instance = opsInstanceFor({
@@ -671,6 +683,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       conversationPruneTimer.start();
       reminderDeliveryTimer.start();
       resourceRefreshTimer.start();
+      housekeepingTimer.start();
     },
 
     async stop() {
@@ -683,6 +696,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       conversationPruneTimer.stop();
       reminderDeliveryTimer.stop();
       resourceRefreshTimer.stop();
+      housekeepingTimer.stop();
       await settle();
     },
 
