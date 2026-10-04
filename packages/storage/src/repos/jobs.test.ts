@@ -9,6 +9,7 @@ import {
   claimNext,
   completeJob,
   countByState,
+  deleteFinishedBatch,
   enqueue,
   failJob,
   findJob,
@@ -559,5 +560,87 @@ describe('retryJob', () => {
     const jobId = failToDeath(b);
     expect(retryJob(a, jobId, 99_000)).toEqual({ ok: false, reason: 'not-found' });
     expect(findJob(b, jobId)?.state).toBe('failed');
+  });
+});
+
+describe('deleteFinishedBatch (ADR 0127)', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW = Date.parse('2026-10-04T00:00:00.000Z');
+  const CUTOFF = NOW - 14 * DAY_MS;
+  let keySeq = 0;
+
+  const finishAt = (
+    scope: GuildScope,
+    terminal: 'done' | 'failed' | 'cancelled',
+    finishedAt: number,
+  ): number => {
+    keySeq += 1;
+    const created = put(scope, { dedupeKey: `prune-test:${keySeq}`, now: finishedAt, maxAttempts: 1 });
+    const id = created.jobId ?? -1;
+    if (terminal === 'done') {
+      claimNext(scope, finishedAt);
+      completeJob(scope, id, finishedAt);
+    } else if (terminal === 'failed') {
+      claimNext(scope, finishedAt);
+      failJob(scope, id, 'boom', finishedAt);
+    } else {
+      cancelJob(scope, id, finishedAt);
+    }
+    return id;
+  };
+
+  it('deletes done, failed and cancelled rows older than the cutoff', () => {
+    const done = finishAt(a, 'done', CUTOFF - 1);
+    const failed = finishAt(a, 'failed', CUTOFF - 1);
+    const cancelled = finishAt(a, 'cancelled', CUTOFF - 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(3);
+
+    expect(findJob(a, done)).toBeUndefined();
+    expect(findJob(a, failed)).toBeUndefined();
+    expect(findJob(a, cancelled)).toBeUndefined();
+    expect(countByState(a)).toEqual({});
+  });
+
+  it('keeps finished rows at or after the cutoff', () => {
+    const atCutoff = finishAt(a, 'done', CUTOFF);
+    const afterCutoff = finishAt(a, 'failed', CUTOFF + 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(0);
+
+    expect(findJob(a, atCutoff)?.state).toBe('done');
+    expect(findJob(a, afterCutoff)?.state).toBe('failed');
+  });
+
+  it('never deletes queued or running rows, even ones created long before the cutoff', () => {
+    keySeq += 1;
+    const running = put(a, { dedupeKey: `prune-test:${keySeq}`, now: CUTOFF - 100 * DAY_MS });
+    claimNext(a, CUTOFF - 100 * DAY_MS);
+    keySeq += 1;
+    const queued = put(a, { dedupeKey: `prune-test:${keySeq}`, now: CUTOFF - 100 * DAY_MS });
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(0);
+
+    expect(findJob(a, queued.jobId ?? -1)?.state).toBe('queued');
+    expect(findJob(a, running.jobId ?? -1)?.state).toBe('running');
+  });
+
+  it('deletes at most limit rows and returns the count', () => {
+    finishAt(a, 'done', CUTOFF - 1);
+    finishAt(a, 'done', CUTOFF - 1);
+    finishAt(a, 'done', CUTOFF - 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 2)).toBe(2);
+    expect(countByState(a)).toEqual({ done: 1 });
+    expect(deleteFinishedBatch(a, CUTOFF, 2)).toBe(1);
+    expect(countByState(a)).toEqual({});
+  });
+
+  it("is guild-scoped: guild b's old done row survives a call for guild a", () => {
+    finishAt(a, 'done', CUTOFF - 1);
+    const other = finishAt(b, 'done', CUTOFF - 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(1);
+    expect(findJob(b, other)?.state).toBe('done');
   });
 });

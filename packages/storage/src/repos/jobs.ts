@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, lte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { jobs } from '../schema.js';
@@ -243,6 +243,30 @@ export const cancelJob = (scope: GuildScope, jobId: number, now: number): void =
       .set({ state: 'cancelled', updatedAt: now })
       .where(scope.only(jobs, and(eq(jobs.jobId, jobId), eq(jobs.state, 'queued'))))
       .run();
+  });
+
+/**
+ * ADR 0127: deletes up to `limit` finished rows (`done`, `failed`, `cancelled`)
+ * whose `updated_at` is strictly before `olderThanMs`. Never touches `queued` or
+ * `running`. Returns how many were deleted; the caller loops while it equals `limit`.
+ */
+export const deleteFinishedBatch = (scope: GuildScope, olderThanMs: number, limit: number): number =>
+  write(scope, ({ db }) => {
+    const ids = db
+      .select({ jobId: jobs.jobId })
+      .from(jobs)
+      .where(
+        scope.only(
+          jobs,
+          inArray(jobs.state, ['done', 'failed', 'cancelled']),
+          lt(jobs.updatedAt, olderThanMs),
+        ),
+      )
+      .limit(limit)
+      .all()
+      .map((row) => row.jobId);
+    if (ids.length === 0) return 0;
+    return db.delete(jobs).where(scope.only(jobs, inArray(jobs.jobId, ids))).run().changes;
   });
 
 export const findJob = (scope: GuildScope, jobId: number): JobRow | undefined =>
