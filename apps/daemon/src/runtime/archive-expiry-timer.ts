@@ -32,8 +32,8 @@ export interface ArchiveExpiryTimerDeps {
   readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
   /**
    * Instance-level OAuth housekeeping (`oauthRepo.purgeExpired`): expired
-   * pending rows, expired codes and revoked+expired tokens, which otherwise
-   * accumulate forever at a rate an unauthenticated stranger sets. It rides
+   * pending rows, expired codes and tokens 14 days past expiry (ADR 0127),
+   * which otherwise accumulate forever at a rate an unauthenticated stranger sets. It rides
    * this timer because the timer already runs once at start and every 24 h
    * with an injected clock — but it is NOT per-guild, so it runs once per
    * `runOnce`, outside the guild loop. Optional so existing callers keep
@@ -53,7 +53,7 @@ export interface ArchiveExpiryTimerDeps {
   readonly logger: Logger;
 }
 
-/** What `purgeOAuth` deleted: expired pending rows, codes, revoked+expired tokens. */
+/** What `purgeOAuth` deleted: expired pending rows, codes, tokens 14 days past expiry. */
 export interface OAuthPurgeCounts {
   readonly pending: number;
   readonly codes: number;
