@@ -30,7 +30,13 @@ const portWithName = (guildName: string | undefined): McpHealthPort => ({
     {
       guildId: GUILD,
       guildName,
-      safety: { killswitch: false, dryRun: false, breakerOpen: false, breakerReason: null },
+      safety: {
+        killswitch: false,
+        dryRun: false,
+        breakerOpen: false,
+        breakerReason: null,
+        automodState: 'off',
+      },
       jobCounts: { queued: 1, running: 0, failed: 0 },
       schedulerLagMs: 0,
     },
@@ -47,7 +53,13 @@ const portWithJobCounts = (jobCounts: Readonly<Record<string, number>>): McpHeal
     {
       guildId: GUILD,
       guildName: 'guild a',
-      safety: { killswitch: false, dryRun: false, breakerOpen: false, breakerReason: null },
+      safety: {
+        killswitch: false,
+        dryRun: false,
+        breakerOpen: false,
+        breakerReason: null,
+        automodState: 'off',
+      },
       jobCounts,
       schedulerLagMs: 0,
     },
@@ -101,5 +113,40 @@ describe('get_health points at list_jobs when jobs have failed', () => {
   it('a guild with no failures carries no such line', () => {
     const text = textOf(getHealthText(principalWith(GUILD), portWithJobCounts({ done: 3 })));
     expect(text).not.toContain('list_jobs');
+  });
+});
+
+describe('get_health reports the automod switch (ADR 0121)', () => {
+  const portWithAutomod = (
+    automodState: 'off' | 'watch' | 'on',
+    dryRun = false,
+  ): McpHealthPort => ({
+    ...portWithName('guild a'),
+    guilds: () => [
+      {
+        guildId: GUILD,
+        guildName: 'guild a',
+        safety: {
+          killswitch: false,
+          dryRun,
+          breakerOpen: false,
+          breakerReason: null,
+          automodState,
+        },
+        jobCounts: {},
+        schedulerLagMs: 0,
+      },
+    ],
+  });
+
+  it.each(['off', 'watch', 'on'] as const)('prints automod %s for the guild', (state) => {
+    const text = textOf(getHealthText(principalWith(GUILD), portWithAutomod(state)));
+    expect(text).toContain(`  automod ${state}`);
+  });
+
+  it('prints it beside dry run when both apply', () => {
+    const text = textOf(getHealthText(principalWith(GUILD), portWithAutomod('on', true)));
+    expect(text).toContain('dry run on');
+    expect(text).toContain('  automod on');
   });
 });

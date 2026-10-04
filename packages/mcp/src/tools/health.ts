@@ -1,4 +1,4 @@
-import { humaniseDuration, type GuildId } from '@bananasaurs/core';
+import { humaniseDuration, type GuildId, type OpsAutomodState } from '@bananasaurs/core';
 import { requireAnyReachableGuild, type McpPrincipal } from '../scope.js';
 import { escapeEvidenceText } from '../envelope.js';
 import { MCP_READ_GET_HEALTH, type McpReadRecord } from '../read-audit.js';
@@ -16,7 +16,8 @@ export const GET_HEALTH_TOOL_NAME = 'get_health';
 
 export const GET_HEALTH_TOOL_DESCRIPTION =
   'Process health: uptime, gateway connection, per-guild safety controls ' +
-  '(kill switch, dry run, breaker), job counts and scheduler lag. ' +
+  '(kill switch, dry run, breaker), the automod switch (off, watch or on), ' +
+  'job counts and scheduler lag. ' +
   'Refuses when the caller reaches no guild. Use list_jobs to see why jobs failed.';
 
 /**
@@ -35,6 +36,8 @@ export interface McpGuildHealth {
         readonly dryRun: boolean;
         readonly breakerOpen: boolean;
         readonly breakerReason: string | null;
+        /** ADR 0121: the guild-wide automod switch. */
+        readonly automodState: OpsAutomodState;
       }
     | undefined;
   readonly jobCounts: Readonly<Record<string, number>>;
@@ -128,6 +131,7 @@ export const renderHealth = (port: McpHealthPort): string => {
       }
       const state = paused.length === 0 ? 'role changes enabled' : `paused (${paused.join(', ')})`;
       lines.push(`guild ${guild.guildId} (${name}): ${state}`);
+      lines.push(`  automod ${guild.safety.automodState}`);
     }
     const jobs = Object.entries(guild.jobCounts);
     const jobText =

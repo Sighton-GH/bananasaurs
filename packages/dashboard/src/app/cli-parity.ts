@@ -44,11 +44,6 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Backups',
     control: 'backup table with sizes and checksums',
   },
-  'automod dryrun': {
-    kind: 'covered',
-    page: 'Automod rule',
-    control: 'replay over the fixture corpus with corpus caveats',
-  },
   'automod review': {
     kind: 'covered',
     page: 'Review',
@@ -76,16 +71,6 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     control: 'safety settings and limits controls, confirmed and audited',
   },
   'automod verdict': { kind: 'covered', page: 'Review', control: 'verdict buttons per match' },
-  'automod ready': {
-    kind: 'covered',
-    page: 'Automod rule',
-    control: 'mark ready for enforcement, confirmed',
-  },
-  'automod signoff': {
-    kind: 'covered',
-    page: 'Automod rule',
-    control: 'owner sign-off, confirmed',
-  },
   'automod invite-allow': {
     kind: 'covered',
     page: 'Automod rule',

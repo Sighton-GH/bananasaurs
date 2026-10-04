@@ -111,10 +111,15 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     const panels = ctx.ports.listPanels();
     const stale = panels.filter((p) => p.status !== 'enabled');
     const unassignable = ctx.ports.listUnassignableRoles();
-    const missingManageMessages = ctx.ports.listKeywordFilterRulesMissingManageMessages();
+    // ADR 0121: the guild-wide switch decides whether enabled rules act. A
+    // guild with no `guilds` row has no switch to read; the gateway half
+    // reports that, and automod treats it as off.
+    const safety = ctx.ports.safetyState();
+    const automodState = safety?.automodState ?? 'off';
+    // Only On deletes anything, so only On makes Manage Messages load-bearing.
+    const missingManageMessages =
+      automodState === 'on' ? ctx.ports.listKeywordFilterRulesMissingManageMessages() : [];
     const unusable = ctx.ports.listUnusableAutomodRules();
-    const badCutoverState = ctx.ports.listAutomodRulesEnforcingWithBadCutoverState();
-    const observePastWindow = ctx.ports.listAutomodRulesObservingPastWindowWithBacklog(ctx.now());
     const unreadableArchiveChannels = ctx.ports.listUnreadableArchiveChannels();
     const archiveIndex = ctx.ports.archiveIndexHealth();
     // ADR 0044 §7's instance-level check: the odd one out in this command —
@@ -226,15 +231,18 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       });
     }
 
-    if (missingManageMessages.length === 0) {
-      clear.push('automod: every enforce-mode keyword filter rule has Manage Messages');
+    if (automodState === 'on' && safety?.dryRun === true) {
+      advisories.push('automod is On but dry run is on: matches are logged, not acted on');
+    }
+    if (automodState === 'on' && missingManageMessages.length === 0) {
+      clear.push('automod: every enabled keyword filter rule has Manage Messages');
     }
     for (const rule of missingManageMessages) {
       problems.push({
         title: `Keyword filter rule ${rule.ruleId} cannot delete matching messages`,
         impact:
-          'The rule is in enforce mode, but without Manage Messages its deletions fail and matching messages stay up.',
-        fix: "Grant the bot Manage Messages in Discord (Server Settings -> Roles -> the bot's role), or drop the rule back to observe mode.",
+          'Automod is On, but without Manage Messages its deletions fail and matching messages stay up.',
+        fix: "Grant the bot Manage Messages in Discord (Server Settings -> Roles -> the bot's role), or switch automod to Watch on the Automod page.",
         route: `/automod/${rule.ruleId}`,
         details: `rule ${rule.ruleId}  channel ${rule.channelId}`,
       });
@@ -250,34 +258,6 @@ export const doctorCommand = defineCommand<Record<string, never>>({
         fix: 'Open the rule and fix the setting named in the details.',
         route: `/automod/${rule.ruleId}`,
         details: `${rule.kind}  ${rule.reason}: ${rule.detail}`,
-      });
-    }
-
-    if (badCutoverState.length === 0) {
-      clear.push('automod: every enforcing rule is in a cutover state that permits it');
-    }
-    for (const rule of badCutoverState) {
-      problems.push({
-        title: `Automod rule ${rule.ruleId} is enforcing without completing its observe window`,
-        impact: 'The safe roll-out order was bypassed - an untested rule is acting on members.',
-        fix: 'Move the rule back to observe, or complete the cutover properly.',
-        route: `/automod/${rule.ruleId}`,
-        details: `cutover_state=${rule.cutoverState}`,
-      });
-    }
-
-    if (observePastWindow.length === 0) {
-      clear.push(
-        'automod: no observing rule is both past its window and carrying an unreviewed backlog',
-      );
-    }
-    for (const rule of observePastWindow) {
-      problems.push({
-        title: `Automod rule ${rule.ruleId} finished observing with ${String(rule.unreviewedCount)} unreviewed match(es)`,
-        impact: 'The rule cannot move to enforce until someone reviews what it caught.',
-        fix: 'Review the matches, then enforce the rule or extend the window.',
-        route: `/automod/${rule.ruleId}`,
-        details: `observing since ${iso(rule.observeStartedAt)}`,
       });
     }
 
@@ -407,7 +387,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     }
 
     // The verdict counts the gateway half and every finding above the same
-    // way: a panel, an enforce-mode rule, or an archive channel that
+    // way: a panel, an automod rule, or an archive channel that
     // silently does nothing is a problem even under a green header.
     const ok =
       report.ok &&
@@ -415,15 +395,17 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       unassignable.length === 0 &&
       missingManageMessages.length === 0 &&
       unusable.length === 0 &&
-      badCutoverState.length === 0 &&
-      observePastWindow.length === 0 &&
       unreadableArchiveChannels.length === 0 &&
       archiveIndex.indexed === archiveIndex.rows &&
       eligibilityWarnings.length === 0 &&
       (!dashboardAccess.success || dashboardAccessVerdict(dashboardAccess.data)) &&
       surface.ok;
 
-    const lines: string[] = [ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND', ''];
+    const lines: string[] = [
+      ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND',
+      `automod           ${automodState}`,
+      '',
+    ];
     if (problems.length > 0) {
       lines.push(`Problems (${String(problems.length)}):`, '');
       problems.forEach((problem, index) => {
@@ -461,6 +443,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           ...(problem.details !== undefined && { details: problem.details }),
         })),
         advisories: [...advisories],
+        automodState,
         gateway: report.data,
         stalePanels: stale.map((p) => ({ panelId: p.panelId, status: p.status })),
         unassignableRoles: unassignable.map((r) => ({
@@ -476,15 +459,6 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           kind: r.kind,
           reason: r.reason,
           detail: r.detail,
-        })),
-        automodEnforceModeBadCutoverState: badCutoverState.map((r) => ({
-          ruleId: r.ruleId,
-          cutoverState: r.cutoverState,
-        })),
-        automodObservePastWindowWithBacklog: observePastWindow.map((r) => ({
-          ruleId: r.ruleId,
-          observeStartedAt: r.observeStartedAt,
-          unreviewedCount: r.unreviewedCount,
         })),
         unreadableArchiveChannels: unreadableArchiveChannels.map((c) => ({
           channelId: c.channelId,

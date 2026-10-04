@@ -279,14 +279,6 @@ export const testPortsFor = (
     throw new Error('not used by the dashboard routes under test');
   },
 
-  listAutomodRulesEnforcingWithBadCutoverState: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
-
-  listAutomodRulesObservingPastWindowWithBacklog: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
-
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       routeId: route.routeId,
@@ -331,12 +323,6 @@ export const testPortsFor = (
     };
   },
 
-  findAutomodRule: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
-  listAutomodFixtures: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
   listUnreviewedMatches: (query) =>
     modCaseRepo.listUnreviewedMatches(scope, query).map((match) => ({
       eventId: match.eventId,
@@ -354,9 +340,7 @@ export const testPortsFor = (
 
   // Slice 8's dashboard pages (Task 2): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires, so route tests exercise real
-  // reads and writes. Only `runAutomodDryRun` differs — a canned report
-  // rather than a real replay (`toAutomodRule` lives in `apps/daemon` and
-  // this package may not import it); the route test asserts pass-through.
+  // reads and writes.
   listAutomodRules: () => {
     const matchCounts = automodAdminRepo.countMatchesByRule(scope);
     const reviewedCounts = automodAdminRepo.countReviewedByRule(scope);
@@ -382,24 +366,6 @@ export const testPortsFor = (
       inviteAllowlist: stored?.inviteAllowlist ?? [],
       linkDomains: stored?.linkDomains ?? [],
       eligibility: enforcementGateRepo.enforcementEligibility(scope, ruleId),
-    };
-  },
-  runAutomodDryRun: (ruleId) => {
-    if (!automodRuleRepo.ruleExists(scope, ruleId)) return 'no-such-rule';
-    const rule = automodRuleRepo.findRuleKindAndConfig(scope, ruleId);
-    if (rule === undefined) return 'no-such-rule';
-    return {
-      ruleId,
-      kind: rule.kind,
-      usable: true,
-      failure: undefined,
-      threw: 0,
-      corpusSize: 0,
-      total: 0,
-      matched: 0,
-      falsePositives: 0,
-      falseNegatives: 0,
-      results: [],
     };
   },
   listRecentCases: (query) =>
@@ -434,12 +400,6 @@ export const testPortsFor = (
   },
   recordMatchVerdict: (input) =>
     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
-  setAutomodRuleReady: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
-  recordAutomodSignOff: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
   addInviteAllowlistEntry: (input) => {
     const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
     if (rule === undefined) return 'no-such-rule';

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDispatcher, type RegisteredCommand } from '../dispatch.js';
 import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
-import type { OpsAuditRow, OpsInstance, OpsJobRow, OpsPorts } from '../ports.js';
+import type { OpsAuditRow, OpsInstance, OpsJobRow, OpsPorts, OpsSafetyState } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
 import {
   auditTailCommand,
@@ -445,15 +445,26 @@ describe('bananasaurs panel list and panel show', () => {
   });
 });
 
+const safety = (overrides: Partial<OpsSafetyState> = {}): OpsSafetyState => ({
+  killswitch: false,
+  dryRun: false,
+  breakerOpen: false,
+  breakerReason: null,
+  roleRatePerMin: 10,
+  reconcileBudget: 100,
+  breakerThreshold: 5,
+  automodState: 'off',
+  ...overrides,
+});
+
 describe('bananasaurs doctor', () => {
   const healthy = {
     listPanels: () => [],
     listUnassignableRoles: () => [],
     listKeywordFilterRulesMissingManageMessages: () => [],
     listUnusableAutomodRules: () => [],
-    listAutomodRulesEnforcingWithBadCutoverState: () => [],
-    listAutomodRulesObservingPastWindowWithBacklog: () => [],
     listUnreadableArchiveChannels: () => [],
+    safetyState: () => safety(),
     archiveIndexHealth: () => ({ indexed: 0, rows: 0 }),
   };
 
@@ -574,29 +585,89 @@ describe('bananasaurs doctor', () => {
     expect(res.data).toMatchObject({ ok: false });
   });
 
-  it('flags an enforce-mode keyword_filter rule where the bot lacks Manage Messages', async () => {
+  it('prints the automod switch state (ADR 0121)', async () => {
+    const res = await drive(doctorCommand, healthy);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('automod           off');
+    expect(res.data).toMatchObject({ automodState: 'off' });
+  });
+
+  it('warns, without failing, when automod is On but dry run is on', async () => {
     const res = await drive(doctorCommand, {
       ...healthy,
+      safetyState: () => safety({ automodState: 'on', dryRun: true }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('automod           on');
+    expect(res.text).toContain('automod is On but dry run is on: matches are logged, not acted on');
+    expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('does not warn about dry run while automod is on Watch', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      safetyState: () => safety({ automodState: 'watch', dryRun: true }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('automod is On but dry run is on');
+  });
+
+  it('flags an enabled keyword rule without Manage Messages while automod is On', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      safetyState: () => safety({ automodState: 'on' }),
       listKeywordFilterRulesMissingManageMessages: () => [
         { ruleId: 'profanity-filter', channelId: '333' },
       ],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('automod');
     expect(res.text).toContain('profanity-filter');
+    expect(res.text).not.toContain('observe mode');
     expect(res.data).toMatchObject({ ok: false });
   });
 
-  it('reports clean when every enforce-mode rule has Manage Messages', async () => {
+  it.each(['off', 'watch'] as const)(
+    'does not ask about Manage Messages while automod is %s',
+    async (automodState) => {
+      let asked = false;
+      const res = await drive(doctorCommand, {
+        ...healthy,
+        safetyState: () => safety({ automodState }),
+        listKeywordFilterRulesMissingManageMessages: () => {
+          asked = true;
+          return [{ ruleId: 'profanity-filter', channelId: '333' }];
+        },
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(asked).toBe(false);
+      expect(res.text).not.toContain('profanity-filter');
+      expect(res.data).toMatchObject({ ok: true });
+    },
+  );
+
+  it('reports clean when automod is On and every enabled keyword rule has Manage Messages', async () => {
     const res = await drive(doctorCommand, {
       ...healthy,
-      listKeywordFilterRulesMissingManageMessages: () => [],
+      safetyState: () => safety({ automodState: 'on' }),
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('automod');
+    expect(res.text).toContain('every enabled keyword filter rule has Manage Messages');
     expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('carries no staged-rollout finding (ADR 0121)', async () => {
+    const res = await drive(doctorCommand, healthy);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toMatch(/cutover|observe window|observing/i);
+    expect(res.data).not.toHaveProperty('automodEnforceModeBadCutoverState');
+    expect(res.data).not.toHaveProperty('automodObservePastWindowWithBacklog');
   });
 
   it('reports a rule whose config cannot be compiled, and fails the check', async () => {
@@ -647,80 +718,6 @@ describe('bananasaurs doctor', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('every enabled automod rule compiles');
-  });
-
-  it('flags a rule enforcing with a cutover_state that does not permit it', async () => {
-    const res = await drive(doctorCommand, {
-      ...healthy,
-      listAutomodRulesEnforcingWithBadCutoverState: () => [
-        { ruleId: 'hand-edited', cutoverState: 'observing' },
-      ],
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain('hand-edited');
-    expect(res.text).toContain('cutover_state=observing');
-    expect(res.text).toContain('doctor: PROBLEMS FOUND');
-    expect(res.data).toMatchObject({
-      ok: false,
-      automodEnforceModeBadCutoverState: [{ ruleId: 'hand-edited', cutoverState: 'observing' }],
-    });
-  });
-
-  it('reports clean when every enforcing rule is in a cutover_state that permits it', async () => {
-    const res = await drive(doctorCommand, {
-      ...healthy,
-      listAutomodRulesEnforcingWithBadCutoverState: () => [],
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain('every enforcing rule is in a cutover state that permits it');
-  });
-
-  it('flags an observing rule past its window with an unreviewed backlog', async () => {
-    const res = await drive(doctorCommand, {
-      ...healthy,
-      listAutomodRulesObservingPastWindowWithBacklog: () => [
-        {
-          ruleId: 'overdue-rule',
-          observeStartedAt: NOW - 20 * 24 * 60 * 60 * 1000,
-          unreviewedCount: 3,
-        },
-      ],
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain('overdue-rule');
-    expect(res.text).toContain('3 unreviewed match(es)');
-    expect(res.text).toContain('doctor: PROBLEMS FOUND');
-    expect(res.data).toMatchObject({
-      ok: false,
-      automodObservePastWindowWithBacklog: [{ ruleId: 'overdue-rule', unreviewedCount: 3 }],
-    });
-  });
-
-  it('passes ctx.now() through to the observe-window-backlog port', async () => {
-    const seen: unknown[] = [];
-    await drive(doctorCommand, {
-      ...healthy,
-      listAutomodRulesObservingPastWindowWithBacklog: (nowMs) => {
-        seen.push(nowMs);
-        return [];
-      },
-    });
-    expect(seen).toEqual([NOW]);
-  });
-
-  it('reports clean when no observing rule is both overdue and backlogged', async () => {
-    const res = await drive(doctorCommand, {
-      ...healthy,
-      listAutomodRulesObservingPastWindowWithBacklog: () => [],
-    });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.text).toContain(
-      'no observing rule is both past its window and carrying an unreviewed backlog',
-    );
   });
 
   it('flags an unreadable archive channel, and fails the check', async () => {
@@ -840,9 +837,8 @@ describe('bananasaurs doctor dashboard access (S13-D5)', () => {
     listUnassignableRoles: () => [],
     listKeywordFilterRulesMissingManageMessages: () => [],
     listUnusableAutomodRules: () => [],
-    listAutomodRulesEnforcingWithBadCutoverState: () => [],
-    listAutomodRulesObservingPastWindowWithBacklog: () => [],
     listUnreadableArchiveChannels: () => [],
+    safetyState: () => safety(),
     archiveIndexHealth: () => ({ indexed: 0, rows: 0 }),
   };
 

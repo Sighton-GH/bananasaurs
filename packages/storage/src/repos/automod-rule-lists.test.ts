@@ -121,31 +121,20 @@ const portsFor = (s: GuildScope): OpsPorts => ({
     'listKeywordFilterRulesMissingManageMessages',
   ),
   listUnusableAutomodRules: notNeeded('listUnusableAutomodRules'),
-  listAutomodRulesEnforcingWithBadCutoverState: notNeeded(
-    'listAutomodRulesEnforcingWithBadCutoverState',
-  ),
-  listAutomodRulesObservingPastWindowWithBacklog: notNeeded(
-    'listAutomodRulesObservingPastWindowWithBacklog',
-  ),
   listRoutes: notNeeded('listRoutes'),
   getRoute: notNeeded('getRoute'),
   listExcludedChannels: notNeeded('listExcludedChannels'),
   findJob: notNeeded('findJob'),
-  findAutomodRule: notNeeded('findAutomodRule'),
-  listAutomodFixtures: notNeeded('listAutomodFixtures'),
   listUnreviewedMatches: notNeeded('listUnreviewedMatches'),
   listUnreviewedNativeHits: notNeeded('listUnreviewedNativeHits'),
   nativeBlockedCount: notNeeded('nativeBlockedCount'),
   listAutomodRules: notNeeded('listAutomodRules'),
   findAutomodRuleDetail: notNeeded('findAutomodRuleDetail'),
-  runAutomodDryRun: notNeeded('runAutomodDryRun'),
   listRecentCases: notNeeded('listRecentCases'),
   findCaseDetail: notNeeded('findCaseDetail'),
   listCasesForMember: notNeeded('listCasesForMember'),
   applySetting: notNeeded('applySetting'),
   recordMatchVerdict: notNeeded('recordMatchVerdict'),
-  setAutomodRuleReady: notNeeded('setAutomodRuleReady'),
-  recordAutomodSignOff: notNeeded('recordAutomodSignOff'),
   // The ports this test exercises for real — the same logic
   // `apps/daemon/src/ops/wiring.ts` uses: `findRuleKindAndConfig` guards both
   // existence and kind ahead of the write (IMPORTANT-7), so a mistyped rule

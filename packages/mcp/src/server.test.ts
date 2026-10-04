@@ -112,7 +112,13 @@ const stubPort = (): McpHealthPort => ({
     {
       guildId: GUILD,
       guildName: 'guild a',
-      safety: { killswitch: false, dryRun: false, breakerOpen: false, breakerReason: null },
+      safety: {
+        killswitch: false,
+        dryRun: false,
+        breakerOpen: false,
+        breakerReason: null,
+        automodState: 'off',
+      },
       jobCounts: { queued: 1, running: 0, failed: 0 },
       schedulerLagMs: 0,
     },

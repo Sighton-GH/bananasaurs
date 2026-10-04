@@ -202,6 +202,7 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
                 dryRun: safety.dryRun,
                 breakerOpen: safety.breakerOpen,
                 breakerReason: safety.breakerReason,
+                automodState: safety.automodState,
               },
         jobCounts: ports.jobCounts(),
         // Clamped at zero so a clock that moved backwards reports "not behind"

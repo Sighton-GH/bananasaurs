@@ -15,12 +15,9 @@ import {
 import {
   automodDomainAddCommand,
   automodDomainRmCommand,
-  automodDryRunCommand,
   automodInviteAllowCommand,
   automodInviteDenyCommand,
-  automodReadyCommand,
   automodReviewCommand,
-  automodSignoffCommand,
   automodVerdictCommand,
 } from './commands/automod.js';
 import {
@@ -102,7 +99,6 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   auditTailCommand,
   jobsListCommand,
   backupListCommand,
-  automodDryRunCommand,
   automodReviewCommand,
   archiveStatusCommand,
   archiveSearchCommand,
@@ -113,8 +109,6 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   // dispatcher enforces both, so the ordering here is for `--help` only.
   configSetCommand,
   automodVerdictCommand,
-  automodReadyCommand,
-  automodSignoffCommand,
   automodInviteAllowCommand,
   automodInviteDenyCommand,
   automodDomainAddCommand,

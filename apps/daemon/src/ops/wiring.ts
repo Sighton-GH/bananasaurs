@@ -7,7 +7,6 @@ import {
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,
-  runDryRun,
   undoDedupeKey,
   type Config,
   type OpsGuildMemberInfo,
@@ -21,7 +20,6 @@ import {
   archiveSearchRepo,
   authzRepo,
   automodAdminRepo,
-  automodFixtureRepo,
   automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
@@ -43,7 +41,6 @@ import {
   type InstanceScope,
 } from '@bananasaurs/storage';
 import { generateToken, hashPassword, hashToken, POLICY } from '@bananasaurs/http';
-import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
 import type { PasswordVault } from './password-vault.js';
@@ -209,21 +206,6 @@ export const opsPortsFor = (
         detail: result.ok ? '' : result.detail,
       })),
 
-  // ADR 0042 §3's two `doctor` checks (Task 6): the storage layer already
-  // does the guild-scoped join work (`enforcementGateRepo`), so this is a
-  // plain pass-through, the same shape `listUnassignableRoles` above uses.
-  listAutomodRulesEnforcingWithBadCutoverState: () =>
-    enforcementGateRepo.listEnforceRulesWithBadCutoverState(scope).map((row) => ({
-      ruleId: row.ruleId,
-      cutoverState: row.cutoverState,
-    })),
-  listAutomodRulesObservingPastWindowWithBacklog: (nowMs) =>
-    enforcementGateRepo.listObservingRulesPastWindowWithBacklog(scope, nowMs).map((row) => ({
-      ruleId: row.ruleId,
-      observeStartedAt: row.observeStartedAt,
-      unreviewedCount: row.unreviewedCount,
-    })),
-
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       routeId: route.routeId,
@@ -258,23 +240,6 @@ export const opsPortsFor = (
     return job === undefined ? undefined : jobRow(job);
   },
 
-  // `listEnabledRules` returns only enabled rules — the honest thing to
-  // dry-run, since a disabled rule is not going to match anything in
-  // production either. Replaying a disabled rule is a repo function this
-  // task does not add.
-  //
-  // Narrowed through `toAutomodRule`, not passed through: `runDryRun` builds a
-  // predicate from this, and `ruleFingerprint` hashes the rule object's own
-  // runtime keys. Handing it the repository row hashes ADR 0042's eight
-  // gate columns too, which is harmless here only because a dry run uses a
-  // fresh cache — the same widening the subscriber's wiring already closed, and
-  // not worth leaving open in a second place for a reader to have to re-derive.
-  findAutomodRule: (ruleId) =>
-    automodRuleRepo
-      .listEnabledRules(scope)
-      .map(toAutomodRule)
-      .find((r) => r.ruleId === ruleId),
-  listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
   listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
   listUnreviewedNativeHits: (query) => automodAdminRepo.listUnreviewedNativeHits(scope, query),
   nativeBlockedCount: () => automodAdminRepo.countNativeBlocked(scope),
@@ -314,18 +279,6 @@ export const opsPortsFor = (
       eligibility: enforcementGateRepo.enforcementEligibility(scope, ruleId),
     };
   },
-  // A disabled rule **may** be dry-run from the dashboard (Slice 8, PR-47):
-  // an operator edits a disabled rule, dry-runs it, then enables it. The
-  // CLI's enabled-only `findAutomodRule` above is unchanged.
-  runAutomodDryRun: (ruleId) => {
-    const stored = automodRuleRepo.findRuleIncludingDisabled(scope, ruleId);
-    if (stored === undefined) return 'no-such-rule';
-    return runDryRun({
-      guildId: scope.guildId,
-      rule: toAutomodRule(stored),
-      fixtures: automodFixtureRepo.listFixtures(scope, {}),
-    });
-  },
   listRecentCases: (query) =>
     automodAdminRepo.listRecentCases(scope, { limit: query.limit }).map(opsCaseRow),
   findCaseDetail: (caseId) => {
@@ -359,13 +312,6 @@ export const opsPortsFor = (
     // command: a command does not get to choose when it happened, the same
     // way it does not get to choose its own audit attribution.
     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
-
-  // `automod ready` / `automod signoff` (ADR 0042 §3/§4, Task 6). The clock is
-  // this composition root's, not the command's, the same reasoning
-  // `recordMatchVerdict` above gives.
-  setAutomodRuleReady: (ruleId) => automodRuleRepo.setRuleReady(scope, { ruleId, now: now() }),
-  recordAutomodSignOff: (input) =>
-    automodRuleRepo.setEnforceSignOff(scope, { ...input, now: now() }),
 
   // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
   // lists Task 6 built with no caller. `findRuleKindAndConfig` replaces a
@@ -1290,8 +1236,8 @@ const isTextChannelOfGuild = (client: Client, guildId: string, channelId: string
 };
 
 /**
- * `doctor`'s automod half: for every enabled, enforce-mode `keyword_filter`
- * rule, every channel it is not exempted from where the bot's cached
+ * `doctor`'s automod half: for every enabled `keyword_filter` rule, every
+ * channel it is not exempted from where the bot's cached
  * permissions do not include `Manage Messages`.
  *
  * A live check against `client.guilds.cache`, the same "already in memory,
@@ -1312,7 +1258,7 @@ const keywordFilterRulesMissingManageMessages = (
   scope: GuildScope,
   client: Client,
 ): readonly { ruleId: string; channelId: string }[] => {
-  const rules = automodRuleRepo.listEnforceModeKeywordFilterRules(scope);
+  const rules = automodRuleRepo.listEnabledKeywordFilterRules(scope);
   if (rules.length === 0) return [];
 
   const guild = client.guilds.cache.get(scope.guildId);

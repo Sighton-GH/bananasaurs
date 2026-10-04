@@ -333,39 +333,29 @@ export const hasRoleExemption = (scope: GuildScope, ruleId: string): boolean =>
         .get() !== undefined,
   );
 
-export interface EnforceRuleChannelScope {
+export interface KeywordRuleChannelScope {
   readonly ruleId: string;
   /** Channels this rule is exempted from, so `doctor` skips them. */
   readonly exemptChannelIds: readonly string[];
 }
 
 /**
- * Every enabled, `mode: 'enforce'` `keyword_filter` rule, with its channel
- * exemptions — the input `doctor`'s `listKeywordFilterRulesMissingManageMessages`
+ * Every enabled `keyword_filter` rule, with its channel exemptions — the
+ * input `doctor`'s `listKeywordFilterRulesMissingManageMessages`
  * (`apps/daemon/src/ops/wiring.ts`) needs to check the bot's live permissions
- * against the rest of the guild's channels.
- *
- * Deliberately narrower than `listEnabledRules`: a `test` or `observe` rule
- * never calls `deleteMessage` (Task 9's subscriber), so a missing
- * `Manage Messages` there is not yet a finding — only `enforce` mode makes
- * the permission load-bearing.
+ * against the rest of the guild's channels. Whether a missing Manage Messages
+ * matters is the guild's automod switch (ADR 0121): `doctor` asks only when
+ * it is On.
  */
-export const listEnforceModeKeywordFilterRules = (
+export const listEnabledKeywordFilterRules = (
   scope: GuildScope,
-): readonly EnforceRuleChannelScope[] => {
+): readonly KeywordRuleChannelScope[] => {
   const rules = read(scope, (db) =>
     db
       .select({ ruleId: modRules.ruleId })
       .from(modRules)
       .where(
-        scope.only(
-          modRules,
-          and(
-            eq(modRules.kind, 'keyword_filter'),
-            eq(modRules.enabled, 1),
-            eq(modRules.mode, 'enforce'),
-          ),
-        ),
+        scope.only(modRules, and(eq(modRules.kind, 'keyword_filter'), eq(modRules.enabled, 1))),
       )
       .all(),
   );

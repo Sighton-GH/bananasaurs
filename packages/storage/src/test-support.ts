@@ -51,7 +51,7 @@ export function openMigratedTestDatabase(): MigratedTestDatabase {
 /**
  * Puts a rule in a state `setRuleMode(mode: 'enforce')` will accept, so a test
  * whose subject is something *downstream* of enforcement — the subscriber, the
- * mode-flip mechanics, `listEnforceModeKeywordFilterRules` — can get there
+ * mode-flip mechanics — can get there
  * without first building a twenty-match review corpus it has nothing to do
  * with (plan ruling PR-31).
  *

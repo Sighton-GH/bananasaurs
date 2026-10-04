@@ -1,5 +1,4 @@
-import type { DryRunReport } from '../automod/dry-run.js';
-import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
+import type { RuleKind } from '../automod/predicates/types.js';
 import type { Capability } from '../authz.js';
 import type { ResolvedLogRouteInput } from '../logging/route-input.js';
 import type { PanelDefinition } from '../panels/model.js';
@@ -136,11 +135,12 @@ export interface OpsUnassignableRole {
 }
 
 /**
- * One (rule, channel) pair where an enforce-mode `keyword_filter` rule
- * applies but a live check found the bot without `Manage Messages` there.
+ * One (rule, channel) pair where an enabled `keyword_filter` rule applies
+ * but a live check found the bot without `Manage Messages` there.
  *
- * An enforce-mode rule that cannot delete is not a rule quietly doing less —
- * it is a rule doing nothing at all while its mode says otherwise, the same
+ * With automod On (ADR 0121), a rule that cannot delete is not a rule quietly
+ * doing less — it is a rule doing nothing at all while the switch says
+ * otherwise, the same
  * failure `docs/SESSION_LOG.md`'s "a panel with a deleted message says so"
  * precedent exists for (`docs/superpowers/specs/2026-08-30-automod-rule-
  * engine-design.md` §6).
@@ -165,35 +165,6 @@ export interface OpsUnusableAutomodRule {
   readonly reason: string;
   readonly detail: string;
 }
-
-/**
- * A rule already in `mode = 'enforce'` whose `cutover_state` does not permit
- * it (ADR 0042 §3, Task 6) — rows that predate this slice or were hand-edited,
- * since `setRuleMode` can no longer *create* this combination.
- */
-export interface OpsAutomodEnforceModeBadCutoverState {
-  readonly ruleId: string;
-  /** `CutoverState` widened to a string, the same reasoning `OpsUnusableAutomodRule.reason` gives. */
-  readonly cutoverState: string;
-}
-
-/**
- * A rule sitting in `observe` past `docs/08`'s floor with matches nobody has
- * reviewed yet (ADR 0042 §3, Task 6).
- */
-export interface OpsAutomodObserveWindowBacklog {
-  readonly ruleId: string;
-  readonly observeStartedAt: number;
-  readonly unreviewedCount: number;
-}
-
-/**
- * The outcome of `automod ready` (ADR 0042 §3/PR-27, Task 6): the write
- * succeeded, or `cutover_state` was not `observing` and the refusal names it.
- */
-export type OpsSetAutomodRuleReadyOutcome =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: 'not-observing'; readonly state: string };
 
 /**
  * One row of the review queue (ADR 0041 §5, §7): a recorded match nobody has
@@ -849,58 +820,18 @@ export interface OpsPorts {
   findPanel(panelId: string): OpsPanelDetail | undefined;
   listUnassignableRoles(): readonly OpsUnassignableRole[];
   /**
-   * Every (rule, channel) pair where an enabled, enforce-mode `keyword_filter`
-   * rule applies and a live check found the bot without `Manage Messages`.
+   * Every (rule, channel) pair where an enabled `keyword_filter` rule applies
+   * and a live check found the bot without `Manage Messages`. `doctor` asks
+   * only while the automod switch is On (ADR 0121).
    */
   listKeywordFilterRulesMissingManageMessages(): readonly OpsKeywordFilterChannelMissingManageMessages[];
   /** Every enabled rule `compileRule` cannot compile, and why. */
   listUnusableAutomodRules(): readonly OpsUnusableAutomodRule[];
-  /**
-   * `doctor`'s first ADR 0042 §3 check (Task 6): rules already enforcing whose
-   * `cutover_state` does not permit it.
-   */
-  listAutomodRulesEnforcingWithBadCutoverState(): readonly OpsAutomodEnforceModeBadCutoverState[];
-  /**
-   * `doctor`'s second ADR 0042 §3 check (Task 6): rules in `observe` past
-   * `docs/08`'s floor with an unreviewed match backlog. Takes `nowMs`
-   * explicitly, the same reasoning `oldestDueJobAtMs` gives — the clock is the
-   * caller's, not a fresh read of the wall.
-   */
-  listAutomodRulesObservingPastWindowWithBacklog(
-    nowMs: number,
-  ): readonly OpsAutomodObserveWindowBacklog[];
   listRoutes(): readonly OpsLogRoute[];
   getRoute(routeId: string): OpsLogRoute | undefined;
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
   findJob(jobId: number): OpsJobRow | undefined;
-  /**
-   * One **enabled** rule by id, hydrated exactly the way the subscriber sees
-   * it — `undefined` for a rule that is disabled, as well as for one that
-   * does not exist.
-   *
-   * Enabled-only is the honest thing to dry-run: a disabled rule will not
-   * match a message in production either, so replaying it would answer a
-   * question nobody asked and report a match count for a rule that cannot
-   * produce one. If replaying a disabled rule is ever wanted, it needs a
-   * repository function that says so, not a widening of this one.
-   *
-   * (This comment previously claimed "enabled or disabled", which the wiring
-   * never did — `listEnabledRules(...).find(...)`. Corrected after Task 8's
-   * review; the contradiction came from the plan, which stated both.)
-   */
-  findAutomodRule(ruleId: string): AutomodRule | undefined;
-  /**
-   * The review corpus, oldest first.
-   *
-   * The whole corpus, not a page: a dry run's numbers are only meaningful
-   * over the whole thing, and a truncated replay would report a
-   * false-positive count for a subset while looking like one for the corpus.
-   * At club volume this is a few thousand rows.
-   */
-  listAutomodFixtures(filter: {
-    readonly source?: 'observed' | 'handwritten';
-  }): readonly FixtureRecord[];
   /**
    * Matches nobody has ruled on yet, oldest first (ADR 0041 §5, §7) — the
    * CLI review queue `automod review` renders.
@@ -928,14 +859,6 @@ export interface OpsPorts {
    * that names no row in this guild.
    */
   findAutomodRuleDetail(ruleId: string): OpsAutomodRuleDetail | undefined;
-  /**
-   * Replays one rule over the whole fixture corpus — the `/automod/:ruleId`
-   * dry-run section. A disabled rule **may** be dry-run here (Slice 8,
-   * PR-47: an operator edits a disabled rule, dry-runs it, then enables
-   * it); the CLI's enabled-only `findAutomodRule` above is unchanged.
-   * `'no-such-rule'` is a usage answer for a mistyped id.
-   */
-  runAutomodDryRun(ruleId: string): DryRunReport | 'no-such-rule';
   /**
    * The newest cases first — the dashboard's `/cases` list page.
    */
@@ -983,23 +906,6 @@ export interface OpsPorts {
      * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
      */
     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
-  /**
-   * `automod ready` (ADR 0042 section 3 / PR-27, Task 6): the explicit human
-   * act that ends a rule's observe window. Refused from every `cutover_state`
-   * but `observing` -- `'not-observing'` names the actual state, the same
-   * "return a usage answer, not a throw" treatment `recordMatchVerdict`'s
-   * `'no-such-event'` gets above, since an operator naming a rule in the wrong
-   * state (or one that does not exist at all) is a usage mistake, not a fault.
-   */
-  setAutomodRuleReady(ruleId: string): OpsSetAutomodRuleReadyOutcome;
-  /**
-   * `automod signoff` (ADR 0042 section 4 / PR-29, Task 6): records
-   * `enforce_signed_off_by`/`_at` on a rule. The command calling this port has
-   * already run the corpus dry run and confirmed it is clean -- this port is
-   * the plain write, with no precondition of its own to duplicate the one the
-   * command just checked.
-   */
-  recordAutomodSignOff(input: { readonly ruleId: string; readonly signedOffBy: string }): void;
   /**
    * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
    * PR-19). `'already-present'` is a real answer, not a refusal: the

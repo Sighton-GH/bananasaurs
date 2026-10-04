@@ -1332,21 +1332,19 @@ describe('the operator CLI, end to end', () => {
 });
 
 /**
- * IMPORTANT-4: the four automod port bindings in `opsPortsFor`
- * (`findAutomodRule`, `listAutomodFixtures`, `listUnreviewedMatches`,
- * `recordMatchVerdict`) are the only code that connects `automod dryrun` /
- * `automod review` / `automod verdict` to the real repositories. Every other
- * test exercising those three commands drives them through `fakeOpsPorts`
- * (`packages/core/src/ops/commands/automod.test.ts`), so the bindings had
- * `typecheck` as their entire coverage — the path that runs on flip day had
- * never been executed. One test, over the real socket against a real
- * migrated database, covers all four.
+ * IMPORTANT-4: the automod port bindings in `opsPortsFor`
+ * (`listUnreviewedMatches`, `recordMatchVerdict`) are the only code that
+ * connects `automod review` / `automod verdict` to the real repositories.
+ * Every other test exercising those commands drives them through
+ * `fakeOpsPorts` (`packages/core/src/ops/commands/automod.test.ts`), so the
+ * bindings had `typecheck` as their entire coverage. One test, over the real
+ * socket against a real migrated database, covers both.
  */
-describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
+describe('automod review / verdict, end to end (IMPORTANT-4)', () => {
   const scope = () => t.scopes.forGuild(GUILD);
   const MEMBER = parseSnowflakeId('456789012345678901');
 
-  it('carries a match from dryrun through review to a recorded verdict and a propagated fixture label', async () => {
+  it('carries a match through review to a recorded verdict and a propagated fixture label', async () => {
     startDaemon();
     guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
 
@@ -1396,12 +1394,6 @@ describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
       fixtureId,
     });
 
-    // `automod dryrun r1` — exercises `findAutomodRule` and
-    // `listAutomodFixtures`.
-    const dryrun = await cli('automod dryrun r1');
-    expect(dryrun.code, dryrun.err).toBe(0);
-    expect(dryrun.out).toContain('badword');
-
     // `automod review` — exercises `listUnreviewedMatches`.
     const review = await cli('automod review');
     expect(review.code, review.err).toBe(0);
@@ -1425,47 +1417,6 @@ describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
     // the read commands query, not just a side channel.
     const reviewAgain = await cli('automod review');
     expect(reviewAgain.out).not.toContain('e1');
-  });
-
-  it('replays a disabled rule through the production ports (the edit, dry-run, enable workflow)', async () => {
-    // PR-47: an operator edits a disabled rule, dry-runs it, then enables
-    // it. `daemon.portsFor` is the production `opsPortsFor` binding — the
-    // same ports the dashboard dry-run route reads — so this proves the
-    // production path replays the rule rather than answering 'no-such-rule'.
-    startDaemon();
-    guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
-
-    automodRuleRepo.createRule(scope(), {
-      ruleId: 'disabled-one',
-      kind: 'keyword_filter',
-      name: 'disabled word filter',
-      config: '{}',
-      now: discord.now(),
-    });
-    automodRuleRepo.addCategory(scope(), {
-      categoryId: 'c1',
-      ruleId: 'disabled-one',
-      name: 'profanity',
-      defaultAction: 'log_only',
-    });
-    automodRuleRepo.addTerm(scope(), { termId: 't1', categoryId: 'c1', text: 'badword' });
-    automodRuleRepo.setRuleMode(scope(), {
-      ruleId: 'disabled-one',
-      enabled: false,
-      now: discord.now(),
-    });
-
-    automodFixtureRepo.captureObservedFixture(scope(), {
-      messageId: '900000000000000002',
-      content: 'hello badword everyone',
-      authorId: MEMBER,
-      createdAt: discord.now(),
-      attachments: [],
-    });
-
-    const report = daemon.portsFor(scope()).runAutomodDryRun('disabled-one');
-    expect(report).not.toBe('no-such-rule');
-    expect(report).toMatchObject({ usable: true, matched: 1 });
   });
 });
 

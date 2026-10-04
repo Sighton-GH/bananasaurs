@@ -13,7 +13,7 @@ import {
   hasRoleExemption,
   isExempt,
   listEnabledRules,
-  listEnforceModeKeywordFilterRules,
+  listEnabledKeywordFilterRules,
   ruleExists,
   setEnforceSignOff,
   setRuleConfig,
@@ -23,7 +23,6 @@ import {
   type RuleKind,
 } from './automod-rules.js';
 import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
-import { makeRuleEnforceableForTest } from '../test-support.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const ROLE = parseSnowflakeId('222222222222222222');
@@ -127,61 +126,35 @@ describe('automod rules repo', () => {
     });
   });
 
-  describe('listEnforceModeKeywordFilterRules', () => {
-    it('excludes a rule that is disabled or not in enforce mode', () => {
+  describe('listEnabledKeywordFilterRules (ADR 0121)', () => {
+    it('lists an enabled keyword rule whatever its mode, and skips a disabled one or another kind', () => {
       const scope = t.scopes.forGuild(GUILD);
       createRule(scope, {
-        ruleId: 'test-mode',
+        ruleId: 'kw-on',
         kind: 'keyword_filter',
         name: 'x',
         config: '{}',
         now: 1000,
       });
-
       createRule(scope, {
-        ruleId: 'disabled-enforce',
+        ruleId: 'kw-off',
         kind: 'keyword_filter',
         name: 'x',
         config: '{}',
         now: 1000,
       });
-      // PR-31 (plan ruling): `setRuleMode`'s enforce path now runs through
-      // the ADR 0042 gate, which this test is not about — it reaches
-      // `mode: 'enforce'` through the gate via the test-only helper rather
-      // than around it.
-      makeRuleEnforceableForTest(scope, 'disabled-enforce', 1000);
-      setRuleMode(scope, {
-        ruleId: 'disabled-enforce',
-        mode: 'enforce',
-        enabled: false,
-        now: 1000,
-      });
+      setRuleEnabled(scope, { ruleId: 'kw-off', enabled: false, now: 1000 });
+      createRule(scope, { ruleId: 'caps', kind: 'caps', name: 'x', config: '{}', now: 1000 });
+      addChannelExemption(scope, { ruleId: 'kw-on', channelId: CHANNEL });
 
-      expect(listEnforceModeKeywordFilterRules(scope)).toEqual([]);
-    });
-
-    it('lists an enabled enforce-mode rule with its channel exemptions', () => {
-      const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, {
-        ruleId: 'r1',
-        kind: 'keyword_filter',
-        name: 'x',
-        config: '{}',
-        now: 1000,
-      });
-      makeRuleEnforceableForTest(scope, 'r1', 1000); // PR-31: reach enforce through the gate.
-      setRuleMode(scope, { ruleId: 'r1', mode: 'enforce', now: 1000 });
-      addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
-
-      expect(listEnforceModeKeywordFilterRules(scope)).toEqual([
-        { ruleId: 'r1', exemptChannelIds: [CHANNEL] },
+      expect(listEnabledKeywordFilterRules(scope)).toEqual([
+        { ruleId: 'kw-on', exemptChannelIds: [CHANNEL] },
       ]);
     });
 
     it('is guild-scoped, like every other query in this file', () => {
       const other = parseGuildId('444444444444444444');
       upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 0 });
-
       createRule(t.scopes.forGuild(GUILD), {
         ruleId: 'r1',
         kind: 'keyword_filter',
@@ -189,10 +162,8 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
-      makeRuleEnforceableForTest(t.scopes.forGuild(GUILD), 'r1', 1000); // PR-31: through the gate.
-      setRuleMode(t.scopes.forGuild(GUILD), { ruleId: 'r1', mode: 'enforce', now: 1000 });
 
-      expect(listEnforceModeKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);
+      expect(listEnabledKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);
     });
   });
 
