@@ -166,7 +166,8 @@ describe('archive expiry timer', () => {
     expect(seen).toEqual([nowMs]);
   });
 
-  it('the real purge wired to runOnce deletes expired OAuth rows and keeps live ones', () => {    enableChannels(a, b);
+  it('the real purge wired to runOnce deletes expired OAuth rows and keeps live ones', () => {
+    enableChannels(a, b);
     const instance = t.scopes.instance();
     oauthRepo.createPendingAuthorization(instance, {
       requestId: 'req-old',
