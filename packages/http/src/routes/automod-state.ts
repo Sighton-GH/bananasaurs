@@ -33,8 +33,9 @@ export const registerAutomodStateRoutes = (
     if (before === undefined) return reply.status(404).send({ error: 'not-found' });
     const enabledRules = ports.listEnabledAutomodRuleNames();
     return reply.status(200).send({
-      ok: true,
       state: before.automodState,
+      dryRun: before.dryRun,
+      killswitch: before.killswitch,
       enabledRules: enabledRules.map((rule) => ({ ruleId: rule.ruleId, name: rule.name })),
     });
   });
@@ -53,7 +54,7 @@ export const registerAutomodStateRoutes = (
     if (before.automodState === next) return reply.status(200).send({ ok: true, state: next });
 
     const session =
-      RANK[next] > (RANK[before.automodState] ?? 0) ? guard.requireFresh(request, reply) : signedIn;
+      RANK[next] > RANK[before.automodState] ? guard.requireFresh(request, reply) : signedIn;
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
