@@ -537,7 +537,9 @@ describe('reconnecting', () => {
     const scope = t.scopes.forGuild(GUILD);
     const gaps = pipelineRepo.unreconciledGaps(scope);
     expect(gaps).toHaveLength(1);
-    expect(gaps[0]?.reconnectedAt - (gaps[0]?.disconnectedAt ?? 0)).toBe(5_000);
+    const gap = gaps[0];
+    expect(gap).toBeDefined();
+    expect(gap!.reconnectedAt - gap!.disconnectedAt).toBe(5_000);
   });
 
   it('keeps the first disconnect stamp when several reconnectings fire', async () => {
@@ -554,7 +556,9 @@ describe('reconnecting', () => {
     const scope = t.scopes.forGuild(GUILD);
     const gaps = pipelineRepo.unreconciledGaps(scope);
     expect(gaps).toHaveLength(1);
-    expect(gaps[0]?.reconnectedAt - (gaps[0]?.disconnectedAt ?? 0)).toBe(5_000);
+    const gap = gaps[0];
+    expect(gap).toBeDefined();
+    expect(gap!.reconnectedAt - gap!.disconnectedAt).toBe(5_000);
   });
 });
 
