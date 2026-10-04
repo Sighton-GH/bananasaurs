@@ -4,7 +4,7 @@ import {
   safeLogFields,
   type Logger,
 } from '@bananasaurs/core';
-import type { GuildScope, jobRepo } from '@bananasaurs/storage';
+import { jobRepo, type GuildScope } from '@bananasaurs/storage';
 
 /**
  * The due-reminder delivery timer (Release 3, docs/RELEASE3_ASSISTANT_SCOPE.md).
@@ -27,6 +27,9 @@ import type { GuildScope, jobRepo } from '@bananasaurs/storage';
 
 export const REMINDER_DELIVERY_INTERVAL_MS = 30_000;
 
+/** A failed pass waits this long before the timer enqueues another (ADR 0127 follow-up). */
+export const REMINDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
+
 export interface ReminderDeliveryTimer {
   /** Enqueues one delivery pass per guild, now. */
   runOnce(): void;
@@ -44,6 +47,12 @@ export interface ReminderDeliveryTimerDeps {
    * negative only delays a pass by one tick.
    */
   readonly hasDueWork: (scope: GuildScope) => boolean;
+  /**
+   * Whether the guild's last delivery pass failed recently. A failed job is
+   * outside `jobs_dedupe`, so without this a persistent fault enqueues a new
+   * failing job every tick. Optional, defaulting to the real job table.
+   */
+  readonly recentlyFailed?: (scope: GuildScope, now: number) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
 }
@@ -53,11 +62,23 @@ export function createReminderDeliveryTimer(
 ): ReminderDeliveryTimer {
   let timer: NodeJS.Timeout | undefined;
 
+  const recentlyFailed =
+    deps.recentlyFailed ??
+    ((scope, nowMs) => {
+      const last = jobRepo.latestByDedupeKey(scope, deliverRemindersDedupeKey());
+      return (
+        last !== undefined &&
+        last.state === 'failed' &&
+        nowMs - last.updatedAt < REMINDER_FAILURE_COOLDOWN_MS
+      );
+    });
+
   const runOnce = (): void => {
     const now = deps.now();
     let enqueued = 0;
     for (const { scope } of deps.guilds()) {
       if (!deps.hasDueWork(scope)) continue;
+      if (recentlyFailed(scope, now)) continue;
       deps.enqueue(scope, {
         kind: JOB_KINDS.deliverReminders,
         payload: JSON.stringify({}),

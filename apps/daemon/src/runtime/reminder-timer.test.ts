@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { JOB_KINDS, parseGuildId } from '@bananasaurs/core';
+import { deliverRemindersDedupeKey, JOB_KINDS, parseGuildId } from '@bananasaurs/core';
 import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
@@ -82,6 +82,56 @@ describe('reminder delivery timer', () => {
     timer.runOnce();
     expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(0);
     expect(jobsFor(b).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(1);
+  });
+
+  describe('failure cool-down (failed pass waits 5 minutes)', () => {
+    const seedTerminalDeliverPass = (
+      scope: GuildScope,
+      terminal: 'done' | 'failed',
+      finishedAt: number,
+    ): void => {
+      const created = jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.deliverReminders,
+        payload: JSON.stringify({}),
+        dedupeKey: deliverRemindersDedupeKey(),
+        now: finishedAt,
+        maxAttempts: 1,
+      });
+      const claimed = jobRepo.claimNext(scope, finishedAt);
+      expect(claimed?.jobId).toBe(created.jobId);
+      if (terminal === 'done') {
+        jobRepo.completeJob(scope, created.jobId ?? -1, finishedAt);
+      } else {
+        jobRepo.failJob(scope, created.jobId ?? -1, 'store fault', finishedAt);
+      }
+    };
+
+    it('enqueues nothing while the last pass failed 1 minute ago', () => {
+      seedTerminalDeliverPass(a, 'failed', nowMs - 60_000);
+      createReminderDeliveryTimer(depsFor()).runOnce();
+      expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(1);
+    });
+
+    it('enqueues again once the failure is 6 minutes old', () => {
+      seedTerminalDeliverPass(a, 'failed', nowMs - 6 * 60_000);
+      createReminderDeliveryTimer(depsFor()).runOnce();
+      // Guild a gets its retry; guild b (no history) gets its first pass.
+      expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(2);
+      expect(jobsFor(b).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(1);
+    });
+
+    it('never blocks on a done pass, even 1 minute ago', () => {
+      seedTerminalDeliverPass(a, 'done', nowMs - 60_000);
+      createReminderDeliveryTimer(depsFor()).runOnce();
+      expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(2);
+    });
+
+    it('cools down per guild: guild b still gets its pass while guild a cools down', () => {
+      seedTerminalDeliverPass(a, 'failed', nowMs - 60_000);
+      createReminderDeliveryTimer(depsFor()).runOnce();
+      expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(1);
+      expect(jobsFor(b).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(1);
+    });
   });
 
   it('start runs immediately, then fires on the interval until stopped', () => {
