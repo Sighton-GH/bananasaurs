@@ -13,6 +13,8 @@ export interface AssistantProviderConfigRow {
   /** ADR 0066: the sealed Brave Search API key. */
   readonly searchApiKeyEnc?: string;
   readonly searchEnabled?: boolean;
+  /** ADR 0120: which search backend answers; anything unrecognised reads as `'brave'`. */
+  readonly searchSource?: 'brave' | 'tavily';
   readonly updatedAt: number;
 }
 /** Own prior write, still validated: a malformed list reads as no backups. */
@@ -40,6 +42,7 @@ export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefine
           ...fallbackModelsOf(row.fallbackModelsJson),
           ...(row.searchApiKeyEnc === null ? {} : { searchApiKeyEnc: row.searchApiKeyEnc }),
           searchEnabled: row.searchEnabled === 1,
+          searchSource: row.searchSource === 'tavily' ? 'tavily' : 'brave',
           updatedAt: row.updatedAt,
         };
   });
@@ -56,6 +59,7 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
         fallbackModelsJson: JSON.stringify(input.fallbackModels ?? []),
         searchApiKeyEnc: input.searchApiKeyEnc ?? null,
         searchEnabled: input.searchEnabled === true ? 1 : 0,
+        searchSource: input.searchSource ?? 'brave',
         updatedAt: input.updatedAt,
       })
       .onConflictDoUpdate({
@@ -69,6 +73,7 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
           fallbackModelsJson: JSON.stringify(input.fallbackModels ?? []),
           searchApiKeyEnc: input.searchApiKeyEnc ?? null,
           searchEnabled: input.searchEnabled === true ? 1 : 0,
+          searchSource: input.searchSource ?? 'brave',
           updatedAt: input.updatedAt,
         },
       })

@@ -27,6 +27,12 @@ import type {
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 import type { CitationRegistry } from './citations.js';
+import {
+  WebSearchLimitError,
+  SearchHttpError,
+  type WebSearchOutcome,
+  type WebSearchRun,
+} from './web-search.js';
 
 /**
  * The read-only tools the model may call (ADR 0067, Task 16).
@@ -157,7 +163,7 @@ export interface AssistantToolPorts {
   readonly resources: () => readonly ClubResource[];
   readonly fetchResource: (url: string) => Promise<ResourceFetchResult>;
   /** Absent while web search is off (ADR 0066). */
-  readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
+  readonly webSearch?: WebSearchRun | undefined;
   readonly serverCard: () => string;
   readonly visibleChannels: () => Promise<readonly { id: string; name: string }[]>;
   /**
@@ -231,8 +237,8 @@ export interface AssistantToolResult {
   /** What goes back to the model: redacted, untrusted evidence. */
   readonly text: string;
   readonly sources: readonly ToolSource[];
-  /** True when the result came from Brave (the answer must say so). */
-  readonly web?: boolean;
+  /** ADR 0120: which search source produced this result; 'brave' means the answer must say "Powered by Brave Search". */
+  readonly webSource?: 'brave' | 'tavily';
   /**
    * IDs follow-up rounds may open (ADR 0071): cache tools return the ids
    * they actually showed; every other tool returns none.
@@ -771,20 +777,33 @@ export const runAssistantTool = async (
       case 'web_search': {
         const { query: q } = parsed.data as z.infer<typeof query>;
         if (ports.webSearch === undefined) return refused(name, 'Web search is off.');
-        // The query leaves for Brave: the same local scan as member input.
+        // The query leaves for the search provider: the same local scan as member input.
         if (
           !scanOutboundRequest({ model: 'web-search', messages: [{ role: 'user', text: q }] }).safe
         )
           return refused(name, 'The query looked like it contained personal data or a secret.');
-        const results = await ports.webSearch(q);
-        if (results.length === 0) return { ...evidence(name, 'No web results.'), web: true };
+        let outcome: WebSearchOutcome;
+        try {
+          outcome = await ports.webSearch(q);
+        } catch (err) {
+          if (err instanceof WebSearchLimitError)
+            return refused(name, 'Web search has reached its limit for now. Answer without it.');
+          // Fixed text only: a provider body or driver message must never
+          // reach the model (ADR 0120 §6).
+          if (err instanceof SearchHttpError)
+            return refused(name, `Web search failed (HTTP ${String(err.status)}).`);
+          return refused(name, 'Web search failed.');
+        }
+        const results = outcome.results;
+        if (results.length === 0)
+          return { ...evidence(name, 'No web results.'), webSource: outcome.source };
         return {
           ...evidence(
             name,
             results.map((r) => `${r.title} (${r.url})\n${r.description}`).join('\n\n'),
             results.map((r) => ({ title: r.title, url: r.url })),
           ),
-          web: true,
+          webSource: outcome.source,
         };
       }
       case 'server_info': {
@@ -1322,9 +1341,6 @@ export const runAssistantTool = async (
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
-    return refused(
-      name,
-      name === 'web_search' ? `Web search failed: ${message}` : `The tool failed: ${message}`,
-    );
+    return refused(name, `The tool failed: ${message}`);
   }
 };

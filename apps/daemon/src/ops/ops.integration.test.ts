@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { Client } from 'discord.js';
 import {
+  DiscordApiError,
   panelDefinitionSchema,
   parseConfig,
   parseGuildId,
@@ -466,10 +467,10 @@ describe('the operator CLI, end to end', () => {
    * The write commands that stay inside the database (slice 13d).
    *
    * Asserted against the columns the *rest of the product* reads, never against
-   * the command's own output: `loggingRepo.findRoute` is what the logging
-   * subscriber calls, and `guildRepo.readSafetyState` is what the effect
-   * gateway calls. A command that printed a convincing sentence and wrote the
-   * wrong column would pass a test of its text and fail these.
+   * the command's own output: `loggingRepo.listEnabledRoutesFor` is what the
+   * logging subscriber calls, and `guildRepo.readSafetyState` is what the
+   * effect gateway calls. A command that printed a convincing sentence and wrote
+   * the wrong column would pass a test of its text and fail these.
    */
   describe('the database write commands', () => {
     const scope = () => t.scopes.forGuild(GUILD);
@@ -481,6 +482,7 @@ describe('the operator CLI, end to end', () => {
       });
     };
     const CHANNEL = '456789012345678901';
+    const OTHER_CHANNEL = '567890123456789012';
 
     it('`config set` changes the column the effect gateway reads', async () => {
       startDaemon();
@@ -534,18 +536,21 @@ describe('the operator CLI, end to end', () => {
       expect(result.out).toContain(GUILD);
     });
 
-    it('`log routing set` makes WP4 not inert, which is what it was for', async () => {
+    it('`log routing create` makes WP4 not inert, which is what it was for', async () => {
       startDaemon();
       seed();
-      const result = await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      const result = await cli(`log routing create ${CHANNEL} --events member_join --confirm`);
       expect(result.code).toBe(0);
 
       // The exact call the logging subscriber makes on a member join.
-      expect(loggingRepo.findRoute(scope(), 'member_join')).toMatchObject({
+      const matching = loggingRepo.listEnabledRoutesFor(scope(), 'member_join');
+      expect(matching).toHaveLength(1);
+      expect(matching[0]).toMatchObject({
         channelId: CHANNEL,
         enabled: true,
         includeContent: true,
       });
+      expect(matching[0]?.eventKinds).toEqual(['member_join']);
       // And the gap-marker query, which is the other reader of the table.
       expect(loggingRepo.listEnabledLogChannels(scope())).toEqual([CHANNEL]);
 
@@ -554,32 +559,68 @@ describe('the operator CLI, end to end', () => {
       expect(listed.out).not.toMatch(/nothing is being logged/i);
     });
 
-    it('`log routing set --no-content` keeps the message text out of the log', async () => {
+    it('`log routing create --no-content` keeps the message text out of the log', async () => {
       startDaemon();
       seed();
-      const result = await cli(`log routing set message_edit ${CHANNEL} --no-content --confirm`);
+      const result = await cli(
+        `log routing create ${CHANNEL} --events message_edit --no-content --confirm`,
+      );
       expect(result.code).toBe(0);
-      expect(loggingRepo.findRoute(scope(), 'message_edit')?.includeContent).toBe(false);
+      expect(loggingRepo.listEnabledRoutesFor(scope(), 'message_edit')[0]?.includeContent).toBe(
+        false,
+      );
     });
 
     it('`log routing off` stops the logging and keeps the channel', async () => {
       startDaemon();
       seed();
-      await cli(`log routing set member_join ${CHANNEL} --confirm`);
-      const result = await cli('log routing off member_join --confirm');
+      await cli(`log routing create ${CHANNEL} --events member_join --confirm`);
+      const routeId = loggingRepo.listRoutes(scope())[0]?.routeId ?? 'missing';
+      const result = await cli(`log routing off ${routeId} --confirm`);
       expect(result.code).toBe(0);
 
-      expect(loggingRepo.findRoute(scope(), 'member_join')?.enabled).toBe(false);
+      expect(loggingRepo.listEnabledRoutesFor(scope(), 'member_join')).toEqual([]);
       expect(loggingRepo.listEnabledLogChannels(scope())).toEqual([]);
       // Turning it back on needs no channel id, which is why `off` disables
       // rather than deletes.
       expect(loggingRepo.listRoutes(scope())[0]?.channelId).toBe(CHANNEL);
+
+      const backOn = await cli(`log routing on ${routeId} --confirm`);
+      expect(backOn.code).toBe(0);
+      expect(loggingRepo.listEnabledRoutesFor(scope(), 'member_join')).toHaveLength(1);
+    });
+
+    it('`log routing update` replaces the route, keeping whether it is on', async () => {
+      startDaemon();
+      seed();
+      await cli(`log routing create ${CHANNEL} --events member_join --confirm`);
+      const routeId = loggingRepo.listRoutes(scope())[0]?.routeId ?? 'missing';
+      const result = await cli(
+        `log routing update ${routeId} ${OTHER_CHANNEL} --events member_join,member_leave --confirm`,
+      );
+      expect(result.code).toBe(0);
+      expect(loggingRepo.listRoutes(scope())[0]).toMatchObject({
+        routeId,
+        channelId: OTHER_CHANNEL,
+        eventKinds: ['member_join', 'member_leave'],
+        enabled: true,
+      });
+    });
+
+    it('`log routing delete` removes the route', async () => {
+      startDaemon();
+      seed();
+      await cli(`log routing create ${CHANNEL} --events member_join --confirm`);
+      const routeId = loggingRepo.listRoutes(scope())[0]?.routeId ?? 'missing';
+      const result = await cli(`log routing delete ${routeId} --confirm`);
+      expect(result.code).toBe(0);
+      expect(loggingRepo.listRoutes(scope())).toEqual([]);
     });
 
     it('`log routing exclude` beats a route that is otherwise configured', async () => {
       startDaemon();
       seed();
-      await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      await cli(`log routing create ${CHANNEL} --events member_join --confirm`);
       const result = await cli(`log routing exclude ${CHANNEL} --confirm`);
       expect(result.code).toBe(0);
       // The subscriber checks the exclusion before the route.
@@ -629,8 +670,11 @@ describe('the operator CLI, end to end', () => {
       seed();
       for (const line of [
         'config set role_rate_per_min 60',
-        `log routing set member_join ${CHANNEL}`,
-        'log routing off member_join',
+        `log routing create ${CHANNEL} --events member_join`,
+        'log routing off 123e4567-e89b-12d3-a456-426614174000',
+        'log routing on 123e4567-e89b-12d3-a456-426614174000',
+        'log routing delete 123e4567-e89b-12d3-a456-426614174000',
+        `log routing update 123e4567-e89b-12d3-a456-426614174000 ${CHANNEL} --events member_join`,
         `log routing exclude ${CHANNEL}`,
         `log routing unexclude ${CHANNEL}`,
         'jobs retry 1',
@@ -689,7 +733,7 @@ describe('the operator CLI, end to end', () => {
 
       for (const line of [
         'config set role_rate_per_min 60 --confirm',
-        `log routing set member_join ${CHANNEL} --confirm`,
+        `log routing create ${CHANNEL} --events member_join --confirm`,
         `log routing exclude ${CHANNEL} --confirm`,
       ]) {
         const result = await cli(line);
@@ -704,12 +748,16 @@ describe('the operator CLI, end to end', () => {
     it('answers every write command as JSON too, for an agent', async () => {
       startDaemon();
       seed();
+      await cli(`log routing create ${CHANNEL} --events member_join --confirm`);
+      const routeId = loggingRepo.listRoutes(scope())[0]?.routeId ?? 'missing';
       for (const line of [
         'config set role_rate_per_min 60 --confirm --json',
-        `log routing set member_join ${CHANNEL} --confirm --json`,
+        `log routing update ${routeId} ${CHANNEL} --events member_join --confirm --json`,
+        `log routing off ${routeId} --confirm --json`,
+        `log routing on ${routeId} --confirm --json`,
         `log routing exclude ${CHANNEL} --confirm --json`,
         `log routing unexclude ${CHANNEL} --confirm --json`,
-        'log routing off member_join --confirm --json',
+        `log routing delete ${routeId} --confirm --json`,
       ]) {
         const result = await cli(line);
         expect(result.code, `${line}: ${result.err}`).toBe(0);
@@ -1019,6 +1067,211 @@ describe('the operator CLI, end to end', () => {
       expect(panelRepo.findPanel(scope(), 'buttons')?.messageId).toBeDefined();
       // A button panel has no reactions to drift, so no pass is queued.
       expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    /**
+     * `panel edit` and `panel delete` (slice 4, Task 6a), through the same
+     * chain as `panel sync` above: a real command line, the real dispatcher,
+     * and `FakeDiscord` as the only place a message actually disappearing is
+     * observable.
+     */
+    describe('`panel edit` and `panel delete`', () => {
+      const seedManaged = (panelId = 'buttons'): void => {
+        panelRepo.createPanel(
+          scope(),
+          panelDefinitionSchema.parse({
+            panelId,
+            kind: 'managed',
+            channelId: CHANNEL,
+            behaviour: 'toggle',
+            component: 'button',
+            options: [{ optionId: 'brain', roleId: ROLE, label: 'Brain', position: 0 }],
+          }),
+          discord.now(),
+        );
+      };
+
+      const editJson = (over: Record<string, unknown> = {}): string =>
+        JSON.stringify({
+          panelId: 'buttons',
+          kind: 'managed',
+          channelId: CHANNEL,
+          behaviour: 'add_only',
+          component: 'button',
+          options: [{ optionId: 'brain', roleId: ROLE, label: 'Brainy', position: 0 }],
+          ...over,
+        });
+
+      it('`panel edit` replaces the definition without reaching Discord', async () => {
+        startDaemon();
+        seed();
+        seedManaged();
+        await cli('panel sync buttons --confirm');
+        const posted = panelRepo.findPanel(scope(), 'buttons')?.messageId;
+        expect(posted).toBeDefined();
+
+        discord.resetCalls();
+        const result = await cli(`panel edit --definition ${editJson()} --confirm`);
+        expect(result.code, result.err).toBe(0);
+        expect(result.out).toMatch(/updated panel 'buttons'/);
+        expect(result.out).toMatch(/panel sync buttons/);
+
+        const panel = panelRepo.findPanel(scope(), 'buttons');
+        expect(panel?.behaviour).toBe('add_only');
+        expect(panel?.options.map((o) => o.optionId)).toEqual(['brain']);
+        // The posted message survives the edit: the definition changed, the
+        // live message did not, until `panel sync` publishes it.
+        expect(panel?.messageId).toBe(posted);
+        expect(discord.restCalls()).toEqual([]);
+
+        const rows = effectRepo.tailAudit(scope());
+        expect(rows[0]).toMatchObject({ action: 'panel.edited', subjectId: 'buttons' });
+      });
+
+      it('`panel edit` refuses an unknown id, a channel change and a kind change', async () => {
+        startDaemon();
+        seed();
+        seedManaged();
+
+        const unknown = await cli(
+          `panel edit --definition ${editJson({ panelId: 'ghost' })} --confirm`,
+        );
+        expect(unknown.code, unknown.err).toBe(0);
+        expect(unknown.out).toMatch(/no panel 'ghost'/);
+
+        const moved = await cli(
+          `panel edit --definition ${editJson({ channelId: '999999999999999999' })} --confirm`,
+        );
+        expect(moved.code, moved.err).toBe(0);
+        expect(moved.out).toMatch(/orphan/);
+
+        const flipped = await cli(
+          `panel edit --definition ${editJson({
+            kind: 'adopted',
+            component: 'reaction',
+            messageId: MESSAGE,
+            options: [
+              { optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 },
+            ],
+          })} --confirm`,
+        );
+        expect(flipped.code, flipped.err).toBe(0);
+        expect(flipped.out).toMatch(/recreate/);
+
+        // Three refusals, nothing written: the definition is untouched.
+        expect(panelRepo.findPanel(scope(), 'buttons')?.behaviour).toBe('toggle');
+        expect(discord.restCalls()).toEqual([]);
+        const outcomes = effectRepo
+          .tailAudit(scope(), { limit: 3 })
+          .map((row) => JSON.parse(row.after ?? 'null') as { outcome?: string });
+        expect(outcomes.map((o) => o.outcome).sort()).toEqual([
+          'channel-change',
+          'kind-change',
+          'unknown-panel',
+        ]);
+      });
+
+      it('`panel edit` refuses a role the bot cannot manage', async () => {
+        startDaemon();
+        seed();
+        seedManaged();
+
+        const result = await cli(
+          `panel edit --definition ${editJson({
+            options: [
+              { optionId: 'ghost', roleId: '999999999999999999', label: 'Ghost', position: 0 },
+            ],
+          })} --confirm`,
+        );
+        expect(result.code, result.err).toBe(0);
+        expect(result.out).toMatch(/cannot manage/);
+        expect(panelRepo.findPanel(scope(), 'buttons')?.options.map((o) => o.optionId)).toEqual([
+          'brain',
+        ]);
+      });
+
+      it('`panel delete` removes a managed posted panel: message first, then rows', async () => {
+        startDaemon();
+        seed();
+        seedManaged();
+        await cli('panel sync buttons --confirm');
+        const posted = panelRepo.findPanel(scope(), 'buttons')?.messageId;
+        expect(posted).toBeDefined();
+
+        discord.resetCalls();
+        const result = await cli('panel delete buttons --confirm');
+        expect(result.code, result.err).toBe(0);
+        expect(result.out).toMatch(/removed its Discord message/);
+
+        expect(discord.restCalls('deleteMessage')).toHaveLength(1);
+        expect(panelRepo.findPanel(scope(), 'buttons')).toBeUndefined();
+
+        const rows = effectRepo.tailAudit(scope());
+        expect(rows[0]).toMatchObject({ action: 'panel.deleted', subjectId: 'buttons' });
+      });
+
+      it('`panel delete` treats an already-deleted message as success', async () => {
+        // The message id names nothing FakeDiscord ever posted: reading it
+        // back would be unknown-message, which counts as success.
+        startDaemon();
+        seed();
+        seedManaged();
+        panelRepo.setPanelMessage(scope(), 'buttons', '999999999999999999', discord.now());
+
+        const result = await cli('panel delete buttons --confirm');
+        expect(result.code, result.err).toBe(0);
+        expect(panelRepo.findPanel(scope(), 'buttons')).toBeUndefined();
+      });
+
+      it('`panel delete` keeps the rows when Discord fails, so a retry can finish', async () => {
+        startDaemon();
+        seed();
+        seedManaged();
+        discord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE, authorId: MEMBER });
+        panelRepo.setPanelMessage(scope(), 'buttons', MESSAGE, discord.now());
+        discord.failNext(
+          'deleteMessage',
+          new DiscordApiError(500, undefined, 'Internal Server Error'),
+        );
+
+        const result = await cli('panel delete buttons --confirm');
+        expect(result.code).toBe(1);
+        expect(result.err).toMatch(/Internal Server Error/);
+        expect(panelRepo.findPanel(scope(), 'buttons')).toBeDefined();
+
+        // The retry finishes: the failure was injected once.
+        const retry = await cli('panel delete buttons --confirm');
+        expect(retry.code, retry.err).toBe(0);
+        expect(panelRepo.findPanel(scope(), 'buttons')).toBeUndefined();
+      });
+
+      it("`panel delete` on an adopted panel deletes rows only — the message is somebody else's", async () => {
+        startDaemon();
+        seed();
+        seedPanel();
+        discord.resetCalls();
+
+        const result = await cli('panel delete roles --confirm');
+        expect(result.code, result.err).toBe(0);
+        expect(result.out).toMatch(/belongs to someone else/);
+
+        expect(discord.restCalls('deleteMessage')).toEqual([]);
+        expect(panelRepo.findPanel(scope(), 'roles')).toBeUndefined();
+      });
+
+      it('`panel delete` on an unposted panel deletes rows only', async () => {
+        startDaemon();
+        seed();
+        seedManaged();
+        discord.resetCalls();
+
+        const result = await cli('panel delete buttons --confirm');
+        expect(result.code, result.err).toBe(0);
+        expect(result.out).toMatch(/never posted/);
+
+        expect(discord.restCalls('deleteMessage')).toEqual([]);
+        expect(panelRepo.findPanel(scope(), 'buttons')).toBeUndefined();
+      });
     });
 
     it('`panel sync` refuses a panel `doctor` took out of service', async () => {

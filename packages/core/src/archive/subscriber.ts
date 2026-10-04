@@ -88,6 +88,8 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
           createdAt: event.receivedAtMs,
           editedAt: event.editedTimestampMs,
           attachments: mapAttachments(ports, event.messageId, event.attachments),
+          replyToMessageId: event.referencedMessageId,
+          mentionedRoleIds: event.mentionedRoleIds,
         });
         return;
       case 'messageUpdate': {
@@ -95,6 +97,11 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
           messageId: event.messageId,
           content: event.content,
           editedAt: event.editedTimestampMs ?? event.receivedAtMs,
+          // A partial update carries mentionedRoleIds: [] because nothing is
+          // known (MessageEvent), not because no role was mentioned — so only
+          // a content-bearing update may replace the stored roles. Absent
+          // leaves them untouched.
+          ...(event.content !== undefined ? { mentionedRoleIds: event.mentionedRoleIds } : {}),
         });
         if (outcome === 'no-such-message') {
           // The message predates enablement; Discord sends full content on
@@ -109,6 +116,8 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
             createdAt: event.receivedAtMs,
             editedAt: event.editedTimestampMs ?? event.receivedAtMs,
             attachments: mapAttachments(ports, event.messageId, event.attachments),
+            replyToMessageId: event.referencedMessageId,
+            mentionedRoleIds: event.mentionedRoleIds,
           });
           ports.logger.debug(
             safeLogFields({

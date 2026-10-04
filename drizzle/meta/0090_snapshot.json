@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "60f017e5-e853-4fc3-a04a-e054b13e0fbe",
+  "id": "7de05dbf-8033-47f7-ae0e-82f9b0f4372b",
   "prevId": "4905367a-cb44-4fe5-a4f2-644f5b2f1d13",
   "tables": {
     "account_capabilities": {
@@ -1857,6 +1857,14 @@
           "autoincrement": false,
           "default": 0
         },
+        "search_source": {
+          "name": "search_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'brave'"
+        },
         "github_token_enc": {
           "name": "github_token_enc",
           "type": "text",
@@ -1884,6 +1892,10 @@
         "assistant_provider_config_search_enabled_bool": {
           "name": "assistant_provider_config_search_enabled_bool",
           "value": "\"assistant_provider_config\".\"search_enabled\" IN (0,1)"
+        },
+        "assistant_provider_config_search_source": {
+          "name": "assistant_provider_config_search_source",
+          "value": "\"assistant_provider_config\".\"search_source\" IN ('brave','tavily')"
         },
         "assistant_provider_config_provider": {
           "name": "assistant_provider_config_provider",
@@ -2301,6 +2313,175 @@
         "assistant_resources_fetch_status": {
           "name": "assistant_resources_fetch_status",
           "value": "\"assistant_resources\".\"fetch_status\" IN ('pending','ok','failed','blocked')"
+        }
+      }
+    },
+    "assistant_search_calls": {
+      "name": "assistant_search_calls",
+      "columns": {
+        "call_id": {
+          "name": "call_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "at": {
+          "name": "at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "assistant_search_calls_key_at": {
+          "name": "assistant_search_calls_key_at",
+          "columns": [
+            "key_id",
+            "at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "assistant_search_calls_key_id_assistant_search_keys_key_id_fk": {
+          "name": "assistant_search_calls_key_id_assistant_search_keys_key_id_fk",
+          "tableFrom": "assistant_search_calls",
+          "tableTo": "assistant_search_keys",
+          "columnsFrom": [
+            "key_id"
+          ],
+          "columnsTo": [
+            "key_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_search_calls_guild_id_snowflake": {
+          "name": "assistant_search_calls_guild_id_snowflake",
+          "value": "(\"assistant_search_calls\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_search_calls\".\"guild_id\") BETWEEN 17 AND 20)"
+        }
+      }
+    },
+    "assistant_search_keys": {
+      "name": "assistant_search_keys",
+      "columns": {
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "api_key_enc": {
+          "name": "api_key_enc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "monthly_limit": {
+          "name": "monthly_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "daily_limit": {
+          "name": "daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_search_keys_source": {
+          "name": "assistant_search_keys_source",
+          "value": "\"assistant_search_keys\".\"source\" IN ('brave','tavily')"
+        },
+        "assistant_search_keys_label_length": {
+          "name": "assistant_search_keys_label_length",
+          "value": "length(\"assistant_search_keys\".\"label\") BETWEEN 1 AND 60"
+        },
+        "assistant_search_keys_enabled_bool": {
+          "name": "assistant_search_keys_enabled_bool",
+          "value": "\"assistant_search_keys\".\"enabled\" IN (0,1)"
+        },
+        "assistant_search_keys_monthly_limit": {
+          "name": "assistant_search_keys_monthly_limit",
+          "value": "\"assistant_search_keys\".\"monthly_limit\" IS NULL OR \"assistant_search_keys\".\"monthly_limit\" BETWEEN 1 AND 1000000"
+        },
+        "assistant_search_keys_daily_limit": {
+          "name": "assistant_search_keys_daily_limit",
+          "value": "\"assistant_search_keys\".\"daily_limit\" IS NULL OR \"assistant_search_keys\".\"daily_limit\" BETWEEN 1 AND 1000000"
         }
       }
     },
@@ -4254,14 +4435,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
-        },
-        "automod_state": {
-          "name": "automod_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'off'"
         },
         "created_at": {
           "name": "created_at",

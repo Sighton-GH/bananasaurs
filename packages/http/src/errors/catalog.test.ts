@@ -29,8 +29,10 @@ const collectSlugs = (dir: string): Set<string> => {
  * Codes sent through a variable rather than a literal (`error: result.reason`
  * and friends): the slug scan above cannot see them, so they are pinned here.
  * Sourced from `LoginFailure` and `BootstrapFailure` (`packages/http/src/auth.ts`),
- * the `'no-key' | 'unsupported'` message match in `routes/assistant.ts`, and
- * `OpsSetAutomodRuleReadyOutcome['reason']` (`packages/core/src/ops/ports.ts`).
+ * the `'no-key' | 'unsupported'` message match in `routes/assistant.ts`,
+ * `OpsSetAutomodRuleReadyOutcome['reason']` (`packages/core/src/ops/ports.ts`),
+ * and `OpsAllowRoleOutcome`'s three 409 refusals (`routes/ops-write.ts` sends
+ * `outcome` itself, so the scan never sees them).
  */
 const VARIABLE_CODES = [
   'invalid-credentials',
@@ -43,6 +45,9 @@ const VARIABLE_CODES = [
   'no-key',
   'unsupported',
   'not-observing',
+  'role-everyone',
+  'role-managed',
+  'role-dangerous',
 ] as const;
 
 describe('ERROR_CATALOG covers every error slug', () => {

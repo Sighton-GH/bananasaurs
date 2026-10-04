@@ -119,6 +119,21 @@ const DETECTORS: readonly Detector[] = [
   ),
 ];
 
+/**
+ * The MCP connector's withholding policy (ADR 0113): member text that trips a
+ * secret or prompt-injection detector is not shown to the operator's model at
+ * all. Personal-data detectors are deliberately excluded — the operator runs
+ * the club and needs names, emails and phone numbers in its messages.
+ */
+export function detectWithheldEvidence(text: string): readonly string[] {
+  const names: string[] = [];
+  for (const detector of DETECTORS) {
+    if (detector.kind === 'personal-data') continue;
+    if (detector.matches(text) && !names.includes(detector.name)) names.push(detector.name);
+  }
+  return names;
+}
+
 const requestSections = (request: GenerateTextRequest): readonly (readonly [string, string])[] => [
   ...(request.systemInstruction
     ? [['system-instruction', request.systemInstruction] as const]

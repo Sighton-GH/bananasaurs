@@ -272,7 +272,7 @@ export const effectBatches = sqliteTable(
     check('effect_batches_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check(
       'effect_batches_source',
-      sql`${t.source} IN ('interaction','reaction','adoption','reconcile','cli','dashboard')`,
+      sql`${t.source} IN ('interaction','reaction','adoption','reconcile','cli','dashboard','mcp')`,
     ),
   ],
 );
@@ -547,29 +547,109 @@ export const auditEvents = sqliteTable(
 // --- log routing ------------------------------------------------------------
 
 /**
- * Where each logged event kind goes.
+ * A named logging route (ADR 0123 decisions 1-2).
  *
- * `include_content` defaults on for `message_delete` and `message_edit`
- * (decision 3, reversed on owner review: Carl-bot already logs content to a
- * log channel, so metadata-only would be a regression members never asked
- * for). Any route can be turned off individually.
+ * One row per route, keyed by its own random-UUID `route_id` (like task ids):
+ * a UUID is never reused after a delete, so a replayed event's claim can
+ * never be confused with a different route's claim. The route's event kinds
+ * and per-route excluded source channels are child rows in
+ * `log_route_events` and `log_route_exclusions`.
  */
 export const logRoutes = sqliteTable(
   'log_routes',
   {
     guildId: snowflake('guild_id').notNull(),
-    eventKind: text('event_kind').notNull(),
+    routeId: text('route_id').notNull(),
+    name: text('name').notNull(),
     channelId: snowflake('channel_id').notNull(),
     includeContent: integer('include_content').notNull().default(1),
     enabled: integer('enabled').notNull().default(1),
+    createdAtMs: integer('created_at_ms').notNull(),
   },
   (t) => [
-    primaryKey({ columns: [t.guildId, t.eventKind] }),
+    primaryKey({ columns: [t.guildId, t.routeId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('log_routes_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('log_routes_channel_id_snowflake', snowflakeCheck(t.channelId)),
     check('log_routes_include_content_bool', boolCheck(t.includeContent)),
     check('log_routes_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+/**
+ * The event kinds a route logs (ADR 0123 decision 2).
+ *
+ * `event_kind` is validated in code against core's `LOG_EVENT_KINDS`, not by
+ * a SQL CHECK. The composite foreign key carries `guild_id`, so a child row
+ * cannot point at a route in another guild; deleting the route cascades.
+ */
+export const logRouteEvents = sqliteTable(
+  'log_route_events',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    routeId: text('route_id').notNull(),
+    eventKind: text('event_kind').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.routeId, t.eventKind] }),
+    foreignKey({
+      columns: [t.guildId, t.routeId],
+      foreignColumns: [logRoutes.guildId, logRoutes.routeId],
+    }).onDelete('cascade'),
+    check('log_route_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/**
+ * Per-route excluded source channels (ADR 0123 decisions 2 and 4).
+ *
+ * Distinct from the guild-wide `log_excluded_channels` list below, which
+ * still wins over every route. An event is skipped for a route when its
+ * channel, or its thread parent, is in this route's exclusions.
+ */
+export const logRouteExclusions = sqliteTable(
+  'log_route_exclusions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    routeId: text('route_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.routeId, t.channelId] }),
+    foreignKey({
+      columns: [t.guildId, t.routeId],
+      foreignColumns: [logRoutes.guildId, logRoutes.routeId],
+    }).onDelete('cascade'),
+    check('log_route_exclusions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('log_route_exclusions_channel_id_snowflake', snowflakeCheck(t.channelId)),
+  ],
+);
+
+/**
+ * A member's last-seen record, for old → new logging (ADR 0123 decision 8).
+ *
+ * Written on member events and compared against; the row is deleted once the
+ * member leaves. Stores avatar hashes, never images. `role_ids` is a JSON
+ * array of snowflake strings, sorted — parsed defensively on read.
+ */
+export const logMemberSnapshots = sqliteTable(
+  'log_member_snapshots',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    userId: snowflake('user_id').notNull(),
+    username: text('username').notNull(),
+    globalName: text('global_name'),
+    nickname: text('nickname'),
+    avatarHash: text('avatar_hash'),
+    guildAvatarHash: text('guild_avatar_hash'),
+    roleIds: text('role_ids').notNull().default('[]'),
+    updatedAtMs: integer('updated_at_ms').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.userId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('log_member_snapshots_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('log_member_snapshots_user_id_snowflake', snowflakeCheck(t.userId)),
   ],
 );
 
@@ -946,6 +1026,17 @@ export const archiveMessages = sqliteTable(
     createdAt: integer('created_at').notNull(),
     editedAt: integer('edited_at'),
     deletedAt: integer('deleted_at'),
+    /**
+     * The message this one replies to (slice 2 task 3). Nullable snowflake,
+     * same CHECK shape as `thread_id` above.
+     */
+    replyToMessageId: snowflake('reply_to_message_id'),
+    /**
+     * Mentioned roles as a JSON array of snowflakes (slice 2 task 3). NULL
+     * when the message mentioned none — never `'[]'` — so "mentions a role"
+     * and "mentions no role" stay distinguishable in SQL.
+     */
+    mentionedRoleIds: text('mentioned_role_ids'),
     retentionClass: text('retention_class').notNull().default('default'),
     /** PR-69; no FK. */
     caseId: text('case_id'),
@@ -960,10 +1051,15 @@ export const archiveMessages = sqliteTable(
     index('archive_messages_channel_created').on(t.guildId, t.channelId, t.createdAt),
     index('archive_messages_thread_created').on(t.guildId, t.threadId, t.createdAt),
     index('archive_messages_deleted').on(t.guildId, t.deletedAt),
+    index('archive_messages_author_created').on(t.guildId, t.authorId, t.createdAt),
     check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
     check('archive_messages_channel_id_snowflake', snowflakeCheck(t.channelId)),
     check('archive_messages_thread_id_snowflake', nullableSnowflakeCheck(t.threadId)),
+    check(
+      'archive_messages_reply_to_message_id_snowflake',
+      nullableSnowflakeCheck(t.replyToMessageId),
+    ),
     check(
       'archive_messages_retention_class',
       sql`${t.retentionClass} IN ('default','case','preserve')`,
@@ -1745,6 +1841,168 @@ export const mcpSends = sqliteTable(
 );
 
 /**
+ * The ledger for every MCP write (ADR 0116 §2, slice M5 follow-up).
+ *
+ * Keyed `(guild_id, idempotency_key)` and unique per `(guild_id, action_id)`:
+ * a retried key with a matching `args_hash` is a replay, with a differing
+ * hash a refusal. `status` is `claimed` between the claim and the single
+ * Discord call, `dry_run` for a claim that never calls, and `done`/`failed`
+ * once `completeAction` records the outcome. `undo_json` holds the inverse of
+ * a reversible action (the bot's own previous content for edits, never the
+ * posted content itself); `undone_by_action_id` names the undo action.
+ * `cap_group` carries the rolling-hour cap bucket the count reads. Migration
+ * 0092 copies every `mcp_sends` row in; `mcp_sends` stays as history that
+ * nothing new writes.
+ */
+export const mcpActions = sqliteTable(
+  'mcp_actions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    actionId: text('action_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    kind: text('kind').notNull(),
+    capGroup: text('cap_group').notNull(),
+    argsHash: text('args_hash').notNull(),
+    status: text('status').notNull(),
+    tokenId: text('token_id').notNull(),
+    targetChannelId: snowflake('target_channel_id'),
+    resultMessageId: snowflake('result_message_id'),
+    resultThreadId: snowflake('result_thread_id'),
+    undoJson: text('undo_json'),
+    undoneByActionId: text('undone_by_action_id'),
+    createdAt: integer('created_at').notNull(),
+    completedAt: integer('completed_at'),
+  },
+  (t) => [
+    unique('mcp_actions_idempotency_once').on(t.guildId, t.idempotencyKey),
+    unique('mcp_actions_action_once').on(t.guildId, t.actionId),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    index('mcp_actions_cap_created').on(t.guildId, t.capGroup, t.createdAt),
+    index('mcp_actions_target_created').on(t.guildId, t.targetChannelId, t.createdAt),
+    check('mcp_actions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_actions_target_channel_id_snowflake', nullableSnowflakeCheck(t.targetChannelId)),
+    check('mcp_actions_result_message_id_snowflake', nullableSnowflakeCheck(t.resultMessageId)),
+    check('mcp_actions_result_thread_id_snowflake', nullableSnowflakeCheck(t.resultThreadId)),
+    check(
+      'mcp_actions_cap_group',
+      sql`${t.capGroup} IN ('message','edit','member_role','structure','pin_react')`,
+    ),
+    check('mcp_actions_status', sql`${t.status} IN ('claimed','done','dry_run','failed')`),
+  ],
+);
+
+/**
+ * The per-guild MCP role policy (ADR 0117 §2).
+ *
+ * One row per guild; absent means both modes are `below-bot`. `grant_mode`
+ * and the `grant` allowlist rows are stored now and used by slice 4.
+ */
+export const mcpRolePolicy = sqliteTable(
+  'mcp_role_policy',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    grantMode: text('grant_mode').notNull().default('below-bot'),
+    pingMode: text('ping_mode').notNull().default('below-bot'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_role_policy_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_role_policy_grant_mode', sql`${t.grantMode} IN ('below-bot','allowlist')`),
+    check('mcp_role_policy_ping_mode', sql`${t.pingMode} IN ('below-bot','allowlist')`),
+  ],
+);
+
+/**
+ * The roles the MCP may ping or (slice 4) grant in `allowlist` mode
+ * (ADR 0117 §2). A row names one purpose; a role allowed for both has two.
+ * The dangerous-permission floor is checked live at the call, never stored.
+ */
+export const mcpRoleAllowlist = sqliteTable(
+  'mcp_role_allowlist',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    roleId: snowflake('role_id').notNull(),
+    purpose: text('purpose').notNull(),
+    /** The dashboard account that allowed it — an account id, not a snowflake. */
+    addedByAccountId: text('added_by_account_id').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    unique('mcp_role_allowlist_once').on(t.guildId, t.roleId, t.purpose),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_role_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_role_allowlist_role_id_snowflake', snowflakeCheck(t.roleId)),
+    check('mcp_role_allowlist_purpose', sql`${t.purpose} IN ('grant','ping')`),
+  ],
+);
+
+/**
+ * The private threads the MCP created (ADR 0116 §3, ADR 0115 §1).
+ *
+ * A row here is what makes the thread readable to later MCP reads without
+ * the owner being a member. One row per thread per guild, written in the same
+ * transaction as the creating action's completion.
+ */
+export const mcpPrivateThreads = sqliteTable(
+  'mcp_private_threads',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    threadId: snowflake('thread_id').notNull(),
+    parentChannelId: snowflake('parent_channel_id').notNull(),
+    createdActionId: text('created_action_id').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    unique('mcp_private_threads_once').on(t.guildId, t.threadId),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_private_threads_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_private_threads_thread_id_snowflake', snowflakeCheck(t.threadId)),
+    check('mcp_private_threads_parent_channel_id_snowflake', snowflakeCheck(t.parentChannelId)),
+  ],
+);
+
+/**
+ * A stored bulk role-change preview (slice 4, task 1).
+ *
+ * The preview is the durable half of the preview → confirm handshake: the
+ * tool resolves the member set live, stores it here, and hands the caller a
+ * random 128-bit token. Storage keeps only `token_hash` = sha256 hex of that
+ * token — the token itself is never written — and `findPreviewByToken`
+ * hashes its input, so a database read answers nothing about any token.
+ * `consumePreview` succeeds once, before `expires_at`, and records the
+ * `mcp.bulk_role` job that applies the stored member set.
+ */
+export const mcpBulkPreviews = sqliteTable(
+  'mcp_bulk_previews',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    previewId: text('preview_id').notNull(),
+    /** sha256 hex of the confirm token. The token itself is never stored. */
+    tokenHash: text('token_hash').notNull(),
+    actionKind: text('action_kind').notNull(),
+    roleId: snowflake('role_id').notNull(),
+    argsHash: text('args_hash').notNull(),
+    /** The previewed member set as a JSON array of snowflakes. */
+    memberIdsJson: text('member_ids_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    consumedAt: integer('consumed_at'),
+    jobId: integer('job_id'),
+  },
+  (t) => [
+    unique('mcp_bulk_previews_preview_once').on(t.guildId, t.previewId),
+    unique('mcp_bulk_previews_token_once').on(t.guildId, t.tokenHash),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_bulk_previews_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_bulk_previews_role_id_snowflake', snowflakeCheck(t.roleId)),
+    check('mcp_bulk_previews_action_kind', sql`${t.actionKind} IN ('add','remove')`),
+    check('mcp_bulk_previews_expiry_sane', sql`${t.expiresAt} > ${t.createdAt}`),
+  ],
+);
+
+/**
  * Training-eligibility record (ADR 0044 §7, ADR 0010 §1). Instance-level
  * (ADR 0027): a provider is a fact about the daemon, not a guild — the same
  * reason `bootstrap_tokens` and `oauth_clients` carry no `guild_id`.
@@ -1791,6 +2049,8 @@ export const assistantProviderConfig = sqliteTable(
     /** ADR 0066: the Brave Search API key, sealed like `api_key_enc`. */
     searchApiKeyEnc: text('search_api_key_enc'),
     searchEnabled: integer('search_enabled').notNull().default(0),
+    /** ADR 0120: which search backend answers — `brave` keeps prior behaviour. */
+    searchSource: text('search_source').notNull().default('brave'),
     /** ADR 0075: the GitHub token, sealed like `api_key_enc`. */
     githubTokenEnc: text('github_token_enc'),
     updatedAt: integer('updated_at').notNull(),
@@ -1798,6 +2058,7 @@ export const assistantProviderConfig = sqliteTable(
   (t) => [
     check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
     check('assistant_provider_config_search_enabled_bool', boolCheck(t.searchEnabled)),
+    check('assistant_provider_config_search_source', sql`${t.searchSource} IN ('brave','tavily')`),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
@@ -1896,6 +2157,63 @@ export const assistantModelCalls = sqliteTable(
     ),
     index('assistant_model_calls_key_model_at').on(t.keyId, t.model, t.at),
     check('assistant_model_calls_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+// ADR 0120: several sealed search keys per source (brave/tavily), tried in the
+// owner's order. Instance-level like the provider keys they sit beside; each
+// key carries nullable sliding-window limits (null = no limit), enforced at
+// reserve time against `assistantSearchCalls`.
+export const assistantSearchKeys = sqliteTable(
+  'assistant_search_keys',
+  {
+    keyId: text('key_id').primaryKey(),
+    source: text('source').notNull(),
+    /** Owner-chosen label. Never a secret itself. */
+    label: text('label').notNull(),
+    apiKeyEnc: text('api_key_enc').notNull(),
+    enabled: integer('enabled').notNull().default(1),
+    /** Owner-set order within one source; dense but not unique (see moveSearchKey). */
+    position: integer('position').notNull().default(0),
+    monthlyLimit: integer('monthly_limit'),
+    dailyLimit: integer('daily_limit'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    check('assistant_search_keys_source', sql`${t.source} IN ('brave','tavily')`),
+    check('assistant_search_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
+    check('assistant_search_keys_enabled_bool', boolCheck(t.enabled)),
+    check(
+      'assistant_search_keys_monthly_limit',
+      sql`${t.monthlyLimit} IS NULL OR ${t.monthlyLimit} BETWEEN 1 AND 1000000`,
+    ),
+    check(
+      'assistant_search_keys_daily_limit',
+      sql`${t.dailyLimit} IS NULL OR ${t.dailyLimit} BETWEEN 1 AND 1000000`,
+    ),
+  ],
+);
+
+// ADR 0120: every web-search HTTP call is recorded here (key + time, plus
+// which guild spent the call), so a key at its daily/monthly limit is skipped
+// before calling. Instance-scoped because the key is shared; `guild_id`
+// records who spent the call (hard rule 2, as in `assistantModelCalls`);
+// rows older than 32 days are pruned on reserve.
+export const assistantSearchCalls = sqliteTable(
+  'assistant_search_calls',
+  {
+    callId: integer('call_id').primaryKey({ autoIncrement: true }),
+    keyId: text('key_id').notNull(),
+    at: integer('at').notNull(),
+    guildId: snowflake('guild_id').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantSearchKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    index('assistant_search_calls_key_at').on(t.keyId, t.at),
+    check('assistant_search_calls_guild_id_snowflake', snowflakeCheck(t.guildId)),
   ],
 );
 
@@ -2080,6 +2398,9 @@ export const assistantReminders = sqliteTable(
     context: text('context'),
     deliveredCount: integer('delivered_count').notNull().default(0),
     updatedAt: integer('updated_at'),
+    // ADR 0119: scheduled MCP sends are reminder rows with `origin='mcp'`.
+    // Pre-0095 rows read back as `assistant` through the column default.
+    origin: text('origin').notNull().default('assistant'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.reminderId] }),
@@ -2092,6 +2413,7 @@ export const assistantReminders = sqliteTable(
       'assistant_reminders_status',
       sql`${t.status} IN ('scheduled','delivering','delivered','cancelled','failed')`,
     ),
+    check('assistant_reminders_origin', sql`${t.origin} IN ('assistant','mcp')`),
     index('assistant_reminders_due').on(t.guildId, t.status, t.dueAt),
   ],
 );

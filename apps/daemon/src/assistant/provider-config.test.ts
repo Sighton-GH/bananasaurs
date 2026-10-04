@@ -1,6 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseConfig } from '@bananasaurs/core';
-import { assistantProviderRepo, assistantProvidersRepo } from '@bananasaurs/storage';
+import {
+  assistantProviderRepo,
+  assistantProvidersRepo,
+  searchKeysRepo,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -325,33 +329,174 @@ it('lists Gemini models with a pasted key, or the first saved gemini key, never 
   await expect(store.listModels('openrouter')).rejects.toThrow('unsupported');
 });
 
-it('keeps the Brave key write-only and applies it only while web search is on (ADR 0066)', () => {
-  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  store.save({ provider: 'gemini', model: 'm', apiKey: 'k', enabled: true }, 10);
-  expect(store.status().webSearch).toBeUndefined();
-  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBeUndefined();
+const GUILD = '123456789012345678';
 
-  store.save({ provider: 'gemini', enabled: true, searchApiKey: 'brave-raw-key' }, 11);
-  expect(store.status().webSearch).toEqual({ keyConfigured: true, enabled: false });
-  expect(assistantProviderRepo.get(t.scopes.instance())?.searchApiKeyEnc).not.toContain(
-    'brave-raw-key',
-  );
-  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBeUndefined();
+/**
+ * Web search keys (ADR 0120): several sealed keys per source with their own
+ * limits, tried in the owner's order. Replaces the ADR 0066 single-key test:
+ * `save()` no longer takes `searchApiKey`, and `effective()` never carries a
+ * search key — search runs through `webSearch()`.
+ */
+describe('web search keys (ADR 0120)', () => {
+  it('addSearchKey seals; the plaintext never appears in searchKeys() or status()', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    const keyId = store.addSearchKey(
+      { source: 'brave', label: 'Brave key', apiKey: 'brave-raw-key' },
+      10,
+    );
+    expect('apiKeyEnc' in store.searchKeys()[0]!).toBe(false);
+    const sealed = searchKeysRepo.listSearchKeys(t.scopes.instance())[0]?.apiKeyEnc;
+    expect(sealed).not.toContain('brave-raw-key');
+    expect(JSON.stringify(store.searchKeys())).not.toContain('brave-raw-key');
+    expect(JSON.stringify(store.status())).not.toContain('brave-raw-key');
+    expect(store.isSearchKeyReadable(keyId)).toBe(true);
+    expect(store.isSearchKeyReadable('skey_does-not-exist')).toBe(false);
+    const other = createProviderConfigStore(t.scopes.instance(), 'b'.repeat(32));
+    expect(other.isSearchKeyReadable(keyId)).toBe(false);
+  });
 
-  store.save({ provider: 'gemini', enabled: true, searchEnabled: true }, 12);
-  expect(store.status().webSearch).toEqual({ keyConfigured: true, enabled: true });
-  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBe('brave-raw-key');
-  expect(JSON.stringify(store.status())).not.toContain('brave-raw-key');
+  it('webSearch() is undefined while search is off, with no keys, or with only the other source keys', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    expect(store.webSearch(GUILD)).toBeUndefined();
+    store.addSearchKey({ source: 'brave', label: 'B', apiKey: 'brave-raw' }, 10);
+    // No saved row yet, and no env seed: still off.
+    expect(store.webSearch(GUILD)).toBeUndefined();
+    store.save({ provider: 'gemini', enabled: true, searchEnabled: true }, 11);
+    expect(store.webSearch(GUILD)).not.toBeUndefined();
+    // Only the other source's keys: nothing usable for the current source.
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: true, searchSource: 'tavily' },
+      12,
+    );
+    expect(store.webSearch(GUILD)).toBeUndefined();
+    // Back off: undefined even with keys stored.
+    store.save({ provider: 'gemini', enabled: true, searchEnabled: false }, 13);
+    expect(store.webSearch(GUILD)).toBeUndefined();
+  });
 
-  // The search key is not tied to the AI service.
-  store.save({ provider: 'openrouter', model: 'm', apiKey: 'k2', enabled: true }, 13);
-  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBe('brave-raw-key');
+  it('webSearch() uses only enabled keys of the current source, in position order', async () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: true, searchSource: 'tavily' },
+      10,
+    );
+    const first = store.addSearchKey({ source: 'tavily', label: 'T1', apiKey: 'tavily-one' }, 11);
+    store.addSearchKey({ source: 'tavily', label: 'T2', apiKey: 'tavily-two' }, 12);
+    store.addSearchKey({ source: 'brave', label: 'B1', apiKey: 'brave-one' }, 13);
+    const braveSeen: string[] = [];
+    const tavilySeen: string[] = [];
+    const clients = {
+      brave: vi.fn(async (apiKey: string, _q: string) => {
+        braveSeen.push(apiKey);
+        return [];
+      }),
+      tavily: vi.fn(async (apiKey: string, _q: string) => {
+        tavilySeen.push(apiKey);
+        return [];
+      }),
+    };
+    await store.webSearch(GUILD, clients)!('q');
+    expect(tavilySeen).toEqual(['tavily-one']);
+    expect(braveSeen).toEqual([]);
+    expect(JSON.stringify(tavilySeen)).not.toContain('brave-one');
+    store.updateSearchKey(first, { enabled: false }, 14);
+    await store.webSearch(GUILD, clients)!('q');
+    expect(tavilySeen).toEqual(['tavily-one', 'tavily-two']);
+  });
 
-  // A saved row is authoritative: switched off there means off, even with env set.
-  store.save({ provider: 'openrouter', enabled: true, searchEnabled: false }, 14);
-  expect(
-    store.effective({ ...base, BRAVE_SEARCH_API_KEY: 'env-key' }).BRAVE_SEARCH_API_KEY,
-  ).toBeUndefined();
+  it('webSearch() ignores the .env Brave seed once a key store exists', async () => {
+    const envBase = { ...base, BRAVE_SEARCH_API_KEY: 'env-key' };
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32), 'env', envBase);
+    // No row and an env key: still undefined — the seed is dead here.
+    expect(store.webSearch(GUILD)).toBeUndefined();
+    store.save({ provider: 'gemini', enabled: true, searchEnabled: false }, 10);
+    expect(store.webSearch(GUILD)).toBeUndefined();
+  });
+
+  it('status().webSearch reports the stored source even while search is off with no keys', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: false, searchSource: 'tavily' },
+      10,
+    );
+    expect(store.status().webSearch).toEqual({
+      keyConfigured: false,
+      enabled: false,
+      source: 'tavily',
+    });
+  });
+
+  it('status().webSearch carries keyConfigured/enabled/source, absent when unused', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    expect(store.status().webSearch).toBeUndefined();
+    store.save({ provider: 'gemini', enabled: true, searchEnabled: true }, 10);
+    expect(store.status().webSearch).toEqual({
+      keyConfigured: false,
+      enabled: true,
+      source: 'brave',
+    });
+    store.addSearchKey({ source: 'brave', label: 'B', apiKey: 'brave-raw' }, 11);
+    expect(store.status().webSearch).toEqual({
+      keyConfigured: true,
+      enabled: true,
+      source: 'brave',
+    });
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: true, searchSource: 'tavily' },
+      12,
+    );
+    // The stored key belongs to the other source now.
+    expect(store.status().webSearch).toEqual({
+      keyConfigured: false,
+      enabled: true,
+      source: 'tavily',
+    });
+  });
+
+  it('save() without searchSource keeps the saved source', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: true, searchSource: 'tavily' },
+      10,
+    );
+    expect(assistantProviderRepo.get(t.scopes.instance())?.searchSource).toBe('tavily');
+    store.save({ provider: 'gemini', enabled: true, searchEnabled: true }, 11);
+    expect(assistantProviderRepo.get(t.scopes.instance())?.searchSource).toBe('tavily');
+    expect(store.status().webSearch?.source).toBe('tavily');
+  });
+
+  it('effective() never returns BRAVE_SEARCH_API_KEY once a row exists', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save({ provider: 'gemini', enabled: true }, 10);
+    expect(
+      store.effective({ ...base, BRAVE_SEARCH_API_KEY: 'env-key' }).BRAVE_SEARCH_API_KEY,
+    ).toBeUndefined();
+    store.save(
+      { provider: 'gemini', enabled: true, searchEnabled: true, searchSource: 'tavily' },
+      11,
+    );
+    store.addSearchKey({ source: 'tavily', label: 'T', apiKey: 'tavily-raw' }, 12);
+    const effective = store.effective({ ...base, BRAVE_SEARCH_API_KEY: 'env-key' });
+    expect(effective.BRAVE_SEARCH_API_KEY).toBeUndefined();
+    expect(JSON.stringify(effective)).not.toContain('tavily-raw');
+  });
+
+  it('updateSearchKey re-seals only with a new apiKey; usage is undefined for unknown keys', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    const keyId = store.addSearchKey({ source: 'brave', label: 'B', apiKey: 'alpha-secret' }, 10);
+    const sealedOf = (): string | undefined =>
+      searchKeysRepo.listSearchKeys(t.scopes.instance()).find((k) => k.keyId === keyId)?.apiKeyEnc;
+    const before = sealedOf();
+    expect(store.updateSearchKey(keyId, { label: 'B renamed' }, 11)).toBe(true);
+    expect(sealedOf()).toBe(before);
+    expect(store.updateSearchKey(keyId, { apiKey: 'beta-secret' }, 12)).toBe(true);
+    const after = sealedOf();
+    expect(after).not.toBe(before);
+    expect(after).not.toContain('beta-secret');
+    expect(store.updateSearchKey('skey_does-not-exist', { label: 'x' }, 13)).toBe(false);
+    expect(store.searchKeyUsage('skey_does-not-exist')).toBeUndefined();
+    expect(store.searchKeyUsage(keyId)).toMatchObject({ last24h: 0, last31d: 0 });
+  });
 });
 
 /**

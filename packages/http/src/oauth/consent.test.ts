@@ -59,6 +59,20 @@ describe('renderConsentPage', () => {
     expect(html).toContain('<li>bananasaurs:send — send messages as the bot</li>');
   });
 
+  it('explains all four scopes with no unknown permission', () => {
+    const html = renderConsentPage({
+      ...VIEW,
+      scopes: ['bananasaurs:read', 'bananasaurs:send', 'bananasaurs:roles', 'bananasaurs:tasks'],
+    });
+    expect(html).toContain('<li>bananasaurs:read — read messages, cases and server settings</li>');
+    expect(html).toContain('<li>bananasaurs:send — send messages as the bot</li>');
+    expect(html).toContain(
+      '<li>bananasaurs:roles — give and remove member roles and manage role panels</li>',
+    );
+    expect(html).toContain('<li>bananasaurs:tasks — create and change club tasks</li>');
+    expect(html).not.toContain('unknown permission');
+  });
+
   it('names the client id and the registration date', () => {
     const html = renderConsentPage({ ...VIEW });
     expect(html).toContain('<code>cli_abcdef0123456789</code>');

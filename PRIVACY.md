@@ -37,6 +37,14 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 - Join and leave events
 - Commands run against the bot, and the answers it gave
 
+To log what changed when a member's roles, nickname, username, display name
+or avatar change, Bananasaurs keeps a last-seen record for each member:
+username, display name, nickname, avatar IDs, and role IDs. It holds IDs and
+hashes only — no images are downloaded or stored. The record is written
+only while some enabled logging route includes a member-change action; when no
+route does, a member's record is deleted the next time Bananasaurs sees that
+member join or update; and it is always deleted when the member leaves.
+
 **Not stored:**
 
 - Voice calls or anything spoken in them
@@ -62,7 +70,7 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 **The AI provider may train on what is sent.** The server owner has chosen a provider whose terms allow it to use the excerpts it receives to train its models. The bot shows a warning on its setup page while that is the case. If you do not want your messages used this way, do not ask Bananasaurs questions that would draw on them, and ask a server admin which channels are stored.
 
-**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the Brave Search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use web results say "Powered by Brave Search".
+**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the search service the owner chose: the Brave Search API or the Tavily search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use Brave results say "Powered by Brave Search". Tavily's terms let it keep queries and use them to improve its services, including training AI models.
 
 **AI log channel.** If the server owner chooses a log channel, every question asked of Bananasaurs is copied there, together with its answer, the sources used and the outcome. That channel is meant for server staff only. Messages in it are kept by Discord, not by Bananasaurs, until someone deletes them.
 

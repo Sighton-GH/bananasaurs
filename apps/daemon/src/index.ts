@@ -342,6 +342,7 @@ async function main(): Promise<void> {
       // Task 8: the one process-wide ledger — the same instance every
       // guild's assistant loop shares — so the allowance pill agrees.
       assistantQuotaLedger: daemon.quotaLedger,
+      assistantWebSearch: daemon.webSearch,
       // ADR 0080: the owner-edited instance settings (AI tuning).
       instanceSettings: daemon.instanceSettings,
     });

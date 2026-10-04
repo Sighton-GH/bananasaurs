@@ -39,6 +39,9 @@ export type {
   Snowflake,
 } from './discord/port.js';
 export type {
+  AuditChangeValue,
+  AuditLogChange,
+  AuditLogEntryEvent,
   AutoModerationEvent,
   ConnectionEvent,
   DomainEvent,
@@ -152,13 +155,36 @@ export {
   formatRoleCreate,
   formatRoleDelete,
   formatRoleUpdate,
+  formatWarn,
 } from './logging/format.js';
 export {
   createLoggingSubscriber,
+  createLogPoster,
   LOG_EVENT_KINDS,
   type LoggingPorts,
+  type LogItem,
   type LogRoute,
 } from './logging/subscriber.js';
+export {
+  isSourceExcluded,
+  routeAccepts,
+  routeDedupeKind,
+  type LogSource,
+} from './logging/routing.js';
+export {
+  LOG_ACTION_CATALOG,
+  LOG_ACTION_GROUPS,
+  logActionInfo,
+  type LogActionGroup,
+  type LogActionInfo,
+} from './logging/catalog.js';
+export {
+  logEventKindSchema,
+  logRouteIdSchema,
+  logRouteInputSchema,
+  type LogRouteInput,
+  type ResolvedLogRouteInput,
+} from './logging/route-input.js';
 export {
   correlateDeletion,
   MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
@@ -217,6 +243,22 @@ export {
   type SafetyStateForSend,
   type SendLedgerRow,
 } from './effects/message-gateway.js';
+export {
+  argsHashFor,
+  MCP_ACTION_CAPS,
+  MCP_ACTION_DUPLICATE_WINDOW_MS,
+  MCP_ACTION_WINDOW_MS,
+  runMcpAction,
+  type McpActionLedgerRow,
+  type McpActionAuditInput,
+  type McpActionClaim,
+  type McpActionCompletion,
+  type McpActionDeps,
+  type McpActionIntent,
+  type McpActionOutcome,
+  type McpActionRefusal,
+  type McpCapGroup,
+} from './effects/mcp-action-gateway.js';
 export {
   inverseOf,
   undoBatch,
@@ -549,10 +591,13 @@ export { adoptionAllowCommand, panelSyncCommand, undoCommand } from './ops/comma
 export {
   configSetCommand,
   jobsRetryCommand,
+  logRoutingCreateCommand,
+  logRoutingDeleteCommand,
   logRoutingExcludeCommand,
   logRoutingOffCommand,
-  logRoutingSetCommand,
+  logRoutingOnCommand,
   logRoutingUnexcludeCommand,
+  logRoutingUpdateCommand,
 } from './ops/commands/writes.js';
 export {
   auditTailCommand,
@@ -602,6 +647,7 @@ export {
 } from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,
+  detectWithheldEvidence,
   redactEvidenceText,
   scanOutboundRequest,
   type OutboundSafetyResult,
@@ -658,3 +704,24 @@ export {
   renderSummary,
   type ConversationSummary,
 } from './assistant/conversation-summary.js';
+
+export {
+  ADMINISTRATOR,
+  BAN_MEMBERS,
+  DANGEROUS_PERMISSION_BITS,
+  isDangerousRole,
+  KICK_MEMBERS,
+  MANAGE_CHANNELS,
+  MANAGE_EVENTS,
+  MANAGE_GUILD,
+  MANAGE_GUILD_EXPRESSIONS,
+  MANAGE_MESSAGES,
+  MANAGE_ROLES,
+  MANAGE_THREADS,
+  MANAGE_WEBHOOKS,
+  MENTION_EVERYONE,
+  MODERATE_MEMBERS,
+  rolePingAllowed,
+  type RoleFacts,
+  type RolePingRefusal,
+} from './roles/dangerous.js';

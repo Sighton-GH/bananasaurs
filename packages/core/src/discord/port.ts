@@ -22,6 +22,14 @@ export interface DiscordRole {
   position: number;
   /** Integration-managed roles cannot be assigned at any position. */
   managed: boolean;
+  /**
+   * Bitwise permissions as Discord sends them (a decimal string).
+   *
+   * Present on every role the REST adapter and `FakeDiscord.createRole`
+   * report. Absent only for roles a test seeded through `defineRole`, which
+   * predates it and never needed permissions for a hierarchy assertion.
+   */
+  permissions?: string | undefined;
 }
 
 export interface DiscordMember {
@@ -115,6 +123,27 @@ export interface OutgoingMessage {
    * is byte-identical to a message with no reply at all.
    */
   replyTo?: string | undefined;
+  /**
+   * Opt-out of the reply ping (ADR 0072): only `false` suppresses the
+   * replied-to member's ping. Undefined keeps today's behaviour —
+   * `replied_user: true`.
+   */
+  pingReplyAuthor?: boolean | undefined;
+  /**
+   * A native poll attached to the message (MCP slice 5). When set, the REST
+   * adapter emits Discord's `poll` object — `question.text`, `answers[].poll_media.text`,
+   * `duration` in hours and `allow_multiselect`. Absent, the wire output is
+   * byte-identical to a message with no poll at all.
+   */
+  poll?:
+    | {
+        readonly question: string;
+        readonly answers: readonly string[];
+        /** Hours the poll stays open. */
+        readonly durationHours: number;
+        readonly allowMultiselect: boolean;
+      }
+    | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */
@@ -160,6 +189,8 @@ export interface ScheduledEvent {
   readonly description?: string | undefined;
   /** From `scheduled_start_time`. */
   readonly scheduledStartAt: number;
+  /** From `scheduled_end_time`; absent when the event has no end time. */
+  readonly scheduledEndAt?: number | undefined;
   readonly channelId?: Snowflake | undefined;
   readonly location?: string | undefined;
 }
@@ -206,13 +237,76 @@ export interface DiscordPort {
   fetchRoles(guildId: Snowflake): Promise<readonly DiscordRole[]>;
   /** The bot's own highest role position, recomputed rather than cached. */
   fetchBotHighestRolePosition(guildId: Snowflake): Promise<number>;
+  /**
+   * Creates a guild role (MCP slice 4): `POST /guilds/{guild}/roles`.
+   *
+   * There is deliberately no permissions parameter — the input type has no
+   * permissions field, and the adapter always sends `'0'`, so a created role
+   * can never carry a permission bit (review focus 6).
+   */
+  createRole(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly color?: number | undefined;
+      readonly hoist?: boolean | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<{ roleId: Snowflake }>;
+  /**
+   * Moves a role (MCP slice 4): `PATCH /guilds/{guild}/roles` with one
+   * `{ id, position }` entry.
+   */
+  setRolePosition(guildId: Snowflake, roleId: Snowflake, position: number): Promise<void>;
+  /**
+   * Edits a role (MCP slice 4): `PATCH /guilds/{guild}/roles/{role}` with
+   * only the fields given, so a rename never disturbs the colour and vice
+   * versa — the same shape `setThreadState` keeps for threads.
+   */
+  editRole(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly color?: number | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<void>;
 
   // --- members -----------------------------------------------------------
   fetchMember(guildId: Snowflake, userId: Snowflake): Promise<DiscordMember>;
 
   // --- messages and reactions -------------------------------------------
   fetchMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<{ exists: true }>;
+  /**
+   * One message's live pin state and reaction counts (slice 2, Task 6): `GET
+   * /channels/{channel}/messages/{message}` — the same route `fetchMessage`
+   * already reads — projected to `pinned` and `reactions[].{emoji, count}`
+   * (`emoji` is `<:name:id>` for custom emoji, the unicode characters
+   * otherwise). `undefined` on 404 (gone) or 403 (no access) — both routine
+   * here, reported the same way rather than thrown, so the caller answers
+   * without the metadata instead of failing. Any other error propagates.
+   *
+   * The return shape is inline, like `fetchMessage`'s `{ exists: true }`:
+   * one method's two fields need no named type.
+   */
+  fetchMessageMeta(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<
+    | {
+        readonly pinned: boolean;
+        readonly reactions: readonly { readonly emoji: string; readonly count: number }[];
+      }
+    | undefined
+  >;
   createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void>;
+  /** Removes the bot's own reaction; other members' reactions are untouched. */
+  deleteOwnReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void>;
+  /** Pins a channel message. */
+  pinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void>;
+  /** Unpins a channel message; unpinning an unpinned message is not an error. */
+  unpinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void>;
   /**
    * Paginated at 100. An adopted panel with many reactors needs several calls,
    * which is why the adoption pass is a resumable job rather than a request.
@@ -243,9 +337,15 @@ export interface DiscordPort {
     channelId: Snowflake,
     messageId: Snowflake,
   ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
+  /** One message's author, content and embeds: edit/delete eligibility and undo (ADR 0116 §4). */
+  fetchMessageAuthor(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<{ authorId: string; content: string; embeds: readonly unknown[] } | undefined>;
   /**
    * Channel context for the assistant (ADR 0089): up to `limit` messages sent
-   * before `before` in one channel, oldest first. `undefined` on 404 (gone)
+   * before `before` in one channel, oldest first — or, when `before` is
+   * absent, the channel's newest `limit` messages. `undefined` on 404 (gone)
    * or 403 (no access) — both routine, reported the same way rather than
    * thrown, so the caller answers without the block instead of failing.
    *
@@ -257,7 +357,7 @@ export interface DiscordPort {
   fetchChannelMessages(
     guildId: Snowflake,
     channelId: Snowflake,
-    opts: { before: Snowflake; limit: number },
+    opts: { before?: Snowflake | undefined; limit: number },
   ): Promise<readonly RecentMessage[] | undefined>;
   /** The "is typing…" indicator, shown for about ten seconds or until the next message. */
   sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void>;
@@ -316,12 +416,145 @@ export interface DiscordPort {
    */
   listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
   /**
+   * Whether a user is a member of a thread (ADR 0115): `GET
+   * /channels/{thread}/thread-members/{user}` — 200 answers true, 404
+   * answers false. Checked live on every private-thread read, never cached;
+   * any other error propagates.
+   */
+  isThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<boolean>;
+  /**
+   * One thread's facts over REST (ADR 0115's sweeper fallback): `GET
+   * /channels/{thread}` — `undefined` on 404 (gone) or 403 (no access),
+   * when the channel is not in this guild, when it is not a thread, or when
+   * it has no parent. Any other error propagates. The MCP daemon calls this
+   * only on a gateway-cache miss, so a swept archived thread still resolves
+   * and its archive rows still read.
+   *
+   * The return shape is inline, like `fetchMessage`'s `{ exists: true }`:
+   * the package index names no thread-info type, and none is needed for one
+   * method's four fields.
+   */
+  fetchThreadInfo(
+    guildId: Snowflake,
+    threadId: Snowflake,
+  ): Promise<
+    | {
+        readonly id: Snowflake;
+        readonly name: string;
+        readonly parentId: Snowflake;
+        readonly isPrivate: boolean;
+      }
+    | undefined
+  >;
+  /**
+   * Starts a thread under a text channel (MCP slice 3): `POST
+   * /channels/{channel}/threads`, or `POST
+   * /channels/{channel}/messages/{message}/threads` when `fromMessageId`
+   * is set. A private thread with `fromMessageId` is refused with a
+   * `TypeError` before any call — Discord derives the kind from the
+   * message route, so the combination is a caller bug, not a Discord
+   * refusal. `invitable` is sent only for private threads.
+   */
+  createThread(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly type: 'public' | 'private';
+      readonly autoArchiveMinutes: 60 | 1440 | 4320 | 10080;
+      readonly invitable?: boolean | undefined;
+      readonly fromMessageId?: string | undefined;
+    },
+  ): Promise<{ threadId: string }>;
+  /** Adds a user to a thread: `PUT /channels/{thread}/thread-members/{user}`. */
+  addThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<void>;
+  /** Removes a user from a thread: `DELETE` on the same route. */
+  removeThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<void>;
+  /**
+   * Starts a public forum post (MCP slice 3): `POST
+   * /channels/{forum}/threads` with `name`, the starter `message` built
+   * exactly as `sendMessage` builds it, and `applied_tags`. The returned
+   * `messageId` is the starter `message.id` nested in Discord's response,
+   * falling back to the thread id, which a forum starter message shares.
+   */
+  createForumPost(
+    guildId: Snowflake,
+    forumChannelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly message: OutgoingMessage;
+      readonly appliedTagIds: readonly string[];
+    },
+  ): Promise<{ threadId: string; messageId: string }>;
+  /**
+   * Archives/locks a thread (MCP slice 3): `PATCH /channels/{thread}`
+   * with only the fields given, so an archive never disturbs the lock
+   * and vice versa.
+   */
+  setThreadState(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    state: { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined },
+  ): Promise<void>;
+  /**
    * Guild scheduled events for the assistant's `upcoming_events` tool
    * (ADR 0092 decision 1): `GET /guilds/{id}/scheduled-events`, no gateway
    * intent needed. An empty list when there are none — or when the bot may
    * not see them (403).
    */
   listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]>;
+
+  /**
+   * Creates a guild scheduled event (MCP slice 5): `POST
+   * /guilds/{id}/scheduled-events`. Privacy is always guild-only; times are
+   * epoch ms on the port and ISO strings on the wire. A voice or stage event
+   * is hosted in `channelId`; an external event is hosted at `place` and
+   * requires `endAt` — Discord rejects an external event without one, so the
+   * adapters throw a `TypeError` before any call when it is missing.
+   */
+  createScheduledEvent(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly description?: string | undefined;
+      readonly startAt: number;
+      readonly endAt?: number | undefined;
+      readonly location:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string };
+    },
+  ): Promise<{ eventId: string }>;
+  /**
+   * Edits a guild scheduled event (MCP slice 5): `PATCH
+   * /guilds/{id}/scheduled-events/{event}` with only the fields given, so a
+   * rename never disturbs the time and vice versa. Times are epoch ms on the
+   * port and ISO strings on the wire, like `createScheduledEvent`.
+   * `description: null` clears the description (the PATCH body's
+   * `description` is nullable in discord-api-types v10); `scheduled_end_time`
+   * is not, so there is no clearing of the end time — pass a new one or leave
+   * it alone.
+   */
+  editScheduledEvent(
+    guildId: Snowflake,
+    eventId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly description?: string | null | undefined;
+      readonly startAt?: number | undefined;
+      readonly endAt?: number | undefined;
+      readonly location?:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string }
+        | undefined;
+    },
+  ): Promise<void>;
+  /**
+   * Cancels a guild scheduled event (MCP slice 5): `PATCH
+   * /guilds/{id}/scheduled-events/{event}` with `status: Canceled`. Discord
+   * only cancels events still in `Scheduled` status; anything else is a
+   * server-side refusal, not a caller-side check.
+   */
+  cancelScheduledEvent(guildId: Snowflake, eventId: Snowflake): Promise<void>;
 
   // --- interactions ------------------------------------------------------
   /**

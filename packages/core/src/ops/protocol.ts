@@ -33,7 +33,7 @@ export const opsRequestSchema = z
   .object({
     v: z.literal(OPS_PROTOCOL_VERSION),
     /**
-     * The full command path as one string — `status`, `log routing set`. The
+     * The full command path as one string — `status`, `log routing create`. The
      * same spelling `docs/17` uses, so the surface reads identically in the
      * documentation, on the wire, and in an audit row.
      */

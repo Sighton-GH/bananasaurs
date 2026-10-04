@@ -115,7 +115,7 @@ const purgePortsFor = (): PurgePorts => ({
  */
 const deletionAttributionPortsFor = (): MessageDeleteAttributionPorts => ({
   guildId: GUILD,
-  findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+  listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
   fetchAuditLog: () => discord.fetchAuditLog(GUILD, { actionType: 'message_delete', limit: 25 }),
   claimedCountFor: (input) => loggingRepo.claimedCountFor(scope, input),
   incrementClaimedCount: (input) => loggingRepo.incrementClaimedCount(scope, input),

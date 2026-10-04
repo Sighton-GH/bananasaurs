@@ -41,6 +41,25 @@ export const hasSendScope = (principal: McpPrincipal): boolean =>
   principal.scopes.includes(MCP_SEND_SCOPE);
 
 /**
+ * The roles scope (ADR 0114): role grants and removals, role creation and
+ * role panels register under it from slice 4. A token without it cannot see
+ * those tools.
+ */
+export const MCP_ROLES_SCOPE = 'bananasaurs:roles';
+
+export const hasRolesScope = (principal: McpPrincipal): boolean =>
+  principal.scopes.includes(MCP_ROLES_SCOPE);
+
+/**
+ * The tasks scope (ADR 0114): the task-tracking write tools register under
+ * it when that branch merges.
+ */
+export const MCP_TASKS_SCOPE = 'bananasaurs:tasks';
+
+export const hasTasksScope = (principal: McpPrincipal): boolean =>
+  principal.scopes.includes(MCP_TASKS_SCOPE);
+
+/**
  * The refusal every tool returns for a guild it cannot resolve, whatever the
  * underlying reason. Empty set, malformed id, and unreachable id are
  * indistinguishable to the caller on purpose: distinct messages would be an

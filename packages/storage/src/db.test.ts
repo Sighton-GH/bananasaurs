@@ -566,6 +566,10 @@ describe('migration 0036 adds the fallback model, web search and assistant setti
         fallback_models_json: '[]',
         search_api_key_enc: null,
         search_enabled: 0,
+        // ADR 0120 (migration 0090) adds this column after this test's own
+        // migration; the row it seeded predates it, so it reads back the
+        // rebuild default.
+        search_source: 'brave',
         // ADR 0075 (migration 0038) adds this column after this test's own
         // migration; the row it seeded predates it, so it reads back null.
         github_token_enc: null,
@@ -620,5 +624,631 @@ describe('migration 0039 keeps one chain row per model when 0038 duplicated fall
       { key_id: 'key_gemini', model: 'gemini-2.5-pro' },
     ]);
     raw.close();
+  });
+});
+
+/**
+ * A migrations folder containing only the journal entries and `.sql` files up
+ * to and including `tag`, so `migrate()` can run against a snapshot of the
+ * schema older than what ships. Keyed by tag rather than idx so a test names
+ * the migration it stops before. Shared by the 0091 and 0092 data tests.
+ */
+const migrationsFolderUpToTag = (tag: string): string => {
+  const journal = JSON.parse(
+    fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+  ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+  const last = journal.entries.find((entry) => entry.tag === tag);
+  expect(last, `journal has no entry tagged ${tag}`).toBeDefined();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migrations-up-to-tag-'));
+  fs.mkdirSync(path.join(dir, 'meta'));
+  const entries = journal.entries.filter((entry) => entry.idx <= last!.idx);
+  fs.writeFileSync(
+    path.join(dir, 'meta', '_journal.json'),
+    JSON.stringify({ ...journal, entries }),
+  );
+  for (const entry of entries) {
+    fs.copyFileSync(
+      path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+      path.join(dir, `${entry.tag}.sql`),
+    );
+  }
+  return dir;
+};
+
+describe('migration 0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
+  const GUILD_ID = '111111111111111111';
+  const CHANNEL_ID = '222222222222222222';
+  const MEMBER_ID = '333333333333333333';
+  const MESSAGE_ONE = '444444444444444444';
+  const MESSAGE_PURGED = '555555555555555555';
+  const ATTACHMENT_ID = '666666666666666666';
+
+  it('0091 rebuild preserves archive rows, edits, attachments and FTS', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0091, seeded the way a
+    // real upgrade would find it: two message rows (one live with searchable
+    // content, one purged), an edit row and an attachment row on the first.
+    runMigrations(raw, db, migrationsFolderUpToTag('0052_conversation_summary_search'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(`INSERT INTO archive_channels (guild_id, channel_id, enabled_at) VALUES (?, ?, 0)`)
+      .run(GUILD_ID, CHANNEL_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages
+           (guild_id, message_id, channel_id, thread_id, author_id, content,
+            created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at)
+         VALUES (?, ?, ?, NULL, ?, 'quokka snack manifest for the picnic', 1000, NULL, NULL, 'default', NULL, NULL)`,
+      )
+      .run(GUILD_ID, MESSAGE_ONE, CHANNEL_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages
+           (guild_id, message_id, channel_id, thread_id, author_id, content,
+            created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at)
+         VALUES (?, ?, ?, NULL, ?, NULL, 2000, NULL, 2500, 'default', NULL, 4000)`,
+      )
+      .run(GUILD_ID, MESSAGE_PURGED, CHANNEL_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_message_edits (guild_id, message_id, edit_seq, content, edited_at)
+         VALUES (?, ?, 1, 'quokka snack draft', 900)`,
+      )
+      .run(GUILD_ID, MESSAGE_ONE);
+    raw
+      .prepare(
+        `INSERT INTO archive_attachments
+           (guild_id, message_id, attachment_id, filename, content_type, size, sha256, bytes_path)
+         VALUES (?, ?, ?, 'menu.png', 'image/png', 1234, NULL, NULL)`,
+      )
+      .run(GUILD_ID, MESSAGE_ONE, ATTACHMENT_ID);
+
+    // Applies 0091 against the seeded rows, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // Both message rows survive with every original column value unchanged.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, message_id, channel_id, thread_id, author_id, content,
+                  created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at
+           FROM archive_messages ORDER BY message_id`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ONE,
+        channel_id: CHANNEL_ID,
+        thread_id: null,
+        author_id: MEMBER_ID,
+        content: 'quokka snack manifest for the picnic',
+        created_at: 1000,
+        edited_at: null,
+        deleted_at: null,
+        retention_class: 'default',
+        case_id: null,
+        content_purged_at: null,
+      },
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_PURGED,
+        channel_id: CHANNEL_ID,
+        thread_id: null,
+        author_id: MEMBER_ID,
+        content: null,
+        created_at: 2000,
+        edited_at: null,
+        deleted_at: 2500,
+        retention_class: 'default',
+        case_id: null,
+        content_purged_at: 4000,
+      },
+    ]);
+    // The two new columns land NULL on the carried rows.
+    expect(
+      raw
+        .prepare(
+          `SELECT message_id, reply_to_message_id, mentioned_role_ids
+           FROM archive_messages ORDER BY message_id`,
+        )
+        .all(),
+    ).toEqual([
+      { message_id: MESSAGE_ONE, reply_to_message_id: null, mentioned_role_ids: null },
+      { message_id: MESSAGE_PURGED, reply_to_message_id: null, mentioned_role_ids: null },
+    ]);
+    // The edit and attachment rows survive with the message they belong to.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, message_id, edit_seq, content, edited_at FROM archive_message_edits`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ONE,
+        edit_seq: 1,
+        content: 'quokka snack draft',
+        edited_at: 900,
+      },
+    ]);
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, message_id, attachment_id, filename, content_type, size, sha256, bytes_path
+           FROM archive_attachments`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        message_id: MESSAGE_ONE,
+        attachment_id: ATTACHMENT_ID,
+        filename: 'menu.png',
+        content_type: 'image/png',
+        size: 1234,
+        sha256: null,
+        bytes_path: null,
+      },
+    ]);
+    // The rebuild leaves no dangling reference behind.
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+    // The re-attached triggers plus the trailing rebuild keep the FTS index
+    // tracking content: the distinctive word still finds the first message.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, channel_id, message_id FROM archive_messages_fts
+           WHERE archive_messages_fts MATCH 'quokka'`,
+        )
+        .all(),
+    ).toEqual([{ guild_id: GUILD_ID, channel_id: CHANNEL_ID, message_id: MESSAGE_ONE }]);
+
+    raw.close();
+  });
+});
+
+describe('migration 0092 copies mcp_sends into mcp_actions (ADR 0116 section 2)', () => {
+  const GUILD_ID = '111111111111111111';
+  const CHANNEL_SENT = '222222222222222222';
+  const CHANNEL_DRY = '333333333333333333';
+  const MESSAGE_ID = '444444444444444444';
+
+  it('copies every mcp_sends row with the mapped values and leaves mcp_sends unchanged', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0092, seeded the way a
+    // real upgrade would find it: one accepted send with a message id and one
+    // dry run without.
+    runMigrations(raw, db, migrationsFolderUpToTag('0091_archive_reply_links'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mcp_sends
+           (guild_id, idempotency_key, channel_id, content_hash, message_id, token_id, sent_at, outcome)
+         VALUES (?, 'plain-key', ?, 'hash-plain', ?, 'tok_1', 1000, 'sent')`,
+      )
+      .run(GUILD_ID, CHANNEL_SENT, MESSAGE_ID);
+    raw
+      .prepare(
+        `INSERT INTO mcp_sends
+           (guild_id, idempotency_key, channel_id, content_hash, message_id, token_id, sent_at, outcome)
+         VALUES (?, 'dry-key', ?, 'hash-dry', NULL, 'tok_2', 2000, 'dry_run')`,
+      )
+      .run(GUILD_ID, CHANNEL_DRY);
+
+    // Applies 0092 against the seeded rows, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // Both rows are in mcp_actions with every mapped value.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, action_id, idempotency_key, kind, cap_group, args_hash, status,
+                  token_id, target_channel_id, result_message_id, result_thread_id,
+                  undo_json, undone_by_action_id, created_at, completed_at
+           FROM mcp_actions ORDER BY idempotency_key`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        action_id: 'legacy:dry-key',
+        idempotency_key: 'dry-key',
+        kind: 'message.send',
+        cap_group: 'message',
+        args_hash: 'hash-dry',
+        status: 'dry_run',
+        token_id: 'tok_2',
+        target_channel_id: CHANNEL_DRY,
+        result_message_id: null,
+        result_thread_id: null,
+        undo_json: null,
+        undone_by_action_id: null,
+        created_at: 2000,
+        completed_at: 2000,
+      },
+      {
+        guild_id: GUILD_ID,
+        action_id: 'legacy:plain-key',
+        idempotency_key: 'plain-key',
+        kind: 'message.send',
+        cap_group: 'message',
+        args_hash: 'hash-plain',
+        status: 'done',
+        token_id: 'tok_1',
+        target_channel_id: CHANNEL_SENT,
+        result_message_id: MESSAGE_ID,
+        result_thread_id: null,
+        undo_json: null,
+        undone_by_action_id: null,
+        created_at: 1000,
+        completed_at: 1000,
+      },
+    ]);
+    // mcp_sends still has both rows unchanged: the copy reads, never moves.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, idempotency_key, channel_id, content_hash, message_id,
+                  token_id, sent_at, outcome
+           FROM mcp_sends ORDER BY idempotency_key`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        idempotency_key: 'dry-key',
+        channel_id: CHANNEL_DRY,
+        content_hash: 'hash-dry',
+        message_id: null,
+        token_id: 'tok_2',
+        sent_at: 2000,
+        outcome: 'dry_run',
+      },
+      {
+        guild_id: GUILD_ID,
+        idempotency_key: 'plain-key',
+        channel_id: CHANNEL_SENT,
+        content_hash: 'hash-plain',
+        message_id: MESSAGE_ID,
+        token_id: 'tok_1',
+        sent_at: 1000,
+        outcome: 'sent',
+      },
+    ]);
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+
+    raw.close();
+  });
+});
+
+describe('migration 0094 widens the effect_batches source CHECK to admit mcp', () => {
+  const GUILD_ID = '111111111111111111';
+  const ROLE_ID = '222222222222222222';
+  const MEMBER_ID = '333333333333333333';
+
+  it('carries every effect_batches and role_effects row across the rebuild, then admits mcp', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0094, seeded the way a
+    // real upgrade would find it: one batch row and the role effect that
+    // belongs to it, through the managed_roles row the foreign key demands.
+    runMigrations(raw, db, migrationsFolderUpToTag('0093_mcp_bulk_previews'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(`INSERT INTO managed_roles (guild_id, role_id) VALUES (?, ?)`)
+      .run(GUILD_ID, ROLE_ID);
+    raw
+      .prepare(
+        `INSERT INTO effect_batches
+           (guild_id, batch_id, source, actor_type, actor_id, started_at, finished_at, undone_at)
+         VALUES (?, 'batch-1', 'dashboard', 'dashboard', 'acct_1', 1000, 2000, NULL)`,
+      )
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO role_effects
+           (guild_id, effect_id, batch_id, dedupe_key, user_id, role_id, action,
+            state, had_role_before, panel_id, attempted_at, completed_at, error_code)
+         VALUES (?, 'effect-1', 'batch-1', 'dedupe-1', ?, ?, 'grant',
+            'applied', 0, NULL, 1000, 2000, NULL)`,
+      )
+      .run(GUILD_ID, MEMBER_ID, ROLE_ID);
+
+    // Applies 0094 against the seeded rows, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // The batch row survives with every original column value unchanged.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, batch_id, source, actor_type, actor_id,
+                  started_at, finished_at, undone_at
+           FROM effect_batches`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        batch_id: 'batch-1',
+        source: 'dashboard',
+        actor_type: 'dashboard',
+        actor_id: 'acct_1',
+        started_at: 1000,
+        finished_at: 2000,
+        undone_at: null,
+      },
+    ]);
+    // The role effect survives with the batch it belongs to.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, effect_id, batch_id, dedupe_key, user_id, role_id, action,
+                  state, had_role_before, panel_id, attempted_at, completed_at, error_code
+           FROM role_effects`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        effect_id: 'effect-1',
+        batch_id: 'batch-1',
+        dedupe_key: 'dedupe-1',
+        user_id: MEMBER_ID,
+        role_id: ROLE_ID,
+        action: 'grant',
+        state: 'applied',
+        had_role_before: 0,
+        panel_id: null,
+        attempted_at: 1000,
+        completed_at: 2000,
+        error_code: null,
+      },
+    ]);
+    // The rebuild leaves no dangling reference behind.
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+
+    // And the widened CHECK admits the new source the MCP role tools open
+    // their batches with.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO effect_batches
+             (guild_id, batch_id, source, actor_type, actor_id, started_at)
+           VALUES (?, 'batch-mcp', 'mcp', 'mcp_operator', 'tok_1', 3000)`,
+        )
+        .run(GUILD_ID),
+    ).not.toThrow();
+    expect(
+      raw.prepare(`SELECT source FROM effect_batches WHERE batch_id = 'batch-mcp'`).get(),
+    ).toEqual({ source: 'mcp' });
+
+    raw.close();
+  });
+});
+
+describe('migration 0095 adds the reminder origin column (ADR 0119)', () => {
+  const GUILD_ID = '111111111111111111';
+  const CREATOR_ID = '222222222222222222';
+  const CHANNEL_ID = '333333333333333333';
+
+  it('reads pre-0095 rows back as assistant with every other column intact', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the state just before 0095, seeded the way a
+    // real upgrade would find it: one reminder row with every column set.
+    runMigrations(raw, db, migrationsFolderUpToTag('0094_effect_batches_mcp_source'));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO assistant_reminders
+           (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+            next_attempt_at, claimed_at, created_at, status, dedupe_key,
+            failure_reason, mentions_json, recurrence_json, context,
+            delivered_count, updated_at)
+         VALUES (?, 'r1', ?, ?, 'quokka snack', 1000, 1500, NULL, 500,
+            'scheduled', 'reminder:r1',
+            NULL, '{"userIds":[],"roleIds":[],"everyone":false,"here":false}',
+            NULL, 'why', 2, 700)`,
+      )
+      .run(GUILD_ID, CREATOR_ID, CHANNEL_ID);
+
+    // Applies 0095 against the seeded row, through `runMigrations` — the
+    // exact call a real upgrade makes — never `migrate()` directly.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // The carried row reads back as assistant with every other column intact.
+    expect(
+      raw
+        .prepare(
+          `SELECT guild_id, reminder_id, creator_id, destination_id, text, due_at,
+                  next_attempt_at, claimed_at, created_at, status, dedupe_key,
+                  failure_reason, mentions_json, recurrence_json, context,
+                  delivered_count, updated_at, origin
+           FROM assistant_reminders`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        guild_id: GUILD_ID,
+        reminder_id: 'r1',
+        creator_id: CREATOR_ID,
+        destination_id: CHANNEL_ID,
+        text: 'quokka snack',
+        due_at: 1000,
+        next_attempt_at: 1500,
+        claimed_at: null,
+        created_at: 500,
+        status: 'scheduled',
+        dedupe_key: 'reminder:r1',
+        failure_reason: null,
+        mentions_json: '{"userIds":[],"roleIds":[],"everyone":false,"here":false}',
+        recurrence_json: null,
+        context: 'why',
+        delivered_count: 2,
+        updated_at: 700,
+        origin: 'assistant',
+      },
+    ]);
+    // The rebuild leaves no dangling reference behind.
+    expect(raw.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
+
+    // The primary key, the guild foreign key, the dedupe unique key and
+    // every CHECK survived the rebuild.
+    const pk = raw.prepare(`PRAGMA table_info(assistant_reminders)`).all() as {
+      pk: number;
+      name: string;
+    }[];
+    expect(
+      pk
+        .filter((c) => c.pk > 0)
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(['guild_id', 'reminder_id']);
+    const fks = raw.prepare(`PRAGMA foreign_key_list(assistant_reminders)`).all() as {
+      table: string;
+    }[];
+    expect(fks.some((fk) => fk.table === 'guilds')).toBe(true);
+    const indexes = raw.prepare(`PRAGMA index_list(assistant_reminders)`).all() as {
+      name: string;
+      unique: number;
+    }[];
+    // The dedupe unique key and the due-date index survive under their names;
+    // the refused duplicate insert below proves the unique one still enforces.
+    expect(indexes.map((i) => i.name)).toEqual(
+      expect.arrayContaining(['assistant_reminders_dedupe', 'assistant_reminders_due']),
+    );
+    expect(indexes.find((i) => i.name === 'assistant_reminders_dedupe')?.unique).toBe(1);
+    // A second row with the same dedupe key in the same guild is refused.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO assistant_reminders
+             (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+              created_at, status, dedupe_key, delivered_count)
+           VALUES (?, 'r2', ?, ?, 'other', 2000, 600, 'scheduled', 'reminder:r1', 0)`,
+        )
+        .run(GUILD_ID, CREATOR_ID, CHANNEL_ID),
+    ).toThrow();
+    // A reminder naming a guild that does not exist is refused.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO assistant_reminders
+             (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+              created_at, status, dedupe_key, delivered_count)
+           VALUES ('999999999999999999', 'r9', ?, ?, 'other', 2000, 600, 'scheduled', 'reminder:r9', 0)`,
+        )
+        .run(CREATOR_ID, CHANNEL_ID),
+    ).toThrow(/FOREIGN KEY/i);
+    // The widened table still refuses a bad status and a bad origin.
+    for (const sql of [
+      `INSERT INTO assistant_reminders
+         (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+          created_at, status, dedupe_key, delivered_count)
+       VALUES (?, 'bad-status', ?, ?, 'other', 2000, 600, 'snoozed', 'reminder:bad-status', 0)`,
+      `INSERT INTO assistant_reminders
+         (guild_id, reminder_id, creator_id, destination_id, text, due_at,
+          created_at, status, dedupe_key, delivered_count, origin)
+       VALUES (?, 'bad-origin', ?, ?, 'other', 2000, 600, 'scheduled', 'reminder:bad-origin', 0, 'sms')`,
+    ])
+      expect(() => raw.prepare(sql).run(GUILD_ID, CREATOR_ID, CHANNEL_ID)).toThrow(/CHECK/i);
+
+    raw.close();
+  });
+});
+
+describe('migration journal ordering (ADR 0115 section 3)', () => {
+  interface JournalEntry {
+    readonly idx: number;
+    readonly when: number;
+    readonly tag: string;
+  }
+
+  /**
+   * The migrator applies a migration only when its journal `when` is later
+   * than the newest migration already applied, so an entry whose `when` is
+   * equal to or smaller than its predecessor's is silently skipped on a
+   * database that has already run the earlier migration. Returns a
+   * description of the first disorder, or undefined when strictly increasing.
+   */
+  const firstOutOfOrder = (entries: readonly JournalEntry[]): string | undefined => {
+    for (let i = 1; i < entries.length; i += 1) {
+      const prev = entries[i - 1]!;
+      const curr = entries[i]!;
+      if (curr.when <= prev.when) {
+        return (
+          `${curr.tag} (idx ${curr.idx}) has when ${curr.when}, not strictly greater than ` +
+          `${prev.tag} (idx ${prev.idx}) with when ${prev.when}; ` +
+          `the migrator would silently skip it.`
+        );
+      }
+    }
+    return undefined;
+  };
+
+  const readJournal = (): { entries: JournalEntry[] } =>
+    JSON.parse(fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8')) as {
+      entries: JournalEntry[];
+    };
+
+  it('journal when strictly increases', () => {
+    const { entries } = readJournal();
+    expect(entries.length).toBeGreaterThan(0);
+    expect(firstOutOfOrder(entries)).toBeUndefined();
+  });
+
+  it('every journal tag has a matching .sql file', () => {
+    const { entries } = readJournal();
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(
+        fs.existsSync(path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`)),
+        `${entry.tag} has no matching .sql file`,
+      ).toBe(true);
+    }
+  });
+
+  it('the ordering checker fails on a crafted out-of-order journal', () => {
+    expect(
+      firstOutOfOrder([
+        { idx: 0, when: 100, tag: '0000_first' },
+        { idx: 1, when: 90, tag: '0001_second' },
+      ]),
+    ).toContain('0001_second');
+    // Equal timestamps fail too: the migrator's gate is `created_at <`, so an
+    // equal `when` is skipped just like a smaller one.
+    expect(
+      firstOutOfOrder([
+        { idx: 0, when: 100, tag: '0000_first' },
+        { idx: 1, when: 100, tag: '0001_second' },
+      ]),
+    ).toContain('0001_second');
   });
 });

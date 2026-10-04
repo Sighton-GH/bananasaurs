@@ -35,7 +35,7 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
   'log routing list': {
     kind: 'covered',
     page: 'Logging',
-    control: 'routes table plus excluded channels',
+    control: 'route cards',
   },
   'audit tail': { kind: 'covered', page: 'Audit', control: 'audit table, newest first' },
   'jobs list': { kind: 'covered', page: 'Jobs', control: 'queue table with state filters' },
@@ -98,18 +98,33 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     control: 'add domain to allow/deny list',
   },
   'automod domain-rm': { kind: 'covered', page: 'Automod rule', control: 'remove domain' },
-  'log routing set': {
+  'log routing create': {
     kind: 'covered',
     page: 'Logging',
-    control: 'destination channel per event kind',
+    control: 'New route form',
+  },
+  'log routing update': {
+    kind: 'covered',
+    page: 'Logging',
+    control: 'Edit route form',
+  },
+  'log routing on': {
+    kind: 'covered',
+    page: 'Logging',
+    control: 'route On switch',
   },
   'log routing off': {
     kind: 'covered',
     page: 'Logging',
-    control: 'disable one event kind, keeping its channel',
+    control: 'route Off switch',
   },
-  'log routing exclude': { kind: 'covered', page: 'Logging', control: 'exclude a source channel' },
-  'log routing unexclude': { kind: 'covered', page: 'Logging', control: 'remove an exclusion' },
+  'log routing delete': {
+    kind: 'covered',
+    page: 'Logging',
+    control: 'route Delete button',
+  },
+  'log routing exclude': { kind: 'covered', page: 'Permissions', control: 'No access toggle' },
+  'log routing unexclude': { kind: 'covered', page: 'Permissions', control: 'No access toggle' },
   'jobs retry': { kind: 'covered', page: 'Jobs', control: 'retry a failed job, confirmed' },
   'backup now': { kind: 'covered', page: 'Backups', control: 'take a backup now, confirmed' },
   'archive enable-channel': {
@@ -173,6 +188,21 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Connector',
     control: 'remove a category from the send allowlist',
   },
+  'mcp role-policy': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'role policy modes and the role allowlist',
+  },
+  'mcp allow-role': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'allowlist a role for grants or pings, with live refusals',
+  },
+  'mcp disallow-role': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'remove a role from the role allowlist',
+  },
   'panel sync': {
     kind: 'covered',
     page: 'Reaction roles',
@@ -182,6 +212,16 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     kind: 'covered',
     page: 'Reaction roles',
     control: 'role panel builder — channel, behaviour, options, review, then publish',
+  },
+  'panel edit': {
+    kind: 'exception',
+    reason:
+      'Release scope keeps the role panel builder create-only: editing a panel definition and deleting a panel stay CLI (and MCP) operations, which share the panel edit / panel delete ops commands and their audit trail. The Reaction roles page links that scope rather than offering an edit control.',
+  },
+  'panel delete': {
+    kind: 'exception',
+    reason:
+      'Release scope keeps the role panel builder create-only: deleting a panel (its Discord message, then its rows) stays a CLI (and MCP) operation through the panel delete ops command, confirmed and audited. The Reaction roles page links that scope rather than offering a delete control.',
   },
   'adoption allow': {
     kind: 'covered',

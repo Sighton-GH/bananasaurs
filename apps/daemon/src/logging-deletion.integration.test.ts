@@ -36,6 +36,8 @@ import { logMessageDeleteHandler } from './jobs/logging.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const CHANNEL = '222222222222222222';
+const LOG = '777777777777777777';
+const OTHER_LOG = '888888888888888888';
 const AUTHOR = '333333333333333333';
 const MOD_A = '444444444444444444';
 const MOD_B = '555555555555555555';
@@ -49,18 +51,16 @@ let worker: JobWorker;
 let jobPorts: MessageDeleteAttributionPorts;
 
 const seedRoute = (
-  over: { channelId?: string; includeContent?: boolean; enabled?: boolean } = {},
+  over: { name?: string; channelId?: string; includeContent?: boolean; enabled?: boolean } = {},
 ) =>
-  write(scope, ({ db }) => {
-    db.insert(schema.logRoutes)
-      .values({
-        guildId: scope.guildId,
-        eventKind: 'message_delete',
-        channelId: over.channelId ?? CHANNEL,
-        includeContent: (over.includeContent ?? true) ? 1 : 0,
-        enabled: (over.enabled ?? true) ? 1 : 0,
-      })
-      .run();
+  loggingRepo.createRoute(scope, {
+    name: over.name ?? 'route-message-delete',
+    channelId: over.channelId ?? LOG,
+    includeContent: over.includeContent ?? true,
+    enabled: over.enabled ?? true,
+    eventKinds: ['message_delete'],
+    excludedChannelIds: [],
+    nowMs: 0,
   });
 
 beforeEach(() => {
@@ -72,7 +72,7 @@ beforeEach(() => {
 
   const loggingPorts: LoggingPorts = {
     guildId: GUILD,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: discord.now() }),
@@ -86,6 +86,12 @@ beforeEach(() => {
         runAfter,
         now: discord.now(),
       }),
+    getMemberSnapshot: (id) => loggingRepo.getMemberSnapshot(scope, id),
+    saveMemberSnapshot: (s) =>
+      loggingRepo.upsertMemberSnapshot(scope, { ...s, roleIds: [...s.roleIds] }),
+    deleteMemberSnapshot: (id) => {
+      loggingRepo.deleteMemberSnapshot(scope, id);
+    },
     now: () => discord.now(),
     logger,
   };
@@ -94,7 +100,7 @@ beforeEach(() => {
 
   jobPorts = {
     guildId: GUILD,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     fetchAuditLog: () => discord.fetchAuditLog(GUILD, { actionType: 'message_delete', limit: 25 }),
     claimedCountFor: (input) => loggingRepo.claimedCountFor(scope, input),
     incrementClaimedCount: (input) => loggingRepo.incrementClaimedCount(scope, input),
@@ -363,5 +369,27 @@ describe('the route', () => {
     discord.advance(MESSAGE_DELETE_ATTRIBUTION_DELAY_MS);
     expect(await worker.drain()).toBe(1);
     expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+});
+
+describe('two routes', () => {
+  it('each gets the deletion line, with one audit row recorded', async () => {
+    seedRoute({ name: 'route-b', channelId: OTHER_LOG });
+    const messageId = '600000000000000020';
+    define(messageId);
+    await discord.deleteMessageAs({ channelId: CHANNEL, messageId, actorUserId: MOD_A });
+
+    discord.advance(MESSAGE_DELETE_ATTRIBUTION_DELAY_MS);
+    expect(await worker.drain()).toBe(1);
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls.map((c) => c.args[1]).sort()).toEqual([LOG, OTHER_LOG].sort());
+    for (const call of calls) {
+      expect((call.args[2] as { content: string }).content).toContain(`<@${MOD_A}>`);
+    }
+    expect(loggingRepo.findMessageDeleteAttribution(scope, messageId)).toEqual({
+      actorId: MOD_A,
+      inferred: true,
+    });
   });
 });

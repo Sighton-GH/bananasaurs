@@ -6,6 +6,8 @@ import {
   type ChatInputCommandInteraction,
   type Client,
   type CommandInteractionOption,
+  type Guild,
+  type GuildAuditLogsEntry,
   type GuildMember,
   type Interaction,
   type Message,
@@ -19,6 +21,8 @@ import {
 } from 'discord.js';
 import {
   emojiKeyFromGateway,
+  type AuditChangeValue,
+  type AuditLogChange,
   type DomainEvent,
   type NativeAutoModAction,
   type NativeAutoModTrigger,
@@ -180,6 +184,26 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
     translate('autoModerationAction', () => toAutoModerationEvent(execution, now(), onError));
   });
 
+  // --- audit-log entries (ADR 0123) ---------------------------------------
+  // One Discord audit-log entry per gateway dispatch, delivered as
+  // GUILD_AUDIT_LOG_ENTRY_CREATE under the GuildModeration intent. The entry
+  // id is stable, so a replayed dispatch dedupes by fingerprint downstream.
+  client.on(Events.GuildAuditLogEntryCreate, (entry: GuildAuditLogsEntry, guild: Guild) => {
+    translate('auditLogEntry', () => ({
+      kind: 'auditLogEntry',
+      guildId: guild.id,
+      receivedAtMs: now(),
+      entryId: entry.id,
+      action: entry.action,
+      actorId: entry.executorId ?? undefined,
+      targetId: entry.targetId ?? undefined,
+      reason: entry.reason ?? undefined,
+      changes: normaliseAuditChanges(entry.changes),
+      count: auditCountOf(entry.extra),
+      channelId: auditChannelIdOf(entry.extra),
+    }));
+  });
+
   // --- members ------------------------------------------------------------
   client.on(Events.GuildMemberAdd, (member: GuildMember) => {
     translate('memberAdd', () => ({
@@ -190,6 +214,8 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
       roleIds: roleIdsOf(member),
       previousRoleIds: undefined,
       joinedAtMs: member.joinedTimestamp ?? undefined,
+      profile: profileOf(member),
+      previousMember: undefined,
     }));
   });
 
@@ -226,7 +252,56 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
        */
       previousRoleIds: before.partial ? undefined : roleIdsOf(before),
       joinedAtMs: after.joinedTimestamp ?? undefined,
+      profile: profileOf(after),
+      // discord.js hands `before.user` and `after.user` as the SAME object, so
+      // a previous username or avatar is never observable here — only
+      // member-level fields (nickname, guild avatar) have a real "before", and
+      // only when `before` was not built from the dispatch alone.
+      previousMember: before.partial
+        ? undefined
+        : {
+            nickname: before.nickname ?? undefined,
+            guildAvatarHash: before.avatar ?? undefined,
+          },
     }));
+  });
+
+  /**
+   * Account-level changes (username, display name, avatar) never reach
+   * `GuildMemberUpdate`: for a cached member discord.js compares with
+   * `GuildMember.equals`, which ignores user fields, and emits only
+   * `UserUpdate(oldUser, newUser)`. So a rename with no member-level change
+   * would be invisible to the logging module without this listener, which
+   * re-emits one `memberUpdate` per guild holding the member — roles
+   * unchanged, so `previousRoleIds` is the member's current set and
+   * `previousMember` is read from that same member.
+   */
+  client.on(Events.UserUpdate, (oldUser: AnyUser, newUser: User) => {
+    void oldUser;
+    for (const guild of client.guilds.cache.values()) {
+      const member = guild.members.cache.get(newUser.id);
+      if (member === undefined) continue;
+      translate('memberUpdate', () => ({
+        kind: 'memberUpdate',
+        guildId: guild.id,
+        receivedAtMs: now(),
+        userId: newUser.id,
+        roleIds: roleIdsOf(member),
+        previousRoleIds: roleIdsOf(member),
+        joinedAtMs: member.joinedTimestamp ?? undefined,
+        profile: {
+          username: newUser.username,
+          globalName: newUser.globalName ?? undefined,
+          nickname: member.nickname ?? undefined,
+          avatarHash: newUser.avatar ?? undefined,
+          guildAvatarHash: member.avatar ?? undefined,
+        },
+        previousMember: {
+          nickname: member.nickname ?? undefined,
+          guildAvatarHash: member.avatar ?? undefined,
+        },
+      }));
+    }
   });
 
   // --- roles --------------------------------------------------------------
@@ -392,6 +467,26 @@ function roleIdsOf(member: AnyMember): string[] {
   return [...member.roles.cache.keys()].filter((roleId) => roleId !== everyone);
 }
 
+/**
+ * The member as of this dispatch, for the logging module's last-seen record.
+ * Hashes only — nothing is downloaded or stored beyond the hash Discord sent.
+ */
+function profileOf(member: GuildMember): {
+  username: string;
+  globalName: string | undefined;
+  nickname: string | undefined;
+  avatarHash: string | undefined;
+  guildAvatarHash: string | undefined;
+} {
+  return {
+    username: member.user.username,
+    globalName: member.user.globalName ?? undefined,
+    nickname: member.nickname ?? undefined,
+    avatarHash: member.user.avatar ?? undefined,
+    guildAvatarHash: member.avatar ?? undefined,
+  };
+}
+
 function toMessageEvent(
   kind: 'messageCreate' | 'messageUpdate' | 'messageDelete',
   message: AnyMessage,
@@ -523,4 +618,101 @@ function toAutoModerationEvent(
     matchedKeyword: execution.matchedKeyword ?? undefined,
     matchedContent: execution.matchedContent ?? undefined,
   };
+}
+
+/**
+ * The `count` an audit-log entry carries, when it carries one.
+ *
+ * Only `MessageBulkDelete` (and a few member-move/disconnect actions) put a
+ * count in `extra`; everything else leaves it absent. A non-finite number is
+ * treated as absent rather than propagated — raw Discord values are untrusted
+ * input, and `NaN` is not JSON-safe.
+ */
+function auditCountOf(extra: unknown): number | undefined {
+  if (typeof extra !== 'object' || extra === null) return undefined;
+  const count = (extra as { count?: unknown }).count;
+  return typeof count === 'number' && Number.isFinite(count) ? count : undefined;
+}
+
+/**
+ * The channel an audit-log entry concerns, when Discord names one.
+ *
+ * `extra.channel` is a channel structure (or a bare `{ id }` when the channel
+ * is not cached) on message pin/unpin, single-message delete and a few other
+ * actions; otherwise there is no channel to report. Anything that is not a
+ * string id is treated as absent.
+ */
+function auditChannelIdOf(extra: unknown): string | undefined {
+  if (typeof extra !== 'object' || extra === null) return undefined;
+  const channel = (extra as { channel?: unknown }).channel;
+  if (typeof channel !== 'object' || channel === null) return undefined;
+  const id = (channel as { id?: unknown }).id;
+  return typeof id === 'string' ? id : undefined;
+}
+
+/**
+ * Discord's raw change list, normalised to JSON-safe domain shape.
+ *
+ * `entry.changes` carries raw Discord values (`old_value`/`new_value`), which
+ * are untrusted input: role lists arrive as objects and arrays, and a future
+ * action could send anything. Each change becomes `{ key, old, new }`, where a
+ * missing side stays `undefined` ("Discord sent no value", not "the value was
+ * empty") and an unrepresentable value becomes `undefined` via `toAuditChangeValue`.
+ */
+function normaliseAuditChanges(
+  changes: readonly { key: unknown; old?: unknown; new?: unknown }[],
+): AuditLogChange[] {
+  if (!Array.isArray(changes)) return [];
+  return changes
+    .filter(
+      (change): change is { key: unknown; old?: unknown; new?: unknown } =>
+        typeof change === 'object' && change !== null,
+    )
+    .map((change) => ({
+      key: String(change.key),
+      old: toAuditChangeValue(change.old),
+      new: toAuditChangeValue(change.new),
+    }));
+}
+
+/** How deep `toAuditChangeValue` recurses into arrays and plain objects. */
+const AUDIT_CHANGE_DEPTH_LIMIT = 4;
+
+/**
+ * One raw Discord change value, made JSON-safe.
+ *
+ * Strings, finite numbers, booleans and null pass through; arrays and plain
+ * objects recurse (to a depth limit); bigints become their decimal string;
+ * everything else — `undefined`, functions, symbols, non-finite numbers, class
+ * instances, values nested too deep — becomes `undefined`.
+ */
+function toAuditChangeValue(value: unknown, depth = 0): AuditChangeValue | undefined {
+  if (value === null) return null;
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'bigint') return value.toString();
+  if (depth >= AUDIT_CHANGE_DEPTH_LIMIT) return undefined;
+  if (Array.isArray(value)) {
+    const out: AuditChangeValue[] = [];
+    for (const item of value) {
+      const safe = toAuditChangeValue(item, depth + 1);
+      if (safe !== undefined) out.push(safe);
+    }
+    return out;
+  }
+  if (typeof value === 'object' && isPlainObject(value)) {
+    const out: { [k: string]: AuditChangeValue } = {};
+    for (const [k, v] of Object.entries(value)) {
+      const safe = toAuditChangeValue(v, depth + 1);
+      if (safe !== undefined) out[k] = safe;
+    }
+    return out;
+  }
+  return undefined;
+}
+
+/** True for objects Discord serialised as JSON — not class instances. */
+function isPlainObject(value: object): value is Record<string, unknown> {
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }

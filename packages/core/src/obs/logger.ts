@@ -123,6 +123,7 @@ export const LOGGABLE_FIELDS = new Set([
   'settingKey',
   'availableAt',
   'resourceId',
+  'routeId',
 ]);
 
 /**

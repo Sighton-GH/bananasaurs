@@ -532,13 +532,53 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
           ok: true,
           text: 'r',
           sources: [{ title: 'Guide', url: 'https://a.example/' }],
-          web: true,
+          webSource: 'brave',
         })),
       }),
     );
     expect(result.web).toBe(true);
+    expect(result.webSources).toEqual(['brave']);
     expect(result.sources).toEqual([{ title: 'Guide', url: 'https://a.example/' }]);
     expect(result.text).toBe('Store them half charged.');
+  });
+
+  it('deduplicates webSources in first-seen order across brave, tavily and brave', async () => {
+    const { provider } = scripted([
+      toolAnswer([
+        { name: 'web_search', args: { query: 'a' } },
+        { name: 'web_search', args: { query: 'b' } },
+        { name: 'web_search', args: { query: 'c' } },
+      ]),
+      textAnswer('Done.'),
+    ]);
+    const sources = ['brave', 'tavily', 'brave'] as const;
+    let n = 0;
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        // Round 2+ only allows ID tools, so run all three calls in round 1.
+        tools: {
+          firstRound: [decl('web_search')],
+          idRound: [],
+          run: async (call: ToolCall) => ({
+            ...okResult(call.name, 'r'),
+            webSource: sources[n++ % sources.length]!,
+          }),
+        },
+      }),
+    );
+    expect(result.web).toBe(true);
+    expect(result.webSources).toEqual(['brave', 'tavily']);
+  });
+
+  it('leaves web false with empty webSources when no webSource was recorded', async () => {
+    const { provider } = scripted([textAnswer('Done.')]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        tools: loopTools(async (call) => okResult(call.name)),
+      }),
+    );
+    expect(result.web).toBe(false);
+    expect(result.webSources).toEqual([]);
   });
 });
 

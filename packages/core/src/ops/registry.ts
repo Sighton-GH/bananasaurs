@@ -51,6 +51,11 @@ import {
   mcpDisallowChannelCommand,
   mcpSendsCommand,
 } from './commands/mcp-allowlist.js';
+import {
+  mcpAllowRoleCommand,
+  mcpDisallowRoleCommand,
+  mcpRolePolicyCommand,
+} from './commands/mcp-role-policy.js';
 import { killswitchCommand } from './commands/killswitch.js';
 import {
   auditTailCommand,
@@ -64,13 +69,18 @@ import {
 import { statusCommand } from './commands/status.js';
 import { adoptionAllowCommand, panelSyncCommand, undoCommand } from './commands/effects.js';
 import { panelCreateCommand } from './commands/panel-create.js';
+import { panelDeleteCommand } from './commands/panel-delete.js';
+import { panelEditCommand } from './commands/panel-edit.js';
 import {
   configSetCommand,
   jobsRetryCommand,
+  logRoutingCreateCommand,
+  logRoutingDeleteCommand,
   logRoutingExcludeCommand,
   logRoutingOffCommand,
-  logRoutingSetCommand,
+  logRoutingOnCommand,
   logRoutingUnexcludeCommand,
+  logRoutingUpdateCommand,
 } from './commands/writes.js';
 
 /**
@@ -109,8 +119,11 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   automodInviteDenyCommand,
   automodDomainAddCommand,
   automodDomainRmCommand,
-  logRoutingSetCommand,
+  logRoutingCreateCommand,
+  logRoutingUpdateCommand,
+  logRoutingOnCommand,
   logRoutingOffCommand,
+  logRoutingDeleteCommand,
   logRoutingExcludeCommand,
   logRoutingUnexcludeCommand,
   jobsRetryCommand,
@@ -132,11 +145,16 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpAllowCategoryCommand,
   mcpDisallowCategoryCommand,
   mcpDisallowChannelCommand,
+  mcpRolePolicyCommand,
+  mcpAllowRoleCommand,
+  mcpDisallowRoleCommand,
   panelCreateCommand,
+  panelEditCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).
   panelSyncCommand,
+  panelDeleteCommand,
   adoptionAllowCommand,
   undoCommand,
   killswitchCommand,

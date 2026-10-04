@@ -1,12 +1,16 @@
 import {
   AuditLogEvent,
   ChannelType,
+  GuildScheduledEventEntityType,
+  GuildScheduledEventPrivacyLevel,
+  GuildScheduledEventStatus,
   InteractionResponseType,
   MessageFlags,
   Routes,
   makeURLSearchParams,
   type APIAuditLog,
   type APIAuditLogEntry,
+  type APIChannel,
   type APIGuild,
   type APIGuildMember,
   type APIGuildScheduledEvent,
@@ -15,6 +19,9 @@ import {
   type APIRole,
   type APIUser,
   type REST,
+  type RESTPatchAPIGuildRoleJSONBody,
+  type RESTPatchAPIGuildRolePositionsJSONBody,
+  type RESTPostAPIGuildRoleJSONBody,
 } from 'discord.js';
 import { DiscordApiError, unicodeEmojiChars } from '@bananasaurs/core';
 import type {
@@ -167,6 +174,57 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       return highest;
     },
 
+    /**
+     * Role creation (MCP slice 4): `POST` on the guild-roles route. The
+     * `permissions: '0'` is not a caller choice — the port input has no
+     * permissions field, and this body always carries `'0'`, so no caller
+     * can create a role with a permission bit (review focus 6).
+     */
+    async createRole(guildId, input) {
+      const created = (await mapErrors(() =>
+        rest.post(Routes.guildRoles(guildId), {
+          body: {
+            name: input.name,
+            permissions: '0',
+            ...(input.color === undefined ? {} : { color: input.color }),
+            ...(input.hoist === undefined ? {} : { hoist: input.hoist }),
+            ...(input.mentionable === undefined ? {} : { mentionable: input.mentionable }),
+          } satisfies RESTPostAPIGuildRoleJSONBody,
+        }),
+      )) as APIRole;
+      return { roleId: created.id };
+    },
+
+    /**
+     * Role moves (MCP slice 4): `PATCH` on the guild-roles route with one
+     * `{ id, position }` entry — `RESTPatchAPIGuildRolePositionsJSONBody`'s
+     * array form, a single-element batch rather than a whole-list rewrite.
+     */
+    async setRolePosition(guildId, roleId, position) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildRoles(guildId), {
+          body: [{ id: roleId, position }] satisfies RESTPatchAPIGuildRolePositionsJSONBody,
+        }),
+      );
+    },
+
+    /**
+     * Role edits (MCP slice 4): `PATCH` on the guild-role route with only
+     * the fields given — the way `setThreadState` carries only its fields —
+     * so a rename never disturbs the colour and vice versa.
+     */
+    async editRole(guildId, roleId, patch) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildRole(guildId, roleId), {
+          body: {
+            ...(patch.name === undefined ? {} : { name: patch.name }),
+            ...(patch.color === undefined ? {} : { color: patch.color }),
+            ...(patch.mentionable === undefined ? {} : { mentionable: patch.mentionable }),
+          } satisfies RESTPatchAPIGuildRoleJSONBody,
+        }),
+      );
+    },
+
     // --- members ---------------------------------------------------------
     async fetchMember(guildId, userId) {
       const member = (await mapErrors(() =>
@@ -205,10 +263,62 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       return { exists: true };
     },
 
+    /**
+     * Live pin state and reaction counts (slice 2, Task 6): the same
+     * `GET channelMessage` route `fetchMessage` already reads, projected to
+     * `pinned` and `reactions[].{emoji, count}`. A custom emoji renders as
+     * `<:name:id>` — the name Discord reports on the reaction, which is
+     * display text, not identity — and a unicode one as its characters.
+     * `undefined` on 404 (gone) or 403 (no access), so the caller answers
+     * without the metadata instead of failing; anything else still throws.
+     */
+    async fetchMessageMeta(_guildId, ref) {
+      let message: APIMessage;
+      try {
+        message = (await mapErrors(() =>
+          rest.get(Routes.channelMessage(ref.channelId, ref.messageId)),
+        )) as APIMessage;
+      } catch (err) {
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+      return {
+        pinned: message.pinned,
+        reactions: (message.reactions ?? []).map((reaction) => ({
+          emoji:
+            reaction.emoji.id != null
+              ? `<:${reaction.emoji.name ?? 'unknown'}:${reaction.emoji.id}>`
+              : (reaction.emoji.name ?? ''),
+          count: reaction.count,
+        })),
+      };
+    },
+
     async createReaction(_guildId, ref, emoji) {
       await mapErrors(() =>
         rest.put(Routes.channelMessageOwnReaction(ref.channelId, ref.messageId, restEmoji(emoji))),
       );
+    },
+
+    /** Removes the bot's own reaction with DELETE on the same `@me` route. */
+    async deleteOwnReaction(_guildId, ref, emoji) {
+      await mapErrors(() =>
+        rest.delete(
+          Routes.channelMessageOwnReaction(ref.channelId, ref.messageId, restEmoji(emoji)),
+        ),
+      );
+    },
+
+    /** Pins a message with PUT on Discord's non-deprecated pin route. */
+    async pinMessage(_guildId, ref) {
+      await mapErrors(() => rest.put(Routes.channelMessagesPin(ref.channelId, ref.messageId)));
+    },
+
+    /** Unpins a message with DELETE on the same route. */
+    async unpinMessage(_guildId, ref) {
+      await mapErrors(() => rest.delete(Routes.channelMessagesPin(ref.channelId, ref.messageId)));
     },
 
     async fetchReactionUsers(_guildId, ref, emoji, options = {}) {
@@ -269,6 +379,28 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       }
     },
 
+    /** One message's author, content and embeds: edit/delete eligibility and undo (ADR 0116 §4). */
+    async fetchMessageAuthor(_guildId, ref) {
+      try {
+        const message = (await mapErrors(() =>
+          rest.get(Routes.channelMessage(ref.channelId, ref.messageId)),
+        )) as APIMessage;
+        return {
+          authorId: message.author.id,
+          content: message.content,
+          embeds: message.embeds ?? [],
+        };
+      } catch (err) {
+        // Gone or no access is routine — the same fold `fetchMessageContent`
+        // makes, so a reply context resolves without the block instead of
+        // failing the turn.
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+    },
+
     async fetchChannelMessages(
       _guildId,
       channelId,
@@ -276,11 +408,17 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     ): Promise<readonly RecentMessage[] | undefined> {
       // Discord caps a channel page at 100; the assistant's window setting
       // caps lower still. Clamped, never defaulted: the caller names N.
+      // `before` is omitted when absent — a first page reads from the
+      // newest — rather than sent as a sentinel id Discord never promised
+      // to accept.
       const limit = Math.min(Math.max(opts.limit, 1), 50);
       try {
         const messages = (await mapErrors(() =>
           rest.get(Routes.channelMessages(channelId), {
-            query: new URLSearchParams({ before: opts.before, limit: String(limit) }),
+            query: makeURLSearchParams({
+              limit,
+              ...(opts.before !== undefined ? { before: opts.before } : {}),
+            }),
           }),
         )) as APIMessageWithMember[];
         // Discord returns newest first; channel context reads oldest first.
@@ -469,6 +607,136 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     },
 
     /**
+     * Thread membership for ADR 0115's private-thread reads: 200 answers
+     * true, 404 answers false; anything else still throws. `_guildId` is
+     * the mandatory scope key with nothing to address — the thread-member
+     * route carries no guild id, like the other channel routes above.
+     */
+    async isThreadMember(_guildId, threadId, userId) {
+      try {
+        await mapErrors(() => rest.get(Routes.threadMembers(threadId, userId)));
+        return true;
+      } catch (err) {
+        if (err instanceof DiscordApiError && err.status === 404) return false;
+        throw err;
+      }
+    },
+
+    /**
+     * Thread facts over REST for threads the gateway cache has swept
+     * (ADR 0115): `GET /channels/{thread}`. `undefined` on 404 (gone) or 403
+     * (no access), on a channel outside this guild, on a non-thread, or on a
+     * thread with no parent — all routine here, reported the same way rather
+     * than thrown, so the caller answers "no thread" instead of failing.
+     * Anything else still throws.
+     */
+    async fetchThreadInfo(guildId, threadId) {
+      let channel: APIChannel;
+      try {
+        channel = (await mapErrors(() => rest.get(Routes.channel(threadId)))) as APIChannel;
+      } catch (err) {
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+      if (
+        channel.type !== ChannelType.PublicThread &&
+        channel.type !== ChannelType.PrivateThread &&
+        channel.type !== ChannelType.AnnouncementThread
+      ) {
+        return undefined;
+      }
+      if (channel.guild_id !== guildId || channel.parent_id == null) return undefined;
+      return {
+        id: channel.id,
+        // A thread always has a title in practice; the API type allows
+        // null, so name it rather than letting `null` reach the caller.
+        name: channel.name ?? '(unnamed thread)',
+        parentId: channel.parent_id,
+        isPrivate: channel.type === ChannelType.PrivateThread,
+      };
+    },
+
+    /**
+     * Thread starts for the MCP (slice 3): standalone threads POST to
+     * `threads(channel)`, from-message threads to
+     * `threads(channel, message)` — whose body takes no `type`, Discord
+     * deriving the kind from the message. The standalone default is
+     * private (API v9/v10), so `type` is always sent there; `invitable`
+     * is a private-thread field and is sent only for private threads.
+     */
+    async createThread(_guildId, channelId, input) {
+      if (input.fromMessageId !== undefined && input.type === 'private') {
+        throw new TypeError('createThread: fromMessageId is only valid for public threads');
+      }
+      const route =
+        input.fromMessageId !== undefined
+          ? Routes.threads(channelId, input.fromMessageId)
+          : Routes.threads(channelId);
+      const body =
+        input.fromMessageId !== undefined
+          ? { name: input.name, auto_archive_duration: input.autoArchiveMinutes }
+          : {
+              name: input.name,
+              auto_archive_duration: input.autoArchiveMinutes,
+              type: input.type === 'public' ? ChannelType.PublicThread : ChannelType.PrivateThread,
+              // ADR 0116 §3: a private thread is not invitable unless the
+              // caller says so — Discord's own default is true.
+              ...(input.type === 'private' ? { invitable: input.invitable ?? false } : {}),
+            };
+      const thread = (await mapErrors(() => rest.post(route, { body }))) as APIChannel;
+      return { threadId: thread.id };
+    },
+
+    /** Adds a member with PUT on the thread-member route (no body). */
+    async addThreadMember(_guildId, threadId, userId) {
+      await mapErrors(() => rest.put(Routes.threadMembers(threadId, userId)));
+    },
+
+    /** Removes a member with DELETE on the same route. */
+    async removeThreadMember(_guildId, threadId, userId) {
+      await mapErrors(() => rest.delete(Routes.threadMembers(threadId, userId)));
+    },
+
+    /**
+     * Forum posts (slice 3): the starter message is built by the same
+     * `toRestMessage` the channel sends use, so embeds and mention policy
+     * behave identically. Discord answers with the thread channel plus the
+     * starter `message` nested in it; a forum post's starter message shares
+     * the thread's id, which is the fallback when `message` is absent. Listed
+     * for the live smoke run: not yet observed against Discord.
+     */
+    async createForumPost(_guildId, forumChannelId, input) {
+      const thread = (await mapErrors(() =>
+        rest.post(Routes.threads(forumChannelId), {
+          body: {
+            name: input.name,
+            message: toRestMessage(input.message),
+            applied_tags: [...input.appliedTagIds],
+          },
+        }),
+      )) as APIChannel & { message?: { id: string } | null };
+      return { threadId: thread.id, messageId: thread.message?.id ?? thread.id };
+    },
+
+    /**
+     * Archive/lock (slice 3): PATCH on the channel route with only the
+     * fields given — `RESTPatchAPIChannelJSONBody`'s `archived`/`locked` —
+     * so an archive never disturbs the lock and vice versa.
+     */
+    async setThreadState(_guildId, threadId, state) {
+      await mapErrors(() =>
+        rest.patch(Routes.channel(threadId), {
+          body: {
+            ...(state.archived !== undefined ? { archived: state.archived } : {}),
+            ...(state.locked !== undefined ? { locked: state.locked } : {}),
+          },
+        }),
+      );
+    },
+
+    /**
      * Guild scheduled events for the assistant (ADR 0092 decision 1): no
      * gateway intent is needed for the REST read. A 403 (the bot may not
      * see them) answers `[]` rather than failing the turn; anything else
@@ -484,6 +752,11 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
           name: event.name,
           ...(event.description == null ? {} : { description: event.description }),
           scheduledStartAt: Date.parse(event.scheduled_start_time),
+          // `scheduled_end_time` is `string | null`: null means the event has
+          // no end time, so the field stays absent rather than becoming one.
+          ...(event.scheduled_end_time == null
+            ? {}
+            : { scheduledEndAt: Date.parse(event.scheduled_end_time) }),
           ...(event.channel_id == null ? {} : { channelId: event.channel_id }),
           ...(event.entity_metadata?.location == null
             ? {}
@@ -493,6 +766,100 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         if (err instanceof DiscordApiError && err.status === 403) return [];
         throw err;
       }
+    },
+
+    /**
+     * Guild scheduled event writes (MCP slice 5): voice and stage events are
+     * hosted in a channel, external ones at a `location` with a required end
+     * time. The external-without-`endAt` refusal mirrors `createThread`'s
+     * `TypeError`, thrown before any call — Discord would reject it, so the
+     * combination is a caller bug, not a Discord refusal.
+     */
+    async createScheduledEvent(guildId, input) {
+      if (input.location.kind === 'external' && input.endAt === undefined) {
+        throw new TypeError('createScheduledEvent: external events require endAt');
+      }
+      const created = (await mapErrors(() =>
+        rest.post(Routes.guildScheduledEvents(guildId), {
+          body: {
+            name: input.name,
+            // The only privacy level Discord accepts for a guild event;
+            // always sent, never a caller choice.
+            privacy_level: GuildScheduledEventPrivacyLevel.GuildOnly,
+            scheduled_start_time: new Date(input.startAt).toISOString(),
+            ...(input.endAt === undefined
+              ? {}
+              : { scheduled_end_time: new Date(input.endAt).toISOString() }),
+            ...(input.description === undefined ? {} : { description: input.description }),
+            entity_type:
+              input.location.kind === 'voice'
+                ? GuildScheduledEventEntityType.Voice
+                : input.location.kind === 'stage'
+                  ? GuildScheduledEventEntityType.StageInstance
+                  : GuildScheduledEventEntityType.External,
+            ...(input.location.kind === 'external'
+              ? { entity_metadata: { location: input.location.place } }
+              : { channel_id: input.location.channelId }),
+          },
+        }),
+      )) as APIGuildScheduledEvent;
+      return { eventId: created.id };
+    },
+
+    /**
+     * Scheduled-event edits (MCP slice 5): PATCH with only the fields given,
+     * the way `setThreadState` carries only its fields. `description: null`
+     * clears the description (the PATCH body's `description` is nullable in
+     * discord-api-types v10); `scheduled_end_time` is not, so an end time can
+     * only be moved, never cleared. A location change carries the entity type
+     * with it, and an external location clears the
+     * channel — Discord hosts an external event at a `location`, not in a
+     * channel.
+     */
+    async editScheduledEvent(guildId, eventId, patch) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildScheduledEvent(guildId, eventId), {
+          body: {
+            ...(patch.name === undefined ? {} : { name: patch.name }),
+            ...(patch.description === undefined ? {} : { description: patch.description }),
+            ...(patch.startAt === undefined
+              ? {}
+              : { scheduled_start_time: new Date(patch.startAt).toISOString() }),
+            ...(patch.endAt === undefined
+              ? {}
+              : { scheduled_end_time: new Date(patch.endAt).toISOString() }),
+            ...(patch.location === undefined
+              ? {}
+              : patch.location.kind === 'external'
+                ? {
+                    entity_type: GuildScheduledEventEntityType.External,
+                    channel_id: null,
+                    entity_metadata: { location: patch.location.place },
+                  }
+                : {
+                    entity_type:
+                      patch.location.kind === 'voice'
+                        ? GuildScheduledEventEntityType.Voice
+                        : GuildScheduledEventEntityType.StageInstance,
+                    channel_id: patch.location.channelId,
+                  }),
+          },
+        }),
+      );
+    },
+
+    /**
+     * Scheduled-event cancellation (MCP slice 5): PATCH with `status:
+     * Canceled`. Discord deletes nothing — a cancelled event stays listed —
+     * and only cancels events still `Scheduled`; anything else is a
+     * server-side refusal.
+     */
+    async cancelScheduledEvent(guildId, eventId) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildScheduledEvent(guildId, eventId), {
+          body: { status: GuildScheduledEventStatus.Canceled },
+        }),
+      );
     },
 
     // --- interactions ----------------------------------------------------
@@ -566,6 +933,10 @@ function toDiscordRole(role: APIRole): DiscordRole {
     // Integration-managed roles cannot be assigned at any position, which is a
     // separate refusal from hierarchy and must not be confused with it.
     managed: role.managed,
+    // The bitfield as Discord sends it (a decimal string). Slice 4's role
+    // reads need it live; absent in older recorded fixtures, which is why
+    // `DiscordRole.permissions` is optional.
+    permissions: role.permissions,
   };
 }
 
@@ -646,7 +1017,9 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     // panel posts and log messages send. `replyTo` (ADR 0072) forces
     // `replied_user: true` in on top of whatever `allowedMentions` already
     // says, without disturbing `parse`, so replying still pings the member
-    // being replied to even when nothing else set `allowedMentions` at all.
+    // being replied to even when nothing else set `allowedMentions` at all —
+    // and `pingReplyAuthor: false` is the only thing that turns that ping
+    // off; undefined keeps today's behaviour exactly.
     ...(allowedMentions === undefined && message.replyTo === undefined
       ? {}
       : {
@@ -654,12 +1027,28 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
             parse: allowedMentions?.parse ?? [],
             ...(allowedMentions?.roles === undefined ? {} : { roles: allowedMentions.roles }),
             ...(allowedMentions?.users === undefined ? {} : { users: allowedMentions.users }),
-            ...(message.replyTo === undefined ? {} : { replied_user: true }),
+            ...(message.replyTo === undefined
+              ? {}
+              : { replied_user: message.pingReplyAuthor === false ? false : true }),
           },
         }),
     ...(message.replyTo === undefined
       ? {}
       : { message_reference: { message_id: message.replyTo, fail_if_not_exists: false } }),
+    // A native poll (MCP slice 5): `question.text`, one `poll_media.text`
+    // answer each, `duration` in hours and `allow_multiselect`. Opt-in only —
+    // the MCP send path is the sole caller that sets it, and a default here
+    // would change what panel posts and log messages send.
+    ...(message.poll === undefined
+      ? {}
+      : {
+          poll: {
+            question: { text: message.poll.question },
+            answers: message.poll.answers.map((answer) => ({ poll_media: { text: answer } })),
+            duration: message.poll.durationHours,
+            allow_multiselect: message.poll.allowMultiselect,
+          },
+        }),
   };
 }
 

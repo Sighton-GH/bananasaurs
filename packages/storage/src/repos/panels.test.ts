@@ -12,11 +12,13 @@ import {
   findPanel,
   findPanelByMessage,
   isPanelEnabled,
+  isPanelMessage,
   listAdoptedPanels,
   listPanels,
   setAdoptionPassState,
   setPanelMessage,
   setPanelStatus,
+  updatePanel,
 } from './panels.js';
 
 /**
@@ -235,6 +237,23 @@ describe('findPanelByMessage', () => {
   });
 });
 
+describe('isPanelMessage', () => {
+  it('is true for a panel message in any channel of this guild', () => {
+    createPanel(a, definition(), 1000);
+    expect(isPanelMessage(a, MESSAGE)).toBe(true);
+  });
+
+  it('is false for a message with no panel', () => {
+    createPanel(a, definition(), 1000);
+    expect(isPanelMessage(a, '999999999999999999')).toBe(false);
+  });
+
+  it("is false for another guild's panel message", () => {
+    createPanel(a, definition(), 1000);
+    expect(isPanelMessage(b, MESSAGE)).toBe(false);
+  });
+});
+
 describe('guild scope', () => {
   it("does not find another guild's panel by id", () => {
     createPanel(a, definition(), 1000);
@@ -303,6 +322,90 @@ describe('mutating a panel', () => {
     deletePanel(a, 'roles');
     expect(findPanel(a, 'roles')).toBeUndefined();
     expect(listPanels(a)).toEqual([]);
+  });
+});
+
+describe('updatePanel', () => {
+  const ROLE_C = '888888888888888888';
+
+  const managed = (over: Record<string, unknown> = {}): PanelDefinition =>
+    panelDefinitionSchema.parse({
+      panelId: 'roles',
+      kind: 'managed',
+      channelId: CHANNEL,
+      behaviour: 'toggle',
+      component: 'button',
+      options: [{ optionId: 'a', roleId: ROLE_A, label: 'Alpha', position: 0 }],
+      ...over,
+    });
+
+  it('replaces options and blocked roles but keeps the message id and status', () => {
+    createPanel(a, managed(), 1000);
+    setPanelMessage(a, 'roles', MESSAGE, 1500);
+    setPanelStatus(a, 'roles', 'disabled_by_owner', 'taking a break', 1500);
+
+    updatePanel(
+      a,
+      managed({
+        behaviour: 'add_only',
+        content: 'Pick one.',
+        options: [{ optionId: 'b', roleId: ROLE_B, label: 'Beta', position: 0 }],
+        blockedRoleIds: [BLOCKED],
+      }),
+      2000,
+    );
+
+    const panel = findPanel(a, 'roles');
+    expect(panel?.options.map((o) => o.optionId)).toEqual(['b']);
+    expect(panel?.blockedRoleIds).toEqual([BLOCKED]);
+    expect(panel?.behaviour).toBe('add_only');
+    expect(panel?.content).toBe('Pick one.');
+    // The posted message and the out-of-service state survive the edit: a new
+    // definition must neither republish nor re-enable by itself.
+    expect(panel?.messageId).toBe(MESSAGE);
+    expect(panel?.status).toBe('disabled_by_owner');
+  });
+
+  it('allowists newly approved roles in the same transaction', () => {
+    createPanel(a, managed(), 1000);
+
+    updatePanel(
+      a,
+      managed({
+        options: [
+          { optionId: 'a', roleId: ROLE_A, label: 'Alpha', position: 0 },
+          { optionId: 'c', roleId: ROLE_C, label: 'Gamma', position: 1 },
+        ],
+      }),
+      2000,
+      [ROLE_C],
+    );
+
+    expect(findManagedRole(a, ROLE_C)).toBeDefined();
+    expect(
+      findPanel(a, 'roles')
+        ?.options.map((o) => o.optionId)
+        .sort(),
+    ).toEqual(['a', 'c']);
+  });
+
+  it('touches only its own guild', () => {
+    createPanel(a, managed(), 1000);
+    createPanel(b, managed({ behaviour: 'add_only' }), 1000);
+
+    updatePanel(
+      a,
+      managed({
+        behaviour: 'remove_only',
+        options: [{ optionId: 'b', roleId: ROLE_B, label: 'Beta', position: 0 }],
+      }),
+      2000,
+    );
+
+    expect(findPanel(a, 'roles')?.behaviour).toBe('remove_only');
+    expect(findPanel(a, 'roles')?.options.map((o) => o.optionId)).toEqual(['b']);
+    expect(findPanel(b, 'roles')?.behaviour).toBe('add_only');
+    expect(findPanel(b, 'roles')?.options.map((o) => o.optionId)).toEqual(['a']);
   });
 });
 

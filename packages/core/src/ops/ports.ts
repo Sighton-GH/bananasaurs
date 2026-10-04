@@ -1,6 +1,7 @@
 import type { DryRunReport } from '../automod/dry-run.js';
 import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { Capability } from '../authz.js';
+import type { ResolvedLogRouteInput } from '../logging/route-input.js';
 import type { PanelDefinition } from '../panels/model.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
@@ -218,10 +219,14 @@ export interface OpsReviewableMatch {
 }
 
 export interface OpsLogRoute {
-  readonly eventKind: string;
+  readonly routeId: string;
+  readonly name: string;
   readonly channelId: string;
   readonly enabled: boolean;
   readonly includeContent: boolean;
+  readonly createdAtMs: number;
+  readonly eventKinds: readonly string[];
+  readonly excludedChannelIds: readonly string[];
 }
 
 /** The guild's row in `guilds`, as the effect gateway reads it. */
@@ -688,6 +693,22 @@ export interface OpsGuildMemberPage {
 export type OpsMessageLookup =
   'ok' | 'channel-not-found' | 'not-text-channel' | 'message-not-found';
 
+/** What the builder's live preview shows of an existing message. */
+export interface OpsMessagePreview {
+  readonly authorName: string;
+  /** The message text, cut to Discord's 2000-character limit. */
+  readonly content: string;
+}
+
+/** One custom emoji of the guild, for the emoji picker and the preview. */
+export interface OpsGuildEmojiInfo {
+  readonly emojiId: string;
+  readonly name: string;
+  readonly animated: boolean;
+  /** Discord CDN image the dashboard renders. */
+  readonly url: string;
+}
+
 export interface OpsGuildRoleInfo {
   readonly roleId: string;
   readonly name: string;
@@ -754,6 +775,17 @@ export interface OpsPorts {
    * attaches to a guessed id.
    */
   findGuildMessage(channelId: string, messageId: string): Promise<OpsMessageLookup>;
+  /**
+   * The text and author of an existing message, for the builder's preview.
+   * Live fetch, same rules as `findGuildMessage`; `undefined` on any miss.
+   */
+  previewGuildMessage(channelId: string, messageId: string): Promise<OpsMessagePreview | undefined>;
+  /**
+   * The guild's custom emoji (live REST read), for the emoji picker. Empty
+   * when the guild is not cached or the read fails - the picker still offers
+   * every Unicode emoji.
+   */
+  listGuildEmojis(): Promise<readonly OpsGuildEmojiInfo[]>;
   /** Live destinations inside a team category: text and announcement channels plus unarchived, unlocked threads. Private threads are excluded. */
   listTaskDestinations(categoryId: string): Promise<
     readonly {
@@ -770,6 +802,14 @@ export interface OpsPorts {
    * is not cached yet, which the picker shows as an honest loading state.
    */
   listGuildRoles(): readonly OpsGuildRoleInfo[];
+  /**
+   * ADR 0125: what a member's tag of the bot can look like. `roleId` is the
+   * role Discord created for the bot on install (a tag of it routes like a
+   * tag of the bot user), and `names` are the bot's role, user and nickname
+   * names. A desk role may be neither. Undefined when the guild is not cached.
+   */
+  botMentionIdentity():
+    { readonly roleId: string | undefined; readonly names: readonly string[] } | undefined;
   /**
    * The bot's own highest role position in the live hierarchy, from the
    * gateway cache. Discord decides manageability from this number right now
@@ -822,6 +862,7 @@ export interface OpsPorts {
     nowMs: number,
   ): readonly OpsAutomodObserveWindowBacklog[];
   listRoutes(): readonly OpsLogRoute[];
+  getRoute(routeId: string): OpsLogRoute | undefined;
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
   findJob(jobId: number): OpsJobRow | undefined;
@@ -1098,10 +1139,14 @@ export interface OpsPorts {
     readonly exemptType: 'role' | 'channel';
     readonly exemptId: string;
   }): 'removed' | 'not-present';
-  /** Points an event kind at a channel, creating or re-pointing the route. */
-  setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
+  /** Creates a route; the port supplies the creation timestamp. */
+  createRoute(input: ResolvedLogRouteInput): OpsLogRoute;
+  /** Replaces a route; `undefined` when no route carries that id in this guild. */
+  updateRoute(routeId: string, input: ResolvedLogRouteInput): OpsLogRoute | undefined;
   /** Returns whether there was a route to change. False is a real answer. */
-  setRouteEnabled(eventKind: string, enabled: boolean): boolean;
+  setRouteEnabled(routeId: string, enabled: boolean): boolean;
+  /** Deletes a route. Returns whether there was one. */
+  deleteRoute(routeId: string): boolean;
   /** Returns whether the exclusion is new. */
   excludeChannel(channelId: string): boolean;
   /** Returns whether there was an exclusion to remove. */
@@ -1135,6 +1180,19 @@ export interface OpsPorts {
    */
   allowlistRole(roleId: string): void;
 
+  /**
+   * Replaces a panel's definition: its scalar fields, its options and its
+   * blocked roles, in one transaction.
+   *
+   * The definition has already been through `panelDefinitionSchema`, the
+   * caller has already checked the panel exists and that neither `channelId`
+   * nor `kind` changed, so this port validates nothing itself. Storage only —
+   * nothing here reaches Discord, and the panel keeps its `message_id` and
+   * its `status`: publishing the change stays `publishPanel`'s job, and an
+   * edit never re-enables a panel `doctor` took out of service (ADR 0053).
+   */
+  updatePanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
+
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**
    * Posts or edits a managed panel's message and re-seeds its reactions.
@@ -1145,6 +1203,17 @@ export interface OpsPorts {
    * minutes at the default cap and the CLI gives up after thirty seconds.
    */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
+  /**
+   * Deletes a panel's Discord message, then its rows.
+   *
+   * Only a managed panel with a `messageId` has a message deleted: an adopted
+   * panel's message belongs to someone else, and an unposted panel has nothing
+   * to remove — both delete their rows only. An already-deleted message
+   * (unknown message, 10008/404) counts as success, so retrying is safe; any
+   * other Discord error throws with the rows still in place, so a retry can
+   * finish. Roles stay in `managed_roles` either way.
+   */
+  unpublishPanel(panelId: string): Promise<void>;
   /** Queues the reconciliation half. Absent `panelId` would mean every panel. */
   enqueueReconcile(panelId: string): OpsEnqueued;
   /** The batch row, so `undo` can refuse one that does not exist or is done. */
@@ -1331,7 +1400,78 @@ export interface OpsPorts {
     sinceMs?: number | undefined;
     limit?: number | undefined;
   }): readonly OpsSendRecord[];
+
+  // --- mcp role policy (slice 5 task 6, ADR 0117 §2) ---------------------------
+  /**
+   * The guild's role-policy modes. Absent row means both are `below-bot`
+   * (ADR 0117, consequences) — the repository answers the default, never
+   * `undefined`, so callers never branch on "no row".
+   */
+  readRolePolicy(): OpsRolePolicy;
+  /**
+   * Upserts the policy row, keeping the mode no input named. Returns before
+   * and after, so the command can audit both halves of the change.
+   */
+  setRolePolicy(input: {
+    readonly grantMode?: OpsRolePolicyMode;
+    readonly pingMode?: OpsRolePolicyMode;
+  }): { readonly before: OpsRolePolicy; readonly after: OpsRolePolicy };
+  /**
+   * What `mcp allow-role` did.
+   *
+   * Five refusals besides the two successes, each distinct: the operator
+   * needs to hear which of "allowed", "already allowed", "no such role in
+   * this guild", "`@everyone`", "managed", or "dangerous" happened.
+   * `'no-such-role'`, `'everyone'`, `'managed'` and `'dangerous'` write
+   * nothing — the live Discord check runs before the repository sees the id.
+   *
+   * Async where `allowSendChannel` is synchronous: the role is fetched live
+   * from the guild, not read from the cache alone, and a REST fetch is a
+   * promise. Above-bot roles MAY be allowlisted — hierarchy is checked at
+   * use time by the grant and ping paths, never here.
+   */
+  allowRole(input: {
+    readonly roleId: string;
+    readonly purpose: OpsRoleAllowlistPurpose;
+    readonly accountId: string;
+  }): Promise<OpsAllowRoleOutcome>;
+  /**
+   * What `mcp disallow-role` did. `'not-allowed'` is a real answer, the same
+   * shape `disallowSendChannel`'s is: nothing to remove is not a fault.
+   */
+  disallowRole(input: {
+    readonly roleId: string;
+    readonly purpose: OpsRoleAllowlistPurpose;
+  }): 'removed' | 'not-allowed';
+  /** Every allowlisted role of this guild. Ids and purposes only — never role names. */
+  listRoleAllowlist(): readonly OpsRoleAllowlistEntry[];
 }
+
+/** `mcp_role_policy`'s two modes, re-declared here rather than imported (ADR 0014). */
+export type OpsRolePolicyMode = 'below-bot' | 'allowlist';
+
+/** `mcp_role_allowlist`'s purpose, re-declared here rather than imported (ADR 0014). */
+export type OpsRoleAllowlistPurpose = 'grant' | 'ping';
+
+export interface OpsRolePolicy {
+  readonly grantMode: OpsRolePolicyMode;
+  readonly pingMode: OpsRolePolicyMode;
+}
+
+/** One row of `mcp_role_allowlist`, as `mcp role-policy` renders it. Ids only. */
+export interface OpsRoleAllowlistEntry {
+  readonly roleId: string;
+  readonly purpose: OpsRoleAllowlistPurpose;
+  readonly addedByAccountId: string;
+  readonly addedAt: number;
+}
+
+/**
+ * What `mcp allow-role` did: allowed, already allowed, or one of four
+ * distinct refusals — unknown role, `@everyone`, managed, dangerous.
+ */
+export type OpsAllowRoleOutcome =
+  'allowed' | 'already-allowed' | 'no-such-role' | 'everyone' | 'managed' | 'dangerous';
 
 /** What `mcp allow-channel` did: allowed, already allowed, or refused. */
 export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';

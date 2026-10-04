@@ -105,7 +105,7 @@ export interface OpsFlag {
 }
 
 interface OpsCommandBase<A> {
-  /** The full path, spelled as `docs/17` spells it: `log routing set`. */
+  /** The full path, spelled as `docs/17` spells it: `log routing create`. */
   readonly name: string;
   readonly summary: string;
   /**

@@ -252,6 +252,185 @@ Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model 
 
 - [ ] Steps 1–10 recorded with timestamps (no destructive step taken).
 
+## Section G — MCP message writes on the test guild (slice 3, not yet run)
+
+**Test guild only.** The unit and composition suites prove the ledger, the
+target checks and the inverses against fakes; what they cannot prove is the
+live Discord behaviour — permission errors, mention rendering, thread
+visibility — so each write tool below runs once against the real test
+guild, from the owner's Claude client through the tunnel connector.
+Preconditions: `bananasaurs doctor` is clean; one text channel allowlisted
+for sends; the connector authorised with `bananasaurs:read` **and**
+`bananasaurs:send`. Record the run with timestamps.
+
+1. **`send_message` with a reply and an embed.** Post content with
+   `@everyone` in the text plus one embed, as a reply without
+   `pingReplyAuthor`. Confirm in Discord: the message is there as a reply,
+   **nobody was pinged**, and the embed renders.
+2. **`send_message` pings only through `pingRoles`/`pingUsers`.** Post
+   naming one low role in `pingRoles` and one member in `pingUsers`.
+   Confirm only those two notify, and the audit row carries ids, never the
+   text.
+3. **`create_thread` (private) then `send_message` into it.** Create a
+   private thread with a first message. Confirm `read_thread` reads it and
+   a follow-up `send_message` with `threadId` posts into it.
+4. **`add_thread_members` / `remove_thread_members`.** Add a member, confirm
+   they see the thread; remove them, confirm they no longer do.
+5. **`create_forum_post`.** Post with a title and one tag. Confirm the post
+   appears in the forum with the tag applied; an unknown tag refuses
+   listing the available names.
+6. **`archive_thread` / `lock_thread`.** Archive the thread from step 3,
+   confirm it archives; unarchive it. Lock it, confirm posting is refused
+   to non-moderators; unlock it.
+7. **`edit_message` then `undo_action`.** Edit a bot message, confirm the
+   new text; call `undo_action` with the edit's action id, confirm the
+   previous text returns and a second undo answers "already undone".
+8. **`pin_message` / `unpin_message`.** Pin a message, confirm it pins;
+   unpin it. A channel where the bot lacks the pin permission refuses
+   naming it.
+9. **`add_reaction` / `remove_reaction`.** Add a unicode reaction to a bot
+   message, confirm it appears; remove it. A foreign guild's custom emoji
+   refuses.
+10. **`delete_message`.** Delete a bot message, confirm it disappears, and
+    confirm `undo_action` on the delete answers that it cannot be undone.
+11. **`list_actions`.** Confirm it lists the actions above newest-first with
+    kind, status, target ids and `undoable` flags — and no message content
+    anywhere in the output.
+12. **The retry.** Repeat step 1's call with the **same** `idempotencyKey`.
+    Confirm it answers as a replay and Discord has exactly one message.
+
+- [ ] Steps 1–12 recorded with timestamps.
+
+## Section H — MCP roles and panels on the test guild (slice 4, not yet run)
+
+**Test guild only.** The unit suites prove the grant policy, the preview→confirm
+hashing, the inverses and the panel validation against fakes; what they cannot
+prove is the live Discord behaviour — hierarchy enforcement, dangerous-permission
+refusals, job application, panel message ownership — so each roles-scope tool
+below runs once against the real test guild, from the owner's Claude client
+through the tunnel connector.
+Preconditions: `bananasaurs doctor` is clean; one low test role is on the
+operator's managed-roles allowlist and below the bot; the connector is
+authorised with `bananasaurs:read`, `bananasaurs:send` **and**
+`bananasaurs:roles` — re-authorise the MCP client to add the `roles` scope
+before starting, and confirm the roles tools appear in the tool list.
+Record the run with timestamps.
+
+1. **`grant_role`.** Grant the allowlisted low role to a test member.
+   Confirm in Discord the member has the role, and `list_actions` shows the
+   grant with its action id.
+2. **`remove_role`.** Remove the same role from the same member. Confirm in
+   Discord the role is gone.
+3. **`undo_action` of a grant.** Grant the role again, then call
+   `undo_action` with the grant's action id. Confirm the member loses the
+   role, and a second undo of the same action answers "already undone".
+4. **A dangerous role refused.** Call `grant_role` for a role holding a
+   dangerous permission. Confirm the refusal names the dangerous-permission
+   reason and nothing changed in Discord.
+5. **An above-bot role refused.** Call `grant_role` for a role above the
+   bot's highest role. Confirm the refusal names the hierarchy reason and
+   nothing changed in Discord.
+6. **`create_role`.** Create a role with a distinctive test name. Confirm in
+   Discord it exists with no permissions just below the bot — and that
+   granting it refuses as not allowlisted until an operator allowlists it.
+7. **`edit_role`.** Rename the role from step 6 and set a colour. Confirm
+   the new name and colour in Discord.
+8. **`bulk_role_change` preview.** Preview adding the low role to two or
+   three test members. Confirm the answer names the count and returns a
+   single-use token.
+9. **Bulk confirm, then the job, then the members changed.** Confirm with
+   the same arguments plus the token and a fresh `idempotencyKey`. Watch
+   the job with `get_job` until it completes, then confirm in Discord every
+   previewed member gained the role.
+10. **A reused token refused.** Repeat the step 9 confirm with the same
+    token and new arguments otherwise unchanged. Confirm it refuses as
+    already used and nothing new changed.
+11. **`create_panel`.** Create a button panel in the allowlisted channel
+    with the low role as its option. Confirm the panel message posts in
+    Discord.
+12. **`edit_panel`.** Change the panel's title and reorder its options.
+    Confirm the panel message republishes with the new title and order.
+13. **`edit_message` on a panel message refused.** Call `edit_message` on
+    the panel message from step 11. Confirm it refuses as a role-panel
+    message and the message is unchanged.
+14. **`delete_panel`.** Delete the panel. Confirm its message is removed,
+    `list_panels` no longer shows it, and members keep whatever roles they
+    hold.
+15. **The kill switch refuses every roles write.** `bananasaurs killswitch on
+    --confirm`, then attempt `grant_role`, `create_role` and `create_panel`:
+    all three must refuse naming the kill switch with nothing changed.
+    `killswitch off --confirm` restores normal operation.
+
+- [ ] Steps 1–15 recorded with timestamps.
+
+## Section I — MCP schedules, events, polls, caps and policy controls on the test guild (slice 5, not yet run)
+
+**Test guild only.** The unit suites prove the schedule-time and send-time
+checks, the undo arms and the cap reads against fakes and a real database;
+what they cannot prove is the live path — the reminder worker posting an
+`origin='mcp'` row, a ping dropped at send time, Discord's event and poll
+behaviour, and a settings edit reaching the next call — so each step below
+runs once against the real test guild from the owner's Claude client through
+the tunnel connector.
+Preconditions: `bananasaurs doctor` is clean; one text channel and one voice
+channel are allowlisted for sends; one low test role sits below the bot; the
+bot holds ManageEvents on the voice channel; the connector is authorised with
+`bananasaurs:read` and `bananasaurs:send`. Record the run with timestamps.
+
+1. **A one-shot `schedule_message`.** Schedule a short text three minutes
+   ahead that mentions the low role (`<@&id>`) with the role also in
+   `pingRoles`. Confirm `list_scheduled` shows it as scheduled; at the due
+   time confirm it posts in the channel exactly as written (no reminder
+   framing), the role is notified, and `list_scheduled` now shows it
+   delivered.
+2. **A recurring schedule, cancelled and undone.** Schedule a daily send.
+   Confirm `list_scheduled` shows its first occurrence. `cancel_scheduled`
+   it, then `undo_action` the cancel: it is scheduled again. Cancel it once
+   more to leave nothing behind.
+3. **`edit_scheduled`, then undo.** Schedule a one-shot an hour ahead, edit
+   its content and re-time it with `at`. Confirm the listing shows the new
+   text and time; `undo_action` the edit and confirm the old text and time
+   are back. Cancel it.
+4. **A ping dropped at send time.** Schedule a send three minutes ahead
+   pinging the low role as in step 1, then switch `bananasaurs mcp role-policy --ping
+   allowlist` with the role not allowlisted. At the due time confirm the
+   message posts with the role mention rendered but nobody notified, and the
+   journal has one `mcp reminder ping dropped` line carrying only ids.
+   Switch the ping mode back.
+5. **A destination that left scope.** Schedule a send three minutes ahead,
+   then `bananasaurs mcp disallow-channel` the channel. At the due time
+   confirm nothing posts, `list_scheduled` shows it failed, and the journal
+   has one `mcp reminder target out of scope` line carrying only ids.
+   Allowlist the channel again.
+6. **Assistant reminders unchanged.** Ask the in-Discord assistant for a
+   reminder two minutes out. Confirm it delivers exactly as before and never
+   appears in `list_scheduled`.
+7. **Events.** `create_event` a voice event on the allowlisted voice
+   channel; confirm it appears in Discord. `edit_event` its name, then
+   `undo_action` the edit and confirm the old name returns. `cancel_event`
+   it and confirm Discord shows it cancelled.
+8. **An external event without an end time refused.** Call `create_event`
+   for an external event with a place and no end time. Confirm the refusal
+   and that no event was created.
+9. **`create_poll`.** Post a two-answer poll to the allowlisted channel.
+   Confirm the native poll renders and nobody was pinged.
+10. **A cap edit takes effect with no restart.** On the dashboard AI tuning
+    page set `mcp.cap.message` to the count of posts already made this hour
+    plus one. Post once (it succeeds), then once more: the second refuses
+    naming `mcp.cap.message`. Restore the default (300).
+11. **Role-policy controls.** `bananasaurs mcp role-policy` shows both modes
+    and the allowlist; `bananasaurs mcp allow-role <low role id> --purpose
+    ping` adds a row the dashboard MCP page also shows; `bananasaurs mcp
+    allow-role` of `@everyone` or a role with a dangerous permission refuses.
+    `bananasaurs mcp disallow-role <low role id> --purpose ping` removes the
+    row.
+12. **The kill switch refuses the slice 5 writes.** `bananasaurs killswitch
+    on --confirm`, then attempt `schedule_message`, `create_event` and
+    `create_poll`: all three refuse naming the kill switch with nothing
+    changed. `killswitch off --confirm` restores normal operation.
+
+- [ ] Steps 1–12 recorded with timestamps.
+
 ## Sign-off
 
 **Release 1 is done — 2026-08-30.** Every box above is checked, run against

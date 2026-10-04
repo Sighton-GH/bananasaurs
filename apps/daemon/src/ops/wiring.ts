@@ -3,6 +3,7 @@ import { ChannelType, PermissionsBitField, type Client, type GuildMember } from 
 import {
   archiveBackfillDedupeKey,
   compileRule,
+  isDangerousRole,
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,
@@ -31,6 +32,7 @@ import {
   listBackups,
   loggingRepo,
   mcpSendRepo,
+  mcpRolePolicyRepo,
   modCaseRepo,
   modMatchReviewRepo,
   oauthRepo,
@@ -218,11 +220,30 @@ export const opsPortsFor = (
 
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
-      eventKind: route.eventKind,
+      routeId: route.routeId,
+      name: route.name,
       channelId: route.channelId,
       enabled: route.enabled,
       includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
     })),
+
+  getRoute: (routeId) => {
+    const route = loggingRepo.getRoute(scope, routeId);
+    if (route === undefined) return undefined;
+    return {
+      routeId: route.routeId,
+      name: route.name,
+      channelId: route.channelId,
+      enabled: route.enabled,
+      includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
+    };
+  },
 
   listExcludedChannels: () => loggingRepo.listExcludedChannels(scope),
 
@@ -478,13 +499,35 @@ export const opsPortsFor = (
     return 'added';
   },
 
-  setRoute: (input) =>
-    loggingRepo.setRoute(scope, {
-      eventKind: input.eventKind,
-      channelId: input.channelId,
-      includeContent: input.includeContent,
-    }),
-  setRouteEnabled: (eventKind, enabled) => loggingRepo.setRouteEnabled(scope, eventKind, enabled),
+  createRoute: (input) => {
+    const route = loggingRepo.createRoute(scope, { ...input, nowMs: now() });
+    return {
+      routeId: route.routeId,
+      name: route.name,
+      channelId: route.channelId,
+      enabled: route.enabled,
+      includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
+    };
+  },
+  updateRoute: (routeId, input) => {
+    const route = loggingRepo.updateRoute(scope, routeId, input);
+    if (route === undefined) return undefined;
+    return {
+      routeId: route.routeId,
+      name: route.name,
+      channelId: route.channelId,
+      enabled: route.enabled,
+      includeContent: route.includeContent,
+      createdAtMs: route.createdAtMs,
+      eventKinds: route.eventKinds,
+      excludedChannelIds: route.excludedChannelIds,
+    };
+  },
+  setRouteEnabled: (routeId, enabled) => loggingRepo.setRouteEnabled(scope, routeId, enabled),
+  deleteRoute: (routeId) => loggingRepo.deleteRoute(scope, routeId),
   excludeChannel: (channelId) => loggingRepo.excludeChannel(scope, channelId),
   unexcludeChannel: (channelId) => loggingRepo.unexcludeChannel(scope, channelId),
 
@@ -499,11 +542,18 @@ export const opsPortsFor = (
   // here. Nothing reaches Discord — publishing stays publishPanel's job.
   createPanel: (definition, newlyAllowlistedRoleIds) =>
     operations.createPanel(definition, newlyAllowlistedRoleIds),
+  // Storage-only write, like `createPanel` above: `panel edit` replaces the
+  // definition, and the change goes live with `panel sync`.
+  updatePanel: (definition, newlyAllowlistedRoleIds) =>
+    operations.updatePanel(definition, newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
+  // `panel delete`: the message first, then the rows, so a Discord failure
+  // leaves the rows for a retry.
+  unpublishPanel: (panelId) => operations.unpublishPanel(panelId),
   grantAdoptionAllowance: (count) => {
     operations.grantAdoptionAllowance(count);
   },
@@ -758,6 +808,40 @@ export const opsPortsFor = (
       return 'message-not-found';
     }
   },
+  previewGuildMessage: async (channelId, messageId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const channel = guild?.channels.cache.get(channelId);
+    if (channel === undefined || !channel.isTextBased()) return undefined;
+    try {
+      const message = await channel.messages.fetch(messageId);
+      return {
+        authorName: message.member?.displayName ?? message.author.displayName,
+        content: message.content.slice(0, 2000),
+      };
+    } catch {
+      return undefined;
+    }
+  },
+  // REST, not the cache: the emoji cache is not guaranteed warm, and this is
+  // only read when an operator opens the picker.
+  listGuildEmojis: async () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    try {
+      const emojis = await guild.emojis.fetch();
+      return [...emojis.values()]
+        .filter((emoji) => emoji.name !== null)
+        .map((emoji) => ({
+          emojiId: emoji.id,
+          name: emoji.name ?? '',
+          animated: emoji.animated ?? false,
+          url: emoji.imageURL({ size: 64 }),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return [];
+    }
+  },
   // Same gateway-cache honesty as listGuildChannels: the guild's roles,
   // `@everyone` excluded (it is not a panel option), highest rank first.
   // `rawPosition`, deliberately: discord.js's `Role.position` is the role's
@@ -785,6 +869,18 @@ export const opsPortsFor = (
   botHighestRolePosition: () => {
     const guild = client.guilds.cache.get(scope.guildId);
     return guild?.members.me?.roles.highest.rawPosition;
+  },
+  // ADR 0125: live, so a reinstall's new integration role is picked up.
+  botMentionIdentity: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const user = client.user;
+    if (guild === undefined || user === null) return undefined;
+    const role = guild.roles.botRoleFor(user.id);
+    const names = [role?.name, user.username, user.globalName, guild.members.me?.nickname];
+    return {
+      roleId: role?.id,
+      names: names.filter((name): name is string => typeof name === 'string' && name !== ''),
+    };
   },
   // The same paginated REST read the MCP port makes (ruling M4-D10): the
   // 50-entry member cache would silently truncate, and `cache: false` keeps
@@ -956,6 +1052,45 @@ export const opsPortsFor = (
     })),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
+
+  // Slice 5 task 6 (ADR 0117 §2): the role-policy modes and the role
+  // allowlist. The clock is this composition root's, not the command's, the
+  // same reasoning `recordMatchVerdict` gives.
+  //
+  // The allow-time role check is live: `roles.fetch` with `force: true` goes
+  // to Discord rather than answering from the gateway cache alone, so a role
+  // deleted (or given a dangerous permission) since the cache filled in is
+  // refused rather than allowlisted on stale facts. Each refusal writes
+  // nothing — the repository sees the id only after every check has passed.
+  // Above-bot roles MAY be allowlisted: hierarchy is checked at use time by
+  // the grant and ping paths, never here, so position is not read at all.
+  readRolePolicy: () => mcpRolePolicyRepo.readRolePolicy(scope),
+  setRolePolicy: (input) => mcpRolePolicyRepo.upsertRolePolicy(scope, { ...input, now: now() }),
+  allowRole: async (input) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    let role: { id: string; managed: boolean; permissions: { bitfield: bigint } } | null;
+    try {
+      role = (await guild?.roles.fetch(input.roleId, { force: true })) ?? null;
+    } catch {
+      // Fail closed: without a live role there is nothing to check the floor
+      // against, so the answer is the same as for a role that is not there.
+      return 'no-such-role';
+    }
+    if (role === null) return 'no-such-role';
+    if (role.id === scope.guildId) return 'everyone';
+    if (role.managed) return 'managed';
+    if (isDangerousRole(role.permissions.bitfield)) return 'dangerous';
+    const added = mcpRolePolicyRepo.allowRole(scope, {
+      roleId: input.roleId,
+      purpose: input.purpose,
+      addedByAccountId: input.accountId,
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowRole: (input) =>
+    mcpRolePolicyRepo.disallowRole(scope, input.roleId, input.purpose) ? 'removed' : 'not-allowed',
+  listRoleAllowlist: () => mcpRolePolicyRepo.listRoleAllowlist(scope),
 
   // ADR 0028 / ADR 0045 (ruling PR-102): grant a dashboard account a
   // capability in this guild. `findAccountByUsername` is instance-level while

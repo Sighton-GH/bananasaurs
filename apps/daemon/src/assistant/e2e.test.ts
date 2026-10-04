@@ -1336,7 +1336,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
         };
       return { text: 'The order ships Friday. [S2]', model: 'fixture-model' };
     });
-    const webSearch = vi.fn(async () => []);
+    const webSearch = vi.fn(async () => ({ results: [], source: 'brave' as const }));
     const svc = createAssistantService(
       t.scopes.forGuild(GUILD),
       t.scopes.instance(),

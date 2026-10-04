@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 12 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(12);
+  it('has 17 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(17);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
@@ -63,5 +63,31 @@ describe('instance settings registry', () => {
     expect(isInstanceSettingKey('assistant.maxToolRounds')).toBe(true);
     expect(isInstanceSettingKey('nope')).toBe(false);
     expect(settingDefinition('nope')).toBeUndefined();
+  });
+
+  it('registers the five MCP caps with defaults, group and bounds', () => {
+    const expected: Readonly<Record<string, number>> = {
+      'mcp.cap.message': 300,
+      'mcp.cap.edit': 300,
+      'mcp.cap.member_role': 1000,
+      'mcp.cap.structure': 100,
+      'mcp.cap.pin_react': 300,
+    };
+    for (const [key, defaultValue] of Object.entries(expected)) {
+      const def = settingDefinition(key);
+      expect(def, key).toBeDefined();
+      expect(def?.defaultValue).toBe(defaultValue);
+      expect(def?.group).toBe('MCP connector');
+      expect(def?.display).toBe('count');
+      expect(def?.bounds).toEqual({ min: 1, max: 10000 });
+      expect(def?.schema.safeParse(defaultValue).success, key).toBe(true);
+      expect(def?.schema.safeParse(0).success, key).toBe(false);
+      expect(def?.schema.safeParse(10001).success, key).toBe(false);
+      expect(def?.schema.safeParse(1).success, key).toBe(true);
+      expect(def?.schema.safeParse(10000).success, key).toBe(true);
+      expect(def?.schema.safeParse(2.5).success, key).toBe(false);
+      expect(def?.help).toContain('per rolling hour per guild');
+      expect(def?.help).toContain('never trip the breaker');
+    }
   });
 });

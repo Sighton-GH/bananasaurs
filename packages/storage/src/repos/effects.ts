@@ -14,7 +14,7 @@ import { auditEvents, effectBatches, managedRoleAssignments, roleEffects } from 
 
 export interface OpenBatchInput {
   batchId?: string;
-  source: 'interaction' | 'reaction' | 'adoption' | 'reconcile' | 'cli' | 'dashboard';
+  source: 'interaction' | 'reaction' | 'adoption' | 'reconcile' | 'cli' | 'dashboard' | 'mcp';
   actorType: string;
   actorId: string | undefined;
   now: number;

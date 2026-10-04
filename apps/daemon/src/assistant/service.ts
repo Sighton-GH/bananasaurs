@@ -46,8 +46,8 @@ import type {
   AssistantTraceDetail,
   InvocationTrace,
 } from './commands.js';
-import { braveWebSearch } from './brave-search.js';
 import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
+import type { WebSearchRun } from './web-search.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
 import { LocalLimitError, localLimitReply, reserveEntryCall } from './local-limit.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
@@ -60,7 +60,6 @@ import {
   type ArchiveResult,
   type AssistantToolPorts,
   type UpcomingEventItem,
-  type WebResult,
 } from './tools.js';
 import { formatChannelLines } from './channel-context.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
@@ -122,8 +121,8 @@ export interface AssistantServiceTestPorts {
   readonly provider?: TextProvider | undefined;
   readonly fetchResource?:
     ((url: string) => ReturnType<ReviewedResourceFetcher['fetch']>) | undefined;
-  /** Replaces Brave's HTTP call in tests. */
-  readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
+  /** Replaces the web search run in tests. */
+  readonly webSearch?: WebSearchRun | undefined;
   /**
    * Task 20: replaces the pre-retrieval cache search in tests — throw from
    * it to simulate an unreadable resource cache (`resources-unavailable`).
@@ -309,6 +308,12 @@ export const createAssistantService = (
    * means off.
    */
   channelContextMessages: () => number = () => 0,
+  /**
+   * ADR 0120: the web search run for one request, built by the provider
+   * store at the composition root (Brave or Tavily, with the owner's key
+   * order and limits). Undefined while search is off.
+   */
+  webSearch: (guildId: string) => WebSearchRun | undefined = () => undefined,
 ): AssistantCommandService & {
   tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
 } => {
@@ -971,12 +976,7 @@ export const createAssistantService = (
         },
         resources: () => resources,
         fetchResource,
-        webSearch:
-          testPorts.webSearch ??
-          (currentConfig.BRAVE_SEARCH_API_KEY === undefined
-            ? undefined
-            : (query: string) =>
-                braveWebSearch({ apiKey: currentConfig.BRAVE_SEARCH_API_KEY! }, query)),
+        webSearch: testPorts.webSearch ?? webSearch(scope.guildId),
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
         upcomingEvents,
@@ -1210,7 +1210,8 @@ export const createAssistantService = (
       const reserveCall = (entry: ChainEntry) =>
         reserveEntryCall(instance, entry, scope.guildId, now());
       // Task 20: the sources line contains only known resources whose tags the
-      // answer actually used. A web-only answer keeps just the Brave attribution.
+      // answer actually used. A web-only answer keeps just the Brave attribution,
+      // and only when Brave results were used (ADR 0120 §7).
       const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
       // The same check gates the loop's "Cite as" tags: only enabled,
       // known resources are citable, so an untrusted title never prints raw.
@@ -1286,7 +1287,21 @@ export const createAssistantService = (
       });
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
+      // ADR 0120: Tavily's terms allow training on queries, so an answer that
+      // used Tavily results warns once per request, next to the AI-provider
+      // warning above.
+      if (loop.webSources.includes('tavily')) {
+        logger.warn(
+          safeLogFields({
+            component: 'assistant',
+            guildId: input.guildId,
+            reason: 'search-provider-may-train',
+          }),
+          'web search provider may train on queries',
+        );
+      }
       const { text: citedText, cited } = applyCitations(loop.text, citations);
+      const braveUsed = loop.webSources.includes('brave');
       // B2b: code-written action summaries travel verbatim — after the answer
       // text, before the Brave attribution and the Sources line — never
       // through the model.
@@ -1294,8 +1309,9 @@ export const createAssistantService = (
         loop.actionSummaries.length === 0 ? '' : `\n\n${loop.actionSummaries.join('\n\n')}`;
       // The escalation summary is built from the loop text below — before
       // the sources line is appended — so a ticket never carries it. Only a
-      // normal answer grows the line.
-      const baseAnswer = loop.web
+      // normal answer grows the line, and the Brave attribution is kept only
+      // when Brave results were used (ADR 0120 §7).
+      const baseAnswer = braveUsed
         ? `${citedText}${summaryBlock}${BRAVE_ATTRIBUTION}`
         : `${citedText}${summaryBlock}`;
       const answerText =

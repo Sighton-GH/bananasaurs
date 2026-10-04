@@ -146,6 +146,7 @@ export const registerAssistantProviderRoutes = (
       webSearch: {
         keyConfigured: webSearch?.keyConfigured ?? false,
         enabled: webSearch?.enabled ?? false,
+        source: webSearch?.source ?? 'brave',
       },
       github: { tokenConfigured: configured.githubTokenConfigured() },
     });

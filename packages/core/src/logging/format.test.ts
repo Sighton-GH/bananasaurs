@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js';
 import {
   formatGapMarker,
+  formatMemberAvatarChanged,
   formatMemberJoin,
   formatMemberLeave,
+  formatMemberNicknameChanged,
+  formatMemberRolesChanged,
+  formatMemberUsernameChanged,
   formatMessageDelete,
   formatMessageEdit,
   formatRoleCreate,
   formatRoleDelete,
   formatRoleUpdate,
+  formatWarn,
 } from './format.js';
 
 const CHANNEL = '111111111111111111';
@@ -116,6 +121,113 @@ describe('formatMemberJoin', () => {
   });
 });
 
+describe('formatMemberRolesChanged', () => {
+  it('names added roles first, then removed ones', () => {
+    const text = formatMemberRolesChanged(AUTHOR, ['111', '222'], ['333']);
+    expect(text).toContain(`<@${AUTHOR}>`);
+    expect(text).toContain('+<@&111>');
+    expect(text).toContain('+<@&222>');
+    expect(text).toContain('−<@&333>');
+    expect(text.indexOf('+<@&111>')).toBeLessThan(text.indexOf('−<@&333>'));
+  });
+
+  it('omits an empty side', () => {
+    expect(formatMemberRolesChanged(AUTHOR, ['111'], [])).not.toContain('−<@&');
+    expect(formatMemberRolesChanged(AUTHOR, [], ['333'])).not.toContain('+<@&');
+  });
+});
+
+describe('formatMemberNicknameChanged', () => {
+  it('renders old → new in quotes', () => {
+    expect(formatMemberNicknameChanged(AUTHOR, 'Old', 'New')).toBe(
+      `Nickname changed: <@${AUTHOR}>  "Old" → "New"`,
+    );
+  });
+
+  it('uses (none) for an absent nickname on either side', () => {
+    expect(formatMemberNicknameChanged(AUTHOR, undefined, 'New')).toContain('(none)');
+    expect(formatMemberNicknameChanged(AUTHOR, 'Old', undefined)).toContain('(none)');
+  });
+});
+
+describe('formatMemberUsernameChanged', () => {
+  it('renders a username change', () => {
+    const text = formatMemberUsernameChanged({
+      userId: AUTHOR,
+      oldUsername: 'old_name',
+      newUsername: 'new_name',
+      oldGlobalName: 'Global',
+      newGlobalName: 'Global',
+    });
+    expect(text).toContain('old_name → new_name');
+  });
+
+  it('renders a display-name change', () => {
+    const text = formatMemberUsernameChanged({
+      userId: AUTHOR,
+      oldUsername: 'member',
+      newUsername: 'member',
+      oldGlobalName: undefined,
+      newGlobalName: 'New Display',
+    });
+    expect(text).toContain('Display name changed');
+    expect(text).toContain('(none)');
+  });
+
+  it('renders both lines when both changed', () => {
+    const text = formatMemberUsernameChanged({
+      userId: AUTHOR,
+      oldUsername: 'old_name',
+      newUsername: 'new_name',
+      oldGlobalName: 'Old Display',
+      newGlobalName: 'New Display',
+    });
+    expect(text.split('\n')).toHaveLength(2);
+  });
+});
+
+describe('formatMemberAvatarChanged', () => {
+  const GUILD = '000000000000000001';
+
+  it('links the new account avatar', () => {
+    const text = formatMemberAvatarChanged({
+      userId: AUTHOR,
+      guildId: GUILD,
+      accountChanged: true,
+      newAvatarHash: 'abc',
+      guildAvatarChanged: false,
+      newGuildAvatarHash: undefined,
+    });
+    expect(text).toContain(`https://cdn.discordapp.com/avatars/${AUTHOR}/abc.png`);
+  });
+
+  it('links the new server avatar', () => {
+    const text = formatMemberAvatarChanged({
+      userId: AUTHOR,
+      guildId: GUILD,
+      accountChanged: false,
+      newAvatarHash: undefined,
+      guildAvatarChanged: true,
+      newGuildAvatarHash: 'ghi',
+    });
+    expect(text).toContain(
+      `https://cdn.discordapp.com/guilds/${GUILD}/users/${AUTHOR}/avatars/ghi.png`,
+    );
+  });
+
+  it('names a removal rather than linking', () => {
+    const text = formatMemberAvatarChanged({
+      userId: AUTHOR,
+      guildId: GUILD,
+      accountChanged: true,
+      newAvatarHash: undefined,
+      guildAvatarChanged: false,
+      newGuildAvatarHash: undefined,
+    });
+    expect(text.toLowerCase()).toContain('removed their avatar');
+    expect(text).not.toContain('cdn.discordapp.com');
+  });
+});
 describe('formatMemberLeave', () => {
   it('mentions the member', () => {
     expect(formatMemberLeave(memberEvent('memberRemove'))).toContain(`<@${AUTHOR}>`);
@@ -153,6 +265,37 @@ describe('formatRoleDelete', () => {
   it('names the role by its last-known name, not a bare id', () => {
     const text = formatRoleDelete(roleEvent('roleDelete', { name: 'old-name' }));
     expect(text).toContain('old-name');
+  });
+});
+
+describe('formatWarn', () => {
+  it('names the member, the moderator, the reason, the case and the count', () => {
+    const text = formatWarn({
+      memberId: '333333333333333333',
+      actorId: '222222222222222222',
+      reason: 'spam',
+      caseId: 'case-1',
+      violationCount: 2,
+    });
+    expect(text).toBe(
+      [
+        'Warned: <@333333333333333333> by <@222222222222222222>',
+        'Reason: spam',
+        'Case case-1, warning 2',
+      ].join('\n'),
+    );
+  });
+
+  it('caps a long reason at 300 characters', () => {
+    const text = formatWarn({
+      memberId: '333333333333333333',
+      actorId: '222222222222222222',
+      reason: 'r'.repeat(400),
+      caseId: 'case-1',
+      violationCount: 1,
+    });
+    const reasonLine = text.split('\n')[1] ?? '';
+    expect(reasonLine).toBe(`Reason: ${'r'.repeat(300)}`);
   });
 });
 

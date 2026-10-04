@@ -52,6 +52,11 @@ const TOOLS = [
  */
 function ToolsCard({ data }: { readonly data: AssistantData }) {
   const webOn = data.aiStatus?.webSearch?.enabled === true;
+  const webSource = data.aiStatus?.webSearch?.source ?? 'brave';
+  const webDetail =
+    webSource === 'tavily'
+      ? 'Sends a short query to the Tavily search API. Queries that look like they carry personal data are refused.'
+      : 'Sends a short query to the Brave Search API. Queries that look like they carry personal data are refused.';
   return (
     <Card title="Look-up tools">
       <p className="mb-3 text-sm text-ink-muted">
@@ -67,7 +72,9 @@ function ToolsCard({ data }: { readonly data: AssistantData }) {
                 <Badge tone={webOn ? 'ok' : 'neutral'}>{webOn ? 'On' : 'Off'}</Badge>
               )}
             </div>
-            <p className="mt-1 text-xs text-ink-muted">{tool.detail}</p>
+            <p className="mt-1 text-xs text-ink-muted">
+              {tool.id === 'web_search' ? webDetail : tool.detail}
+            </p>
             {tool.id === 'web_search' && !webOn && (
               <Link className="mt-1 inline-block text-xs underline" href="/providers">
                 Set up web search

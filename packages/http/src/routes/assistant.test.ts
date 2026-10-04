@@ -137,6 +137,57 @@ describe('assistant routes', () => {
     );
   });
 
+  describe("a desk role that collides with the bot's own tag (ADR 0125)", () => {
+    const BOT_ROLE = '888888888888888888';
+    const withRoles = (roles: { roleId: string; name: string }[]) => {
+      deps = {
+        ...deps,
+        portsFor: (scope) => {
+          const ports = testPortsFor(scope, () => clock);
+          return {
+            ...ports,
+            listGuildRoles: () => [
+              ...ports.listGuildRoles(),
+              ...roles.map((r) => ({ ...r, colour: 0, position: 2, managed: false })),
+            ],
+          };
+        },
+      };
+    };
+    const rebuild = async () => {
+      await app.close();
+      app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    };
+
+    it("refuses the bot's integration role as a desk role", async () => {
+      grant('config.write');
+      const { cookie, csrf } = await signIn();
+      const response = await put(cookie, csrf, body({ mentionRoleId: BOT_ROLE }));
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'mention-role-is-bot-role' });
+      expect(assistantRepo.listBehaviours(t.scopes.forGuild(GUILD))).toEqual([]);
+    });
+
+    it('refuses a desk role named like the bot, ignoring case, spaces and a leading @', async () => {
+      withRoles([{ roleId: ROLE_B, name: ' @BANANASAURS ' }]);
+      await rebuild();
+      grant('config.write');
+      const { cookie, csrf } = await signIn();
+      const response = await put(cookie, csrf, body({ mentionRoleId: ROLE_B }));
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: 'mention-role-name-clash' });
+      expect(assistantRepo.listBehaviours(t.scopes.forGuild(GUILD))).toEqual([]);
+    });
+
+    it('still accepts a differently named desk role', async () => {
+      withRoles([{ roleId: ROLE_B, name: 'it-services' }]);
+      await rebuild();
+      grant('config.write');
+      const { cookie, csrf } = await signIn();
+      expect((await put(cookie, csrf, body({ mentionRoleId: ROLE_B }))).statusCode).toBe(200);
+    });
+  });
+
   it('requires a mention role outside direct command and refuses ambiguous enabled routes', async () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();
@@ -664,7 +715,7 @@ describe('PUT /api/assistant/bot-tag authorisation', () => {
   });
 });
 
-describe('provider fallback model and web search (ADR 0066)', () => {
+describe('provider fallback model and web search (ADR 0066, ADR 0120)', () => {
   const OPERATOR = 'acct_fedcba9876543210fedcba9876543211';
   type SaveInput = Parameters<NonNullable<HttpDeps['assistantProviderConfig']>['save']>[0];
   let saved: SaveInput[];
@@ -684,8 +735,14 @@ describe('provider fallback model and web search (ADR 0066)', () => {
           ...(saved.at(-1)?.fallbackModels
             ? { fallbackModels: [...saved.at(-1)!.fallbackModels!] }
             : {}),
-          ...(saved.at(-1)?.searchEnabled !== undefined
-            ? { webSearch: { keyConfigured: true, enabled: saved.at(-1)!.searchEnabled! } }
+          ...(saved.at(-1)?.searchEnabled !== undefined || saved.at(-1)?.searchSource !== undefined
+            ? {
+                webSearch: {
+                  keyConfigured: true,
+                  enabled: saved.at(-1)?.searchEnabled ?? false,
+                  source: saved.at(-1)?.searchSource ?? 'brave',
+                },
+              }
             : {}),
         }),
         save: (input) => {
@@ -704,31 +761,50 @@ describe('provider fallback model and web search (ADR 0066)', () => {
       payload: { provider: 'gemini', enabled: true, ...payload },
     });
 
-  it('lets the owner save a fallback model and a Brave key, and never audits the key', async () => {
+  it('lets the owner save a fallback model and a search source, audited with before/after searchSource', async () => {
     grant('config.write');
     await restart();
     const { cookie, csrf } = await signIn();
     const response = await putProvider(cookie, csrf, {
       fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
-      searchApiKey: 'brave-raw-key',
+      searchSource: 'tavily',
       searchEnabled: true,
     });
     expect(response.statusCode).toBe(200);
     expect(saved[0]).toMatchObject({
       fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
-      searchApiKey: 'brave-raw-key',
+      searchSource: 'tavily',
       searchEnabled: true,
     });
     const row = effectRepo
       .tailAudit(t.scopes.forGuild(GUILD), {})
       .find((r) => r.action === 'assistant_provider.saved');
+    expect(JSON.parse(row?.before ?? 'null')).toMatchObject({ searchSource: 'brave' });
     expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
       fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
       searchEnabled: true,
-      searchKeyReplaced: true,
+      searchSource: 'tavily',
     });
-    expect(JSON.stringify(row)).not.toContain('brave-raw-key');
-    expect(JSON.stringify(response.json())).not.toContain('brave-raw-key');
+    expect(row?.after).not.toContain('searchKeyReplaced');
+  });
+
+  it('a body with searchApiKey no longer saves a key: the schema drops it', async () => {
+    grant('config.write');
+    await restart();
+    const { cookie, csrf } = await signIn();
+    const response = await putProvider(cookie, csrf, {
+      searchApiKey: 'search-raw-key',
+      searchEnabled: true,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).not.toHaveProperty('searchApiKey');
+    expect(JSON.stringify(saved)).not.toContain('search-raw-key');
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_provider.saved');
+    expect(JSON.stringify(row)).not.toContain('search-raw-key');
+    expect(JSON.stringify(response.json())).not.toContain('search-raw-key');
   });
 
   it('clears the backups with an empty list and refuses more than two or a blank', async () => {
@@ -743,7 +819,7 @@ describe('provider fallback model and web search (ADR 0066)', () => {
     expect((await putProvider(cookie, csrf, { fallbackModels: [''] })).statusCode).toBe(400);
   });
 
-  it('keeps turning on web search and replacing its key owner-only', async () => {
+  it('keeps turning on web search and changing its source owner-only', async () => {
     accountRepo.createAccount(t.scopes.instance(), {
       accountId: OPERATOR,
       username: 'operator2',
@@ -769,9 +845,12 @@ describe('provider fallback model and web search (ADR 0066)', () => {
     const on = await putProvider(cookie, csrf, { searchEnabled: true });
     expect(on.statusCode).toBe(403);
     expect(on.json()).toMatchObject({ error: 'owner-only', field: 'searchEnabled' });
-    const key = await putProvider(cookie, csrf, { searchApiKey: 'x'.repeat(20) });
-    expect(key.json()).toMatchObject({ error: 'owner-only', field: 'searchApiKey' });
+    const source = await putProvider(cookie, csrf, { searchSource: 'tavily' });
+    expect(source.statusCode).toBe(403);
+    expect(source.json()).toMatchObject({ error: 'owner-only', field: 'searchSource' });
     expect(saved).toHaveLength(0);
+    const unchanged = await putProvider(cookie, csrf, { searchSource: 'brave' });
+    expect(unchanged.statusCode).toBe(200);
   });
 });
 

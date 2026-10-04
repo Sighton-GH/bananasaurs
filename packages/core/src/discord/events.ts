@@ -257,6 +257,19 @@ export interface MemberEvent extends Base {
    * absent on memberRemove, where the fingerprint falls back to a time bucket.
    */
   joinedAtMs: number | undefined;
+  /** The member as of this dispatch; present on memberAdd and memberUpdate when the adapter had the user. */
+  profile?: MemberProfile | undefined;
+  /** Member-level fields from discord.js's `before`, ONLY when `before` was not partial. User-level fields are never here (discord.js shares the user object). */
+  previousMember?:
+    { nickname: string | undefined; guildAvatarHash: string | undefined } | undefined;
+}
+
+export interface MemberProfile {
+  username: string;
+  globalName: string | undefined;
+  nickname: string | undefined;
+  avatarHash: string | undefined; // user.avatar
+  guildAvatarHash: string | undefined; // member.avatar
 }
 
 export interface RoleEvent extends Base {
@@ -299,6 +312,41 @@ export type DomainEvent =
   | RoleEvent
   | GuildEvent
   | ConnectionEvent
-  | AutoModerationEvent;
+  | AutoModerationEvent
+  | AuditLogEntryEvent;
+
+/** A JSON-safe audit-log change value. Objects/arrays from Discord (e.g. role lists) are kept as JSON-safe structures. */
+export type AuditChangeValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly AuditChangeValue[]
+  | { readonly [k: string]: AuditChangeValue };
+
+export interface AuditLogChange {
+  key: string;
+  old: AuditChangeValue | undefined; // undefined = Discord sent no old_value
+  new: AuditChangeValue | undefined; // undefined = Discord sent no new_value
+}
+
+/**
+ * One Discord audit-log entry, delivered live over the gateway
+ * (GUILD_AUDIT_LOG_ENTRY_CREATE, GuildModeration intent). ADR 0123.
+ */
+export interface AuditLogEntryEvent extends Base {
+  kind: 'auditLogEntry';
+  entryId: Snowflake;
+  /** Discord's numeric AuditLogEvent (e.g. 20 = MemberKick, 22 = MemberBanAdd). */
+  action: number;
+  actorId: Snowflake | undefined;
+  targetId: Snowflake | undefined;
+  reason: string | undefined;
+  changes: readonly AuditLogChange[];
+  /** Present for MessageBulkDelete (and any action whose extra carries a count). */
+  count: number | undefined;
+  /** The channel an entry concerns when Discord names one in its options (extra.channel.id), else undefined. */
+  channelId: Snowflake | undefined;
+}
 
 export type DomainEventKind = DomainEvent['kind'];

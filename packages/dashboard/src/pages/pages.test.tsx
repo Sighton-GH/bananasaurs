@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HealthProvider } from '../app/health.js';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { AuditPage } from './audit.js';
-import { LoggingPage } from './logging.js';
 import { OverviewPage } from './overview.js';
 import { PanelsPage } from './panels.js';
 import { SafetyPage } from './safety.js';
@@ -136,83 +135,6 @@ describe('SafetyPage', () => {
     expect(screen.getByText('open')).toBeTruthy();
     expect(screen.getByText('discord 429 storm')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Configuration' })).toBeTruthy();
-  });
-});
-
-describe('LoggingPage', () => {
-  const ROUTES = {
-    routes: [
-      { eventKind: 'message_delete', channelId: '42', enabled: true, includeContent: false },
-    ],
-    excludedChannels: ['77'],
-  };
-
-  it('lists routes with channel names and posts the same body the old form did', async () => {
-    const mock = stubFetch([
-      { url: '/api/log-routes', body: ROUTES },
-      {
-        url: '/api/guild/channels',
-        body: { channels: [{ channelId: '42', name: 'mod-log', kind: 'text' }] },
-      },
-      { method: 'POST', url: '/api/log-routes', body: { ok: true } },
-    ]);
-    renderWithSession(<LoggingPage />);
-    // Wait on table-only text: the Event kind select renders `message_delete`
-    // before the routes load, so it cannot be the readiness signal.
-    expect(await screen.findByText('redacted')).toBeTruthy();
-    // The route's channel resolves to its live name, id kept for precision
-    // (the picker's option lists the same name, so there may be two).
-    expect((await screen.findAllByText('#mod-log')).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('42').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('message_delete')).toHaveLength(2);
-    fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: 'member_join' } });
-    fireEvent.change(screen.getByLabelText('Channel'), { target: { value: '99' } });
-    // Include content is on by default (owner decision): no click needed.
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Set route' }));
-    });
-    const post = mock.mock.calls.find((c) => c[1]?.method === 'POST')!;
-    expect(post[0] as string).toBe('/api/log-routes');
-    expect(bodyOf(post)).toEqual({
-      eventKind: 'member_join',
-      channelId: '99',
-      includeContent: true,
-    });
-    expect(
-      mock.mock.calls.filter(
-        (c) => (c[0] as string) === '/api/log-routes' && c[1]?.method !== 'POST',
-      ),
-    ).toHaveLength(2);
-  });
-
-  it('toggles a route enabled state and lists exclusions with removal', async () => {
-    const mock = stubFetch([
-      { url: '/api/log-routes', body: ROUTES },
-      { method: 'POST', url: '/api/log-routes/message_delete/enabled', body: { ok: true } },
-      { method: 'DELETE', url: '/api/log-exclusions/77', body: { ok: true, removed: true } },
-    ]);
-    renderWithSession(<LoggingPage />);
-    const disable = await screen.findByRole('button', { name: 'Disable' });
-    await act(async () => {
-      fireEvent.click(disable);
-    });
-    const toggle = mock.mock.calls.find((c) => (c[0] as string).includes('/enabled'))!;
-    expect(bodyOf(toggle)).toEqual({ enabled: false });
-    expect(screen.getByText('77')).toBeTruthy();
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
-    });
-    expect(
-      mock.mock.calls.some(
-        (c) => (c[0] as string) === '/api/log-exclusions/77' && c[1]?.method === 'DELETE',
-      ),
-    ).toBe(true);
-  });
-
-  it('shows an empty state that says what to do', async () => {
-    stubFetch([{ url: '/api/log-routes', body: { routes: [], excludedChannels: [] } }]);
-    renderWithSession(<LoggingPage />);
-    expect(await screen.findByText(/No routes yet/)).toBeTruthy();
   });
 });
 

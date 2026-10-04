@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fingerprintOf, isLevelTriggered } from './fingerprint.js';
 import type {
+  AuditLogEntryEvent,
   AutoModerationEvent,
   ConnectionEvent,
   DomainEvent,
@@ -405,5 +406,38 @@ describe('autoModerationAction fingerprints', () => {
     expect(fingerprintOf(nativeEvent())).toBe(
       '443761f4955d01db78d80350153a63627df479b6c6bfeb8d71154906188c0b1a',
     );
+  });
+});
+
+const auditEntry = (over: Partial<AuditLogEntryEvent> = {}): DomainEvent => ({
+  ...base,
+  kind: 'auditLogEntry',
+  entryId: '800000000000000001',
+  action: 20,
+  actorId: '444444444444444444',
+  targetId: '555555555555555555',
+  reason: undefined,
+  changes: [],
+  count: undefined,
+  channelId: undefined,
+  ...over,
+});
+
+describe('auditLogEntry fingerprints', () => {
+  it('treats a replayed entry as the same event', () => {
+    // A reconnect replay carries the same entry id but is observed later and
+    // may render different mutable fields; the id is the identity.
+    const replayed = auditEntry({ receivedAtMs: 1_700_000_090_000, reason: 'added later' });
+    expect(fingerprintOf(auditEntry())).toBe(fingerprintOf(replayed));
+  });
+
+  it('separates two entries by id', () => {
+    expect(fingerprintOf(auditEntry())).not.toBe(
+      fingerprintOf(auditEntry({ entryId: '800000000000000002' })),
+    );
+  });
+
+  it('is never level-triggered — a replayed entry must not double-log', () => {
+    expect(isLevelTriggered(auditEntry())).toBe(false);
   });
 });

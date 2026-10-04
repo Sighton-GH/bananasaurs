@@ -375,11 +375,24 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           problems.push({
             title: `No enabled dashboard account can reach guild ${guildId}`,
             impact: 'Nobody can operate this server from the dashboard.',
-            fix: `Run 'bananasaurs account grant-guild <username> --guild ${guildId} --confirm' on the host.`,
+            // ADR 0124: a restart grants every enabled owner; other accounts stay explicit.
+            fix:
+              `Restart the daemon: every enabled owner is given access at startup. ` +
+              `For another account, run 'bananasaurs account grant-guild <username> --guild ${guildId} --confirm' on the host.`,
             route: '/accounts',
           });
         }
       }
+    }
+
+    // Instance-level beside the dashboard-access finding above: a development
+    // env pretty-prints logs instead of emitting JSON, so a production bot
+    // running on it is a silent observability gap. Advisory, never a problem
+    // count — a dev host running development is the intended state.
+    if (ctx.instance.env === 'development') {
+      advisories.push(
+        'BANANASAURS_ENV is development on this instance - logs are pretty-printed instead of JSON. If this is the production bot, set BANANASAURS_ENV=production in .env and restart.',
+      );
     }
 
     if (surface.ok) {
@@ -755,7 +768,7 @@ export const panelShowCommand = defineCommand<z.infer<typeof panelShowArgs>>({
 export const logRoutingListCommand = defineCommand<Record<string, never>>({
   name: 'log routing list',
   write: false,
-  summary: 'where each logged event kind goes, and which channels are excluded',
+  summary: 'the named log routes, and which channels are excluded everywhere',
   args: z.object({}),
   run(ctx: OpsContext): OpsCommandResult {
     const routes = ctx.ports.listRoutes();
@@ -767,33 +780,45 @@ export const logRoutingListCommand = defineCommand<Record<string, never>>({
       // module is fully built and does nothing at all until a route exists, and
       // "no output" looks identical to "working but quiet".
       lines.push('No log routes are configured, so nothing is being logged to Discord.');
-      lines.push('  Set one with: bananasaurs log routing set <event-kind> <channel-id> --confirm');
+      lines.push(
+        '  Create one with: bananasaurs log routing create <channel-id> --events <kinds|all> --confirm',
+      );
     } else {
       for (const route of routes) {
         lines.push(
-          `${route.eventKind.padEnd(18)} -> ${route.channelId}` +
+          `${route.routeId.slice(0, 8)}  ${route.name}  -> <#${route.channelId}>` +
             `${route.enabled ? '' : '   (DISABLED)'}` +
             `${route.includeContent ? '' : '   (metadata only)'}`,
+        );
+        lines.push(`    events:   ${route.eventKinds.join(', ')}`);
+        lines.push(
+          route.excludedChannelIds.length === 0
+            ? '    excludes: none'
+            : `    excludes: ${route.excludedChannelIds.map((id) => `<#${id}>`).join(', ')}`,
         );
       }
     }
     lines.push('');
     lines.push(
       excluded.length === 0
-        ? 'excluded  (no channels are excluded from logging)'
-        : `excluded  ${excluded.join(', ')}`,
+        ? 'excluded everywhere (No access)  none'
+        : `excluded everywhere (No access)  ${excluded.map((id) => `<#${id}>`).join(', ')}`,
     );
 
     return {
       text: lines.join('\n'),
       data: {
         routes: routes.map((r) => ({
-          eventKind: r.eventKind,
+          routeId: r.routeId,
+          name: r.name,
           channelId: r.channelId,
           enabled: r.enabled,
           includeContent: r.includeContent,
+          createdAtMs: r.createdAtMs,
+          eventKinds: [...r.eventKinds],
+          excludedChannelIds: [...r.excludedChannelIds],
         })),
-        excludedChannels: excluded,
+        excludedChannels: [...excluded],
       },
     };
   },

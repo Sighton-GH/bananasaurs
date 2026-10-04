@@ -19,11 +19,10 @@ import {
   guildRepo,
   jobRepo,
   listBackups,
+  loggingRepo,
   panelRepo,
   pipelineRepo,
   roleRepo,
-  schema,
-  write,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
@@ -50,6 +49,7 @@ const GUILD = parseGuildId('234567890123456789');
 const SECOND_GUILD = parseGuildId('245678901234567890');
 const UNLISTED = '999888777666555444';
 const CHANNEL = '333333333333333333';
+const LOG_CHANNEL = '555555555555555555';
 const MESSAGE = '444444444444444444';
 const ROLE = '222222222222222222';
 const ALICE = '111111111111111111';
@@ -161,20 +161,18 @@ const seedPanel = (guildId: ReturnType<typeof parseGuildId>): void => {
   );
 };
 
-/** A `message_delete`/`message_edit`/`role_create`/... route to `CHANNEL`. WP4. */
+/** A `message_delete`/`message_edit`/`role_create`/... route to `LOG_CHANNEL`. WP4. */
 const seedLogRoute = (guildId: ReturnType<typeof parseGuildId>, eventKind: string): void => {
   const scope = t.scopes.forGuild(guildId);
   guildRepo.upsertGuild(scope, { name: 'test guild', now: 0 });
-  write(scope, ({ db }) => {
-    db.insert(schema.logRoutes)
-      .values({
-        guildId: scope.guildId,
-        eventKind,
-        channelId: CHANNEL,
-        includeContent: 1,
-        enabled: 1,
-      })
-      .run();
+  loggingRepo.createRoute(scope, {
+    name: `route-${eventKind}`,
+    channelId: LOG_CHANNEL,
+    includeContent: true,
+    enabled: true,
+    eventKinds: [eventKind],
+    excludedChannelIds: [],
+    nowMs: 0,
   });
 };
 
@@ -375,7 +373,7 @@ describe('the logging module, end to end', () => {
 
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.args[1]).toBe(CHANNEL);
+    expect(calls[0]?.args[1]).toBe(LOG_CHANNEL);
     expect((calls[0]?.args[2] as { content: string }).content).toContain('beta');
   });
 
@@ -394,7 +392,7 @@ describe('the logging module, end to end', () => {
 
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.args[1]).toBe(CHANNEL);
+    expect(calls[0]?.args[1]).toBe(LOG_CHANNEL);
   });
 });
 

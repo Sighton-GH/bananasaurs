@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDispatcher } from '../dispatch.js';
 import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
+import { LOG_EVENT_KINDS } from '../../logging/subscriber.js';
 import type {
   OpsAuditWrite,
   OpsInstance,
@@ -78,6 +79,11 @@ const harness = (options: HarnessOptions = {}): Harness => {
   const excluded = options.excluded ?? [];
   const retried: number[] = [];
   const state = 'state' in options ? options.state : safety();
+  let routeSeq = 1;
+
+  // Valid UUIDs, one per created route — `logRouteIdSchema` refuses anything else.
+  const nextRouteId = (): string =>
+    `123e4567-e89b-12d3-a456-4266141740${String(routeSeq++).padStart(2, '0')}`;
 
   const ports: Partial<OpsPorts> = {
     safetyState: () => state,
@@ -88,18 +94,50 @@ const harness = (options: HarnessOptions = {}): Harness => {
       settings.push(change);
     },
     listRoutes: () => routes,
-    setRoute: (input) => {
-      const at = routes.findIndex((r) => r.eventKind === input.eventKind);
-      const next = { ...input, enabled: true };
-      if (at === -1) routes.push(next);
-      else routes[at] = next;
+    getRoute: (routeId) => routes.find((r) => r.routeId === routeId),
+    createRoute: (input) => {
+      const route: OpsLogRoute = {
+        routeId: nextRouteId(),
+        name: input.name,
+        channelId: input.channelId,
+        includeContent: input.includeContent,
+        enabled: input.enabled,
+        createdAtMs: 1_700_000_000_000,
+        eventKinds: [...input.eventKinds],
+        excludedChannelIds: [...input.excludedChannelIds],
+      };
+      routes.push(route);
+      return route;
     },
-    setRouteEnabled: (eventKind, enabled) => {
-      const at = routes.findIndex((r) => r.eventKind === eventKind);
+    updateRoute: (routeId, input) => {
+      const at = routes.findIndex((r) => r.routeId === routeId);
+      if (at === -1) return undefined;
+      const existing = routes[at];
+      if (existing === undefined) return undefined;
+      const next: OpsLogRoute = {
+        ...existing,
+        name: input.name,
+        channelId: input.channelId,
+        includeContent: input.includeContent,
+        enabled: input.enabled,
+        eventKinds: [...input.eventKinds],
+        excludedChannelIds: [...input.excludedChannelIds],
+      };
+      routes[at] = next;
+      return next;
+    },
+    setRouteEnabled: (routeId, enabled) => {
+      const at = routes.findIndex((r) => r.routeId === routeId);
       if (at === -1) return false;
       const existing = routes[at];
       if (existing === undefined) return false;
       routes[at] = { ...existing, enabled };
+      return true;
+    },
+    deleteRoute: (routeId) => {
+      const at = routes.findIndex((r) => r.routeId === routeId);
+      if (at === -1) return false;
+      routes.splice(at, 1);
       return true;
     },
     excludeChannel: (channelId) => {
@@ -156,8 +194,11 @@ const errMessage = (response: Dispatched): string => {
 describe('every 13d command is a write', () => {
   const names = [
     'config set',
-    'log routing set',
+    'log routing create',
+    'log routing update',
+    'log routing on',
     'log routing off',
+    'log routing delete',
     'log routing exclude',
     'log routing unexclude',
     'jobs retry',
@@ -193,11 +234,18 @@ describe('every 13d command is a write', () => {
   });
 });
 
+const ROUTE_ID = '123e4567-e89b-12d3-a456-426614174000';
+const UNKNOWN_ROUTE_ID = '123e4567-e89b-12d3-a456-426614174099';
+
 const route = (over: Partial<OpsLogRoute> = {}): OpsLogRoute => ({
-  eventKind: 'member_join',
+  routeId: ROUTE_ID,
+  name: `→ ${CHANNEL}`,
   channelId: CHANNEL,
   enabled: true,
   includeContent: true,
+  createdAtMs: 1_700_000_000_000,
+  eventKinds: ['member_join'],
+  excludedChannelIds: [],
   ...over,
 });
 
@@ -205,10 +253,14 @@ const argsFor = (name: string): Record<string, unknown> => {
   switch (name) {
     case 'config set':
       return { key: 'role_rate_per_min', value: '60' };
-    case 'log routing set':
-      return { event: 'member_join', channel: OTHER_CHANNEL };
+    case 'log routing create':
+      return { channel: OTHER_CHANNEL, events: 'member_join' };
+    case 'log routing update':
+      return { route: ROUTE_ID, channel: OTHER_CHANNEL, events: 'member_join' };
+    case 'log routing on':
     case 'log routing off':
-      return { event: 'member_join' };
+    case 'log routing delete':
+      return { route: ROUTE_ID };
     case 'log routing exclude':
       return { channel: OTHER_CHANNEL };
     case 'log routing unexclude':
@@ -298,42 +350,74 @@ describe('config set', () => {
   });
 });
 
-// --- log routing set / off ---------------------------------------------------
+// --- log routing create / update / on / off / delete --------------------------
 
-describe('log routing set', () => {
+describe('log routing create', () => {
   it('creates a route and says whether content is included', async () => {
     const h = harness({ routes: [] });
-    const text = okText(await h.run('log routing set', { event: 'member_join', channel: CHANNEL }));
-    expect(text).toContain('member_join now logs to');
+    const text = okText(
+      await h.run('log routing create', { channel: CHANNEL, events: 'member_join' }),
+    );
+    expect(text).toContain('Created route');
+    expect(text).toContain('1 event kinds');
+    expect(text).toContain(`<#${CHANNEL}>`);
     expect(text).toContain('Message content is included');
-    expect(h.routes).toEqual([
-      { eventKind: 'member_join', channelId: CHANNEL, includeContent: true, enabled: true },
-    ]);
+    expect(h.routes).toHaveLength(1);
+    expect(h.routes[0]).toMatchObject({
+      channelId: CHANNEL,
+      includeContent: true,
+      enabled: true,
+      eventKinds: ['member_join'],
+    });
+    expect(h.audit[0]).toMatchObject({
+      action: 'log_route.created',
+      subjectType: 'log_route',
+      subjectId: h.routes[0]?.routeId,
+      after: {
+        channelId: CHANNEL,
+        includeContent: true,
+        enabled: true,
+        eventKinds: ['member_join'],
+        excludedChannelIds: [],
+      },
+    });
   });
 
-  it('honours --no-content, and says so', async () => {
+  it('honours --no-content, --name and --exclude, and says so', async () => {
     const h = harness({ routes: [] });
     const text = okText(
-      await h.run('log routing set', {
-        event: 'message_edit',
+      await h.run('log routing create', {
         channel: CHANNEL,
+        events: 'message_edit',
+        exclude: OTHER_CHANNEL,
+        name: 'mod log',
         'no-content': true,
       }),
     );
     expect(text).toContain('NOT included');
-    expect(h.routes[0]?.includeContent).toBe(false);
-    expect(h.audit[0]?.after).toMatchObject({ includeContent: false });
+    expect(text).toContain('mod log');
+    expect(h.routes[0]).toMatchObject({
+      name: 'mod log',
+      includeContent: false,
+      excludedChannelIds: [OTHER_CHANNEL],
+    });
+    expect(h.audit[0]?.after).toMatchObject({ includeContent: false, name: 'mod log' });
   });
 
-  it('refuses an event kind nothing emits, and lists the real ones', async () => {
+  it('expands --events all to every kind', async () => {
+    const h = harness({ routes: [] });
+    await h.run('log routing create', { channel: CHANNEL, events: 'all' });
+    expect(h.routes[0]?.eventKinds).toEqual([...LOG_EVENT_KINDS].sort());
+  });
+
+  it('refuses an event kind nothing emits, and names the refusal', async () => {
     // The WP4 §5 failure exactly: a route on `membre_join` succeeds, the
     // listing looks configured, and nothing is ever logged.
     const h = harness({ routes: [] });
     const message = errMessage(
-      await h.run('log routing set', { event: 'membre_join', channel: CHANNEL }),
+      await h.run('log routing create', { channel: CHANNEL, events: 'membre_join' }),
     );
     expect(message).toContain('no such log event kind');
-    expect(message).toContain('member_join');
     expect(h.routes).toEqual([]);
     expect(h.audit).toEqual([]);
   });
@@ -341,7 +425,7 @@ describe('log routing set', () => {
   it('refuses a channel id that is not a snowflake', async () => {
     const h = harness({ routes: [] });
     const message = errMessage(
-      await h.run('log routing set', { event: 'member_join', channel: '#general' }),
+      await h.run('log routing create', { channel: '#general', events: 'member_join' }),
     );
     expect(message).toContain('snowflake');
     expect(h.routes).toEqual([]);
@@ -353,43 +437,152 @@ describe('log routing set', () => {
     // stated second audience (`docs/17` §1).
     const h = harness({ routes: [] });
     const message = errMessage(
-      await h.run('log routing set', { event: 'member_join', channel: Number(CHANNEL) }),
+      await h.run('log routing create', { channel: Number(CHANNEL), events: 'member_join' }),
     );
     expect(message).toContain('already corrupted');
   });
 
-  it('records the route it replaced', async () => {
+  it('refuses the destination listed in --exclude', async () => {
+    const h = harness({ routes: [] });
+    const message = errMessage(
+      await h.run('log routing create', {
+        channel: CHANNEL,
+        events: 'member_join',
+        exclude: CHANNEL,
+      }),
+    );
+    expect(message).toContain('cannot also be an excluded channel');
+    expect(h.routes).toEqual([]);
+    expect(h.audit).toEqual([]);
+  });
+});
+
+describe('log routing update', () => {
+  it('replaces the route and records before and after', async () => {
     const h = harness({ routes: [route()] });
     const text = okText(
-      await h.run('log routing set', { event: 'member_join', channel: OTHER_CHANNEL }),
+      await h.run('log routing update', {
+        route: ROUTE_ID,
+        channel: OTHER_CHANNEL,
+        events: 'member_join,member_leave',
+      }),
     );
-    expect(text).toContain(`was <#${CHANNEL}>`);
-    expect(h.audit[0]?.before).toMatchObject({ channelId: CHANNEL });
-    expect(h.audit[0]?.after).toMatchObject({ channelId: OTHER_CHANNEL });
+    expect(text).toContain('Updated route');
+    expect(text).toContain(`<#${OTHER_CHANNEL}>`);
+    expect(h.routes[0]).toMatchObject({
+      routeId: ROUTE_ID,
+      channelId: OTHER_CHANNEL,
+      eventKinds: ['member_join', 'member_leave'],
+    });
+    expect(h.audit[0]).toMatchObject({
+      action: 'log_route.updated',
+      subjectType: 'log_route',
+      subjectId: ROUTE_ID,
+      before: { channelId: CHANNEL, eventKinds: ['member_join'] },
+      after: { channelId: OTHER_CHANNEL, eventKinds: ['member_join', 'member_leave'] },
+    });
   });
 
-  it('records a null `before` when there was no route', async () => {
+  it('keeps the current enabled state', async () => {
+    const h = harness({ routes: [route({ enabled: false })] });
+    await h.run('log routing update', { route: ROUTE_ID, channel: OTHER_CHANNEL, events: 'all' });
+    expect(h.routes[0]).toMatchObject({ enabled: false });
+    expect(h.audit[0]?.after).toMatchObject({ enabled: false });
+  });
+
+  it('refuses an unknown route id rather than reporting success', async () => {
+    const h = harness({ routes: [route()] });
+    const message = errMessage(
+      await h.run('log routing update', {
+        route: UNKNOWN_ROUTE_ID,
+        channel: OTHER_CHANNEL,
+        events: 'member_join',
+      }),
+    );
+    expect(message).toContain('nothing to update');
+    expect(h.routes).toHaveLength(1);
+    expect(h.audit).toEqual([]);
+  });
+
+  it('refuses a route id that is not a UUID', async () => {
+    const h = harness({ routes: [route()] });
+    const message = errMessage(
+      await h.run('log routing update', { route: 'abc', channel: OTHER_CHANNEL, events: 'x' }),
+    );
+    expect(message).toContain('uuid');
+    expect(h.audit).toEqual([]);
+  });
+});
+
+describe('log routing on', () => {
+  it('enables the route and audits it', async () => {
+    const h = harness({ routes: [route({ enabled: false })] });
+    const text = okText(await h.run('log routing on', { route: ROUTE_ID }));
+    expect(text).toContain('logs to');
+    expect(text).toContain(CHANNEL);
+    expect(h.routes[0]).toMatchObject({ enabled: true });
+    expect(h.audit[0]).toMatchObject({
+      action: 'log_route.enabled',
+      subjectType: 'log_route',
+      subjectId: ROUTE_ID,
+      before: { enabled: false },
+      after: { enabled: true },
+    });
+  });
+
+  it('refuses an unknown route id rather than reporting success', async () => {
     const h = harness({ routes: [] });
-    await h.run('log routing set', { event: 'member_join', channel: CHANNEL });
-    expect(h.audit[0]?.before).toBeNull();
+    const message = errMessage(await h.run('log routing on', { route: UNKNOWN_ROUTE_ID }));
+    expect(message).toContain('nothing to turn on');
+    expect(h.audit).toEqual([]);
   });
 });
 
 describe('log routing off', () => {
   it('disables the route and keeps the channel', async () => {
     const h = harness({ routes: [route()] });
-    const text = okText(await h.run('log routing off', { event: 'member_join' }));
+    const text = okText(await h.run('log routing off', { route: ROUTE_ID }));
     expect(text).toContain('no longer logs');
-    expect(text).toContain(CHANNEL);
+    expect(text).toContain('log routing on');
     expect(h.routes[0]).toMatchObject({ enabled: false, channelId: CHANNEL });
+    expect(h.audit[0]).toMatchObject({
+      action: 'log_route.disabled',
+      subjectType: 'log_route',
+      subjectId: ROUTE_ID,
+      before: { enabled: true },
+      after: { enabled: false },
+    });
   });
 
   it('refuses when there was no route, rather than reporting success', async () => {
-    // An operator who mistyped an event kind must not be told that the logging
+    // An operator who mistyped a route id must not be told that the logging
     // they asked to stop has stopped, because they will believe it.
     const h = harness({ routes: [] });
-    const message = errMessage(await h.run('log routing off', { event: 'member_join' }));
+    const message = errMessage(await h.run('log routing off', { route: UNKNOWN_ROUTE_ID }));
     expect(message).toContain('nothing to turn off');
+    expect(h.audit).toEqual([]);
+  });
+});
+
+describe('log routing delete', () => {
+  it('deletes the route and records what it was', async () => {
+    const h = harness({ routes: [route()] });
+    const text = okText(await h.run('log routing delete', { route: ROUTE_ID }));
+    expect(text).toContain('Deleted route');
+    expect(h.routes).toEqual([]);
+    expect(h.audit[0]).toMatchObject({
+      action: 'log_route.deleted',
+      subjectType: 'log_route',
+      subjectId: ROUTE_ID,
+      before: { channelId: CHANNEL, eventKinds: ['member_join'] },
+      after: undefined,
+    });
+  });
+
+  it('refuses an unknown route id rather than reporting success', async () => {
+    const h = harness({ routes: [] });
+    const message = errMessage(await h.run('log routing delete', { route: UNKNOWN_ROUTE_ID }));
+    expect(message).toContain('nothing to delete');
     expect(h.audit).toEqual([]);
   });
 });
@@ -397,10 +590,11 @@ describe('log routing off', () => {
 // --- exclusions --------------------------------------------------------------
 
 describe('log routing exclude / unexclude', () => {
-  it('excludes a channel and says the exclusion wins over every route', async () => {
+  it('excludes a channel from every route and names the No access list', async () => {
     const h = harness({ excluded: [] });
     const text = okText(await h.run('log routing exclude', { channel: CHANNEL }));
-    expect(text).toContain('wins over every route');
+    expect(text).toContain('excluded from every route');
+    expect(text).toContain('No access');
     expect(h.excluded).toEqual([CHANNEL]);
     expect(h.audit[0]).toMatchObject({ action: 'log_exclusion.added', subjectId: CHANNEL });
   });

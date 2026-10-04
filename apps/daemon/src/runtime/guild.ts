@@ -12,12 +12,15 @@ import {
   createAutomodSubscriber,
   createInteractionSubscriber,
   createLoggingSubscriber,
+  createLogPoster,
   createMemberUpdateSubscriber,
   createModCommandSubscriber,
   createTaskCommandSubscriber,
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
+  formatWarn,
+  DiscordApiError,
   EffectGateway,
   JobWorker,
   JOB_KINDS,
@@ -60,6 +63,7 @@ import {
   jobRepo,
   jobStoreFor,
   loggingRepo,
+  mcpBulkRepo,
   modCaseRepo,
   modPendingRepo,
   panelRepo,
@@ -75,6 +79,12 @@ import {
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
+import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
+import {
+  authorizeRolesMutate,
+  mcpRateLimiterFor,
+  mcpRoleGatewayFor,
+} from '../mcp/roles-gateway.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
@@ -96,6 +106,7 @@ import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
+import type { WebSearchRun } from '../assistant/web-search.js';
 import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
 import { guildAudienceChannels } from '../assistant/audience.js';
@@ -163,6 +174,8 @@ export interface GuildRuntimeDeps {
    * in isolated uses, where the service falls back to its own ledger.
    */
   readonly quotaLedger?: QuotaLedger | undefined;
+  /** ADR 0120: the web search run for one request, from the composition root. */
+  readonly assistantWebSearch?: ((guildId: string) => WebSearchRun | undefined) | undefined;
   /**
    * Task 17: the sealed GitHub token, opened for the GitHub client only.
    * Supplied by the composition root (`daemon.ts` owns the provider store);
@@ -195,8 +208,21 @@ export interface GuildOperations {
    * (ADR 0053).
    */
   createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
+  /**
+   * Replaces a panel's definition — options, blocked roles and scalar fields —
+   * keeping its `message_id` and its `status`. Storage only, like
+   * `createPanel`: publishing the change stays `publishPanel`'s job.
+   */
+  updatePanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
   /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
+  /**
+   * `panel delete`'s Discord half plus its rows: deletes the message of a
+   * managed posted panel, then the panel's rows. An adopted panel's message
+   * belongs to someone else and an unposted panel has none — both delete
+   * their rows only.
+   */
+  unpublishPanel(panelId: string): Promise<void>;
   grantAdoptionAllowance(count: number): void;
   adoptionAllowance(): number;
 }
@@ -342,7 +368,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
 
   const loggingPorts: LoggingPorts = {
     guildId,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: now() }),
@@ -356,6 +382,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         runAfter,
         now: now(),
       }),
+    getMemberSnapshot: (id) => loggingRepo.getMemberSnapshot(scope, id),
+    saveMemberSnapshot: (s) =>
+      loggingRepo.upsertMemberSnapshot(scope, { ...s, roleIds: [...s.roleIds] }),
+    deleteMemberSnapshot: (id) => {
+      loggingRepo.deleteMemberSnapshot(scope, id);
+    },
     now,
     logger,
   };
@@ -436,7 +468,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
 
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
-    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
     fetchAuditLog: () =>
       discord.fetchAuditLog(guildId, { actionType: 'message_delete', limit: 25 }),
     claimedCountFor: (input) => loggingRepo.claimedCountFor(scope, input),
@@ -614,12 +646,26 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  const logPoster = createLogPoster(loggingPorts);
+
   const modCommandDeps: ModCommandDeps = {
     guildId,
     authz: authzStoreFor(scope),
     fetchInvokerRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
     moderationGateway: modCommandGateway,
     confirmations: modConfirmationDeps,
+    // ADR 0123 (logging routes): a warning is the bot's own action, so it
+    // never arrives as a gateway event — `/mod warn` hands it to the logging
+    // module here, posted under the warn's interaction id so a retried hook
+    // call replays to nothing. `onWarned` is `readonly`, so it is set in the
+    // literal rather than assigned afterwards.
+    onWarned: (info) =>
+      logPoster.post({
+        eventKind: 'member_warn',
+        fingerprint: info.warnId,
+        source: undefined,
+        render: () => formatWarn(info),
+      }),
     cases: {
       openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
       recordCaseEvent: (input) =>
@@ -933,6 +979,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // ADR 0092 decision 2: the live channel-context window from the AI tuning
     // settings. Absent means off, and the `channel_history` tool stays hidden.
     settings === undefined ? undefined : () => settings.get('assistant.channelContextMessages'),
+    deps.assistantWebSearch,
   );
   const { interactionTokenSealer } = deps;
 
@@ -1088,6 +1135,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       // ADR 0112 decision 4: a pinged reply to a task post is a progress
       // update for the reply subscriber, never a general assistant question.
       isTaskPost: (messageId) => taskNudgeRepo.isTaskPost(scope, messageId),
+      // ADR 0125: a tag of the bot's integration role is a tag of the bot.
+      botRoleId: () => client.guilds.cache.get(guildId)?.roles.botRoleFor(botUserId)?.id,
       // Task 20: member 👍/👎 on a bot answer sets feedback and a trace
       // flag; anything else (and the bot's own reactions) is ignored inside.
       feedback: {
@@ -1170,6 +1219,24 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
+      // Slice 4, Task 4: the durable bulk role walk, through the MCP's own
+      // gateway instance (same policy, same no-op breaker, same `mcp` audit
+      // rows as the interactive role tools) on the shared per-guild limiter
+      // from `mcp/roles-gateway.ts` — the job and the HTTP role ports spend
+      // one `roleRatePerMin` bucket.
+      mcpBulkRoleHandler({
+        scope,
+        logger,
+        now,
+        gateway: mcpRoleGatewayFor(
+          { authz: authzStoreFor(scope), rateLimiter: mcpRateLimiterFor(scope), logger, now },
+          client,
+          discord,
+          scope,
+        ),
+        authorizeAccount: (accountId) => authorizeRolesMutate(scope, accountId),
+        findPreview: (previewId) => mcpBulkRepo.findPreviewById(scope, previewId),
+      }),
       logMessageDeleteHandler(deletionAttributionPorts),
       modPurgeHandler(purgePorts),
       archiveBackfillHandler(archiveBackfillPorts),
@@ -1177,7 +1244,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
       deliverRemindersHandler({
         store: reminderStoreFor(scope),
-        delivery: createReminderDelivery(guildId, discord),
+        delivery: createReminderDelivery(guildId, discord, { client, scope, logger }),
         now,
         logger,
       }),
@@ -1260,6 +1327,30 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const ops: GuildOperations = {
     createPanel: (definition, newlyAllowlistedRoleIds = []) => {
       panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds);
+    },
+    updatePanel: (definition, newlyAllowlistedRoleIds = []) => {
+      panelRepo.updatePanel(scope, definition, now(), newlyAllowlistedRoleIds);
+    },
+    async unpublishPanel(panelId) {
+      const panel = panelRepo.findPanel(scope, panelId);
+      if (panel === undefined) throw new Error(`no panel ${panelId} in guild ${guildId}`);
+
+      if (panel.kind === 'managed' && panel.messageId !== undefined) {
+        // Deleting a message that is already gone is a no-op, so retrying
+        // this command is safe: an unknown message (10008/404) counts as
+        // success. Any other Discord error throws with the rows still in
+        // place, so a retry can finish.
+        try {
+          await discord.deleteMessage(
+            guildId,
+            { channelId: panel.channelId, messageId: panel.messageId },
+            `panel delete ${panelId}`,
+          );
+        } catch (err) {
+          if (!(err instanceof DiscordApiError && err.isGone)) throw err;
+        }
+      }
+      panelRepo.deletePanel(scope, panelId);
     },
     async publishPanel(panelId) {
       const panel = panelRepo.findPanel(scope, panelId);

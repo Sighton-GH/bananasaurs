@@ -115,8 +115,62 @@ class MinimalModerationDiscord implements DiscordPort {
   async listPublicThreads(): Promise<never> {
     this.notUsed('listPublicThreads');
   }
+  async isThreadMember(): Promise<never> {
+    this.notUsed('isThreadMember');
+  }
+  async fetchThreadInfo(): Promise<never> {
+    this.notUsed('fetchThreadInfo');
+  }
+  async fetchMessageMeta(): Promise<never> {
+    this.notUsed('fetchMessageMeta');
+  }
+  async pinMessage(): Promise<void> {
+    this.notUsed('pinMessage');
+  }
+  async unpinMessage(): Promise<void> {
+    this.notUsed('unpinMessage');
+  }
+  async deleteOwnReaction(): Promise<void> {
+    this.notUsed('deleteOwnReaction');
+  }
+  async createThread(): Promise<never> {
+    this.notUsed('createThread');
+  }
+  async addThreadMember(): Promise<void> {
+    this.notUsed('addThreadMember');
+  }
+  async removeThreadMember(): Promise<void> {
+    this.notUsed('removeThreadMember');
+  }
+  async createForumPost(): Promise<never> {
+    this.notUsed('createForumPost');
+  }
+  async setThreadState(): Promise<void> {
+    this.notUsed('setThreadState');
+  }
+  async createRole(): Promise<never> {
+    this.notUsed('createRole');
+  }
+  async setRolePosition(): Promise<void> {
+    this.notUsed('setRolePosition');
+  }
+  async editRole(): Promise<void> {
+    this.notUsed('editRole');
+  }
+  async fetchMessageAuthor(): Promise<never> {
+    this.notUsed('fetchMessageAuthor');
+  }
   async listScheduledEvents(): Promise<never> {
     this.notUsed('listScheduledEvents');
+  }
+  async createScheduledEvent(): Promise<never> {
+    this.notUsed('createScheduledEvent');
+  }
+  async editScheduledEvent(): Promise<void> {
+    this.notUsed('editScheduledEvent');
+  }
+  async cancelScheduledEvent(): Promise<void> {
+    this.notUsed('cancelScheduledEvent');
   }
   async createReaction(): Promise<void> {
     this.notUsed('createReaction');

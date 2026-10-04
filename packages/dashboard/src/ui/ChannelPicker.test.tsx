@@ -33,7 +33,41 @@ describe('ChannelPicker', () => {
     const option = await screen.findByRole('button', { name: /#general/ });
     fireEvent.mouseDown(option);
     expect(screen.getByTestId('value').textContent).toBe('333333333333333333');
-    expect(await screen.findByText(/Selected: #general/)).toBeTruthy();
+    // The name and the id both stay in the box; nothing is printed below it.
+    const input = screen.getByLabelText('Enable archiving for a channel');
+    expect(input).toHaveProperty('value', '#general (333333333333333333)');
+    expect(screen.queryByText(/Selected:/)).toBeNull();
+  });
+
+  it('shows the name and id for a pasted id the list knows', async () => {
+    stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
+    renderWithSession(<Harness />);
+    await screen.findByRole('button', { name: /#general/ });
+    const input = screen.getByLabelText('Enable archiving for a channel');
+    fireEvent.change(input, { target: { value: '444444444444444444' } });
+    expect(input).toHaveProperty('value', '#mod-log (444444444444444444)');
+    expect(screen.getByTestId('value').textContent).toBe('444444444444444444');
+  });
+
+  it('hides the list once a channel is chosen, and shows it again on focus', async () => {
+    stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
+    renderWithSession(<Harness />);
+    fireEvent.mouseDown(await screen.findByRole('button', { name: /#general/ }));
+    expect(screen.queryByRole('button', { name: /#mod-log/ })).toBeNull();
+    fireEvent.focus(screen.getByLabelText('Enable archiving for a channel'));
+    expect(screen.getByRole('button', { name: /#mod-log/ })).toBeTruthy();
+  });
+
+  it('keeps filtering by name after the user edits the shown text', async () => {
+    stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
+    renderWithSession(<Harness />);
+    fireEvent.mouseDown(await screen.findByRole('button', { name: /#general/ }));
+    const input = screen.getByLabelText('Enable archiving for a channel');
+    fireEvent.focus(input);
+    // Backspacing into the name leaves "#genera ..." - not a channel, still a search.
+    fireEvent.change(input, { target: { value: '#mod (333333333333333333)' } });
+    expect(screen.getByRole('button', { name: /#mod-log/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /#general/ })).toBeNull();
   });
 
   it('lists every matching channel, not a capped few', async () => {

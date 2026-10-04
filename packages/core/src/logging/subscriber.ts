@@ -1,10 +1,19 @@
 import type { Snowflake } from '../discord/port.js';
+import { createHash } from 'node:crypto';
+import type { MemberEvent } from '../discord/events.js';
 import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { fingerprintOf } from '../pipeline/fingerprint.js';
 import { MESSAGE_DELETE_ATTRIBUTION_DELAY_MS } from './attribution.js';
 import { logMessageDeleteDedupeKey } from '../jobs/kinds.js';
+import {
+  isSourceExcluded,
+  routeAccepts,
+  routeDedupeKind,
+  type LogRoute,
+  type LogSource,
+} from './routing.js';
 import {
   formatGapMarker,
   formatMemberJoin,
@@ -14,36 +23,55 @@ import {
   formatRoleDelete,
   formatRoleUpdate,
 } from './format.js';
+import { MEMBER_CHANGE_KINDS, baselineFor, memberChanges } from './member-changes.js';
+import { AUDIT_EVENT_KINDS, auditItemsFor } from './audit-items.js';
+import type { MemberSnapshotLike } from './member-changes.js';
+
+export type { LogRoute } from './routing.js';
 
 /**
- * The logging module (ADR 0023): message edits and deletes, member
- * joins/leaves, and role create/update/delete. A deletion is not formatted
+ * The logging module (ADR 0123): message edits and deletes, member
+ * joins/leaves, role create/update/delete, live audit-log entries (kicks,
+ * bans, timeouts, channel/thread/server changes, invites, emoji, stickers),
+ * and bulk deletes (purges). A deletion is not formatted
  * or sent here — it is enqueued as a delayed job, because ADR 0019 fact 3
  * says the audit log has not caught up yet at the moment the dispatch
  * arrives. `attribute-deletion.ts` is the job's body.
+ *
+ * Each handled gateway event becomes zero or more log items, and each item
+ * fans out to every matching enabled route — one post per route, each under
+ * its own claim (`log:r<route_id>:<event_kind>`), so one bad route never
+ * blocks another.
  */
-
-export interface LogRoute {
-  channelId: Snowflake;
-  includeContent: boolean;
-  enabled: boolean;
-}
 
 export interface LoggingPorts {
   readonly guildId: Snowflake;
-  findRoute(eventKind: string): LogRoute | undefined;
+  /** Enabled routes that include this event kind (ADR 0123). */
+  listEnabledRoutesFor(eventKind: string): readonly LogRoute[];
   isChannelExcluded(channelId: Snowflake): boolean;
   /** Every distinct channel enabled for at least one event kind (gap markers). */
   listEnabledLogChannels(): readonly Snowflake[];
   /**
-   * The claim, namespaced under this module's own `eventKind` so it cannot
-   * collide with the pipeline's own gate-2 dedupe row for the bare gateway
-   * kind (ADR 0023 decision 4).
+   * The claim, namespaced per route under this module's own `eventKind` so
+   * it cannot collide with the pipeline's own gate-2 dedupe row for the bare
+   * gateway kind (ADR 0123 decision 6).
    */
   claim(input: { eventKind: string; fingerprint: string }): boolean;
   /** Released when a send throws, so a later delivery of the same event can retry. */
   release(input: { eventKind: string; fingerprint: string }): void;
-  sendMessage(channelId: Snowflake, message: { content: string }): Promise<unknown>;
+  sendMessage(
+    channelId: Snowflake,
+    message: { content: string; allowedMentions: { parse: readonly [] } },
+  ): Promise<unknown>;
+  /**
+   * The per-member last-seen record (ADR 0123 decision 8): what the logging
+   * module last knew, so a change can be rendered old → new. Hashes only —
+   * no image is ever downloaded or stored. Guild scope is bound by the
+   * composition root, which closes over its own scope.
+   */
+  getMemberSnapshot(userId: Snowflake): MemberSnapshotLike | undefined;
+  saveMemberSnapshot(snapshot: MemberSnapshotLike): void;
+  deleteMemberSnapshot(userId: Snowflake): void;
   /** One job per deletion; a no-op if the same messageId is already queued. */
   enqueueDeletionAttribution(input: { dedupeKey: string; payload: string; runAfter: number }): {
     enqueued: boolean;
@@ -52,7 +80,7 @@ export interface LoggingPorts {
   now(): number;
 }
 
-/** The `log_routes.event_kind` string for each gateway kind this module handles. */
+/** The event-kind string for each gateway kind this module handles (ADR 0123). */
 const ROUTE_KIND = {
   messageUpdate: 'message_edit',
   memberAdd: 'member_join',
@@ -60,7 +88,8 @@ const ROUTE_KIND = {
   roleCreate: 'role_create',
   roleUpdate: 'role_update',
   roleDelete: 'role_delete',
-  memberUpdate: 'member_update',
+  // `memberUpdate` is deliberately absent: it fans out to the four
+  // MEMBER_CHANGE_KINDS via the snapshot diff in `handle`, not to one kind.
   messageCreate: 'message_create',
   guildCreate: 'guild_available',
   guildDelete: 'guild_unavailable',
@@ -68,20 +97,29 @@ const ROUTE_KIND = {
 } as const;
 
 /**
- * Every value `log_routes.event_kind` may usefully hold.
+ * Every event kind a route may usefully include.
  *
- * Derived from `ROUTE_KIND` rather than written out a second time, plus
- * `message_delete`, which is routed here but handled by a delayed job rather
- * than by the switch below (ADR 0019 fact 3).
+ * Derived from `ROUTE_KIND` rather than written out a second time, plus the
+ * four member-change kinds (diffed from the last-seen record in `handle`,
+ * not mapped from one gateway kind), `message_delete`, which is routed
+ * here but handled by a delayed job rather than by the switch below
+ * (ADR 0019 fact 3), the eighteen audit-log kinds (one item per live
+ * `auditLogEntry`, via `audit-items.ts`), `message_bulk_delete` (the
+ * gateway bulk-delete event), and `member_warn` (posted by the logging
+ * side of `/mod warn` through `createLogPoster`, not by this subscriber).
  *
- * Exported for `bananasaurs log routing set`, which validates against it. A
+ * Exported for `bananasaurs log routing create`, which validates against it. A
  * route on an event kind nothing emits is the exact failure WP4's report §5
  * named: the command succeeds, the listing looks configured, and nothing is
  * ever logged — an inert module and a working one look identical.
  */
 export const LOG_EVENT_KINDS: readonly string[] = [
   ...Object.values(ROUTE_KIND),
+  ...MEMBER_CHANGE_KINDS,
+  ...AUDIT_EVENT_KINDS,
   'message_delete',
+  'message_bulk_delete',
+  'member_warn',
 ].sort();
 
 /**
@@ -100,8 +138,315 @@ function fingerprintFor(event: Parameters<Subscriber['handle']>[0]): string | un
   return undefined;
 }
 
+interface LogItem {
+  eventKind: string; // a LOG_EVENT_KINDS value
+  fingerprint: string; // replay-stable identity of this item
+  source: LogSource | undefined; // undefined for events with no source channel
+  render(includeContent: boolean): string;
+}
+
+export type { LogItem };
+
+type HandleEvent = Parameters<Subscriber['handle']>[0];
+
+function logItemsFor(event: HandleEvent): LogItem[] {
+  if (event.kind === 'auditLogEntry') {
+    // One item per handled audit action, each under the entry's own id so a
+    // replayed entry posts nothing new. An entry for an unhandled action
+    // yields no items.
+    return auditItemsFor(event).map((item) => ({
+      eventKind: item.eventKind,
+      fingerprint: event.entryId,
+      source: undefined,
+      render: () => item.render(),
+    }));
+  }
+
+  if (event.kind === 'messageDeleteBulk') {
+    const fingerprint =
+      fingerprintOf(event) ?? `${event.kind}:${event.receivedAtMs}:${event.channelId}`;
+    const source: LogSource = {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+    };
+    return [
+      {
+        eventKind: 'message_bulk_delete',
+        fingerprint,
+        source,
+        render: () =>
+          `Messages bulk-deleted in <#${event.channelId}>: ${event.messageIds.length} messages`,
+      },
+    ];
+  }
+
+  const routeKind = ROUTE_KIND[event.kind as keyof typeof ROUTE_KIND] as string | undefined;
+  if (routeKind === undefined) return []; // everything else: not this module's job
+
+  if (event.kind === 'messageCreate') {
+    if (event.authorIsBot) return [];
+    const source: LogSource = {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+    };
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source,
+        render: (includeContent) =>
+          `Message created in <#${event.channelId}> by ${event.authorId === undefined ? 'an unknown member' : `<@${event.authorId}>`}${includeContent && event.content !== undefined ? `\nContent: ${event.content}` : ''}`,
+      },
+    ];
+  }
+
+  if (event.kind === 'messageUpdate') {
+    const source: LogSource = {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+    };
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source,
+        render: (includeContent) => formatMessageEdit(event, includeContent),
+      },
+    ];
+  }
+
+  if (event.kind === 'memberAdd') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.userId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => formatMemberJoin(event),
+      },
+    ];
+  }
+
+  if (event.kind === 'memberRemove') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.userId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => formatMemberLeave(event),
+      },
+    ];
+  }
+
+  if (event.kind === 'roleCreate') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => formatRoleCreate(event),
+      },
+    ];
+  }
+
+  if (event.kind === 'roleUpdate') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => formatRoleUpdate(event),
+      },
+    ];
+  }
+
+  if (event.kind === 'roleDelete') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => formatRoleDelete(event),
+      },
+    ];
+  }
+
+  if (event.kind === 'guildCreate') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => 'Server became available to Bananasaurs.',
+      },
+    ];
+  }
+
+  if (event.kind === 'guildDelete') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () => 'Server became unavailable to Bananasaurs.',
+      },
+    ];
+  }
+
+  if (event.kind === 'autoModerationAction') {
+    const fingerprint =
+      fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.guildId}`;
+    return [
+      {
+        eventKind: routeKind,
+        fingerprint,
+        source: undefined,
+        render: () =>
+          `Discord AutoMod action ${event.actionType} for <@${event.userId}> under rule ${event.ruleId}.`,
+      },
+    ];
+  }
+
+  throw new Error(`unreachable log event kind: ${event.kind}`);
+}
+
+export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
+  name: 'logging',
+  async handle(event) {
+    if (event.kind === 'connection') {
+      if (event.resumed) return; // nothing lost — the session replayed the gap
+      await postGapMarkers(ports, event);
+      return;
+    }
+
+    if (event.kind === 'messageDelete') {
+      const source: LogSource = {
+        channelId: event.channelId,
+        parentChannelId: event.parentChannelId,
+      };
+      if (isSourceExcluded(source, (id) => ports.isChannelExcluded(id))) return;
+      const routes = ports
+        .listEnabledRoutesFor('message_delete')
+        .filter((r) => routeAccepts(r, source));
+      if (routes.length === 0) return;
+
+      const now = ports.now();
+      ports.enqueueDeletionAttribution({
+        dedupeKey: logMessageDeleteDedupeKey(event.channelId, event.messageId),
+        payload: JSON.stringify({
+          channelId: event.channelId,
+          messageId: event.messageId,
+          authorId: event.authorId,
+          parentChannelId: event.parentChannelId,
+          // Decided once, here — not re-checked at job time — so content the
+          // owner has off is never persisted into the job table even for the
+          // delay's duration.
+          content: routes.some((r) => r.includeContent) ? event.content : undefined,
+          deletedAtMs: event.receivedAtMs,
+        }),
+        runAfter: now + MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
+      });
+      return;
+    }
+
+    if (event.kind === 'memberAdd') {
+      const firstError = await postItems(ports, logItemsFor(event), event.kind);
+      if (firstError === undefined) {
+        // Like the update path below: a failed send must not advance the
+        // snapshot — the replay must see the same baseline.
+        if (wantsMemberChanges(ports)) {
+          const snapshot = snapshotOf(event);
+          if (snapshot !== undefined) ports.saveMemberSnapshot(snapshot);
+        } else {
+          // No route wants member changes, so no record is kept: drop any
+          // existing row the next time the member is seen (ADR 0123 decision 8).
+          ports.deleteMemberSnapshot(event.userId);
+        }
+      }
+      if (firstError !== undefined) throw firstError;
+      return;
+    }
+
+    if (event.kind === 'memberUpdate') {
+      const baseline = baselineFor(ports.getMemberSnapshot(event.userId), event);
+      const items: LogItem[] = memberChanges(baseline, event).map((change) => {
+        const text = change.render();
+        return {
+          eventKind: change.eventKind,
+          fingerprint: `${event.userId}:${change.eventKind}:${baseline.version}:${shortHash(text)}`,
+          source: undefined,
+          render: () => text,
+        };
+      });
+      const firstError = await postItems(ports, items, event.kind);
+      if (firstError === undefined) {
+        // The replay must see the same baseline and therefore the same
+        // fingerprints (routes that already posted are skipped by their
+        // claims), so a failed send leaves the snapshot untouched.
+        if (wantsMemberChanges(ports)) {
+          const snapshot = snapshotOf(event);
+          if (snapshot !== undefined) ports.saveMemberSnapshot(snapshot);
+        } else {
+          // No route wants member changes, so no record is kept: drop any
+          // existing row the next time the member is seen (ADR 0123 decision 8).
+          ports.deleteMemberSnapshot(event.userId);
+        }
+      }
+      if (firstError !== undefined) throw firstError;
+      return;
+    }
+
+    if (event.kind === 'memberRemove') {
+      const firstError = await postItems(ports, logItemsFor(event), event.kind);
+      // Unconditional: the leave line does not depend on the snapshot, so
+      // deletion must not wait for the send — PRIVACY.md promises the record
+      // is always deleted when the member leaves.
+      ports.deleteMemberSnapshot(event.userId);
+      if (firstError !== undefined) throw firstError;
+      return;
+    }
+
+    const firstError = await postItems(ports, logItemsFor(event), event.kind);
+    if (firstError !== undefined) throw firstError;
+  },
+});
+
 /**
- * `docs/19` §6.7's restated gate, generalised (ADR 0023 decision 5): a gap
+ * Posts one item through the same fan-out the subscriber uses (route
+ * matching, per-route claims, no pings). Throws the first send error, if
+ * any, after trying every route — the caller decides what that means.
+ *
+ * The `/mod warn` logging hook posts through this: a warning is the bot's
+ * own action, not a gateway event, so there is no dispatch to handle.
+ */
+export function createLogPoster(ports: LoggingPorts): { post(item: LogItem): Promise<void> } {
+  return {
+    async post(item: LogItem): Promise<void> {
+      const firstError = await postItems(ports, [item], item.eventKind);
+      if (firstError !== undefined) throw firstError;
+    },
+  };
+}
+
+/**
+ * `docs/19` §6.7's restated gate, generalised (ADR 0123 decision 5): a gap
  * during which nothing was captured must be a visible marker, never a
  * silent hole. Every distinct enabled channel gets one, independently of the
  * others — one channel's send failing must not stop another's.
@@ -117,6 +462,9 @@ async function postGapMarkers(
     try {
       await ports.sendMessage(channelId, {
         content: formatGapMarker(event.disconnectedAtMs, event.receivedAtMs),
+        // Log lines quote member-controlled text; mentions in the content
+        // must never ping anyone in the log channel.
+        allowedMentions: { parse: [] },
       });
     } catch (err) {
       ports.release({ eventKind: dedupeKind, fingerprint });
@@ -134,105 +482,83 @@ async function postGapMarkers(
   }
 }
 
-export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
-  name: 'logging',
-  async handle(event) {
-    // Bulk deletes are not a logging-module event; ignore before the switch below.
-    if (event.kind === 'messageDeleteBulk') return;
+/**
+ * Short stable hash for a member-change fingerprint, the same primitive
+ * `pipeline/fingerprint.ts` hashes with. The fingerprint must distinguish two
+ * different changes from the same baseline version (A→B→A→B posts four lines)
+ * while staying replay-stable for the identical event.
+ */
+const shortHash = (text: string): string =>
+  createHash('sha256').update(text).digest('hex').slice(0, 16);
 
-    if (event.kind === 'connection') {
-      if (event.resumed) return; // nothing lost — the session replayed the gap
-      await postGapMarkers(ports, event);
-      return;
-    }
+/**
+ * Data minimisation (ADR 0123 decision 8): the last-seen record is only kept
+ * while some enabled route includes a member-change action. No route wants
+ * member changes → no record kept.
+ */
+const wantsMemberChanges = (ports: LoggingPorts): boolean =>
+  MEMBER_CHANGE_KINDS.some((kind) => ports.listEnabledRoutesFor(kind).length > 0);
 
-    if (event.kind === 'messageDelete') {
-      if (ports.isChannelExcluded(event.channelId)) return;
-      const route = ports.findRoute('message_delete');
-      if (route === undefined || !route.enabled) return;
+/** The snapshot to store for this dispatch, when the adapter saw the member. */
+const snapshotOf = (event: MemberEvent): MemberSnapshotLike | undefined => {
+  const profile = event.profile;
+  if (profile === undefined) return undefined;
+  return {
+    userId: event.userId,
+    username: profile.username,
+    globalName: profile.globalName,
+    nickname: profile.nickname,
+    avatarHash: profile.avatarHash,
+    guildAvatarHash: profile.guildAvatarHash,
+    roleIds: [...event.roleIds],
+    updatedAtMs: event.receivedAtMs,
+  };
+};
 
-      const now = ports.now();
-      ports.enqueueDeletionAttribution({
-        dedupeKey: logMessageDeleteDedupeKey(event.channelId, event.messageId),
-        payload: JSON.stringify({
-          channelId: event.channelId,
-          messageId: event.messageId,
-          authorId: event.authorId,
-          // Decided once, here — not re-checked at job time — so content the
-          // owner has off is never persisted into the job table even for the
-          // delay's duration.
-          content: route.includeContent ? event.content : undefined,
-          deletedAtMs: event.receivedAtMs,
-        }),
-        runAfter: now + MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
-      });
-      return;
-    }
-
-    const routeKind = ROUTE_KIND[event.kind as keyof typeof ROUTE_KIND] as string | undefined;
-    if (routeKind === undefined) return; // everything else: not this module's job
-
-    if (event.kind === 'messageCreate') {
-      if (event.authorIsBot || ports.isChannelExcluded(event.channelId)) return;
-    }
-    if (event.kind === 'messageUpdate' && ports.isChannelExcluded(event.channelId)) return;
-
-    const route = ports.findRoute(routeKind);
-    if (route === undefined || !route.enabled) return;
-
-    const fingerprint =
-      fingerprintFor(event) ??
-      `${event.kind}:${event.receivedAtMs}:${'userId' in event ? event.userId : 'messageId' in event ? (event.messageId ?? 'none') : event.guildId}`;
-
-    const dedupeKind = `log:${routeKind}`;
-    if (!ports.claim({ eventKind: dedupeKind, fingerprint })) return;
-
-    const content = ((): string => {
-      switch (event.kind) {
-        case 'messageCreate':
-          return `Message created in <#${event.channelId}> by ${event.authorId === undefined ? 'an unknown member' : `<@${event.authorId}>`}${route.includeContent && event.content !== undefined ? `\nContent: ${event.content}` : ''}`;
-        case 'messageUpdate':
-          return formatMessageEdit(event, route.includeContent);
-        case 'memberUpdate':
-          return `Member updated: <@${event.userId}>`;
-        case 'memberAdd':
-          return formatMemberJoin(event);
-        case 'memberRemove':
-          return formatMemberLeave(event);
-        case 'roleCreate':
-          return formatRoleCreate(event);
-        case 'roleUpdate':
-          return formatRoleUpdate(event);
-        case 'roleDelete':
-          return formatRoleDelete(event);
-        case 'guildCreate':
-          return 'Server became available to Bananasaurs.';
-        case 'guildDelete':
-          return 'Server became unavailable to Bananasaurs.';
-        case 'autoModerationAction':
-          return `Discord AutoMod action ${event.actionType} for <@${event.userId}> under rule ${event.ruleId}.`;
-        default:
-          throw new Error(`unreachable log event kind: ${event.kind}`);
+/**
+ * Fans log items out to every matching enabled route — one post per route,
+ * each under its own claim, so one bad route never blocks another. Returns
+ * the first send error, if any, so the caller can decide whether derived
+ * state (the member snapshot) may be advanced.
+ */
+async function postItems(
+  ports: LoggingPorts,
+  items: readonly LogItem[],
+  gatewayKind: string,
+): Promise<Error | undefined> {
+  let firstError: Error | undefined;
+  for (const item of items) {
+    if (isSourceExcluded(item.source, (id) => ports.isChannelExcluded(id))) continue;
+    const routes = ports
+      .listEnabledRoutesFor(item.eventKind)
+      .filter((r) => routeAccepts(r, item.source));
+    for (const route of routes) {
+      const dedupeKind = routeDedupeKind(route.routeId, item.eventKind);
+      if (!ports.claim({ eventKind: dedupeKind, fingerprint: item.fingerprint })) continue;
+      try {
+        await ports.sendMessage(route.channelId, {
+          content: item.render(route.includeContent),
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        // A transient send failure must not blackhole this line forever —
+        // this module has no reconciliation to fall back on (ADR 0123
+        // decision 6) — and must not stop the other routes either.
+        ports.release({ eventKind: dedupeKind, fingerprint: item.fingerprint });
+        ports.logger.error(
+          safeLogFields({
+            component: 'logging',
+            guildId: ports.guildId,
+            eventKind: gatewayKind,
+            channelId: route.channelId,
+            routeId: route.routeId,
+            err,
+          }),
+          'failed to post a log line; released the claim for a future retry',
+        );
+        firstError ??= err instanceof Error ? err : new Error(String(err));
       }
-    })();
-
-    try {
-      await ports.sendMessage(route.channelId, { content });
-    } catch (err) {
-      // A transient send failure must not blackhole this line forever — this
-      // module has no reconciliation to fall back on (ADR 0023 decision 4).
-      ports.release({ eventKind: dedupeKind, fingerprint });
-      ports.logger.error(
-        safeLogFields({
-          component: 'logging',
-          guildId: ports.guildId,
-          eventKind: event.kind,
-          channelId: route.channelId,
-          err,
-        }),
-        'failed to post a log line; released the claim for a future retry',
-      );
-      throw err;
     }
-  },
-});
+  }
+  return firstError;
+}

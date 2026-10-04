@@ -9,6 +9,7 @@ import {
   authzRepo,
   effectRepo,
   guildRepo,
+  loggingRepo,
   panelRepo,
   roleRepo,
 } from '@bananasaurs/storage';
@@ -147,6 +148,48 @@ describe('GET /api/health', () => {
     expect(body.gateway).toBeDefined();
     expect(body.safety.killswitch).toBe(false);
     expect(body.jobCounts).toBeDefined();
+  });
+});
+
+describe('GET /api/log-routes — routes with kinds and exclusions plus excludedChannels', () => {
+  it('lists every route with its kinds and exclusions, and the guild-wide list beside it', async () => {
+    grant(['logging.manage']);
+    loggingRepo.createRoute(t.scopes.forGuild(GUILD), {
+      name: 'mod log',
+      channelId: '444444444444444444',
+      includeContent: true,
+      enabled: true,
+      eventKinds: ['member_leave', 'member_join'],
+      excludedChannelIds: ['555555555555555555'],
+      nowMs: clock,
+    });
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD), '666666666666666666');
+
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/log-routes',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      routes: {
+        routeId: string;
+        name: string;
+        channelId: string;
+        eventKinds: string[];
+        excludedChannelIds: string[];
+      }[];
+      excludedChannels: string[];
+    }>();
+    expect(body.routes).toHaveLength(1);
+    expect(body.routes[0]).toMatchObject({
+      name: 'mod log',
+      channelId: '444444444444444444',
+      eventKinds: ['member_join', 'member_leave'],
+      excludedChannelIds: ['555555555555555555'],
+    });
+    expect(body.excludedChannels).toEqual(['666666666666666666']);
   });
 });
 

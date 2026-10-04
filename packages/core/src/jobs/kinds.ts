@@ -52,6 +52,11 @@ export const JOB_KINDS = {
    * never fetches live.
    */
   resourceRefresh: 'resource_refresh',
+  /**
+   * One confirmed MCP `bulk_role_change` (ADR 0118 §5): walks the previewed
+   * member set from a persisted cursor through the MCP role gateway.
+   */
+  mcpBulkRole: 'mcp.bulk_role',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -125,6 +130,7 @@ export const logMessageDeletePayload = z.object({
   channelId: snowflakeIdSchema,
   messageId: snowflakeIdSchema,
   authorId: snowflakeIdSchema.optional(),
+  parentChannelId: snowflakeIdSchema.optional(),
   content: z.string().optional(),
   deletedAtMs: z.number().int().nonnegative(),
 });

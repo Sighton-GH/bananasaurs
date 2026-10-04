@@ -1,6 +1,7 @@
 import {
   DiscordApiError,
   DiscordErrorCode,
+  unicodeEmojiChars,
   type AuditLogEntry,
   type DiscordMember,
   type DiscordMessageRef,
@@ -56,6 +57,8 @@ interface FakeMessage {
   authorName: string;
   /** emojiKey -> ordered user ids, mirroring Discord's insertion order. */
   reactions: Map<EmojiKey, Snowflake[]>;
+  /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). */
+  pinned: boolean;
   cached: boolean;
   deleted: boolean;
   /** Last-known content, for `fetchRecentMessages` (ADR 0037). */
@@ -66,6 +69,8 @@ interface FakeMessage {
   attachments: FakeAttachment[];
   /** Reply target's display name, for `fetchChannelMessages` (ADR 0089). */
   referencedAuthorName: string | undefined;
+  /** The poll `sendMessage` attached, for the `pollOf` inspector (MCP slice 5). */
+  poll: OutgoingMessage['poll'];
 }
 
 /**
@@ -122,6 +127,44 @@ interface FakeMember {
   isGuildOwner: boolean;
 }
 
+interface FakeThreadInfo {
+  name: string;
+  parentId: Snowflake;
+  isPrivate: boolean;
+  guildId: Snowflake;
+  /** Live archive/lock state, for `setThreadState` (MCP slice 3). */
+  archived: boolean;
+  locked: boolean;
+}
+
+/** A guild scheduled event `createScheduledEvent` minted (MCP slice 5). */
+interface FakeScheduledEvent {
+  id: Snowflake;
+  name: string;
+  description: string | undefined;
+  scheduledStartAt: number;
+  scheduledEndAt: number | undefined;
+  channelId: Snowflake | undefined;
+  location: string | undefined;
+}
+
+/** A forum post `createForumPost` minted, keyed by its thread id (MCP slice 3). */
+interface FakeForumPost {
+  messageId: Snowflake;
+  appliedTagIds: readonly string[];
+}
+
+/**
+ * The display fields a `createRole`/`editRole` carried (MCP slice 4).
+ * `DiscordRole` is deliberately narrow — hierarchy only — so the colour, the
+ * hoist and the mentionable live beside the roles map rather than on it.
+ */
+interface FakeRoleDetails {
+  color: number | undefined;
+  hoist: boolean | undefined;
+  mentionable: boolean | undefined;
+}
+
 export interface RestCall {
   method: PortMethod;
   args: readonly unknown[];
@@ -163,6 +206,8 @@ export class FakeDiscord implements DiscordPort {
   readonly guildId: Snowflake;
 
   private roles = new Map<Snowflake, DiscordRole>();
+  /** Display fields for roles `createRole` minted or `editRole` touched (MCP slice 4). */
+  private roleDisplay = new Map<Snowflake, FakeRoleDetails>();
   private members = new Map<Snowflake, FakeMember>();
   /**
    * What `timeoutMember`/`kickMember` most recently did to a member.
@@ -172,6 +217,14 @@ export class FakeDiscord implements DiscordPort {
    */
   private moderationState = new Map<Snowflake, { until: number } | 'kicked'>();
   private messages = new Map<string, FakeMessage>();
+  /** Thread memberships (`threadId` -> member user ids), for `isThreadMember` (ADR 0115). */
+  private threadMembers = new Map<Snowflake, Set<Snowflake>>();
+  /** Thread facts (`threadId` -> info), for `fetchThreadInfo` (ADR 0115). */
+  private threadInfos = new Map<Snowflake, FakeThreadInfo>();
+  /** Forum posts (`threadId` -> starter), for `createForumPost` (MCP slice 3). */
+  private forumPosts = new Map<Snowflake, FakeForumPost>();
+  /** Guild scheduled events (`eventId` -> event), for the MCP slice 5 writes. */
+  private scheduledEvents = new Map<Snowflake, FakeScheduledEvent>();
   /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
   private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
@@ -217,10 +270,31 @@ export class FakeDiscord implements DiscordPort {
     this.roles.set(full.id, full);
     return full;
   }
-  setRolePosition(roleId: Snowflake, position: number): void {
-    const r = this.roles.get(roleId);
-    if (!r) throw new Error(`no such role ${roleId}`);
-    this.roles.set(roleId, { ...r, position });
+  /**
+   * Moves a role's position.
+   *
+   * Two-arg form is world-building: it seeds the position without recording
+   * a call or checking scope, so fixtures stay silent in `restCalls`.
+   * Three-arg form is the `DiscordPort.setRolePosition` write (MCP slice 4):
+   * it records, checks scope, then mutates the same position — and throws a
+   * 404 for an unknown role, mirroring the adapter's mapped error.
+   */
+  setRolePosition(roleId: Snowflake, position: number): void;
+  setRolePosition(guildId: Snowflake, roleId: Snowflake, position: number): Promise<void>;
+  setRolePosition(a: Snowflake, b: Snowflake | number, c?: number): void | Promise<void> {
+    if (c === undefined) {
+      const r = this.roles.get(a);
+      if (!r) throw new Error(`no such role ${a}`);
+      this.roles.set(a, { ...r, position: b as number });
+      return;
+    }
+    return (async () => {
+      this.record('setRolePosition', [a, b, c]);
+      this.check('setRolePosition', a);
+      const role = this.roles.get(b as Snowflake);
+      if (!role) throw new DiscordApiError(404, DiscordErrorCode.UnknownRole, 'Unknown Role');
+      this.roles.set(b as Snowflake, { ...role, position: c });
+    })();
   }
   setBotHighestRolePosition(position: number): void {
     this.botPosition = position;
@@ -233,6 +307,60 @@ export class FakeDiscord implements DiscordPort {
   defineMember(userId: Snowflake, roleIds: Snowflake[] = [], isGuildOwner = false): void {
     this.members.set(userId, { userId, roleIds: new Set(roleIds), isGuildOwner });
   }
+  /**
+   * Adds a user to a thread's membership, for `isThreadMember` (ADR 0115).
+   * Absent unless added: a thread the fake was never told about has no
+   * members, the way an unknown thread answers 404 on the real endpoint.
+   *
+   * Two-arg form is world-building: it seeds membership without recording
+   * a call or checking scope, so fixtures stay silent in `restCalls`.
+   * Three-arg form is the `DiscordPort.addThreadMember` write (MCP slice
+   * 3): it records, checks scope, then mutates the same set.
+   */
+  addThreadMember(threadId: Snowflake, userId: Snowflake): void;
+  addThreadMember(guildId: Snowflake, threadId: Snowflake, userId: Snowflake): Promise<void>;
+  addThreadMember(a: Snowflake, b: Snowflake, c?: Snowflake): void | Promise<void> {
+    if (c === undefined) {
+      const members = this.threadMembers.get(a) ?? new Set<Snowflake>();
+      members.add(b);
+      this.threadMembers.set(a, members);
+      return;
+    }
+    return (async () => {
+      this.record('addThreadMember', [a, b, c]);
+      this.check('addThreadMember', a);
+      const members = this.threadMembers.get(b) ?? new Set<Snowflake>();
+      members.add(c);
+      this.threadMembers.set(b, members);
+    })();
+  }
+  /**
+   * Describes a thread for `fetchThreadInfo` (ADR 0115's sweeper fallback).
+   * `guildId` defaults to this fake's guild; pass another guild's id to
+   * model a cross-guild thread, which answers `undefined` for this guild —
+   * the way the REST adapter folds a foreign `guild_id` — rather than
+   * throwing a scope error.
+   */
+  defineThread(info: {
+    threadId: Snowflake;
+    name?: string;
+    parentId: Snowflake;
+    isPrivate?: boolean;
+    guildId?: Snowflake;
+    /** Live archive state to seed, for `setThreadState` tests (MCP slice 3). */
+    archived?: boolean;
+    /** Live lock state to seed, for `setThreadState` tests (MCP slice 3). */
+    locked?: boolean;
+  }): void {
+    this.threadInfos.set(info.threadId, {
+      name: info.name ?? `thread-${info.threadId}`,
+      parentId: info.parentId,
+      isPrivate: info.isPrivate ?? false,
+      guildId: info.guildId ?? this.guildId,
+      archived: info.archived ?? false,
+      locked: info.locked ?? false,
+    });
+  }
   memberRoles(userId: Snowflake): Snowflake[] {
     return [...(this.members.get(userId)?.roleIds ?? [])].sort();
   }
@@ -244,6 +372,39 @@ export class FakeDiscord implements DiscordPort {
   isBanned(userId: Snowflake): boolean {
     return this.bans.has(userId);
   }
+  /**
+   * A thread's live archive/lock state, for `setThreadState` assertions
+   * (MCP slice 3). `undefined` for a thread the fake was never told about.
+   */
+  threadState(threadId: Snowflake): { archived: boolean; locked: boolean } | undefined {
+    const info = this.threadInfos.get(threadId);
+    if (!info) return undefined;
+    return { archived: info.archived, locked: info.locked };
+  }
+  /**
+   * A forum post `createForumPost` minted (MCP slice 3). `undefined` for
+   * anything else — including threads `createThread` made, which carry no
+   * starter message or tags.
+   */
+  forumPost(
+    threadId: Snowflake,
+  ): { messageId: Snowflake; appliedTagIds: readonly string[] } | undefined {
+    return this.forumPosts.get(threadId);
+  }
+  /**
+   * The display fields a `createRole`/`editRole` carried (MCP slice 4).
+   * `undefined` for a role neither minted nor edited — including every
+   * `defineRole` seed, which predates the fields the way it predates
+   * `permissions`. Name, position and permissions are on `fetchRoles`
+   * instead, where Discord itself reports them.
+   */
+  roleDetails(
+    roleId: Snowflake,
+  ):
+    | { color: number | undefined; hoist: boolean | undefined; mentionable: boolean | undefined }
+    | undefined {
+    return this.roleDisplay.get(roleId);
+  }
 
   defineMessage(msg: {
     channelId: Snowflake;
@@ -253,6 +414,8 @@ export class FakeDiscord implements DiscordPort {
     cached?: boolean;
     content?: string | undefined;
     editedTimestampMs?: number | undefined;
+    /** Live pin state, for `fetchMessageMeta` (slice 2, Task 6). Defaults to unpinned. */
+    pinned?: boolean;
     attachments?: ReadonlyArray<{
       attachmentId: Snowflake;
       fileName: string;
@@ -273,6 +436,7 @@ export class FakeDiscord implements DiscordPort {
       deleted: false,
       content: msg.content,
       editedTimestampMs: msg.editedTimestampMs,
+      pinned: msg.pinned ?? false,
       attachments: (msg.attachments ?? []).map((a) => ({
         attachmentId: a.attachmentId,
         fileName: a.fileName,
@@ -280,6 +444,7 @@ export class FakeDiscord implements DiscordPort {
         sizeBytes: a.sizeBytes,
       })),
       referencedAuthorName: msg.referencedAuthorName,
+      poll: undefined,
     });
   }
   /** A message outside the client cache. Its events arrive partial. */
@@ -962,6 +1127,68 @@ export class FakeDiscord implements DiscordPort {
     return this.botPosition;
   }
 
+  /**
+   * Creates a role (MCP slice 4): mints the id and stores it with
+   * permissions `'0'` — mirroring the REST adapter, which always sends
+   * `'0'` — at the bottom of the list. The name, position and permissions
+   * are what `fetchRoles` reads; the display fields go to `roleDetails`.
+   */
+  async createRole(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly color?: number | undefined;
+      readonly hoist?: boolean | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<{ roleId: string }> {
+    this.record('createRole', [guildId, input]);
+    this.check('createRole', guildId);
+    const roleId = this.nextId();
+    this.roles.set(roleId, {
+      id: roleId,
+      name: input.name,
+      position: 1,
+      managed: false,
+      permissions: '0',
+    });
+    this.roleDisplay.set(roleId, {
+      color: input.color,
+      hoist: input.hoist,
+      mentionable: input.mentionable,
+    });
+    return { roleId };
+  }
+
+  /**
+   * Edits a role (MCP slice 4): only the fields given move — the name on
+   * the role itself, the rest on the details beside it. An unknown role
+   * throws a 404, the way the other *writes* answer.
+   */
+  async editRole(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly color?: number | undefined;
+      readonly mentionable?: boolean | undefined;
+    },
+  ): Promise<void> {
+    this.record('editRole', [guildId, roleId, patch]);
+    this.check('editRole', guildId);
+    const role = this.roles.get(roleId);
+    if (!role) throw new DiscordApiError(404, DiscordErrorCode.UnknownRole, 'Unknown Role');
+    if (patch.name !== undefined) this.roles.set(roleId, { ...role, name: patch.name });
+    const details = this.roleDisplay.get(roleId) ?? {
+      color: undefined,
+      hoist: undefined,
+      mentionable: undefined,
+    };
+    if (patch.color !== undefined) details.color = patch.color;
+    if (patch.mentionable !== undefined) details.mentionable = patch.mentionable;
+    this.roleDisplay.set(roleId, details);
+  }
+
   async fetchMember(guildId: Snowflake, userId: Snowflake): Promise<DiscordMember> {
     this.record('fetchMember', [guildId, userId]);
     this.check('fetchMember', guildId);
@@ -979,6 +1206,31 @@ export class FakeDiscord implements DiscordPort {
     return { exists: true };
   }
 
+  /**
+   * Live pin state and reaction counts (slice 2, Task 6): `pinned` is what
+   * `defineMessage` recorded, and each reaction bucket
+   * reports its reactor count with the display form the REST adapter
+   * projects — unicode characters for `u:` keys, `<:unknown:id>` for custom
+   * ones, whose names an `EmojiKey` deliberately does not carry. `undefined`
+   * for a message this fake was never told about or that was deleted —
+   * mirroring the REST adapter's 404/403 fold, not a thrown error.
+   */
+  async fetchMessageMeta(guildId: Snowflake, ref: DiscordMessageRef) {
+    this.record('fetchMessageMeta', [guildId, ref]);
+    this.check('fetchMessageMeta', guildId);
+    const m = this.messages.get(key(ref.channelId, ref.messageId));
+    if (!m || m.deleted) return undefined;
+    return {
+      pinned: m.pinned,
+      reactions: [...m.reactions.entries()]
+        .filter(([, users]) => users.length > 0)
+        .map(([emoji, users]) => ({
+          emoji: emoji.startsWith('c:') ? `<:unknown:${emoji.slice(2)}>` : unicodeEmojiChars(emoji),
+          count: users.length,
+        })),
+    };
+  }
+
   async createReaction(guildId: Snowflake, ref: DiscordMessageRef, emoji: EmojiKey): Promise<void> {
     this.record('createReaction', [guildId, ref, emoji]);
     this.check('createReaction', guildId);
@@ -987,6 +1239,41 @@ export class FakeDiscord implements DiscordPort {
     const users = m.reactions.get(emoji) ?? [];
     if (!users.includes(BOT_USER_ID)) users.push(BOT_USER_ID);
     m.reactions.set(emoji, users);
+  }
+
+  /** Removes the bot's reaction from the same bucket `createReaction` seeds. */
+  async deleteOwnReaction(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+    emoji: EmojiKey,
+  ): Promise<void> {
+    this.record('deleteOwnReaction', [guildId, ref, emoji]);
+    this.check('deleteOwnReaction', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    const users = m.reactions.get(emoji);
+    if (users !== undefined) {
+      const at = users.indexOf(BOT_USER_ID);
+      if (at !== -1) users.splice(at, 1);
+    }
+  }
+
+  /** Sets the message's pinned flag; visible through `fetchMessageMeta`. */
+  async pinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void> {
+    this.record('pinMessage', [guildId, ref]);
+    this.check('pinMessage', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    m.pinned = true;
+  }
+
+  /** Clears the message's pinned flag; unpinning an unpinned message is a no-op. */
+  async unpinMessage(guildId: Snowflake, ref: DiscordMessageRef): Promise<void> {
+    this.record('unpinMessage', [guildId, ref]);
+    this.check('unpinMessage', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    m.pinned = false;
   }
 
   async fetchReactionUsers(
@@ -1032,6 +1319,7 @@ export class FakeDiscord implements DiscordPort {
     this.check('sendMessage', guildId);
     const messageId = this.nextId();
     this.defineMessage({ channelId, messageId, authorId: BOT_USER_ID });
+    this.mustMessage({ channelId, messageId }).poll = message.poll;
     return { channelId, messageId };
   }
 
@@ -1234,18 +1522,264 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
-   * Guild scheduled events (ADR 0092): nothing is seeded, so the fake
-   * answers no events — the same `[]` the REST adapter reports on a 403.
+   * Thread membership (ADR 0115): what `addThreadMember` recorded. The real
+   * endpoint folds an unknown thread into 404 (false); the fake answers the
+   * same — absence is false, never a throw — so a caller under test sees the
+   * same refusal it would against real Discord.
+   */
+  async isThreadMember(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    userId: Snowflake,
+  ): Promise<boolean> {
+    this.record('isThreadMember', [guildId, threadId, userId]);
+    this.check('isThreadMember', guildId);
+    return this.threadMembers.get(threadId)?.has(userId) ?? false;
+  }
+
+  /**
+   * Thread facts (ADR 0115's sweeper fallback): what `defineThread`
+   * recorded. An unknown thread answers `undefined` — mirroring the REST
+   * adapter's 404/403 fold, not a thrown error — as does a thread from
+   * another guild, mirroring its foreign-`guild_id` fold. The guild id is
+   * compared, not enforced as scope (unlike every other method here): the
+   * caller legitimately names its own guild while Discord answers with the
+   * channel's actual one.
+   */
+  async fetchThreadInfo(guildId: Snowflake, threadId: Snowflake) {
+    this.record('fetchThreadInfo', [guildId, threadId]);
+    this.check('fetchThreadInfo', guildId, { allowForeignGuild: true });
+    const info = this.threadInfos.get(threadId);
+    if (info === undefined || info.guildId !== guildId) return undefined;
+    return { id: threadId, name: info.name, parentId: info.parentId, isPrivate: info.isPrivate };
+  }
+
+  /**
+   * Starts a thread (MCP slice 3): mints the id, records the facts
+   * `fetchThreadInfo` reads, and joins the bot — Discord adds the creator
+   * to its own thread. The private-from-message refusal mirrors the REST
+   * adapter's `TypeError`, thrown before anything is recorded.
+   */
+  async createThread(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly type: 'public' | 'private';
+      readonly autoArchiveMinutes: 60 | 1440 | 4320 | 10080;
+      readonly invitable?: boolean | undefined;
+      readonly fromMessageId?: string | undefined;
+    },
+  ): Promise<{ threadId: string }> {
+    if (input.fromMessageId !== undefined && input.type === 'private') {
+      throw new TypeError('createThread: fromMessageId is only valid for public threads');
+    }
+    this.record('createThread', [guildId, channelId, input]);
+    this.check('createThread', guildId);
+    const threadId = this.nextId();
+    this.threadInfos.set(threadId, {
+      name: input.name,
+      parentId: channelId,
+      isPrivate: input.type === 'private',
+      guildId,
+      archived: false,
+      locked: false,
+    });
+    this.addThreadMember(threadId, BOT_USER_ID);
+    return { threadId };
+  }
+
+  /**
+   * Removes a user from a thread's membership (MCP slice 3). Removing a
+   * non-member is a no-op, the way Discord treats it.
+   */
+  async removeThreadMember(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    userId: Snowflake,
+  ): Promise<void> {
+    this.record('removeThreadMember', [guildId, threadId, userId]);
+    this.check('removeThreadMember', guildId);
+    this.threadMembers.get(threadId)?.delete(userId);
+  }
+
+  /**
+   * Starts a forum post (MCP slice 3): mints the thread and its starter
+   * message — the bot authors it, as Discord does — records the facts
+   * `fetchThreadInfo`/`fetchMessageAuthor` read, and keeps the tags for
+   * the `forumPost` inspector, since no port reader reports them.
+   */
+  async createForumPost(
+    guildId: Snowflake,
+    forumChannelId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly message: OutgoingMessage;
+      readonly appliedTagIds: readonly string[];
+    },
+  ): Promise<{ threadId: string; messageId: string }> {
+    this.record('createForumPost', [guildId, forumChannelId, input]);
+    this.check('createForumPost', guildId);
+    const threadId = this.nextId();
+    // A real forum post's starter message shares the thread's id.
+    const messageId = threadId;
+    this.threadInfos.set(threadId, {
+      name: input.name,
+      parentId: forumChannelId,
+      isPrivate: false,
+      guildId,
+      archived: false,
+      locked: false,
+    });
+    this.defineMessage({
+      channelId: threadId,
+      messageId,
+      authorId: BOT_USER_ID,
+      content: input.message.content,
+    });
+    this.addThreadMember(threadId, BOT_USER_ID);
+    this.forumPosts.set(threadId, { messageId, appliedTagIds: [...input.appliedTagIds] });
+    return { threadId, messageId };
+  }
+
+  /**
+   * Archives/locks a thread (MCP slice 3): only the fields given move,
+   * the way the REST adapter's PATCH carries only them. An unknown thread
+   * throws a 404, mirroring the adapter's mapped error — not `undefined`,
+   * which is what the *reads* answer.
+   */
+  async setThreadState(
+    guildId: Snowflake,
+    threadId: Snowflake,
+    state: { readonly archived?: boolean | undefined; readonly locked?: boolean | undefined },
+  ): Promise<void> {
+    this.record('setThreadState', [guildId, threadId, state]);
+    this.check('setThreadState', guildId);
+    const info = this.threadInfos.get(threadId);
+    if (!info) throw new DiscordApiError(404, undefined, `Unknown Channel: ${threadId}`);
+    if (state.archived !== undefined) info.archived = state.archived;
+    if (state.locked !== undefined) info.locked = state.locked;
+  }
+
+  /**
+   * Guild scheduled events (ADR 0092, MCP slice 5): what
+   * `createScheduledEvent` minted, with edits applied and cancelled events
+   * removed — the same `ScheduledEvent` shape the REST adapter reports.
    */
   async listScheduledEvents(guildId: Snowflake): Promise<readonly ScheduledEvent[]> {
     this.record('listScheduledEvents', [guildId]);
     this.check('listScheduledEvents', guildId);
-    return [];
+    return [...this.scheduledEvents.values()].map((event) => ({
+      id: event.id,
+      name: event.name,
+      ...(event.description === undefined ? {} : { description: event.description }),
+      scheduledStartAt: event.scheduledStartAt,
+      ...(event.scheduledEndAt === undefined ? {} : { scheduledEndAt: event.scheduledEndAt }),
+      ...(event.channelId === undefined ? {} : { channelId: event.channelId }),
+      ...(event.location === undefined ? {} : { location: event.location }),
+    }));
   }
 
   /**
-   * Channel context for the assistant (ADR 0089): messages before `before`,
-   * oldest first, excluding deleted ones. Unlike `fetchRecentMessages` this
+   * Creates a guild scheduled event (MCP slice 5): mints the id and records
+   * what `listScheduledEvents` reads. The external-without-`endAt` refusal
+   * mirrors the REST adapter's `TypeError`, thrown before anything is
+   * recorded.
+   */
+  async createScheduledEvent(
+    guildId: Snowflake,
+    input: {
+      readonly name: string;
+      readonly description?: string | undefined;
+      readonly startAt: number;
+      readonly endAt?: number | undefined;
+      readonly location:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string };
+    },
+  ): Promise<{ eventId: string }> {
+    if (input.location.kind === 'external' && input.endAt === undefined) {
+      throw new TypeError('createScheduledEvent: external events require endAt');
+    }
+    this.record('createScheduledEvent', [guildId, input]);
+    this.check('createScheduledEvent', guildId);
+    const eventId = this.nextId();
+    this.scheduledEvents.set(eventId, {
+      id: eventId,
+      name: input.name,
+      description: input.description,
+      scheduledStartAt: input.startAt,
+      scheduledEndAt: input.endAt,
+      channelId: input.location.kind === 'external' ? undefined : input.location.channelId,
+      location: input.location.kind === 'external' ? input.location.place : undefined,
+    });
+    return { eventId };
+  }
+
+  /**
+   * Edits a guild scheduled event (MCP slice 5): only the fields given move,
+   * the way `setThreadState` carries only its fields. `description: null`
+   * clears the description, like the REST adapter's JSON null; `endAt` moves
+   * the end time, which can never be cleared because Discord's PATCH
+   * `scheduled_end_time` is not nullable. An unknown event throws
+   * a 404, mirroring the adapter's mapped error — not `undefined`, which is
+   * what the *reads* answer.
+   */
+  async editScheduledEvent(
+    guildId: Snowflake,
+    eventId: Snowflake,
+    patch: {
+      readonly name?: string | undefined;
+      readonly description?: string | null | undefined;
+      readonly startAt?: number | undefined;
+      readonly endAt?: number | undefined;
+      readonly location?:
+        | { readonly kind: 'voice' | 'stage'; readonly channelId: string }
+        | { readonly kind: 'external'; readonly place: string }
+        | undefined;
+    },
+  ): Promise<void> {
+    this.record('editScheduledEvent', [guildId, eventId, patch]);
+    this.check('editScheduledEvent', guildId);
+    const event = this.scheduledEvents.get(eventId);
+    if (!event)
+      throw new DiscordApiError(404, undefined, `Unknown Guild Scheduled Event: ${eventId}`);
+    if (patch.name !== undefined) event.name = patch.name;
+    if (patch.description !== undefined) event.description = patch.description ?? undefined;
+    if (patch.startAt !== undefined) event.scheduledStartAt = patch.startAt;
+    if (patch.endAt !== undefined) event.scheduledEndAt = patch.endAt;
+    if (patch.location !== undefined) {
+      event.channelId = patch.location.kind === 'external' ? undefined : patch.location.channelId;
+      event.location = patch.location.kind === 'external' ? patch.location.place : undefined;
+    }
+  }
+
+  /**
+   * Cancels a guild scheduled event (MCP slice 5): removes it from what
+   * `listScheduledEvents` reads. An unknown event throws a 404, mirroring
+   * the adapter's mapped error.
+   */
+  async cancelScheduledEvent(guildId: Snowflake, eventId: Snowflake): Promise<void> {
+    this.record('cancelScheduledEvent', [guildId, eventId]);
+    this.check('cancelScheduledEvent', guildId);
+    if (!this.scheduledEvents.delete(eventId)) {
+      throw new DiscordApiError(404, undefined, `Unknown Guild Scheduled Event: ${eventId}`);
+    }
+  }
+
+  /**
+   * The poll a `sendMessage` attached to the message (MCP slice 5).
+   * `undefined` for a message sent without one — or for a message this fake
+   * was never told about — so assertions read absence the same way.
+   */
+  pollOf(channelId: Snowflake, messageId: Snowflake): OutgoingMessage['poll'] {
+    return this.messages.get(key(channelId, messageId))?.poll;
+  }
+
+  /**
+   * Channel context for the assistant (ADR 0089): messages before `before`
+   * — or the newest messages when `before` is absent — oldest first,
+   * excluding deleted ones. Unlike `fetchRecentMessages` this
    * carries display names, the bot flag and the reply target instead of edit
    * metadata. A 403/404 has no model here — the REST adapter folds those to
    * `undefined`; callers that need the failure path inject it with
@@ -1255,14 +1789,14 @@ export class FakeDiscord implements DiscordPort {
   async fetchChannelMessages(
     guildId: Snowflake,
     channelId: Snowflake,
-    opts: { before: Snowflake; limit: number },
+    opts: { before?: Snowflake | undefined; limit: number },
   ): Promise<readonly RecentMessage[] | undefined> {
     this.record('fetchChannelMessages', [guildId, channelId, opts]);
     this.check('fetchChannelMessages', guildId);
     const limit = Math.min(Math.max(opts.limit, 1), 50);
     return [...this.messages.values()]
       .filter((m) => m.channelId === channelId && !m.deleted)
-      .filter((m) => BigInt(m.messageId) < BigInt(opts.before))
+      .filter((m) => opts.before === undefined || BigInt(m.messageId) < BigInt(opts.before))
       .sort((a, b) => (BigInt(a.messageId) > BigInt(b.messageId) ? 1 : -1))
       .slice(-limit)
       .map((m) => ({
@@ -1349,6 +1883,24 @@ export class FakeDiscord implements DiscordPort {
   async sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void> {
     this.record('sendTyping', [guildId, channelId]);
     this.check('sendTyping', guildId);
+  }
+
+  /**
+   * One message's author, content and embeds, for reply context: what
+   * `defineMessage` recorded, plus the empty embed list a text-only fake
+   * message carries. `undefined` for a message the fake was never told
+   * about or that was deleted — mirroring the REST adapter's 404/403 fold,
+   * not a thrown error, the way `fetchMessageContent` answers.
+   */
+  async fetchMessageAuthor(
+    guildId: Snowflake,
+    ref: DiscordMessageRef,
+  ): Promise<{ authorId: Snowflake; content: string; embeds: readonly unknown[] } | undefined> {
+    this.record('fetchMessageAuthor', [guildId, ref]);
+    this.check('fetchMessageAuthor', guildId);
+    const m = this.messages.get(key(ref.channelId, ref.messageId));
+    if (!m || m.deleted) return undefined;
+    return { authorId: m.authorId, content: m.content ?? '', embeds: [] };
   }
 
   async fetchAuditLog(

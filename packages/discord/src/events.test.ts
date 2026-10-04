@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ChannelType, Client, Events, type Guild } from 'discord.js';
-import type { AutoModerationEvent, DomainEvent, ReactionEvent } from '@bananasaurs/core';
+import type {
+  AuditLogEntryEvent,
+  AutoModerationEvent,
+  DomainEvent,
+  ReactionEvent,
+} from '@bananasaurs/core';
 import { buildClientOptions } from './client.js';
 import { attachGatewayTranslation } from './events.js';
 
@@ -305,6 +310,99 @@ describe('members', () => {
 
     expect(h.events[0]).toMatchObject({ kind: 'memberUpdate', roleIds: [ROLE] });
     expect((h.events[0] as { previousRoleIds?: readonly string[] }).previousRoleIds).toEqual([]);
+  });
+
+  it('carries the profile on join', () => {
+    const h = harness();
+    h.client.emit(
+      Events.GuildMemberAdd,
+      membersOf(h.guild)._add(
+        memberPacket({
+          user: { id: USER, username: 'member', global_name: 'Global', discriminator: '0' },
+          nick: 'Nick',
+        }),
+      ),
+    );
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberAdd',
+      userId: USER,
+      profile: {
+        username: 'member',
+        globalName: 'Global',
+        nickname: 'Nick',
+      },
+    });
+  });
+
+  it('carries the profile and no previousMember when the old member was not cached', () => {
+    const h = harness();
+    h.packet(
+      'GuildMemberUpdate',
+      memberPacket({
+        user: { id: USER, username: 'member', discriminator: '0' },
+        nick: 'Nick',
+      }),
+    );
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberUpdate',
+      profile: { username: 'member', nickname: 'Nick' },
+    });
+    expect((h.events[0] as { previousMember?: unknown }).previousMember).toBeUndefined();
+  });
+
+  it('carries the previous nickname and guild avatar when the old member was resident', () => {
+    const h = harness();
+    membersOf(h.guild)._add(memberPacket({ nick: 'Old' }));
+
+    h.packet('GuildMemberUpdate', memberPacket({ nick: 'New' }));
+
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberUpdate',
+      profile: { nickname: 'New' },
+      previousMember: { nickname: 'Old' },
+    });
+  });
+
+  /**
+   * Account-level changes never reach `GuildMemberUpdate` (`GuildMember.equals`
+   * ignores user fields), so without this listener a rename would be invisible.
+   * The cached user is mutated the way the gateway would mutate it, then the
+   * update is emitted for it.
+   */
+  it('a UserUpdate for a cached member yields one memberUpdate with the new username', () => {
+    const h = harness();
+    membersOf(h.guild)._add(memberPacket());
+    const user = h.client.users.cache.get(USER);
+    expect(user).toBeDefined();
+    if (user === undefined) return;
+    user.username = 'renamed';
+    h.client.emit(Events.UserUpdate, user, user);
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({
+      kind: 'memberUpdate',
+      guildId: GUILD,
+      userId: USER,
+      profile: { username: 'renamed' },
+    });
+    // Roles did not change: previous roles are the member's current set.
+    expect((h.events[0] as { previousRoleIds?: readonly string[] }).previousRoleIds).toEqual([
+      ROLE,
+    ]);
+  });
+
+  it('a UserUpdate for a user with no cached member yields nothing', () => {
+    const h = harness();
+    internals(h.client).users._add({
+      id: '777777777777777771',
+      username: 'stranger',
+      discriminator: '0',
+    });
+    const stranger = h.client.users.cache.get('777777777777777771');
+    expect(stranger).toBeDefined();
+    if (stranger === undefined) return;
+    h.client.emit(Events.UserUpdate, stranger, stranger);
+    expect(h.events).toEqual([]);
   });
 });
 
@@ -954,5 +1052,188 @@ describe('slash commands', () => {
     h.packet('InteractionCreate', commandPacket({ type: 4 }));
     expect(h.events).toEqual([]);
     expect(h.errors).toEqual([]);
+  });
+});
+
+/**
+ * Audit-log entries (ADR 0123).
+ *
+ * `GUILD_AUDIT_LOG_ENTRY_CREATE` has a real action class
+ * (`client.actions.GuildAuditLogEntryCreate`), so like every other dispatch
+ * here it is driven through `h.packet` — a raw packet through discord.js's own
+ * handler — rather than a hand-built `GuildAuditLogsEntry`. The packet shape is
+ * the gateway's: `{ guild_id, id, action_type, user_id, target_id, reason,
+ * changes: [{ key, old_value, new_value }], options }`.
+ */
+const MODERATOR = '777777777777777777';
+const AUDIT_ENTRY = '900000000000000001';
+
+const auditPacket = (over: Record<string, unknown> = {}): object => ({
+  guild_id: GUILD,
+  id: AUDIT_ENTRY,
+  action_type: 20, // MemberKick
+  user_id: MODERATOR,
+  target_id: USER,
+  reason: 'spam',
+  changes: [],
+  ...over,
+});
+
+describe('audit-log entries (ADR 0123)', () => {
+  it('translates a MemberKick entry into the domain shape, guild id included', () => {
+    const h = harness();
+    h.packet('GuildAuditLogEntryCreate', auditPacket());
+
+    expect(h.events).toEqual<DomainEvent[]>([
+      {
+        kind: 'auditLogEntry',
+        guildId: GUILD,
+        receivedAtMs: 1_700_000_000_000,
+        entryId: AUDIT_ENTRY,
+        action: 20,
+        actorId: MODERATOR,
+        targetId: USER,
+        reason: 'spam',
+        changes: [],
+        count: undefined,
+        channelId: undefined,
+      },
+    ]);
+  });
+
+  it('carries old and new strings for a timeout change on MemberUpdate', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000002',
+        action_type: 24, // MemberUpdate
+        reason: 'timeout',
+        changes: [
+          {
+            key: 'communication_disabled_until',
+            old_value: '2026-08-30T00:00:00.000Z',
+            new_value: '2026-08-31T00:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).changes).toEqual([
+      {
+        key: 'communication_disabled_until',
+        old: '2026-08-30T00:00:00.000Z',
+        new: '2026-08-31T00:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('carries the deleted count for a MessageBulkDelete', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000003',
+        action_type: 73, // MessageBulkDelete
+        target_id: CHANNEL,
+        reason: null,
+        options: { count: '5' },
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({ kind: 'auditLogEntry', action: 73, count: 5 });
+  });
+
+  it('treats an unparseable count as absent rather than propagating NaN', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000004',
+        action_type: 73, // MessageBulkDelete
+        target_id: CHANNEL,
+        options: { count: 'not-a-number' },
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).count).toBeUndefined();
+    expect(h.errors).toEqual([]);
+  });
+
+  it('carries channelId when extra.channel.id is set', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000007',
+        action_type: 72, // MessageDelete
+        options: { channel_id: CHANNEL },
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).channelId).toBe(CHANNEL);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('reports no actor when Discord names none', () => {
+    const h = harness();
+    h.packet('GuildAuditLogEntryCreate', auditPacket({ user_id: null }));
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).actorId).toBeUndefined();
+  });
+
+  /**
+   * Role-list changes arrive as `$add`/`$remove` keys holding arrays of role
+   * objects. They must survive normalisation as JSON-safe data, not be dropped
+   * as "unrepresentable" — the logging route renders who gained what.
+   */
+  it('keeps an object array change value as JSON-safe data', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000005',
+        action_type: 25, // MemberRoleUpdate
+        changes: [{ key: '$add', new_value: [{ id: ROLE, name: 'alpha' }] }],
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).changes).toEqual([
+      { key: '$add', old: undefined, new: [{ id: ROLE, name: 'alpha' }] },
+    ]);
+  });
+
+  /**
+   * Raw Discord values are untrusted input. A value nested deeper than the
+   * normaliser recurses is pruned, not fatal: the entry still emits and no
+   * error escapes into the gateway.
+   */
+  it('prunes an over-nested change value instead of throwing', () => {
+    const h = harness();
+    h.packet(
+      'GuildAuditLogEntryCreate',
+      auditPacket({
+        id: '900000000000000006',
+        changes: [{ key: 'deep', new_value: { l1: { l2: { l3: { l4: { l5: 'x' } } } } } }],
+      }),
+    );
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AuditLogEntryEvent).changes).toEqual([
+      { key: 'deep', old: undefined, new: { l1: { l2: { l3: {} } } } },
+    ]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('drops an entry from a guild that is not allowlisted', () => {
+    const h = harness({ allow: [OTHER_GUILD] });
+    h.packet('GuildAuditLogEntryCreate', auditPacket());
+    expect(h.events).toEqual([]);
   });
 });
