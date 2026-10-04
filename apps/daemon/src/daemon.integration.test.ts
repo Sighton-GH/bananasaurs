@@ -9,6 +9,7 @@ import {
   panelDefinitionSchema,
   parseConfig,
   parseGuildId,
+  reconcileDedupeKey,
   unicodeEmojiKey,
   type Config,
 } from '@bananasaurs/core';
@@ -506,6 +507,33 @@ describe('reconnecting', () => {
     // reconciliation.
     const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(1);
+  });
+
+  /**
+   * ADR 0127: the `reconcile_guild:gateway-gap` enqueue deliberately carries
+   * no `oncePerBucket` — a second fresh connection after the first
+   * reconciliation finished must enqueue again, because the new gap is new
+   * work. The first job may have ended `done` or `failed`; either way it is
+   * no longer pending, which is the point. Fails if someone adds
+   * `oncePerBucket` to the reconcile enqueue in `connection-subscriber.ts`.
+   */
+  it('enqueues a second reconciliation when a second fresh connection follows the first', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+    await daemon.drainJobs();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const reconciles = jobRepo
+      .listJobs(scope, {})
+      .filter((job) => job.kind === JOB_KINDS.reconcileGuild);
+    expect(reconciles).toHaveLength(2);
+    for (const job of reconciles) expect(job.dedupeKey).toBe(reconcileDedupeKey('gateway-gap'));
   });
 
   it('records a resumed session as a gap that needs no repair', async () => {
