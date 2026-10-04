@@ -39,7 +39,10 @@ export interface HousekeepingTimer {
 
 export interface HousekeepingTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
-  readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => { readonly enqueued: boolean };
+  readonly enqueue: (
+    scope: GuildScope,
+    input: jobRepo.EnqueueInput,
+  ) => { readonly enqueued: boolean };
   readonly now: () => number;
   readonly logger: Logger;
 }

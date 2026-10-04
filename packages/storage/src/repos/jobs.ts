@@ -250,7 +250,11 @@ export const cancelJob = (scope: GuildScope, jobId: number, now: number): void =
  * whose `updated_at` is strictly before `olderThanMs`. Never touches `queued` or
  * `running`. Returns how many were deleted; the caller loops while it equals `limit`.
  */
-export const deleteFinishedBatch = (scope: GuildScope, olderThanMs: number, limit: number): number =>
+export const deleteFinishedBatch = (
+  scope: GuildScope,
+  olderThanMs: number,
+  limit: number,
+): number =>
   write(scope, ({ db }) => {
     const ids = db
       .select({ jobId: jobs.jobId })
@@ -266,7 +270,10 @@ export const deleteFinishedBatch = (scope: GuildScope, olderThanMs: number, limi
       .all()
       .map((row) => row.jobId);
     if (ids.length === 0) return 0;
-    return db.delete(jobs).where(scope.only(jobs, inArray(jobs.jobId, ids))).run().changes;
+    return db
+      .delete(jobs)
+      .where(scope.only(jobs, inArray(jobs.jobId, ids)))
+      .run().changes;
   });
 
 export const findJob = (scope: GuildScope, jobId: number): JobRow | undefined =>

@@ -575,7 +575,11 @@ describe('deleteFinishedBatch (ADR 0127)', () => {
     finishedAt: number,
   ): number => {
     keySeq += 1;
-    const created = put(scope, { dedupeKey: `prune-test:${keySeq}`, now: finishedAt, maxAttempts: 1 });
+    const created = put(scope, {
+      dedupeKey: `prune-test:${keySeq}`,
+      now: finishedAt,
+      maxAttempts: 1,
+    });
     const id = created.jobId ?? -1;
     if (terminal === 'done') {
       claimNext(scope, finishedAt);

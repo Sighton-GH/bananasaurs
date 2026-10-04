@@ -41,7 +41,10 @@ const depsFor = (over: Partial<HousekeepingTimerDeps> = {}): HousekeepingTimerDe
 });
 
 const jobsFor = (scope: GuildScope) => jobRepo.listJobs(scope, {});
-const kindsFor = (scope: GuildScope) => jobsFor(scope).map((job) => job.kind).sort();
+const kindsFor = (scope: GuildScope) =>
+  jobsFor(scope)
+    .map((job) => job.kind)
+    .sort();
 
 const completeAll = (scope: GuildScope): void => {
   for (;;) {
@@ -72,7 +75,9 @@ describe('housekeeping timer (ADR 0127)', () => {
 
     const prune = captured.find((c) => c.input.kind === JOB_KINDS.pruneJobs);
     expect(prune?.input.dedupeKey).toBe(pruneJobsDedupeKey('2026-10-04'));
-    expect(JSON.parse(prune?.input.payload ?? '{}')).toEqual({ olderThanMs: nowMs - JOB_RETENTION_MS });
+    expect(JSON.parse(prune?.input.payload ?? '{}')).toEqual({
+      olderThanMs: nowMs - JOB_RETENTION_MS,
+    });
     expect(prune?.input.oncePerBucket).toBe(true);
 
     const sweep = captured.find((c) => c.input.kind === JOB_KINDS.sweepEventDedupe);
@@ -129,7 +134,12 @@ describe('housekeeping timer (ADR 0127)', () => {
 
     expect(jobsFor(a)).toHaveLength(4);
     // `listJobs` is newest-first: the next day's pair sorts first.
-    expect(kindsFor(a)).toEqual([JOB_KINDS.pruneJobs, JOB_KINDS.pruneJobs, JOB_KINDS.sweepEventDedupe, JOB_KINDS.sweepEventDedupe]);
+    expect(kindsFor(a)).toEqual([
+      JOB_KINDS.pruneJobs,
+      JOB_KINDS.pruneJobs,
+      JOB_KINDS.sweepEventDedupe,
+      JOB_KINDS.sweepEventDedupe,
+    ]);
     const days = jobsFor(a)
       .map((job) => job.dedupeKey)
       .sort();

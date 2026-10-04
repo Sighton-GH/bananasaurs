@@ -19,7 +19,10 @@ import { jobRepo, pipelineRepo, type GuildScope } from '@bananasaurs/storage';
 
 const PRUNE_JOBS_BATCH = 500;
 
-export const pruneJobsHandler = (scope: GuildScope, logger: Logger): JobHandler<PruneJobsPayload> => ({
+export const pruneJobsHandler = (
+  scope: GuildScope,
+  logger: Logger,
+): JobHandler<PruneJobsPayload> => ({
   kind: JOB_KINDS.pruneJobs,
   payload: pruneJobsPayload,
   async run(payload) {
@@ -33,7 +36,12 @@ export const pruneJobsHandler = (scope: GuildScope, logger: Logger): JobHandler<
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     logger.info(
-      safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.pruneJobs, guildId: scope.guildId, count: removed }),
+      safeLogFields({
+        component: 'jobs',
+        jobKind: JOB_KINDS.pruneJobs,
+        guildId: scope.guildId,
+        count: removed,
+      }),
       'pruned finished jobs',
     );
   },

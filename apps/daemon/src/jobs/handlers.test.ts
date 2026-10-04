@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { parseGuildId } from '@bananasaurs/core';
-import {
-  guildRepo,
-  jobRepo,
-  type GuildScope,
-} from '@bananasaurs/storage';
+import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { pruneJobsHandler } from './handlers.js';
 
