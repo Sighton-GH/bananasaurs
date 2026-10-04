@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pino } from 'pino';
-import { parseConfig, type Config } from '@bananasaurs/core';
+import { parseConfig, type Config, type Logger } from '@bananasaurs/core';
 import { listBackups, openTestDatabase } from '@bananasaurs/storage';
 import { createBackupTimer } from './backup-timer.js';
 
@@ -144,6 +144,43 @@ describe('createBackupTimer', () => {
 
     vi.advanceTimersByTime(24 * 60 * 60_000);
     expect(listBackups(dir)).toHaveLength(3);
+
+    timer.stop();
+  });
+
+  it('start() backs up now and keeps the interval when the backup directory cannot be listed', () => {
+    vi.useFakeTimers();
+    // A regular file where the destination directory should be: listBackups'
+    // readdirSync throws ENOTDIR, which must not escape start() and kill the
+    // daemon (systemd restart loop) — runOnce logs its own 'backup failed'.
+    const badFile = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(badFile, 'not a directory');
+    const warns: string[] = [];
+    const errors: string[] = [];
+    const capture = {
+      info() {},
+      warn(_fields: unknown, msg: string) {
+        warns.push(msg);
+      },
+      error(_fields: unknown, msg: string) {
+        errors.push(msg);
+      },
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+
+    const timer = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_DIR: badFile, BANANASAURS_BACKUP_INTERVAL_MIN: '60' }),
+      logger: capture,
+    });
+    expect(() => timer.start()).not.toThrow();
+    expect(warns).toEqual(['backup: could not list existing backups; backing up now']);
+    expect(errors).toEqual(['backup failed']); // the immediate runOnce
+
+    vi.advanceTimersByTime(60 * 60_000);
+    expect(errors).toEqual(['backup failed', 'backup failed']); // the recurring tick
 
     timer.stop();
   });

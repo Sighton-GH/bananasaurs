@@ -86,14 +86,32 @@ export function createBackupTimer(deps: BackupTimerDeps): BackupTimer {
       // install with no backup at all for up to twenty-four hours, but a
       // restart inside the interval must not take another backup either.
       const intervalMs = deps.config.BANANASAURS_BACKUP_INTERVAL_MIN * 60_000;
-      const newest = listBackups(deps.config.BANANASAURS_BACKUP_DIR).at(-1);
-      const ageMs = newest === undefined ? Infinity : now() - newest.createdAt.getTime();
       const scheduleRecurring = () => {
         timer = setInterval(runOnce, intervalMs);
         // Same reasoning as the job-poll timer: a pending backup tick must not
         // be what keeps the process alive after the gateway connection dies.
         timer.unref();
       };
+      // listBackups reads the directory synchronously and throws when the
+      // configured path is a regular file (ENOTDIR), is unreadable (EACCES)
+      // or a file vanishes mid-listing. That fault must stay a logged backup
+      // failure like runOnce's — never a throw out of start(), which would
+      // take daemon.start() and the whole process down into a systemd
+      // restart loop — so only the lookup is guarded, and on error we take
+      // the "no recent backup" path below.
+      let newest: ReturnType<typeof listBackups>[number] | undefined;
+      try {
+        newest = listBackups(deps.config.BANANASAURS_BACKUP_DIR).at(-1);
+      } catch (err) {
+        deps.logger.warn(
+          safeLogFields({ component: 'backup', err }),
+          'backup: could not list existing backups; backing up now',
+        );
+        runOnce();
+        scheduleRecurring();
+        return;
+      }
+      const ageMs = newest === undefined ? Infinity : now() - newest.createdAt.getTime();
       if (newest === undefined || ageMs >= intervalMs) {
         runOnce();
         scheduleRecurring();
