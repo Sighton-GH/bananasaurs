@@ -130,6 +130,12 @@ export const opsPortsFor = (
       dryRun: input.dryRun,
     }),
   setKillswitch: (on) => guildRepo.setKillswitch(scope, on, now()),
+  setAutomodState: (state) => guildRepo.setAutomodState(scope, state, now()),
+  listEnabledAutomodRuleNames: () =>
+    automodAdminRepo
+      .listRules(scope)
+      .filter((rule) => rule.enabled)
+      .map((rule) => ({ ruleId: rule.ruleId, name: rule.name })),
 
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({

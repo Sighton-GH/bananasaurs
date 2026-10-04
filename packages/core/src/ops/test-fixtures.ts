@@ -28,6 +28,8 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   oldestDueJobAtMs: unstubbed('oldestDueJobAtMs'),
   recordAudit: unstubbed('recordAudit'),
   setKillswitch: unstubbed('setKillswitch'),
+  setAutomodState: unstubbed('setAutomodState'),
+  listEnabledAutomodRuleNames: unstubbed('listEnabledAutomodRuleNames'),
   tailAudit: unstubbed('tailAudit'),
   listGuildChannels: unstubbed('listGuildChannels'),
   findGuildMessage: unstubbed('findGuildMessage'),

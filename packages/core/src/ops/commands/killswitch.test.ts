@@ -12,6 +12,7 @@ const safety = (over: Partial<OpsSafetyState> = {}): OpsSafetyState => ({
   roleRatePerMin: 20,
   reconcileBudget: 25,
   breakerThreshold: 5,
+  automodState: 'off',
   ...over,
 });
 

@@ -103,6 +103,8 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   oldestDueJobAtMs: notNeeded('oldestDueJobAtMs'),
   recordAudit: () => undefined,
   setKillswitch: notNeeded('setKillswitch'),
+  setAutomodState: notNeeded('setAutomodState'),
+  listEnabledAutomodRuleNames: notNeeded('listEnabledAutomodRuleNames'),
   tailAudit: notNeeded('tailAudit'),
   listJobs: notNeeded('listJobs'),
   listPanels: notNeeded('listPanels'),

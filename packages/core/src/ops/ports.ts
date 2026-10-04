@@ -229,6 +229,9 @@ export interface OpsLogRoute {
   readonly excludedChannelIds: readonly string[];
 }
 
+/** ADR 0121's guild-wide automod switch; re-declared here (ADR 0014). */
+export type OpsAutomodState = 'off' | 'watch' | 'on';
+
 /** The guild's row in `guilds`, as the effect gateway reads it. */
 export interface OpsSafetyState {
   readonly killswitch: boolean;
@@ -238,6 +241,7 @@ export interface OpsSafetyState {
   readonly roleRatePerMin: number;
   readonly reconcileBudget: number;
   readonly breakerThreshold: number;
+  readonly automodState: OpsAutomodState;
 }
 
 // `packages/core` may not import from `@bananasaurs/storage` (ADR 0014;
@@ -746,6 +750,10 @@ export interface OpsPorts {
   recordAudit(input: OpsAuditWrite): void;
   /** `guilds.killswitch`, layer 2 of the effect gateway's twelve. */
   setKillswitch(on: boolean): void;
+  /** ADR 0121: `guilds.automod_state`. Audited by the caller. */
+  setAutomodState(state: OpsAutomodState): void;
+  /** The guild's enabled automod rules, for the On confirmation. */
+  listEnabledAutomodRuleNames(): readonly { readonly ruleId: string; readonly name: string }[];
 
   // --- read commands (13c) ---------------------------------------------------
   tailAudit(query: OpsAuditQuery): readonly OpsAuditRow[];

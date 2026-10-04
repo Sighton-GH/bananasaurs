@@ -109,6 +109,12 @@ export const testPortsFor = (
       dryRun: input.dryRun,
     }),
   setKillswitch: (on) => guildRepo.setKillswitch(scope, on, now()),
+  setAutomodState: (state) => guildRepo.setAutomodState(scope, state, now()),
+  listEnabledAutomodRuleNames: () =>
+    automodAdminRepo
+      .listRules(scope)
+      .filter((rule) => rule.enabled)
+      .map((rule) => ({ ruleId: rule.ruleId, name: rule.name })),
 
   // The Discord cache cannot exist here, so the pickers' channel list is a
   // static demo set beside the seeded archive fixture channel; the daemon's

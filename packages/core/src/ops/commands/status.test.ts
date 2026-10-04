@@ -19,6 +19,7 @@ const HEALTHY: Partial<OpsPorts> = {
     roleRatePerMin: 20,
     reconcileBudget: 25,
     breakerThreshold: 5,
+    automodState: 'off' as const,
   }),
   jobCounts: () => ({ queued: 2, done: 17 }),
   oldestDueJobAtMs: () => undefined,
@@ -81,6 +82,7 @@ describe('bananasaurs status', () => {
         roleRatePerMin: 20,
         reconcileBudget: 25,
         breakerThreshold: 5,
+        automodState: 'off' as const,
       }),
     });
     expect(res.ok).toBe(true);
@@ -100,6 +102,7 @@ describe('bananasaurs status', () => {
         roleRatePerMin: 20,
         reconcileBudget: 25,
         breakerThreshold: 5,
+        automodState: 'off' as const,
       }),
     });
     expect(res.ok).toBe(true);
