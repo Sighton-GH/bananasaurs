@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { InstanceScope } from '../scope.js';
 import { readInstance, writeInstance } from '../write.js';
@@ -665,10 +665,19 @@ export const rotateRefreshToken = (
     }
   });
 
+/** ADR 0127: a token is deleted this long after it expires, revoked or not. */
+export const OAUTH_TOKEN_RETENTION_AFTER_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000;
+
 /**
- * Ruling PR-108: deletes expired pending rows, expired codes, and tokens that
- * are BOTH expired AND revoked (a revoked-but-unexpired token stays so
- * `mcp tokens` can show what was revoked and when). Returns counts.
+ * Ruling PR-108: deletes expired pending rows and expired codes at expiry;
+ * tokens are deleted 14 days after expiry whether or not they were revoked
+ * (ADR 0127), because rotation never revokes the old access token, so the
+ * old "expired AND revoked" rule left those forever. Safe: an expired token
+ * can't authenticate, rotated access tokens are leaves of the refresh chain
+ * (`parent_token_id` points at a refresh token, see `revokeTokenChain`) so
+ * deleting them can't weaken reuse detection, and a revoked-but-unexpired
+ * token is still kept so `mcp tokens` can show what was revoked and when.
+ * Returns counts.
  */
 export const purgeExpired = (
   scope: InstanceScope,
@@ -685,7 +694,7 @@ export const purgeExpired = (
       .run();
     const tokens = db
       .delete(oauthTokens)
-      .where(and(lte(oauthTokens.expiresAt, now), isNotNull(oauthTokens.revokedAt)))
+      .where(lte(oauthTokens.expiresAt, now - OAUTH_TOKEN_RETENTION_AFTER_EXPIRY_MS))
       .run();
     return { pending: pending.changes, codes: codes.changes, tokens: tokens.changes };
   });
