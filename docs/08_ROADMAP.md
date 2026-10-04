@@ -54,16 +54,16 @@ What follows is the full engine, for the rules that survive that filter.
 
 - Rule model and predicates: keyword, wildcard, regex, invite, link/domain, mention spam, duplicate message, rapid spam, caps, emoji, attachment type, account age, join age.
 - Role, channel, and user exemptions. Sliding-window counters, violation expiry, progressive escalation, per-rule rate limits.
-- Saved-message fixtures, dry-run evaluation, human-readable match traces, false-positive review, rule versioning and rollback.
-- Per-rule `test` / `observe` / `enforce`, a global testing-mode toggle, and an emergency disable that is separate from testing mode. **Observe-only windows are per rule and run concurrently, not sequentially** — build the rule set up front and flip every rule into `observe` the same day so their clocks overlap; that is the lever for wall-clock speed, not a shorter window per rule. *(Recorded 2026-08-29.)*
-- **No overlapping enforcement.** While Carl-bot enforces a rule, the Bananasaurs equivalent is observe-only. Cutover is per rule and atomic: disable there, then enable here. Each rule records which legacy rule it replaces and its cutover state.
+- Human-readable match traces, false-positive flags that narrow a rule from the Review page, rule versioning and rollback.
+- **One guild-wide automod switch: Off, Watch, or On** (ADR 0121, replacing per-rule modes and observe windows). Off checks nothing. Watch records matches for review and touches no one. On deletes and escalates. Each rule can be enabled or disabled on its own. Every change is confirmed on the dashboard's Automod tab; turning automod up asks for the password again, turning it down never does. The kill switch, dry run and the breaker stay as separate emergency controls.
+- **No overlapping enforcement.** The On confirmation says to turn off the matching Carl-bot or Dyno automod first, so two bots never act on the same message.
 - Native Discord AutoMod integration where it blocks content earlier; supplement rather than duplicate.
 - Moderation cases, notes, warnings, evidence links, permission-scoped history search.
 - `/mod timeout` (clamped to Discord's 28-day maximum), `untimeout`, `kick`, `ban`, `unban`, and bounded `purge` as a durable background job — bulk delete only reaches messages under 14 days old, older ones go one at a time under rate limits.
 - Protected users and roles, hierarchy checks, per-action capability grants, confirmation policy for high-impact actions.
 - Reconciliation of actions taken directly in Discord, flagged `source: discord_audit_log (inferred)`, never authoritative.
 
-**Gate:** every legacy automod rule has an equivalent that ran observe-only against real traffic with an acceptable false-positive rate before cutover. **Two weeks is the floor for a fuzzy, heuristic rule** (spam-rate, duplicate-message, mention-spam, caps) — exactly the kind where real conversation produces the surprises this gate exists to catch. **A narrow, precise rule** (invite-link blocklist, domain blocklist) has little for real traffic to teach it and may graduate sooner if its false-positive review is clean early; the owner decides per rule, not by one uniform timer. *(Recorded 2026-08-29 — no auto-testing volume substitutes for real-traffic exposure; see the reasoning in the WP4 boundary conversation.)* Cutover happened one rule at a time. Hierarchy and permission tests pass, duplicate execution is impossible, and every action records actor, target, reason, evidence, timestamps, and outcome. All of it works with no AI configured at all — because at this point there is none.
+**Gate:** automod reaches On via the switch, recorded by an `automod.state_set` audit row. *(2026-09-30, ADR 0121: after 17 days of reviewing and flagging matches, the owner replaced the per-rule observe floor and one-rule-at-a-time cutover with this switch.)* Hierarchy and permission tests pass, duplicate execution is impossible, and every action records actor, target, reason, evidence, timestamps, and outcome. All of it works with no AI configured at all — because at this point there is none.
 
 ---
 

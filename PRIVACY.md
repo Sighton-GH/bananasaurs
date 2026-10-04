@@ -31,8 +31,8 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 **Server-wide:**
 
 - Moderation records — warnings, notes, timeouts, kicks, bans — including who acted, on whom, why, and when
-- Automod matches and the action taken
-- Messages an automod rule matched while it was being tested, kept as examples so a human can check whether the rule was right — including the name, type and size of any files attached to them
+- Automod matches and the action taken: the rule, the short piece of text that matched, and why it matched. Automod keeps no copy of the whole message
+- Whether the owner flagged a match as right or as a false positive, used to tune the rule
 - Role changes made by the bot, such as reaction-role assignments
 - Join and leave events
 - Commands run against the bot, and the answers it gave
@@ -148,7 +148,6 @@ a member says can cause the bot to post one of these.
 | Messages from enabled channels | Kept until the owner deletes them or changes the policy |
 | Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case |
 | Moderation records | Kept as long as the server needs them for consistent moderation |
-| Automod test examples | Kept until the owner removes them. `/forgetme` removes yours. |
 | Bot conversations and answers | Kept until deleted on request |
 | Task progress updates | Kept until the owner deletes the update or the task |
 | Attachments | Same as the messages they belong to |

@@ -80,6 +80,8 @@ This is cheap to build, and it is the part that makes the whole design defensibl
 
 **Fix.** State the rule explicitly: **while the old bot enforces, the new automod is observe-only; cutover is per-rule and atomic — disable the old rule, then enable the new one, never both.** Add a dashboard field per rule recording which legacy rule it replaces and its cutover status.
 
+> **Superseded 2026-09-30 by ADR 0121** (owner decision): one guild-wide Off / Watch / On switch replaces per-rule observe windows and cutover. The no-overlap rule survives as a step in the On confirmation.
+
 ---
 
 ## B. Scope and sequencing — the most likely cause of failure
@@ -208,6 +210,8 @@ Replaces `docs/08`. Three releases, each ending in something the club actually u
 - ~~Message/member/role logging.~~ **Moved to Release 1** (see above).
 
 **Done when:** every legacy automod rule has a Bananasaurs equivalent that ran observe-only for at least two weeks with an acceptable false-positive rate, cutover happened one rule at a time, and the whole thing works with every AI provider unreachable — because there is no AI yet.
+
+> **Superseded 2026-09-30 by ADR 0121** (owner decision): one guild-wide Off / Watch / On switch replaces per-rule observe windows and cutover. The no-overlap rule survives as a step in the On confirmation.
 
 ### Release 3 — "Bananasaurs remembers"
 

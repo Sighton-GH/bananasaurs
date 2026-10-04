@@ -301,7 +301,7 @@ either way — this is the one worth a decision rather than a patch; OAuth
 client registrations accumulate with only `mcp revoke-client` to prune them;
 and the club guild's archive scope question is still open.
 
-**Next action: Slice 11 merges after the floor.**
+**Next action: deploy the automod switch (ADR 0121) — see below.**
 As of 2026-09-19 `main` is `1b8d579`, 175 files / 3,414 tests, with M4, M5,
 M6's code, Slice 10 and Slice 13 all merged. The daemon is up on both guilds
 but running a build from 2026-09-17, so **the next `npm run build && sudo
@@ -315,13 +315,16 @@ origin answers `401` with the bearer challenge on `/mcp` and `200` on the
 authorization-server document, so **M6's live run (`docs/SMOKE_TESTS.md`
 Section D) is unblocked** and is the next thing to do after deploying.
 
-`oc/slice-11-cutover` is built, reviewed twice and **held unmerged** by the
-owner's decision until the club guild's floor elapses **2026-09-26 19:49 PDT
-(2026-09-27T02:49:57.656Z)**. It gives `setRuleMode` its first production
-callers, so merging early would put a command that can end an observe window
-on a live daemon. After the floor: merge, rehearse on the dev guild
-(`SMOKE_TESTS.md` Section E), flip the club, then Slice 12's sign-off against
-`docs/reports/release2-gate-signoff.md`.
+**ADR 0121 — the automod switch replaces Slice 11, 2026-09-30.** After 17
+days of reviewing and flagging matches, the owner replaced the staged rollout
+with one guild-wide Off / Watch / On switch on the dashboard's Automod tab.
+Slice 11 (`worktree-slice-11-cutover`) is abandoned and must not be merged.
+Per-rule modes, the observe window, readiness, sign-off, fixtures and dry-run
+replay are gone; flagging false positives and "narrow this rule" stay. The
+switch starts Off on every guild. Migrations `0100_automod_state` (the column)
+and `0101_automod_cleanup` (its CHECK and the removals). Next: deploy in the
+order stop → migrate → start, then run `SMOKE_TESTS.md` Section E on the dev
+guild, then switch the club to Watch or On.
 
 Slice 13 was not in the original plan. It exists because the owner tried to
 log in on 2026-09-19 and found three gaps nothing had caught: no password
@@ -338,15 +341,6 @@ run: `/mcp`, `/oauth/token`, `/oauth/register` and both `.well-known`
 documents arrive at the origin with no `Cf-Access-*` headers, while
 `/oauth/authorize` arrives carrying `Cf-Access-Authenticated-User-Email`.
 Both applications are scoped correctly.
-
-Slice 11 is the first slice permitted to give `setRuleMode` a production
-caller, "and only under owner decision" (`docs/reports/release2-slices-7-12-ledger.md`).
-The club's floor elapses 2026-09-27T02:49:57.656Z. Nothing in code can move
-`cutover_state` or reach `mode = 'enforce'` today, which is the safest state
-available; building the driver early puts a `--confirm`-gated command that
-*can* on the live daemon before the floor. The controller has asked rather
-than decided. Then Slice 12, the gate sign-off, which is wall-clock-gated on
-the floor regardless.
 
 **Phase 4b — the MCP operator server — decided 2026-09-12, not yet started.** The owner wants his own Claude clients (Claude Code, the desktop app, claude.ai) to read the club server — channels, roles, members, archived messages, cases, audit — and post to allowlisted channels, over a Cloudflare Tunnel at `bananasaurs.sighton.ca` with OAuth 2.1. That needs an archive, so **R3-1 archive ingestion and R3-2 FTS5 search are pulled forward** from Release 3 into the observe window. Six slices M1–M6, **after Slices 7–9 and before 10–12**; three ADRs 0044–0046; one new dependency (`@modelcontextprotocol/sdk` 1.30.0, MIT). Read-mostly with one write tool; no moderation tools. Design: `docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md` (DRAFT — the owner's six decisions are its §2, the five still open are its §11). Slice plan: `docs/superpowers/plans/2026-09-12-mcp-operator-server-plan.md` (DRAFT). ADR 0046 (accepted 2026-09-13) records the pull-forward and turns the `/mydata`/`/forgetme` precondition into a check: the club guild may not be added to `BANANASAURS_ARCHIVE_GUILDS` until they ship.
 

@@ -10,19 +10,20 @@ has a Bananasaurs equivalent that ran observe-only for at least two weeks
 with an acceptable false-positive rate, cutover happened one rule at a time,
 and the whole thing works with every AI provider unreachable."*
 
+Superseded 2026-09-30 by ADR 0121 (owner decision): one guild-wide Off /
+Watch / On switch replaces per-rule observe windows and cutover. The rows
+below are the clause as it now stands.
+
 ## The clause, line by line
 
 | # | Clause | Evidence | Checked by | Date | Ticked |
 |---|---|---|---|---|---|
-| 1 | every legacy automod rule has a Bananasaurs equivalent | `automod` listing: every club rule's `legacy_rule_ref`; owner's statement that no legacy rule is unaccounted for | | | [ ] |
-| 2 | ran observe-only for at least two weeks | `observe_started_at + 14d ≤ now` per rule (`doctor`); **the 2026-09-17 outage of about one day is stated here, not absorbed** — the owner accepted the loss on the day | | | [ ] |
-| 3 | with an acceptable false-positive rate | the `automod.rule.cutover` audit row exists for the rule, which `setRuleMode` only writes after `enforcementEligibility` passed | | | [ ] |
-| 4 | cutover happened one rule at a time | one `automod.rule.cutover` row per rule, each its own timestamp and attestation | | | [ ] |
-| 5 | works with every AI provider unreachable | Section E run with no provider configured; moderation evaluated, cases opened, `doctor` clean | | | [ ] |
+| 1 | automod reached On via the switch | the `automod.state_set` audit row (`before: off` or `watch`, `after: on`) and its timestamp | | | [ ] |
+| 2 | works with every AI provider unreachable | Section E run with no provider configured; moderation evaluated, cases opened, `doctor` clean | | | [ ] |
 
-## Section E — the cutover rehearsal on the dev guild
+## Section E — the automod switch on the dev guild
 
-(`docs/SMOKE_TESTS.md` Section E, steps 1–11, with timestamps.)
+(`docs/SMOKE_TESTS.md` Section E, steps 1–6, with timestamps.)
 
 ## Section D — the MCP connector over the tunnel
 
@@ -42,6 +43,7 @@ and the whole thing works with every AI provider unreachable."*
 | 0045 (Amendments 1–5) | | |
 | 0046 | | |
 | 0029 (amended) | | |
+| 0121 | | |
 
 ## Sign-off
 

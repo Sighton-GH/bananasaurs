@@ -167,61 +167,36 @@ arrived as on the consent POST (`docs/17` §2.4 says why).
 
 - [x] Steps 1–10 recorded with timestamps in `docs/reports/mcp-m6-live-run.md` (all pass; six findings, one needing a ruling).
 
-## Section E — the automod cutover, rehearsed on the dev guild (Slice 12, not yet run)
+## Section E — the automod switch (dev guild)
 
-**Dev guild only. Never the club.** This rehearses every command flip day
-uses, on a rule that does not matter, so the first time `automod cutover`
-runs on the club it is not the first time it has run. The commands land
-with Slice 11 (`oc/slice-11-cutover`, held until the club's floor elapses).
-Record the run in `docs/reports/release2-gate-signoff.md` Section E, with
-timestamps.
+**Dev guild only. Never the club.** This checks the Off / Watch / On switch
+(ADR 0121) end to end before it is used on the club. Record the run in
+`docs/reports/release2-gate-signoff.md` Section E, with timestamps.
 
-Preconditions: the daemon is up on a build that includes Slice 11;
-`bananasaurs doctor` is clean, including the `public surface` block.
+Preconditions: the daemon is up on a build with migrations 0100 and 0101
+applied; the dev guild has an enabled `keyword_filter` rule with a harmless
+term.
 
-1. **A rule to rehearse with.** Pick or create a `keyword_filter` rule on
-   the dev guild with a harmless term. `bananasaurs automod legacy-ref
-   <ruleId> rehearsal:none --confirm` so the ref is set; the rule must not
-   be one the club guild also has.
-2. **Observe.** `automod observe <ruleId> --confirm`. Confirm the output
-   says the clock **started** and prints a floor date fourteen days out.
-   Run it again: confirm it refuses as already observing and the date is
-   unchanged.
-3. **A match and a verdict.** Post the term in the dev guild; confirm a
-   match is recorded (`automod review`); mark it `true_positive` with
-   `automod verdict`. Post it once more and mark that one `false_positive`.
-4. **Ready, and the gate refuses.** `automod ready <ruleId> --confirm`.
-   Then `automod cutover <ruleId> --legacy-disabled --confirm` — expect the
-   gate's own refusal (`false-positive`, one of one) rendered as a sentence
-   naming `automod review`. Confirm nothing changed: the row is still
-   `ready`, `mode` still `observe`, no `automod.rule.cutover` audit row.
-5. **Clear the gate.** Re-verdict the false positive as `true_positive`
-   (or clear it per `automod verdict`'s own rules). If the rule is
-   low-volume, `automod signoff <ruleId> --confirm`.
-6. **The wrong attestation.** `automod cutover <ruleId> --no-legacy
-   --confirm` — expect refusal, because the rule *has* a ref. Then
-   `--legacy-disabled --no-legacy` together — expect refusal as
-   contradictory. Neither touches the row.
-7. **Cutover.** `automod cutover <ruleId> --legacy-disabled --confirm`.
-   Confirm the output says the rule now enforces; the row is `cutover`,
-   `mode = 'enforce'`; the audit row carries the ref and
-   `legacyDisabledAttested: true`. Post the term: **the message is acted on**
-   (dry run permitting — if `dry_run` is on for the dev guild, the effect is
-   logged, not performed, and that is what to confirm).
-8. **The dashboard cannot.** On the rule's page, the `enforce` radio is
-   disabled with the reason visible. `curl` the mode route with
-   `mode: 'enforce'` and a valid session → `409 { error: 'use-cli' }`.
-9. **Rollback.** `automod rollback <ruleId> --confirm`. Confirm the
-   **first line** says the guild is unprotected until the legacy rule is
-   re-enabled by hand and names `rehearsal:none`; the row is `rolled_back`,
-   `mode = 'observe'`. Then `automod ready` and `automod cutover` — both
-   must refuse from `rolled_back`.
-10. **Back to observing, clock reset.** `automod observe <ruleId>
-    --confirm`. Confirm the output says the clock was **reset** and prints
-    a new floor date. Leave the dev rule there.
-11. **`doctor`** — clean, and no rule enforcing from a bad state.
+1. **Off to start.** `bananasaurs doctor` over SSH shows
+   `automod           off`.
+2. **Off records nothing.** Post the term in the dev guild. Confirm the
+   Review page shows no new match and the message is untouched.
+3. **Watch.** On the dashboard's Automod tab, choose Watch and confirm. The
+   password is asked for. Post the term again: one match appears on Review
+   and the message is untouched. Choose “Should be allowed” on it.
+4. **On.** Choose On. Confirm the dialog lists the enabled rules and says to
+   turn off the matching Carl-bot or Dyno automod first. With dry run on
+   (`bananasaurs config set dry_run true --confirm`), post the term: the
+   case history records `delete_blocked_dry_run` and the message stays.
+   With dry run off (`config set dry_run false --confirm`), post it again:
+   the message is deleted.
+5. **Off, without a password.** Choose Off. Confirm no password prompt
+   appears. Post the term: nothing is recorded.
+6. **The audit trail.** The Audit page shows three `automod.state_set`
+   rows — off → watch, watch → on, on → off — each with its before and
+   after state.
 
-- [ ] Steps 1–11 recorded with timestamps in the sign-off document.
+- [ ] Steps 1–6 recorded with timestamps in the sign-off document.
 
 ## Section F — assistant harness v2 on the test guild (not yet run)
 
