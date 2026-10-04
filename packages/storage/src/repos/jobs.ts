@@ -276,6 +276,21 @@ export const deleteFinishedBatch = (
       .run().changes;
   });
 
+/** The guild's most recent job under `dedupeKey` (highest job id), any state. */
+export const latestByDedupeKey = (
+  scope: GuildScope,
+  dedupeKey: string,
+): { readonly state: string; readonly updatedAt: number } | undefined =>
+  read(scope, (db) =>
+    db
+      .select({ state: jobs.state, updatedAt: jobs.updatedAt })
+      .from(jobs)
+      .where(scope.only(jobs, eq(jobs.dedupeKey, dedupeKey)))
+      .orderBy(desc(jobs.jobId))
+      .limit(1)
+      .get(),
+  );
+
 export const findJob = (scope: GuildScope, jobId: number): JobRow | undefined =>
   read(scope, (db) =>
     db

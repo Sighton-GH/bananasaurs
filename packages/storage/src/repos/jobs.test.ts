@@ -13,6 +13,7 @@ import {
   enqueue,
   failJob,
   findJob,
+  latestByDedupeKey,
   listJobs,
   oldestDueAt,
   requeueStranded,
@@ -560,6 +561,32 @@ describe('retryJob', () => {
     const jobId = failToDeath(b);
     expect(retryJob(a, jobId, 99_000)).toEqual({ ok: false, reason: 'not-found' });
     expect(findJob(b, jobId)?.state).toBe('failed');
+  });
+});
+
+describe('latestByDedupeKey', () => {
+  it('returns undefined when there is no job under the key', () => {
+    expect(latestByDedupeKey(a, 'deliver_reminders')).toBeUndefined();
+  });
+
+  it("returns the newest row's state and updatedAt when several share the key", () => {
+    const first = put(a, { dedupeKey: 'deliver_reminders', now: 1000 });
+    const claimed = claimNext(a, 1000);
+    expect(claimed?.jobId).toBe(first.jobId);
+    completeJob(a, first.jobId ?? -1, 1100);
+    put(a, { dedupeKey: 'deliver_reminders', now: 2000 });
+
+    const last = latestByDedupeKey(a, 'deliver_reminders');
+    expect(last).toEqual({ state: 'queued', updatedAt: 2000 });
+  });
+
+  it("does not see another guild's job", () => {
+    put(b, { dedupeKey: 'deliver_reminders', now: 1000 });
+    expect(latestByDedupeKey(a, 'deliver_reminders')).toBeUndefined();
+    expect(latestByDedupeKey(b, 'deliver_reminders')).toEqual({
+      state: 'queued',
+      updatedAt: 1000,
+    });
   });
 });
 
