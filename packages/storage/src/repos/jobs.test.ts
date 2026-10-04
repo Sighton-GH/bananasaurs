@@ -125,6 +125,83 @@ describe('enqueue', () => {
   });
 
   /**
+   * ADR 0127. For a dedupe key that ends in a time bucket, `oncePerBucket`
+   * makes the bucket run once even after its job has finished: the refusal
+   * looks at rows in any state, not just the pending work `jobs_dedupe`
+   * covers (ADR 0016).
+   */
+  describe('oncePerBucket (ADR 0127)', () => {
+    const BUCKET_KEY = 'resource_refresh:all:497523';
+
+    it('refuses a second enqueue of the same key after the first job is done', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      const claimed = claimNext(a, 1000);
+      expect(claimed?.jobId).toBe(first.jobId);
+      completeJob(a, first.jobId ?? -1, 1100);
+
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second).toEqual({ enqueued: false, jobId: undefined });
+      expect(countByState(a)).toEqual({ done: 1 });
+    });
+
+    it('refuses after the first job permanently failed', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, maxAttempts: 1 });
+      claimNext(a, 1000);
+      const outcome = failJob(a, first.jobId ?? -1, 'boom', 1100);
+      expect(outcome.willRetry).toBe(false);
+
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second).toEqual({ enqueued: false, jobId: undefined });
+      expect(countByState(a)).toEqual({ failed: 1 });
+    });
+
+    it('refuses after the first job was cancelled', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      cancelJob(a, first.jobId ?? -1, 1100);
+
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second).toEqual({ enqueued: false, jobId: undefined });
+      expect(countByState(a)).toEqual({ cancelled: 1 });
+    });
+
+    it('still collapses while the first is queued', () => {
+      put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second.enqueued).toBe(false);
+      expect(second.jobId).toBeUndefined();
+      expect(countByState(a)).toEqual({ queued: 1 });
+    });
+
+    it('accepts a different key', () => {
+      put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      const other = put(a, { dedupeKey: 'resource_refresh:all:497524', oncePerBucket: true });
+      expect(other.enqueued).toBe(true);
+      expect(countByState(a)).toEqual({ queued: 2 });
+    });
+
+    it('is guild-scoped: the key done in one guild does not block another', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      completeJob(a, first.jobId ?? -1, 1100);
+
+      const other = put(b, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(other.enqueued).toBe(true);
+      expect(countByState(b)).toEqual({ queued: 1 });
+    });
+
+    it('without the flag the same key after done is accepted, which resource_refresh:<id>:added, reconcile_guild:gateway-gap and deliver_reminders rely on', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY });
+      const claimed = claimNext(a, 1000);
+      expect(claimed?.jobId).toBe(first.jobId);
+      completeJob(a, first.jobId ?? -1, 1100);
+
+      const again = put(a, { dedupeKey: BUCKET_KEY, now: 2000 });
+      expect(again.enqueued).toBe(true);
+      expect(again.jobId).toBeDefined();
+      expect(countByState(a)).toEqual({ done: 1, queued: 1 });
+    });
+  });
+
+  /**
    * The purge job (ADR 0037) enqueues its own continuation pre-loaded with
    * the cursor to resume from, rather than starting the new row at `null`
    * and losing the progress the tick just computed.

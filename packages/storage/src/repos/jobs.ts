@@ -57,6 +57,15 @@ export interface EnqueueInput {
    * call actually creates.
    */
   cursor?: string | null;
+  /**
+   * ADR 0127: for a dedupe key that ends in a time bucket (an hour, a day, a
+   * minute), refuse when ANY row in this guild already carries the key, in
+   * any state, so a bucket runs once even after its job has finished.
+   * `jobs_dedupe` alone only collapses pending work (ADR 0016). Never set it
+   * for a key without a time bucket (`…:added`, `reconcile_guild:*`,
+   * `deliver_reminders`): those must re-enqueue after completion.
+   */
+  oncePerBucket?: boolean;
   now: number;
 }
 
@@ -75,6 +84,15 @@ export interface EnqueueResult {
  */
 export const enqueue = (scope: GuildScope, input: EnqueueInput): EnqueueResult =>
   write(scope, ({ db }) => {
+    if (input.oncePerBucket === true) {
+      const existing = db
+        .select({ jobId: jobs.jobId })
+        .from(jobs)
+        .where(scope.only(jobs, eq(jobs.dedupeKey, input.dedupeKey)))
+        .limit(1)
+        .get();
+      if (existing !== undefined) return { enqueued: false, jobId: undefined };
+    }
     const result = db
       .insert(jobs)
       .values({
