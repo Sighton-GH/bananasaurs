@@ -115,7 +115,7 @@ describe('GET /api/automod/state', () => {
     expect(response.statusCode).toBe(401);
   });
 
-  it('b. answers 403 no-grant without automod.view', async () => {
+  it('b. answers 403 no-grant without config.read', async () => {
     const { cookie, csrf } = await signIn();
     const response = await app.inject({
       method: 'GET',
@@ -126,7 +126,7 @@ describe('GET /api/automod/state', () => {
   });
 
   it('c. reports the current position (default off)', async () => {
-    grant(['automod.view']);
+    grant(['config.read']);
     const { cookie, csrf } = await signIn();
     const response = await app.inject({
       method: 'GET',
@@ -138,7 +138,7 @@ describe('GET /api/automod/state', () => {
   });
 
   it('d. names only the enabled rules of this guild', async () => {
-    grant(['automod.view']);
+    grant(['config.read']);
     createKindRule(GUILD, 'kw-one', true);
     createKindRule(GUILD, 'kw-two', false);
     createKindRule(OTHER_GUILD, 'kw-other', true);

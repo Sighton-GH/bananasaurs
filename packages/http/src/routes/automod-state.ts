@@ -26,7 +26,7 @@ export const registerAutomodStateRoutes = (
   app.get('/api/automod/state', (request, reply) => {
     const signedIn = guard.require(request, reply);
     if (signedIn === undefined) return reply;
-    if (!requireCapability(signedIn, 'automod.view', reply)) return reply;
+    if (!requireCapability(signedIn, 'config.read', reply)) return reply;
 
     const ports = deps.portsFor(signedIn.scope);
     const before = ports.safetyState();
@@ -53,7 +53,7 @@ export const registerAutomodStateRoutes = (
     if (before.automodState === next) return reply.status(200).send({ ok: true, state: next });
 
     const session =
-      RANK[next] > RANK[before.automodState] ? guard.requireFresh(request, reply) : signedIn;
+      RANK[next] > (RANK[before.automodState] ?? 0) ? guard.requireFresh(request, reply) : signedIn;
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
 

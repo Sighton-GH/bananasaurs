@@ -550,6 +550,7 @@ export type {
   OpsPanelDetail,
   OpsPanelSummary,
   OpsPorts,
+  OpsAutomodState,
   OpsPublishResult,
   OpsRetryOutcome,
   OpsRuleMode,
