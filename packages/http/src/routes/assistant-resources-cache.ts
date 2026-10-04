@@ -58,6 +58,7 @@ export const registerAssistantResourceCacheRoutes = (
         resourceId: id,
         minuteBucket: Math.floor(now / MINUTE_MS),
       }),
+      oncePerBucket: true,
       now,
     });
     deps.portsFor(session.scope).recordAudit({
@@ -84,6 +85,7 @@ export const registerAssistantResourceCacheRoutes = (
         reason: 'manual',
         minuteBucket: Math.floor(now / MINUTE_MS),
       }),
+      oncePerBucket: true,
       now,
     });
     deps.portsFor(session.scope).recordAudit({
