@@ -13,10 +13,18 @@ import { type GuildScope, type jobRepo } from '@bananasaurs/storage';
  * The daily housekeeping timer (ADR 0127).
  *
  * The job table has no scheduler, so this is the producer: at startup and
- * every 24 hours it enqueues one `prune_jobs` job and one
+ * every hour it enqueues one `prune_jobs` job and one
  * `sweep_event_dedupe` job per guild for the current UTC day. The dedupe keys
  * are the day, enqueued with `oncePerBucket`, so a second `runOnce` on the
- * same day — or a restart — enqueues nothing.
+ * same day — or a restart — enqueues nothing, and all but the first tick of
+ * a UTC day are no-ops.
+ *
+ * The tick is hourly rather than daily on purpose: a 24 h `setInterval`
+ * re-arms from when it actually fired, so ticks drift later, and a tick that
+ * drifts past 00:00 UTC would leave a UTC day with no run at all. The day
+ * key plus `oncePerBucket` (ADR 0127) makes extra ticks harmless, so an
+ * hourly tick can no longer skip a day — the first tick after midnight
+ * enqueues the new day within the hour.
  *
  * Unlike the conversation-prune timer there is deliberately no peek: every
  * guild gets housekeeping whether or not it has archive channels, resources
@@ -27,7 +35,7 @@ import { type GuildScope, type jobRepo } from '@bananasaurs/storage';
  * at start, then `setInterval(...).unref()`; `stop` clears) and nothing else.
  */
 
-export const HOUSEKEEPING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const DAILY_JOB_TICK_MS = 60 * 60 * 1000;
 
 export interface HousekeepingTimer {
   /** Enqueues the day's housekeeping jobs per guild, now. */
@@ -92,10 +100,13 @@ export function createHousekeepingTimer(deps: HousekeepingTimerDeps): Housekeepi
     runOnce,
     start() {
       // Run once immediately rather than waiting out the first interval — a
-      // fresh install's finished rows would otherwise wait up to a full day
-      // for their first prune pass.
+      // fresh install's finished rows would otherwise wait up to an hour for
+      // their first prune pass. The recurring tick is hourly (not daily):
+      // the day key plus `oncePerBucket` (ADR 0127) makes all but the first
+      // tick of a UTC day a no-op, so a drifting tick can no longer skip a
+      // day — the first tick after midnight enqueues the new day.
       runOnce();
-      timer = setInterval(runOnce, HOUSEKEEPING_INTERVAL_MS);
+      timer = setInterval(runOnce, DAILY_JOB_TICK_MS);
       // Same reasoning as the job-poll timer: a pending housekeeping tick must
       // not be what keeps the process alive after the gateway connection dies.
       timer.unref();

@@ -5,6 +5,7 @@ import {
   archiveExpiryHandler,
   JOB_KINDS,
   parseGuildId,
+  type Logger,
 } from '@bananasaurs/core';
 import {
   archiveRepo,
@@ -17,8 +18,8 @@ import {
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
-  ARCHIVE_EXPIRY_INTERVAL_MS,
   createArchiveExpiryTimer,
+  DAILY_JOB_TICK_MS,
   type ArchiveExpiryTimerDeps,
 } from './archive-expiry-timer.js';
 
@@ -134,7 +135,7 @@ describe('archive expiry timer', () => {
     }
   });
 
-  it('start() runs once immediately then every 24h; stop() cancels the interval', () => {
+  it('start() runs once immediately then hourly; stop() cancels the interval', () => {
     vi.useFakeTimers();
     enableChannels(a, b);
     const timer = createArchiveExpiryTimer(depsFor());
@@ -143,13 +144,82 @@ describe('archive expiry timer', () => {
     expect(jobsFor(a)).toHaveLength(1);
 
     nowMs += DAY_MS;
-    vi.advanceTimersByTime(ARCHIVE_EXPIRY_INTERVAL_MS);
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
     expect(jobsFor(a)).toHaveLength(2);
 
     timer.stop();
     nowMs += DAY_MS;
-    vi.advanceTimersByTime(2 * ARCHIVE_EXPIRY_INTERVAL_MS);
+    vi.advanceTimersByTime(2 * DAILY_JOB_TICK_MS);
     expect(jobsFor(a)).toHaveLength(2);
+  });
+
+  it('ticks hourly: quiet on the same UTC day, next day enqueued within an hour of midnight', () => {
+    vi.useFakeTimers();
+    enableChannels(a);
+    const infos: string[] = [];
+    const capture = {
+      info(_fields: unknown, msg: string) {
+        infos.push(msg);
+      },
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+    const timer = createArchiveExpiryTimer(
+      depsFor({
+        logger: capture,
+        purgeOAuth: () => ({ pending: 0, codes: 0, tokens: 0 }),
+      }),
+    );
+
+    timer.start();
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(infos).toEqual(['archive: expiry enqueued for the day']);
+
+    // One hourly tick, same UTC day: nothing new — no new "enqueued" line
+    // and no zero-purge oauth line either.
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(infos).toHaveLength(1);
+
+    // Across 00:00 UTC the first tick after midnight enqueues the next day —
+    // within one hour, not twenty-four.
+    nowMs = Date.parse('2026-09-14T00:30:00.000Z');
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
+    expect(jobsFor(a)).toHaveLength(2);
+    expect(infos).toEqual([
+      'archive: expiry enqueued for the day',
+      'archive: expiry enqueued for the day',
+    ]);
+
+    timer.stop();
+  });
+
+  it('logs the oauth purge line only when something was actually purged', () => {
+    enableChannels(a);
+    const infos: string[] = [];
+    const capture = {
+      info(_fields: unknown, msg: string) {
+        infos.push(msg);
+      },
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+
+    createArchiveExpiryTimer(
+      depsFor({ logger: capture, purgeOAuth: () => ({ pending: 0, codes: 0, tokens: 0 }) }),
+    ).runOnce();
+    expect(infos.some((msg) => msg.startsWith('oauth: purged'))).toBe(false);
+
+    createArchiveExpiryTimer(
+      depsFor({ logger: capture, purgeOAuth: () => ({ pending: 1, codes: 0, tokens: 2 }) }),
+    ).runOnce();
+    expect(infos.some((msg) => msg.startsWith('oauth: purged'))).toBe(true);
   });
 
   it('runOnce runs the wired OAuth purge once, with the timer clock', () => {

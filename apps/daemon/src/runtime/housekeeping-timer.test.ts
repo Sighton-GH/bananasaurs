@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import {
   EVENT_DEDUPE_RETENTION_MS,
@@ -7,12 +7,13 @@ import {
   parseGuildId,
   pruneJobsDedupeKey,
   sweepDedupeKey,
+  type Logger,
 } from '@bananasaurs/core';
 import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   createHousekeepingTimer,
-  HOUSEKEEPING_INTERVAL_MS,
+  DAILY_JOB_TICK_MS,
   type HousekeepingTimerDeps,
 } from './housekeeping-timer.js';
 
@@ -63,7 +64,10 @@ beforeEach(() => {
   nowMs = Date.parse('2026-10-04T12:00:00.000Z');
   captured.length = 0;
 });
-afterEach(() => t.close());
+afterEach(() => {
+  t.close();
+  vi.useRealTimers();
+});
 
 describe('housekeeping timer (ADR 0127)', () => {
   it('runOnce enqueues one prune_jobs and one sweep_event_dedupe per guild', () => {
@@ -153,7 +157,44 @@ describe('housekeeping timer (ADR 0127)', () => {
     );
   });
 
-  it('ticks once a day', () => {
-    expect(HOUSEKEEPING_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+  it('ticks hourly', () => {
+    expect(DAILY_JOB_TICK_MS).toBe(60 * 60 * 1000);
+  });
+
+  it('ticks hourly: quiet on the same UTC day, next day enqueued within an hour of midnight', () => {
+    vi.useFakeTimers();
+    const infos: string[] = [];
+    const capture = {
+      info(_fields: unknown, msg: string) {
+        infos.push(msg);
+      },
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+    const timer = createHousekeepingTimer(depsFor({ logger: capture }));
+
+    timer.start();
+    expect(jobsFor(a)).toHaveLength(2); // the day's prune + sweep
+    expect(infos).toEqual(['housekeeping: enqueued for the day']);
+
+    // One hourly tick, same UTC day: nothing new, no new "enqueued" line.
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
+    expect(jobsFor(a)).toHaveLength(2);
+    expect(infos).toHaveLength(1);
+
+    // Across 00:00 UTC the first tick after midnight enqueues the next day —
+    // within one hour, not twenty-four.
+    nowMs = Date.parse('2026-10-05T00:30:00.000Z');
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
+    expect(jobsFor(a)).toHaveLength(4);
+    expect(infos).toEqual([
+      'housekeeping: enqueued for the day',
+      'housekeeping: enqueued for the day',
+    ]);
+
+    timer.stop();
   });
 });

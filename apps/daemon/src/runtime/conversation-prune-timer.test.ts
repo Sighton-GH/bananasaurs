@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { conversationPruneDedupeKey, JOB_KINDS, parseGuildId } from '@bananasaurs/core';
+import { conversationPruneDedupeKey, JOB_KINDS, parseGuildId, type Logger } from '@bananasaurs/core';
 import { conversationRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
-  CONVERSATION_PRUNE_INTERVAL_MS,
   createConversationPruneTimer,
+  DAILY_JOB_TICK_MS,
   type ConversationPruneTimerDeps,
 } from './conversation-prune-timer.js';
 
@@ -48,7 +48,10 @@ beforeEach(() => {
   guildRepo.upsertGuild(b, { name: 'guild-b', now: 0 });
   nowMs = Date.parse('2026-09-25T12:00:00.000Z');
 });
-afterEach(() => t.close());
+afterEach(() => {
+  t.close();
+  vi.useRealTimers();
+});
 
 describe('conversation prune timer', () => {
   it('runOnce enqueues one job per guild carrying the UTC day', () => {
@@ -80,8 +83,47 @@ describe('conversation prune timer', () => {
     expect(jobsFor(a)[0]?.dedupeKey).toBe(conversationPruneDedupeKey('2026-09-26'));
   });
 
-  it('ticks once a day', () => {
-    expect(CONVERSATION_PRUNE_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+  it('ticks hourly', () => {
+    expect(DAILY_JOB_TICK_MS).toBe(60 * 60 * 1000);
+  });
+
+  it('ticks hourly: quiet on the same UTC day, next day enqueued within an hour of midnight', () => {
+    vi.useFakeTimers();
+    seedConversation(a);
+    seedConversation(b);
+    const infos: string[] = [];
+    const capture = {
+      info(_fields: unknown, msg: string) {
+        infos.push(msg);
+      },
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+    const timer = createConversationPruneTimer(depsFor({ logger: capture }));
+
+    timer.start();
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(infos).toEqual(['conversations: prune enqueued for the day']);
+
+    // One hourly tick, same UTC day: nothing new, no new "enqueued" line.
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(infos).toHaveLength(1);
+
+    // Across 00:00 UTC the first tick after midnight enqueues the next day —
+    // within one hour, not twenty-four.
+    nowMs = Date.parse('2026-09-26T00:30:00.000Z');
+    vi.advanceTimersByTime(DAILY_JOB_TICK_MS);
+    expect(jobsFor(a)).toHaveLength(2);
+    expect(infos).toEqual([
+      'conversations: prune enqueued for the day',
+      'conversations: prune enqueued for the day',
+    ]);
+
+    timer.stop();
   });
 
   it('skips a guild with no conversations, enqueues for one with conversations', () => {
