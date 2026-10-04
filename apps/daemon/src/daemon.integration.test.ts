@@ -524,6 +524,38 @@ describe('reconnecting', () => {
     const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(0);
   });
+
+  it('records the real gap length when a resumable drop precedes the resume', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(5_000);
+    client.emit(Events.ShardResume, 0, 3);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const gaps = pipelineRepo.unreconciledGaps(scope);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]?.reconnectedAt - (gaps[0]?.disconnectedAt ?? 0)).toBe(5_000);
+  });
+
+  it('keeps the first disconnect stamp when several reconnectings fire', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(1_000);
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(4_000);
+    client.emit(Events.ShardResume, 0, 3);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const gaps = pipelineRepo.unreconciledGaps(scope);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]?.reconnectedAt - (gaps[0]?.disconnectedAt ?? 0)).toBe(5_000);
+  });
 });
 
 describe('startup diagnostics', () => {

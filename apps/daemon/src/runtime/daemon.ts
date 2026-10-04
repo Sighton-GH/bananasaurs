@@ -518,12 +518,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   /**
    * When the socket went away, or `undefined` if it has not since start.
    *
-   * A cold start is a fresh IDENTIFY by definition, so the first READY records a
-   * gap too — `docs/21` exercise 4 is "Ctrl-C, react while it is down, restart",
-   * and reactions added in that window produced no dispatch at all. The gap's
-   * *duration* is unknown to a process that was not running, so it is recorded
-   * as zero-length; the gap's *existence* is what enqueues the reconciliation
-   * that recovers the window.
+   * Stamped on both `ShardDisconnect` (unrecoverable closes) and
+   * `ShardReconnecting` (resumable drops, which discord.js v14 reports only
+   * via the latter) — without the second, every resumed session records a
+   * zero-length gap. A cold start is a fresh IDENTIFY by definition, so the
+   * first READY records a gap too — `docs/21` exercise 4 is "Ctrl-C, react
+   * while it is down, restart", and reactions added in that window produced
+   * no dispatch at all. The gap's *duration* is unknown to a process that
+   * was not running, so it is recorded as zero-length; the gap's *existence*
+   * is what enqueues the reconciliation that recovers the window.
    */
   let disconnectedAtMs: number | undefined;
 
@@ -533,6 +536,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       safeLogFields({ component: 'connection', outcome: 'disconnected' }),
       'shard closed',
     );
+  });
+
+  client.on(Events.ShardReconnecting, () => {
+    // discord.js v14 emits ShardDisconnect only for unrecoverable closes; a
+    // resumable drop emits ShardReconnecting. Stamp here too so a resumed
+    // session's gap has its real length. The first stamp wins.
+    disconnectedAtMs ??= now();
   });
 
   const connectionEvent = (resumed: boolean): void => {
