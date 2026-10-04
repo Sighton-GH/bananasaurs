@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import {
+  listBackups,
   performBackup,
   pruneBackups,
   type BackupResult,
@@ -32,7 +33,7 @@ export type BackupRunResult = BackupOutcome | BackupFailure;
 export interface BackupTimer {
   /** Runs one backup-and-prune cycle immediately, on this call site's thread. */
   runOnce(): BackupRunResult;
-  /** Runs once now, then schedules the recurring interval. */
+  /** Backs up now unless the newest backup is younger than the interval, then schedules the recurring interval. */
   start(): void;
   stop(): void;
 }
@@ -41,10 +42,14 @@ export interface BackupTimerDeps {
   readonly raw: Database.Database;
   readonly config: Config;
   readonly logger: Logger;
+  /** Injectable for tests; defaults to the real clock. */
+  readonly now?: () => number;
 }
 
 export function createBackupTimer(deps: BackupTimerDeps): BackupTimer {
   let timer: NodeJS.Timeout | undefined;
+  let firstRun: NodeJS.Timeout | undefined;
+  const now = deps.now ?? Date.now;
 
   const runOnce = (): BackupRunResult => {
     try {
@@ -76,17 +81,41 @@ export function createBackupTimer(deps: BackupTimerDeps): BackupTimer {
   return {
     runOnce,
     start() {
-      // Run once immediately rather than waiting out the first interval — at
-      // the daily default, waiting would leave a fresh install with no backup
-      // at all for up to twenty-four hours.
-      runOnce();
+      // Back up immediately unless the newest existing backup is younger than
+      // one interval — at the daily default, waiting would leave a fresh
+      // install with no backup at all for up to twenty-four hours, but a
+      // restart inside the interval must not take another backup either.
       const intervalMs = deps.config.BANANASAURS_BACKUP_INTERVAL_MIN * 60_000;
-      timer = setInterval(runOnce, intervalMs);
-      // Same reasoning as the job-poll timer: a pending backup tick must not
-      // be what keeps the process alive after the gateway connection dies.
-      timer.unref();
+      const newest = listBackups(deps.config.BANANASAURS_BACKUP_DIR).at(-1);
+      const ageMs = newest === undefined ? Infinity : now() - newest.createdAt.getTime();
+      const scheduleRecurring = () => {
+        timer = setInterval(runOnce, intervalMs);
+        // Same reasoning as the job-poll timer: a pending backup tick must not
+        // be what keeps the process alive after the gateway connection dies.
+        timer.unref();
+      };
+      if (ageMs >= intervalMs) {
+        runOnce();
+        scheduleRecurring();
+      } else {
+        // A restart inside the interval must not take another backup: retention is
+        // by count, so restart backups would push out the daily history.
+        const delayMs = Math.min(intervalMs, intervalMs - Math.max(0, ageMs));
+        firstRun = setTimeout(() => {
+          firstRun = undefined;
+          runOnce();
+          scheduleRecurring();
+        }, delayMs);
+        firstRun.unref();
+        deps.logger.info(
+          safeLogFields({ component: 'backup', fileName: newest.fileName }),
+          'backup: newest is recent; next backup scheduled',
+        );
+      }
     },
     stop() {
+      if (firstRun !== undefined) clearTimeout(firstRun);
+      firstRun = undefined;
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
     },

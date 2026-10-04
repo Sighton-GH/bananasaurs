@@ -92,6 +92,86 @@ describe('createBackupTimer', () => {
     timer.stop();
   });
 
+  it('start() backs up immediately when the newest backup is older than the interval', () => {
+    vi.useFakeTimers();
+    const setup = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_INTERVAL_MIN: '60' }),
+      logger,
+    });
+    setup.runOnce();
+    expect(listBackups(dir)).toHaveLength(1);
+
+    vi.advanceTimersByTime(61 * 60_000);
+
+    const timer = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_INTERVAL_MIN: '60' }),
+      logger,
+    });
+    timer.start();
+    expect(listBackups(dir)).toHaveLength(2);
+
+    timer.stop();
+  });
+
+  it('start() skips the immediate backup when the newest backup is younger than the interval', () => {
+    vi.useFakeTimers();
+    const setup = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_INTERVAL_MIN: '1440' }),
+      logger,
+    });
+    setup.runOnce();
+    expect(listBackups(dir)).toHaveLength(1);
+
+    // A restart one hour into a 24 h interval: nothing is due for 23 h.
+    vi.advanceTimersByTime(60 * 60_000);
+
+    const timer = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_INTERVAL_MIN: '1440' }),
+      logger,
+    });
+    timer.start();
+    expect(listBackups(dir)).toHaveLength(1);
+
+    vi.advanceTimersByTime(23 * 60 * 60_000 - 1);
+    expect(listBackups(dir)).toHaveLength(1);
+
+    vi.advanceTimersByTime(1);
+    expect(listBackups(dir)).toHaveLength(2);
+
+    vi.advanceTimersByTime(24 * 60 * 60_000);
+    expect(listBackups(dir)).toHaveLength(3);
+
+    timer.stop();
+  });
+
+  it('stop() before the delayed first run means no backup ever appears', () => {
+    vi.useFakeTimers();
+    const setup = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_INTERVAL_MIN: '1440' }),
+      logger,
+    });
+    setup.runOnce();
+    expect(listBackups(dir)).toHaveLength(1);
+
+    vi.advanceTimersByTime(60 * 60_000);
+
+    const timer = createBackupTimer({
+      raw: db.raw,
+      config: config({ BANANASAURS_BACKUP_INTERVAL_MIN: '1440' }),
+      logger,
+    });
+    timer.start();
+    timer.stop();
+    vi.advanceTimersByTime(48 * 60 * 60_000);
+
+    expect(listBackups(dir)).toHaveLength(1);
+  });
+
   it('stop() cancels the interval, so no further backups appear', () => {
     vi.useFakeTimers();
     const timer = createBackupTimer({
