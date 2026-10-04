@@ -199,7 +199,7 @@ describe('the dedupe table is bounded rather than growing forever', () => {
     jobRepo.enqueue(scope, {
       kind: JOB_KINDS.sweepEventDedupe,
       payload: JSON.stringify({ olderThanMs: now - RETENTION_MS }),
-      dedupeKey: sweepDedupeKey(),
+      dedupeKey: sweepDedupeKey('2026-10-04'),
       now,
     });
 
@@ -222,7 +222,7 @@ describe('the dedupe table is bounded rather than growing forever', () => {
     jobRepo.enqueue(scope, {
       kind: JOB_KINDS.sweepEventDedupe,
       payload: '{"olderThanMs":"yesterday"}',
-      dedupeKey: sweepDedupeKey(),
+      dedupeKey: sweepDedupeKey('2026-10-04'),
       now,
     });
 

@@ -9,9 +9,11 @@ import {
   claimNext,
   completeJob,
   countByState,
+  deleteFinishedBatch,
   enqueue,
   failJob,
   findJob,
+  latestByDedupeKey,
   listJobs,
   oldestDueAt,
   requeueStranded,
@@ -121,6 +123,83 @@ describe('enqueue', () => {
       const first = put(a);
       cancelJob(a, first.jobId ?? -1, 1100);
       expect(put(a, { now: 2000 }).enqueued).toBe(true);
+    });
+  });
+
+  /**
+   * ADR 0127. For a dedupe key that ends in a time bucket, `oncePerBucket`
+   * makes the bucket run once even after its job has finished: the refusal
+   * looks at rows in any state, not just the pending work `jobs_dedupe`
+   * covers (ADR 0016).
+   */
+  describe('oncePerBucket (ADR 0127)', () => {
+    const BUCKET_KEY = 'resource_refresh:all:497523';
+
+    it('refuses a second enqueue of the same key after the first job is done', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      const claimed = claimNext(a, 1000);
+      expect(claimed?.jobId).toBe(first.jobId);
+      completeJob(a, first.jobId ?? -1, 1100);
+
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second).toEqual({ enqueued: false, jobId: undefined });
+      expect(countByState(a)).toEqual({ done: 1 });
+    });
+
+    it('refuses after the first job permanently failed', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, maxAttempts: 1 });
+      claimNext(a, 1000);
+      const outcome = failJob(a, first.jobId ?? -1, 'boom', 1100);
+      expect(outcome.willRetry).toBe(false);
+
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second).toEqual({ enqueued: false, jobId: undefined });
+      expect(countByState(a)).toEqual({ failed: 1 });
+    });
+
+    it('refuses after the first job was cancelled', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      cancelJob(a, first.jobId ?? -1, 1100);
+
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second).toEqual({ enqueued: false, jobId: undefined });
+      expect(countByState(a)).toEqual({ cancelled: 1 });
+    });
+
+    it('still collapses while the first is queued', () => {
+      put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      const second = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(second.enqueued).toBe(false);
+      expect(second.jobId).toBeUndefined();
+      expect(countByState(a)).toEqual({ queued: 1 });
+    });
+
+    it('accepts a different key', () => {
+      put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      const other = put(a, { dedupeKey: 'resource_refresh:all:497524', oncePerBucket: true });
+      expect(other.enqueued).toBe(true);
+      expect(countByState(a)).toEqual({ queued: 2 });
+    });
+
+    it('is guild-scoped: the key done in one guild does not block another', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY, oncePerBucket: true });
+      completeJob(a, first.jobId ?? -1, 1100);
+
+      const other = put(b, { dedupeKey: BUCKET_KEY, oncePerBucket: true, now: 2000 });
+      expect(other.enqueued).toBe(true);
+      expect(countByState(b)).toEqual({ queued: 1 });
+    });
+
+    it('without the flag the same key after done is accepted, which resource_refresh:<id>:added, reconcile_guild:gateway-gap and deliver_reminders rely on', () => {
+      const first = put(a, { dedupeKey: BUCKET_KEY });
+      const claimed = claimNext(a, 1000);
+      expect(claimed?.jobId).toBe(first.jobId);
+      completeJob(a, first.jobId ?? -1, 1100);
+
+      const again = put(a, { dedupeKey: BUCKET_KEY, now: 2000 });
+      expect(again.enqueued).toBe(true);
+      expect(again.jobId).toBeDefined();
+      expect(countByState(a)).toEqual({ done: 1, queued: 1 });
     });
   });
 
@@ -482,5 +561,143 @@ describe('retryJob', () => {
     const jobId = failToDeath(b);
     expect(retryJob(a, jobId, 99_000)).toEqual({ ok: false, reason: 'not-found' });
     expect(findJob(b, jobId)?.state).toBe('failed');
+  });
+});
+
+describe('latestByDedupeKey', () => {
+  it('returns undefined when there is no job under the key', () => {
+    expect(latestByDedupeKey(a, 'deliver_reminders')).toBeUndefined();
+  });
+
+  it("returns the newest row's state and updatedAt when several share the key", () => {
+    const first = put(a, { dedupeKey: 'deliver_reminders', now: 1000 });
+    const claimed = claimNext(a, 1000);
+    expect(claimed?.jobId).toBe(first.jobId);
+    completeJob(a, first.jobId ?? -1, 1100);
+    put(a, { dedupeKey: 'deliver_reminders', now: 2000 });
+
+    const last = latestByDedupeKey(a, 'deliver_reminders');
+    expect(last).toEqual({ state: 'queued', updatedAt: 2000 });
+  });
+
+  it("does not see another guild's job", () => {
+    put(b, { dedupeKey: 'deliver_reminders', now: 1000 });
+    expect(latestByDedupeKey(a, 'deliver_reminders')).toBeUndefined();
+    expect(latestByDedupeKey(b, 'deliver_reminders')).toEqual({
+      state: 'queued',
+      updatedAt: 1000,
+    });
+  });
+});
+
+describe('countByState', () => {
+  it('counts every state and ignores other guilds', () => {
+    // Each job is transitioned before the next is enqueued, so claimNext
+    // always takes the one intended — it claims the oldest due job.
+    put(a, { dedupeKey: 'ends-running' });
+    claimNext(a, 1000);
+    const done = put(a, { dedupeKey: 'ends-done' });
+    claimNext(a, 1000);
+    completeJob(a, done.jobId ?? -1, 1100);
+    const failed = put(a, { dedupeKey: 'ends-failed', maxAttempts: 1 });
+    claimNext(a, 1000);
+    failJob(a, failed.jobId ?? -1, 'boom', 1100);
+    put(a, { dedupeKey: 'stays-queued' });
+    put(b, { dedupeKey: 'other-queued' });
+    put(b, { dedupeKey: 'other-queued-2' });
+
+    expect(countByState(a)).toEqual({ queued: 1, running: 1, done: 1, failed: 1 });
+    expect(countByState(b)).toEqual({ queued: 2 });
+  });
+
+  it('is empty when the guild has no jobs', () => {
+    put(b);
+    expect(countByState(a)).toEqual({});
+  });
+});
+
+describe('deleteFinishedBatch (ADR 0127)', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW = Date.parse('2026-10-04T00:00:00.000Z');
+  const CUTOFF = NOW - 14 * DAY_MS;
+  let keySeq = 0;
+
+  const finishAt = (
+    scope: GuildScope,
+    terminal: 'done' | 'failed' | 'cancelled',
+    finishedAt: number,
+  ): number => {
+    keySeq += 1;
+    const created = put(scope, {
+      dedupeKey: `prune-test:${keySeq}`,
+      now: finishedAt,
+      maxAttempts: 1,
+    });
+    const id = created.jobId ?? -1;
+    if (terminal === 'done') {
+      claimNext(scope, finishedAt);
+      completeJob(scope, id, finishedAt);
+    } else if (terminal === 'failed') {
+      claimNext(scope, finishedAt);
+      failJob(scope, id, 'boom', finishedAt);
+    } else {
+      cancelJob(scope, id, finishedAt);
+    }
+    return id;
+  };
+
+  it('deletes done, failed and cancelled rows older than the cutoff', () => {
+    const done = finishAt(a, 'done', CUTOFF - 1);
+    const failed = finishAt(a, 'failed', CUTOFF - 1);
+    const cancelled = finishAt(a, 'cancelled', CUTOFF - 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(3);
+
+    expect(findJob(a, done)).toBeUndefined();
+    expect(findJob(a, failed)).toBeUndefined();
+    expect(findJob(a, cancelled)).toBeUndefined();
+    expect(countByState(a)).toEqual({});
+  });
+
+  it('keeps finished rows at or after the cutoff', () => {
+    const atCutoff = finishAt(a, 'done', CUTOFF);
+    const afterCutoff = finishAt(a, 'failed', CUTOFF + 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(0);
+
+    expect(findJob(a, atCutoff)?.state).toBe('done');
+    expect(findJob(a, afterCutoff)?.state).toBe('failed');
+  });
+
+  it('never deletes queued or running rows, even ones created long before the cutoff', () => {
+    keySeq += 1;
+    const running = put(a, { dedupeKey: `prune-test:${keySeq}`, now: CUTOFF - 100 * DAY_MS });
+    claimNext(a, CUTOFF - 100 * DAY_MS);
+    keySeq += 1;
+    const queued = put(a, { dedupeKey: `prune-test:${keySeq}`, now: CUTOFF - 100 * DAY_MS });
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(0);
+
+    expect(findJob(a, queued.jobId ?? -1)?.state).toBe('queued');
+    expect(findJob(a, running.jobId ?? -1)?.state).toBe('running');
+  });
+
+  it('deletes at most limit rows and returns the count', () => {
+    finishAt(a, 'done', CUTOFF - 1);
+    finishAt(a, 'done', CUTOFF - 1);
+    finishAt(a, 'done', CUTOFF - 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 2)).toBe(2);
+    expect(countByState(a)).toEqual({ done: 1 });
+    expect(deleteFinishedBatch(a, CUTOFF, 2)).toBe(1);
+    expect(countByState(a)).toEqual({});
+  });
+
+  it("is guild-scoped: guild b's old done row survives a call for guild a", () => {
+    finishAt(a, 'done', CUTOFF - 1);
+    const other = finishAt(b, 'done', CUTOFF - 1);
+
+    expect(deleteFinishedBatch(a, CUTOFF, 500)).toBe(1);
+    expect(findJob(b, other)?.state).toBe('done');
   });
 });

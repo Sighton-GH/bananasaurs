@@ -39,6 +39,7 @@ import {
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createConversationPruneTimer } from './conversation-prune-timer.js';
+import { createHousekeepingTimer } from './housekeeping-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
 import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
@@ -354,7 +355,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     // Item 7: the OAuth purge is instance-level, not per-guild, so it rides
-    // the timer's once-a-day `runOnce` rather than the per-guild expiry jobs.
+    // the archive-expiry timer's `runOnce` outside the guild loop. That runs
+    // at start and hourly (ADR 0127); the purge is a cheap indexed delete that logs only when it removed something.
     purgeOAuth: (nowMs) => oauthRepo.purgeExpired(instanceScope, nowMs),
     now,
     logger,
@@ -364,6 +366,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // per UTC day, beside the archive-expiry timer — the job table has no
   // scheduler, so this `setInterval` is what says when.
   const conversationPruneTimer = createConversationPruneTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
+  // ADR 0127: the daily housekeeping producer. One `prune_jobs` job and one
+  // `sweep_event_dedupe` job per guild per UTC day — every guild gets both,
+  // with no peek, because finished jobs and event fingerprints accumulate
+  // wherever anything ever ran.
+  const housekeepingTimer = createHousekeepingTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     now,
@@ -506,12 +519,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   /**
    * When the socket went away, or `undefined` if it has not since start.
    *
-   * A cold start is a fresh IDENTIFY by definition, so the first READY records a
-   * gap too — `docs/21` exercise 4 is "Ctrl-C, react while it is down, restart",
-   * and reactions added in that window produced no dispatch at all. The gap's
-   * *duration* is unknown to a process that was not running, so it is recorded
-   * as zero-length; the gap's *existence* is what enqueues the reconciliation
-   * that recovers the window.
+   * Stamped on both `ShardDisconnect` (unrecoverable closes) and
+   * `ShardReconnecting` (resumable drops, which discord.js v14 reports only
+   * via the latter) — without the second, every resumed session records a
+   * zero-length gap. A cold start is a fresh IDENTIFY by definition, so the
+   * first READY records a gap too — `docs/21` exercise 4 is "Ctrl-C, react
+   * while it is down, restart", and reactions added in that window produced
+   * no dispatch at all. The gap's *duration* is unknown to a process that
+   * was not running, so it is recorded as zero-length; the gap's *existence*
+   * is what enqueues the reconciliation that recovers the window.
    */
   let disconnectedAtMs: number | undefined;
 
@@ -521,6 +537,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       safeLogFields({ component: 'connection', outcome: 'disconnected' }),
       'shard closed',
     );
+  });
+
+  client.on(Events.ShardReconnecting, () => {
+    // discord.js v14 emits ShardDisconnect only for unrecoverable closes; a
+    // resumable drop emits ShardReconnecting. Stamp here too so a resumed
+    // session's gap has its real length. The first stamp wins.
+    disconnectedAtMs ??= now();
   });
 
   const connectionEvent = (resumed: boolean): void => {
@@ -671,6 +694,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       conversationPruneTimer.start();
       reminderDeliveryTimer.start();
       resourceRefreshTimer.start();
+      housekeepingTimer.start();
     },
 
     async stop() {
@@ -683,6 +707,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       conversationPruneTimer.stop();
       reminderDeliveryTimer.stop();
       resourceRefreshTimer.stop();
+      housekeepingTimer.stop();
       await settle();
     },
 

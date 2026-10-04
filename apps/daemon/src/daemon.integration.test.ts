@@ -9,6 +9,7 @@ import {
   panelDefinitionSchema,
   parseConfig,
   parseGuildId,
+  reconcileDedupeKey,
   unicodeEmojiKey,
   type Config,
 } from '@bananasaurs/core';
@@ -508,6 +509,33 @@ describe('reconnecting', () => {
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(1);
   });
 
+  /**
+   * ADR 0127: the `reconcile_guild:gateway-gap` enqueue deliberately carries
+   * no `oncePerBucket` — a second fresh connection after the first
+   * reconciliation finished must enqueue again, because the new gap is new
+   * work. The first job may have ended `done` or `failed`; either way it is
+   * no longer pending, which is the point. Fails if someone adds
+   * `oncePerBucket` to the reconcile enqueue in `connection-subscriber.ts`.
+   */
+  it('enqueues a second reconciliation when a second fresh connection follows the first', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+    await daemon.drainJobs();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const reconciles = jobRepo
+      .listJobs(scope, {})
+      .filter((job) => job.kind === JOB_KINDS.reconcileGuild);
+    expect(reconciles).toHaveLength(2);
+    for (const job of reconciles) expect(job.dedupeKey).toBe(reconcileDedupeKey('gateway-gap'));
+  });
+
   it('records a resumed session as a gap that needs no repair', async () => {
     seedPanel(GUILD);
     daemon = start();
@@ -523,6 +551,42 @@ describe('reconnecting', () => {
     // queue.
     const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(0);
+  });
+
+  it('records the real gap length when a resumable drop precedes the resume', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(5_000);
+    client.emit(Events.ShardResume, 0, 3);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const gaps = pipelineRepo.unreconciledGaps(scope);
+    expect(gaps).toHaveLength(1);
+    const gap = gaps[0];
+    expect(gap).toBeDefined();
+    expect(gap!.reconnectedAt - gap!.disconnectedAt).toBe(5_000);
+  });
+
+  it('keeps the first disconnect stamp when several reconnectings fire', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(1_000);
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(4_000);
+    client.emit(Events.ShardResume, 0, 3);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const gaps = pipelineRepo.unreconciledGaps(scope);
+    expect(gaps).toHaveLength(1);
+    const gap = gaps[0];
+    expect(gap).toBeDefined();
+    expect(gap!.reconnectedAt - gap!.disconnectedAt).toBe(5_000);
   });
 });
 
@@ -587,6 +651,20 @@ describe('the bot user id', () => {
 });
 
 describe('the job worker', () => {
+  it('enqueues the daily housekeeping jobs at startup and runs both to done (ADR 0127)', async () => {
+    daemon = start();
+    await daemon.settle();
+    await daemon.drainJobs();
+
+    // Both housekeeping handlers are registered: a missing handler would fail
+    // the job instead of completing it.
+    const scope = t.scopes.forGuild(GUILD);
+    const byKind = new Map(jobRepo.listJobs(scope, {}).map((job) => [job.kind, job]));
+    for (const kind of [JOB_KINDS.pruneJobs, JOB_KINDS.sweepEventDedupe] as const) {
+      expect(byKind.get(kind)?.state).toBe('done');
+    }
+  });
+
   it('runs a queued job without anything else asking it to', async () => {
     seedPanel(GUILD);
     discord.offlineReactionAdd({
