@@ -134,7 +134,12 @@ describe('GET /api/automod/state', () => {
       headers: { cookie, [CSRF_HEADER]: csrf },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true, state: 'off', enabledRules: [] });
+    expect(response.json()).toEqual({
+      state: 'off',
+      dryRun: true,
+      killswitch: false,
+      enabledRules: [],
+    });
   });
 
   it('d. names only the enabled rules of this guild', async () => {
@@ -150,10 +155,24 @@ describe('GET /api/automod/state', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      ok: true,
       state: 'off',
+      dryRun: true,
+      killswitch: false,
       enabledRules: [{ ruleId: 'kw-one', name: 'kw-one' }],
     });
+  });
+
+  it('d2. reports killswitch true after the guild killswitch is set', async () => {
+    grant(['config.read']);
+    guildRepo.setKillswitch(t.scopes.forGuild(GUILD), true, clock);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/automod/state',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ killswitch: true, dryRun: true, state: 'off' });
   });
 });
 
@@ -232,6 +251,58 @@ describe('PUT /api/automod/state', () => {
       sinceMs: undefined,
     });
     expect(rows.find((r) => r.action === 'automod.state_set')).toBeDefined();
+  });
+
+  it('h2. allows a stale on-to-off move without a fresh password', async () => {
+    grant(['config.write']);
+    guildRepo.setAutomodState(t.scopes.forGuild(GUILD), 'on', clock);
+    const { cookie, csrf } = await signIn();
+    clock += POLICY.reauthWindowMs + 1;
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/automod/state',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { state: 'off' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, state: 'off' });
+    expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.automodState).toBe('off');
+  });
+
+  it('f2. moves off to on with a fresh session and records exactly one audit row', async () => {
+    grant(['config.write']);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/automod/state',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { state: 'on' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, state: 'on' });
+    expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.automodState).toBe('on');
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
+      limit: 10,
+      sinceMs: undefined,
+    });
+    const matches = rows.filter((r) => r.action === 'automod.state_set');
+    expect(matches).toHaveLength(1);
+    expect(JSON.parse(matches[0]?.before ?? 'null')).toEqual({ state: 'off' });
+    expect(JSON.parse(matches[0]?.after ?? 'null')).toEqual({ state: 'on' });
+  });
+
+  it('e2. answers 400 for an empty body', async () => {
+    grant(['config.write']);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/automod/state',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: {},
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'bad-request' });
   });
 
   it('i. re-sending the current position succeeds and writes no audit row', async () => {
