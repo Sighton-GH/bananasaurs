@@ -355,7 +355,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     // Item 7: the OAuth purge is instance-level, not per-guild, so it rides
-    // the timer's once-a-day `runOnce` rather than the per-guild expiry jobs.
+    // the archive-expiry timer's `runOnce` outside the guild loop. That runs
+    // at start and hourly (ADR 0127); the purge is a cheap indexed delete that logs only when it removed something.
     purgeOAuth: (nowMs) => oauthRepo.purgeExpired(instanceScope, nowMs),
     now,
     logger,
