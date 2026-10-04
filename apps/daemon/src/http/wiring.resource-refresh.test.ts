@@ -92,8 +92,10 @@ it('saving a resource again after its refresh job finished enqueues a second add
     reviewedAt: new Date(0).toISOString(),
   };
 
-  expect((await app.inject({ method: 'PUT', url: '/api/assistant/resources/res-1', headers, payload }))
-    .statusCode).toBe(200);
+  expect(
+    (await app.inject({ method: 'PUT', url: '/api/assistant/resources/res-1', headers, payload }))
+      .statusCode,
+  ).toBe(200);
 
   const scope = t.scopes.forGuild(GUILD);
   const claimed = jobRepo.claimNext(scope, clock);

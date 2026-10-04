@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { conversationPruneDedupeKey, JOB_KINDS, parseGuildId, type Logger } from '@bananasaurs/core';
+import {
+  conversationPruneDedupeKey,
+  JOB_KINDS,
+  parseGuildId,
+  type Logger,
+} from '@bananasaurs/core';
 import { conversationRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
