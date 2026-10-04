@@ -194,7 +194,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   },
   createAutomodRule: notNeeded('createAutomodRule'),
   setAutomodRuleConfig: notNeeded('setAutomodRuleConfig'),
-  setAutomodRuleMode: notNeeded('setAutomodRuleMode'),
+  setAutomodRuleEnabled: notNeeded('setAutomodRuleEnabled'),
   addAutomodExemption: notNeeded('addAutomodExemption'),
   addAutomodAllowlistPhrase: notNeeded('addAutomodAllowlistPhrase'),
   removeAutomodExemption: notNeeded('removeAutomodExemption'),

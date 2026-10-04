@@ -102,7 +102,7 @@ const createKindRule = (guild: GuildId, ruleId: string, enabled: boolean): void 
     config: '{}',
   });
   if (!enabled) {
-    testPortsFor(t.scopes.forGuild(guild), () => clock).setAutomodRuleMode({
+    testPortsFor(t.scopes.forGuild(guild), () => clock).setAutomodRuleEnabled({
       ruleId,
       enabled: false,
     });

@@ -512,6 +512,27 @@ export interface SetRuleConfigInput {
  * side is `compileRule`, called by the subscriber and by `doctor`) — the
  * write-side guard has to live at the call site for exactly that reason.
  */
+export interface SetRuleEnabledInput {
+  readonly ruleId: string;
+  readonly enabled: boolean;
+  readonly now: number;
+}
+
+/**
+ * ADR 0121: turns one rule on or off. Whether a rule acts is the guild's
+ * automod switch; this only decides which rules the switch applies to.
+ * `false` when the rule does not exist in this guild.
+ */
+export const setRuleEnabled = (scope: GuildScope, input: SetRuleEnabledInput): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(modRules)
+      .set({ enabled: input.enabled ? 1 : 0, updatedAt: input.now })
+      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
+      .run();
+    return result.changes > 0;
+  });
+
 export const setRuleConfig = (scope: GuildScope, input: SetRuleConfigInput): void =>
   write(scope, ({ db }) => {
     db.update(modRules)

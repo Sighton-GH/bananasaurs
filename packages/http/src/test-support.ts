@@ -492,15 +492,8 @@ export const testPortsFor = (
     automodRuleRepo.setRuleConfig(scope, { ...input, now: now() });
     return 'ok';
   },
-  setAutomodRuleMode: (input) => {
-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
-    return automodRuleRepo.setRuleMode(scope, {
-      ruleId: input.ruleId,
-      ...(input.mode !== undefined && { mode: input.mode }),
-      ...(input.enabled !== undefined && { enabled: input.enabled }),
-      now: now(),
-    });
-  },
+  setAutomodRuleEnabled: (input) =>
+    automodRuleRepo.setRuleEnabled(scope, { ...input, now: now() }) ? 'ok' : 'no-such-rule',
   addAutomodExemption: (input) => {
     if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
     const existing = automodAdminRepo.listExemptions(scope, input.ruleId);

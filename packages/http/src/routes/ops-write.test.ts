@@ -163,8 +163,6 @@ const ALL_CALLS: readonly Call[] = [
   },
   { method: 'DELETE', url: '/api/role-allowlist/666666666666666666?purpose=grant' },
   { method: 'POST', url: '/api/adoption-allowance', payload: { count: 5 } },
-  { method: 'POST', url: '/api/automod/rules/r1/ready' },
-  { method: 'POST', url: '/api/automod/rules/r1/signoff', payload: { signedOffBy: 'owner' } },
   {
     method: 'POST',
     url: '/api/automod/rules/r1/invite-allowlist',
@@ -1280,5 +1278,19 @@ describe('provider terms record (ADR 0061 §1)', () => {
     });
     expect(missingField.statusCode).toBe(400);
     expect(eligibilityRepo.findEligibility(t.scopes.instance(), 'gemini')).toBeUndefined();
+  });
+});
+
+describe('removed staged-rollout routes (ADR 0121)', () => {
+  it.each(['ready', 'signoff'])('POST /api/automod/rules/:ruleId/%s answers 404', async (path) => {
+    grant(ALL_GRANTS);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/automod/rules/r1/${path}`,
+      headers: { cookie, [CSRF]: csrf },
+      payload: { signedOffBy: 'owner' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });

@@ -44,7 +44,6 @@ const VARIABLE_CODES = [
   'no-guild',
   'no-key',
   'unsupported',
-  'not-observing',
   'role-everyone',
   'role-managed',
   'role-dangerous',

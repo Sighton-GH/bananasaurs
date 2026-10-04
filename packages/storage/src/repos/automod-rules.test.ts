@@ -17,6 +17,7 @@ import {
   ruleExists,
   setEnforceSignOff,
   setRuleConfig,
+  setRuleEnabled,
   setRuleMode,
   setRuleReady,
   type RuleKind,
@@ -617,5 +618,42 @@ describe('setEnforceSignOff', () => {
     const rule = listEnabledRules(scope)[0]!;
     expect(rule.enforceSignedOffBy).toBe('cli:bryan');
     expect(rule.enforceSignedOffAt).toBe(5000);
+  });
+});
+
+describe('setRuleEnabled (ADR 0121)', () => {
+  const OTHER = parseGuildId('999999999999999999');
+  const seed = (guild: typeof GUILD, ruleId: string): void => {
+    createRule(t.scopes.forGuild(guild), {
+      ruleId,
+      kind: 'keyword_filter',
+      name: ruleId,
+      config: '{}',
+      now: 0,
+    });
+  };
+
+  it('turns a rule off and back on', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    seed(GUILD, 'r-enabled');
+    expect(setRuleEnabled(scope, { ruleId: 'r-enabled', enabled: false, now: 10 })).toBe(true);
+    expect(listEnabledRules(scope).some((r) => r.ruleId === 'r-enabled')).toBe(false);
+    expect(setRuleEnabled(scope, { ruleId: 'r-enabled', enabled: true, now: 20 })).toBe(true);
+    expect(listEnabledRules(scope).some((r) => r.ruleId === 'r-enabled')).toBe(true);
+  });
+
+  it('answers false for a rule that does not exist', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    expect(setRuleEnabled(scope, { ruleId: 'nope', enabled: false, now: 10 })).toBe(false);
+  });
+
+  it('never reaches a rule of another guild', () => {
+    upsertGuild(t.scopes.forGuild(OTHER), { name: 'other', now: 0 });
+    seed(OTHER, 'r-other');
+    const mine = t.scopes.forGuild(GUILD);
+    expect(setRuleEnabled(mine, { ruleId: 'r-other', enabled: false, now: 10 })).toBe(false);
+    expect(listEnabledRules(t.scopes.forGuild(OTHER)).some((r) => r.ruleId === 'r-other')).toBe(
+      true,
+    );
   });
 });

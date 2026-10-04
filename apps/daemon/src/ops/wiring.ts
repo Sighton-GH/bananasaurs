@@ -447,18 +447,8 @@ export const opsPortsFor = (
     automodRuleRepo.setRuleConfig(scope, { ...input, now: now() });
     return 'ok';
   },
-  setAutomodRuleMode: (input) => {
-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
-    // Conditional spreads, not `mode: input.mode` directly:
-    // `exactOptionalPropertyTypes` treats an explicit `undefined` as distinct
-    // from the property being absent.
-    return automodRuleRepo.setRuleMode(scope, {
-      ruleId: input.ruleId,
-      ...(input.mode !== undefined && { mode: input.mode }),
-      ...(input.enabled !== undefined && { enabled: input.enabled }),
-      now: now(),
-    });
-  },
+  setAutomodRuleEnabled: (input) =>
+    automodRuleRepo.setRuleEnabled(scope, { ...input, now: now() }) ? 'ok' : 'no-such-rule',
   // A pre-check rather than the before/after count `addInviteAllowlistEntry`
   // above uses: the pair either exists or it does not, and checking first
   // never lets the `INSERT` throw.

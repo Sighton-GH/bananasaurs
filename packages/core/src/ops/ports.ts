@@ -1101,17 +1101,14 @@ export interface OpsPorts {
     readonly config: string;
   }): 'ok' | 'no-such-rule';
   /**
-   * Moves one rule's mode and/or enabled flag from the `/automod/:ruleId`
-   * mode dialog. A request for `mode: 'enforce'` runs through the ADR 0042
-   * gate at `setRuleMode`, and the refusal is the answer — the dialog states
-   * the consequence, the server decides. `'no-such-rule'` is a usage answer
-   * for a mistyped id.
+   * ADR 0121: turns one rule on or off from the `/automod/:ruleId` page.
+   * Whether enabled rules act is the guild's automod switch, not this.
+   * `'no-such-rule'` is a usage answer for a mistyped id.
    */
-  setAutomodRuleMode(input: {
+  setAutomodRuleEnabled(input: {
     readonly ruleId: string;
-    readonly mode?: OpsRuleMode;
-    readonly enabled?: boolean;
-  }): OpsEnforcementEligibility | 'no-such-rule';
+    readonly enabled: boolean;
+  }): 'ok' | 'no-such-rule';
   /**
    * Exempts one role or channel from one rule, from the `/automod/:ruleId`
    * exemptions section. `'already-present'` is a real answer, not a refusal:

@@ -148,6 +148,17 @@ const seedMatch = (
   });
 };
 
+const STAGED_FIELDS = [
+  'mode',
+  'cutoverState',
+  'observeStartedAt',
+  'legacyRuleRef',
+  'maxFalsePositiveRate',
+  'minReviewedMatches',
+  'enforceSignedOffBy',
+  'enforceSignedOffAt',
+];
+
 const auditActions = (): readonly string[] =>
   effectRepo
     .tailAudit(t.scopes.forGuild(GUILD), { limit: 50, sinceMs: undefined })
@@ -184,6 +195,19 @@ describe('GET /api/automod/rules', () => {
     expect(response.json()).toEqual({
       rules: [expect.objectContaining({ ruleId: 'kw-one', kind: 'keyword_filter' })],
     });
+  });
+  it('sends no staged-rollout field (ADR 0121)', async () => {
+    grant(['config.read']);
+    createRule();
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/automod/rules',
+      headers: { cookie },
+    });
+    const [rule] = response.json<{ rules: Record<string, unknown>[] }>().rules;
+    for (const field of STAGED_FIELDS) expect(rule).not.toHaveProperty(field);
+    expect(rule).toHaveProperty('enabled', true);
   });
 });
 
@@ -253,6 +277,19 @@ describe('GET /api/automod/rules/:ruleId', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);
+  });
+  it('sends no staged-rollout field or eligibility (ADR 0121)', async () => {
+    grant(['config.read']);
+    createRule();
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/automod/rules/kw-one',
+      headers: { cookie },
+    });
+    const detail = response.json<Record<string, unknown>>();
+    for (const field of [...STAGED_FIELDS, 'eligibility']) expect(detail).not.toHaveProperty(field);
+    expect(detail).toHaveProperty('enabled', true);
   });
 });
 
@@ -464,126 +501,117 @@ describe('PUT /api/automod/rules/:ruleId/config', () => {
   });
 });
 
-describe('POST /api/automod/rules/:ruleId/mode', () => {
-  it('answers 401 with no session', async () => {
-    const response = await app.inject({
+describe('POST /api/automod/rules/:ruleId/enabled (ADR 0121)', () => {
+  const post = (cookie: string, csrf: string, ruleId: string, payload: unknown) =>
+    app.inject({
       method: 'POST',
-      url: '/api/automod/rules/kw-one/mode',
-      payload: { enabled: false },
-    });
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('answers 403 no-grant without config.write', async () => {
-    grant(['config.read']);
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/mode',
+      url: `/api/automod/rules/${ruleId}/enabled`,
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { enabled: false },
+      payload: payload as Record<string, unknown>,
     });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ error: 'no-grant' });
-  });
+  const enabledRuleIds = (guild: GuildId = GUILD): readonly string[] =>
+    testPortsFor(t.scopes.forGuild(guild), () => clock)
+      .listEnabledAutomodRuleNames()
+      .map((rule) => rule.ruleId);
+  const enabledAuditRows = () =>
+    effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), { limit: 50, sinceMs: undefined })
+      .filter((row) => row.action === 'automod_rule.enabled_set');
 
-  it('answers 400 when neither mode nor enabled is given', async () => {
-    grant(['config.write']);
-    createRule();
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/mode',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: {},
-    });
-    expect(response.statusCode).toBe(400);
-  });
-
-  it('toggles enabled and records before and after', async () => {
-    grant(['config.write']);
-    createRule();
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/mode',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { enabled: false },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true });
-
-    const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
-      'kw-one',
-    );
-    expect(detail?.enabled).toBe(false);
-
-    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
-      limit: 10,
-      sinceMs: undefined,
-    });
-    const row = rows.find((r) => r.action === 'automod_rule.mode_set');
-    expect(row?.subjectType).toBe('automod_rule');
-    expect(row?.subjectId).toBe('kw-one');
-    expect(JSON.parse(row?.before ?? 'null')).toEqual({
-      mode: 'test',
-      enabled: true,
-      cutoverState: 'not_started',
-      observeStartedAt: null,
-    });
-    expect(JSON.parse(row?.after ?? 'null')).toEqual({ enabled: false });
-  });
-
-  it('answers 404 for an unknown rule and records no audit row', async () => {
-    grant(['config.write']);
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/no-such-rule/mode',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { enabled: false },
-    });
-    expect(response.statusCode).toBe(404);
-    expect(auditActions()).not.toContain('automod_rule.mode_set');
-  });
-
-  it('answers 409 not-eligible for enforce on a not_started rule and leaves the row alone', async () => {
-    grant(['config.write']);
-    createRule();
-    const before = automodAdminRepo.findRule(t.scopes.forGuild(GUILD), 'kw-one');
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/mode',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { mode: 'enforce' },
-    });
-    expect(response.statusCode).toBe(409);
-    const body = response.json<{
-      error: string;
-      refusal: { reason: string; state: string };
-    }>();
-    expect(body.error).toBe('not-eligible');
-    expect(body.refusal.reason).toBe('cutover-state');
-
-    const after = automodAdminRepo.findRule(t.scopes.forGuild(GUILD), 'kw-one');
-    expect(after).toEqual(before);
-    expect(auditActions()).not.toContain('automod_rule.mode_set');
-  });
-
-  it('answers 401 reauth-required once the re-auth window has passed', async () => {
+  it('turns a rule off with a stale session and records one audit row', async () => {
     grant(['config.write']);
     createRule();
     const { cookie, csrf } = await signIn();
     clock += POLICY.reauthWindowMs + 1;
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/mode',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { enabled: false },
+    const response = await post(cookie, csrf, 'kw-one', { enabled: false });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(enabledRuleIds()).not.toContain('kw-one');
+    const rows = enabledAuditRows();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]?.before ?? 'null')).toEqual({ enabled: true });
+    expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ enabled: false });
+  });
+
+  it('refuses to turn a rule on with a stale session and changes nothing', async () => {
+    grant(['config.write']);
+    createRule();
+    testPortsFor(t.scopes.forGuild(GUILD), () => clock).setAutomodRuleEnabled({
+      ruleId: 'kw-one',
+      enabled: false,
     });
+    const { cookie, csrf } = await signIn();
+    clock += POLICY.reauthWindowMs + 1;
+    const response = await post(cookie, csrf, 'kw-one', { enabled: true });
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ error: 'reauth-required' });
+    expect(enabledRuleIds()).not.toContain('kw-one');
+    expect(enabledAuditRows()).toHaveLength(0);
+  });
+
+  it('turns a rule on with a fresh session', async () => {
+    grant(['config.write']);
+    createRule();
+    testPortsFor(t.scopes.forGuild(GUILD), () => clock).setAutomodRuleEnabled({
+      ruleId: 'kw-one',
+      enabled: false,
+    });
+    const { cookie, csrf } = await signIn();
+    const response = await post(cookie, csrf, 'kw-one', { enabled: true });
+    expect(response.statusCode).toBe(200);
+    expect(enabledRuleIds()).toContain('kw-one');
+    expect(enabledAuditRows()).toHaveLength(1);
+  });
+
+  it('re-sending the current value succeeds without an audit row', async () => {
+    grant(['config.write']);
+    createRule();
+    const { cookie, csrf } = await signIn();
+    clock += POLICY.reauthWindowMs + 1;
+    const response = await post(cookie, csrf, 'kw-one', { enabled: true });
+    expect(response.statusCode).toBe(200);
+    expect(enabledAuditRows()).toHaveLength(0);
+  });
+
+  it('answers 404 for an unknown rule and for a rule of another guild', async () => {
+    grant(['config.write']);
+    createKindRule(OTHER_GUILD, 'kw-other', 'keyword_filter');
+    const { cookie, csrf } = await signIn();
+    expect((await post(cookie, csrf, 'no-such-rule', { enabled: false })).statusCode).toBe(404);
+    expect((await post(cookie, csrf, 'kw-other', { enabled: false })).statusCode).toBe(404);
+    expect(enabledRuleIds(OTHER_GUILD)).toContain('kw-other');
+  });
+
+  it('answers 400 for a missing or malformed body', async () => {
+    grant(['config.write']);
+    createRule();
+    const { cookie, csrf } = await signIn();
+    expect((await post(cookie, csrf, 'kw-one', {})).statusCode).toBe(400);
+    expect((await post(cookie, csrf, 'kw-one', { enabled: 'yes' })).statusCode).toBe(400);
+  });
+
+  it('refuses without config.write and changes nothing', async () => {
+    grant(['config.read']);
+    createRule();
+    const { cookie, csrf } = await signIn();
+    const response = await post(cookie, csrf, 'kw-one', { enabled: false });
+    expect(response.statusCode).toBe(403);
+    expect(enabledRuleIds()).toContain('kw-one');
+  });
+});
+
+describe('removed staged-rollout routes (ADR 0121)', () => {
+  it.each(['mode', 'dry-run'])('POST /api/automod/rules/:ruleId/%s answers 404', async (path) => {
+    grant(['config.write', 'config.read']);
+    createRule();
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/automod/rules/kw-one/${path}`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { mode: 'enforce' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
 
@@ -732,72 +760,6 @@ describe('DELETE /api/automod/rules/:ruleId/exemptions/:exemptType/:exemptId', (
       headers: { cookie, [CSRF_HEADER]: csrf },
     });
     expect(response.statusCode).toBe(400);
-  });
-});
-
-describe('POST /api/automod/rules/:ruleId/dry-run', () => {
-  it('answers 401 with no session', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/dry-run',
-      payload: {},
-    });
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('answers 403 no-grant without config.read', async () => {
-    grant(['config.write']);
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/dry-run',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: {},
-    });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ error: 'no-grant' });
-  });
-
-  it('returns the dry-run report', async () => {
-    grant(['config.read']);
-    createRule();
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/dry-run',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: {},
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual(expect.objectContaining({ ruleId: 'kw-one' }));
-  });
-
-  it('dry-runs a disabled rule (the edit, dry-run, enable workflow)', async () => {
-    grant(['config.read']);
-    createRule();
-    const ports = testPortsFor(t.scopes.forGuild(GUILD), () => clock);
-    expect(ports.setAutomodRuleMode({ ruleId: 'kw-one', enabled: false })).toEqual({ ok: true });
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/kw-one/dry-run',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: {},
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual(expect.objectContaining({ ruleId: 'kw-one' }));
-  });
-
-  it('answers 404 for an unknown rule', async () => {
-    grant(['config.read']);
-    const { cookie, csrf } = await signIn();
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/automod/rules/no-such-rule/dry-run',
-      headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: {},
-    });
-    expect(response.statusCode).toBe(404);
   });
 });
 

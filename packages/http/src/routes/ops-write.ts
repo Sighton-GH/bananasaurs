@@ -164,8 +164,6 @@ const adoptionAllowanceBodySchema = z.object({
   count: z.number().int().positive().max(100),
 });
 
-const signoffBodySchema = z.object({ signedOffBy: z.string().min(1).max(100) });
-
 const inviteAllowlistBodySchema = z.object({
   code: z.string().min(1).max(100),
   label: z.string().min(1).max(200),
@@ -958,57 +956,6 @@ export const registerOpsWriteRoutes = (
     });
     return reply.status(200).send({ allowance: after });
   });
-
-  app.post<{ Params: { ruleId: string } }>('/api/automod/rules/:ruleId/ready', (request, reply) => {
-    const session = guard.require(request, reply);
-    if (session === undefined) return reply;
-    if (!requireCapability(session, 'moderation.act', reply)) return reply;
-
-    const ports = deps.portsFor(session.scope);
-    const outcome = ports.setAutomodRuleReady(request.params.ruleId);
-    if (!outcome.ok) {
-      return reply.status(409).send({ error: outcome.reason, state: outcome.state });
-    }
-    ports.recordAudit({
-      ...dashboardAuditBase(session, deps.now()),
-      action: 'automod_rule.ready',
-      subjectType: 'automod_rule',
-      subjectId: request.params.ruleId,
-      before: undefined,
-      after: { ready: true },
-    });
-    return reply.status(200).send({ ok: true });
-  });
-
-  app.post<{ Params: { ruleId: string } }>(
-    '/api/automod/rules/:ruleId/signoff',
-    (request, reply) => {
-      const session = guard.require(request, reply);
-      if (session === undefined) return reply;
-      if (!requireCapability(session, 'moderation.act', reply)) return reply;
-
-      const parsed = signoffBodySchema.safeParse(request.body);
-      if (!parsed.success) return badRequest(reply, parsed.error);
-
-      const ports = deps.portsFor(session.scope);
-      if (ports.findAutomodRule(request.params.ruleId) === undefined) {
-        return reply.status(404).send({ error: 'not-found' });
-      }
-      ports.recordAutomodSignOff({
-        ruleId: request.params.ruleId,
-        signedOffBy: parsed.data.signedOffBy,
-      });
-      ports.recordAudit({
-        ...dashboardAuditBase(session, deps.now()),
-        action: 'automod_rule.signed_off',
-        subjectType: 'automod_rule',
-        subjectId: request.params.ruleId,
-        before: undefined,
-        after: { signedOffBy: parsed.data.signedOffBy },
-      });
-      return reply.status(200).send({ ok: true });
-    },
-  );
 
   app.post<{ Params: { ruleId: string } }>(
     '/api/automod/rules/:ruleId/invite-allowlist',

@@ -392,11 +392,6 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     hint: 'Paste another link.',
   },
   'github-url-needs-import': GITHUB_URL_NEEDS_IMPORT_TEXT,
-  'not-eligible': {
-    title: "The rule can't go live yet",
-    explanation: "The rule did not pass its checks, so it can't be enabled.",
-    hint: 'Read the refusal and fix what it names.',
-  },
   'no-such-token': {
     title: 'No such token',
     explanation: 'That token id is not recorded here.',
@@ -476,11 +471,6 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     title: 'Already queued',
     explanation: 'The same job is already queued, so a retry would be a duplicate.',
     hint: 'Wait for the queued job.',
-  },
-  'not-observing': {
-    title: 'Not ready yet',
-    explanation: "That rule is still being observed and can't be marked ready.",
-    hint: 'Wait for the observation window.',
   },
 };
 

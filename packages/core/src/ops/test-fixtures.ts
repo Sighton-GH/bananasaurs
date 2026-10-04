@@ -73,7 +73,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   findAutomodRuleDetail: unstubbed('findAutomodRuleDetail'),
   createAutomodRule: unstubbed('createAutomodRule'),
   setAutomodRuleConfig: unstubbed('setAutomodRuleConfig'),
-  setAutomodRuleMode: unstubbed('setAutomodRuleMode'),
+  setAutomodRuleEnabled: unstubbed('setAutomodRuleEnabled'),
   addAutomodExemption: unstubbed('addAutomodExemption'),
   addAutomodAllowlistPhrase: unstubbed('addAutomodAllowlistPhrase'),
   removeAutomodExemption: unstubbed('removeAutomodExemption'),
