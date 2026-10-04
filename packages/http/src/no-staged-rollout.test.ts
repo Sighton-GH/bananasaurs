@@ -29,10 +29,15 @@ const SCANNED = [
   'packages/mcp/src/tools',
   'apps/daemon/src/ops',
   'apps/daemon/src/runtime',
+  'apps/daemon/src/automod',
+  'packages/storage/src',
+  'packages/mcp/src/resources',
 ];
 
+// `observe-only` is excluded: it names the read-only process mode
+// (`BANANASAURS_READONLY`, `storage/src/write.ts`), not automod.
 const FORBIDDEN =
-  /observe window|observe floor|observing|cutover|cut over|sign-off|signoff|signed off|legacy ref|legacy-ref|legacyRuleRef|fixture|enforce mode|enforceSignedOff|cutoverState|observeStartedAt|automodTestingMode|OBSERVE_FLOOR/i;
+  /observe window|observe floor|observing|\bobserves?\b(?!-only)|rule modes?\b|cutover|cut over|sign-off|signoff|signed off|legacy ref|legacy-ref|legacyRuleRef|fixture|enforce mode|enforceSignedOff|cutoverState|observeStartedAt|automodTestingMode|OBSERVE_FLOOR/i;
 
 const SKIPPED_NAMES = new Set(['test-fixtures.ts', 'test-support.ts', 'no-staged-rollout.test.ts']);
 

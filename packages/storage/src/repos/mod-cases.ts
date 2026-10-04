@@ -35,10 +35,9 @@ export type ModCaseStatus = 'open' | 'closed';
  *   `escalation_dry_run` (`dry-run`), `escalation_skipped` (`skipped`, the
  *   identical action had already been applied). The last five map one-to-one
  *   onto `ModerationOutcome`'s five variants.
- * - **Not deleted**: `would_delete` (the rule is in `test`/`observe` mode, so
- *   nothing was ever going to be deleted), `delete_blocked_*` (the rule is in
- *   `enforce` mode but a docs/18 safety layer stopped every Discord side
- *   effect first), `delete_failed` (the delete was attempted and Discord
+ * - **Not deleted**: `would_delete` (automod is on Watch, so nothing was
+ *   ever going to be deleted — ADR 0121), `delete_blocked_*` (automod is On
+ *   but a docs/18 safety layer stopped every Discord side effect first), `delete_failed` (the delete was attempted and Discord
  *   refused it for a reason other than "the message is already gone", which
  *   the subscriber treats as success).
  */
@@ -100,7 +99,7 @@ export interface OpenOrResolveCaseInput {
    * Whether this violation moves the counter the escalation ladder reads.
    *
    * `false` still resolves (or opens) the member's case, so a case event has
-   * something to hang off — a `test`/`observe` match and a match a safety
+   * something to hang off — a Watch match and a match a safety
    * layer blocked are both real observations a moderator should be able to
    * read back — but leaves `violation_count` exactly where it was. A case
    * opened by a non-counting match starts at 0, which is what "we have seen

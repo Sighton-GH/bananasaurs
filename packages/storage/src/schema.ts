@@ -1178,17 +1178,17 @@ export const modCaseEvents = sqliteTable(
      * The first vocabulary had three values and the subscriber mapped every
      * non-refused escalation onto `deleted_and_escalated` — which recorded a
      * timeout or a kick for a `dry-run`, `skipped` or `failed`
-     * `ModerationOutcome` too — and reused `deleted` for a `test`/`observe`
-     * mode match where nothing was deleted at all. Both are lies in a table
+     * `ModerationOutcome` too — and reused `deleted` for a match recorded
+     * without acting, where nothing was deleted at all. Both are lies in a table
      * whose entire purpose (ADR 0035) is a durable, truthful record a
      * moderator reads back later.
      *
      * The five `escalation_*`/`deleted*` values below map one-to-one onto
      * `ModerationOutcome`'s five variants, after a real deletion. The
      * `delete_blocked_*` values are the case where enforcement never reached
-     * Discord because a safety layer (docs/18) said no; `would_delete` is the
-     * `test`/`observe` case, which is not a deletion and no longer pretends
-     * to be one; `delete_failed` is a deletion Discord actually refused.
+     * Discord because a safety layer (docs/18) said no; `would_delete` is a
+     * match recorded while automod is on Watch (ADR 0121), which is not a
+     * deletion and does not pretend to be one; `delete_failed` is a deletion Discord actually refused.
      */
     check(
       'mod_case_events_action_taken',
@@ -1241,10 +1241,9 @@ export const modMatchReviews = sqliteTable(
      *
      * Two reviewers with two kinds of identity write here. Slice 9's
      * dashboard authenticates a Discord user and writes a snowflake; the
-     * operator CLI, which ships first and covers the whole first fortnight
-     * of the observe window, has only the Unix user the invocation claimed
-     * (ADR 0024) and writes `cli:<user>`. A snowflake CHECK would make the
-     * path that exists on flip day impossible to write.
+     * operator CLI has only the Unix user the invocation claimed (ADR 0024)
+     * and writes `cli:<user>`. A snowflake CHECK would make the CLI path
+     * impossible to write.
      *
      * Provenance, not authorisation: the socket's group permissions are the
      * access control, and the dispatcher's `audit_events` row is the

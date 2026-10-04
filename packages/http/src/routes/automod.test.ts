@@ -597,6 +597,13 @@ describe('POST /api/automod/rules/:ruleId/enabled (ADR 0121)', () => {
     expect(response.statusCode).toBe(403);
     expect(enabledRuleIds()).toContain('kw-one');
   });
+  it('refuses without config.write even when re-sending the current value', async () => {
+    grant(['config.read']);
+    createRule();
+    const { cookie, csrf } = await signIn();
+    const response = await post(cookie, csrf, 'kw-one', { enabled: true });
+    expect(response.statusCode).toBe(403);
+  });
 });
 
 describe('removed staged-rollout routes (ADR 0121)', () => {

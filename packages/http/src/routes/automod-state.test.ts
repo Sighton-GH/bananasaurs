@@ -333,6 +333,17 @@ describe('PUT /api/automod/state', () => {
     expect(auditActions()).not.toContain('automod.state_set');
   });
 
+  it('j2. answers 403 without config.write even when re-sending the current state', async () => {
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/automod/state',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { state: 'off' },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
   it('k. is guild-scoped: a change in one guild does not move the other', async () => {
     grant(['config.write'], GUILD);
     grant(['config.write'], OTHER_GUILD);

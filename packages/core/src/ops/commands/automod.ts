@@ -203,13 +203,9 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
  * Task 6 built `invite`'s labelled code allowlist and `link_domain`'s
  * allow/deny lists in storage, and shipped no caller — nothing outside a test
  * could add the club's own invite code to the allowlist. That is not merely
- * untidy: `observe` mode never touches Discord, so an empty allowlist harms
- * nobody during the observe window, but an `invite` rule with an empty
- * allowlist fires on the club's own invite links every time a member posts
- * one, and Slice 6's release gate demands zero false positives for a rule
- * that feeds the escalation counter. That rule cannot pass its gate until an
- * operator can populate the list, so this is in Release 2 even though the
- * dashboard screen (Slice 8/9) is not.
+ * untidy: an `invite` rule with an empty allowlist fires on the club's own
+ * invite links every time a member posts one, so it cannot be switched On
+ * until an operator can populate the list.
  *
  * Four commands under the existing `automod` namespace (plan ruling PR-6
  * named the precedent). Reads are not separate commands: this build has no

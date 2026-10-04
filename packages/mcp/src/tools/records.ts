@@ -24,7 +24,7 @@ import type { McpGuildPort } from './guild.js';
  *
  * Ruling M4-D14 — reader-only imports. The moderation repositories export
  * state-changing functions next to their readers, and constraint 8 says those
- * paths must not be touched while the observe window runs on live guilds. So
+ * paths must not be reachable from an MCP read. So
  * this module holds no repository handle of any kind: every fact arrives
  * through `McpRecordsPort`, which the daemon implements field by field in
  * `apps/daemon/src/mcp/wiring.ts` — exactly as `McpHealthPort` and the

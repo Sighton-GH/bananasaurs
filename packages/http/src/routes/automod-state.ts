@@ -47,6 +47,7 @@ export const registerAutomodStateRoutes = (
 
     const signedIn = guard.require(request, reply);
     if (signedIn === undefined) return reply;
+    if (!requireCapability(signedIn, 'config.write', reply)) return reply;
 
     const before = deps.portsFor(signedIn.scope).safetyState();
     if (before === undefined) return reply.status(404).send({ error: 'not-found' });
@@ -56,7 +57,6 @@ export const registerAutomodStateRoutes = (
     const session =
       RANK[next] > RANK[before.automodState] ? guard.requireFresh(request, reply) : signedIn;
     if (session === undefined) return reply;
-    if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const ports = deps.portsFor(session.scope);
     ports.setAutomodState(next);

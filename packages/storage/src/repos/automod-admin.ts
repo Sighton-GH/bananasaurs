@@ -277,7 +277,7 @@ export const countVerdictsByRule = (scope: GuildScope): Readonly<Record<string, 
     return out;
   });
 
-/** How many native AutoMod decisions that stopped a message this guild has recorded — `native_blocked`, `native_timeout` and `native_blocked_interaction`; `native_alerted` lets the message through and is excluded. Nonzero means the observe window measures a stream native already filtered (spec F3.2). */
+/** How many native AutoMod decisions that stopped a message this guild has recorded — `native_blocked`, `native_timeout` and `native_blocked_interaction`; `native_alerted` lets the message through and is excluded. Nonzero means what automod sees on Watch is a stream native already filtered (spec F3.2). */
 export const countNativeBlocked = (scope: GuildScope): number =>
   read(scope, (db) => {
     const row = db

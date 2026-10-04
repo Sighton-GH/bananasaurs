@@ -63,7 +63,9 @@ describe('ConfigPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Turn dry run off' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain('start being sent to Discord for real');
-    expect(dialog.textContent).toContain('observe still only observes');
+    expect(dialog.textContent).toContain(
+      'Automod acts only when its switch on the Automod page is On.',
+    );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Turn dry run off' }));
     });

@@ -429,23 +429,6 @@ describe('automod subscriber', () => {
     ]);
   });
 
-  it('does not call Discord under watch either, whatever the rule mode', async () => {
-    const { deps, calls } = buildHarness({
-      rules: [rule({ ruleId: 'rule-4' })],
-      safetyState: WATCH,
-    });
-    const subscriber = createAutomodSubscriber(deps);
-
-    await subscriber.handle(messageCreate());
-
-    expect(calls.deleteMessage).toHaveLength(0);
-    expect(calls.applyAction).toHaveLength(0);
-    // Distinguishable from the previous watch case by which rule triggered it.
-    expect(calls.recordCaseEvent).toEqual([
-      expect.objectContaining({ ruleId: 'rule-4', actionTaken: 'would_delete' }),
-    ]);
-  });
-
   it('skips an exempt author/channel entirely', async () => {
     const { deps, calls } = buildHarness({
       rules: [rule({ ruleId: 'rule-5' })],

@@ -93,8 +93,9 @@ export const setKillswitch = (scope: GuildScope, on: boolean, now: number): void
 export type AutomodState = 'off' | 'watch' | 'on';
 export const AUTOMOD_STATES: readonly AutomodState[] = ['off', 'watch', 'on'];
 
-// Fail closed: anything unrecognised reads as off. A later migration adds a
-// CHECK that makes this unreachable; until then it is the guard.
+// Fail closed: anything unrecognised reads as off. The `guilds_automod_state`
+// CHECK (migration 0101) makes such a row impossible to write; this stays as
+// the guard for one written with CHECKs off.
 const toAutomodState = (raw: string): AutomodState =>
   raw === 'watch' || raw === 'on' ? raw : 'off';
 

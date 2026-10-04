@@ -191,6 +191,7 @@ export const registerAutomodRoutes = (
 
       const signedIn = guard.require(request, reply);
       if (signedIn === undefined) return reply;
+      if (!requireCapability(signedIn, 'config.write', reply)) return reply;
       const before = deps.portsFor(signedIn.scope).findAutomodRuleDetail(request.params.ruleId);
       if (before === undefined) return reply.status(404).send({ error: 'not-found' });
       // Re-sending the current value changes nothing, so it is not audited.
@@ -200,7 +201,6 @@ export const registerAutomodRoutes = (
       // needs a fresh password; disabling one is never harder than that.
       const session = enabled ? guard.requireFresh(request, reply) : signedIn;
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.setAutomodRuleEnabled({ ruleId: request.params.ruleId, enabled });
@@ -390,9 +390,8 @@ export const registerAutomodRoutes = (
       const parsed = suppressBodySchema.safeParse(request.body);
       if (!parsed.success) return badRequest(reply, parsed.error);
 
-      // A suppression strictly narrows the rule, so no fresh password (PR-54)
-      // and no change to the sign-off columns — the route writes nothing to
-      // `mod_rules` (PR-59).
+      // A suppression strictly narrows the rule, so no fresh password (PR-54);
+      // the route writes nothing to `mod_rules` (PR-59).
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'config.write', reply)) return reply;

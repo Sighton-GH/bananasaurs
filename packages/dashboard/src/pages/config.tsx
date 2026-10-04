@@ -48,8 +48,8 @@ const LIMIT_FIELDS: readonly LimitField[] = [
  * `/config`: `bananasaurs config get` (redacted — secrets never cross this
  * boundary) beside the live safety settings `config set` owns (ADR 0051 D3).
  * Dry run off and a breaker reset both move the guild toward enforcement, so
- * each states its exact scope before it can be confirmed; the observe freeze
- * is untouched — nothing here changes any rule's mode.
+ * each states its exact scope before it can be confirmed. Nothing here
+ * changes the automod switch (ADR 0121).
  */
 export function ConfigPage() {
   const session = useSession();
@@ -322,7 +322,7 @@ export function ConfigPage() {
           safety?.dryRun === true ? (
             <p>
               Effects for guild {session.info.guildId} stop being rehearsed and start being sent to
-              Discord for real. Rule modes do not change — a rule in observe still only observes.
+              Discord for real. Automod acts only when its switch on the Automod page is On.
             </p>
           ) : (
             <p>

@@ -126,11 +126,9 @@ export interface SlashCommandEvent extends Base {
  */
 export interface MessageAttachment {
   /**
-   * Discord's attachment id. Optional (PR-71): a fixture-derived attachment
-   * (`FixtureAttachment` in storage, replayed by the dry-run evaluator)
-   * genuinely has no Discord attachment id, so `undefined` (absent) is a true
-   * statement there. The live adapter and `FakeDiscord` always populate it;
-   * later archive consumers treat absence as "none" and skip the attachment.
+   * Discord's attachment id. Optional (PR-71). The live adapter and
+   * `FakeDiscord` always populate it; archive consumers treat absence as
+   * "none" and skip the attachment.
    */
   readonly attachmentId?: Snowflake;
   readonly fileName: string;
@@ -162,7 +160,7 @@ export interface MessageEvent extends Base {
    *
    * Load-bearing for automod: discord.js emits `MessageCreate` for the bot's
    * own messages, and the `message_delete` logging route quotes the deleted
-   * content, so without this an enforce-mode rule deletes a message, matches
+   * content, so without this automod on On deletes a message, matches
    * its own log entry about that deletion, deletes that, and loops.
    */
   authorIsBot: boolean;
