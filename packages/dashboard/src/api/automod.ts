@@ -397,3 +397,24 @@ export const RULE_CONFIG_EXAMPLE: Record<
     note: 'Fires when the same text repeats more than maxRepeats times inside windowMs milliseconds; messages shorter than minLength are ignored.',
   },
 };
+
+/** ADR 0121: the guild-wide automod switch. */
+export type AutomodState = 'off' | 'watch' | 'on';
+export const AUTOMOD_STATES: readonly AutomodState[] = ['off', 'watch', 'on'];
+export const AUTOMOD_STATE_LABEL: Record<AutomodState, string> = {
+  off: 'Off',
+  watch: 'Watch',
+  on: 'On',
+};
+export const AUTOMOD_STATE_MEANING: Record<AutomodState, string> = {
+  off: 'Automod is off. It does not check messages and records nothing.',
+  watch:
+    'Automod records matches for you to review and flag. It deletes nothing and touches no one.',
+  on: 'Automod deletes messages that match an enabled rule and escalates repeat offenders.',
+};
+export interface AutomodStateView {
+  readonly state: AutomodState;
+  readonly dryRun: boolean;
+  readonly killswitch: boolean;
+  readonly enabledRules: readonly { readonly ruleId: string; readonly name: string }[];
+}
