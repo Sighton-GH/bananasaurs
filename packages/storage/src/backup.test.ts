@@ -5,7 +5,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 import { openTestDatabase } from './db.js';
-import { BACKUP_FILENAME_PATTERN, listBackups, performBackup, pruneBackups, sha256OfFile } from './backup.js';
+import {
+  BACKUP_FILENAME_PATTERN,
+  listBackups,
+  performBackup,
+  pruneBackups,
+  sha256OfFile,
+} from './backup.js';
 
 let dir: string;
 let db: ReturnType<typeof openTestDatabase>;

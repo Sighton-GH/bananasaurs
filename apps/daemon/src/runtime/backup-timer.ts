@@ -94,7 +94,7 @@ export function createBackupTimer(deps: BackupTimerDeps): BackupTimer {
         // be what keeps the process alive after the gateway connection dies.
         timer.unref();
       };
-      if (ageMs >= intervalMs) {
+      if (newest === undefined || ageMs >= intervalMs) {
         runOnce();
         scheduleRecurring();
       } else {
