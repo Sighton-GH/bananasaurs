@@ -777,6 +777,7 @@ export const createAssistantService = (
             resourceId,
             tenMinuteBucket,
           }),
+          oncePerBucket: true,
           now: now(),
         });
         return result.enqueued;

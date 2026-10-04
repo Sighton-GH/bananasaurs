@@ -1589,7 +1589,7 @@ describe('cache tools (Task 16)', () => {
       { name: 'refresh_source', args: { resourceId: 'handbook' } },
       cachePorts({ enqueueRefresh: () => false }),
     );
-    expect(deduped.text).toBe('Already refreshed in the last 10 minutes.');
+    expect(deduped.text).toBe('A refresh was already requested in the last 10 minutes.');
     const unknown = await runAssistantTool(
       { name: 'refresh_source', args: { resourceId: 'nope' } },
       cachePorts(),

@@ -1270,7 +1270,7 @@ export const runAssistantTool = async (
           name,
           enqueued
             ? 'Refresh started; updated content will be available in about a minute.'
-            : 'Already refreshed in the last 10 minutes.',
+            : 'A refresh was already requested in the last 10 minutes.',
         );
       }
       case 'upcoming_events': {

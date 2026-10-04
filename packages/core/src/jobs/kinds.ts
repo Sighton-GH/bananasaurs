@@ -607,7 +607,10 @@ export type ResourceRefreshPayload = z.infer<typeof resourceRefreshPayload>;
  * `resource_refresh:<resourceId|all>:<bucket>` — one pending refresh per
  * resource (or per guild, for "all") per bucket, so a flapping timer or a
  * double-tapped "Update now" collapses into the one already queued rather
- * than piling up (ADR 0016). `added` carries no time bucket: a resource is
+ * than piling up (ADR 0016). The `hourly`, `manual` and `assistant` keys
+ * are enqueued with `oncePerBucket` (ADR 0127), so the bucket runs once
+ * even after its job has finished. `added` carries no time bucket and is
+ * deliberately NOT enqueued with `oncePerBucket`: a resource is
  * added or edited rarely, and collapsing every edit within the pending job's
  * lifetime into one refresh is exactly the point — the job re-reads the
  * resource row at run time, so it always picks up the latest save.
