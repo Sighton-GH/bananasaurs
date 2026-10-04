@@ -91,6 +91,7 @@ describe('AutomodSwitch', () => {
         (c[1] as RequestInit | undefined)?.method !== 'PUT',
     );
     expect(gets).toHaveLength(2);
+  });
 
   it('shows the dry-run note in the On dialog when dryRun is true', async () => {
     stubFetch([{ url: '/api/automod/state', body: view({ dryRun: true }) }]);
@@ -151,6 +152,5 @@ describe('AutomodSwitch', () => {
     expect(dialog.textContent ?? '').toContain(
       'No rules are enabled, so nothing will happen until you enable one.',
     );
-  });
   });
 });
