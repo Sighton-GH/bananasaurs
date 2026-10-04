@@ -486,8 +486,12 @@ describe('tokens', () => {
     expect(revokeTokenChain(instance, 'main-r0', 6000)).toBe(0);
   });
 
-  it('purgeExpired deletes expired pending rows, expired codes, and expired+revoked tokens only', () => {
-    const now = 10_000;
+  it('purgeExpired deletes tokens 14 days after expiry whether or not revoked (ADR 0127)', () => {
+    const DAY = 86_400_000;
+    const now = 30 * DAY;
+    const longAgo = 1000;
+    const recentExpiry = now - 7 * DAY;
+    const liveExpiry = now + DAY;
     // Pending: one expired, one live.
     createPendingAuthorization(instance, {
       requestId: 'req-old',
@@ -509,32 +513,104 @@ describe('tokens', () => {
       codeChallenge: 'c',
       state: null,
       createdAt: 1000,
-      expiresAt: 50_000,
+      expiresAt: liveExpiry,
     });
     // Codes: one expired, one live.
     seedCode('code-old', 'client-1', 5000);
-    seedCode('code-live', 'client-1', 50_000);
-    // Tokens: expired+revoked (deleted), revoked-but-unexpired (kept),
-    // expired-but-unrevoked (kept).
-    const gone = mintPair('code-gone', 'gone', { expiresAt: 5000 });
-    revokeToken(instance, gone.accessId, 6000);
-    revokeToken(instance, gone.refreshId, 6000);
-    const revokedLive = mintPair('code-revoked-live', 'revlive', { expiresAt: 50_000 });
+    seedCode('code-live', 'client-1', liveExpiry);
+    // Tokens: expired >14d ago revoked (deleted) and unrevoked (deleted —
+    // the rotated-access-token case), expired <14d ago revoked or not (kept),
+    // revoked-but-unexpired (kept), live (kept).
+    const oldRevoked = mintPair('code-old-rev', 'oldrev', { expiresAt: longAgo });
+    revokeToken(instance, oldRevoked.accessId, 6000);
+    revokeToken(instance, oldRevoked.refreshId, 6000);
+    const oldUnrevoked = mintPair('code-old-unrev', 'oldunrev', { expiresAt: longAgo });
+    const recentRevoked = mintPair('code-recent-rev', 'recentrev', { expiresAt: recentExpiry });
+    revokeToken(instance, recentRevoked.accessId, 6000);
+    revokeToken(instance, recentRevoked.refreshId, 6000);
+    const recentUnrevoked = mintPair('code-recent-unrev', 'recentunrev', {
+      expiresAt: recentExpiry,
+    });
+    const revokedLive = mintPair('code-revoked-live', 'revlive', { expiresAt: liveExpiry });
     revokeToken(instance, revokedLive.accessId, 6000);
     revokeToken(instance, revokedLive.refreshId, 6000);
-    const expiredLive = mintPair('code-exp-live', 'explive', { expiresAt: 5000 });
+    const live = mintPair('code-live-tok', 'livetok', { expiresAt: liveExpiry });
 
-    expect(purgeExpired(instance, now)).toEqual({ pending: 1, codes: 1, tokens: 2 });
+    expect(purgeExpired(instance, now)).toEqual({ pending: 1, codes: 1, tokens: 4 });
 
     expect(consumePendingAuthorization(instance, 'req-old', now)).toBeUndefined();
     expect(consumePendingAuthorization(instance, 'req-live', now)).toBeDefined();
     expect(findAuthorizationCode(instance, 'code-old')).toBeUndefined();
     expect(findAuthorizationCode(instance, 'code-live')).toBeDefined();
-    // The expired+revoked pair is gone; both kept classes are still readable.
-    expect(findTokenById(instance, gone.accessId)).toBeUndefined();
-    expect(findTokenById(instance, gone.refreshId)).toBeUndefined();
+    // Both long-expired pairs are gone; every other token class is readable.
+    expect(findTokenById(instance, oldRevoked.accessId)).toBeUndefined();
+    expect(findTokenById(instance, oldRevoked.refreshId)).toBeUndefined();
+    expect(findTokenById(instance, oldUnrevoked.accessId)).toBeUndefined();
+    expect(findTokenById(instance, oldUnrevoked.refreshId)).toBeUndefined();
+    expect(findTokenById(instance, recentRevoked.accessId)?.revokedAt).toBe(6000);
+    expect(findTokenById(instance, recentRevoked.refreshId)?.revokedAt).toBe(6000);
+    expect(findTokenById(instance, recentUnrevoked.accessId)?.revokedAt).toBeNull();
+    expect(findTokenById(instance, recentUnrevoked.refreshId)?.revokedAt).toBeNull();
     expect(findTokenById(instance, revokedLive.accessId)?.revokedAt).toBe(6000);
-    expect(findTokenById(instance, expiredLive.accessId)?.revokedAt).toBeNull();
+    expect(findTokenById(instance, revokedLive.refreshId)?.revokedAt).toBe(6000);
+    expect(findTokenById(instance, live.accessId)?.revokedAt).toBeNull();
+    expect(findTokenById(instance, live.refreshId)?.revokedAt).toBeNull();
+  });
+
+  it('purgeExpired deletes a rotated access token 14 days after expiry without breaking reuse detection', () => {
+    const DAY = 86_400_000;
+    const accessExpiry = 1000;
+    const refreshExpiry = 100 * DAY;
+    // Split expiries so the old access token is long-expired while the old
+    // refresh token (and the rotated pair) is still live: rotation never
+    // revokes the old access token, so it is the leaf the old rule leaked.
+    createToken(instance, {
+      tokenId: 'access-old-rot',
+      tokenHash: 'hash-access-old-rot',
+      kind: 'access',
+      clientId: 'client-1',
+      accountId: 'acct-1',
+      scopes: ['bananasaurs:read'],
+      createdAt: 1000,
+      expiresAt: accessExpiry,
+      parentTokenId: null,
+      issuedFromCodeHash: 'code-rot',
+    });
+    createToken(instance, {
+      tokenId: 'refresh-old-rot',
+      tokenHash: 'hash-refresh-old-rot',
+      kind: 'refresh',
+      clientId: 'client-1',
+      accountId: 'acct-1',
+      scopes: ['bananasaurs:read'],
+      createdAt: 1000,
+      expiresAt: refreshExpiry,
+      parentTokenId: null,
+      issuedFromCodeHash: 'code-rot',
+    });
+    rotateRefreshToken(instance, {
+      oldRefreshTokenId: 'refresh-old-rot',
+      newAccess: { tokenId: 'access-new', tokenHash: 'hash-access-new', expiresAt: refreshExpiry },
+      newRefresh: {
+        tokenId: 'refresh-new',
+        tokenHash: 'hash-refresh-new',
+        expiresAt: refreshExpiry,
+      },
+      now: 2000,
+    });
+
+    const purgeNow = accessExpiry + 14 * DAY + 1;
+    expect(purgeExpired(instance, purgeNow)).toEqual({ pending: 0, codes: 0, tokens: 1 });
+
+    expect(findTokenById(instance, 'access-old-rot')).toBeUndefined();
+    expect(findTokenById(instance, 'refresh-old-rot')).toBeDefined();
+    expect(findTokenById(instance, 'access-new')).toBeDefined();
+    expect(findTokenById(instance, 'refresh-new')).toBeDefined();
+    // The surviving old refresh token still reaches the new pair, so refresh
+    // reuse detection is intact after the leaf is purged.
+    expect(revokeTokenChain(instance, 'refresh-old-rot', purgeNow)).toBe(2);
+    expect(findTokenById(instance, 'access-new')?.revokedAt).toBe(purgeNow);
+    expect(findTokenById(instance, 'refresh-new')?.revokedAt).toBe(purgeNow);
   });
 });
 
