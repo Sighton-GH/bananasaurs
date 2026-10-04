@@ -19,6 +19,7 @@ import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { RuleConfigExample } from './automod-config-example.js';
+import { AutomodSwitch } from './automod-switch.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { Button } from '../ui/Button.js';
@@ -116,8 +117,11 @@ export function AutomodRulesPage() {
     <>
       <PageHeader
         title="Automod"
-        purpose="Every rule, what mode it is in, and how far through its observe window it is."
+        purpose="The automod switch, and every rule it applies to."
       />
+      <div className="mb-4 max-w-4xl">
+        <AutomodSwitch />
+      </div>
       <DataState
         resource={rules.resource}
         isEmpty={(r) => r.length === 0}

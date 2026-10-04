@@ -50,6 +50,10 @@ describe('AutomodRulesPage', () => {
   it('renders one row per rule from GET /api/automod/rules', async () => {
     stubFetch([
       {
+        url: '/api/automod/state',
+        body: { state: 'off', dryRun: false, killswitch: false, enabledRules: [] },
+      },
+      {
         url: '/api/automod/rules',
         body: {
           rules: [rule({ verdicts: { falsePositive: 2, truePositive: 4, unclear: 1 } })],
@@ -74,6 +78,10 @@ describe('AutomodRulesPage', () => {
 
   it('posts the create body exactly and toasts on success', async () => {
     const mock = stubFetch([
+      {
+        url: '/api/automod/state',
+        body: { state: 'off', dryRun: false, killswitch: false, enabledRules: [] },
+      },
       { url: '/api/automod/rules', body: { rules: [] } },
       { method: 'POST', url: '/api/automod/rules', body: { ok: true } },
     ]);
@@ -102,6 +110,10 @@ describe('AutomodRulesPage', () => {
 
   it('renders a 400 invalid-config detail under the configuration field', async () => {
     stubFetch([
+      {
+        url: '/api/automod/state',
+        body: { state: 'off', dryRun: false, killswitch: false, enabledRules: [] },
+      },
       { url: '/api/automod/rules', body: { rules: [] } },
       {
         method: 'POST',
@@ -122,6 +134,10 @@ describe('AutomodRulesPage', () => {
 
   it('renders a 409 through the server answer', async () => {
     stubFetch([
+      {
+        url: '/api/automod/state',
+        body: { state: 'off', dryRun: false, killswitch: false, enabledRules: [] },
+      },
       { url: '/api/automod/rules', body: { rules: [] } },
       {
         method: 'POST',
@@ -147,9 +163,27 @@ describe('AutomodRulesPage', () => {
   });
 
   it('shows the empty state when there are no rules', async () => {
-    stubFetch([{ url: '/api/automod/rules', body: { rules: [] } }]);
+    stubFetch([
+      {
+        url: '/api/automod/state',
+        body: { state: 'off', dryRun: false, killswitch: false, enabledRules: [] },
+      },
+      { url: '/api/automod/rules', body: { rules: [] } },
+    ]);
     renderWithSession(<AutomodRulesPage />);
     expect(await screen.findByText('No rules yet. Create one below.')).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('renders the Automod switch group', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/state',
+        body: { state: 'off', dryRun: false, killswitch: false, enabledRules: [] },
+      },
+      { url: '/api/automod/rules', body: { rules: [] } },
+    ]);
+    renderWithSession(<AutomodRulesPage />);
+    expect(await screen.findByRole('group', { name: 'Automod' })).toBeTruthy();
   });
 });
