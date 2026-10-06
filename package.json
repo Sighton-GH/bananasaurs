@@ -31,7 +31,7 @@
     "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.20.1",
-    "@vitest/coverage-v8": "^2.1.9",
+    "@vitest/coverage-v8": "^5.0.3",
     "drizzle-kit": "^0.31.10",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
@@ -40,14 +40,19 @@
     "prettier": "^3.9.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.1",
-    "vitest": "^2.1.9"
+    "vitest": "^5.0.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@node-rs/argon2": "^2.2.0"
   },
   "allowScripts": {
     "better-sqlite3": false,
     "esbuild": false
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.12"
+    }
   }
 }

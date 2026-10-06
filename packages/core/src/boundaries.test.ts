@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ESLint } from 'eslint';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,11 @@ import { fileURLToPath } from 'node:url';
  */
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+
+// These tests drive a real ESLint with type-aware typescript-eslint rules. The
+// first lint of a file builds a TypeScript program, which alone can take
+// longer than the 5s default while the rest of the suite runs in parallel.
+vi.setConfig({ testTimeout: 60_000 });
 const eslint = new ESLint({ cwd: REPO_ROOT });
 
 interface RestrictedPattern {

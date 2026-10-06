@@ -13,7 +13,7 @@
     "@bananasaurs/http": "*",
     "@bananasaurs/mcp": "*",
     "@bananasaurs/storage": "*",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "discord.js": "^14.27.0"
   },
   "devDependencies": {
