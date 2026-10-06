@@ -119,7 +119,9 @@ describe('GeminiProvider', () => {
   it('attaches finishReason and no emptyAnswer to a SAFETY empty answer', async () => {
     const provider = new GeminiProvider({
       apiKey: 'secret',
-      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ candidates: [{ finishReason: 'SAFETY' }] })),
+      fetch: vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(ok({ candidates: [{ finishReason: 'SAFETY' }] })),
     });
     const error = await provider
       .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })

@@ -218,15 +218,34 @@ export class GeminiProvider implements TextProvider {
     const rawParts = (raw as { candidates?: { content?: { parts?: unknown } }[] }).candidates?.[0]
       ?.content?.parts;
     if (text === '' && toolCalls.length === 0) {
-      if (candidate?.finishReason === 'MAX_TOKENS') {
+      const finishReason = candidate?.finishReason;
+      const emptyUsage = parsed.data.usageMetadata;
+      const emptyEvidence = {
+        ...(emptyUsage?.candidatesTokenCount !== undefined
+          ? { completionTokens: emptyUsage.candidatesTokenCount }
+          : {}),
+        ...(emptyUsage?.thoughtsTokenCount !== undefined
+          ? { reasoningTokens: emptyUsage.thoughtsTokenCount }
+          : {}),
+        reasoningOnly: false,
+      };
+      if (finishReason === 'MAX_TOKENS') {
         throw new ProviderError(
           'invalid-response',
           'Gemini stopped at MAX_TOKENS before answering',
           false,
+          { finishReason, emptyAnswer: emptyEvidence },
         );
       }
-      const kind = candidate?.finishReason === 'SAFETY' ? 'safety-refusal' : 'invalid-response';
-      throw new ProviderError(kind, 'Gemini returned no text', false);
+      if (finishReason === 'SAFETY') {
+        throw new ProviderError('safety-refusal', 'Gemini returned no text', false, {
+          finishReason,
+        });
+      }
+      throw new ProviderError('invalid-response', 'Gemini returned no text', false, {
+        ...(finishReason === undefined ? {} : { finishReason }),
+        emptyAnswer: emptyEvidence,
+      });
     }
 
     const usage = parsed.data.usageMetadata;

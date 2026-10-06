@@ -66,6 +66,8 @@ export interface GenerateTextResponse {
   readonly finishReason?: string;
   readonly usage?: ProviderUsage;
   readonly toolCalls?: readonly ToolCall[];
+  /** The upstream provider OpenRouter routed to (ADR 0129 §4). */
+  readonly upstream?: string;
   /** See `GenerationMessage.providerParts`. */
   readonly providerParts?: unknown;
 }

@@ -20,13 +20,18 @@ const toolCallSchema = z.object({
   }),
 });
 
+/** OpenRouter-only: non-answer reasoning for Responses-API-style providers (ADR 0129 §4). */
+const reasoningTextSchema = z.string().nullable().optional();
+
 const responseSchema = z.object({
   model: z.string().optional(),
+  provider: z.string().optional(),
   choices: z
     .array(
       z.object({
         message: z.object({
           content: z.string().nullable(),
+          reasoning: reasoningTextSchema,
           tool_calls: z.array(toolCallSchema).optional(),
         }),
         finish_reason: z.string().nullable().optional(),
@@ -38,6 +43,10 @@ const responseSchema = z.object({
       prompt_tokens: z.number().int().nonnegative().optional(),
       completion_tokens: z.number().int().nonnegative().optional(),
       total_tokens: z.number().int().nonnegative().optional(),
+      completion_tokens_details: z
+        .object({ reasoning_tokens: z.number().int().nonnegative().optional() })
+        .partial()
+        .optional(),
     })
     .optional(),
 });
@@ -68,6 +77,19 @@ const errorBodySchema = z.object({
     metadata: z.record(z.string(), z.unknown()).optional(),
   }),
 });
+
+/**
+ * Upstream provider the gateway routed the request to
+ * (`error.metadata.provider_name`, ADR 0129 §4). Guards the shape so the failure path never
+ * crashes on an unexpected metadata entry, and caps the length so a hostile upstream cannot
+ * grow the stored trace.
+ */
+const upstreamFromError = (metadata: Record<string, unknown> | undefined): string | undefined => {
+  const providerName = metadata?.['provider_name'];
+  return typeof providerName === 'string' && providerName !== ''
+    ? providerName.slice(0, 60)
+    : undefined;
+};
 
 /** Never trust an upstream error body: bounded before it is even parsed. */
 const MAX_ERROR_BODY_CHARS = 4_096;
@@ -338,6 +360,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
             quotaScope: 'daily-free',
             status: response.status,
             host: this.host,
+            ...(upstreamFromError(metadata) === undefined
+              ? {}
+              : { upstream: upstreamFromError(metadata) as string }),
             ...(resetAt === undefined ? {} : { resetAt }),
           },
         );
@@ -349,7 +374,13 @@ export class OpenAiCompatibleProvider implements TextProvider {
           ? `${this.id} request failed with HTTP ${response.status}`
           : `${this.id} request failed with HTTP ${response.status} (${reason})`,
         kind === 'rate-limit' || kind === 'outage',
-        { status: response.status, host: this.host },
+        {
+          status: response.status,
+          host: this.host,
+          ...(upstreamFromError(metadata) === undefined
+            ? {}
+            : { upstream: upstreamFromError(metadata) as string }),
+        },
       );
     }
     const parsed = responseSchema.safeParse(await response.json());
@@ -367,14 +398,35 @@ export class OpenAiCompatibleProvider implements TextProvider {
       name: call.function.name,
       args: parseToolArguments(call.function.arguments),
     }));
-    if (text === '' && toolCalls.length === 0)
-      throw new ProviderError('invalid-response', `${this.id} returned no text`, false);
+    const finishReason =
+      choice?.finish_reason === null ||
+      choice?.finish_reason === '' ||
+      choice?.finish_reason === undefined
+        ? undefined
+        : choice.finish_reason;
+    const upstream = parsed.data.provider;
     const usage = parsed.data.usage;
+    const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
+    const reasoningOnly = (choice?.message.reasoning ?? '') !== '';
+    if (text === '' && toolCalls.length === 0)
+      throw new ProviderError('invalid-response', `${this.id} returned no text`, false, {
+        host: this.host,
+        ...(finishReason === undefined ? {} : { finishReason }),
+        ...(upstream === undefined ? {} : { upstream }),
+        emptyAnswer: {
+          ...(usage?.completion_tokens !== undefined
+            ? { completionTokens: usage.completion_tokens }
+            : {}),
+          ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+          reasoningOnly,
+        },
+      });
     return {
       text,
       model: parsed.data.model ?? request.model,
-      ...(choice?.finish_reason ? { finishReason: choice.finish_reason } : {}),
+      ...(finishReason ? { finishReason } : {}),
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(upstream === undefined ? {} : { upstream }),
       ...(usage
         ? {
             usage: {
@@ -383,6 +435,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
                 ? { completionTokens: usage.completion_tokens }
                 : {}),
               ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
+              ...(reasoningTokens !== undefined ? { thinkingTokens: reasoningTokens } : {}),
             },
           }
         : {}),

@@ -459,7 +459,9 @@ describe('OpenAI-compatible providers', () => {
         new Response(
           JSON.stringify({
             provider: 'Nebius',
-            choices: [{ message: { content: null, reasoning: 'thinking…' }, finish_reason: 'length' }],
+            choices: [
+              { message: { content: null, reasoning: 'thinking…' }, finish_reason: 'length' },
+            ],
             usage: {
               completion_tokens: 2048,
               completion_tokens_details: { reasoning_tokens: 2048 },

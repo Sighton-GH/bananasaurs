@@ -626,6 +626,7 @@ export {
   type ProviderFailure,
   type ProviderFailureCode,
 } from './providers/failure.js';
+export { sanitizeProviderMessage } from './providers/provider-message.js';
 export {
   assertProviderEligible,
   providerMayTrain,

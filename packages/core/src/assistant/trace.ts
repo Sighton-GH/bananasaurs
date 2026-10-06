@@ -28,6 +28,8 @@ export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema
  */
 export const assistantTraceSchema = z.object({
   traceId: z.string().min(1),
+  /** ADR 0129 §5: the invocation id; ties the trace to its journal lines and run ledger. */
+  runId: z.string().min(1).max(64).optional(),
   at: z.number().int(),
   userId: z.string(),
   channelId: z.string().optional(),
@@ -50,9 +52,21 @@ export const assistantTraceSchema = z.object({
       reason: z.string().optional(),
       ms: z.number().int().nonnegative(),
       code: z.string().optional(),
+      /** ADR 0129 §3: the error's message after `sanitizeProviderMessage`. */
+      providerMessage: z.string().max(200).optional(),
       httpStatus: z.number().int().optional(),
       netCode: z.string().optional(),
       host: z.string().optional(),
+      /** Provider finish/stop reason, verbatim (ADR 0129 §4). */
+      finishReason: z.string().max(40).optional(),
+      /** The upstream provider OpenRouter routed to (ADR 0129 §4). */
+      upstream: z.string().max(60).optional(),
+      /** Completion tokens reported on an empty answer (ADR 0129 §4). */
+      completionTokens: z.number().int().nonnegative().optional(),
+      /** Reasoning tokens reported on an empty answer (ADR 0129 §4). */
+      reasoningTokens: z.number().int().nonnegative().optional(),
+      /** Filled by a later task (per-call cost); declared now so the schema is settled. */
+      costUsd: z.number().nonnegative().optional(),
       availableAt: z.number().int().optional(),
     }),
   ),
@@ -125,6 +139,8 @@ export interface TraceSummary {
   readonly behaviourId: string;
   readonly outcome: AssistantTrace['outcome'];
   readonly durationMs: number;
+  /** The last non-ok, non-skipped attempt's code, else absent. */
+  readonly errorCode?: string;
   /** The model that answered: the last successful attempt, else the last attempt. */
   readonly model?: string;
   readonly totalTokens: number | null;
@@ -134,6 +150,9 @@ export const summaryOfTrace = (t: AssistantTrace): TraceSummary => {
   const attempts = t.attempts;
   const model =
     [...attempts].reverse().find((a) => a.outcome === 'ok')?.model ?? attempts.at(-1)?.model;
+  const errorCode = [...attempts]
+    .reverse()
+    .find((a) => a.outcome !== 'ok' && a.outcome !== 'skipped' && a.code !== undefined)?.code;
   return {
     traceId: t.traceId,
     at: t.at,
@@ -142,6 +161,7 @@ export const summaryOfTrace = (t: AssistantTrace): TraceSummary => {
     behaviourId: t.behaviourId,
     outcome: t.outcome,
     durationMs: t.durationMs,
+    ...(errorCode === undefined ? {} : { errorCode }),
     ...(model === undefined ? {} : { model }),
     totalTokens: totalTokensOf(t.usage),
   };

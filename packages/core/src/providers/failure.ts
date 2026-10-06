@@ -56,6 +56,7 @@ export type ProviderFailureCode =
   | 'provider-daily-quota'
   | 'provider-credits'
   | 'provider-outage'
+  | 'provider-empty-answer'
   | 'provider-invalid-response'
   | 'provider-safety-refusal'
   | 'provider-error'
@@ -136,6 +137,12 @@ export const PROVIDER_FAILURE_TEXT: Readonly<Record<ProviderFailureCode, Failure
     explanation: 'The provider answered with a 5xx error.',
     hint: "Usually brief; the next chain entry is tried. Check the provider's status page if it persists.",
   },
+  'provider-empty-answer': {
+    title: 'The model returned an empty answer',
+    explanation:
+      'The provider answered, but the answer had no text. Reasoning models often do this when their thinking uses up the whole output budget.',
+    hint: 'Check the finish reason and reasoning tokens on this attempt. If the finish reason is length, raise AI tuning → Max output tokens, or move this model down the chain.',
+  },
   'provider-invalid-response': {
     title: "The provider's answer was unusable",
     explanation: 'The provider answered, but with nothing Bananasaurs could use.',
@@ -164,7 +171,7 @@ export const PROVIDER_FAILURE_TEXT: Readonly<Record<ProviderFailureCode, Failure
   },
 };
 
-/** All 18 codes, in the order above. */
+/** All 19 codes, in the order above. */
 export const PROVIDER_FAILURE_CODES: readonly ProviderFailureCode[] = [
   'provider-connect-timeout',
   'provider-dns',
@@ -179,6 +186,7 @@ export const PROVIDER_FAILURE_CODES: readonly ProviderFailureCode[] = [
   'provider-daily-quota',
   'provider-credits',
   'provider-outage',
+  'provider-empty-answer',
   'provider-invalid-response',
   'provider-safety-refusal',
   'provider-error',
@@ -193,6 +201,8 @@ export interface ProviderFailure {
   readonly host?: string;
   readonly httpStatus?: number;
   readonly netCode?: NetErrorCode;
+  readonly finishReason?: string;
+  readonly upstream?: string;
   readonly retryable: boolean;
   readonly resetAt?: number;
 }
@@ -227,6 +237,8 @@ const optionalFieldsOf = (
   readonly host?: string;
   readonly httpStatus?: number;
   readonly netCode?: NetErrorCode;
+  readonly finishReason?: string;
+  readonly upstream?: string;
   readonly resetAt?: number;
 } => {
   if (typeof err !== 'object' || err === null) return {};
@@ -234,16 +246,22 @@ const optionalFieldsOf = (
     host?: unknown;
     status?: unknown;
     netCode?: unknown;
+    finishReason?: unknown;
+    upstream?: unknown;
     resetAt?: unknown;
   };
   const host = typeof record.host === 'string' ? record.host : undefined;
   const httpStatus = typeof record.status === 'number' ? record.status : undefined;
   const netCode = isNetErrorCode(record.netCode) ? record.netCode : undefined;
+  const finishReason = typeof record.finishReason === 'string' ? record.finishReason : undefined;
+  const upstream = typeof record.upstream === 'string' ? record.upstream : undefined;
   const resetAt = typeof record.resetAt === 'number' ? record.resetAt : undefined;
   return {
     ...(host === undefined ? {} : { host }),
     ...(httpStatus === undefined ? {} : { httpStatus }),
     ...(netCode === undefined ? {} : { netCode }),
+    ...(finishReason === undefined ? {} : { finishReason }),
+    ...(upstream === undefined ? {} : { upstream }),
     ...(resetAt === undefined ? {} : { resetAt }),
   };
 };
@@ -260,6 +278,8 @@ export const classifyProviderFailure: (
     ...(fields.host === undefined ? {} : { host: fields.host }),
     ...(fields.httpStatus === undefined ? {} : { httpStatus: fields.httpStatus }),
     ...(fields.netCode === undefined ? {} : { netCode: fields.netCode }),
+    ...(fields.finishReason === undefined ? {} : { finishReason: fields.finishReason }),
+    ...(fields.upstream === undefined ? {} : { upstream: fields.upstream }),
     retryable,
   } as const;
 
@@ -307,7 +327,14 @@ export const classifyProviderFailure: (
     return { code: 'provider-credits', ...base };
   }
 
-  // Rule 6: unusable answer or safety refusal.
+  // Rule 6: an empty answer explains itself; other unusable answers stay invalid-response.
+  if (
+    err instanceof ProviderError &&
+    err.kind === 'invalid-response' &&
+    err.emptyAnswer !== undefined
+  ) {
+    return { code: 'provider-empty-answer', ...base };
+  }
   if (err instanceof ProviderError && err.kind === 'invalid-response') {
     return { code: 'provider-invalid-response', ...base };
   }

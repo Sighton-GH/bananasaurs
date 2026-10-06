@@ -28,6 +28,17 @@ export class ProviderError extends Error {
   public readonly netCode?: string;
   /** From our own base URL, e.g. 'openrouter.ai'. */
   public readonly host?: string;
+  /** Provider finish/stop reason, verbatim, capped at 40 characters (ADR 0129). */
+  public readonly finishReason?: string;
+  /** The upstream provider OpenRouter routed to (`provider` / `error.metadata.provider_name`), capped at 60 characters. */
+  public readonly upstream?: string;
+  /** Set only on an empty-answer throw: evidence for why the answer had no text. */
+  public readonly emptyAnswer?: {
+    readonly completionTokens?: number;
+    readonly reasoningTokens?: number;
+    /** Reasoning text came back but the answer was empty. */
+    readonly reasoningOnly: boolean;
+  };
 
   public constructor(
     public readonly kind: ProviderErrorKind,
@@ -39,6 +50,13 @@ export class ProviderError extends Error {
       status?: number;
       netCode?: string;
       host?: string;
+      finishReason?: string;
+      upstream?: string;
+      emptyAnswer?: {
+        readonly completionTokens?: number;
+        readonly reasoningTokens?: number;
+        readonly reasoningOnly: boolean;
+      };
     },
   ) {
     super(message, options);
@@ -48,5 +66,8 @@ export class ProviderError extends Error {
     if (options?.status !== undefined) this.status = options.status;
     if (options?.netCode !== undefined) this.netCode = options.netCode;
     if (options?.host !== undefined) this.host = options.host;
+    if (options?.finishReason !== undefined) this.finishReason = options.finishReason.slice(0, 40);
+    if (options?.upstream !== undefined) this.upstream = options.upstream.slice(0, 60);
+    if (options?.emptyAnswer !== undefined) this.emptyAnswer = options.emptyAnswer;
   }
 }

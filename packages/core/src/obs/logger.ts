@@ -123,7 +123,15 @@ export const LOGGABLE_FIELDS = new Set([
   'provider',
   'model',
   'keyLabel',
-  'providerMessage',
+  // ADR 0129 §5: run tracing, all routing facts or provider codes.
+  'runId', // the invocation id tying logs to the run ledger.
+  'stage', // which pipeline step emitted the line.
+  'providerMessage', // sanitized and capped by sanitizeProviderMessage.
+  'finishReason', // provider finish/stop reason, verbatim.
+  'upstream', // upstream provider OpenRouter routed to.
+  'reasoningTokens', // reasoning tokens on an empty answer.
+  'completionTokens', // completion tokens on an empty answer.
+  'totalTokens', // total tokens for the attempt.
   'ms',
   'settingKey',
   'availableAt',
