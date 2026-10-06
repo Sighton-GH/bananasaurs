@@ -120,6 +120,11 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: "This setting belongs to the bot's owner account.",
     hint: 'Sign in as the owner.',
   },
+  'tasks-forbidden': {
+    title: 'You cannot manage club tasks here',
+    explanation: 'Club tasks need the owner account, or the Manage club tasks permission.',
+    hint: 'Ask the owner to give this account Manage club tasks.',
+  },
   'owner-protected': {
     title: "That can't be changed",
     explanation: "The owner account can't be changed.",

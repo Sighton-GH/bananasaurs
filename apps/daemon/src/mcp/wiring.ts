@@ -44,6 +44,7 @@ import {
   withoutNoAccessRows,
 } from '../channels/access.js';
 import { taskAdminPortFor } from './task-admin-port.js';
+import { canManageTasks, canManageTasksInAny } from './task-access.js';
 import {
   mcpRoleGatewayFor,
   authorizeRolesMutate,
@@ -144,7 +145,6 @@ import {
   panelRepo,
   resourceCacheRepo,
   roleRepo,
-  accountRepo,
   mcpActionsRepo,
   mcpBulkRepo,
   mcpRolePolicyRepo,
@@ -6833,17 +6833,13 @@ const readAuditPortFor = (
 
 /**
  * The `McpTaskDetailPort` behind `get_task_details` and `list_task_reminders`,
- * field by field like `healthPortFor` above. Each method rechecks the enabled
- * instance owner per call — the tool layer names the task, the daemon supplies
+ * field by field like `healthPortFor` above. Each method rechecks owner-or-`tasks.manage`
+ * in the call's guild per call — the tool layer names the task, the daemon supplies
  * the authority — and reads through the task repositories. Archived tasks are
  * returned with `archived: true` rather than refused, so the owner can inspect
  * what left the default listing. Nothing here writes.
  */
 const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
-  const requireOwner = (accountId: string): boolean => {
-    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
-    return account?.isOwner === true && !account.disabled;
-  };
   const reminderSlots = (guildId: GuildId, taskId: string) =>
     taskNudgeRepo.reminderSlotsForTask(deps.scopes.forGuild(guildId), taskId).map((slot) => ({
       slotId: slot.slotId,
@@ -6853,7 +6849,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
     }));
   return {
     detail: (guildId, accountId, taskId) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       const scope = deps.scopes.forGuild(guildId);
       const task = taskRepo.getTask(scope, taskId);
       if (!task) return undefined;
@@ -6888,7 +6884,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
       };
     },
     reminders: (guildId, accountId, taskId) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       if (!taskRepo.getTask(deps.scopes.forGuild(guildId), taskId)) return undefined;
       return reminderSlots(guildId, taskId);
     },
@@ -6905,13 +6901,9 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
  * the quiet-hours row (or the default when no override is stored).
  */
 const tasksPortFor = (deps: HttpDeps): McpTaskPort => {
-  const requireOwner = (accountId: string): boolean => {
-    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
-    return account?.isOwner === true && !account.disabled;
-  };
   return {
     list: (guildId, accountId, filter) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       const scope = deps.scopes.forGuild(guildId);
       return {
         teams: taskRepo.listTeams(scope).map((team) => ({ teamId: team.teamId, name: team.name })),
@@ -6934,7 +6926,7 @@ const tasksPortFor = (deps: HttpDeps): McpTaskPort => {
       };
     },
     teams: (guildId, accountId) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       const scope = deps.scopes.forGuild(guildId);
       const quiet = taskRepo.getQuietHours(scope);
       return {
@@ -7104,22 +7096,19 @@ export const registerMcpRoutes = (
       context: contextPortFor(deps),
       resources: resourcesPortFor(deps),
       threads: threadsPortFor(deps, client, discord),
-      // Task tools are advertised only to the enabled instance owner at
-      // connect time, so a non-owner token never sees them in `tools/list`
-      // at all. The ports still recheck the owner on every call, so a token
-      // whose owner was disabled mid-lifetime is refused rather than served.
-      ...(() => {
-        const ownerAccount = accountRepo.findAccountById(
-          deps.scopes.instance(),
-          principal.accountId,
-        );
-        if (ownerAccount?.isOwner !== true || ownerAccount.disabled) return {};
-        return {
-          taskAdmin: taskAdminPortFor(deps, client, discord),
-          taskDetail: taskDetailPortFor(deps),
-          tasks: tasksPortFor(deps),
-        };
-      })(),
+      // Task tools are advertised only to the enabled instance owner or an
+      // account holding `tasks.manage` in a guild this token reaches (ADR
+      // 0130), so any other token never sees them in `tools/list` at all. The
+      // ports still recheck owner-or-`tasks.manage` in the call's guild on
+      // every call, so a revoked permission or a disabled account is refused
+      // rather than served.
+      ...(canManageTasksInAny(deps, principal.accountId, principal.reachableGuilds)
+        ? {
+            taskAdmin: taskAdminPortFor(deps, client, discord),
+            taskDetail: taskDetailPortFor(deps),
+            tasks: tasksPortFor(deps),
+          }
+        : {}),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

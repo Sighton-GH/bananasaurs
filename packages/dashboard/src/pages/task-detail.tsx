@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
 import { useResource } from '../hooks/useResource.js';
 import { useSession } from '../app/session.js';
-import { ApiError } from '../api.js';
+import { ApiError, mayManageTasks } from '../api.js';
 import { describeError } from '../api/describe-error.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
@@ -69,11 +69,14 @@ export function TaskDetailPage() {
   const detail = useResource('task', detailLoad);
   const [notice, setNotice] = useState('');
 
-  if (session.info.instanceOwner !== true) {
+  if (!mayManageTasks(session.info)) {
     return (
       <>
         <PageHeader title="Task" purpose="One piece of club work, with its steps and progress." />
-        <p role="status">Only the instance owner can view tasks here. Members use Discord.</p>
+        <p role="status">
+          Viewing tasks here needs the owner, or the Manage club tasks permission. Members use
+          Discord.
+        </p>
       </>
     );
   }

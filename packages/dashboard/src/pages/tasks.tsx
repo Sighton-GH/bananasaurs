@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { Link } from 'wouter';
 import { useResource } from '../hooks/useResource.js';
 import { useSession } from '../app/session.js';
+import { mayManageTasks } from '../api.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -61,14 +62,17 @@ export function TasksPage() {
   );
   const resource = useResource('tasks', load);
 
-  if (session.info.instanceOwner !== true) {
+  if (!mayManageTasks(session.info)) {
     return (
       <>
         <PageHeader
           title="Tasks"
           purpose="A place to check what is due, who owns it, and what needs review."
         />
-        <p role="status">Only the instance owner can view tasks here. Members use Discord.</p>
+        <p role="status">
+          Viewing tasks here needs the owner, or the Manage club tasks permission. Members use
+          Discord.
+        </p>
       </>
     );
   }

@@ -7274,6 +7274,79 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(readRefused.isError).toBe(true);
   });
 
+  it('a non-owner with tasks.manage gets the task tools in that guild only, and revoking binds the next call (ADR 0130)', async () => {
+    seedTaskWorld();
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: MEMBER_ACCOUNT,
+      username: 'manager',
+      passwordHash: await hashPassword('manager-pass'),
+      isOwner: false,
+      now: clock,
+    });
+    for (const guild of [GUILD_A, GUILD_B] as const) {
+      accountRepo.grantGuildAccess(t.scopes.forGuild(guild), MEMBER_ACCOUNT);
+    }
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: MEMBER_ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    // Without tasks.manage anywhere: no task tools at all.
+    const before = await mintTokenFor(
+      'manager',
+      'manager-pass',
+      'bananasaurs:send bananasaurs:tasks',
+    );
+    const listNames = async (token: string): Promise<string[] | undefined> =>
+      (
+        sseData(
+          (await mcpPost(app, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, token))
+            .body,
+        )[0] as { result?: { tools?: Array<{ name: string }> } }
+      ).result?.tools?.map((tool) => tool.name);
+    expect(await listNames(before)).not.toContain('create_task_team');
+    expect(await listNames(before)).not.toContain('list_tasks');
+
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: MEMBER_ACCOUNT,
+      capability: 'tasks.manage',
+      grantedBy: 'test',
+      now: clock,
+    });
+    const token = await mintTokenFor(
+      'manager',
+      'manager-pass',
+      'bananasaurs:read bananasaurs:send bananasaurs:tasks',
+    );
+    const names = await listNames(token);
+    expect(names).toContain('create_task_team');
+    expect(names).toContain('create_club_task');
+    expect(names).toContain('list_tasks');
+
+    const teamId = await createTeam(token);
+    const read = text((await call(token, 'list_tasks', { guildId: gid() })).body);
+    expect(read.isError).not.toBe(true);
+
+    // A grant in guild A never reaches guild B.
+    const otherGuild = text(
+      (await call(token, 'create_task_team', teamArgs({ guildId: String(GUILD_B) }))).body,
+    );
+    expect(otherGuild.isError).toBe(true);
+    const otherRead = text((await call(token, 'list_tasks', { guildId: String(GUILD_B) })).body);
+    expect(otherRead.isError).toBe(true);
+
+    authzRepo.revokeAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: MEMBER_ACCOUNT,
+      capability: 'tasks.manage',
+    });
+    const revoked = text((await call(token, 'delete_task_team', { guildId: gid(), teamId })).body);
+    expect(revoked.isError).toBe(true);
+    expect(taskRepo.listTeams(t.scopes.forGuild(GUILD_A))).toHaveLength(1);
+    const revokedRead = text((await call(token, 'list_tasks', { guildId: gid() })).body);
+    expect(revokedRead.isError).toBe(true);
+  });
+
   it('create (multi-assignee) → edit → request → approve ends done with mcp_operator audit', async () => {
     seedTaskWorld();
     const send = await mintToken('bananasaurs:send bananasaurs:tasks');

@@ -987,7 +987,7 @@ describe('task loop closure writes', () => {
     for (const call of calls) {
       const response = await app.inject({ ...call, headers: viewerHeaders });
       expect(response.statusCode).toBe(403);
-      expect(response.json()).toMatchObject({ error: 'owner-only' });
+      expect(response.json()).toMatchObject({ error: 'tasks-forbidden' });
     }
   });
 
@@ -1149,7 +1149,7 @@ describe('task loop closure writes', () => {
     ] as const) {
       const response = await app.inject({ ...call, headers: viewerHeaders });
       expect(response.statusCode).toBe(403);
-      expect(response.json()).toMatchObject({ error: 'owner-only' });
+      expect(response.json()).toMatchObject({ error: 'tasks-forbidden' });
     }
     expect(taskRepo.getTask(scope, taskId)).toBeDefined();
     expect(taskRepo.listReports(scope, taskId)).toHaveLength(1);

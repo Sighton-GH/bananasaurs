@@ -247,6 +247,19 @@ describe('Shell', () => {
     expect(link.getAttribute('href')).toBe('/assistant/tuning');
   });
 
+  it('shows Tasks, and only Tasks, to a non-owner who can manage tasks (ADR 0130)', async () => {
+    renderAt('/', { ...TEST_SESSION, canManageTasks: true });
+    const nav = await screen.findByRole('navigation', { name: 'Areas' });
+    expect(within(nav).getByRole('link', { name: 'Tasks' }).getAttribute('href')).toBe('/tasks');
+    expect(within(nav).queryByRole('link', { name: 'AI tuning' })).toBeNull();
+    expect(
+      visibleNav(false, true)
+        .filter((n) => n.ownerOnly === true)
+        .map((n) => n.label),
+    ).toEqual(['Tasks']);
+    expect(visibleNav(false).some((n) => n.label === 'Tasks')).toBe(false);
+  });
+
   it('opens and closes the mobile jump navigation without changing the page', async () => {
     renderAt('/');
     const trigger = await screen.findByRole('button', {

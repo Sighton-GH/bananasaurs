@@ -6,6 +6,7 @@ import {
 } from '@bananasaurs/storage/test-support';
 import {
   accountRepo,
+  authzRepo,
   guildRepo,
   sessionRepo,
   taskRepo,
@@ -333,7 +334,30 @@ describe('task read isolation', () => {
       headers: { cookie: `bs_session=${token}` },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ error: 'owner-only' });
+    expect(response.json()).toMatchObject({ error: 'tasks-forbidden' });
+  });
+  it('lets a non-owner with tasks.manage in this guild read tasks, and refuses once it is revoked (ADR 0130)', async () => {
+    const guild = db.scopes.forGuild(GUILD);
+    const headers = { cookie: `bs_session=${token}` };
+    const session = async (): Promise<unknown> =>
+      (await app.inject({ method: 'GET', url: '/api/session', headers })).json<unknown>();
+    expect(await session()).toMatchObject({ instanceOwner: false, canManageTasks: false });
+    authzRepo.grantAccountCapability(guild, {
+      accountId: 'acct_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      capability: 'tasks.manage',
+      grantedBy: 'test',
+      now: NOW,
+    });
+    expect(await session()).toMatchObject({ instanceOwner: false, canManageTasks: true });
+    const allowed = await app.inject({ method: 'GET', url: '/api/tasks', headers });
+    expect(allowed.statusCode).toBe(200);
+    authzRepo.revokeAccountCapability(guild, {
+      accountId: 'acct_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      capability: 'tasks.manage',
+    });
+    const refused = await app.inject({ method: 'GET', url: '/api/tasks', headers });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ error: 'tasks-forbidden' });
   });
   it('does not expose task data to a non-owner with a stored membership', async () => {
     const guild = db.scopes.forGuild(GUILD);

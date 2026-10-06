@@ -103,7 +103,10 @@ function DesktopHeader() {
 function Rail() {
   const [location] = useLocation();
   const session = useSession();
-  const entries = visibleNav(session.info.instanceOwner === true);
+  const entries = visibleNav(
+    session.info.instanceOwner === true,
+    session.info.canManageTasks === true,
+  );
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <nav aria-label="Areas" className="flex-1 overflow-y-auto px-3 py-2">

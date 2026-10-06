@@ -60,6 +60,6 @@ export { requireCapability } from './routes/capability.js';
 export { ERROR_CATALOG, explainError, type ErrorExplanation } from './errors/catalog.js';
 export { RESOURCE_FAILURE_TEXT } from './errors/resource-failures.js';
 export { badRequest, fieldsOf, type FieldProblem } from './errors/reply.js';
-export { isInstanceOwner } from './owner.js';
+export { isInstanceOwner, canManageTasks } from './owner.js';
 export { registerTaskRoutes } from './routes/tasks.js';
 export { registerTaskWriteRoutes } from './routes/task-write.js';

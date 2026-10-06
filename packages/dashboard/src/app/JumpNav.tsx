@@ -62,7 +62,10 @@ export function JumpNav(): ReactElement {
   const [open, setOpen] = useState(false);
   const current = currentNavEntry(location);
   const label = current?.label ?? 'Jump to';
-  const entries = visibleNav(session.info.instanceOwner === true);
+  const entries = visibleNav(
+    session.info.instanceOwner === true,
+    session.info.canManageTasks === true,
+  );
 
   // Opening orients to the current area: when it sits below the fold, the
   // sheet scrolls just enough to show its "Current" badge. `nearest` leaves
