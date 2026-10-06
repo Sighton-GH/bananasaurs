@@ -166,7 +166,36 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     control: 'threads progress column (done/found per channel)',
   },
   'mcp clients': { kind: 'covered', page: 'Connector', control: 'registered OAuth clients' },
-  'mcp tokens': { kind: 'covered', page: 'Connector', control: 'token rows, live and revoked' },
+  'mcp tokens': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'individual tokens (advanced), live and revoked',
+  },
+  'mcp connections': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'connections card: account, app, what it can do, status',
+  },
+  'mcp disconnect': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'connections card Disconnect button, confirmed',
+  },
+  'mcp delete-connection': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'connections card Delete button, confirmed',
+  },
+  'mcp delete-token': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'individual tokens (advanced) Delete button, confirmed',
+  },
+  'mcp cleanup': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'connections card Clean up button, confirmed',
+  },
   'mcp revoke': {
     kind: 'covered',
     page: 'Connector',

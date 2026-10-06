@@ -22,6 +22,7 @@ const TOKENS = {
       kind: 'access',
       clientId: 'cl-1',
       accountId: 'acct-1',
+      connectionId: 'tok-1',
       createdAt: 0,
       expiresAt: Date.now() + 3_600_000,
       revokedAt: null,
@@ -32,10 +33,39 @@ const TOKENS = {
       kind: 'refresh',
       clientId: 'cl-1',
       accountId: 'acct-1',
+      connectionId: 'tok-1',
       createdAt: 0,
       expiresAt: Date.now() + 86_400_000,
       revokedAt: 1000,
       lastUsedAt: 500,
+    },
+  ],
+};
+const CONNECTIONS = {
+  connections: [
+    {
+      connectionId: 'tok-1',
+      accountId: 'acct-1',
+      accountUsername: 'racerbot-club-claude',
+      clientId: 'cl-1',
+      clientName: 'Claude Desktop',
+      scopes: ['bananasaurs:read', 'bananasaurs:send', 'bananasaurs:tasks'],
+      createdAt: 0,
+      lastUsedAt: null,
+      status: 'connected',
+      tokenCount: 2,
+    },
+    {
+      connectionId: 'tok-old',
+      accountId: 'acct-1',
+      accountUsername: 'racerbot-club-claude',
+      clientId: 'cl-1',
+      clientName: 'Claude Desktop',
+      scopes: ['bananasaurs:read'],
+      createdAt: 0,
+      lastUsedAt: 500,
+      status: 'revoked',
+      tokenCount: 4,
     },
   ],
 };
@@ -77,6 +107,7 @@ const ROLES = {
 const STUBS = [
   { url: '/api/mcp/clients', body: CLIENTS },
   { url: '/api/mcp/tokens', body: TOKENS },
+  { url: '/api/mcp/connections', body: CONNECTIONS },
   { url: '/api/send-allowlist', body: ALLOWLIST },
   { url: '/api/mcp/sends?since=7d', body: SENDS },
   { url: '/api/role-policy', body: ROLE_POLICY },
@@ -95,10 +126,10 @@ describe('McpPage', () => {
   it('renders clients, tokens and the allowlist', async () => {
     stubFetch(STUBS);
     renderWithSession(<McpPage />);
-    expect(await screen.findByText('Claude Desktop')).toBeTruthy();
+    expect((await screen.findAllByText('Claude Desktop')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('tok-1').length).toBeGreaterThan(0);
     expect(screen.getByText('live')).toBeTruthy();
-    expect(screen.getByText('revoked')).toBeTruthy();
+    expect(screen.getAllByText('revoked').length).toBeGreaterThan(0);
     expect(screen.getAllByText('c-9').length).toBeGreaterThan(0);
     // The send ledger is a page section now, not a "still on the CLI" note.
     expect(screen.getByText('Send ledger')).toBeTruthy();
@@ -125,26 +156,112 @@ describe('McpPage', () => {
     expect(screen.queryByText('system:write-seed')).toBeNull();
   });
 
-  it('revokes a token through the confirm dialog', async () => {
+  it('renders the Connections card with username, app name and plain scope labels', async () => {
+    stubFetch(STUBS);
+    renderWithSession(<McpPage />);
+    expect(await screen.findByText('Connections', { selector: 'h2' })).toBeTruthy();
+    expect((await screen.findAllByText('racerbot-club-claude')).length).toBe(2);
+    expect(screen.getByText('connected')).toBeTruthy();
+    expect(screen.getAllByText('Post').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Tasks').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Read').length).toBe(2);
+    // Raw rows live behind a collapsed section.
+    expect(screen.getByText('Individual tokens (advanced)')).toBeTruthy();
+  });
+
+  it('disconnects a connected connection through the confirm dialog', async () => {
     const mock = stubFetch([
       ...STUBS,
       {
         method: 'POST',
-        url: '/api/mcp/tokens/tok-1/revoke',
-        body: { tokenId: 'tok-1', tokensRevoked: 1 },
+        url: '/api/mcp/connections/tok-1/disconnect',
+        body: { connectionId: 'tok-1', tokensRevoked: 2 },
       },
     ]);
     renderWithSession(<McpPage />);
-    // The first Revoke belongs to the client row, the second to the live token.
-    const revokeButtons = await screen.findAllByRole('button', { name: 'Revoke' });
-    fireEvent.click(revokeButtons[1]!);
-    fireEvent.click(await screen.findByRole('button', { name: 'Revoke token' }));
+    // Only the connected connection offers Disconnect.
+    const buttons = await screen.findAllByRole('button', { name: 'Disconnect' });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]!);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect app' }));
     await vi.waitFor(() => {
       const post = mock.mock.calls.find(
-        (c) => (c[0] as string) === '/api/mcp/tokens/tok-1/revoke' && c[1]?.method === 'POST',
+        (c) =>
+          (c[0] as string) === '/api/mcp/connections/tok-1/disconnect' && c[1]?.method === 'POST',
       );
-      expect(post, 'revoke POST').toBeTruthy();
+      expect(post, 'disconnect POST').toBeTruthy();
     });
+  });
+
+  it('deletes a connection and a raw token behind confirm dialogs', async () => {
+    const mock = stubFetch([
+      ...STUBS,
+      {
+        method: 'POST',
+        url: '/api/mcp/connections/tok-old/delete',
+        body: { connectionId: 'tok-old', tokensRevoked: 0, tokensDeleted: 4 },
+      },
+      {
+        method: 'POST',
+        url: '/api/mcp/tokens/tok-2/delete',
+        body: { tokenId: 'tok-2', tokensRevoked: 0, tokensDeleted: 1 },
+      },
+    ]);
+    renderWithSession(<McpPage />);
+    const deletes = await screen.findAllByRole('button', { name: 'Delete' });
+    // Connections rows come first (connected, then revoked), then the raw rows.
+    fireEvent.click(deletes[1]!);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete connection' }));
+    await vi.waitFor(() => {
+      expect(
+        mock.mock.calls.find((c) => (c[0] as string) === '/api/mcp/connections/tok-old/delete'),
+        'connection delete POST',
+      ).toBeTruthy();
+    });
+    // The raw rows sit in a collapsed section; open it.
+    fireEvent.click(screen.getByText('Individual tokens (advanced)'));
+    const rawDeletes = await screen.findAllByRole('button', { name: 'Delete' });
+    fireEvent.click(rawDeletes[rawDeletes.length - 1]!);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete token' }));
+    await vi.waitFor(() => {
+      expect(
+        mock.mock.calls.find((c) => (c[0] as string) === '/api/mcp/tokens/tok-2/delete'),
+        'token delete POST',
+      ).toBeTruthy();
+    });
+  });
+
+  it('Clean up asks first, then calls the cleanup route and reports the counts', async () => {
+    const mock = stubFetch([
+      ...STUBS,
+      {
+        method: 'POST',
+        url: '/api/mcp/cleanup',
+        body: { tokensDeleted: 400, clientsDeleted: 2 },
+      },
+    ]);
+    renderWithSession(<McpPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Clean up' }));
+    expect(await screen.findByText(/no longer works/)).toBeTruthy();
+    expect(mock.mock.calls.some((c) => (c[0] as string) === '/api/mcp/cleanup')).toBe(false);
+    fireEvent.click(
+      await screen
+        .findAllByRole('button', { name: 'Clean up' })
+        .then((b) => b[b.length - 1] as HTMLElement),
+    );
+    await vi.waitFor(() => {
+      const post = mock.mock.calls.find(
+        (c) => (c[0] as string) === '/api/mcp/cleanup' && c[1]?.method === 'POST',
+      );
+      expect(post, 'cleanup POST').toBeTruthy();
+    });
+    expect(await screen.findByText(/400 token rows and 2 unused apps/)).toBeTruthy();
+  });
+
+  it('shows how many connections each registered client has', async () => {
+    stubFetch(STUBS);
+    renderWithSession(<McpPage />);
+    expect(await screen.findByRole('columnheader', { name: 'Connections' })).toBeTruthy();
   });
 
   it('renders the role policy card with modes and the allowlist', async () => {

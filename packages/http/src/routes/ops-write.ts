@@ -1841,6 +1841,99 @@ export const registerOpsWriteRoutes = (
     return reply.status(200).send({ tokenId: request.params.tokenId, tokensRevoked });
   });
 
+  // ADR 0130 §6: connection housekeeping, gated like the revokes above. An
+  // unknown id is a 404 with no audit row — nothing changed.
+  app.post<{ Params: { id: string } }>('/api/mcp/connections/:id/disconnect', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const { id } = request.params;
+    const tokensRevoked = deps.instance.mcpDisconnect(id);
+    if (tokensRevoked === undefined) {
+      return reply
+        .status(404)
+        .send({ error: 'no-such-connection', message: `no such connection ${id}` });
+    }
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'mcp.connection.revoked',
+      subjectType: 'instance',
+      subjectId: 'instance',
+      before: { connectionId: id },
+      after: { connectionId: id, tokensRevoked },
+    });
+    return reply.status(200).send({ connectionId: id, tokensRevoked });
+  });
+
+  app.post<{ Params: { id: string } }>('/api/mcp/connections/:id/delete', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const { id } = request.params;
+    const result = deps.instance.mcpDeleteConnection(id);
+    if (result === undefined) {
+      return reply
+        .status(404)
+        .send({ error: 'no-such-connection', message: `no such connection ${id}` });
+    }
+    const after = {
+      connectionId: id,
+      tokensRevoked: result.revoked,
+      tokensDeleted: result.deleted,
+    };
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'mcp.connection.deleted',
+      subjectType: 'instance',
+      subjectId: 'instance',
+      before: { connectionId: id },
+      after,
+    });
+    return reply.status(200).send(after);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/mcp/tokens/:id/delete', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const { id } = request.params;
+    const result = deps.instance.mcpDeleteToken(id);
+    if (result === undefined) {
+      return reply.status(404).send({ error: 'no-such-token', message: `no such token ${id}` });
+    }
+    const after = { tokenId: id, tokensRevoked: result.revoked, tokensDeleted: result.deleted };
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'mcp.token.deleted',
+      subjectType: 'instance',
+      subjectId: 'instance',
+      before: { tokenId: id },
+      after,
+    });
+    return reply.status(200).send(after);
+  });
+
+  app.post('/api/mcp/cleanup', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const result = deps.instance.mcpCleanup();
+    const after = { tokensDeleted: result.tokens, clientsDeleted: result.clients };
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'mcp.tokens.cleaned',
+      subjectType: 'instance',
+      subjectId: 'instance',
+      before: undefined,
+      after,
+    });
+    return reply.status(200).send(after);
+  });
+
   app.post<{ Params: { clientId: string } }>(
     '/api/mcp/clients/:clientId/revoke',
     (request, reply) => {

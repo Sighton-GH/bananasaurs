@@ -908,17 +908,43 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       createdAt: row.createdAt,
       redirectUriCount: row.redirectUris.length,
     })),
-  mcpTokens: () =>
-    oauthRepo.listTokens(instanceScope).map((row) => ({
+  mcpTokens: () => {
+    const connectionIds = oauthRepo.tokenConnectionIds(instanceScope);
+    return oauthRepo.listTokens(instanceScope).map((row) => ({
       tokenId: row.tokenId,
       kind: row.kind,
       clientId: row.clientId,
       accountId: row.accountId,
+      connectionId: connectionIds.get(row.tokenId) ?? row.tokenId,
       createdAt: row.createdAt,
       expiresAt: row.expiresAt,
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,
-    })),
+    }));
+  },
+  // Canonical implementation: `apps/daemon/src/ops/wiring.ts`.
+  mcpConnections: () => {
+    const clientNames = new Map(
+      oauthRepo.listClients(instanceScope).map((c) => [c.clientId, c.clientName]),
+    );
+    return oauthRepo.listConnections(instanceScope, now()).map((row) => ({
+      connectionId: row.connectionId,
+      accountId: row.accountId,
+      accountUsername: accountRepo.findAccountById(instanceScope, row.accountId)?.username ?? null,
+      clientId: row.clientId,
+      clientName: clientNames.get(row.clientId) ?? null,
+      scopes: row.scopes,
+      createdAt: row.createdAt,
+      lastUsedAt: row.lastUsedAt,
+      status: row.status,
+      tokenCount: row.tokenCount,
+    }));
+  },
+  mcpDisconnect: (connectionId) => oauthRepo.revokeConnection(instanceScope, connectionId, now()),
+  mcpDeleteConnection: (connectionId) =>
+    oauthRepo.deleteConnection(instanceScope, connectionId, now()),
+  mcpDeleteToken: (tokenId) => oauthRepo.deleteToken(instanceScope, tokenId, now()),
+  mcpCleanup: () => oauthRepo.cleanupDead(instanceScope, now()),
   mcpRevokeToken: (tokenId) => {
     const row = oauthRepo.findTokenById(instanceScope, tokenId);
     if (row === undefined) return undefined;

@@ -39,7 +39,12 @@ import { providerReviewCommand } from './commands/provider.js';
 import { backupListCommand, backupNowCommand } from './commands/backup.js';
 import { bootstrapReissueCommand } from './commands/bootstrap.js';
 import {
+  mcpCleanupCommand,
   mcpClientsCommand,
+  mcpConnectionsCommand,
+  mcpDeleteConnectionCommand,
+  mcpDeleteTokenCommand,
+  mcpDisconnectCommand,
   mcpRevokeClientCommand,
   mcpRevokeCommand,
   mcpTokensCommand,
@@ -151,6 +156,11 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpTokensCommand,
   mcpRevokeCommand,
   mcpRevokeClientCommand,
+  mcpConnectionsCommand,
+  mcpDisconnectCommand,
+  mcpDeleteConnectionCommand,
+  mcpDeleteTokenCommand,
+  mcpCleanupCommand,
   mcpAllowChannelCommand,
   mcpAllowCategoryCommand,
   mcpDisallowCategoryCommand,

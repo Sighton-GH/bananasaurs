@@ -53,10 +53,22 @@ describe('renderConsentPage', () => {
     expect(html).toContain('value="deny"');
   });
 
-  it('explains each scope in plain English beside the raw string', () => {
+  it('leads with "<client> is asking to:" and a labelled bullet per scope, above the sign-in fields', () => {
     const html = renderConsentPage({ ...VIEW, scopes: ['bananasaurs:read', 'bananasaurs:send'] });
-    expect(html).toContain('<li>bananasaurs:read — read messages, cases and server settings</li>');
-    expect(html).toContain('<li>bananasaurs:send — send messages as the bot</li>');
+    expect(html).toContain('<h2>Claude Desktop is asking to:</h2>');
+    expect(html).toContain(
+      '<li><strong>Read</strong> — read messages, members, cases, tasks and settings</li>',
+    );
+    expect(html).toContain(
+      '<li><strong>Post</strong> — post, edit and schedule messages, threads, forum posts, events and polls</li>',
+    );
+    expect(html.indexOf('is asking to:')).toBeLessThan(html.indexOf('name="username"'));
+    expect(html.indexOf('<li>')).toBeLessThan(html.indexOf('name="username"'));
+  });
+
+  it('escapes a hostile client name in the "is asking to" heading', () => {
+    const html = renderConsentPage({ ...VIEW, clientName: '<b>x</b>' });
+    expect(html).toContain('<h2>&lt;b&gt;x&lt;/b&gt; is asking to:</h2>');
   });
 
   it('explains all four scopes with no unknown permission', () => {
@@ -64,13 +76,18 @@ describe('renderConsentPage', () => {
       ...VIEW,
       scopes: ['bananasaurs:read', 'bananasaurs:send', 'bananasaurs:roles', 'bananasaurs:tasks'],
     });
-    expect(html).toContain('<li>bananasaurs:read — read messages, cases and server settings</li>');
-    expect(html).toContain('<li>bananasaurs:send — send messages as the bot</li>');
     expect(html).toContain(
-      '<li>bananasaurs:roles — give and remove member roles and manage role panels</li>',
+      '<li><strong>Roles</strong> — give and remove member roles and manage role panels</li>',
     );
-    expect(html).toContain('<li>bananasaurs:tasks — create and change club tasks</li>');
+    expect(html).toContain(
+      '<li><strong>Tasks</strong> — create and change club tasks (needs the Manage club tasks permission)</li>',
+    );
     expect(html).not.toContain('unknown permission');
+  });
+
+  it('shows an unrecognised scope by its raw name, flagged as unknown', () => {
+    const html = renderConsentPage({ ...VIEW, scopes: ['bananasaurs:<x>'] });
+    expect(html).toContain('<li><strong>bananasaurs:&lt;x&gt;</strong> — unknown permission</li>');
   });
 
   it('names the client id and the registration date', () => {

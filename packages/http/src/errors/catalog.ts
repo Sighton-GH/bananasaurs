@@ -402,6 +402,11 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'That token id is not recorded here.',
     hint: 'Pick a token from the list.',
   },
+  'no-such-connection': {
+    title: 'No such connection',
+    explanation: 'That connection is not recorded here, or it was already deleted.',
+    hint: 'Reload the page and pick a connection from the list.',
+  },
   'no-such-client': {
     title: 'No such app',
     explanation: 'That client id is not registered here.',

@@ -103,6 +103,7 @@ const INSTANCE_ROUTES = [
   '/api/accounts',
   '/api/mcp/clients',
   '/api/mcp/tokens',
+  '/api/mcp/connections',
   '/api/providers/eligibility',
 ] as const;
 

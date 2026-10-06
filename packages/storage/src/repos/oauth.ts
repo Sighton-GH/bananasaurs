@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { and, asc, eq, isNull, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { InstanceScope } from '../scope.js';
@@ -697,4 +698,236 @@ export const purgeExpired = (
       .where(lte(oauthTokens.expiresAt, now - OAUTH_TOKEN_RETENTION_AFTER_EXPIRY_MS))
       .run();
     return { pending: pending.changes, codes: codes.changes, tokens: tokens.changes };
+  });
+
+// --- connections (ADR 0130) ---------------------------------------------------
+
+export type OAuthConnectionStatus = 'connected' | 'expired' | 'revoked';
+
+/**
+ * One sign-in: every token row sharing an `issued_from_code_hash`. The public
+ * id is `connectionIdFor` of that hash — stable for the connection's whole
+ * life, whichever of its rows cleanup or the 14-day purge removes — and never
+ * the code hash itself.
+ */
+export interface OAuthConnectionRow {
+  readonly connectionId: string;
+  readonly accountId: string;
+  readonly clientId: string;
+  readonly scopes: readonly string[];
+  readonly createdAt: number;
+  readonly lastUsedAt: number | null;
+  readonly status: OAuthConnectionStatus;
+  readonly tokenCount: number;
+}
+
+/**
+ * The public id of the connection minted from `codeHash`. A digest of a digest
+ * of a single-use, already-spent code: it names the connection and unlocks
+ * nothing.
+ */
+export const connectionIdFor = (codeHash: string): string =>
+  `conn_${createHash('sha256').update(codeHash).digest('hex').slice(0, 24)}`;
+
+type Db = Parameters<Parameters<typeof writeInstance>[1]>[0]['db'];
+
+/** The code hash behind a public connection id, or `undefined` when no row carries it. */
+const codeHashOfConnection = (db: Db, connectionId: string): string | undefined =>
+  db
+    .selectDistinct({ code: oauthTokens.issuedFromCodeHash })
+    .from(oauthTokens)
+    .all()
+    .find((row) => connectionIdFor(row.code) === connectionId)?.code;
+
+/** Whether any row of the connection can still authenticate. */
+const connectionIsLive = (db: Db, codeHash: string, now: number): boolean =>
+  db
+    .select({ tokenId: oauthTokens.tokenId })
+    .from(oauthTokens)
+    .where(
+      and(
+        eq(oauthTokens.issuedFromCodeHash, codeHash),
+        isNull(oauthTokens.revokedAt),
+        sql`${oauthTokens.expiresAt} > ${now}`,
+      ),
+    )
+    .get() !== undefined;
+
+/** tokenId -> connectionId for every token row, so a raw token can be filtered by connection. */
+export const tokenConnectionIds = (scope: InstanceScope): ReadonlyMap<string, string> => {
+  const rows = readInstance(scope, (db) =>
+    db
+      .select({ tokenId: oauthTokens.tokenId, code: oauthTokens.issuedFromCodeHash })
+      .from(oauthTokens)
+      .all(),
+  );
+  return new Map(rows.map((row) => [row.tokenId, connectionIdFor(row.code)]));
+};
+
+/**
+ * Connections, connected first then newest. Grouped in memory: the table is
+ * bounded by the 14-day purge, and a group needs the min/max/newest-row
+ * aggregates the status rule reads.
+ */
+export const listConnections = (
+  scope: InstanceScope,
+  now: number,
+): readonly OAuthConnectionRow[] => {
+  const rows = readInstance(scope, (db) => db.select(TOKEN_SELECT).from(oauthTokens).all());
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const group = groups.get(row.issuedFromCodeHash);
+    if (group === undefined) groups.set(row.issuedFromCodeHash, [row]);
+    else group.push(row);
+  }
+  const byCreated = (a: { createdAt: number; tokenId: string }, b: typeof a): number =>
+    a.createdAt - b.createdAt || (a.tokenId < b.tokenId ? -1 : a.tokenId > b.tokenId ? 1 : 0);
+  const out: OAuthConnectionRow[] = [];
+  for (const group of groups.values()) {
+    const ordered = [...group].sort(byCreated);
+    const root = ordered[0];
+    const newest = ordered[ordered.length - 1];
+    if (root === undefined || newest === undefined) continue;
+    let lastUsedAt: number | null = null;
+    for (const r of group) {
+      if (r.lastUsedAt !== null && (lastUsedAt === null || r.lastUsedAt > lastUsedAt)) {
+        lastUsedAt = r.lastUsedAt;
+      }
+    }
+    const live = group.some((r) => r.revokedAt === null && r.expiresAt > now);
+    const allRevoked = group.every((r) => r.revokedAt !== null);
+    out.push({
+      connectionId: connectionIdFor(root.issuedFromCodeHash),
+      accountId: root.accountId,
+      clientId: root.clientId,
+      scopes: parseStringArray(newest.scopes),
+      createdAt: root.createdAt,
+      lastUsedAt,
+      status: live ? 'connected' : allRevoked ? 'revoked' : 'expired',
+      tokenCount: group.length,
+    });
+  }
+  return out.sort((a, b) => {
+    const ca = a.status === 'connected' ? 0 : 1;
+    const cb = b.status === 'connected' ? 0 : 1;
+    return ca - cb || b.createdAt - a.createdAt || (a.connectionId < b.connectionId ? -1 : 1);
+  });
+};
+
+/**
+ * Revokes every live row of the connection and keeps the rows. Returns the
+ * number revoked, or `undefined` for an unknown id.
+ */
+export const revokeConnection = (
+  scope: InstanceScope,
+  connectionId: string,
+  now: number,
+): number | undefined =>
+  writeInstance(scope, ({ db }) => {
+    const code = codeHashOfConnection(db, connectionId);
+    if (code === undefined) return undefined;
+    return db
+      .update(oauthTokens)
+      .set({ revokedAt: now })
+      .where(and(eq(oauthTokens.issuedFromCodeHash, code), isNull(oauthTokens.revokedAt)))
+      .run().changes;
+  });
+
+/**
+ * ONE transaction: revoke every live row of the connection, then delete all
+ * its rows. `undefined` for an unknown id.
+ */
+export const deleteConnection = (
+  scope: InstanceScope,
+  connectionId: string,
+  now: number,
+): { readonly revoked: number; readonly deleted: number } | undefined =>
+  writeInstance(scope, ({ db }) => {
+    const code = codeHashOfConnection(db, connectionId);
+    if (code === undefined) return undefined;
+    const revoked = db
+      .update(oauthTokens)
+      .set({ revokedAt: now })
+      .where(and(eq(oauthTokens.issuedFromCodeHash, code), isNull(oauthTokens.revokedAt)))
+      .run().changes;
+    const deleted = db.delete(oauthTokens).where(eq(oauthTokens.issuedFromCodeHash, code)).run();
+    return { revoked, deleted: deleted.changes };
+  });
+
+/**
+ * ONE transaction: when the row's connection can still authenticate, the
+ * whole connection is revoked first, then that one row is deleted.
+ * `undefined` for an unknown id.
+ *
+ * Revoking even for a dead row of a live connection is deliberate: a revoked
+ * refresh row is what lets `refreshTokens` spot a replay and revoke the
+ * lineage (it checks `revokedAt` before expiry), so deleting one from a live
+ * connection would silently disarm that check. Deleting it disconnects
+ * instead.
+ */
+export const deleteToken = (
+  scope: InstanceScope,
+  tokenId: string,
+  now: number,
+): { readonly revoked: number; readonly deleted: number } | undefined =>
+  writeInstance(scope, ({ db }) => {
+    const row = db
+      .select({
+        code: oauthTokens.issuedFromCodeHash,
+        revokedAt: oauthTokens.revokedAt,
+        expiresAt: oauthTokens.expiresAt,
+      })
+      .from(oauthTokens)
+      .where(eq(oauthTokens.tokenId, tokenId))
+      .get();
+    if (row === undefined) return undefined;
+    let revoked = 0;
+    if (connectionIsLive(db, row.code, now)) {
+      revoked = db
+        .update(oauthTokens)
+        .set({ revokedAt: now })
+        .where(and(eq(oauthTokens.issuedFromCodeHash, row.code), isNull(oauthTokens.revokedAt)))
+        .run().changes;
+    }
+    const deleted = db.delete(oauthTokens).where(eq(oauthTokens.tokenId, tokenId)).run();
+    return { revoked, deleted: deleted.changes };
+  });
+
+/** An app registered less than this long ago may be mid-sign-in; cleanup spares it. */
+export const OAUTH_CLIENT_CLEANUP_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * ONE transaction: delete every token row of every connection that can no
+ * longer authenticate — no unrevoked, unexpired row left — then every
+ * client left with no token row, no unexpired pending authorization and no
+ * unexpired authorization code that was registered over an hour ago. The
+ * tables have no foreign keys (ruling PR-109), so the NOT EXISTS checks here
+ * are the whole safeguard.
+ */
+export const cleanupDead = (
+  scope: InstanceScope,
+  now: number,
+): { readonly tokens: number; readonly clients: number } =>
+  writeInstance(scope, ({ db }) => {
+    // A live connection keeps its revoked rotated-out rows until the 14-day
+    // purge: replaying one must still revoke the connection (`deleteToken`).
+    const tokens = db
+      .delete(oauthTokens)
+      .where(
+        sql`${oauthTokens.issuedFromCodeHash} NOT IN (SELECT live.issued_from_code_hash
+          FROM oauth_tokens live WHERE live.revoked_at IS NULL AND live.expires_at > ${now})`,
+      )
+      .run();
+    const clients = db
+      .delete(oauthClients)
+      .where(
+        sql`${oauthClients.createdAt} < ${now - OAUTH_CLIENT_CLEANUP_GRACE_MS}
+          AND NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.client_id = ${oauthClients.clientId})
+          AND NOT EXISTS (SELECT 1 FROM oauth_pending_authorizations p
+            WHERE p.client_id = ${oauthClients.clientId} AND p.expires_at > ${now})
+          AND NOT EXISTS (SELECT 1 FROM oauth_authorization_codes c
+            WHERE c.client_id = ${oauthClients.clientId} AND c.expires_at > ${now})`,
+      )
+      .run();
+    return { tokens: tokens.changes, clients: clients.changes };
   });

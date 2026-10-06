@@ -40,18 +40,22 @@ account name, app name or scopes, revoked rows lingered ~44 days, and
    server and, with the matching approvals, post messages, change roles and
    manage tasks — limited by this account's other permissions.
 5. **Connections, not token rows.** Tokens are grouped by the sign-in that
-   minted them (`issued_from_code_hash`): one row per connection showing
+   minted them (`issued_from_code_hash`), under a stable public id
+   (`conn_` + a digest of that hash): one row per connection showing
    the account username, app name, plain-language scopes, connected /
    expired / revoked, created and last used. Raw token rows sit behind it.
 6. **Cleanup.** Gated like the existing revoke ("Change settings",
    `config.write`), audited, CLI and dashboard alike:
    - disconnect one connection (revoke every token it holds);
-   - delete one connection or token (a live one is revoked first, then its
-     rows are deleted);
-   - "Clean up": delete every expired or revoked token row now, plus
-     registered apps left with no tokens.
-   Deleting only removes rows that can no longer authenticate, or that the
-   same action just revoked; it never extends access.
+   - delete one connection or token (a connection that still works is
+     revoked first, then the rows are deleted);
+   - "Clean up": delete every connection that can no longer authenticate,
+     with all its rows, plus registered apps left with no tokens.
+   A connected app keeps its revoked rotated-out refresh rows until the
+   14-day purge: replaying one is how a stolen refresh token is caught
+   (`refreshTokens` checks revocation before expiry), so cleanup never
+   deletes them and deleting one by hand disconnects the connection.
+   Deleting never extends access.
 7. **`mcp tokens` cannot overflow:** the CLI lists connections (bounded by
    sign-ins, not refreshes), and the raw-token listing is capped and paged.
 

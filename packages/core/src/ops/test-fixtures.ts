@@ -168,6 +168,11 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   mcpTokens: unstubbed('mcpTokens'),
   mcpRevokeToken: unstubbed('mcpRevokeToken'),
   mcpRevokeClient: unstubbed('mcpRevokeClient'),
+  mcpConnections: unstubbed('mcpConnections'),
+  mcpDisconnect: unstubbed('mcpDisconnect'),
+  mcpDeleteConnection: unstubbed('mcpDeleteConnection'),
+  mcpDeleteToken: unstubbed('mcpDeleteToken'),
+  mcpCleanup: unstubbed('mcpCleanup'),
   // All-clear by default, because `doctor` always reads it: a test that wants
   // an eligibility warning has to say so, so a stale provider is never
   // something a fixture arranged by accident.

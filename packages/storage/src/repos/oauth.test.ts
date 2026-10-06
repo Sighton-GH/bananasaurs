@@ -6,15 +6,21 @@ import {
   createAuthorizationCode,
   createClient,
   createPendingAuthorization,
+  cleanupDead,
   createToken,
   deleteClient,
+  deleteConnection,
+  deleteToken,
   deleteAuthorizationCodesForAccount,
   findAuthorizationCode,
   findClient,
   findTokenByHash,
   findTokenById,
   listClients,
+  connectionIdFor,
+  listConnections,
   listTokens,
+  revokeConnection,
   markAuthorizationCodeUsed,
   purgeExpired,
   revokeAllTokensForAccount,
@@ -688,5 +694,142 @@ describe('deleteAuthorizationCodesForAccount (M3c fix wave)', () => {
 
     expect(deleteAuthorizationCodesForAccount(instance, 'acct-1')).toBe(1);
     expect(findAuthorizationCode(instance, 'code-doomed')).toBeUndefined();
+  });
+});
+
+describe('connections (ADR 0130)', () => {
+  const rotate = (oldRefreshId: string, suffix: string, now: number, expiresAt = 500_000): void =>
+    rotateRefreshToken(instance, {
+      oldRefreshTokenId: oldRefreshId,
+      newAccess: { tokenId: `access-${suffix}`, tokenHash: `hash-access-${suffix}`, expiresAt },
+      newRefresh: { tokenId: `refresh-${suffix}`, tokenHash: `hash-refresh-${suffix}`, expiresAt },
+      now,
+    });
+
+  const id = connectionIdFor;
+
+  it('groups rotations with their sign-in, keyed by a stable id derived from the sign-in', () => {
+    seedClient();
+    mintPair('code-1', 'a', { createdAt: 1000, expiresAt: 100_000 });
+    rotate('refresh-a', 'b', 2000);
+    mintPair('code-2', 'c', { createdAt: 3000, expiresAt: 100_000 });
+    touchToken(instance, 'access-b', 9000);
+
+    const connections = listConnections(instance, 10_000);
+    expect(connections).toHaveLength(2);
+    const first = connections.find((c) => c.connectionId === id('code-1'));
+    expect(first).toMatchObject({
+      accountId: 'acct-1',
+      clientId: 'client-1',
+      scopes: ['bananasaurs:read'],
+      createdAt: 1000,
+      lastUsedAt: 9000,
+      status: 'connected',
+      tokenCount: 4,
+    });
+    expect(connections.find((c) => c.connectionId === id('code-2'))?.lastUsedAt).toBeNull();
+    // The code hash is never exposed.
+    expect(JSON.stringify(connections)).not.toContain('code-1');
+    expect(id('code-1')).toMatch(/^conn_[0-9a-f]{24}$/);
+  });
+
+  it('a connection keeps its id when its oldest rows are deleted', () => {
+    seedClient();
+    mintPair('code-1', 'a', { createdAt: 1000, expiresAt: 100_000 });
+    rotate('refresh-a', 'b', 2000);
+    deleteToken(instance, 'access-a', 3000);
+    expect(listConnections(instance, 10_000).map((c) => c.connectionId)).toEqual([id('code-1')]);
+  });
+
+  it('reports connected, revoked and expired', () => {
+    seedClient();
+    mintPair('code-live', 'live', { expiresAt: 100_000 });
+    mintPair('code-rev', 'rev', { expiresAt: 100_000 });
+    mintPair('code-exp', 'exp', { expiresAt: 5_000 });
+    revokeTokensFromCode(instance, 'code-rev', 2000);
+    const byId = new Map(listConnections(instance, 10_000).map((c) => [c.connectionId, c.status]));
+    expect(byId.get(id('code-live'))).toBe('connected');
+    expect(byId.get(id('code-rev'))).toBe('revoked');
+    expect(byId.get(id('code-exp'))).toBe('expired');
+  });
+
+  it('revokeConnection revokes live rows and keeps them; unknown is undefined', () => {
+    seedClient();
+    mintPair('code-1', 'a');
+    expect(revokeConnection(instance, id('code-1'), 2000)).toBe(2);
+    expect(findTokenById(instance, 'refresh-a')?.revokedAt).toBe(2000);
+    expect(revokeConnection(instance, 'nope', 2000)).toBeUndefined();
+  });
+
+  it('deleteConnection revokes live rows then deletes every row of that connection only', () => {
+    seedClient();
+    mintPair('code-1', 'a');
+    rotate('refresh-a', 'b', 2000);
+    mintPair('code-2', 'c');
+    // access-a/refresh-a: refresh-a revoked by rotation; access-a, access-b, refresh-b live.
+    expect(deleteConnection(instance, id('code-1'), 3000)).toEqual({ revoked: 3, deleted: 4 });
+    expect(listTokens(instance).map((x) => x.tokenId)).toEqual(['access-c', 'refresh-c']);
+    expect(deleteConnection(instance, id('code-1'), 3000)).toBeUndefined();
+  });
+
+  it('deleting a dead row of a live connection disconnects it, so a replay check is never weakened silently', () => {
+    seedClient();
+    mintPair('code-1', 'a');
+    rotate('refresh-a', 'b', 2000);
+    // refresh-a is revoked by rotation; the connection is still live.
+    expect(deleteToken(instance, 'refresh-a', 3000)).toEqual({ revoked: 3, deleted: 1 });
+    expect(findTokenById(instance, 'refresh-b')?.revokedAt).toBe(3000);
+  });
+
+  it('deleteToken revokes the lineage of a live row, deletes just that row', () => {
+    seedClient();
+    mintPair('code-1', 'a');
+    expect(deleteToken(instance, 'access-a', 3000)).toEqual({ revoked: 2, deleted: 1 });
+    expect(findTokenById(instance, 'access-a')).toBeUndefined();
+    expect(findTokenById(instance, 'refresh-a')?.revokedAt).toBe(3000);
+    // A dead row is deleted without a revoke.
+    expect(deleteToken(instance, 'refresh-a', 4000)).toEqual({ revoked: 0, deleted: 1 });
+    expect(deleteToken(instance, 'nope', 4000)).toBeUndefined();
+  });
+
+  it('cleanupDead deletes revoked and expired rows, keeps live rows, drops unused old clients only', () => {
+    const now = 10_000_000;
+    const hour = 60 * 60 * 1000;
+    seedClient('client-live', 1000);
+    seedClient('client-dead', 1000);
+    seedClient('client-young', now - 1000);
+    seedClient('client-midflow', 1000);
+    seedClient('client-code', 1000);
+    mintPair('code-live', 'live', { clientId: 'client-live', expiresAt: now + hour });
+    mintPair('code-dead', 'dead', { clientId: 'client-dead', expiresAt: now + hour });
+    mintPair('code-exp', 'exp', { clientId: 'client-dead', expiresAt: now - 1 });
+    revokeTokensFromCode(instance, 'code-dead', now - 5);
+    // A live connection's rotated-out refresh row stays: replaying it must
+    // still revoke the connection (provider.ts checks revoked before expiry).
+    rotate('refresh-live', 'live2', now - 2, now + hour);
+    createPendingAuthorization(instance, {
+      requestId: 'req-1',
+      nonceHash: 'nonce-1',
+      clientId: 'client-midflow',
+      redirectUri: 'https://example.test/cb',
+      scopes: ['bananasaurs:read'],
+      codeChallenge: 'c',
+      state: null,
+      createdAt: now - 10,
+      expiresAt: now + 60_000,
+    });
+    seedCode('code-open', 'client-code', now + 60_000);
+
+    expect(cleanupDead(instance, now)).toEqual({ tokens: 4, clients: 1 });
+    expect(
+      listTokens(instance)
+        .map((x) => x.tokenId)
+        .sort(),
+    ).toEqual(['access-live', 'access-live2', 'refresh-live', 'refresh-live2']);
+    expect(
+      listClients(instance)
+        .map((c) => c.clientId)
+        .sort(),
+    ).toEqual(['client-code', 'client-live', 'client-midflow', 'client-young']);
   });
 });

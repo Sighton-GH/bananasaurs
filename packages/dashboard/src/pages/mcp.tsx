@@ -1,10 +1,12 @@
 import { useCallback, useState } from 'react';
+import { MCP_SCOPE_INFO, mcpScopeLabel } from '@bananasaurs/core';
 import { Link } from 'wouter';
 import { ApiError } from '../api.js';
 import { describeError } from '../api/describe-error.js';
 import type {
   GuildRoleInfo,
   McpClient,
+  McpConnection,
   McpSend,
   McpToken,
   RoleAllowlistEntry,
@@ -28,8 +30,9 @@ import { useToast } from '../ui/Toast.js';
 
 /**
  * `/mcp`: the connector's standing state as a page (ADR 0051 D3) —
- * `mcp clients`, `mcp tokens`, revocation (`mcp revoke`,
- * `mcp revoke-client`), the send allowlist as READ-ONLY state, the send
+ * `mcp clients`, `mcp connections` and `mcp tokens` (ADR 0130), revocation
+ * and cleanup (`mcp disconnect`, `mcp delete-connection`, `mcp delete-token`,
+ * `mcp cleanup`, `mcp revoke-client`), the send allowlist as READ-ONLY state, the send
  * ledger (`mcp sends`), and the role policy (`mcp role-policy`,
  * `mcp allow-role`, `mcp disallow-role`, ADR 0117 §2). Nothing is
  * allowlisted by default, and the allowlists are the only thing that decide
@@ -41,6 +44,9 @@ import { useToast } from '../ui/Toast.js';
  * duplicating the controls. The role allowlist's writers live here, on the
  * Role policy card below, because no other page owns them.
  */
+/** A client id is long; the first characters tell two apps with the same name apart. */
+const shortId = (id: string): string => (id.length > 12 ? `${id.slice(0, 12)}…` : id);
+
 const ROLE_POLICY_MODES: readonly RolePolicyMode[] = ['below-bot', 'allowlist'];
 const ROLE_ALLOWLIST_PURPOSES: readonly RoleAllowlistPurpose[] = ['grant', 'ping'];
 
@@ -317,6 +323,13 @@ export function McpPage() {
     () => session.read<{ tokens: McpToken[] }>('/api/mcp/tokens').then((r) => r.tokens),
     [session],
   );
+  const loadConnections = useCallback(
+    () =>
+      session
+        .read<{ connections: McpConnection[] }>('/api/mcp/connections')
+        .then((r) => r.connections),
+    [session],
+  );
   const loadAllowlist = useCallback(
     () =>
       session.read<{ entries: SendAllowlistEntry[] }>('/api/send-allowlist').then((r) => r.entries),
@@ -324,6 +337,7 @@ export function McpPage() {
   );
   const clients = useResource('the MCP clients', loadClients);
   const tokens = useResource('the MCP tokens', loadTokens);
+  const connections = useResource('the MCP connections', loadConnections);
   const allowlist = useResource('the send allowlist', loadAllowlist);
   const loadSends = useCallback(
     () => session.read<{ sends: McpSend[] }>('/api/mcp/sends?since=7d').then((r) => r.sends),
@@ -336,28 +350,98 @@ export function McpPage() {
   );
   const rolePolicy = useResource('the role policy', loadRolePolicy);
 
-  const [revokingToken, setRevokingToken] = useState<McpToken | undefined>(undefined);
+  const [disconnecting, setDisconnecting] = useState<McpConnection | undefined>(undefined);
+  const [deletingConnection, setDeletingConnection] = useState<McpConnection | undefined>(
+    undefined,
+  );
+  const [deletingToken, setDeletingToken] = useState<McpToken | undefined>(undefined);
+  const [cleaning, setCleaning] = useState(false);
   const [revokingClient, setRevokingClient] = useState<McpClient | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
-  const revokeToken = async () => {
-    if (revokingToken === undefined) return;
+  const reloadConnections = () => {
+    connections.reload();
+    tokens.reload();
+  };
+
+  const disconnect = async () => {
+    if (disconnecting === undefined) return;
     setBusy(true);
     try {
-      const result = await session.write<{ tokenId: string; tokensRevoked: number }>(
-        `/api/mcp/tokens/${encodeURIComponent(revokingToken.tokenId)}/revoke`,
+      const result = await session.write<{ connectionId: string; tokensRevoked: number }>(
+        `/api/mcp/connections/${encodeURIComponent(disconnecting.connectionId)}/disconnect`,
         {},
       );
       if (result !== undefined) {
         toast({
           tone: 'ok',
-          title: `Token revoked — ${String(result.tokensRevoked)} token(s) in its lineage`,
+          title: `Disconnected — ${String(result.tokensRevoked)} token(s) revoked`,
         });
-        tokens.reload();
+        reloadConnections();
       }
     } finally {
       setBusy(false);
-      setRevokingToken(undefined);
+      setDisconnecting(undefined);
+    }
+  };
+
+  const deleteConnection = async () => {
+    if (deletingConnection === undefined) return;
+    setBusy(true);
+    try {
+      const result = await session.write<{ connectionId: string; tokensDeleted: number }>(
+        `/api/mcp/connections/${encodeURIComponent(deletingConnection.connectionId)}/delete`,
+        {},
+      );
+      if (result !== undefined) {
+        toast({
+          tone: 'ok',
+          title: `Connection deleted — ${String(result.tokensDeleted)} token row(s) removed`,
+        });
+        reloadConnections();
+      }
+    } finally {
+      setBusy(false);
+      setDeletingConnection(undefined);
+    }
+  };
+
+  const deleteToken = async () => {
+    if (deletingToken === undefined) return;
+    setBusy(true);
+    try {
+      const result = await session.write<{ tokenId: string; tokensDeleted: number }>(
+        `/api/mcp/tokens/${encodeURIComponent(deletingToken.tokenId)}/delete`,
+        {},
+      );
+      if (result !== undefined) {
+        toast({ tone: 'ok', title: 'Token row deleted' });
+        reloadConnections();
+      }
+    } finally {
+      setBusy(false);
+      setDeletingToken(undefined);
+    }
+  };
+
+  const cleanUp = async () => {
+    setBusy(true);
+    try {
+      const result = await session.write<{ tokensDeleted: number; clientsDeleted: number }>(
+        '/api/mcp/cleanup',
+        {},
+      );
+      if (result !== undefined) {
+        toast({
+          tone: 'ok',
+          title: `Cleaned up — ${String(result.tokensDeleted)} token rows and ${String(result.clientsDeleted)} unused apps deleted`,
+        });
+        reloadConnections();
+        clients.reload();
+      }
+    } finally {
+      setBusy(false);
+      setCleaning(false);
     }
   };
 
@@ -375,7 +459,7 @@ export function McpPage() {
           title: `Client removed — ${String(result.tokensRevoked)} token(s) revoked`,
         });
         clients.reload();
-        tokens.reload();
+        reloadConnections();
       }
     } finally {
       setBusy(false);
@@ -481,6 +565,15 @@ export function McpPage() {
                     numeric: true,
                   },
                   {
+                    key: 'connections',
+                    header: 'Connections',
+                    cell: (c) =>
+                      connections.resource.state === 'ready'
+                        ? connections.resource.data.filter((x) => x.clientId === c.clientId).length
+                        : '',
+                    numeric: true,
+                  },
+                  {
                     key: 'created',
                     header: 'Created',
                     cell: (c) => new Date(c.createdAt).toLocaleDateString(),
@@ -495,61 +588,152 @@ export function McpPage() {
             )}
           </DataState>
         </Card>
-        <Card title="Tokens">
+        <Card
+          title="Connections"
+          action={<Button onClick={() => setCleaning(true)}>Clean up</Button>}
+        >
           <DataState
-            resource={tokens.resource}
+            resource={connections.resource}
             isEmpty={(rows) => rows.length === 0}
-            empty={<p className="text-sm text-ink-muted">No tokens minted yet.</p>}
+            empty={<p className="text-sm text-ink-muted">No apps have connected yet.</p>}
           >
             {(rows) => (
               <DataTable
-                caption="App access tokens - identifiers only; secret values are never shown"
+                caption="Each sign-in an app made. Disconnect stops it working; Delete also removes its rows."
                 rows={rows}
-                rowKey={(t) => t.tokenId}
+                rowKey={(c) => c.connectionId}
                 columns={[
-                  { key: 'id', header: 'Token', cell: (t) => t.tokenId },
-                  { key: 'kind', header: 'Kind', cell: (t) => t.kind },
-                  { key: 'client', header: 'Client', cell: (t) => t.clientId },
-                  { key: 'account', header: 'Account', cell: (t) => t.accountId },
                   {
-                    key: 'expires',
-                    header: 'Expires',
-                    cell: (t) => new Date(t.expiresAt).toLocaleString(),
+                    key: 'account',
+                    header: 'Account',
+                    cell: (c) =>
+                      c.accountUsername ?? <span className="text-ink-muted">deleted</span>,
                   },
                   {
-                    key: 'state',
-                    header: 'State',
-                    cell: (t) =>
-                      t.revokedAt !== null ? (
-                        <Badge tone="danger">revoked</Badge>
-                      ) : t.expiresAt <= Date.now() ? (
-                        <Badge tone="neutral">expired</Badge>
-                      ) : (
-                        <Badge tone="ok">live</Badge>
-                      ),
+                    key: 'app',
+                    header: 'App',
+                    cell: (c) => (
+                      <span className="whitespace-nowrap">
+                        {c.clientName ?? 'deleted app'}{' '}
+                        <span className="text-ink-muted">({shortId(c.clientId)})</span>
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'can',
+                    header: 'Can',
+                    cell: (c) => (
+                      <span className="flex flex-wrap gap-1">
+                        {c.scopes.map((scope) => (
+                          <span key={scope} title={MCP_SCOPE_INFO[scope]?.description}>
+                            <Badge>{mcpScopeLabel(scope)}</Badge>
+                          </span>
+                        ))}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'status',
+                    header: 'Status',
+                    cell: (c) => (
+                      <Badge tone={c.status === 'connected' ? 'ok' : 'neutral'}>{c.status}</Badge>
+                    ),
+                  },
+                  {
+                    key: 'connected',
+                    header: 'Connected',
+                    cell: (c) => new Date(c.createdAt).toLocaleDateString(),
                   },
                   {
                     key: 'lastUsed',
                     header: 'Last used',
-                    cell: (t) =>
-                      t.lastUsedAt === null ? (
+                    cell: (c) =>
+                      c.lastUsedAt === null ? (
                         <span className="text-ink-muted">never</span>
                       ) : (
-                        new Date(t.lastUsedAt).toLocaleString()
+                        new Date(c.lastUsedAt).toLocaleString()
                       ),
                   },
                   {
                     key: 'actions',
                     header: '',
-                    cell: (t) =>
-                      t.revokedAt !== null ? null : (
-                        <Button onClick={() => setRevokingToken(t)}>Revoke</Button>
-                      ),
+                    cell: (c) => (
+                      <span className="flex gap-2">
+                        {c.status === 'connected' && (
+                          <Button onClick={() => setDisconnecting(c)}>Disconnect</Button>
+                        )}
+                        <Button variant="danger" onClick={() => setDeletingConnection(c)}>
+                          Delete
+                        </Button>
+                      </span>
+                    ),
                   },
                 ]}
               />
             )}
           </DataState>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-sm text-ink-muted">
+              Individual tokens (advanced)
+            </summary>
+            <div className="mt-2">
+              <DataState
+                resource={tokens.resource}
+                isEmpty={(rows) => rows.length === 0}
+                empty={<p className="text-sm text-ink-muted">No tokens minted yet.</p>}
+              >
+                {(rows) => (
+                  <DataTable
+                    caption="App access tokens - identifiers only; secret values are never shown"
+                    rows={rows}
+                    rowKey={(t) => t.tokenId}
+                    columns={[
+                      { key: 'id', header: 'Token', cell: (t) => t.tokenId },
+                      { key: 'kind', header: 'Kind', cell: (t) => t.kind },
+                      { key: 'client', header: 'Client', cell: (t) => t.clientId },
+                      { key: 'account', header: 'Account', cell: (t) => t.accountId },
+                      {
+                        key: 'expires',
+                        header: 'Expires',
+                        cell: (t) => new Date(t.expiresAt).toLocaleString(),
+                      },
+                      {
+                        key: 'state',
+                        header: 'State',
+                        cell: (t) =>
+                          t.revokedAt !== null ? (
+                            <Badge tone="danger">revoked</Badge>
+                          ) : t.expiresAt <= Date.now() ? (
+                            <Badge tone="neutral">expired</Badge>
+                          ) : (
+                            <Badge tone="ok">live</Badge>
+                          ),
+                      },
+                      {
+                        key: 'lastUsed',
+                        header: 'Last used',
+                        cell: (t) =>
+                          t.lastUsedAt === null ? (
+                            <span className="text-ink-muted">never</span>
+                          ) : (
+                            new Date(t.lastUsedAt).toLocaleString()
+                          ),
+                      },
+                      {
+                        key: 'actions',
+                        header: '',
+                        cell: (t) => (
+                          <Button variant="danger" onClick={() => setDeletingToken(t)}>
+                            Delete
+                          </Button>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
+              </DataState>
+            </div>
+          </details>
         </Card>
         <Card title="Send ledger">
           <DataState
@@ -596,19 +780,65 @@ export function McpPage() {
         </Card>
       </div>
       <ConfirmDialog
-        open={revokingToken !== undefined}
-        title={`Revoke token ${revokingToken?.tokenId ?? ''}?`}
+        open={disconnecting !== undefined}
+        title={`Disconnect ${disconnecting?.clientName ?? 'this app'}?`}
         scope={
           <p>
-            The token and its whole lineage stop working at once; anything holding it has to
-            authorise again.
+            Every token from this sign-in stops working at once; the app has to sign in again. The
+            rows are kept.
           </p>
         }
-        confirmLabel="Revoke token"
+        confirmLabel="Disconnect app"
         danger
         busy={busy}
-        onConfirm={() => void revokeToken()}
-        onCancel={() => setRevokingToken(undefined)}
+        onConfirm={() => void disconnect()}
+        onCancel={() => setDisconnecting(undefined)}
+      />
+      <ConfirmDialog
+        open={deletingConnection !== undefined}
+        title={`Delete this ${deletingConnection?.clientName ?? 'app'} connection?`}
+        scope={
+          <p>
+            Any live token is revoked first, then every token row of this connection is deleted.
+            This cannot be undone.
+          </p>
+        }
+        confirmLabel="Delete connection"
+        danger
+        busy={busy}
+        onConfirm={() => void deleteConnection()}
+        onCancel={() => setDeletingConnection(undefined)}
+      />
+      <ConfirmDialog
+        open={deletingToken !== undefined}
+        title={`Delete token ${deletingToken?.tokenId ?? ''}?`}
+        scope={
+          <p>
+            If this token&apos;s connection is still connected, the whole connection is disconnected
+            first (the app has to sign in again), then this one row is deleted.
+          </p>
+        }
+        confirmLabel="Delete token"
+        danger
+        busy={busy}
+        onConfirm={() => void deleteToken()}
+        onCancel={() => setDeletingToken(undefined)}
+      />
+      <ConfirmDialog
+        open={cleaning}
+        title="Clean up connections?"
+        scope={
+          <p>
+            This deletes every connection that no longer works (expired or revoked) with all its
+            tokens, and every registered app left with no tokens. Connected apps are not touched;
+            their old tokens are kept 14 days so a stolen one is still caught.
+          </p>
+        }
+        confirmLabel="Clean up"
+        danger
+        busy={busy}
+        onConfirm={() => void cleanUp()}
+        onCancel={() => setCleaning(false)}
       />
       <ConfirmDialog
         open={revokingClient !== undefined}
