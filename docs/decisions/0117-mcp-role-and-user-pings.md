@@ -1,6 +1,7 @@
 # ADR 0117: MCP role and user pings
 
-Status: accepted (2026-10-01)
+Status: accepted (2026-10-01); §1 amended by ADR 0128 (mentions typed into
+the text ping under the same policy)
 
 Amends: ruling M5-D2 ("`allowedMentions` is always `{ parse: [] }` for MCP sends").
 Spec: `docs/superpowers/specs/2026-09-29-mcp-connector-v2-design.md` §5.1, §6.1, §6.2 (owner decisions D2, D12).

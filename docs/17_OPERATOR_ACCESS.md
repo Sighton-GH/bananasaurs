@@ -133,17 +133,29 @@ by the client:
 it. The message text is not in the audit trail — it is in `mcp_sends` and in
 Discord, which is where a member can see it too.
 
-**Scopes, when you connect a client (slice M4).** The consent page offers two:
-`bananasaurs:read` — read messages, cases and server settings — and
-`bananasaurs:send`, which is reserved for the write tool slice M5 adds and
-today grants nothing. Approve **`bananasaurs:read`**. The tools are filtered
-at registration rather than refused on call, so a token holding only
-`bananasaurs:send` connects successfully and then answers
-`-32601 Method not found` to `tools/list` and to every other method: with no
-tool registered, the MCP SDK never installs those handlers at all. That is
-the intended security behaviour and not a broken server, but several MCP
-clients report it as one — so if a freshly connected client says the server
-has no methods, check which scope was approved before checking anything else.
+**Scopes, when you connect a client (ADR 0114).** The consent page lists the
+scopes the client asked for, from these four:
+
+- `bananasaurs:read` — every read tool (messages, cases, settings, tasks).
+- `bananasaurs:send` — posts, edits, threads, forum posts, schedules, events.
+- `bananasaurs:roles` — role grants and removals, role creation, role panels.
+- `bananasaurs:tasks` — the task write tools (`create_club_task`,
+  `edit_club_task`, approvals, archive, reminders, task teams); owner only.
+
+Tools are filtered at registration rather than refused on call: a token
+without a scope never sees that scope's tools in `tools/list`. **A token keeps
+the scopes it was first approved with for its whole refresh lineage**, so a
+client connected before a scope existed (the roles and tasks scopes arrived
+with MCP connector v2) keeps working but never shows those tools. To pick
+them up, disconnect and reconnect the client — a standard MCP client asks for
+every scope in `scopes_supported` — approve them on the consent page, then
+revoke the old lineage with `bananasaurs mcp revoke <token-id> --confirm`
+(`bananasaurs mcp tokens` lists the token ids; it does not show scopes, so
+confirm by the tools the client now lists). A token holding
+only `bananasaurs:send` connects and then answers `-32601 Method not found`
+to `tools/list`: with no read tool registered, the MCP SDK installs no list
+handler. That is intended, so if a freshly connected client says the server
+has no methods, check which scopes were approved before anything else.
 
 The `account` commands mostly act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
 

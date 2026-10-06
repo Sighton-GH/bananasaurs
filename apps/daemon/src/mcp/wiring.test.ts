@@ -970,6 +970,30 @@ describe('/mcp send_message through the real composition', () => {
     });
   });
 
+  it('mentions typed into the text ping under the same policy, and a refused one is reported (ADR 0128)', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({
+            content: `<@${MEMBER_USER}> and <@&${LOW_ROLE}>, not <@&${BOT_ROLE}> or @everyone`,
+            idempotencyKey: 'text-ping-send',
+          }),
+        )
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Sent message');
+    expect(found.text).toContain(`role ${BOT_ROLE} (`);
+    const calls = fakeDiscord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[2]).toMatchObject({
+      allowedMentions: { parse: [], roles: [LOW_ROLE], users: [MEMBER_USER] },
+    });
+  });
+
   it('a reply without pingReplyAuthor records the reply with the ping off', async () => {
     allow();
     const accessToken = await mintToken('bananasaurs:send');
@@ -1535,6 +1559,67 @@ describe('/mcp thread writes through the real composition', () => {
       // This creation carried no firstMessage, so the only send is this one.
       expect(sends).toHaveLength(1);
       expect(sends[0]?.args[1]).toBe(threadId);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a first message pings the member it mentions and reports a managed role it cannot (ADR 0128)', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const created = callText(
+        (
+          await mcpCall(
+            threadApp,
+            accessToken,
+            'create_thread',
+            createArgs({
+              firstMessage: { content: `<@${MEMBER}> over to you, cc <@&${BOT_ROLE}>` },
+            }),
+          )
+        ).body,
+      );
+      expect(created.isError).not.toBe(true);
+      expect(created.text).toContain(`role ${BOT_ROLE} (managed roles and @everyone never ping)`);
+      const sends = discord.restCalls('sendMessage');
+      expect(sends).toHaveLength(1);
+      expect(sends[0]?.args[2]).toMatchObject({
+        allowedMentions: { parse: [], roles: [], users: [MEMBER] },
+      });
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a forum post pings the member its content mentions (ADR 0128)', async () => {
+    seed();
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    const client = buildThreadClient();
+    const threadApp = buildThreadApp(client, discord);
+    try {
+      const accessToken = await mintToken('bananasaurs:send');
+      const posted = callText(
+        (
+          await mcpCall(threadApp, accessToken, 'create_forum_post', {
+            guildId: '111111111111111111',
+            forum: 'Help-Desk',
+            title: 'club question',
+            content: `<@${MEMBER}> when is the next build night?`,
+            tags: ['Question'],
+            idempotencyKey: 'forum-ping-k1',
+          })
+        ).body,
+      );
+      expect(posted.isError).not.toBe(true);
+      const posts = discord.restCalls('createForumPost');
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.args[2]).toMatchObject({
+        message: { allowedMentions: { parse: [], roles: [], users: [MEMBER] } },
+      });
     } finally {
       await threadApp.close();
     }

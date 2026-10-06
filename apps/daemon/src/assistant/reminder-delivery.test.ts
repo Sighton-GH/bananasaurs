@@ -455,6 +455,27 @@ describe('mcp scheduled sends (origin mcp)', () => {
     expect(JSON.stringify(fields[0])).not.toContain(MCP_TEXT);
   });
 
+  it('ADR 0128: a member mentioned in the text pings at delivery with nothing stored', async () => {
+    allowChannel(scope, CHANNEL);
+    const client = makeDeliveryClient({
+      guilds: [{ guildId: GUILD, channels: [CHANNEL], members: [MEMBER] }],
+    });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+
+    await createReminderDelivery(GUILD, port, { client, scope, logger }).send(
+      mcpReminder({
+        text: `<@${MEMBER}> ${MCP_TEXT}`,
+        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      }),
+    );
+
+    const calls = port.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]?.args[2] as { allowedMentions: unknown };
+    expect(sent.allowedMentions).toEqual({ parse: [], users: [MEMBER] });
+  });
+
   it('the checks use the row guild only: a channel allowlisted in another guild stays out of scope', async () => {
     // CHANNEL is allowlisted in GUILD only; the row belongs to GUILD_B, where
     // nothing is allowlisted — and CHANNEL itself lives in GUILD.

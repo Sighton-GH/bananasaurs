@@ -1,7 +1,12 @@
 import { PermissionFlagsBits, type Client, type Guild, type GuildMember } from 'discord.js';
 import { rolePingAllowed, type GuildId } from '@bananasaurs/core';
 import { mcpRolePolicyRepo, type GuildScope } from '@bananasaurs/storage';
-import { resolveRoleRef } from '@bananasaurs/mcp';
+import {
+  resolveRoleRef,
+  SEND_PING_ROLES_MAX,
+  SEND_PING_USERS_MAX,
+  type McpNotPinged,
+} from '@bananasaurs/mcp';
 import { resolveChannel } from '../channels/resolver.js';
 import { channelAccessFor } from '../channels/access.js';
 
@@ -399,4 +404,172 @@ export const filterPings = async (
     if (!userIds.includes(ref)) userIds.push(ref);
   }
   return { roleIds, userIds, dropped };
+};
+
+/**
+ * The user and role mentions typed into MCP-posted text (ADR 0128 §1), in
+ * order and without repeats: `<@id>` and `<@!id>` are users, `<@&id>` roles.
+ * `@everyone`, `@here` and channel mentions are never ping targets. Code
+ * spans and fenced blocks are skipped: Discord renders a mention there as
+ * text and never pings it, so checking it would only cost a lookup and
+ * report a false "not pinged".
+ */
+const TEXT_MENTION = /<@([!&]?)(\d{17,20})>/g;
+const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g;
+
+export const textMentions = (
+  text: string | undefined,
+): { readonly users: string[]; readonly roles: string[] } => {
+  const users: string[] = [];
+  const roles: string[] = [];
+  if (text === undefined) return { users, roles };
+  for (const match of text.replace(CODE_SPAN, ' ').matchAll(TEXT_MENTION)) {
+    const id = match[2];
+    if (id === undefined) continue;
+    const list = match[1] === '&' ? roles : users;
+    if (!list.includes(id)) list.push(id);
+  }
+  return { users, roles };
+};
+
+export interface CappedPings {
+  readonly roleIds: string[];
+  readonly userIds: string[];
+  readonly notPinged: McpNotPinged[];
+}
+
+export type SendPingResolution =
+  | ({ readonly ok: true } & CappedPings)
+  | { readonly ok: false; readonly reason: PingRefusal; readonly ref: string };
+
+/**
+ * The pings of one MCP post (ADR 0128 §2): the explicit `pingRoles` /
+ * `pingUsers` stay strict — `resolvePings` refuses the call on the first bad
+ * one — and the mentions typed into `text` are best effort — `filterPings`
+ * drops a bad one, which the result reports as not pinged.
+ */
+export const resolveSendPings = async (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+  input: {
+    readonly roles: readonly string[];
+    readonly users: readonly string[];
+    readonly text: string | undefined;
+  },
+): Promise<SendPingResolution> => {
+  const explicit = await resolvePings(client, scope, guildId, {
+    roles: input.roles,
+    users: input.users,
+  });
+  if (!explicit.ok) return explicit;
+  return { ok: true, ...(await withTextPings(client, scope, guildId, explicit, input.text)) };
+};
+
+/**
+ * Adds the mentions typed into `text` to already-resolved `base` pings, best
+ * effort and under the caps (ADR 0128 §2–§3). Scheduling calls it on its
+ * own, to report what the text would not ping while storing only the
+ * explicit ids.
+ *
+ * Best effort means it never throws and never refuses: a mention past the
+ * cap is reported `over-cap` without a lookup (a 2,000-character text can
+ * hold ~90 mentions, and each uncached one costs a REST call), and a
+ * membership lookup that fails for any reason other than Unknown Member is
+ * reported `member-check-failed` instead of failing the post — a Discord
+ * blip must not stop a send that needed no lookup before ADR 0128.
+ */
+export const withTextPings = async (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+  base: { readonly roleIds: readonly string[]; readonly userIds: readonly string[] },
+  text: string | undefined,
+  /** Ids already checked and dropped by the caller: neither re-checked nor re-reported. */
+  decided: readonly McpNotPinged[] = [],
+): Promise<CappedPings> => {
+  const seen = (kind: 'role' | 'user', id: string): boolean =>
+    decided.some((drop) => drop.kind === kind && drop.id === id);
+  const all = textMentions(text);
+  const mentioned = {
+    roles: all.roles.filter((id) => !seen('role', id)),
+    users: all.users.filter((id) => !seen('user', id)),
+  };
+  const roleIds = [...base.roleIds];
+  const userIds = [...base.userIds];
+  const notPinged: McpNotPinged[] = [];
+  const guild = client.guilds.cache.get(guildId);
+  const context =
+    guild === undefined || mentioned.roles.length === 0
+      ? undefined
+      : rolePingContextFor(client, scope, guildId);
+  for (const id of mentioned.roles) {
+    if (roleIds.includes(id)) continue;
+    if (roleIds.length >= SEND_PING_ROLES_MAX) {
+      notPinged.push({ kind: 'role', id, reason: 'over-cap' });
+      continue;
+    }
+    if (context === undefined) {
+      notPinged.push({ kind: 'role', id, reason: 'role-unknown' });
+      continue;
+    }
+    const checked = checkRolePing(client, scope, guildId, id, context);
+    if (!checked.ok) notPinged.push({ kind: 'role', id: checked.id, reason: checked.reason });
+    else if (!roleIds.includes(checked.id)) roleIds.push(checked.id);
+  }
+  for (const id of mentioned.users) {
+    if (userIds.includes(id)) continue;
+    if (userIds.length >= SEND_PING_USERS_MAX) {
+      notPinged.push({ kind: 'user', id, reason: 'over-cap' });
+      continue;
+    }
+    if (guild === undefined) {
+      notPinged.push({ kind: 'user', id, reason: 'user-not-member' });
+      continue;
+    }
+    let member: boolean;
+    try {
+      member = await isLiveMember(guild, id);
+    } catch {
+      notPinged.push({ kind: 'user', id, reason: 'member-check-failed' });
+      continue;
+    }
+    if (member) userIds.push(id);
+    else notPinged.push({ kind: 'user', id, reason: 'user-not-member' });
+  }
+  return { roleIds, userIds, notPinged };
+};
+
+/**
+ * The delivery-time pings of a scheduled send (ADR 0128 §5): the stored
+ * explicit pings through the ADR 0119 §2 filter, unchanged — a transport
+ * fault there still throws, so the pass retries — then the mentions in the
+ * text as it stands now, best effort under `withTextPings`.
+ */
+export const filterSendPings = async (
+  client: Client,
+  scope: GuildScope,
+  guildId: GuildId,
+  input: {
+    readonly roles: readonly string[];
+    readonly users: readonly string[];
+    readonly text: string | undefined;
+  },
+): Promise<CappedPings> => {
+  const stored = await filterPings(client, scope, guildId, {
+    roles: input.roles,
+    users: input.users,
+  });
+  const withText = await withTextPings(
+    client,
+    scope,
+    guildId,
+    {
+      roleIds: stored.roleIds.slice(0, SEND_PING_ROLES_MAX),
+      userIds: stored.userIds.slice(0, SEND_PING_USERS_MAX),
+    },
+    input.text,
+    stored.dropped,
+  );
+  return { ...withText, notPinged: [...stored.dropped, ...withText.notPinged] };
 };

@@ -9,7 +9,16 @@ import {
 import { idsAreWellFormed } from '../ids.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 import { MCP_READ_LIST_SCHEDULED, type McpReadRecord } from '../read-audit.js';
-import { SEND_CONTENT_MAX, SEND_PING_ROLES_MAX, SEND_PING_USERS_MAX } from './send.js';
+import {
+  notPingedText,
+  SEND_CONTENT_MAX,
+  SEND_PING_ROLES_MAX,
+  SEND_PING_USERS_MAX,
+  type McpNotPinged,
+} from './send.js';
+
+/** Scheduled text is checked again at delivery, so the report is "as of now". */
+const SCHEDULED_NOT_PINGED_LEAD = 'As of now, these mentions in the text would not ping';
 
 /**
  * The four schedule tools, registered under the send scope: scheduling a
@@ -63,8 +72,9 @@ export const SCHEDULE_MESSAGE_TOOL_DESCRIPTION =
   `${String(SCHEDULE_CONTENT_MAX)} characters, and exactly one of at ` +
   '(an ISO-8601 string or epoch milliseconds, must be in the future) or recurrence ' +
   '(a daily, weekdays, weekly or monthly pattern with a time zone). ' +
-  'Mentions typed into the content never ping: @everyone, @here, role and user mentions render but notify nobody ' +
-  'unless named in pingRoles/pingUsers, which are checked against the guild ping policy when scheduled. ' +
+  'Member (<@USER_ID>) and role (<@&ROLE_ID>) mentions typed into the content ping when it is sent, ' +
+  'checked against the guild ping policy then; @everyone and @here never ping. ' +
+  'pingRoles/pingUsers add pings strictly: a bad one there refuses the call when scheduled. ' +
   'Scheduling cannot be undone: to remove the send, call cancel_scheduled with its reminder id. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will schedule the message twice. ' +
@@ -160,8 +170,18 @@ export interface McpSchedulePort {
 
 /** Mirrors the gateway's outcomes, named in this package's own vocabulary. */
 export type McpScheduleOutcome =
-  | { readonly status: 'done'; readonly actionId: string; readonly reminderId?: string | undefined }
-  | { readonly status: 'dry-run'; readonly actionId: string }
+  | {
+      readonly status: 'done';
+      readonly actionId: string;
+      readonly reminderId?: string | undefined;
+      /** Text mentions that would not ping as of this call (ADR 0128 §5). */
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
+    }
+  | {
+      readonly status: 'dry-run';
+      readonly actionId: string;
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
+    }
   | { readonly status: 'replayed'; readonly actionId: string }
   | { readonly status: 'refused'; readonly reason: McpScheduleRefusal; readonly detail?: string }
   | { readonly status: 'failed' };
@@ -309,7 +329,7 @@ export const scheduleMessageParams = {
   content: z
     .string()
     .describe(
-      `Message text in Discord Markdown, 1 to ${String(SCHEDULE_CONTENT_MAX)} characters. Mentions never ping unless named in pingRoles/pingUsers.`,
+      `Message text in Discord Markdown, 1 to ${String(SCHEDULE_CONTENT_MAX)} characters. <@USER_ID> and <@&ROLE_ID> mentions ping under the guild ping policy; @everyone and @here never do.`,
     ),
   at: z
     .union([z.string(), z.number()])
@@ -588,14 +608,16 @@ const renderOutcome = (
               `Scheduled message ${outcome.reminderId} to channel ${target.channel ?? '?'} ` +
               `in guild ${guildId} (action ${outcome.actionId}): ${timing}. ` +
               'Scheduling cannot be undone: to remove the send, call ' +
-              `\`${CANCEL_SCHEDULED_TOOL_NAME}\` with reminderId ${outcome.reminderId}.`,
+              `\`${CANCEL_SCHEDULED_TOOL_NAME}\` with reminderId ${outcome.reminderId}.` +
+              notPingedText(outcome.notPinged, SCHEDULED_NOT_PINGED_LEAD),
           };
         case 'edit':
           return {
             ok: true,
             text:
               `Edited scheduled message ${outcome.reminderId} in guild ${guildId} ` +
-              `(action ${outcome.actionId}). The previous values were kept for undo.`,
+              `(action ${outcome.actionId}). The previous values were kept for undo.` +
+              notPingedText(outcome.notPinged, SCHEDULED_NOT_PINGED_LEAD),
           };
         case 'cancel':
           return {
@@ -614,7 +636,8 @@ const renderOutcome = (
         text:
           `Dry run is on for guild ${guildId}: ` +
           `${nothingHappened}. The write was recorded ` +
-          `as action ${outcome.actionId} under its idempotency key but nothing was stored.`,
+          `as action ${outcome.actionId} under its idempotency key but nothing was stored.` +
+          notPingedText(outcome.notPinged, SCHEDULED_NOT_PINGED_LEAD),
       };
     case 'replayed':
       // Not a failure: the write is already handled under this key and

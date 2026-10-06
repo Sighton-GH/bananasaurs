@@ -7,7 +7,14 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { idsAreWellFormed } from '../ids.js';
-import { SEND_CONTENT_MAX, SEND_EMBED_TOTAL_MAX, SEND_EMBEDS_MAX, type SendEmbed } from './send.js';
+import {
+  notPingedText,
+  SEND_CONTENT_MAX,
+  SEND_EMBED_TOTAL_MAX,
+  SEND_EMBEDS_MAX,
+  type McpNotPinged,
+  type SendEmbed,
+} from './send.js';
 
 /**
  * The six thread/forum write tools, registered under the send scope.
@@ -41,6 +48,7 @@ export const CREATE_THREAD_TOOL_DESCRIPTION =
   'Creates a public or private thread under an allowlisted text channel of this guild. ' +
   'Takes a channel id or name, a thread name up to 100 characters, and the thread type. ' +
   'Private threads are readable back through read_thread and postable through send_message. ' +
+  'Member and role mentions in the first message ping under the guild ping policy, as in send_message. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will create the thread twice. ' +
   'Pass dryRun to record without creating. ' +
@@ -63,6 +71,7 @@ export const CREATE_FORUM_POST_TOOL_NAME = 'create_forum_post';
 export const CREATE_FORUM_POST_TOOL_DESCRIPTION =
   'Creates a public post in a forum channel of this guild: a title up to 100 characters plus ' +
   'content, embeds, or both, with up to 5 tags matched by name or id against the forum tags. ' +
+  'Member and role mentions in the content ping under the guild ping policy, as in send_message. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will post twice. ' +
   'Pass dryRun to record without posting.';
@@ -150,8 +159,14 @@ export type McpThreadWriteOutcome =
       readonly actionId: string;
       readonly threadId?: string | undefined;
       readonly messageId?: string | undefined;
+      /** Mentions in the posted text that did not ping (ADR 0128 §2). */
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
     }
-  | { readonly status: 'dry-run'; readonly actionId: string }
+  | {
+      readonly status: 'dry-run';
+      readonly actionId: string;
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
+    }
   | {
       readonly status: 'replayed';
       readonly actionId: string;
@@ -642,7 +657,8 @@ const createThreadInner = async (
         ok: true,
         text:
           `Created ${input.type} thread ${outcome.threadId} in channel ${input.channel} ` +
-          `in guild ${guildId} (action ${outcome.actionId}).${first}`,
+          `in guild ${guildId} (action ${outcome.actionId}).${first}` +
+          notPingedText(outcome.notPinged),
       };
     }
     case 'dry-run':
@@ -653,7 +669,8 @@ const createThreadInner = async (
           `nothing was created in channel ${input.channel}. The creation was recorded ` +
           `as action ${outcome.actionId} under its idempotency key but no Discord call was made. ` +
           `It would create a ${input.type} thread` +
-          `${input.firstMessage === undefined ? '' : ' with a first message'}.`,
+          `${input.firstMessage === undefined ? '' : ' with a first message'}.` +
+          notPingedText(outcome.notPinged, 'These mentions would not ping'),
       };
     case 'replayed':
       if (outcome.threadId !== undefined) {
@@ -806,7 +823,8 @@ const createForumPostInner = async (
         ok: true,
         text:
           `Created forum post ${outcome.threadId} in forum ${input.forum} ` +
-          `in guild ${guildId} (starter message ${outcome.messageId}, action ${outcome.actionId}).`,
+          `in guild ${guildId} (starter message ${outcome.messageId}, action ${outcome.actionId}).` +
+          notPingedText(outcome.notPinged),
       };
     }
     case 'dry-run':
@@ -815,7 +833,8 @@ const createForumPostInner = async (
         text:
           `Dry run is on for guild ${guildId}: ` +
           `nothing was posted to forum ${input.forum}. The post was recorded ` +
-          `as action ${outcome.actionId} under its idempotency key but no Discord call was made.`,
+          `as action ${outcome.actionId} under its idempotency key but no Discord call was made.` +
+          notPingedText(outcome.notPinged, 'These mentions would not ping'),
       };
     case 'replayed':
       if (outcome.threadId !== undefined) {
