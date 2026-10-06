@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ProviderError } from './errors.js';
 import { createNvidiaNimProvider, createOpenRouterProvider } from './openai-compatible.js';
 
 const response = new Response(
@@ -450,6 +451,76 @@ describe('OpenAI-compatible providers', () => {
     expect('thinking_budget' in body).toBe(false);
     expect('thinkingConfig' in body).toBe(false);
     expect('thinking_config' in body).toBe(false);
+  });
+
+  describe('empty-answer evidence (ADR 0129 §4)', () => {
+    it('throws an empty answer with finishReason, upstream and emptyAnswer', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            provider: 'Nebius',
+            choices: [{ message: { content: null, reasoning: 'thinking…' }, finish_reason: 'length' }],
+            usage: {
+              completion_tokens: 2048,
+              completion_tokens_details: { reasoning_tokens: 2048 },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err).toMatchObject({
+        kind: 'invalid-response',
+        finishReason: 'length',
+        upstream: 'Nebius',
+      });
+      expect((err as Error).message).toBe('openrouter returned no text');
+      expect((err as ProviderError).emptyAnswer).toEqual({
+        completionTokens: 2048,
+        reasoningTokens: 2048,
+        reasoningOnly: true,
+      });
+    });
+
+    it('attaches upstream from the error body provider_name', async () => {
+      const body = JSON.stringify({
+        error: { code: 404, message: 'No endpoints found', metadata: { provider_name: 'X' } },
+      });
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(body, { status: 404 }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ upstream: 'X' });
+    });
+
+    it('reports upstream and thinkingTokens on success', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            provider: 'Nebius',
+            choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+            usage: {
+              prompt_tokens: 2,
+              completion_tokens: 3,
+              total_tokens: 5,
+              completion_tokens_details: { reasoning_tokens: 12 },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] }),
+      ).resolves.toMatchObject({ upstream: 'Nebius', usage: { thinkingTokens: 12 } });
+    });
   });
 
   describe('error fields (ADR 0079)', () => {

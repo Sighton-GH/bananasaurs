@@ -182,13 +182,38 @@ describe('netCodeOf', () => {
 });
 
 describe('PROVIDER_FAILURE_TEXT', () => {
-  it('has 18 codes each with non-empty title, explanation and hint', () => {
-    expect(PROVIDER_FAILURE_CODES).toHaveLength(18);
+  it('has 19 codes each with non-empty title, explanation and hint', () => {
+    expect(PROVIDER_FAILURE_CODES).toHaveLength(19);
     for (const code of PROVIDER_FAILURE_CODES) {
       const text = PROVIDER_FAILURE_TEXT[code];
       expect(text.title.length).toBeGreaterThan(0);
       expect(text.explanation.length).toBeGreaterThan(0);
       expect(text.hint.length).toBeGreaterThan(0);
     }
+  });
+
+  it('classifies an empty-answer error as provider-empty-answer', () => {
+    const failure = classifyProviderFailure(
+      new ProviderError('invalid-response', 'openrouter returned no text', false, {
+        finishReason: 'length',
+        upstream: 'Nebius',
+        emptyAnswer: { completionTokens: 2048, reasoningTokens: 2048, reasoningOnly: true },
+      }),
+      { provider: 'openrouter', model: 'm' },
+    );
+    expect(failure).toMatchObject({
+      code: 'provider-empty-answer',
+      finishReason: 'length',
+      upstream: 'Nebius',
+    });
+  });
+
+  it('keeps a plain invalid-response as provider-invalid-response', () => {
+    expect(
+      classifyProviderFailure(new ProviderError('invalid-response', 'x', false), {
+        provider: 'p',
+        model: 'm',
+      }).code,
+    ).toBe('provider-invalid-response');
   });
 });

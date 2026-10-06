@@ -129,4 +129,12 @@ describe('safeLogFields — allowlist, not denylist', () => {
       oauthTokenId: 'tok_def',
     });
   });
+
+  it('keeps runId, finishReason and upstream (ADR 0129 §5)', () => {
+    expect(safeLogFields({ runId: '123', finishReason: 'length', upstream: 'X' })).toEqual({
+      runId: '123',
+      finishReason: 'length',
+      upstream: 'X',
+    });
+  });
 });

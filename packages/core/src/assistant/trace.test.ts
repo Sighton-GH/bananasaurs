@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { assistantTraceSchema, capTrace, estimateTokens, type AssistantTrace } from './trace.js';
+import {
+  assistantTraceSchema,
+  capTrace,
+  estimateTokens,
+  summaryOfTrace,
+  type AssistantTrace,
+} from './trace.js';
 
 /**
  * A fixture trace as stored data: fixed ids and timestamps, no narrative
@@ -200,6 +206,51 @@ describe('assistantTraceSchema', () => {
       outcome: 'ok',
       ms: 1,
     });
+  });
+
+  it('parses a trace with every new attempt field plus runId', () => {
+    const trace = fixtureTrace({
+      runId: 'run-1',
+      attempts: [
+        {
+          provider: 'openrouter',
+          model: 'm',
+          outcome: 'error',
+          reason: 'openrouter returned no text',
+          ms: 250,
+          code: 'provider-empty-answer',
+          providerMessage: 'openrouter returned no text',
+          finishReason: 'length',
+          upstream: 'Nebius',
+          completionTokens: 2048,
+          reasoningTokens: 2048,
+          costUsd: 0.001,
+        },
+      ],
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)))).toEqual(trace);
+  });
+});
+
+describe('summaryOfTrace errorCode (ADR 0129 §5)', () => {
+  it('reports the last non-ok non-skipped attempt code', () => {
+    const summary = summaryOfTrace(
+      fixtureTrace({
+        attempts: [
+          { provider: 'p', model: 'a', outcome: 'error', ms: 1, code: 'provider-invalid-response' },
+          { provider: 'p', model: 'b', outcome: 'skipped', ms: 0 },
+          { provider: 'p', model: 'c', outcome: 'error', ms: 1, code: 'provider-bad-model' },
+        ],
+      }),
+    );
+    expect(summary.errorCode).toBe('provider-bad-model');
+  });
+
+  it('omits errorCode when only ok attempts exist', () => {
+    const summary = summaryOfTrace(
+      fixtureTrace({ attempts: [{ provider: 'p', model: 'm', outcome: 'ok', ms: 1 }] }),
+    );
+    expect(summary).not.toHaveProperty('errorCode');
   });
 });
 

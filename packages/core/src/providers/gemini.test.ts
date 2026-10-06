@@ -99,6 +99,35 @@ describe('GeminiProvider', () => {
     ).rejects.toMatchObject({ kind: 'safety-refusal', retryable: false });
   });
 
+  it('attaches finishReason and emptyAnswer to a MAX_TOKENS empty answer', async () => {
+    const provider = new GeminiProvider({
+      apiKey: 'secret',
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        ok({
+          candidates: [{ finishReason: 'MAX_TOKENS' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 },
+        }),
+      ),
+    });
+    const error = await provider
+      .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+      .catch((value: unknown) => value);
+    expect(error).toMatchObject({ kind: 'invalid-response', finishReason: 'MAX_TOKENS' });
+    expect((error as ProviderError).emptyAnswer).toMatchObject({ reasoningOnly: false });
+  });
+
+  it('attaches finishReason and no emptyAnswer to a SAFETY empty answer', async () => {
+    const provider = new GeminiProvider({
+      apiKey: 'secret',
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ candidates: [{ finishReason: 'SAFETY' }] })),
+    });
+    const error = await provider
+      .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+      .catch((value: unknown) => value);
+    expect(error).toMatchObject({ kind: 'safety-refusal', finishReason: 'SAFETY' });
+    expect((error as ProviderError).emptyAnswer).toBeUndefined();
+  });
+
   describe('tool calls (ADR 0067)', () => {
     const declaration = {
       name: 'current_time',
