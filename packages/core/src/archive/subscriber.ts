@@ -69,6 +69,7 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
       isPrivateThread: event.isPrivateThread,
       hasOwnRow: (id) => ports.isChannelEnabled(id),
       hasCategoryRow: (id) => ports.hasCategoryRow(id),
+      hasPausedOwnRow: (id) => ports.hasPausedOwnRow(id),
       isExcluded: (id) => ports.isChannelExcluded(id),
       parentIncludesThreads: (id) => ports.parentIncludesThreads(id),
     });

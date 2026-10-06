@@ -16,7 +16,6 @@ import {
   contentHashFor,
   customEmojiKey,
   effectiveSkillScope,
-  isInScope,
   nextOccurrence,
   panelDefinitionSchema,
   parseSnowflakeId,
@@ -38,6 +37,12 @@ import {
   type ReminderRecurrence,
   type RolePingRefusal,
 } from '@bananasaurs/core';
+import {
+  channelAccessFor,
+  excludedThreadIds,
+  noAccessFromCache,
+  withoutNoAccessRows,
+} from '../channels/access.js';
 import { taskAdminPortFor } from './task-admin-port.js';
 import {
   mcpRoleGatewayFor,
@@ -127,7 +132,6 @@ import {
   effectRepo,
   isTargetProtected,
   jobRepo,
-  loggingRepo,
   modCaseRepo,
   panelRepo,
   resourceCacheRepo,
@@ -305,90 +309,165 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
  * A fault leaves one allowlisted-fields error line via `loggedCall` above,
  * never message content (rule 4).
  */
-const archivePortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpArchivePort => ({
-  now: deps.now,
-  listArchiveChannelIds: (guildId) =>
-    loggedCall(deps.logger, 'listArchiveChannelIds', () =>
-      archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
-    ),
-  searchMessages: (guildId, input) =>
-    loggedCall(deps.logger, 'searchMessages', () => {
-      const result = archiveSearchRepo.searchMessages(deps.scopes.forGuild(guildId), {
-        query: input.query,
-        visibility: input.visibility,
-        ...(input.channelIds !== undefined ? { channelIds: input.channelIds } : {}),
-        ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
-        ...(input.before !== undefined ? { before: input.before } : {}),
-        ...(input.after !== undefined ? { after: input.after } : {}),
-        ...(input.limit !== undefined ? { limit: input.limit } : {}),
-      });
-      return {
-        total: result.total,
-        hits: result.hits.map((hit) => ({
-          messageId: hit.messageId,
-          channelId: hit.channelId,
-          threadId: hit.threadId,
-          authorId: hit.authorId,
-          createdAt: hit.createdAt,
-          excerpt: hit.excerpt,
-        })),
-      };
-    }),
-  findMessage: (guildId, messageId) =>
-    loggedCall(deps.logger, 'findMessage', () => {
-      const row = archiveRepo.findMessage(deps.scopes.forGuild(guildId), messageId);
-      return row === undefined ? undefined : toMcpArchiveMessage(row);
-    }),
-  listChannelHistory: (guildId, input) =>
-    loggedCall(deps.logger, 'listChannelHistory', () =>
-      archiveRepo
-        .listChannelHistory(deps.scopes.forGuild(guildId), {
-          channelId: input.channelId,
-          // M1: a forum's posts are threads; the read rolls them up under
-          // the forum id. The type comes from the live cache — the repo
-          // never trusts caller input for the visibility decision.
-          ...(client.guilds.cache.get(guildId)?.channels.cache.get(input.channelId)?.type ===
-          ChannelType.GuildForum
-            ? { includeThreads: true as const }
-            : {}),
-          ...(input.beforeMessageId !== undefined
-            ? { beforeMessageId: input.beforeMessageId }
-            : {}),
-          ...(input.limit !== undefined ? { limit: input.limit } : {}),
-          ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
-        })
-        .map(toMcpArchiveMessage),
-    ),
-  listMessagesSince: (guildId, input) =>
-    loggedCall(deps.logger, 'listMessagesSince', () =>
-      archiveRepo
-        .listMessagesSince(deps.scopes.forGuild(guildId), {
-          channelIds: [...input.channelIds],
-          since: input.since,
-          ...(input.after !== undefined ? { after: input.after } : {}),
-          limit: input.limit,
-        })
-        .map(toMcpArchiveMessage),
-    ),
-  listUnansweredRoleMentions: (guildId, input) =>
-    loggedCall(deps.logger, 'listUnansweredRoleMentions', () =>
-      archiveRepo
-        .listUnansweredRoleMentions(deps.scopes.forGuild(guildId), { ...input })
-        .map(toMcpArchiveMessage),
-    ),
+const archivePortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): McpArchivePort => {
   /**
-   * Slice 2, Task 6: one message's live pin state and reaction counts over
-   * REST. `undefined` when Discord no longer has it (the adapter's 404/403
-   * fold); a throw stays a throw here — the tool layer fails soft, this port
-   * only logs. A fault leaves one allowlisted-fields error line via
-   * `loggedCallAsync` above, never message content (rule 4).
+   * ADR 0126 Task 9: archived-history visibility — an archive row exists (any
+   * kind, paused or not: pausing keeps history searchable by owner decision)
+   * and the channel is not No-access. Synchronous: both halves are sync reads
+   * (the repository, the channel cache), so the ports below stay synchronous.
    */
-  messageMeta: (guildId, channelId, messageId) =>
-    loggedCallAsync(deps.logger, 'messageMeta', () =>
-      discord.fetchMessageMeta(guildId, { channelId, messageId }),
-    ),
-  botUserId: () => client.user?.id ?? undefined,
-});
+  const canSearchArchived = (guildId: GuildId, channelId: string): boolean => {
+    const scope = deps.scopes.forGuild(guildId);
+    return (
+      archiveRepo.hasArchivedChannel(scope, channelId) &&
+      !noAccessFromCache(client, scope, channelId)
+    );
+  };
+
+  return {
+    now: deps.now,
+    listArchiveChannelIds: (guildId) =>
+      loggedCall(deps.logger, 'listArchiveChannelIds', () =>
+        archiveRepo
+          .listChannels(deps.scopes.forGuild(guildId))
+          .map((channel) => channel.channelId)
+          .filter((channelId) => canSearchArchived(guildId, channelId)),
+      ),
+    searchMessages: (guildId, input) =>
+      loggedCall(deps.logger, 'searchMessages', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const result = archiveSearchRepo.searchMessages(scope, {
+          query: input.query,
+          visibility: input.visibility,
+          ...(input.channelIds !== undefined ? { channelIds: input.channelIds } : {}),
+          ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
+          ...(input.before !== undefined ? { before: input.before } : {}),
+          ...(input.after !== undefined ? { after: input.after } : {}),
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          // N5: hits carry their thread id — a thread excluded on its own
+          // hides its rows even though the parent channel stays visible. The
+          // predicate runs in SQL (before the limit), counted in the FTS
+          // total with the same predicate; the channel level is the
+          // visibility set the tool built from archive-enabled,
+          // No-access-filtered channels.
+          excludeThreadIds: excludedThreadIds(scope),
+        });
+        return {
+          total: result.total,
+          hits: result.hits.map((hit) => ({
+            messageId: hit.messageId,
+            channelId: hit.channelId,
+            threadId: hit.threadId,
+            authorId: hit.authorId,
+            createdAt: hit.createdAt,
+            excerpt: hit.excerpt,
+          })),
+        };
+      }),
+    findMessage: (guildId, messageId) =>
+      loggedCall(deps.logger, 'findMessage', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        const row = archiveRepo.findMessage(scope, messageId);
+        // No oracle: a message in a No-access channel answers exactly like an
+        // unknown id — and a thread excluded on its own hides its rows the
+        // same way (M6).
+        if (row === undefined || !canSearchArchived(guildId, row.channelId)) return undefined;
+        if (row.threadId !== undefined && noAccessFromCache(client, scope, row.threadId))
+          return undefined;
+        return toMcpArchiveMessage(row);
+      }),
+    listChannelHistory: (guildId, input) =>
+      loggedCall(deps.logger, 'listChannelHistory', () => {
+        // A No-access channel reads as empty, the same as a channel with no
+        // archive.
+        if (!canSearchArchived(guildId, input.channelId)) return [];
+        const scope = deps.scopes.forGuild(guildId);
+        // N5: a thread excluded on its own hides its rows even though the
+        // parent channel stays visible — in SQL, so the page stays
+        // full-length when those rows interleave.
+        return archiveRepo
+          .listChannelHistory(scope, {
+            channelId: input.channelId,
+            // M1: a forum's posts are threads; the read rolls them up under
+            // the forum id. The type comes from the live cache — the repo
+            // never trusts caller input for the visibility decision.
+            ...(client.guilds.cache.get(guildId)?.channels.cache.get(input.channelId)?.type ===
+            ChannelType.GuildForum
+              ? { includeThreads: true as const }
+              : {}),
+            ...(input.beforeMessageId !== undefined
+              ? { beforeMessageId: input.beforeMessageId }
+              : {}),
+            ...(input.limit !== undefined ? { limit: input.limit } : {}),
+            ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
+            excludeThreadIds: excludedThreadIds(scope),
+          })
+          .map(toMcpArchiveMessage);
+      }),
+    listMessagesSince: (guildId, input) =>
+      loggedCall(deps.logger, 'listMessagesSince', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        // N5: rows No access hides never reach the digest — the channel or,
+        // for a thread message, the thread itself. The thread predicate runs
+        // in SQL so the `limit + 1` probe row still proves there is more when
+        // an excluded thread's row sits inside the fetched window.
+        return archiveRepo
+          .listMessagesSince(scope, {
+            channelIds: [...input.channelIds],
+            since: input.since,
+            ...(input.after !== undefined ? { after: input.after } : {}),
+            limit: input.limit,
+            excludeThreadIds: excludedThreadIds(scope),
+          })
+          .map(toMcpArchiveMessage);
+      }),
+    listUnansweredRoleMentions: (guildId, input) =>
+      loggedCall(deps.logger, 'listUnansweredRoleMentions', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        // ADR 0126 Task 15: like the digest, a mention in a No-access
+        // channel or thread is not an open question the MCP may see.
+        return withoutNoAccessRows(
+          client,
+          scope,
+          archiveRepo.listUnansweredRoleMentions(scope, { ...input }),
+        ).map(toMcpArchiveMessage);
+      }),
+    /**
+     * Slice 2, Task 6: one message's live pin state and reaction counts over
+     * REST. `undefined` when Discord no longer has it (the adapter's 404/403
+     * fold) — and when Read is off the channel: pin and reaction state is a
+     * live Discord fetch beyond the tagging message, so a denial answers
+     * `undefined` exactly like a gone message. A throw stays a throw here —
+     * the tool layer fails soft, this port only logs. A fault leaves one
+     * allowlisted-fields error line via `loggedCallAsync` above, never
+     * message content (rule 4).
+     */
+    messageMeta: (guildId, channelId, messageId) =>
+      loggedCallAsync(deps.logger, 'messageMeta', async () => {
+        const read = await channelAccessFor(client, deps.scopes.forGuild(guildId)).check(
+          'read',
+          channelId,
+        );
+        // N6: every denial is recorded — one ids-only info line carrying
+        // guild, channel, purpose and reason, never message content.
+        if (!read.allowed) {
+          deps.logger.info(
+            safeLogFields({
+              component: 'mcp',
+              guildId,
+              channelId,
+              purpose: 'read',
+              reason: read.reason,
+            }),
+            'mcp messageMeta read denied',
+          );
+          return undefined;
+        }
+        return discord.fetchMessageMeta(guildId, { channelId, messageId });
+      }),
+    botUserId: () => client.user?.id ?? undefined,
+  };
+};
 
 /**
  * The owner's Discord user id behind ADR 0112's private-thread reads:
@@ -484,10 +563,9 @@ export const guildPortFor = (
     listChannels: (guildId) =>
       loggedCall(deps.logger, 'listChannels', () => {
         const guild = requireGuild(guildId);
+        const scope = deps.scopes.forGuild(guildId);
         const enabled = new Set(
-          archiveRepo
-            .listChannels(deps.scopes.forGuild(guildId))
-            .map((channel) => channel.channelId),
+          archiveRepo.listChannels(scope).map((channel) => channel.channelId),
         );
         const names = new Map(
           [...guild.channels.cache.values()].map((channel) => [channel.id, channel.name] as const),
@@ -498,6 +576,8 @@ export const guildPortFor = (
             // asking "what channels exist" means the room list, and a thread
             // that archived away would otherwise flicker in and out of answers.
             .filter((channel) => !channel.isThread())
+            // ADR 0126 Task 9: No-access channels are omitted, never named.
+            .filter((channel) => !noAccessFromCache(client, scope, channel.id))
             .map((channel) => {
               const parentId =
                 'parentId' in channel && typeof channel.parentId === 'string'
@@ -529,6 +609,11 @@ export const guildPortFor = (
       }),
     listThreads: (guildId, channelId, includeArchived) => {
       const guild = requireGuild(guildId);
+      // ADR 0126 Task 9: a No-access parent hides its threads entirely — the
+      // same answer as a parent with no threads, never a refusal.
+      if (noAccessFromCache(client, deps.scopes.forGuild(guildId), channelId)) {
+        return Promise.resolve([]);
+      }
       // Private threads under the channel that are shared with the MCP —
       // bot AND owner both members, checked live per thread. Unshared ones
       // never reach the tool, which renders but never filters. Archived ones
@@ -571,14 +656,22 @@ export const guildPortFor = (
         // threads (review B4 lives in the port's filter too).
         return loggedCall(deps.logger, 'listThreads', () =>
           discord.listPublicThreads(guildId, channelId).then(async (threads) => [
-            ...threads.map((thread) => ({
-              id: thread.id,
-              name: thread.name,
-              parentId: channelId,
-              archived: thread.archived,
-              isPrivate: false as const,
-            })),
-            ...(await sharedPrivate(true)),
+            // ADR 0126 Task 9: threads that are themselves excluded are
+            // omitted, on both the public listing and the shared-private one.
+            ...threads
+              .filter(
+                (thread) => !noAccessFromCache(client, deps.scopes.forGuild(guildId), thread.id),
+              )
+              .map((thread) => ({
+                id: thread.id,
+                name: thread.name,
+                parentId: channelId,
+                archived: thread.archived,
+                isPrivate: false as const,
+              })),
+            ...(await sharedPrivate(true)).filter(
+              (thread) => !noAccessFromCache(client, deps.scopes.forGuild(guildId), thread.id),
+            ),
           ]),
         );
       }
@@ -604,8 +697,13 @@ export const guildPortFor = (
         ];
       });
       return (async (): Promise<readonly McpGuildThread[]> => [
-        ...active.filter((thread) => !thread.archived),
-        ...(await sharedPrivate(false)),
+        // ADR 0126 Task 9: threads that are themselves excluded are omitted.
+        ...active
+          .filter((thread) => !thread.archived)
+          .filter((thread) => !noAccessFromCache(client, deps.scopes.forGuild(guildId), thread.id)),
+        ...(await sharedPrivate(false)).filter(
+          (thread) => !noAccessFromCache(client, deps.scopes.forGuild(guildId), thread.id),
+        ),
       ])();
     },
     listRoles: (guildId) =>
@@ -889,9 +987,30 @@ const membersPortFor = (deps: HttpDeps, client: Client): McpMembersPort => ({
       return { members: collected, truncated: false };
     }),
   lastMessageAt: (guildId, authorIds) =>
-    loggedCall(deps.logger, 'lastMessageAt', () =>
-      archiveRepo.lastMessageAtByAuthor(deps.scopes.forGuild(guildId), [...authorIds]),
-    ),
+    loggedCall(deps.logger, 'lastMessageAt', () => {
+      const scope = deps.scopes.forGuild(guildId);
+      // ADR 0126 Task 15 follow-up: per-author last-post times must not count
+      // messages in No-access channels or threads. The per-channel variant
+      // carries each group's thread id through the same No-access row filter
+      // the archive reads use, then collapses to the newest visible time per
+      // author; authors with no visible message stay absent.
+      const kept = withoutNoAccessRows(
+        client,
+        scope,
+        archiveRepo.lastMessageAtByAuthorByChannel(scope, [...authorIds]).map((row) => ({
+          channelId: row.channelId,
+          ...(row.threadId === null ? {} : { threadId: row.threadId }),
+          authorId: row.authorId,
+          last: row.last,
+        })),
+      );
+      const out = new Map<string, number>();
+      for (const row of kept) {
+        const prev = out.get(row.authorId);
+        if (prev === undefined || row.last > prev) out.set(row.authorId, row.last);
+      }
+      return out;
+    }),
   now: deps.now,
 });
 
@@ -1056,17 +1175,30 @@ const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): M
   const readable = privateThreadReadableFor(deps, client, discord);
   return {
     archiveThread: (guildId, threadId, beforeMessageId, limit) =>
-      loggedCall(deps.logger, 'archiveThread', () =>
-        archiveRepo
-          .listChannelHistory(deps.scopes.forGuild(guildId), {
+      loggedCall(deps.logger, 'archiveThread', () => {
+        const scope = deps.scopes.forGuild(guildId);
+        // ADR 0126 Task 15: a thread that is No access — on itself, its
+        // parent or its category — answers exactly like an unknown or empty
+        // thread, never a refusal and never its rows.
+        if (noAccessFromCache(client, scope, threadId)) return [];
+        return archiveRepo
+          .listChannelHistory(scope, {
             channelId: threadId,
             ...(beforeMessageId !== undefined ? { beforeMessageId } : {}),
             limit,
           })
-          .map(toMcpArchiveMessage),
-      ),
+          .map(toMcpArchiveMessage);
+      }),
     threadInfo: (guildId, threadId) =>
       loggedCallAsync(deps.logger, 'threadInfo', async () => {
+        const scope = deps.scopes.forGuild(guildId);
+        // ADR 0126 Task 15 follow-up: a thread that is No access — on
+        // itself, its parent or its category — answers exactly like an
+        // unknown thread, never its name. The cached path resolves the
+        // full precedence from the cache; an id the cache cannot resolve
+        // answers from its own exclusion only, so the REST path below
+        // re-checks the fetched parent the same way.
+        if (noAccessFromCache(client, scope, threadId)) return undefined;
         const cached = client.guilds.cache.get(guildId)?.channels.cache.get(threadId);
         if (cached !== undefined) {
           // In the cache under this guild: it is what it is — a non-thread
@@ -1086,6 +1218,10 @@ const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): M
         // unchanged, after either path.
         const fetched = await discord.fetchThreadInfo(guildId, threadId);
         if (fetched === undefined) return undefined;
+        // The cache knew neither the thread nor its parent, so the check
+        // above saw the thread's own exclusion only — the fetched parent
+        // carries the parent and category verdicts.
+        if (noAccessFromCache(client, scope, fetched.parentId)) return undefined;
         return {
           id: fetched.id,
           name: fetched.name,
@@ -1096,6 +1232,29 @@ const threadsPortFor = (deps: HttpDeps, client: Client, discord: DiscordPort): M
     privateThreadReadable: (guildId, threadId) => readable(guildId, threadId),
     liveThreadMessages: (guildId, threadId, beforeMessageId, limit) =>
       loggedCallAsync(deps.logger, 'liveThreadMessages', async () => {
+        // ADR 0126 Task 15: a live thread read is a live Discord fetch beyond
+        // the tagging message, so it needs Read — a private thread inherits
+        // its parent's row, and No access is already denied by the check. A
+        // denial reads as empty, the same as an unknown or empty thread.
+        const read = await channelAccessFor(client, deps.scopes.forGuild(guildId)).check(
+          'read',
+          threadId,
+        );
+        // N6: every denial is recorded — one ids-only info line carrying
+        // guild, channel, purpose and reason, never message content.
+        if (!read.allowed) {
+          deps.logger.info(
+            safeLogFields({
+              component: 'mcp',
+              guildId,
+              channelId: threadId,
+              purpose: 'read',
+              reason: read.reason,
+            }),
+            'mcp liveThreadMessages read denied',
+          );
+          return [];
+        }
         const messages = await discord.fetchChannelMessages(guildId, threadId, {
           ...(beforeMessageId !== undefined ? { before: beforeMessageId } : {}),
           limit,
@@ -1189,8 +1348,6 @@ const sendPortFor = (
             return { status: 'refused', reason: 'channel-not-in-guild' };
           case 'not-in-send-scope':
             return { status: 'refused', reason: 'channel-not-allowlisted' };
-          case 'private-thread-not-allowed':
-            return { status: 'refused', reason: 'private-thread' };
           case 'bot-lacks-permission':
             return {
               status: 'refused',
@@ -1559,15 +1716,14 @@ const mapThreadOutcome = (outcome: McpActionOutcome<ThreadActionResult>): McpThr
 };
 
 /**
- * Forum-post target resolution (slice 3, Task 5): send scope ∩ the bot's live
- * permissions — the same two halves `resolveSendTarget` owns, but that helper
- * answers `not-in-guild` for any channel whose `resolveChannel.postable` is
- * false, and discord.js reports `ForumChannel.isTextBased() === false`, so a
- * forum can never pass through it. This resolves the forum the same way up to
- * the postable gate: ADR 0047's `isInScope('send', …)` with the forum's own
- * facts, then the live `ViewChannel` + `SendMessages` check behind the `post`
- * need (the Task 5 ruling). `targets.ts` is outside this task's Files list,
- * so the fork lives here; a later task owning that file should reunite them.
+ * Forum-post target resolution (slice 3, Task 5): Write scope ∩ the bot's
+ * live permissions — the same two halves `resolveSendTarget` owns, but that
+ * helper answers `not-in-guild` for any channel whose `resolveChannel.postable`
+ * is false, and discord.js reports `ForumChannel.isTextBased() === false`, so
+ * a forum can never pass through it. This resolves the forum the same way up
+ * to the postable gate: the one `ChannelAccess` precedence (ADR 0126) with
+ * the forum's id, then the live `ViewChannel` + `SendMessages` check behind
+ * the `post` need (the Task 5 ruling).
  */
 const resolveForumTarget = async (
   client: Client,
@@ -1582,17 +1738,13 @@ const resolveForumTarget = async (
   if (resolved === undefined || !resolved.isForum) {
     return { ok: false, reason: 'not-in-guild' };
   }
-  const grantId = isInScope('send', {
-    channelId: resolved.channelId,
-    parentChannelId: resolved.parentChannelId,
-    categoryId: resolved.categoryId,
-    isPrivateThread: false,
-    hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
-    hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
-    isExcluded: (id) => loggingRepo.isChannelExcluded(scope, id),
-    parentIncludesThreads: () => true,
-  });
-  if (grantId === undefined) return { ok: false, reason: 'not-in-send-scope' };
+  const decision = await channelAccessFor(client, scope).check('write', resolved.channelId);
+  if (!decision.allowed) {
+    return decision.reason === 'unknown-channel'
+      ? { ok: false, reason: 'not-in-guild' }
+      : { ok: false, reason: 'not-in-send-scope' };
+  }
+  const grantId = decision.grantedBy;
   const me: GuildMember | null = client.guilds.cache.get(guildId)?.members.me ?? null;
   if (me === null) return { ok: false, reason: 'bot-lacks-permission', missing: 'ViewChannel' };
   // The resolved channel itself, not a cache probe: a forum `resolveChannel`
@@ -1637,8 +1789,6 @@ const targetRefusalFor = (
       return { status: 'refused', reason: notFound };
     case 'not-in-send-scope':
       return { status: 'refused', reason: 'channel-not-allowlisted' };
-    case 'private-thread-not-allowed':
-      return { status: 'refused', reason: 'private-thread' };
     case 'bot-lacks-permission':
       return {
         status: 'refused',
@@ -2091,8 +2241,7 @@ const messageWritesPortFor = (
 ): McpMessageWritesPort => {
   /** The target layer's reasons mapped onto the writes outcome, ids only. */
   const targetRefusal = (
-    reason:
-      'not-in-guild' | 'not-in-send-scope' | 'private-thread-not-allowed' | 'bot-lacks-permission',
+    reason: 'not-in-guild' | 'not-in-send-scope' | 'bot-lacks-permission',
     missing?: string,
   ): McpMessageWriteOutcome => {
     switch (reason) {
@@ -2100,8 +2249,6 @@ const messageWritesPortFor = (
         return { status: 'refused', reason: 'channel-not-in-guild' };
       case 'not-in-send-scope':
         return { status: 'refused', reason: 'channel-not-allowlisted' };
-      case 'private-thread-not-allowed':
-        return { status: 'refused', reason: 'private-thread' };
       case 'bot-lacks-permission':
         return {
           status: 'refused',
@@ -3558,8 +3705,6 @@ const mapPanelTargetRefusal = (target: Extract<SendTarget, { ok: false }>): Pane
       return { status: 'refused', reason: 'unknown-channel' };
     case 'not-in-send-scope':
       return { status: 'refused', reason: 'channel-not-allowlisted' };
-    case 'private-thread-not-allowed':
-      return { status: 'refused', reason: 'private-thread' };
     case 'bot-lacks-permission':
       return {
         status: 'refused',
@@ -4448,8 +4593,6 @@ const eventWritesPortFor = (
         return { status: 'refused', reason: 'channel-not-in-guild', channelId };
       case 'not-in-send-scope':
         return { status: 'refused', reason: 'channel-not-allowlisted', channelId };
-      case 'private-thread-not-allowed':
-        return { status: 'refused', reason: 'private-thread', channelId };
       case 'bot-lacks-permission':
         return {
           status: 'refused',
@@ -4946,8 +5089,6 @@ const schedulePortFor = (
         return { status: 'refused', reason: 'channel-not-in-guild' };
       case 'not-in-send-scope':
         return { status: 'refused', reason: 'channel-not-allowlisted' };
-      case 'private-thread-not-allowed':
-        return { status: 'refused', reason: 'private-thread' };
       case 'bot-lacks-permission':
         return {
           status: 'refused',

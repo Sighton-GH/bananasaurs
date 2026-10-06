@@ -103,3 +103,4 @@ The existing may-train warnings (log, dashboard, doctor) cover channel context a
 - Answers understand the channel conversation. Each mention costs one extra Discord REST call, plus a second in a thread.
 - A wrong channel follow-up guess costs little: the channel window carries the context anyway, and "new topic:" still forces a fresh conversation.
 - Members who never tag the bot can still have their recent messages sent to the provider. PRIVACY.md states this plainly, per D5.
+Amended by ADR 0126 (2026-10-02): the channel-context window and thread opener now require Read.

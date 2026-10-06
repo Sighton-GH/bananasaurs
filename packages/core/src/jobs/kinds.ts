@@ -15,6 +15,8 @@ import { assistantTraceSchema } from '../assistant/trace.js';
 export const JOB_KINDS = {
   /** Bounds `event_dedupe`, which otherwise grows one row per event forever. */
   sweepEventDedupe: 'sweep_event_dedupe',
+  /** Deletes finished job rows past retention (ADR 0127). */
+  pruneJobs: 'prune_jobs',
   /** Repairs drift after a gateway gap, or on the periodic timer. */
   reconcileGuild: 'reconcile_guild',
   /** Turns a panel's existing reactions into roles, once an owner sized it. */
@@ -100,8 +102,22 @@ export const reconcileDedupeKey = (
       // not share a key.
       `${JOB_KINDS.reconcileGuild}:${reason}:${panelId}`;
 
-/** One sweep pending at a time is enough; the next run picks up what it missed. */
-export const sweepDedupeKey = (): string => JOB_KINDS.sweepEventDedupe;
+/** ADR 0127: finished, failed and cancelled jobs are kept 14 days. */
+export const JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+/** ADR 0127: event fingerprints are kept 14 days, far past any gateway replay window. */
+export const EVENT_DEDUPE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+export const pruneJobsPayload = z.object({
+  /** Finished rows whose `updated_at` is strictly before this are deleted. */
+  olderThanMs: z.number().int().nonnegative(),
+});
+export type PruneJobsPayload = z.infer<typeof pruneJobsPayload>;
+
+/** One prune per guild per UTC day; enqueued with `oncePerBucket` (ADR 0127). */
+export const pruneJobsDedupeKey = (day: string): string => `${JOB_KINDS.pruneJobs}:${day}`;
+
+/** One sweep per guild per UTC day; enqueued with `oncePerBucket` (ADR 0127). */
+export const sweepDedupeKey = (day: string): string => `${JOB_KINDS.sweepEventDedupe}:${day}`;
 
 export const adoptPanelPayload = z.object({
   panelId: z.string().min(1).max(64),
@@ -607,7 +623,10 @@ export type ResourceRefreshPayload = z.infer<typeof resourceRefreshPayload>;
  * `resource_refresh:<resourceId|all>:<bucket>` — one pending refresh per
  * resource (or per guild, for "all") per bucket, so a flapping timer or a
  * double-tapped "Update now" collapses into the one already queued rather
- * than piling up (ADR 0016). `added` carries no time bucket: a resource is
+ * than piling up (ADR 0016). The `hourly`, `manual` and `assistant` keys
+ * are enqueued with `oncePerBucket` (ADR 0127), so the bucket runs once
+ * even after its job has finished. `added` carries no time bucket and is
+ * deliberately NOT enqueued with `oncePerBucket`: a resource is
  * added or edited rarely, and collapsing every edit within the pending job's
  * lifetime into one refresh is exactly the point — the job re-reads the
  * resource row at run time, so it always picks up the latest save.

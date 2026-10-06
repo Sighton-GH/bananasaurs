@@ -1375,6 +1375,18 @@ describe('migration 0101 removes the staged rollout without losing rules, word l
          VALUES (?, 'e1', 'false_positive', 'owner', 5, 'a quote, not abuse')`,
       )
       .run(GUILD_ID);
+    // Channel permissions (0098–0099) cascade from `guilds` too, and 0101
+    // rebuilds `guilds`: these rows must survive it.
+    raw
+      .prepare(
+        `INSERT INTO channel_read_scope (guild_id, channel_id, scope_kind, added_at)
+         VALUES (?, '444444444444444444', 'channel', 0)`,
+      )
+      .run(GUILD_ID);
+    raw.prepare(`INSERT INTO channel_read_seeds (guild_id, seeded_at) VALUES (?, 0)`).run(GUILD_ID);
+    raw
+      .prepare(`INSERT INTO channel_write_seeds (guild_id, seeded_at) VALUES (?, 0)`)
+      .run(GUILD_ID);
 
     runMigrations(raw, db, MIGRATIONS_FOLDER);
 
@@ -1425,6 +1437,15 @@ describe('migration 0101 removes the staged rollout without losing rules, word l
       },
     ]);
     expect(raw.prepare(`SELECT case_id FROM mod_cases`).all()).toEqual([{ case_id: 'case1' }]);
+    expect(raw.prepare(`SELECT channel_id FROM channel_read_scope`).all()).toEqual([
+      { channel_id: '444444444444444444' },
+    ]);
+    expect(raw.prepare(`SELECT guild_id FROM channel_read_seeds`).all()).toEqual([
+      { guild_id: GUILD_ID },
+    ]);
+    expect(raw.prepare(`SELECT guild_id FROM channel_write_seeds`).all()).toEqual([
+      { guild_id: GUILD_ID },
+    ]);
 
     expect(
       raw

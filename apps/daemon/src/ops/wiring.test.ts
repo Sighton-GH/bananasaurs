@@ -15,6 +15,7 @@ import {
   archiveRepo,
   guildRepo,
   jobRepo,
+  loggingRepo,
   mcpSendRepo,
   oauthRepo,
   sessionRepo,
@@ -212,6 +213,45 @@ describe('listUnreadableArchiveChannels', () => {
       { channelId: NO_VIEW, reason: 'no-view' },
       { channelId: NO_HISTORY, reason: 'no-history' },
     ]);
+  });
+});
+
+describe('archiveSearch hides a thread excluded on its own (M6)', () => {
+  const PARENT = '711111111111111111';
+  const THREAD_HIDDEN = '722222222222222222';
+  const THREAD_SHOWN = '733333333333333333';
+  const MEMBER = '744444444444444444';
+  const MSG_HIDDEN = '755555555555555555';
+  const MSG_SHOWN = '766666666666666666';
+
+  it('drops hits whose threadId is No access', () => {
+    enable(PARENT);
+    archiveRepo.upsertMessage(scope, {
+      messageId: MSG_HIDDEN,
+      channelId: PARENT,
+      threadId: THREAD_HIDDEN,
+      authorId: MEMBER,
+      content: 'tango hidden thread merriment',
+      createdAt: NOW,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: MSG_SHOWN,
+      channelId: PARENT,
+      threadId: THREAD_SHOWN,
+      authorId: MEMBER,
+      content: 'sierra shown thread merriment',
+      createdAt: NOW,
+      editedAt: undefined,
+      attachments: [],
+    });
+    loggingRepo.excludeChannel(scope, THREAD_HIDDEN);
+    const ports = opsPortsFor(scope, t.scopes.instance(), operations, () => NOW, client, true);
+
+    const result = ports.archiveSearch({ query: 'merriment' });
+
+    expect(result.hits.map((hit) => hit.messageId)).toEqual([MSG_SHOWN]);
   });
 });
 

@@ -344,7 +344,6 @@ describe('message-write refusal rendering', () => {
   const cases: ReadonlyArray<readonly [McpMessageWriteRefusal, string]> = [
     ['channel-not-allowlisted', 'not on the send allowlist'],
     ['channel-not-in-guild', 'not a channel this guild'],
-    ['private-thread', 'private thread'],
     ['bot-lacks-permission', 'lacks the'],
     ['protected-role-panel', 'role-panel'],
     ['protected-task-post', 'task post'],

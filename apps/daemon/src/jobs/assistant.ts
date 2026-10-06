@@ -13,6 +13,7 @@ import {
   stripNewTopic,
   type AssistantInvokePayload,
   type AssistantInvokeCursor,
+  type ChannelAccess,
   type ConversationResolution,
   type DiscordMessageRef,
   type GenerationMessage,
@@ -289,6 +290,12 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
  */
 const PROVIDER_RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
 
+/**
+ * ADR 0126 R1: how long a mention waits for the guild cache before retrying.
+ * The store allows 5 attempts, so this gives login about a minute.
+ */
+const GUILD_NOT_READY_RETRY_MS = 15_000;
+
 export const assistantInvokeHandler = (deps: {
   guildId: string;
   service: AssistantCommandService;
@@ -339,6 +346,20 @@ export const assistantInvokeHandler = (deps: {
         opts: { before: string; limit: number },
       ) => Promise<readonly RecentMessage[] | undefined>)
     | undefined;
+  /**
+   * ADR 0126: Read gates the live channel-context fetches and Write gates
+   * the reply. Optional so existing callers keep compiling; absent means no
+   * gates. The quoted (replied-to) message fetch below is a handed message
+   * and stays ungated.
+   */
+  channelAccess?: Pick<ChannelAccess, 'check'> | undefined;
+  /**
+   * ADR 0126 R1: whether the guild is in the client cache. The job worker
+   * starts before login, so a mention queued at restart can run before
+   * READY, when every channel resolves as unknown. Not ready is a retry,
+   * never a skip. Absent means always ready.
+   */
+  guildReady?: (() => boolean) | undefined;
   /**
    * ADR 0089: the live channel-context window from the AI tuning settings
    * (`assistant.channelContextMessages`). Absent means the window is off.
@@ -397,6 +418,47 @@ export const assistantInvokeHandler = (deps: {
         'assistant invocation dropped: interaction token is not from this process',
       );
       return;
+    }
+
+    // ADR 0126: Write gates the reply. A fresh mention run in a channel the
+    // bot may not post in stops before any behaviour lookup, invoke, typing
+    // or send: the member sees no reply and no provider call is made. The
+    // subscriber already gates at enqueue time; this re-check covers the
+    // delay between enqueue and run. The interaction branch above is
+    // untouched (no slash commands remain).
+    //
+    // ADR 0126 F4: the same check runs before every answer post below, not
+    // just on a fresh run — a retry past `invoke-done` must not land a
+    // staged answer in a channel Write was turned off for while the job
+    // waited. Slash answers are not channel posts, so the helper passes
+    // them through; the escalation and log stages post to operator
+    // channels, which stay exempt.
+    const writeAllowedNow = async (): Promise<boolean> => {
+      if (
+        payload.source !== 'mention' ||
+        payload.channelId === undefined ||
+        deps.channelAccess === undefined
+      )
+        return true;
+      if (deps.guildReady !== undefined && !deps.guildReady()) {
+        throw new RetryAfterError('guild not cached yet', GUILD_NOT_READY_RETRY_MS);
+      }
+      const decision = await deps.channelAccess.check('write', payload.channelId);
+      if (decision.allowed) return true;
+      deps.logger.info(
+        safeLogFields({
+          component: 'assistant-job',
+          guildId: deps.guildId,
+          channelId: payload.channelId,
+          purpose: 'write',
+          reason: decision.reason,
+        }),
+        'assistant invocation skipped: channel not writable',
+      );
+      return false;
+    };
+    if (prior === undefined) {
+      if (!(await writeAllowedNow())) return;
     }
 
     const behaviourName = async (): Promise<string> =>
@@ -676,12 +738,31 @@ export const assistantInvokeHandler = (deps: {
           // fresh-invoke branch, so a retry past `invoke-done` never fetches
           // again.
           const channelWindow = deps.channelContextMessages?.() ?? 0;
+          // ADR 0126: Read gates the live fetches below (the window and, in
+          // a thread, the starter). The quoted fetch above is a handed
+          // message and stays ungated. Denied skips the whole block and
+          // flags the trace; the answer still goes out.
+          let channelContextAllowed = true;
           if (
             payload.source === 'mention' &&
             payload.messageId !== undefined &&
             conversationId !== undefined &&
             channelWindow > 0 &&
-            deps.fetchChannelMessages !== undefined
+            deps.fetchChannelMessages !== undefined &&
+            deps.channelAccess !== undefined
+          ) {
+            if (!(await deps.channelAccess.check('read', channelId)).allowed) {
+              channelContextAllowed = false;
+              if (!flags.includes('channel-context-denied')) flags.push('channel-context-denied');
+            }
+          }
+          if (
+            payload.source === 'mention' &&
+            payload.messageId !== undefined &&
+            conversationId !== undefined &&
+            channelWindow > 0 &&
+            deps.fetchChannelMessages !== undefined &&
+            channelContextAllowed
           ) {
             const flagUnavailable = (): void => {
               if (!flags.includes('channel-context-unavailable'))
@@ -985,6 +1066,10 @@ export const assistantInvokeHandler = (deps: {
       const answerable = payload.interaction === undefined || slashToken !== undefined;
       if (answerable) {
         for (let index = partsPosted; index < parts.length; index += 1) {
+          // ADR 0126 F4: Write turned off while the job waited leaves the
+          // staged answer unposted — the cursor stays at `invoke-done` with
+          // the posted count untouched, so a later retry resumes here.
+          if (!(await writeAllowedNow())) return;
           const posted = await postPart(index, parts[index]!, slashToken);
           if (posted !== undefined) postedMessageIds.push(posted);
           partsPosted = index + 1;

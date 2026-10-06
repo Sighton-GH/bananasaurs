@@ -9,6 +9,7 @@ import {
   panelDefinitionSchema,
   parseConfig,
   parseGuildId,
+  reconcileDedupeKey,
   unicodeEmojiKey,
   type Config,
 } from '@bananasaurs/core';
@@ -16,10 +17,12 @@ import { buildClientOptions } from '@bananasaurs/discord';
 import {
   assistantRepo,
   automodRuleRepo,
+  channelReadRepo,
   guildRepo,
   jobRepo,
   listBackups,
   loggingRepo,
+  mcpSendRepo,
   panelRepo,
   pipelineRepo,
   roleRepo,
@@ -509,6 +512,33 @@ describe('reconnecting', () => {
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(1);
   });
 
+  /**
+   * ADR 0127: the `reconcile_guild:gateway-gap` enqueue deliberately carries
+   * no `oncePerBucket` — a second fresh connection after the first
+   * reconciliation finished must enqueue again, because the new gap is new
+   * work. The first job may have ended `done` or `failed`; either way it is
+   * no longer pending, which is the point. Fails if someone adds
+   * `oncePerBucket` to the reconcile enqueue in `connection-subscriber.ts`.
+   */
+  it('enqueues a second reconciliation when a second fresh connection follows the first', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+    await daemon.drainJobs();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const reconciles = jobRepo
+      .listJobs(scope, {})
+      .filter((job) => job.kind === JOB_KINDS.reconcileGuild);
+    expect(reconciles).toHaveLength(2);
+    for (const job of reconciles) expect(job.dedupeKey).toBe(reconcileDedupeKey('gateway-gap'));
+  });
+
   it('records a resumed session as a gap that needs no repair', async () => {
     seedPanel(GUILD);
     daemon = start();
@@ -524,6 +554,42 @@ describe('reconnecting', () => {
     // queue.
     const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(0);
+  });
+
+  it('records the real gap length when a resumable drop precedes the resume', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(5_000);
+    client.emit(Events.ShardResume, 0, 3);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const gaps = pipelineRepo.unreconciledGaps(scope);
+    expect(gaps).toHaveLength(1);
+    const gap = gaps[0];
+    expect(gap).toBeDefined();
+    expect(gap!.reconnectedAt - gap!.disconnectedAt).toBe(5_000);
+  });
+
+  it('keeps the first disconnect stamp when several reconnectings fire', async () => {
+    seedPanel(GUILD);
+    daemon = start();
+
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(1_000);
+    client.emit(Events.ShardReconnecting, 0);
+    discord.advance(4_000);
+    client.emit(Events.ShardResume, 0, 3);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const gaps = pipelineRepo.unreconciledGaps(scope);
+    expect(gaps).toHaveLength(1);
+    const gap = gaps[0];
+    expect(gap).toBeDefined();
+    expect(gap!.reconnectedAt - gap!.disconnectedAt).toBe(5_000);
   });
 });
 
@@ -587,7 +653,108 @@ describe('the bot user id', () => {
   });
 });
 
+describe('the channel scope seed (ADR 0126, Task 14)', () => {
+  /**
+   * Ready seeds Read and Write once, from the live guild cache: the one text
+   * channel in `guildPayload` becomes a Read row and a send-allowlist row
+   * authored by the seed. A second ready changes nothing.
+   */
+  it('seeds Read and Write once at ready', async () => {
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(channelReadRepo.listReadScope(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+    const allowed = mcpSendRepo.listAllowedChannels(scope);
+    expect(allowed.map((r) => r.channelId)).toEqual([CHANNEL]);
+    expect(allowed[0]?.addedByAccountId).toBe(mcpSendRepo.WRITE_SEED_ACCOUNT_ID);
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope)).toHaveLength(1);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toHaveLength(1);
+  });
+
+  /**
+   * A guild uncached at ready claims no marker, so it still seeds once it
+   * becomes available: the `GuildCreate` handler runs the same seed, and the
+   * markers make it a no-op if ready already seeded.
+   */
+  it('seeds on guild-available when the guild was uncached at ready', async () => {
+    client.guilds.cache.delete(GUILD);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(channelReadRepo.listReadScope(scope)).toEqual([]);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toEqual([]);
+
+    const guild = internals(client).guilds._add(guildPayload(GUILD, 'test guild'));
+    client.emit(Events.GuildCreate, guild);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+    expect(mcpSendRepo.listAllowedChannels(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+  });
+
+  /**
+   * A guild that was unavailable at READY is already in the cache with an
+   * empty channel cache, so `GuildCreate` never fires for it — when it
+   * recovers, discord.js emits `GuildAvailable` instead, and the seed runs
+   * there, once.
+   */
+  it('seeds on GuildAvailable when the guild was unavailable at ready', async () => {
+    const unavailable = internals(client).guilds._add({
+      ...guildPayload(GUILD, 'test guild'),
+      channels: [],
+      unavailable: true,
+    });
+    expect(unavailable.available).toBe(false);
+    daemon = start();
+
+    client.emit(Events.ClientReady, client as Client<true>);
+    await daemon.settle();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(channelReadRepo.listReadScope(scope)).toEqual([]);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toEqual([]);
+
+    client.guilds.cache.delete(GUILD);
+    const guild = internals(client).guilds._add(guildPayload(GUILD, 'test guild'));
+    client.emit(Events.GuildAvailable, guild);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+    expect(mcpSendRepo.listAllowedChannels(scope).map((r) => r.channelId)).toEqual([CHANNEL]);
+
+    client.emit(Events.GuildAvailable, guild);
+    await daemon.settle();
+
+    expect(channelReadRepo.listReadScope(scope)).toHaveLength(1);
+    expect(mcpSendRepo.listAllowedChannels(scope)).toHaveLength(1);
+  });
+});
+
 describe('the job worker', () => {
+  it('enqueues the daily housekeeping jobs at startup and runs both to done (ADR 0127)', async () => {
+    daemon = start();
+    await daemon.settle();
+    await daemon.drainJobs();
+
+    // Both housekeeping handlers are registered: a missing handler would fail
+    // the job instead of completing it.
+    const scope = t.scopes.forGuild(GUILD);
+    const byKind = new Map(jobRepo.listJobs(scope, {}).map((job) => [job.kind, job]));
+    for (const kind of [JOB_KINDS.pruneJobs, JOB_KINDS.sweepEventDedupe] as const) {
+      expect(byKind.get(kind)?.state).toBe('done');
+    }
+  });
+
   it('runs a queued job without anything else asking it to', async () => {
     seedPanel(GUILD);
     discord.offlineReactionAdd({

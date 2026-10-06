@@ -3,6 +3,7 @@ import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import type { GuildScope } from '../scope.js';
 import { upsertGuild } from './guilds.js';
+import { tailAudit } from './effects.js';
 import {
   allowChannel,
   claimSend,
@@ -13,6 +14,8 @@ import {
   listAllowedChannels,
   listSends,
   recordSentMessageId,
+  seedWriteScopeOnce,
+  WRITE_SEED_ACCOUNT_ID,
 } from './mcp-send.js';
 
 const GUILD_A = parseGuildId('111111111111111111');
@@ -229,5 +232,76 @@ describe('sends', () => {
     expect(listSends(a, {}).map((r) => r.idempotencyKey)).toEqual(['k3', 'k2', 'k1']);
     expect(listSends(a, { sinceMs: 2500 }).map((r) => r.idempotencyKey)).toEqual(['k3']);
     expect(listSends(a, { limit: 2 }).map((r) => r.idempotencyKey)).toEqual(['k3', 'k2']);
+  });
+});
+
+describe('seedWriteScopeOnce', () => {
+  const CATEGORY = '444444444444444446';
+  const targets = [
+    { channelId: CHANNEL_A, scopeKind: 'channel' as const },
+    { channelId: CATEGORY, scopeKind: 'category' as const },
+  ];
+
+  it('inserts targets once with the seed sentinel; the second call is already-seeded and inserts nothing', () => {
+    expect(seedWriteScopeOnce(a, { targets, now: 1000 })).toBe('seeded');
+    expect(listAllowedChannels(a)).toEqual([
+      {
+        channelId: CHANNEL_A,
+        scopeKind: 'channel',
+        addedByAccountId: WRITE_SEED_ACCOUNT_ID,
+        addedAt: 1000,
+      },
+      {
+        channelId: CATEGORY,
+        scopeKind: 'category',
+        addedByAccountId: WRITE_SEED_ACCOUNT_ID,
+        addedAt: 1000,
+      },
+    ]);
+    disallowChannel(a, CHANNEL_A, 'channel');
+    expect(
+      seedWriteScopeOnce(a, {
+        targets: [{ channelId: CHANNEL_B, scopeKind: 'channel' }],
+        now: 2000,
+      }),
+    ).toBe('already-seeded');
+    expect(listAllowedChannels(a).map((r) => r.channelId)).toEqual([CATEGORY]);
+    // Another guild's marker does not block: it still seeds.
+    expect(seedWriteScopeOnce(b, { targets, now: 1000 })).toBe('seeded');
+  });
+
+  it('with empty targets returns nothing-to-seed and does NOT claim the marker, so a later call with targets seeds', () => {
+    expect(seedWriteScopeOnce(a, { targets: [], now: 1000 })).toBe('nothing-to-seed');
+    expect(seedWriteScopeOnce(a, { targets, now: 2000 })).toBe('seeded');
+    expect(listAllowedChannels(a)).toHaveLength(2);
+  });
+
+  it('never overwrites an existing row (insert-or-ignore keeps its author and time)', () => {
+    allowChannel(a, { channelId: CHANNEL_A, addedByAccountId: 'acct-1', now: 500 });
+    expect(seedWriteScopeOnce(a, { targets, now: 1000 })).toBe('seeded');
+    const row = listAllowedChannels(a).find((r) => r.channelId === CHANNEL_A);
+    expect(row?.addedByAccountId).toBe('acct-1');
+    expect(row?.addedAt).toBe(500);
+    expect(listAllowedChannels(a)).toHaveLength(2);
+  });
+
+  it('N8: records one system audit row with the target count when it seeds, and none otherwise', () => {
+    expect(seedWriteScopeOnce(a, { targets, now: 1000 })).toBe('seeded');
+
+    const rows = tailAudit(a, { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: 'system',
+      action: 'send_channel.seeded',
+      subjectType: 'guild',
+      subjectId: GUILD_A,
+    });
+    expect(JSON.parse(rows[0]?.after ?? '{}')).toMatchObject({ targetCount: 2 });
+
+    // Neither a repeat seed nor an empty one writes a further row.
+    expect(seedWriteScopeOnce(a, { targets, now: 2000 })).toBe('already-seeded');
+    expect(seedWriteScopeOnce(a, { targets: [], now: 3000 })).toBe('nothing-to-seed');
+    expect(tailAudit(a, { limit: 10 })).toHaveLength(1);
+    expect(tailAudit(b, { limit: 10 })).toHaveLength(0);
   });
 });

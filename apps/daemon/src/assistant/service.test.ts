@@ -3,6 +3,7 @@ import {
   parseConfig,
   parseGuildId,
   ProviderError,
+  type ChannelAccess,
   type GenerateTextResponse,
   type TextProvider,
 } from '@bananasaurs/core';
@@ -658,6 +659,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       config,
       () => NOW,
       { provider: web.provider },
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -4389,6 +4391,89 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
     expect(toolTurn(seen, 1)).toContain('Bring cones');
     expect(toolTurn(seen, 1)).not.toContain('Build night');
   });
+
+  /** ADR 0126: Read gates the live `channel_history` tool. */
+  const accessWith = (readAllowed: boolean, seenChecks: string[]): ChannelAccess => ({
+    check: async (purpose, channelId) => {
+      seenChecks.push(`${purpose}:${channelId}`);
+      return readAllowed || purpose !== 'read'
+        ? { allowed: true, grantedBy: GENERAL }
+        : { allowed: false, reason: 'not-granted' };
+    },
+    canSearchArchived: async () => true,
+    isNoAccess: async () => false,
+  });
+
+  const serviceWithAccess = (access: ChannelAccess, provider: TextProvider) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL]),
+        fetchChannelMessages: async () => [],
+      },
+      chainOf(provider),
+      undefined,
+      undefined,
+      () => 15,
+      access,
+    );
+
+  const offeredOf = (): { offered: string[][]; provider: TextProvider } => {
+    const offered: string[][] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
+        offered.push((request.tools ?? []).map((tool) => tool.name));
+        return { text: 'No tools needed.', model: 'model-a' };
+      }),
+    };
+    return { offered, provider };
+  };
+
+  const askGeneral = (service: ReturnType<typeof serviceWithAccess>, invocationId: string) =>
+    service.invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: "when's the meeting?" },
+      source: 'slash-command',
+      invocationId,
+    });
+
+  it('channel_history is not declared when Read is denied', async () => {
+    const { offered, provider } = offeredOf();
+    const seenChecks: string[] = [];
+    const result = await askGeneral(
+      serviceWithAccess(accessWith(false, seenChecks), provider),
+      'int-ch-denied',
+    );
+    expect(result.ok).toBe(true);
+    expect(offered[0]).not.toContain('channel_history');
+    expect(seenChecks).toContain(`read:${GENERAL}`);
+  });
+
+  it('channel_history is declared when Read is allowed', async () => {
+    const { offered, provider } = offeredOf();
+    const seenChecks: string[] = [];
+    const result = await askGeneral(
+      serviceWithAccess(accessWith(true, seenChecks), provider),
+      'int-ch-allowed',
+    );
+    expect(result.ok).toBe(true);
+    expect(offered[0]).toContain('channel_history');
+    expect(seenChecks).toContain(`read:${GENERAL}`);
+  });
 });
 
 /**
@@ -4638,5 +4723,343 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
     );
     expect(result.ok).toBe(true);
     expect(toolTurnOf(seen)).not.toContain('lead@example.com');
+  });
+});
+
+/**
+ * Channel-permissions task 7: a No-access channel never surfaces in archive
+ * search, Try-it, conversation recall or server_info, while a paused
+ * (Archive off, collecting=false) channel stays searchable. Written red
+ * first: the service does not yet consult `channelAccess.isNoAccess` on
+ * these paths.
+ */
+describe('Task 7: No-access channels are hidden from search, recall and server_info', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const GENERAL = '567890123456789012';
+  const NOACCESS = '678901234567890123';
+  const PAUSED = '789012345678901234';
+  const CLUB_ROLE = '890123456789012345';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+    for (const channelId of [GENERAL, NOACCESS, PAUSED])
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: NOW });
+    archiveRepo.pauseChannel(scope, PAUSED);
+    archiveRepo.upsertMessage(scope, {
+      messageId: '844444444444444451',
+      channelId: GENERAL,
+      authorId: MEMBER,
+      content: 'sunflower shipment arrives friday',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: '844444444444444452',
+      channelId: NOACCESS,
+      authorId: MEMBER,
+      content: 'sunflower vault combination is secret',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: '844444444444444453',
+      channelId: PAUSED,
+      authorId: MEMBER,
+      content: 'sunflower greenhouse stays open late',
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+    const seedConversation = (
+      conversationId: string,
+      channelId: string,
+      at: number,
+      topic: string,
+      fact: string,
+    ): void => {
+      conversationRepo.createConversation(scope, {
+        conversationId,
+        channelId,
+        behaviourId: 'direct',
+        startedBy: MEMBER,
+        title: topic,
+        source: 'discord',
+        at,
+      });
+      conversationRepo.writeSummaryIfNewer(scope, {
+        conversationId,
+        summary: {
+          topic,
+          facts: [{ text: fact, from: 'member' }],
+          botClaims: [],
+          openQuestions: [],
+          commitments: [],
+          participants: [],
+        },
+        throughAt: at,
+        now: at + 1,
+      });
+    };
+    seedConversation(
+      'conv-general',
+      GENERAL,
+      NOW - 3_600_000,
+      'robot arm gearbox',
+      'The gearbox needs grease',
+    );
+    seedConversation(
+      'conv-noaccess',
+      NOACCESS,
+      NOW - 1_800_000,
+      'robot arm gripper',
+      'The gripper needs oil',
+    );
+  });
+  afterEach(() => t.close());
+
+  type DiscordPorts = Parameters<typeof createAssistantService>[7];
+  const memberChannelsAll = async () => [
+    { id: GENERAL, name: 'general' },
+    { id: NOACCESS, name: 'noaccess' },
+    { id: PAUSED, name: 'paused' },
+  ];
+
+  const noAccessFake: ChannelAccess = {
+    check: async () => ({ allowed: true, grantedBy: GENERAL }),
+    canSearchArchived: async (channelId) => channelId !== NOACCESS,
+    isNoAccess: async (channelId) => channelId === NOACCESS,
+  };
+
+  const chainOf = (provider: TextProvider) => () => [
+    {
+      providerId: 'gemini' as const,
+      model: 'model-a',
+      keyId: 'key_a',
+      keyLabel: 'Key A',
+      provider,
+      skip: undefined,
+      mayTrain: false,
+      rpmLimit: null,
+      rpdLimit: null,
+    },
+  ];
+
+  const serviceWith = (discord: DiscordPorts, provider: TextProvider, access?: ChannelAccess) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      discord,
+      chainOf(provider),
+      undefined,
+      undefined,
+      undefined,
+      access,
+    );
+
+  /** A provider that makes the scripted tool calls in order, then answers. */
+  const scriptedCalls = (
+    seen: { role: string; text: string }[][],
+    calls: { name: string; args: Record<string, unknown> }[],
+    answer: string,
+  ): TextProvider => {
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: vi.fn<TextProvider['generateText']>(async (request) => {
+        seen.push([...request.messages]);
+        round += 1;
+        const call = calls[round - 1];
+        if (call !== undefined) return { text: '', model: 'model-a', toolCalls: [call] };
+        return { text: answer, model: 'model-a' };
+      }),
+    };
+  };
+
+  const toolTurn = (seen: { role: string; text: string }[][], round: number): string =>
+    seen[round]?.filter((message) => message.role === 'tool').at(-1)?.text ?? '';
+
+  it('search_archive (find) returns no hits from the No-access channel', async () => {
+    const service = serviceWith(
+      {
+        memberChannels: memberChannelsAll,
+        audienceChannels: async () => new Set([GENERAL, NOACCESS, PAUSED]),
+      },
+      scriptedCalls([], [], 'unused'),
+      noAccessFake,
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: NOACCESS,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'find',
+      input: { query: 'sunflower' },
+      source: 'slash-command',
+      invocationId: 'int-noaccess-find',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain('shipment');
+    expect(content).not.toContain('vault');
+  });
+
+  it('Try-it search_archive returns no hits from the No-access channel', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const service = serviceWith(
+      { memberChannels: memberChannelsAll },
+      scriptedCalls(
+        seen,
+        [{ name: 'search_archive', args: { query: 'sunflower' } }],
+        'Sunflowers.',
+      ),
+      noAccessFake,
+    );
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'any sunflower news?',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe('Sunflowers.');
+    expect(toolTurn(seen, 1)).toContain('shipment');
+    expect(toolTurn(seen, 1)).not.toContain('vault');
+  });
+
+  it('a paused (Archive off) channel that is not No access still returns its hits', async () => {
+    const service = serviceWith(
+      {
+        memberChannels: memberChannelsAll,
+        audienceChannels: async () => new Set([GENERAL, NOACCESS, PAUSED]),
+      },
+      scriptedCalls([], [], 'unused'),
+      noAccessFake,
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'find',
+      input: { query: 'greenhouse' },
+      source: 'slash-command',
+      invocationId: 'int-paused-find',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.content).toContain('greenhouse');
+  });
+
+  it('search_conversations drops the No-access channel summary', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const service = serviceWith(
+      {
+        memberChannels: memberChannelsAll,
+        audienceChannels: async () => new Set([GENERAL, NOACCESS]),
+      },
+      scriptedCalls(
+        seen,
+        [{ name: 'search_conversations', args: { query: 'robot arm' } }],
+        'Done.',
+      ),
+      noAccessFake,
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'what did we decide about the robot arm?' },
+      source: 'slash-command',
+      invocationId: 'int-noaccess-recall',
+    });
+    expect(result.ok).toBe(true);
+    expect(toolTurn(seen, 1)).toContain('robot arm gearbox');
+    expect(toolTurn(seen, 1)).not.toContain('robot arm gripper');
+    expect(result.detail?.recalled).toEqual(['conv-general']);
+  });
+
+  it('server_info omits the No-access channel', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const service = serviceWith(
+      { memberChannels: memberChannelsAll },
+      scriptedCalls(seen, [{ name: 'server_info', args: {} }], 'Here are the channels.'),
+      noAccessFake,
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: GENERAL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'what channels are here?' },
+      source: 'slash-command',
+      invocationId: 'int-noaccess-server-info',
+    });
+    expect(result.ok).toBe(true);
+    expect(toolTurn(seen, 1)).toContain('#general');
+    expect(toolTurn(seen, 1)).toContain('#paused');
+    expect(toolTurn(seen, 1)).not.toContain(NOACCESS);
+    expect(toolTurn(seen, 1)).not.toContain('#noaccess');
   });
 });

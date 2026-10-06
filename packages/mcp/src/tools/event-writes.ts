@@ -183,7 +183,6 @@ export type McpEventWriteOutcome =
 export type McpEventWriteRefusal =
   | 'channel-not-allowlisted'
   | 'channel-not-in-guild'
-  | 'private-thread'
   | 'bot-lacks-permission'
   | 'event-not-found'
   | 'not-voice-or-stage'
@@ -479,11 +478,6 @@ const refusalText = (
         `\`bananasaurs mcp allow-channel ${channelId} --guild ${guildId} --confirm\` would refuse the same id. ` +
         'If the channel was already allowlisted, the bot may not see it yet ' +
         '(for example right after a restart) — wait a moment and retry this call.'
-      );
-    case 'private-thread':
-      return (
-        `Channel ${channelId} in guild ${guildId} is a private thread, so ${nothingHappened}. ` +
-        'Private threads never inherit send authorization.'
       );
     case 'bot-lacks-permission':
       // External events carry no channel: the missing permission is the

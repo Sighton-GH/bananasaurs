@@ -19,21 +19,30 @@ import {
   countMessages,
   disableChannel,
   enableChannel,
+  ensureDerivedChannel,
   expireContent,
   findChannel,
   findMessage,
+  hasArchivedChannel,
+  hasCategoryRow,
+  hasPausedOwnRow,
   isChannelEnabled,
   lastMessageAtByAuthor,
+  lastMessageAtByAuthorByChannel,
   linkToCase,
   listChannelHistory,
   listChannels,
   listMessagesSince,
   listUnansweredRoleMentions,
   markPreserve,
+  parentIncludesThreads,
+  pauseChannel,
   recordBulkDelete,
   recordDelete,
   recordEdit,
+  resumeChannel,
   setBackfillCursor,
+  setIncludeThreads,
   upsertMessage,
 } from './archive.js';
 import { SEARCH_LIMIT_MAX } from './archive-search.js';
@@ -226,6 +235,131 @@ describe('channel lifecycle', () => {
     });
     expect(countMessages(a, CHANNEL_A)).toBe(1);
     expect(countMessages(a, CHANNEL_B)).toBe(1);
+  });
+});
+
+describe('archive pause (ADR 0126)', () => {
+  it('upgrade path (migration 0098): a row written without collecting reads collecting = 1', () => {
+    // A pre-0098 row carries no collecting value; the ALTER's DEFAULT 1
+    // fills it, so upgraded guilds keep collecting until explicitly paused.
+    t.db
+      .insert(archiveChannels)
+      .values({
+        guildId: a.guildId,
+        channelId: CHANNEL_A,
+        attachmentPolicy: 'none',
+        scopeKind: 'channel',
+        derivedFrom: null,
+        enabledAt: 1000,
+        cursorMessageId: null,
+        backfillState: 'pending',
+      })
+      .run();
+    expect(findChannel(a, CHANNEL_A)).toMatchObject({ collecting: true });
+    expect(isChannelEnabled(a, CHANNEL_A)).toBe(true);
+  });
+
+  it('pauseChannel keeps the row and its messages; isChannelEnabled becomes false; hasArchivedChannel stays true', () => {
+    enable(a, CHANNEL_A);
+    seedMessage(a, { messageId: '666666666666666666' });
+    expect(pauseChannel(a, CHANNEL_A)).toBe('paused');
+    expect(pauseChannel(a, CHANNEL_A)).toBe('already-paused');
+    expect(isChannelEnabled(a, CHANNEL_A)).toBe(false);
+    expect(hasArchivedChannel(a, CHANNEL_A)).toBe(true);
+    expect(hasArchivedChannel(b, CHANNEL_A)).toBe(false);
+    expect(countMessages(a, CHANNEL_A)).toBe(1);
+    expect(findChannel(a, CHANNEL_A)?.collecting).toBe(false);
+    expect(pauseChannel(a, CHANNEL_B)).toBe('not-enabled');
+  });
+
+  it('resumeChannel restores isChannelEnabled and keeps attachmentPolicy, cursor and backfillState', () => {
+    enableChannel(a, { channelId: CHANNEL_A, attachmentPolicy: 'bytes', now: 1000 });
+    setBackfillCursor(a, {
+      channelId: CHANNEL_A,
+      cursorMessageId: '777777777777777777',
+      state: 'running',
+    });
+    pauseChannel(a, CHANNEL_A);
+    expect(resumeChannel(a, CHANNEL_A)).toBe('resumed');
+    expect(resumeChannel(a, CHANNEL_A)).toBe('already-collecting');
+    expect(isChannelEnabled(a, CHANNEL_A)).toBe(true);
+    expect(findChannel(a, CHANNEL_A)).toMatchObject({
+      collecting: true,
+      attachmentPolicy: 'bytes',
+      cursorMessageId: '777777777777777777',
+      backfillState: 'running',
+    });
+    expect(resumeChannel(a, CHANNEL_B)).toBe('not-enabled');
+  });
+
+  it('a paused category row is not a hasCategoryRow grant', () => {
+    enableChannel(a, {
+      channelId: CHANNEL_A,
+      attachmentPolicy: 'none',
+      now: 1000,
+      scopeKind: 'category',
+    });
+    expect(hasCategoryRow(a, CHANNEL_A)).toBe(true);
+    expect(pauseChannel(a, CHANNEL_A)).toBe('paused');
+    expect(hasCategoryRow(a, CHANNEL_A)).toBe(false);
+    expect(hasArchivedChannel(a, CHANNEL_A)).toBe(true);
+  });
+
+  it('a paused parent keeps its include_threads opt-out', () => {
+    enable(a, CHANNEL_A);
+    setIncludeThreads(a, CHANNEL_A, false);
+    expect(parentIncludesThreads(a, CHANNEL_A)).toBe(false);
+    pauseChannel(a, CHANNEL_A);
+    expect(parentIncludesThreads(a, CHANNEL_A)).toBe(false);
+  });
+
+  it('hasPausedOwnRow is true only for a paused channel-kind row', () => {
+    expect(hasPausedOwnRow(a, CHANNEL_A)).toBe(false);
+    enable(a, CHANNEL_A);
+    expect(hasPausedOwnRow(a, CHANNEL_A)).toBe(false);
+    expect(pauseChannel(a, CHANNEL_A)).toBe('paused');
+    expect(hasPausedOwnRow(a, CHANNEL_A)).toBe(true);
+    expect(hasPausedOwnRow(b, CHANNEL_A)).toBe(false);
+    expect(resumeChannel(a, CHANNEL_A)).toBe('resumed');
+    expect(hasPausedOwnRow(a, CHANNEL_A)).toBe(false);
+  });
+
+  it('hasPausedOwnRow is false for a paused category row and for a derived row', () => {
+    enableChannel(a, {
+      channelId: CHANNEL_A,
+      attachmentPolicy: 'none',
+      now: 1000,
+      scopeKind: 'category',
+    });
+    expect(pauseChannel(a, CHANNEL_A)).toBe('paused');
+    expect(hasPausedOwnRow(a, CHANNEL_A)).toBe(false);
+    ensureDerivedChannel(a, {
+      channelId: CHANNEL_B,
+      categoryId: CHANNEL_A,
+      attachmentPolicy: 'none',
+      now: 1000,
+    });
+    expect(hasPausedOwnRow(a, CHANNEL_B)).toBe(false);
+  });
+
+  it('pauseChannel and resumeChannel on a derived row answer derived', () => {
+    ensureDerivedChannel(a, {
+      channelId: CHANNEL_A,
+      categoryId: CHANNEL_B,
+      attachmentPolicy: 'none',
+      now: 1000,
+    });
+    expect(pauseChannel(a, CHANNEL_A)).toBe('derived');
+    expect(resumeChannel(a, CHANNEL_A)).toBe('derived');
+    expect(findChannel(a, CHANNEL_A)?.collecting).toBe(true);
+  });
+
+  it('enableChannel on a paused row returns already-enabled and does not resume', () => {
+    enable(a, CHANNEL_A);
+    pauseChannel(a, CHANNEL_A);
+    expect(enable(a, CHANNEL_A)).toBe('already-enabled');
+    expect(isChannelEnabled(a, CHANNEL_A)).toBe(false);
+    expect(findChannel(a, CHANNEL_A)?.collecting).toBe(false);
   });
 });
 
@@ -892,6 +1026,73 @@ describe('lastMessageAtByAuthor', () => {
   });
 });
 
+describe('lastMessageAtByAuthorByChannel', () => {
+  const AUTHOR_X = '600000000000000001';
+  const AUTHOR_Y = '600000000000000002';
+  const AUTHOR_Z = '600000000000000003';
+  const THREAD_T = '755555555555555555';
+
+  const seedRow = (input: {
+    messageId: string;
+    channelId: string;
+    threadId?: string;
+    authorId: string;
+    createdAt: number;
+  }) => {
+    enableChannel(a, { channelId: input.channelId, attachmentPolicy: 'none', now: 1000 });
+    upsertMessage(a, {
+      messageId: input.messageId,
+      channelId: input.channelId,
+      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+      authorId: input.authorId,
+      content: `from ${input.authorId}`,
+      createdAt: input.createdAt,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  it('carries each row channel and thread id with the newest time per group', () => {
+    seedRow({
+      messageId: '700000000000000011',
+      channelId: CHANNEL_A,
+      authorId: AUTHOR_X,
+      createdAt: 1000,
+    });
+    seedRow({
+      messageId: '700000000000000012',
+      channelId: CHANNEL_A,
+      authorId: AUTHOR_X,
+      createdAt: 1500,
+    });
+    seedRow({
+      messageId: '700000000000000013',
+      channelId: CHANNEL_A,
+      threadId: THREAD_T,
+      authorId: AUTHOR_X,
+      createdAt: 3000,
+    });
+    seedRow({
+      messageId: '700000000000000014',
+      channelId: CHANNEL_B,
+      authorId: AUTHOR_Y,
+      createdAt: 2000,
+    });
+
+    const rows = lastMessageAtByAuthorByChannel(a, [AUTHOR_X, AUTHOR_Y, AUTHOR_Z]);
+    const byKey = new Map(
+      rows.map((row) => [`${row.authorId}/${row.channelId}/${row.threadId ?? '-'}`, row.last]),
+    );
+    expect(byKey).toEqual(
+      new Map([
+        [`${AUTHOR_X}/${CHANNEL_A}/-`, 1500],
+        [`${AUTHOR_X}/${CHANNEL_A}/${THREAD_T}`, 3000],
+        [`${AUTHOR_Y}/${CHANNEL_B}/-`, 2000],
+      ]),
+    );
+  });
+});
+
 describe('archive reply links and mentioned roles (slice 2 task 3)', () => {
   const REPLY_TO = '777777777777777777';
   const ROLE_A = '888888888888888888';
@@ -1210,5 +1411,71 @@ describe('listUnansweredRoleMentions (slice 2 task 5: list_unanswered)', () => {
     seedQuestion(a, { messageId: '730000000000000062', createdAt: 3000 });
     seedQuestion(a, { messageId: '730000000000000063', createdAt: 4000 });
     expect(unanswered(a, HELP, 2)).toEqual(['730000000000000063', '730000000000000062']);
+  });
+});
+
+describe('excludeThreadIds (N5)', () => {
+  const THREAD_HIDDEN = '740000000000000001';
+
+  const seedRow = (input: {
+    messageId: string;
+    channelId: string;
+    threadId?: string;
+    createdAt: number;
+  }) => {
+    enableChannel(a, { channelId: input.channelId, attachmentPolicy: 'none', now: 1000 });
+    upsertMessage(a, {
+      messageId: input.messageId,
+      channelId: input.channelId,
+      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+      authorId: MEMBER,
+      content: `row ${input.messageId}`,
+      createdAt: input.createdAt,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  it('listMessagesSince skips excluded-thread rows inside the fetched window', () => {
+    seedRow({ messageId: '740000000000000011', channelId: CHANNEL_A, createdAt: 1000 });
+    seedRow({
+      messageId: '740000000000000012',
+      channelId: CHANNEL_A,
+      threadId: THREAD_HIDDEN,
+      createdAt: 2000,
+    });
+    seedRow({ messageId: '740000000000000013', channelId: CHANNEL_A, createdAt: 3000 });
+    seedRow({ messageId: '740000000000000014', channelId: CHANNEL_A, createdAt: 4000 });
+
+    const rows = listMessagesSince(a, {
+      channelIds: [CHANNEL_A],
+      since: 0,
+      limit: 2,
+      excludeThreadIds: [THREAD_HIDDEN],
+    });
+
+    // The hidden row sits inside the limit window; SQL refills past it, so
+    // the page stays full-length instead of coming back short.
+    expect(rows.map((row) => row.messageId)).toEqual(['740000000000000011', '740000000000000013']);
+  });
+
+  it('listChannelHistory skips excluded-thread rows interleaved in the page', () => {
+    seedRow({ messageId: '740000000000000021', channelId: CHANNEL_A, createdAt: 1000 });
+    seedRow({
+      messageId: '740000000000000022',
+      channelId: CHANNEL_A,
+      threadId: THREAD_HIDDEN,
+      createdAt: 2000,
+    });
+    seedRow({ messageId: '740000000000000023', channelId: CHANNEL_A, createdAt: 3000 });
+
+    const rows = listChannelHistory(a, {
+      channelId: CHANNEL_A,
+      limit: 2,
+      includeThreads: true,
+      excludeThreadIds: [THREAD_HIDDEN],
+    });
+
+    expect(rows.map((row) => row.messageId)).toEqual(['740000000000000023', '740000000000000021']);
   });
 });

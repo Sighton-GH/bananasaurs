@@ -49,6 +49,7 @@ const buildPipeline = (): Pipeline => {
     guildArchiveEnabled: true,
     isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
     hasCategoryRow: (channelId) => archiveRepo.hasCategoryRow(scope, channelId),
+    hasPausedOwnRow: (channelId) => archiveRepo.hasPausedOwnRow(scope, channelId),
     parentIncludesThreads: (channelId) => archiveRepo.parentIncludesThreads(scope, channelId),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
@@ -166,7 +167,7 @@ describe('category-scoped archiving through the real pipeline', () => {
     expect(archiveRepo.findChannel(scope, CHANNEL)).toBeUndefined();
   });
 
-  it('disable-category removes the derived rows and their archived messages', async () => {
+  it('delete-category removes the derived rows and their archived messages', async () => {
     await discord.emitMessageCreate({
       channelId: CHANNEL,
       messageId: nextId(),

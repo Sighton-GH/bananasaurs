@@ -168,6 +168,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
     const source: LogSource = {
       channelId: event.channelId,
       parentChannelId: event.parentChannelId,
+      categoryId: event.categoryId,
     };
     return [
       {
@@ -188,6 +189,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
     const source: LogSource = {
       channelId: event.channelId,
       parentChannelId: event.parentChannelId,
+      categoryId: event.categoryId,
     };
     const fingerprint =
       fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
@@ -206,6 +208,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
     const source: LogSource = {
       channelId: event.channelId,
       parentChannelId: event.parentChannelId,
+      categoryId: event.categoryId,
     };
     const fingerprint =
       fingerprintFor(event) ?? `${event.kind}:${event.receivedAtMs}:${event.messageId ?? 'none'}`;
@@ -340,6 +343,7 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
       const source: LogSource = {
         channelId: event.channelId,
         parentChannelId: event.parentChannelId,
+        categoryId: event.categoryId,
       };
       if (isSourceExcluded(source, (id) => ports.isChannelExcluded(id))) return;
       const routes = ports

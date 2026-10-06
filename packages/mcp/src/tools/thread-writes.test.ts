@@ -384,7 +384,6 @@ describe('thread-write refusals', () => {
     'channel-not-allowlisted',
     'channel-not-in-guild',
     'bot-lacks-permission',
-    'private-thread',
     'not-a-forum',
     'use-forum-post',
     'invalid-parent',

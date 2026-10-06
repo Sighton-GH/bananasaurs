@@ -214,7 +214,6 @@ export type McpPanelRefusal =
   | 'unknown-channel'
   | 'ambiguous-channel'
   | 'channel-not-allowlisted'
-  | 'private-thread'
   | 'bot-lacks-permission'
   | 'unknown-role'
   | 'ambiguous-role'
@@ -507,11 +506,6 @@ const refusalText = (
       return (
         `That channel in guild ${guildId} is not allowlisted for MCP posts, ` +
         `so ${undone}. An operator must allowlist it for sends before a panel can post there.`
-      );
-    case 'private-thread':
-      return (
-        `That thread in guild ${guildId} is private and not shared with the MCP, ` +
-        `so ${undone}. Panels post to channels, not private threads.`
       );
     case 'bot-lacks-permission':
       return (

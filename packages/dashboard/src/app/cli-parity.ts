@@ -117,10 +117,20 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Archive',
     control: 'enable and backfill a channel',
   },
-  'archive disable-channel': {
+  'archive delete-channel': {
     kind: 'covered',
     page: 'Archive',
-    control: 'stop archiving, rows removed, confirmed',
+    control: 'delete archived messages, confirmed',
+  },
+  'archive pause-channel': {
+    kind: 'covered',
+    page: 'Permissions',
+    control: 'Archive switch (stop / resume archiving)',
+  },
+  'archive resume-channel': {
+    kind: 'covered',
+    page: 'Permissions',
+    control: 'Archive switch (stop / resume archiving)',
   },
   'archive preserve': { kind: 'covered', page: 'Archive', control: 'preserve a hit indefinitely' },
   'archive link-case': { kind: 'covered', page: 'Archive', control: 'link a hit to an open case' },
@@ -130,10 +140,20 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Archive',
     control: 'enable a category; its channels archive dynamically',
   },
-  'archive disable-category': {
+  'archive delete-category': {
     kind: 'covered',
     page: 'Archive',
-    control: 'remove a category, rows destroyed, confirmed',
+    control: "delete a category's archived messages, confirmed",
+  },
+  'archive pause-category': {
+    kind: 'covered',
+    page: 'Permissions',
+    control: 'Archive switch (stop / resume archiving)',
+  },
+  'archive resume-category': {
+    kind: 'covered',
+    page: 'Permissions',
+    control: 'Archive switch (stop / resume archiving)',
   },
   'archive set-threads': {
     kind: 'covered',
@@ -172,6 +192,19 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     kind: 'covered',
     page: 'Connector',
     control: 'remove a category from the send allowlist',
+  },
+  'scope read list': {
+    kind: 'covered',
+    page: 'Permissions',
+    control: 'Read column, effective state per channel',
+  },
+  'scope read enable-channel': { kind: 'covered', page: 'Permissions', control: 'Read column' },
+  'scope read enable-category': { kind: 'covered', page: 'Permissions', control: 'Read column' },
+  'scope read disable-channel': { kind: 'covered', page: 'Permissions', control: 'Read column' },
+  'scope read disable-category': {
+    kind: 'covered',
+    page: 'Permissions',
+    control: 'Read column',
   },
   'mcp role-policy': {
     kind: 'covered',

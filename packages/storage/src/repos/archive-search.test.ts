@@ -468,3 +468,45 @@ describe('rebuildSearchIndex', () => {
     ).toBe(1);
   });
 });
+
+describe('excludeThreadIds (N5)', () => {
+  const THREAD_HIDDEN = '888888888888888881';
+  const THREAD_SHOWN = '888888888888888882';
+
+  const seedThreaded = (): void => {
+    enable(a, CHANNEL_A);
+    const seed = (messageId: string, content: string, threadId?: string): void => {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        ...(threadId === undefined ? {} : { threadId }),
+        authorId: MEMBER,
+        content,
+        createdAt: 2000,
+        editedAt: undefined,
+        attachments: [],
+      });
+    };
+    seed('666666666666666661', 'quince channel commons');
+    seed('666666666666666662', 'quince hidden tango', THREAD_HIDDEN);
+    seed('666666666666666663', 'quince shown sierra', THREAD_SHOWN);
+  };
+
+  it('drops excluded-thread hits and counts the total with the same predicate', () => {
+    seedThreaded();
+
+    const result = searchMessages(a, {
+      query: 'quince',
+      visibility: { channelIds: [CHANNEL_A] },
+      excludeThreadIds: [THREAD_HIDDEN],
+    });
+
+    expect(result.hits).toHaveLength(2);
+    expect(result.hits.map((hit) => hit.messageId).sort()).toEqual([
+      '666666666666666661',
+      '666666666666666663',
+    ]);
+    // The FTS total counts visible rows only, not the pre-filter matches.
+    expect(result.total).toBe(2);
+  });
+});

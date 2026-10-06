@@ -165,7 +165,6 @@ export type McpThreadWriteRefusal =
   | 'channel-not-allowlisted'
   | 'channel-not-in-guild'
   | 'bot-lacks-permission'
-  | 'private-thread'
   | 'not-a-forum'
   | 'use-forum-post'
   | 'invalid-parent'
@@ -496,11 +495,6 @@ const refusalText = (
         `The bot lacks the ${detail ?? 'needed'} Discord permission in channel ${targetId} ` +
         `in guild ${guildId}, so ${nothingHappened}. An operator who can edit the channel's ` +
         'permission overwrites can grant it, then retry this call.'
-      );
-    case 'private-thread':
-      return (
-        `Thread ${targetId} in guild ${guildId} is private and was not created through this tool, ` +
-        `so ${nothingHappened}. Private threads never inherit send authorization.`
       );
     case 'not-a-forum':
       return (

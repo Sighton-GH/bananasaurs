@@ -746,7 +746,6 @@ describe('panel refusals are distinct and content-free', () => {
     'unknown-channel',
     'ambiguous-channel',
     'channel-not-allowlisted',
-    'private-thread',
     'bot-lacks-permission',
     'unknown-role',
     'ambiguous-role',

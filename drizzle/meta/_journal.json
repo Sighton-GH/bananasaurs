@@ -439,12 +439,26 @@
     {
       "idx": 98,
       "version": "6",
+      "when": 1791064410008,
+      "tag": "0098_channel_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "6",
+      "when": 1791075124607,
+      "tag": "0099_channel_write_seeds",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "6",
       "when": 1791094147824,
       "tag": "0100_automod_state",
       "breakpoints": true
     },
     {
-      "idx": 99,
+      "idx": 101,
       "version": "6",
       "when": 1791144516873,
       "tag": "0101_automod_cleanup",

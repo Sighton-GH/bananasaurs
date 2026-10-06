@@ -12,7 +12,7 @@ import {
  * reindex from Slice M2 Task 4).
  *
  * Seven commands over the nine `OpsPorts` archive members: enabling a
- * channel (which queues its backfill), disabling one, listing the enabled
+ * channel (which queues its backfill), deleting one, listing the enabled
  * set, preserving a message, linking a message to a moderation case,
  * searching archived content, and rebuilding the search index.
  * Attachment bytes are refused at this layer (PR-67) — `bytes` never reaches
@@ -120,25 +120,28 @@ export const archiveEnableChannelCommand = defineCommand<z.infer<typeof archiveE
   },
 });
 
-// --- archive disable-channel -------------------------------------------------
+// --- archive delete-channel --------------------------------------------------
+// ADR 0126: `delete-channel` permanently deletes archived messages — turning
+// Archive off pauses recording (the `pause-channel` verb below) and deletes
+// nothing.
+// This verb permanently deletes archived messages. The ops PORT names
+// (`archiveDisableChannel`, `archiveDisableCategory`) are unchanged.
 
-const archiveDisableChannelArgs = z.object({
+const archiveDeleteChannelArgs = z.object({
   channelId: channelIdArg,
 });
 
-export const archiveDisableChannelCommand = defineCommand<
-  z.infer<typeof archiveDisableChannelArgs>
->({
-  name: 'archive disable-channel',
+export const archiveDeleteChannelCommand = defineCommand<z.infer<typeof archiveDeleteChannelArgs>>({
+  name: 'archive delete-channel',
   write: true,
-  summary: 'stop archiving a channel (its archived rows are removed)',
-  positional: [{ name: 'channelId', required: true, describe: 'the channel to stop archiving' }],
-  args: archiveDisableChannelArgs,
+  summary: 'permanently delete a channel\u2019s archived messages',
+  positional: [{ name: 'channelId', required: true, describe: 'the channel to delete' }],
+  args: archiveDeleteChannelArgs,
   run(ctx: OpsContext, args): OpsWriteResult {
     const result = ctx.ports.archiveDisableChannel(args.channelId);
     if (result.outcome === 'wrong-kind') {
       return {
-        text: `channel ${args.channelId} is archived as a category; use archive disable-category`,
+        text: `channel ${args.channelId} is archived as a category; use archive delete-category`,
         data: { ok: false, reason: result.outcome, channelId: args.channelId },
         audit: {
           action: 'archive.channel_disabled',
@@ -151,11 +154,11 @@ export const archiveDisableChannelCommand = defineCommand<
     if (result.outcome === 'covered-by-category') {
       // Review 2 N1: naming the category is the whole point. Saying
       // "archived as a category" here was false of a derived row, and
-      // `disable-category` refused it back, so the operator had no verb.
+      // `delete-category` refused it back, so the operator had no verb.
       return {
         text:
           `channel ${args.channelId} is not archived in its own right: it is covered by ` +
-          `category ${result.categoryId}. Use \`archive disable-category ${result.categoryId}\` ` +
+          `category ${result.categoryId}. Use \`archive delete-category ${result.categoryId}\` ` +
           'to drop the whole category, or exclude this channel from logging to stop it alone.',
         data: {
           ok: false,
@@ -197,6 +200,186 @@ export const archiveDisableChannelCommand = defineCommand<
         subjectType: 'archive_channel',
         subjectId: args.channelId,
         after: { channelId: args.channelId, messageCount: result.messageCount },
+      },
+    };
+  },
+});
+
+// --- archive pause-channel / resume-channel (ADR 0126) -----------------------
+
+const archivePauseArgs = z.object({
+  channelId: channelIdArg,
+});
+
+export const archivePauseChannelCommand = defineCommand<z.infer<typeof archivePauseArgs>>({
+  name: 'archive pause-channel',
+  write: true,
+  summary: 'stop recording a channel; its archived messages are kept',
+  positional: [{ name: 'channelId', required: true, describe: 'the channel to pause' }],
+  args: archivePauseArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.archivePauseChannel(args.channelId);
+    if (outcome === 'paused') {
+      return {
+        text:
+          `Recording stopped for ${args.channelId}. ` +
+          'Nothing was deleted (its archived messages are kept).',
+        data: { ok: true, channelId: args.channelId, outcome },
+        audit: {
+          action: 'archive.channel_paused',
+          subjectType: 'archive_channel',
+          subjectId: args.channelId,
+          after: { outcome, channelId: args.channelId },
+        },
+      };
+    }
+    const text =
+      outcome === 'already-paused'
+        ? `channel ${args.channelId} is already paused; nothing changed`
+        : outcome === 'not-enabled'
+          ? `channel ${args.channelId} is not archived; nothing changed`
+          : outcome === 'wrong-kind'
+            ? `channel ${args.channelId} is archived as a category; use archive pause-category`
+            : `channel ${args.channelId} is covered by a category; use archive pause-category for its category`;
+    return {
+      text,
+      data: { ok: false, reason: outcome, channelId: args.channelId },
+      audit: {
+        action: 'archive.channel_paused',
+        subjectType: 'archive_channel',
+        subjectId: args.channelId,
+        after: { outcome, channelId: args.channelId },
+      },
+    };
+  },
+});
+
+export const archiveResumeChannelCommand = defineCommand<z.infer<typeof archivePauseArgs>>({
+  name: 'archive resume-channel',
+  write: true,
+  summary: 'resume recording a paused channel; the gap stays a gap',
+  positional: [{ name: 'channelId', required: true, describe: 'the channel to resume' }],
+  args: archivePauseArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.archiveResumeChannel(args.channelId);
+    if (outcome === 'resumed') {
+      // No backfill is enqueued: the gap during the pause stays a gap, and
+      // the operator runs the existing backfill path explicitly.
+      return {
+        text:
+          `Recording resumed for ${args.channelId}. ` +
+          'Messages sent while archiving was off were not recorded.',
+        data: { ok: true, channelId: args.channelId, outcome },
+        audit: {
+          action: 'archive.channel_resumed',
+          subjectType: 'archive_channel',
+          subjectId: args.channelId,
+          after: { outcome, channelId: args.channelId },
+        },
+      };
+    }
+    const text =
+      outcome === 'already-collecting'
+        ? `channel ${args.channelId} is already recording; nothing changed`
+        : outcome === 'not-enabled'
+          ? `channel ${args.channelId} is not archived; nothing changed`
+          : outcome === 'wrong-kind'
+            ? `channel ${args.channelId} is archived as a category; use archive resume-category`
+            : `channel ${args.channelId} is covered by a category; use archive resume-category for its category`;
+    return {
+      text,
+      data: { ok: false, reason: outcome, channelId: args.channelId },
+      audit: {
+        action: 'archive.channel_resumed',
+        subjectType: 'archive_channel',
+        subjectId: args.channelId,
+        after: { outcome, channelId: args.channelId },
+      },
+    };
+  },
+});
+
+export const archivePauseCategoryCommand = defineCommand<z.infer<typeof archivePauseArgs>>({
+  name: 'archive pause-category',
+  write: true,
+  summary: 'stop recording a category; its archived messages are kept',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to pause' }],
+  args: archivePauseArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.archivePauseCategory(args.channelId);
+    if (outcome === 'paused') {
+      return {
+        text:
+          `Recording stopped for category ${args.channelId}. ` +
+          'Nothing was deleted (its archived messages are kept).',
+        data: { ok: true, channelId: args.channelId, outcome },
+        audit: {
+          action: 'archive.category_paused',
+          subjectType: 'archive_category',
+          subjectId: args.channelId,
+          after: { outcome, channelId: args.channelId },
+        },
+      };
+    }
+    const text =
+      outcome === 'no-such-channel'
+        ? `${args.channelId} is not a category of this guild`
+        : outcome === 'already-paused'
+          ? `category ${args.channelId} is already paused; nothing changed`
+          : outcome === 'not-enabled'
+            ? `category ${args.channelId} is not archived; nothing changed`
+            : `category ${args.channelId} is covered by a category; pause its category instead`;
+    return {
+      text,
+      data: { ok: false, reason: outcome, channelId: args.channelId },
+      audit: {
+        action: 'archive.category_paused',
+        subjectType: 'archive_category',
+        subjectId: args.channelId,
+        after: { outcome, channelId: args.channelId },
+      },
+    };
+  },
+});
+
+export const archiveResumeCategoryCommand = defineCommand<z.infer<typeof archivePauseArgs>>({
+  name: 'archive resume-category',
+  write: true,
+  summary: 'resume recording a paused category; the gap stays a gap',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to resume' }],
+  args: archivePauseArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.archiveResumeCategory(args.channelId);
+    if (outcome === 'resumed') {
+      return {
+        text:
+          `Recording resumed for ${args.channelId}. ` +
+          'Messages sent while archiving was off were not recorded.',
+        data: { ok: true, channelId: args.channelId, outcome },
+        audit: {
+          action: 'archive.category_resumed',
+          subjectType: 'archive_category',
+          subjectId: args.channelId,
+          after: { outcome, channelId: args.channelId },
+        },
+      };
+    }
+    const text =
+      outcome === 'no-such-channel'
+        ? `${args.channelId} is not a category of this guild`
+        : outcome === 'already-collecting'
+          ? `category ${args.channelId} is already recording; nothing changed`
+          : outcome === 'not-enabled'
+            ? `category ${args.channelId} is not archived; nothing changed`
+            : `category ${args.channelId} is covered by a category; resume its category instead`;
+    return {
+      text,
+      data: { ok: false, reason: outcome, channelId: args.channelId },
+      audit: {
+        action: 'archive.category_resumed',
+        subjectType: 'archive_category',
+        subjectId: args.channelId,
+        after: { outcome, channelId: args.channelId },
       },
     };
   },
@@ -465,10 +648,10 @@ export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archive
     };
   },
 });
-export const archiveDisableCategoryCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
-  name: 'archive disable-category',
+export const archiveDeleteCategoryCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive delete-category',
   write: true,
-  summary: 'remove a category from archive scope',
+  summary: 'permanently delete a category\u2019s archived messages',
   positional: [{ name: 'channelId', required: true, describe: 'the category to remove' }],
   args: archiveCategoryArgs,
   run(ctx, args): OpsWriteResult {
@@ -478,7 +661,7 @@ export const archiveDisableCategoryCommand = defineCommand<z.infer<typeof archiv
         result.outcome === 'disabled'
           ? `category ${args.channelId} is no longer archived (${String(result.messageCount)} archived message(s) removed)`
           : result.outcome === 'wrong-kind'
-            ? `category ${args.channelId} is archived as a channel; use archive disable-channel`
+            ? `category ${args.channelId} is archived as a channel; use archive delete-channel`
             : `category ${args.channelId} was not archived`,
       data: { channelId: args.channelId, ...result },
       audit: {

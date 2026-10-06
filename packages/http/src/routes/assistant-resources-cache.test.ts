@@ -298,4 +298,49 @@ describe('assistant resource cache routes', () => {
     });
     expect(jobRepo.listJobs(scope, {})).toHaveLength(1);
   });
+
+  it('a completed per-resource manual refresh is not repeated inside the same minute', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, resource());
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/assistant/resources/res-1/refresh',
+      headers: { cookie, 'x-bananasaurs-csrf': csrf },
+    });
+    const job = jobRepo.claimNext(scope, clock);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(scope, job?.jobId ?? -1, clock);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/assistant/resources/res-1/refresh',
+      headers: { cookie, 'x-bananasaurs-csrf': csrf },
+    });
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(1);
+  });
+
+  it('a completed Update-all refresh is not repeated inside the same minute', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/assistant/resources/refresh',
+      headers: { cookie, 'x-bananasaurs-csrf': csrf },
+    });
+    const job = jobRepo.claimNext(scope, clock);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(scope, job?.jobId ?? -1, clock);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/assistant/resources/refresh',
+      headers: { cookie, 'x-bananasaurs-csrf': csrf },
+    });
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(1);
+  });
 });

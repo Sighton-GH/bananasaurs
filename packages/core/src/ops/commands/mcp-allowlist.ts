@@ -27,6 +27,16 @@ import { parseDuration } from './reads.js';
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
+/**
+ * Owner decision 2026-10-03: rows the Write seed wrote carry no human
+ * author. The sentinel value is `WRITE_SEED_ACCOUNT_ID` in
+ * `packages/storage/src/repos/mcp-send.ts` (compared by value here —
+ * `core` must not import `storage`); it renders as `Initial setup`, never
+ * as the raw id.
+ */
+export const formatSendAllowlistAddedBy = (addedByAccountId: string): string =>
+  addedByAccountId === 'system:write-seed' ? 'Initial setup' : addedByAccountId;
+
 const channelIdArg = snowflakeIdSchema;
 
 // --- mcp allow-channel ---------------------------------------------------------
@@ -170,7 +180,7 @@ export const mcpAllowlistCommand = defineCommand<Record<string, never>>({
       text: rows
         .map(
           (row) =>
-            `${row.channelId}  ${row.scopeKind === 'category' ? `category, covers ${String(row.coverage ?? ctx.ports.sendScopeCoverage(row.channelId))} channels  ` : ''}allowed by ${row.addedByAccountId}  ${iso(row.addedAt)}`,
+            `${row.channelId}  ${row.scopeKind === 'category' ? `category, covers ${String(row.coverage ?? ctx.ports.sendScopeCoverage(row.channelId))} channels  ` : ''}allowed by ${formatSendAllowlistAddedBy(row.addedByAccountId)}  ${iso(row.addedAt)}`,
         )
         .join('\n'),
       // scopeKind and coverage ride the JSON exactly as the text line

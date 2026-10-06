@@ -4,11 +4,16 @@ import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixture
 import type { OpsPorts } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
 import {
-  archiveDisableChannelCommand,
+  archiveDeleteChannelCommand,
+  archiveDeleteCategoryCommand,
   archiveEnableChannelCommand,
   archiveLinkCaseCommand,
+  archivePauseChannelCommand,
+  archivePauseCategoryCommand,
   archivePreserveCommand,
   archiveReindexCommand,
+  archiveResumeChannelCommand,
+  archiveResumeCategoryCommand,
   archiveSearchCommand,
   archiveStatusCommand,
 } from './archive.js';
@@ -56,15 +61,24 @@ const driveWrite = (
   }).dispatch({ v: 1, command: command.name, args, confirm: true, unixUserClaimed: 'bryan' });
 
 describe('archive commands are registered', () => {
-  it('registers all seven archive commands', () => {
+  it('registers all archive commands', () => {
     const names = OPERATOR_COMMANDS.map((c) => c.name);
     expect(names).toContain('archive enable-channel');
-    expect(names).toContain('archive disable-channel');
+    expect(names).toContain('archive delete-channel');
+    expect(names).toContain('archive pause-channel');
+    expect(names).toContain('archive resume-channel');
+    expect(names).toContain('archive pause-category');
+    expect(names).toContain('archive resume-category');
     expect(names).toContain('archive status');
     expect(names).toContain('archive preserve');
     expect(names).toContain('archive link-case');
     expect(names).toContain('archive search');
     expect(names).toContain('archive reindex');
+  });
+
+  it('the delete commands say they permanently delete archived messages', () => {
+    expect(archiveDeleteChannelCommand.summary).toMatch(/permanently delete/i);
+    expect(archiveDeleteCategoryCommand.summary).toMatch(/permanently delete/i);
   });
 });
 
@@ -187,11 +201,11 @@ describe('archive enable-channel', () => {
   });
 });
 
-describe('archive disable-channel', () => {
-  it('disables the channel and audits the write with the destroyed message count', async () => {
+describe('archive delete-channel', () => {
+  it('deletes the channel and audits the write with the destroyed message count', async () => {
     const audit: unknown[] = [];
     const res = await driveWrite(
-      archiveDisableChannelCommand,
+      archiveDeleteChannelCommand,
       {
         archiveDisableChannel: () => ({ outcome: 'disabled', messageCount: 42 }),
         recordAudit: (input) => {
@@ -214,7 +228,7 @@ describe('archive disable-channel', () => {
 
   it('reports not-enabled as a usage answer', async () => {
     const res = await driveWrite(
-      archiveDisableChannelCommand,
+      archiveDeleteChannelCommand,
       {
         archiveDisableChannel: () => ({ outcome: 'not-enabled' }),
         recordAudit: () => {},
@@ -229,7 +243,7 @@ describe('archive disable-channel', () => {
   it('names the covering category instead of sending the operator to a verb that refuses (N1)', async () => {
     const audit: unknown[] = [];
     const res = await driveWrite(
-      archiveDisableChannelCommand,
+      archiveDeleteChannelCommand,
       {
         archiveDisableChannel: () => ({
           outcome: 'covered-by-category',
@@ -244,10 +258,10 @@ describe('archive disable-channel', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     // The old text claimed the channel was "archived as a category" and
-    // pointed at disable-category, which refused it right back.
+    // pointed at delete-category, which refused it right back.
     expect(res.text).not.toContain('archived as a category');
     expect(res.text).toContain('covered by category 999999999999999999');
-    expect(res.text).toContain('archive disable-category 999999999999999999');
+    expect(res.text).toContain('archive delete-category 999999999999999999');
     expect(res.data).toMatchObject({
       ok: false,
       reason: 'covered-by-category',
@@ -259,6 +273,170 @@ describe('archive disable-channel', () => {
         after: expect.objectContaining({ categoryId: '999999999999999999' }),
       }),
     ]);
+  });
+});
+
+describe('archive pause-channel', () => {
+  it('stops recording and deletes nothing', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      archivePauseChannelCommand,
+      {
+        archivePauseChannel: () => 'paused',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { channelId: CHANNEL },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('Recording stopped');
+    expect(res.text).toContain('Nothing was deleted');
+    expect(res.data).toMatchObject({ ok: true, channelId: CHANNEL, outcome: 'paused' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'archive.channel_paused',
+        subjectId: CHANNEL,
+      }),
+    ]);
+  });
+
+  it.each([['already-paused'], ['not-enabled'], ['derived'], ['wrong-kind']] as const)(
+    'reports %s as a usage answer',
+    async (outcome) => {
+      const res = await driveWrite(
+        archivePauseChannelCommand,
+        {
+          archivePauseChannel: () => outcome,
+          recordAudit: () => {},
+        },
+        { channelId: CHANNEL },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.data).toMatchObject({ ok: false, reason: outcome });
+    },
+  );
+});
+
+describe('archive resume-channel', () => {
+  it('resumes recording and names the gap as unrecorded', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      archiveResumeChannelCommand,
+      {
+        archiveResumeChannel: () => 'resumed',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { channelId: CHANNEL },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toBe(
+      `Recording resumed for ${CHANNEL}. Messages sent while archiving was off were not recorded.`,
+    );
+    expect(res.data).toMatchObject({ ok: true, channelId: CHANNEL, outcome: 'resumed' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'archive.channel_resumed',
+        subjectId: CHANNEL,
+      }),
+    ]);
+  });
+
+  it.each([['already-collecting'], ['not-enabled'], ['derived'], ['wrong-kind']] as const)(
+    'reports %s as a usage answer',
+    async (outcome) => {
+      const res = await driveWrite(
+        archiveResumeChannelCommand,
+        {
+          archiveResumeChannel: () => outcome,
+          recordAudit: () => {},
+        },
+        { channelId: CHANNEL },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.data).toMatchObject({ ok: false, reason: outcome });
+    },
+  );
+
+  it('does not enqueue a backfill on resume', async () => {
+    const backfill = vi.fn();
+    const res = await driveWrite(
+      archiveResumeChannelCommand,
+      {
+        archiveResumeChannel: () => 'resumed',
+        enqueueArchiveBackfill: backfill,
+        recordAudit: () => {},
+      },
+      { channelId: CHANNEL },
+    );
+    expect(res.ok).toBe(true);
+    expect(backfill).not.toHaveBeenCalled();
+  });
+});
+
+describe('archive pause-category / resume-category', () => {
+  it('pauses a category row', async () => {
+    const res = await driveWrite(
+      archivePauseCategoryCommand,
+      {
+        archivePauseCategory: () => 'paused',
+        recordAudit: () => {},
+      },
+      { channelId: CHANNEL },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('Recording stopped');
+    expect(res.data).toMatchObject({ ok: true, channelId: CHANNEL, outcome: 'paused' });
+  });
+
+  it('resumes a category row with the same gap notice', async () => {
+    const res = await driveWrite(
+      archiveResumeCategoryCommand,
+      {
+        archiveResumeCategory: () => 'resumed',
+        recordAudit: () => {},
+      },
+      { channelId: CHANNEL },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toBe(
+      `Recording resumed for ${CHANNEL}. Messages sent while archiving was off were not recorded.`,
+    );
+  });
+
+  it('refuses a non-category id the way enable-category does', async () => {
+    const paused = await driveWrite(
+      archivePauseCategoryCommand,
+      {
+        archivePauseCategory: () => 'no-such-channel',
+        recordAudit: () => {},
+      },
+      { channelId: CHANNEL },
+    );
+    expect(paused.ok).toBe(true);
+    if (!paused.ok) return;
+    expect(paused.text).toContain('is not a category');
+    expect(paused.data).toMatchObject({ ok: false, reason: 'no-such-channel' });
+
+    const resumed = await driveWrite(
+      archiveResumeCategoryCommand,
+      {
+        archiveResumeCategory: () => 'no-such-channel',
+        recordAudit: () => {},
+      },
+      { channelId: CHANNEL },
+    );
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    expect(resumed.text).toContain('is not a category');
   });
 });
 

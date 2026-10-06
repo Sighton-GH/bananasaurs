@@ -19,6 +19,7 @@ import {
   skillScopeAllows,
   stripNewTopic,
   type AssistantTrace,
+  type ChannelAccess,
   type CompiledAssistantContext,
   type Config,
   type GenerationMessage,
@@ -309,6 +310,12 @@ export const createAssistantService = (
    */
   channelContextMessages: () => number = () => 0,
   /**
+   * ADR 0126: Read gates the `channel_history` tool. The full interface —
+   * later tasks use the other methods. Optional so existing callers keep
+   * compiling; absent means no gate.
+   */
+  channelAccess?: ChannelAccess,
+  /**
    * ADR 0120: the web search run for one request, built by the provider
    * store at the composition root (Brave or Tavily, with the owner's key
    * order and limits). Undefined while search is off.
@@ -393,6 +400,20 @@ export const createAssistantService = (
       return { ok: true, authorId: candidates[0]!.id };
     return { ok: false, problem };
   };
+  /**
+   * ADR 0126 M1: the one No-access filter. Every archived-content read below
+   * drops the channels No access hides; paused (Archive off) channels stay.
+   * Absent `channelAccess` keeps everything (legacy callers unchanged).
+   */
+  const dropNoAccessIds = async (ids: Iterable<string>): Promise<Set<string>> => {
+    const kept = new Set(ids);
+    if (channelAccess === undefined) return kept;
+    const flags = await Promise.all(
+      [...kept].map(async (id) => ({ id, noAccess: await channelAccess.isNoAccess(id) })),
+    );
+    for (const { id, noAccess } of flags) if (noAccess) kept.delete(id);
+    return kept;
+  };
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
   const searchArchive = async (
     userId: string,
@@ -417,33 +438,39 @@ export const createAssistantService = (
       const audience = await discord.audienceChannels(answerChannelId);
       for (const id of visible) if (!audience.has(id)) visible.delete(id);
     }
+    // Channel-permissions: No-access channels never surface. Paused
+    // (Archive off) channels stay searchable — only No access hides them.
+    const searchable = await dropNoAccessIds(visible);
     const channelIds = archiveRepo
       .listChannels(scope)
       .map((channel) => channel.channelId)
-      .filter((id) => visible.has(id));
+      .filter((id) => searchable.has(id));
     if (channelIds.length === 0) return { ok: true, hits: [] };
     // A private thread inside a visible channel is not visible to every member
     // who can see the channel, and the archive does not record which threads
-    // are private, so member-facing search leaves every thread out.
+    // are private, so member-facing search leaves every thread out — which
+    // also keeps every thread a No-access exclusion hides (ADR 0126 M6) out.
     const limit = from === undefined ? 16 : 3;
     const cap = from === undefined ? 8 : 3;
+    const rawHits = archiveSearchRepo
+      .searchMessages(scope, {
+        query,
+        visibility: { channelIds },
+        ...(authorId === undefined ? {} : { authorId }),
+        limit,
+      })
+      .hits.filter((hit) => hit.threadId === undefined);
+    // ADR 0126 M6: hits carrying a thread id would additionally need their
+    // thread's No-access verdict — the filter above already drops every such
+    // row, so an excluded thread stays hidden here by construction.
     return {
       ok: true,
-      hits: archiveSearchRepo
-        .searchMessages(scope, {
-          query,
-          visibility: { channelIds },
-          ...(authorId === undefined ? {} : { authorId }),
-          limit,
-        })
-        .hits.filter((hit) => hit.threadId === undefined)
-        .slice(0, cap)
-        .map((hit) => ({
-          channelId: hit.channelId,
-          messageId: hit.messageId,
-          createdAt: hit.createdAt,
-          excerpt: hit.excerpt,
-        })),
+      hits: rawHits.slice(0, cap).map((hit) => ({
+        channelId: hit.channelId,
+        messageId: hit.messageId,
+        createdAt: hit.createdAt,
+        excerpt: hit.excerpt,
+      })),
     };
   };
   const invokeOnce = async (
@@ -777,6 +804,7 @@ export const createAssistantService = (
             resourceId,
             tenMinuteBucket,
           }),
+          oncePerBucket: true,
           now: now(),
         });
         return result.enqueued;
@@ -785,6 +813,16 @@ export const createAssistantService = (
       const listScheduledEvents = discord.listScheduledEvents;
       const fetchChannelHistory = discord.fetchChannelMessages;
       const answerChannelId = input.channelId;
+      /**
+       * ADR 0126: Read gates the `channel_history` tool below. Resolved once
+       * per run, before the tool ports are built; denied means the port stays
+       * `undefined` and `toolDeclarations` omits the tool. `toolDeclarations`
+       * itself stays synchronous.
+       */
+      let channelHistoryAllowed = true;
+      if (channelAccess !== undefined && answerChannelId !== undefined) {
+        channelHistoryAllowed = (await channelAccess.check('read', answerChannelId)).allowed;
+      }
       /**
        * ADR 0092 decision 1: up to 10 schedule rows in the next 30 days,
        * soonest first — Discord scheduled events plus channel reminders in
@@ -868,7 +906,7 @@ export const createAssistantService = (
        * the invoking message id.
        */
       const channelHistory: AssistantToolPorts['channelHistory'] =
-        answerChannelId === undefined || channelContextMessages() <= 0
+        answerChannelId === undefined || channelContextMessages() <= 0 || !channelHistoryAllowed
           ? undefined
           : async (opts) => {
               if (fetchChannelHistory === undefined) return undefined;
@@ -955,12 +993,15 @@ export const createAssistantService = (
             const audience = await discord.audienceChannels(input.channelId);
             for (const id of visible) if (!audience.has(id)) visible.delete(id);
           }
-          if (visible.size === 0) return [];
+          // Channel-permissions: No-access channels are never
+          // recalled. Paused (Archive off) channels stay searchable.
+          const searchable = await dropNoAccessIds(visible);
+          if (searchable.size === 0) return [];
           const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
           return conversationRepo
             .searchSummaries(scope, {
               query,
-              channelIds: [...visible],
+              channelIds: [...searchable],
               ...(input.conversationId === undefined
                 ? {}
                 : { excludeConversationId: input.conversationId }),
@@ -978,7 +1019,13 @@ export const createAssistantService = (
         fetchResource,
         webSearch: testPorts.webSearch ?? webSearch(scope.guildId),
         serverCard: () => assistantRepo.getServerCard(scope),
-        visibleChannels: () => discord.memberChannels(input.userId),
+        // Channel-permissions task 7: server_info never lists a No-access
+        // channel. Paused (Archive off) channels stay listed.
+        visibleChannels: async () => {
+          const channels = await discord.memberChannels(input.userId);
+          const searchable = await dropNoAccessIds(channels.map((channel) => channel.id));
+          return channels.filter((channel) => searchable.has(channel.id));
+        },
         upcomingEvents,
         channelHistory,
         cacheSearch: (q) =>

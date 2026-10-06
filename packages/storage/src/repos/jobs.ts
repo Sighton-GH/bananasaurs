@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, lt, lte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { jobs } from '../schema.js';
@@ -57,6 +57,15 @@ export interface EnqueueInput {
    * call actually creates.
    */
   cursor?: string | null;
+  /**
+   * ADR 0127: for a dedupe key that ends in a time bucket (an hour, a day, a
+   * minute), refuse when ANY row in this guild already carries the key, in
+   * any state, so a bucket runs once even after its job has finished.
+   * `jobs_dedupe` alone only collapses pending work (ADR 0016). Never set it
+   * for a key without a time bucket (`…:added`, `reconcile_guild:*`,
+   * `deliver_reminders`): those must re-enqueue after completion.
+   */
+  oncePerBucket?: boolean;
   now: number;
 }
 
@@ -75,6 +84,15 @@ export interface EnqueueResult {
  */
 export const enqueue = (scope: GuildScope, input: EnqueueInput): EnqueueResult =>
   write(scope, ({ db }) => {
+    if (input.oncePerBucket === true) {
+      const existing = db
+        .select({ jobId: jobs.jobId })
+        .from(jobs)
+        .where(scope.only(jobs, eq(jobs.dedupeKey, input.dedupeKey)))
+        .limit(1)
+        .get();
+      if (existing !== undefined) return { enqueued: false, jobId: undefined };
+    }
     const result = db
       .insert(jobs)
       .values({
@@ -227,6 +245,52 @@ export const cancelJob = (scope: GuildScope, jobId: number, now: number): void =
       .run();
   });
 
+/**
+ * ADR 0127: deletes up to `limit` finished rows (`done`, `failed`, `cancelled`)
+ * whose `updated_at` is strictly before `olderThanMs`. Never touches `queued` or
+ * `running`. Returns how many were deleted; the caller loops while it equals `limit`.
+ */
+export const deleteFinishedBatch = (
+  scope: GuildScope,
+  olderThanMs: number,
+  limit: number,
+): number =>
+  write(scope, ({ db }) => {
+    const ids = db
+      .select({ jobId: jobs.jobId })
+      .from(jobs)
+      .where(
+        scope.only(
+          jobs,
+          inArray(jobs.state, ['done', 'failed', 'cancelled']),
+          lt(jobs.updatedAt, olderThanMs),
+        ),
+      )
+      .limit(limit)
+      .all()
+      .map((row) => row.jobId);
+    if (ids.length === 0) return 0;
+    return db
+      .delete(jobs)
+      .where(scope.only(jobs, inArray(jobs.jobId, ids)))
+      .run().changes;
+  });
+
+/** The guild's most recent job under `dedupeKey` (highest job id), any state. */
+export const latestByDedupeKey = (
+  scope: GuildScope,
+  dedupeKey: string,
+): { readonly state: string; readonly updatedAt: number } | undefined =>
+  read(scope, (db) =>
+    db
+      .select({ state: jobs.state, updatedAt: jobs.updatedAt })
+      .from(jobs)
+      .where(scope.only(jobs, eq(jobs.dedupeKey, dedupeKey)))
+      .orderBy(desc(jobs.jobId))
+      .limit(1)
+      .get(),
+  );
+
 export const findJob = (scope: GuildScope, jobId: number): JobRow | undefined =>
   read(scope, (db) =>
     db
@@ -296,10 +360,13 @@ export const listJobs = (scope: GuildScope, input: ListJobsInput): JobListRow[] 
 /** For `doctor` and for the worker's own logging. */
 export const countByState = (scope: GuildScope): Record<string, number> =>
   read(scope, (db) => {
-    const rows = db.select(columns).from(jobs).where(scope.only(jobs)).all();
-    const out: Record<string, number> = {};
-    for (const row of rows) out[row.state] = (out[row.state] ?? 0) + 1;
-    return out;
+    const rows = db
+      .select({ state: jobs.state, n: count() })
+      .from(jobs)
+      .where(scope.only(jobs))
+      .groupBy(jobs.state)
+      .all();
+    return Object.fromEntries(rows.map((row) => [row.state, row.n]));
   });
 
 /**

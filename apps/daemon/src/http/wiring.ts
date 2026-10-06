@@ -485,6 +485,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
             deps.assistantQuotaLedger,
             undefined,
             undefined,
+            undefined,
             deps.assistantWebSearch,
           );
           return service.tryIt(input);

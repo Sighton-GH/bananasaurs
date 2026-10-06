@@ -159,4 +159,40 @@ describe('resource refresh timer', () => {
       resourceRefreshDedupeKey({ reason: 'hourly', hourBucket: bucket }),
     );
   });
+
+  it('a completed job is not repeated inside the same bucket', () => {
+    seedResource(a);
+    const timer = createResourceRefreshTimer(depsFor());
+    timer.runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+  });
+
+  it('a restart inside the bucket does not repeat it', () => {
+    seedResource(a);
+    createResourceRefreshTimer(depsFor()).runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    createResourceRefreshTimer(depsFor()).runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+  });
+
+  it('the next bucket enqueues again after completion', () => {
+    seedResource(a);
+    const timer = createResourceRefreshTimer(depsFor());
+    timer.runOnce();
+    const job = jobRepo.claimNext(a, nowMs);
+    expect(job).toBeDefined();
+    jobRepo.completeJob(a, job?.jobId ?? -1, nowMs);
+
+    nowMs += RESOURCE_REFRESH_INTERVAL_MS;
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(2);
+  });
 });

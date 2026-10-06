@@ -1,7 +1,7 @@
 import { and, asc, count, desc, eq, gte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import { mcpSendAllowlist, mcpSends } from '../schema.js';
+import { auditEvents, channelWriteSeeds, mcpSendAllowlist, mcpSends } from '../schema.js';
 
 /**
  * The MCP send-message storage (slice M5, Task 1).
@@ -239,3 +239,63 @@ export const listSends = (
  */
 export const SEND_RATE_LIMIT = 200;
 export const SEND_RATE_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Owner decision 2026-10-03: Write is seeded on once at deploy, exactly like
+ * Read. The `added_by_account_id` no human chose is this sentinel; surfaces
+ * that render it show `Initial setup` instead of the raw id.
+ */
+export const WRITE_SEED_ACCOUNT_ID = 'system:write-seed';
+
+/**
+ * One transaction: claims the once-only marker, and inserts the rows only
+ * when the claim succeeded. Empty `targets` claims nothing, so a later call
+ * with targets still seeds. Existing rows are never overwritten.
+ */
+export const seedWriteScopeOnce = (
+  scope: GuildScope,
+  input: {
+    targets: readonly { channelId: string; scopeKind: 'channel' | 'category' }[];
+    now: number;
+  },
+): 'seeded' | 'already-seeded' | 'nothing-to-seed' =>
+  write(scope, ({ db }) => {
+    if (input.targets.length === 0) return 'nothing-to-seed';
+    const claim = db
+      .insert(channelWriteSeeds)
+      .values({ guildId: scope.guildId, seededAt: input.now })
+      .onConflictDoNothing({ target: channelWriteSeeds.guildId })
+      .run();
+    if (claim.changes === 0) return 'already-seeded';
+    for (const target of input.targets) {
+      db.insert(mcpSendAllowlist)
+        .values({
+          guildId: scope.guildId,
+          channelId: target.channelId,
+          scopeKind: target.scopeKind,
+          addedByAccountId: WRITE_SEED_ACCOUNT_ID,
+          addedAt: input.now,
+        })
+        .onConflictDoNothing({ target: [mcpSendAllowlist.guildId, mcpSendAllowlist.channelId] })
+        .run();
+    }
+    // N8: one audit row per seed, in the same transaction as the marker and
+    // the rows — the same `auditEvents` table the allowlist commands use. A
+    // system actor, the target count in `after`, and nothing on the
+    // already-seeded or nothing-to-seed paths.
+    db.insert(auditEvents)
+      .values({
+        guildId: scope.guildId,
+        at: input.now,
+        actorType: 'system',
+        actorId: null,
+        action: 'send_channel.seeded',
+        subjectType: 'guild',
+        subjectId: scope.guildId,
+        before: null,
+        after: JSON.stringify({ targetCount: input.targets.length }),
+        dryRun: 0,
+      })
+      .run();
+    return 'seeded';
+  });

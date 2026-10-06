@@ -920,7 +920,7 @@ export const archiveChannels = sqliteTable(
     /**
      * ADR 0047 amendment 2026-09-20: for a `derived` row, the category row it
      * was materialised from. NULL on `channel` and `category` rows.
-     * Deliberately no FK: `disable-category` removes the category row and its
+     * Deliberately no FK: `delete-category` removes the category row and its
      * derived children in one write, and a self-referencing composite FK
      * would only order that delete without guarding anything.
      */
@@ -933,11 +933,14 @@ export const archiveChannels = sqliteTable(
     /** NULL = not started or done. */
     cursorMessageId: text('cursor_message_id'),
     backfillState: text('backfill_state').notNull().default('pending'),
+    /** ADR 0126: 0 = Archive off (paused). Rows and messages are kept; nothing records. */
+    collecting: integer('collecting').notNull().default(1),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.channelId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('archive_channels_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_channels_collecting', sql`${t.collecting} IN (0,1)`),
     check('archive_channels_channel_id_snowflake', snowflakeCheck(t.channelId)),
     check('archive_channels_scope_kind', sql`${t.scopeKind} IN ('channel','category','derived')`),
     check('archive_channels_derived_from_snowflake', nullableSnowflakeCheck(t.derivedFrom)),
@@ -1593,6 +1596,50 @@ export const capabilityGrants = sqliteTable(
     }).onDelete('cascade'),
     check('capability_grants_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('capability_grants_principal_id_snowflake', snowflakeCheck(t.principalId)),
+  ],
+);
+
+/** ADR 0126: the channels and categories the assistant may read. */
+export const channelReadScope = sqliteTable(
+  'channel_read_scope',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    scopeKind: text('scope_kind').notNull().default('channel'),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.channelId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('channel_read_scope_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('channel_read_scope_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('channel_read_scope_scope_kind', sql`${t.scopeKind} IN ('channel','category')`),
+  ],
+);
+
+/** ADR 0126: the Read seed's once-only marker (hard rule 6) — the PK makes a second seed impossible. */
+export const channelReadSeeds = sqliteTable(
+  'channel_read_seeds',
+  {
+    guildId: snowflake('guild_id').notNull().primaryKey(),
+    seededAt: integer('seeded_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('channel_read_seeds_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/** Owner decision 2026-10-03: the Write seed's once-only marker — same shape and semantics as `channelReadSeeds`. */
+export const channelWriteSeeds = sqliteTable(
+  'channel_write_seeds',
+  {
+    guildId: snowflake('guild_id').notNull().primaryKey(),
+    seededAt: integer('seeded_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('channel_write_seeds_guild_id_snowflake', snowflakeCheck(t.guildId)),
   ],
 );
 

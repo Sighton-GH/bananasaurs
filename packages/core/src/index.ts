@@ -109,11 +109,15 @@ export {
   conversationPrunePayload,
   deliverRemindersDedupeKey,
   deliverRemindersPayload,
+  EVENT_DEDUPE_RETENTION_MS,
   JOB_KINDS,
+  JOB_RETENTION_MS,
   logMessageDeleteDedupeKey,
   logMessageDeletePayload,
   modPurgeCursorSchema,
   modPurgePayload,
+  pruneJobsDedupeKey,
+  pruneJobsPayload,
   purgeDedupeKey,
   reconcileDedupeKey,
   reconcileGuildPayload,
@@ -132,6 +136,7 @@ export {
   type LogMessageDeletePayload,
   type ModPurgeCursor,
   type ModPurgePayload,
+  type PruneJobsPayload,
   type ReconcileGuildPayload,
   type ResourceRefreshPayload,
   type SweepEventDedupePayload,
@@ -597,6 +602,7 @@ export {
 } from './ops/commands/reads.js';
 
 export * from './channels/scope.js';
+export * from './channels/access.js';
 export type {
   GenerateTextRequest,
   GenerateTextResponse,

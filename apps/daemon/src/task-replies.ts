@@ -1,6 +1,7 @@
 import { ChannelType, type Client, type Guild } from 'discord.js';
-import { isProgressUpdate, type DiscordPort, type Subscriber } from '@bananasaurs/core';
-import { taskNudgeRepo, taskRepo, type GuildScope } from '@bananasaurs/storage';
+import { isNoAccess, isProgressUpdate, type DiscordPort, type Subscriber } from '@bananasaurs/core';
+import { loggingRepo, taskNudgeRepo, taskRepo, type GuildScope } from '@bananasaurs/storage';
+import { noAccessFromCache } from './channels/access.js';
 import { taskMemberAccess, type TaskMemberAccess } from './task-access.js';
 
 /** The one pipeline subscriber for task progress replies: anchors, reminders, and check-ins. */
@@ -24,6 +25,19 @@ export const createTaskReplySubscriber = (
       return;
     const authorId = event.authorId;
     const content = event.content;
+    // ADR 0126 I2: a reply in a No-access channel is never recorded — an
+    // exclusion on the channel, its parent or its category vetoes, read off
+    // the event facts like the logging subscriber. Nothing is recorded and
+    // nothing is scheduled.
+    if (
+      isNoAccess({
+        channelId: event.channelId,
+        parentChannelId: event.parentChannelId,
+        categoryId: event.categoryId,
+        isExcluded: (id) => loggingRepo.isChannelExcluded(scope, id),
+      })
+    )
+      return;
     // 2. Candidates come from the replied-to message id only.
     const anchored = taskRepo.taskForAnchor(scope, event.channelId, event.referencedMessageId);
     let candidateIds: string[];
@@ -138,6 +152,9 @@ export const resolveReplyChoice = async (
   const choice = taskNudgeRepo.getReplyChoice(scope, choiceMessageId);
   if (!choice) return 'gone';
   if (pressedBy !== choice.authorId) return 'not-yours';
+  // ADR 0126 I2: the choice's channel may have been marked No access while
+  // the pick was pending — record nothing and schedule nothing.
+  if (noAccessFromCache(client, scope, choice.channelId)) return 'gone';
   const slot = taskNudgeRepo.getSlot(scope, `clarify:${choiceMessageId}`);
   if (!parseCandidates(slot?.payload ?? null).includes(taskId)) return 'gone';
   const guild = client.guilds.cache.get(scope.guildId);

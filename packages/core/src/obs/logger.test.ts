@@ -108,6 +108,14 @@ describe('safeLogFields — allowlist, not denylist', () => {
     });
   });
 
+  it('keeps the permission purpose, a fixed routing enum like kind', () => {
+    expect(safeLogFields({ guildId: '1', purpose: 'read', outcome: 'seeded' })).toEqual({
+      guildId: '1',
+      purpose: 'read',
+      outcome: 'seeded',
+    });
+  });
+
   it('allowlists the OAuth id fields (ADR 0045 D8)', () => {
     // An id is a row key, never a credential — the credential is the token
     // VALUE, which has no allowlisted name. `code` stays allowlisted for its

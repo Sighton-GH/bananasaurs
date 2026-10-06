@@ -150,6 +150,21 @@ describe('the event_dedupe sweep', () => {
   });
 });
 
+describe('countEventDedupe', () => {
+  it('returns the exact row count for one guild and ignores another', () => {
+    expect(countEventDedupe(a)).toBe(0);
+
+    sight(a, 'fp-1');
+    sight(a, 'fp-2');
+    sight(a, 'fp-3');
+    sight(b, 'fp-1');
+    sight(b, 'fp-2');
+
+    expect(countEventDedupe(a)).toBe(3);
+    expect(countEventDedupe(b)).toBe(2);
+  });
+});
+
 describe('gateway gaps', () => {
   it('records a fresh IDENTIFY as a real gap', () => {
     const gapId = recordGap(a, {

@@ -1,18 +1,20 @@
 import { PermissionFlagsBits, type Client, type Guild, type GuildMember } from 'discord.js';
-import { isInScope, rolePingAllowed, type GuildId } from '@bananasaurs/core';
-import { loggingRepo, mcpSendRepo, mcpRolePolicyRepo, type GuildScope } from '@bananasaurs/storage';
+import { rolePingAllowed, type GuildId } from '@bananasaurs/core';
+import { mcpRolePolicyRepo, type GuildScope } from '@bananasaurs/storage';
 import { resolveRoleRef } from '@bananasaurs/mcp';
 import { resolveChannel } from '../channels/resolver.js';
+import { channelAccessFor } from '../channels/access.js';
 
 /**
- * Send-target resolution for the MCP writes (ADR 0116 §3): send scope ∩ the
+ * Send-target resolution for the MCP writes (ADR 0116 §3): Write scope ∩ the
  * bot's live Discord permissions.
  *
- * The scope half is the same facts today's `sendPortFor` passes to ADR 0047's
- * `isInScope('send', …)` — own row, the private-thread own-row rule,
- * parent/category inheritance, exclusions — carried over unchanged. The
- * permission half is live discord.js math: `channel.permissionsFor` of the
- * bot member, so an overwrite changed after allowlisting binds at the call.
+ * The scope half is the one `ChannelAccess` precedence every surface shares
+ * (ADR 0126): `check('write', …)` — the Write row, with parent/category
+ * inheritance (which private threads share since the 2026-10-03 owner
+ * decision), and No access overriding all of it. The permission half is live
+ * discord.js math: `channel.permissionsFor` of the bot member, so an
+ * overwrite changed after allowlisting binds at the call.
  */
 
 export type TargetNeed =
@@ -25,8 +27,7 @@ export type TargetNeed =
   | 'manage-events'
   | 'react';
 
-export type SendTargetRefusal =
-  'not-in-guild' | 'not-in-send-scope' | 'private-thread-not-allowed' | 'bot-lacks-permission';
+export type SendTargetRefusal = 'not-in-guild' | 'not-in-send-scope' | 'bot-lacks-permission';
 
 export type SendTarget =
   | {
@@ -122,24 +123,23 @@ export const resolveSendTarget = async (
   if (resolved === undefined || (!resolved.postable && need !== 'manage-events')) {
     return { ok: false, reason: 'not-in-guild' };
   }
-  // The private-thread own-row rule, before the scope predicate: private
-  // threads never inherit, so the predicate below would refuse them anyway —
-  // this branch names the reason.
-  if (resolved.isPrivateThread && !mcpSendRepo.isChannelAllowed(scope, resolved.channelId)) {
-    return { ok: false, reason: 'private-thread-not-allowed' };
+  // Owner decision 2026-10-03: private threads inherit Write from their
+  // parent or category like any thread — `check('write', …)` below decides,
+  // through the one `ChannelAccess` precedence (ADR 0126). A private thread
+  // with no grant at all still refuses, as `not-in-send-scope`.
+  const decision = await channelAccessFor(client, scope).check('write', resolved.channelId);
+  if (!decision.allowed) {
+    // No access and not-granted are both "outside the send allowlist" to the
+    // caller; a channel the access check cannot resolve answers the way an
+    // out-of-guild channel does. That arm is reachable: the access check
+    // resolves the channel again behind `check`, so a channel deleted between
+    // the resolve above and that second resolve answers `unknown-channel` —
+    // and is refused here all the same.
+    return decision.reason === 'unknown-channel'
+      ? { ok: false, reason: 'not-in-guild' }
+      : { ok: false, reason: 'not-in-send-scope' };
   }
-  // ADR 0047's send scope, with the same facts `sendPortFor` always passed.
-  const grantId = isInScope('send', {
-    channelId: resolved.channelId,
-    parentChannelId: resolved.parentChannelId,
-    categoryId: resolved.categoryId,
-    isPrivateThread: resolved.isPrivateThread,
-    hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
-    hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
-    isExcluded: (id) => loggingRepo.isChannelExcluded(scope, id),
-    parentIncludesThreads: () => true,
-  });
-  if (grantId === undefined) return { ok: false, reason: 'not-in-send-scope' };
+  const grantId = decision.grantedBy;
   // The live permission half: the bot member's channel permissions right
   // now, not as they were when the row was written.
   const live = permissionsOf(client, guildId, resolved.channelId);

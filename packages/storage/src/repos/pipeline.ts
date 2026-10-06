@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt } from 'drizzle-orm';
+import { and, count, eq, isNull, lt } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { eventDedupe, gatewayGaps } from '../schema.js';
@@ -91,7 +91,11 @@ export const sweepEventDedupe = (scope: GuildScope, olderThanMs: number): number
 
 /** Rows currently held, for `doctor` and for the sweep's own logging. */
 export const countEventDedupe = (scope: GuildScope): number =>
-  read(scope, (db) => db.select().from(eventDedupe).where(scope.only(eventDedupe)).all().length);
+  read(
+    scope,
+    (db) =>
+      db.select({ n: count() }).from(eventDedupe).where(scope.only(eventDedupe)).get()?.n ?? 0,
+  );
 
 export interface GapInput {
   disconnectedAtMs: number;

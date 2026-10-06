@@ -144,7 +144,7 @@ export interface MessageEvent extends Base {
   parentChannelId: Snowflake | undefined;
   /** Category of the authorized unit: thread parent, or channel itself. */
   categoryId: Snowflake | undefined;
-  /** Private threads never inherit archive or send authorization. */
+  /** Private threads inherit read and send from their parent; they never inherit archive. */
   isPrivateThread: boolean;
   messageId: Snowflake;
   authorId: Snowflake | undefined;

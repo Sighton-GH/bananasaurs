@@ -5,6 +5,7 @@ import {
   parseSnowflakeId,
   safeLogFields,
   TASK_REPLY_NOTICE,
+  type AccessDecision,
   type DiscordPort,
   type Logger,
 } from '@bananasaurs/core';
@@ -14,6 +15,7 @@ import {
   taskBindingRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
+import { channelAccessFor } from '../channels/access.js';
 import type { TaskUpdateEvaluator } from './task-evaluate.js';
 
 export const QUIET_ZONE = 'America/Los_Angeles';
@@ -139,19 +141,40 @@ export function planTaskNudges(scope: GuildScope, now: number, options?: TaskNud
 }
 
 /** Fetch live metadata before every send, including the category and a thread's parent. */
+type DestinationVerdict =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'write-denied'; readonly detail: string }
+  | { readonly ok: false; readonly reason: 'unavailable' };
+const unavailable = (): DestinationVerdict => ({ ok: false, reason: 'unavailable' });
+/**
+ * N9: a Write decision as a verdict. `unknown-channel` means the channel is
+ * gone, which is the ordinary unavailable pause, not a permission denial.
+ */
+const fromWrite = (write: AccessDecision): DestinationVerdict =>
+  write.allowed
+    ? { ok: true }
+    : write.reason === 'unknown-channel'
+      ? unavailable()
+      : { ok: false, reason: 'write-denied', detail: write.reason };
+/** The owner-facing pause text for a Write denial: No access names itself. */
+const writeDeniedText = (detail: string): string =>
+  detail === 'no-access'
+    ? 'this channel is marked No access'
+    : 'writing is turned off for that channel';
 async function destination(
   client: Client,
   scope: GuildScope,
   channelId: string,
   categoryId: string,
-): Promise<boolean> {
+): Promise<DestinationVerdict> {
   const guild = client.guilds.cache.get(scope.guildId);
-  if (!guild) return false;
+  if (!guild) return unavailable();
   try {
     const category = await guild.channels.fetch(categoryId, { force: true });
-    if (category?.type !== ChannelType.GuildCategory) return false;
+    if (category?.type !== ChannelType.GuildCategory) return unavailable();
     const channel = await guild.channels.fetch(channelId, { force: true });
-    if (!channel || !('send' in channel) || typeof channel.send !== 'function') return false;
+    if (!channel || !('send' in channel) || typeof channel.send !== 'function')
+      return unavailable();
     if (
       channel.type === ChannelType.PublicThread ||
       channel.type === ChannelType.PrivateThread ||
@@ -159,13 +182,16 @@ async function destination(
     ) {
       // An archived-but-unlocked thread reopens on send (Discord unarchives
       // it); only a locked thread, or one with no parent, pauses.
-      if (channel.locked || !channel.parentId) return false;
+      if (channel.locked || !channel.parentId) return unavailable();
       const parent = await guild.channels.fetch(channel.parentId, { force: true });
-      return !!parent && 'parentId' in parent && parent.parentId === categoryId;
+      if (!parent || !('parentId' in parent) || parent.parentId !== categoryId)
+        return unavailable();
+      return fromWrite(await channelAccessFor(client, scope).check('write', channelId));
     }
-    return 'parentId' in channel && channel.parentId === categoryId;
+    if (!('parentId' in channel) || channel.parentId !== categoryId) return unavailable();
+    return fromWrite(await channelAccessFor(client, scope).check('write', channelId));
   } catch {
-    return false;
+    return unavailable();
   }
 }
 
@@ -307,6 +333,10 @@ export async function deliverTaskNudges(
 ): Promise<number> {
   const quiet = isGuildQuiet(scope, now, options.quietStart, options.quietEnd);
   let processed = 0;
+  // N1: a guild not yet cached or available is transient — return before
+  // claiming any slot, so no kind (followup ✅ included) settles `paused`
+  // for a guild the cache has not seen yet.
+  if (client.guilds.cache.get(scope.guildId)?.available !== true) return processed;
   // Quiet hours hold the scheduled kinds in the query itself, so a full page
   // of held slots can never starve an event kind behind the limit. Event
   // kinds (announce, review, clarify, followup, evaluate) always deliver now.
@@ -350,7 +380,39 @@ const deliverOneSlot = async (
   slot: repo.NudgeSlot,
 ): Promise<void> => {
   const teamById = new Map(repo.teams(scope).map((t) => [t.teamId, t]));
-  const pause = (target: string | null | undefined) => {
+  const pause = (target: string | null | undefined, verdict?: DestinationVerdict) => {
+    // ADR 0126 M5: a Write denial pauses as write-denied — writing is turned
+    // off for that channel — with the ids-only denial line carrying guild,
+    // channel, purpose and reason. Anything else pauses as unavailable.
+    if (
+      target != null &&
+      verdict !== undefined &&
+      !verdict.ok &&
+      verdict.reason === 'write-denied'
+    ) {
+      repo.settle(
+        scope,
+        slot.slotId,
+        'paused',
+        now,
+        target,
+        undefined,
+        writeDeniedText(verdict.detail),
+      );
+      options.logger?.info(
+        safeLogFields({
+          component: 'task-nudges',
+          guildId: scope.guildId,
+          slotId: slot.slotId,
+          kind: slot.kind,
+          channelId: target,
+          purpose: 'write',
+          reason: verdict.detail,
+        }),
+        'task nudge paused: write denied',
+      );
+      return;
+    }
     repo.settle(
       scope,
       slot.slotId,
@@ -370,6 +432,25 @@ const deliverOneSlot = async (
       }),
       'task nudge paused',
     );
+  };
+  /**
+   * The destination, or `undefined` after pausing: a missing id, an unpostable
+   * channel and a Write denial all settle here, so arms stay one line.
+   */
+  const resolveTarget = async (
+    channelId: string | null | undefined,
+    categoryId: string,
+  ): Promise<string | undefined> => {
+    if (channelId == null) {
+      pause(channelId);
+      return undefined;
+    }
+    const verdict = await destination(client, scope, channelId, categoryId);
+    if (!verdict.ok) {
+      pause(channelId, verdict);
+      return undefined;
+    }
+    return channelId;
   };
   const fail = (target: string) => {
     // Discord can commit a send and lose the response. Do not replay blindly.
@@ -405,11 +486,8 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
     }
-    const target = task.destinationId;
-    if (!target || !(await destination(client, scope, target, team.categoryId))) {
-      pause(target);
-      return;
-    }
+    const target = await resolveTarget(task.destinationId, team.categoryId);
+    if (target === undefined) return;
     // Planning-mode records a delivery attempt but never calls Discord send.
     if (!options.enabled) {
       repo.settle(scope, slot.slotId, 'planned', now, target);
@@ -452,11 +530,8 @@ const deliverOneSlot = async (
     // Subteams ask their lead (or the president when no lead is set); exec asks the president.
     const president = taskBindingRepo.presidentRoleId(scope);
     const role = team.kind === 'exec' ? president : (team.leadRoleId ?? president);
-    const target = task.destinationId;
-    if (!target || !(await destination(client, scope, target, team.categoryId))) {
-      pause(target);
-      return;
-    }
+    const target = await resolveTarget(task.destinationId, team.categoryId);
+    if (target === undefined) return;
     if (!options.enabled) {
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
@@ -501,11 +576,8 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
     }
-    const target = task.destinationId;
-    if (!target || !(await destination(client, scope, target, team.categoryId))) {
-      pause(target);
-      return;
-    }
+    const target = await resolveTarget(task.destinationId, team.categoryId);
+    if (target === undefined) return;
     if (!options.enabled) {
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
@@ -555,12 +627,10 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
     }
-    if (!(await destination(client, scope, target!, firstTeam.categoryId))) {
-      pause(target);
-      return;
-    }
+    const resolved = await resolveTarget(target, firstTeam.categoryId);
+    if (resolved === undefined) return;
     if (!options.enabled) {
-      repo.settle(scope, slot.slotId, 'planned', now, target!);
+      repo.settle(scope, slot.slotId, 'planned', now, resolved);
       return;
     }
     const users: string[] = [];
@@ -573,7 +643,7 @@ const deliverOneSlot = async (
     });
     const content = `Weekly check-in\n${lines.join('\n')}\n${TASK_REPLY_NOTICE}`;
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target!), {
+      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(resolved), {
         content: content.slice(0, 2000),
         allowedMentions: { parse: [], users: users.slice(0, 50), roles },
       });
@@ -581,12 +651,12 @@ const deliverOneSlot = async (
         scope,
         slot.slotId,
         now,
-        target!,
+        resolved,
         ref.messageId,
         listed.map((t) => t.taskId),
       );
     } catch {
-      fail(target!);
+      fail(resolved);
     }
     return;
   }
@@ -597,11 +667,8 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
     }
-    const target = team.announcementChannelId;
-    if (!target || !(await destination(client, scope, target, team.categoryId))) {
-      pause(target);
-      return;
-    }
+    const target = await resolveTarget(team.announcementChannelId, team.categoryId);
+    if (target === undefined) return;
     if (!options.enabled) {
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
@@ -653,11 +720,8 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
     }
-    const target = payload.channelId;
-    if (!(await destination(client, scope, target, firstTeam.categoryId))) {
-      pause(target);
-      return;
-    }
+    const target = await resolveTarget(payload.channelId, firstTeam.categoryId);
+    if (target === undefined) return;
     if (!options.enabled) {
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
@@ -683,6 +747,16 @@ const deliverOneSlot = async (
     const payload = parseFollowupPayload(slot.payload);
     if (!payload) {
       repo.settle(scope, slot.slotId, 'superseded', now);
+      return;
+    }
+    // ADR 0126 I2: the ✅ reaction is a visible write in the reply's
+    // channel, so it needs Write like every other post. Denied settles
+    // paused with the write-denied reason (M5), never a reaction.
+    const verdict = fromWrite(
+      await channelAccessFor(client, scope).check('write', payload.channelId),
+    );
+    if (!verdict.ok) {
+      pause(payload.channelId, verdict);
       return;
     }
     if (!options.enabled) {
@@ -725,10 +799,8 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
     }
-    if (!(await destination(client, scope, payload.channelId, team.categoryId))) {
-      pause(payload.channelId);
-      return;
-    }
+    const target = await resolveTarget(payload.channelId, team.categoryId);
+    if (target === undefined) return;
     const verdict = await options.evaluate({
       guildId: scope.guildId,
       title: task.title,
@@ -749,14 +821,14 @@ const deliverOneSlot = async (
       return;
     }
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(payload.channelId), {
+      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
         content: `${verdict.question}\n\n${TASK_REPLY_NOTICE}`.slice(0, 2000),
         replyTo: payload.messageId,
         allowedMentions: { parse: [] },
       });
-      repo.settle(scope, slot.slotId, 'sent', now, payload.channelId, ref.messageId);
+      repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
     } catch {
-      fail(payload.channelId);
+      fail(target);
     }
     return;
   }

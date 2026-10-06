@@ -12,10 +12,22 @@ import {
   type Reminder,
   type ReminderStore,
 } from '@bananasaurs/core';
-import { assistantRepo, guildRepo, mcpSendRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  assistantRepo,
+  guildRepo,
+  loggingRepo,
+  mcpSendRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
-import { createReminderDelivery, reminderStoreFor, renderReminder } from './reminder-delivery.js';
+import {
+  assistantWriteGateFor,
+  createReminderDelivery,
+  reminderStoreFor,
+  renderReminder,
+} from './reminder-delivery.js';
+import { channelAccessFor } from '../channels/access.js';
 
 /**
  * Reminder delivery renders exactly the stored pings (ADR 0086 decisions 5
@@ -321,7 +333,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
     expect(JSON.stringify(fields[0])).not.toContain(MCP_TEXT);
   });
 
-  it('RF2: a destination removed from send scope fails target-out-of-scope, and nothing is posted', async () => {
+  it('RF2: a destination removed from send scope fails write-denied, and nothing is posted', async () => {
     const client = makeDeliveryClient({ guilds: [{ guildId: GUILD, channels: [CHANNEL] }] });
     const port = new FakeDiscord({ guildId: GUILD });
     const { logger, lines } = capturingLogger();
@@ -330,15 +342,44 @@ describe('mcp scheduled sends (origin mcp)', () => {
 
     const error = await delivery.send(row).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ReminderDeliveryError);
-    expect((error as ReminderDeliveryError).message).toBe('target-out-of-scope');
+    expect((error as ReminderDeliveryError).message).toBe('write-denied');
     expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect((error as ReminderDeliveryError).endsSeries).toBe(true);
     expect(port.restCalls('sendMessage')).toHaveLength(0);
     const fields = loggedFields(lines);
     expect(fields).toHaveLength(1);
     expect(fields[0]).toMatchObject({
       guildId: GUILD,
       channelId: CHANNEL,
-      reason: 'not-in-send-scope',
+      purpose: 'write',
+      reason: 'not-granted',
+    });
+    expect(JSON.stringify(fields[0])).not.toContain(MCP_TEXT);
+  });
+
+  it('a destination excluded after scheduling fails write-denied with a no-access purpose line', async () => {
+    // The Write row is still there — the exclusion overrides it — so the
+    // denial carries the access reason, not a missing grant.
+    allowChannel(scope, CHANNEL);
+    loggingRepo.excludeChannel(scope, CHANNEL);
+    const client = makeDeliveryClient({ guilds: [{ guildId: GUILD, channels: [CHANNEL] }] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger, lines } = capturingLogger();
+    const error = await createReminderDelivery(GUILD, port, { client, scope, logger })
+      .send(mcpReminder())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).message).toBe('write-denied');
+    expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect((error as ReminderDeliveryError).endsSeries).toBe(true);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+    const fields = loggedFields(lines);
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      purpose: 'write',
+      reason: 'no-access',
     });
     expect(JSON.stringify(fields[0])).not.toContain(MCP_TEXT);
   });
@@ -373,7 +414,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
     );
 
     expect(result).toEqual({ delivered: 0, failed: 1, retried: 0 });
-    expect(failed).toEqual([{ id: 'r1', reason: 'target-out-of-scope' }]);
+    expect(failed).toEqual([{ id: 'r1', reason: 'write-denied' }]);
     expect(retried).toBe(0);
     expect(port.restCalls('sendMessage')).toHaveLength(0);
   });
@@ -434,7 +475,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(ReminderDeliveryError);
-    expect((error as ReminderDeliveryError).message).toBe('target-out-of-scope');
+    expect((error as ReminderDeliveryError).message).toBe('write-denied');
     expect(port.restCalls('sendMessage')).toHaveLength(0);
   });
 
@@ -544,7 +585,7 @@ describe('stored rows through the real store and the real pass', () => {
     expect(port.restCalls('sendMessage')).toHaveLength(0);
     const stored = assistantRepo.getReminder(scope, 'r1', 'mcp');
     expect(stored?.status).toBe('failed');
-    expect(stored?.failureReason).toBe('target-out-of-scope');
+    expect(stored?.failureReason).toBe('write-denied');
   });
 
   it('a recurring mcp row whose destination left scope fails instead of moving to its next occurrence', async () => {
@@ -599,6 +640,76 @@ describe('stored rows through the real store and the real pass', () => {
     const sent = port.restCalls('sendMessage')[0]?.args[2] as { content: string };
     expect(sent.content).toBe(text);
   });
+
+  it('N2 one-off: an mcp row through the production composition fails as write-denied', async () => {
+    // No Write grant: the delivery is built exactly as `runtime/guild.ts`
+    // builds it — both the `canWrite` gate and the MCP recheck object.
+    const client = makeDeliveryClient({ guilds: [{ guildId: GUILD, channels: [CHANNEL] }] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger, lines } = capturingLogger();
+    assistantRepo.insertReminder(scope, mcpReminder(), 'mcp');
+
+    const result = await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, assistantWriteGateFor(client, scope), {
+        client,
+        scope,
+        logger,
+      }),
+      NOW,
+    );
+
+    expect(result).toEqual({ delivered: 0, failed: 1, retried: 0 });
+    const stored = assistantRepo.getReminder(scope, 'r1', 'mcp');
+    expect(stored?.status).toBe('failed');
+    expect(stored?.failureReason).toBe('write-denied');
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+    const fields = loggedFields(lines);
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      purpose: 'write',
+      reason: 'not-granted',
+    });
+    expect(JSON.stringify(fields[0])).not.toContain(MCP_TEXT);
+  });
+
+  it('N2 recurring: an mcp row through the production composition ends the series', async () => {
+    const client = makeDeliveryClient({ guilds: [{ guildId: GUILD, channels: [CHANNEL] }] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger, lines } = capturingLogger();
+    assistantRepo.insertReminder(
+      scope,
+      mcpReminder({ recurrence: { pattern: { kind: 'daily' }, timeZone: 'UTC' } }),
+      'mcp',
+    );
+
+    const result = await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, assistantWriteGateFor(client, scope), {
+        client,
+        scope,
+        logger,
+      }),
+      NOW,
+    );
+
+    // Terminal: the series fails instead of moving to its next occurrence.
+    expect(result).toEqual({ delivered: 0, failed: 1, retried: 0 });
+    const stored = assistantRepo.getReminder(scope, 'r1', 'mcp');
+    expect(stored?.status).toBe('failed');
+    expect(stored?.failureReason).toBe('write-denied');
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+    const fields = loggedFields(lines);
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      purpose: 'write',
+      reason: 'not-granted',
+    });
+  });
 });
 
 describe('no model in the scheduled-send path', () => {
@@ -612,6 +723,7 @@ describe('no model in the scheduled-send path', () => {
     // module, or any new name pulled from `@bananasaurs/core` (which also
     // exports the provider layer), fails here and has to be looked at.
     expect([...new Set(specifiers)].sort()).toEqual([
+      '../channels/access.js',
       '../mcp/targets.js',
       './reminder-summary.js',
       '@bananasaurs/core',
@@ -624,6 +736,7 @@ describe('no model in the scheduled-send path', () => {
       .filter((name) => name !== '')
       .sort();
     expect(coreNames).toEqual([
+      'AccessDecision',
       'DiscordApiError',
       'DiscordPort',
       'Logger',
@@ -648,6 +761,57 @@ describe('reminderStoreFor', () => {
 
     expect(assistantRepo.getReminder(scope, 'r1')?.dueAt).toBe(NOW + 86_400_000);
     expect(assistantRepo.getReminder(scope, 'r1')?.status).toBe('scheduled');
+  });
+});
+
+describe('a guild not yet cached is transient, never a denial (N1)', () => {
+  it('an assistant delivery through the production write gate retries when the guild cache is empty', async () => {
+    const client = makeDeliveryClient({ guilds: [] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    const delivery = createReminderDelivery(GUILD, port, assistantWriteGateFor(client, scope), {
+      client,
+      scope,
+      logger,
+    });
+
+    const error = await delivery.send(assistantReminder()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).permanent).toBe(false);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('an mcp delivery against an empty guild cache retries rather than fails', async () => {
+    allowChannel(scope, CHANNEL);
+    const client = makeDeliveryClient({ guilds: [] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+
+    const error = await createReminderDelivery(GUILD, port, { client, scope, logger })
+      .send(mcpReminder())
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).permanent).toBe(false);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('the pass retries an mcp row delivered while the guild is uncached', async () => {
+    allowChannel(scope, CHANNEL);
+    const client = makeDeliveryClient({ guilds: [] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger } = capturingLogger();
+    assistantRepo.insertReminder(scope, mcpReminder(), 'mcp');
+
+    const result = await deliverDueReminders(
+      reminderStoreFor(scope),
+      createReminderDelivery(GUILD, port, { client, scope, logger }),
+      NOW,
+    );
+
+    expect(result).toEqual({ delivered: 0, failed: 0, retried: 1 });
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
   });
 });
 
@@ -678,5 +842,51 @@ describe('createReminderDelivery', () => {
     expect(error).toBeInstanceOf(ReminderDeliveryError);
     expect((error as ReminderDeliveryError).permanent).toBe(true);
     expect((error as ReminderDeliveryError).message).not.toBe('reminder origin unknown');
+  });
+
+  it('refuses permanently without sending when canWrite denies the channel', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD });
+    const delivery = createReminderDelivery(GUILD, discord, async () => false);
+
+    const error = await delivery.send(assistantReminder()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('sends once when canWrite allows the channel', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD });
+    const delivery = createReminderDelivery(GUILD, discord, async () => true);
+
+    await delivery.send(assistantReminder());
+
+    expect(discord.restCalls('sendMessage')).toHaveLength(1);
+  });
+
+  it('a canWrite denial logs guild, channel, purpose and reason per reminder', async () => {
+    const client = makeDeliveryClient({ guilds: [{ guildId: GUILD, channels: [CHANNEL] }] });
+    const port = new FakeDiscord({ guildId: GUILD });
+    const { logger, lines } = capturingLogger();
+    const delivery = createReminderDelivery(
+      GUILD,
+      port,
+      (channelId) => channelAccessFor(client, scope).check('write', channelId),
+      { client, scope, logger },
+    );
+
+    const error = await delivery.send(assistantReminder()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ReminderDeliveryError);
+    expect((error as ReminderDeliveryError).permanent).toBe(true);
+    expect(port.restCalls('sendMessage')).toHaveLength(0);
+    const fields = loggedFields(lines);
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      purpose: 'write',
+      reason: 'not-granted',
+    });
   });
 });

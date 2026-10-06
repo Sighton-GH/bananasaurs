@@ -167,7 +167,6 @@ export type McpScheduleOutcome =
   | { readonly status: 'failed' };
 
 export type McpScheduleRefusal =
-  | 'private-thread'
   | 'channel-not-allowlisted'
   | 'channel-not-in-guild'
   | 'ambiguous-channel'
@@ -421,11 +420,6 @@ const refusalText = (
 ): string => {
   const channel = target.channel ?? 'the scheduled channel';
   switch (reason) {
-    case 'private-thread':
-      return (
-        `Channel ${channel} in guild ${guildId} is a private thread, ` +
-        `so ${nothingHappened}. Private threads never inherit send authorization.`
-      );
     case 'channel-not-allowlisted':
       return (
         `Channel ${channel} in guild ${guildId} is not on the send allowlist, ` +

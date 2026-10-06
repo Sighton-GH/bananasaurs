@@ -22,6 +22,7 @@ import {
   automodAdminRepo,
   automodRuleListsRepo,
   automodRuleRepo,
+  channelReadRepo,
   effectRepo,
   eligibilityRepo,
   guildRepo,
@@ -40,6 +41,7 @@ import {
   type InstanceScope,
 } from '@bananasaurs/storage';
 import { generateToken, hashPassword, hashToken, POLICY } from '@bananasaurs/http';
+import { excludedThreadIds, noAccessFromCache } from '../channels/access.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
 import type { PasswordVault } from './password-vault.js';
@@ -90,6 +92,16 @@ export const fetchInHundredIdChunks = async <T>(
   }
   return results;
 };
+
+/**
+ * ADR 0126 Task 9: archived-history visibility for the ops read ports — an
+ * archive row exists (any kind, paused or not: pausing keeps history
+ * searchable by owner decision) and the channel is not No-access.
+ * Synchronous: both halves are sync reads (the repository, the channel
+ * cache), so the ports below stay synchronous.
+ */
+const canSearchArchived = (client: Client, scope: GuildScope, channelId: string): boolean =>
+  archiveRepo.hasArchivedChannel(scope, channelId) && !noAccessFromCache(client, scope, channelId);
 
 export const opsPortsFor = (
   scope: GuildScope,
@@ -563,6 +575,36 @@ export const opsPortsFor = (
     return outcome;
   },
   archiveDisableCategory: (channelId) => archiveRepo.disableCategory(scope, channelId),
+  archivePauseChannel: (channelId) => {
+    const row = archiveRepo.findChannel(scope, channelId);
+    if (row === undefined) return 'not-enabled';
+    if (row.scopeKind === 'category') return 'wrong-kind';
+    if (row.scopeKind === 'derived') return 'derived';
+    return archiveRepo.pauseChannel(scope, channelId);
+  },
+  archiveResumeChannel: (channelId) => {
+    const row = archiveRepo.findChannel(scope, channelId);
+    if (row === undefined) return 'not-enabled';
+    if (row.scopeKind === 'category') return 'wrong-kind';
+    if (row.scopeKind === 'derived') return 'derived';
+    return archiveRepo.resumeChannel(scope, channelId);
+  },
+  archivePauseCategory: (channelId) => {
+    const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
+    if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
+    const row = archiveRepo.findChannel(scope, channelId);
+    if (row?.scopeKind === 'channel') return 'not-enabled';
+    if (row?.scopeKind === 'derived') return 'derived';
+    return archiveRepo.pauseChannel(scope, channelId);
+  },
+  archiveResumeCategory: (channelId) => {
+    const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
+    if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
+    const row = archiveRepo.findChannel(scope, channelId);
+    if (row?.scopeKind === 'channel') return 'not-enabled';
+    if (row?.scopeKind === 'derived') return 'derived';
+    return archiveRepo.resumeChannel(scope, channelId);
+  },
   archiveSetThreads: (channelId, include) => {
     const channel = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
     if (!include && channel?.type === ChannelType.GuildForum) return 'forum-requires-all';
@@ -877,13 +919,22 @@ export const opsPortsFor = (
   // within that set (the repository returns empty for one outside it); `rank`
   // is dropped at this boundary but the best-first order is kept.
   archiveSearch: (input) => {
-    const visibleChannelIds = archiveRepo.listChannels(scope).map((channel) => channel.channelId);
+    const visibleChannelIds = archiveRepo
+      .listChannels(scope)
+      .map((channel) => channel.channelId)
+      // ADR 0126 Task 9: No-access channels leave the visibility set — the
+      // rows stay, the search stops seeing them.
+      .filter((channelId) => !noAccessFromCache(client, scope, channelId));
     const result = archiveSearchRepo.searchMessages(scope, {
       query: input.query,
       visibility: { channelIds: visibleChannelIds },
       ...(input.channelId !== undefined && { channelIds: [input.channelId] }),
       ...(input.authorId !== undefined && { authorId: input.authorId }),
       ...(input.limit !== undefined && { limit: input.limit }),
+      // N5: a thread excluded on its own hides its rows even though the
+      // parent channel stays visible — in SQL, counted in the total with the
+      // same predicate. The channel level is the visibility set above.
+      excludeThreadIds: excludedThreadIds(scope),
     });
     return {
       total: result.total,
@@ -899,13 +950,18 @@ export const opsPortsFor = (
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
   // Same visibility rule as archiveSearch: the repository itself refuses
   // channels outside the guild's archive-enabled set, so the wiring passes
-  // the caller's channel id straight through.
-  archiveChannelHistory: (input) =>
-    archiveRepo
+  // the caller's channel id straight through. ADR 0126 Task 9: a No-access
+  // channel reads as empty, the same as a channel with no archive.
+  archiveChannelHistory: (input) => {
+    if (!canSearchArchived(client, scope, input.channelId)) return [];
+    // N5: a thread excluded on its own hides its rows even though the parent
+    // channel stays visible — in SQL, so the page stays full-length.
+    return archiveRepo
       .listChannelHistory(scope, {
         channelId: input.channelId,
         ...(input.before !== undefined && { beforeMessageId: input.before }),
         ...(input.limit !== undefined && { limit: input.limit }),
+        excludeThreadIds: excludedThreadIds(scope),
       })
       .map((message) => ({
         messageId: message.messageId,
@@ -915,10 +971,17 @@ export const opsPortsFor = (
         createdAt: message.createdAt,
         editedAt: message.editedAt,
         deletedAt: message.deletedAt,
-      })),
+      }));
+  },
   archiveFindMessage: (messageId) => {
     const message = archiveRepo.findMessage(scope, messageId);
     if (message === undefined) return undefined;
+    // No oracle: a message in a No-access channel answers like an unknown id,
+    // and the HTTP route maps both to its 404. ADR 0126 M6: a thread excluded
+    // on its own hides its rows the same way.
+    if (!canSearchArchived(client, scope, message.channelId)) return undefined;
+    if (message.threadId !== undefined && noAccessFromCache(client, scope, message.threadId))
+      return undefined;
     return {
       messageId: message.messageId,
       channelId: message.channelId,
@@ -991,6 +1054,27 @@ export const opsPortsFor = (
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
 
+  // ADR 0126: the channels and categories the assistant may read. The same
+  // allow-time shape checks the send allowlist wires above: a channel verb
+  // refuses anything that is not a text-capable channel of this guild, and a
+  // category verb refuses anything that is not a category of this guild —
+  // both resolved from the live cache before the repository sees the id. The
+  // clock is this composition root's, not the command's. Unlike the send
+  // allowlist there is no account: the repository stores no adder.
+  readScopeAllow: (input) => {
+    if (input.scopeKind === 'category') {
+      const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(input.channelId);
+      if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
+    } else if (!isTextChannelOfGuild(client, scope.guildId, input.channelId)) {
+      return 'no-such-channel';
+    }
+    const added = channelReadRepo.allowRead(scope, {
+      channelId: input.channelId,
+      scopeKind: input.scopeKind,
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
   // Slice 5 task 6 (ADR 0117 §2): the role-policy modes and the role
   // allowlist. The clock is this composition root's, not the command's, the
   // same reasoning `recordMatchVerdict` gives.
@@ -1026,6 +1110,9 @@ export const opsPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
+  readScopeDisallow: (input) =>
+    channelReadRepo.disallowRead(scope, input.channelId, input.scopeKind),
+  readScopeList: () => channelReadRepo.listReadScope(scope),
   disallowRole: (input) =>
     mcpRolePolicyRepo.disallowRole(scope, input.roleId, input.purpose) ? 'removed' : 'not-allowed',
   listRoleAllowlist: () => mcpRolePolicyRepo.listRoleAllowlist(scope),

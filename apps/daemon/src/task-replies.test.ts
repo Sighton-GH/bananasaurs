@@ -8,6 +8,7 @@ import {
 import {
   effectRepo,
   guildRepo,
+  loggingRepo,
   taskRepo,
   taskBindingRepo,
   taskNudgeRepo,
@@ -62,6 +63,7 @@ beforeEach(() => {
   roleIdsFor = {};
   liveRoles = [];
   client = {
+    channels: { cache: new Map() },
     guilds: {
       cache: new Map([
         [
@@ -422,5 +424,58 @@ describe('task reply subscriber', () => {
       channelId: CHANNEL,
       messageId: MESSAGE,
     });
+  });
+  it('records nothing from a channel marked no-access, at any of the three levels', async () => {
+    taskBindingRepo.addMembership(scope, teamId, ACTOR, 'member', ACTOR_OBJ, 3);
+    const frame = individualTask('Frame', [ACTOR]);
+    taskRepo.recordTaskAnchor(scope, frame, CHANNEL, '555555555555555556', 3);
+    // The reply event carries channel CHANNEL, parent 777777777777777777,
+    // category CATEGORY: excluding any one of them must refuse the reply.
+    const levels: Array<[string, string]> = [
+      ['channel', CHANNEL],
+      ['parent', '777777777777777777'],
+      ['category', CATEGORY],
+    ];
+    let seq = 0;
+    for (const [level, excludedId] of levels) {
+      loggingRepo.excludeChannel(scope, excludedId);
+      const messageId = `9000000000000000${String(10 + seq).padStart(2, '0')}`;
+      seq += 1;
+      await createTaskReplySubscriber(scope, client, discord).handle(
+        reply({
+          referencedMessageId: '555555555555555556',
+          messageId,
+          content: 'finished the frame',
+        }),
+      );
+      expect(taskRepo.listReports(scope, frame), `excluded ${level}`).toHaveLength(0);
+      expect(
+        taskNudgeRepo.getSlot(scope, `followup:${messageId}`),
+        `excluded ${level}`,
+      ).toBeUndefined();
+      expect(taskNudgeRepo.getReplyChoice(scope, messageId), `excluded ${level}`).toBeUndefined();
+      loggingRepo.unexcludeChannel(scope, excludedId);
+    }
+    expect(scheduledSlots()).toHaveLength(0);
+  });
+  it('resolveReplyChoice records and schedules nothing for a no-access channel', async () => {
+    taskBindingRepo.addMembership(scope, teamId, ACTOR, 'member', ACTOR_OBJ, 3);
+    const one = individualTask('One', [ACTOR]);
+    const two = individualTask('Two', [ACTOR]);
+    sentCheckin('checkin:noaccess', '777777777777777778', [one, two]);
+    await createTaskReplySubscriber(scope, client, discord).handle(
+      reply({
+        referencedMessageId: '777777777777777778',
+        content: 'made good progress today',
+      }),
+    );
+    expect(taskNudgeRepo.getReplyChoice(scope, MESSAGE)).toBeDefined();
+    loggingRepo.excludeChannel(scope, CHANNEL);
+    await expect(resolveReplyChoice(scope, client, discord, ACTOR, MESSAGE, one, 99)).resolves.toBe(
+      'gone',
+    );
+    expect(taskRepo.listReports(scope, one)).toHaveLength(0);
+    expect(taskNudgeRepo.getSlot(scope, `followup:${MESSAGE}`)).toBeUndefined();
+    expect(taskNudgeRepo.getSlot(scope, `evaluate:${MESSAGE}`)).toBeUndefined();
   });
 });

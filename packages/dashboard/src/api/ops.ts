@@ -241,6 +241,17 @@ export interface SendAllowlistEntry {
 /** `POST /api/send-allowlist` outcomes; `no-such-channel` arrives as a 404. */
 export type SendAllowOutcome = 'allowed' | 'already-allowed';
 
+// --- read scope (ADR 0126) ------------------------------------------------------
+
+/** One row of `GET /api/read-scope`'s `entries` — mirrors `OpsReadScopeEntry`. */
+export interface ReadScopeEntry {
+  readonly channelId: string;
+  readonly scopeKind: 'channel' | 'category';
+  readonly addedAt: number;
+}
+
+/** `POST /api/read-scope[/categories]` outcomes; `no-such-channel` arrives as a 404. */
+export type ReadScopeAllowOutcome = 'allowed' | 'already-allowed';
 // --- mcp role policy (slice 5 task 6, ADR 0117 §2) ----------------------------
 
 /** `mcp_role_policy`'s two modes — mirrors `OpsRolePolicyMode`. */
@@ -361,6 +372,8 @@ export interface ArchiveChannelStatus {
   readonly threadsDone?: number | undefined;
   /** Whether threads under the channel are archived. Absent on older servers — treat as on. */
   readonly includeThreads?: boolean | undefined;
+  /** ADR 0126: false = Archive off (paused, history kept). Absent on older servers — treat as on. */
+  readonly collecting?: boolean | undefined;
   readonly messageCount: number;
 }
 

@@ -131,7 +131,6 @@ export type McpSendOutcome =
   | { readonly status: 'failed' };
 
 export type McpSendRefusal =
-  | 'private-thread'
   | 'channel-not-allowlisted'
   | 'channel-not-in-guild'
   | 'bot-lacks-permission'
@@ -303,8 +302,6 @@ const refusalText = (
   detail?: string,
 ): string => {
   switch (reason) {
-    case 'private-thread':
-      return `Channel ${channelId} in guild ${guildId} is a private thread, so nothing was posted. Private threads never inherit send authorization.`;
     case 'channel-not-allowlisted':
       return (
         `Channel ${channelId} in guild ${guildId} is not on the send allowlist, ` +

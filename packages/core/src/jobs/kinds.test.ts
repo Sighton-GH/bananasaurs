@@ -6,7 +6,12 @@ import {
   type ContinueRule,
   type NewRule,
 } from '../assistant/conversation.js';
-import { assistantInvokeCursor } from './kinds.js';
+import {
+  assistantInvokeCursor,
+  pruneJobsDedupeKey,
+  pruneJobsPayload,
+  sweepDedupeKey,
+} from './kinds.js';
 
 const base = {
   stage: 'invoke-done',
@@ -119,5 +124,20 @@ describe('assistantInvokeCursor resolution', () => {
       resolution: { kind: 'continue', conversationId: 'conv-1', rule: 'not-a-rule' },
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe('housekeeping dedupe keys and payload (ADR 0127)', () => {
+  it('keys the prune job by UTC day', () => {
+    expect(pruneJobsDedupeKey('2026-10-04')).toBe('prune_jobs:2026-10-04');
+  });
+
+  it('keys the sweep job by UTC day', () => {
+    expect(sweepDedupeKey('2026-10-04')).toBe('sweep_event_dedupe:2026-10-04');
+  });
+
+  it('pruneJobsPayload rejects a negative olderThanMs', () => {
+    expect(pruneJobsPayload.safeParse({ olderThanMs: -1 }).success).toBe(false);
+    expect(pruneJobsPayload.safeParse({ olderThanMs: 0 }).success).toBe(true);
   });
 });

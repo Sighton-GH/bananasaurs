@@ -39,6 +39,7 @@ import {
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createConversationPruneTimer } from './conversation-prune-timer.js';
+import { createHousekeepingTimer } from './housekeeping-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
 import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
@@ -46,6 +47,7 @@ import { reserveEntryCall } from '../assistant/local-limit.js';
 import { taskNudgeRepo } from '@bananasaurs/storage';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
+import { seedChannelScopes } from '../channels/read-seed.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { ensureOwnerGuildAccess } from './owner-guild-access.js';
 import { createProviderConfigStore, providerKeyFrom } from '../assistant/provider-config.js';
@@ -354,7 +356,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     // Item 7: the OAuth purge is instance-level, not per-guild, so it rides
-    // the timer's once-a-day `runOnce` rather than the per-guild expiry jobs.
+    // the archive-expiry timer's `runOnce` outside the guild loop. That runs
+    // at start and hourly (ADR 0127); the purge is a cheap indexed delete that logs only when it removed something.
     purgeOAuth: (nowMs) => oauthRepo.purgeExpired(instanceScope, nowMs),
     now,
     logger,
@@ -364,6 +367,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // per UTC day, beside the archive-expiry timer — the job table has no
   // scheduler, so this `setInterval` is what says when.
   const conversationPruneTimer = createConversationPruneTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
+  // ADR 0127: the daily housekeeping producer. One `prune_jobs` job and one
+  // `sweep_event_dedupe` job per guild per UTC day — every guild gets both,
+  // with no peek, because finished jobs and event fingerprints accumulate
+  // wherever anything ever ran.
+  const housekeepingTimer = createHousekeepingTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     now,
@@ -506,12 +520,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   /**
    * When the socket went away, or `undefined` if it has not since start.
    *
-   * A cold start is a fresh IDENTIFY by definition, so the first READY records a
-   * gap too — `docs/21` exercise 4 is "Ctrl-C, react while it is down, restart",
-   * and reactions added in that window produced no dispatch at all. The gap's
-   * *duration* is unknown to a process that was not running, so it is recorded
-   * as zero-length; the gap's *existence* is what enqueues the reconciliation
-   * that recovers the window.
+   * Stamped on both `ShardDisconnect` (unrecoverable closes) and
+   * `ShardReconnecting` (resumable drops, which discord.js v14 reports only
+   * via the latter) — without the second, every resumed session records a
+   * zero-length gap. A cold start is a fresh IDENTIFY by definition, so the
+   * first READY records a gap too — `docs/21` exercise 4 is "Ctrl-C, react
+   * while it is down, restart", and reactions added in that window produced
+   * no dispatch at all. The gap's *duration* is unknown to a process that
+   * was not running, so it is recorded as zero-length; the gap's *existence*
+   * is what enqueues the reconciliation that recovers the window.
    */
   let disconnectedAtMs: number | undefined;
 
@@ -521,6 +538,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       safeLogFields({ component: 'connection', outcome: 'disconnected' }),
       'shard closed',
     );
+  });
+
+  client.on(Events.ShardReconnecting, () => {
+    // discord.js v14 emits ShardDisconnect only for unrecoverable closes; a
+    // resumable drop emits ShardReconnecting. Stamp here too so a resumed
+    // session's gap has its real length. The first stamp wins.
+    disconnectedAtMs ??= now();
   });
 
   const connectionEvent = (resumed: boolean): void => {
@@ -534,6 +558,27 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   };
 
   /**
+   * The one-time Read + Write seed for a single guild, for the join and
+   * recover paths (the READY path loops this over every guild). Skipped
+   * read-only; one guild's failure never stops the next guild's seed. A guild
+   * uncached when this runs claims no marker, so a later call once cached
+   * still seeds; the markers make a second seed a no-op.
+   */
+  const seedChannelScopesForGuild = (guildId: string): void => {
+    const entry = byGuild.get(guildId);
+    if (entry && !config.BANANASAURS_READONLY) {
+      try {
+        seedChannelScopes(client, entry.scope, now(), logger);
+      } catch (err) {
+        logger.error(
+          safeLogFields({ component: 'startup', guildId: entry.scope.guildId, err }),
+          'channel scope seed failed for guild; continuing',
+        );
+      }
+    }
+  };
+
+  /**
    * The leave for an unlisted guild is the pipeline's, not this listener's: the
    * translation layer emits `guildCreate` exempt from the allowlist filter
    * precisely so the pipeline's gate can refuse it and call `leaveGuild` once.
@@ -543,11 +588,39 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     if (!allowlist.has(guild.id)) return;
     const entry = byGuild.get(guild.id);
     if (entry) guildRepo.upsertGuild(entry.scope, { name: guild.name, enabled: true, now: now() });
+    seedChannelScopesForGuild(guild.id);
+  });
+
+  /**
+   * N4: a guild that was unavailable at READY is already in the cache with an
+   * empty channel cache, so `GuildCreate` never fires for it — when it
+   * recovers, discord.js emits `GuildAvailable` instead. The same seed runs
+   * here; the once-only markers make it a no-op once seeded, and an
+   * uncached guild claims nothing.
+   */
+  client.on(Events.GuildAvailable, (guild) => {
+    if (!allowlist.has(guild.id)) return;
+    seedChannelScopesForGuild(guild.id);
   });
 
   client.on(Events.ClientReady, () => {
     checkBotIdentity(client, config, logger, deps.onFatal);
     recordGuildMembership(client, byGuild, logger, now());
+    // Channel-permissions Tasks 3 and 14: the one-time Read + Write seed,
+    // once per guild. Skipped read-only (the marker write would throw); one
+    // guild's failure never stops the next guild's seed.
+    if (!config.BANANASAURS_READONLY) {
+      for (const { scope } of byGuild.values()) {
+        try {
+          seedChannelScopes(client, scope, now(), logger);
+        } catch (err) {
+          logger.error(
+            safeLogFields({ component: 'startup', guildId: scope.guildId, err }),
+            'channel scope seed failed for guild; continuing with the next guild',
+          );
+        }
+      }
+    }
     // `doctor` on every start, not only when asked. Its findings — a missing
     // partial, an ungranted intent, a bot below the roles it manages — all look
     // identical from the outside: nothing happens and nothing says why.
@@ -671,6 +744,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       conversationPruneTimer.start();
       reminderDeliveryTimer.start();
       resourceRefreshTimer.start();
+      housekeepingTimer.start();
     },
 
     async stop() {
@@ -683,6 +757,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       conversationPruneTimer.stop();
       reminderDeliveryTimer.stop();
       resourceRefreshTimer.stop();
+      housekeepingTimer.stop();
       await settle();
     },
 

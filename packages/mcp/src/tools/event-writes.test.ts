@@ -431,7 +431,6 @@ describe('event-write refusal rendering', () => {
   const cases: ReadonlyArray<readonly [McpEventWriteRefusal, string]> = [
     ['channel-not-allowlisted', 'not on the send allowlist'],
     ['channel-not-in-guild', 'not a channel this guild'],
-    ['private-thread', 'private thread'],
     ['bot-lacks-permission', 'lacks the'],
     ['event-not-found', 'was not found'],
     ['not-voice-or-stage', 'not a voice or stage channel'],

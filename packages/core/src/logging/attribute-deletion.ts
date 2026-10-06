@@ -62,6 +62,10 @@ export async function attributeAndLogDeletion(
   const source: LogSource = {
     channelId: payload.channelId,
     parentChannelId: payload.parentChannelId,
+    // The persisted payload carries no category: the guild-wide exclusion is
+    // enforced at enqueue time in the subscriber, so by the time this job
+    // runs the source was already allowed.
+    categoryId: undefined,
   };
   const routes = ports
     .listEnabledRoutesFor('message_delete')

@@ -67,6 +67,7 @@ export * as conversationRepo from './repos/conversations.js';
 export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
 export * as loggingRepo from './repos/logging.js';
+export * as channelReadRepo from './repos/channel-read.js';
 export * as mcpSendRepo from './repos/mcp-send.js';
 export * as mcpActionsRepo from './repos/mcp-actions.js';
 export * as mcpBulkRepo from './repos/mcp-bulk.js';

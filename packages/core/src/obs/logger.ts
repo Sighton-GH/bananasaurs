@@ -52,6 +52,11 @@ export const LOGGABLE_FIELDS = new Set([
    */
   'slotId',
   'kind',
+  /**
+   * The permission purpose a check ran for (`read`, `write`, `record`): a
+   * fixed routing enum like `kind` and `jobKind`, never caller text.
+   */
+  'purpose',
   'eventKind',
   'fingerprint',
   'dedupeKey',

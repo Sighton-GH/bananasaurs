@@ -60,6 +60,7 @@ const buildPipeline = (guildArchiveEnabled: boolean): Pipeline => {
     guildArchiveEnabled,
     isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
     hasCategoryRow: (channelId) => archiveRepo.hasCategoryRow(scope, channelId),
+    hasPausedOwnRow: (channelId) => archiveRepo.hasPausedOwnRow(scope, channelId),
     parentIncludesThreads: (channelId) => archiveRepo.parentIncludesThreads(scope, channelId),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),

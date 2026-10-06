@@ -23,6 +23,7 @@ import {
   assistantRepo,
   authzRepo,
   authzStoreFor,
+  channelReadRepo,
   computeDocId,
   effectRepo,
   guildRepo,
@@ -834,10 +835,10 @@ describe('/mcp send_message through the real composition', () => {
     expect(found.isError).not.toBe(true);
   });
 
-  it('a private thread never inherits its parent', async () => {
+  it('a private thread inherits its parent and audits the derived grant', async () => {
     allow();
     const accessToken = await mintToken('bananasaurs:send');
-    const refused = callText(
+    const found = callText(
       (
         await sendCall(
           accessToken,
@@ -845,9 +846,15 @@ describe('/mcp send_message through the real composition', () => {
         )
       ).body,
     );
-    expect(refused.isError).toBe(true);
-    expect(refused.text).toContain('private thread');
-    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Sent message');
+    expect(fakeDiscord.restCalls('sendMessage')[0]?.args[1]).toBe(PRIVATE_THREAD);
+    const audit = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+      .find((entry) => entry.action === 'mcp.message.sent');
+    const after = JSON.parse(audit?.after ?? '{}') as Record<string, unknown>;
+    expect(after['authorization']).toBe('derived');
+    expect(after['grantedByChannelId']).toBe(CHANNEL);
   });
 
   it('an excluded allowlisted channel is refused and Discord is never called', async () => {
@@ -861,6 +868,21 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.text).toContain('not on the send allowlist');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
     expect(mcpActionsRepo.findAction(t.scopes.forGuild(GUILD_A), 'excluded-send')).toBeUndefined();
+  });
+
+  it('a channel under an excluded category is refused and Discord is never called', async () => {
+    allow();
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), CATEGORY);
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'excluded-category-send' }))).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not on the send allowlist');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(
+      mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'excluded-category-send'),
+    ).toBeUndefined();
   });
 
   it('a non-allowlisted channel is refused and Discord is never called', async () => {
@@ -1395,11 +1417,17 @@ describe('/mcp thread writes through the real composition', () => {
 
   it('a private thread created via MCP is readable by read_thread with only the bot as member', async () => {
     seed();
+    // ADR 0126 Task 15: the live read needs Read, inherited from the parent.
+    channelReadRepo.allowRead(t.scopes.forGuild(GUILD_A), {
+      channelId: PLANNING,
+      scopeKind: 'channel',
+      now: clock,
+    });
     const discord = new FakeDiscord({ guildId: GUILD_A });
     const client = buildThreadClient();
     const threadApp = buildThreadApp(client, discord);
     try {
-      const accessToken = await mintToken('bananasaurs:send');
+      const accessToken = await mintToken('bananasaurs:send bananasaurs:read');
       const created = callText(
         (
           await mcpCall(
@@ -1448,10 +1476,12 @@ describe('/mcp thread writes through the real composition', () => {
       // content, so the live page shows the no-content marker; the content
       // reaching Discord is pinned by the `sendMessage` args assertion in the
       // firstMessage test below.)
-      const readToken = await mintToken();
+      // Production learns the thread through the gateway; the test cache
+      // learns it here, the same shape the Read check resolves.
+      injectThread(client, threadId, PLANNING, ChannelType.GuildPrivateThread);
       const read = callText(
         (
-          await mcpCall(threadApp, readToken, 'read_thread', {
+          await mcpCall(threadApp, accessToken, 'read_thread', {
             guildId: '111111111111111111',
             threadId,
           })
@@ -1470,7 +1500,7 @@ describe('/mcp thread writes through the real composition', () => {
     } finally {
       await threadApp.close();
     }
-  });
+  }, 20_000); // an argon2-backed OAuth flow plus thread setup ran past 5s under full-suite load
 
   it('its allowlist row lets a follow-up send_message with threadId pass', async () => {
     seed();
@@ -3104,7 +3134,33 @@ describe('/mcp archive tools across two guilds', () => {
     // Discord live (the fake here), and the tool appends the metadata JSON
     // line after the envelope. The archived row and the live message share
     // ids, the way a real archived message matches its Discord original.
+    // ADR 0126 Task 15: the live read needs Read, so the channel is injected
+    // into the gateway cache and granted a Read row here.
     seedArchive();
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'general',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    channelReadRepo.allowRead(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      scopeKind: 'channel',
+      now: clock,
+    });
     fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A, pinned: true });
     fakeDiscord.offlineReactionAdd({
       channelId: CHANNEL,
@@ -3139,6 +3195,195 @@ describe('/mcp archive tools across two guilds', () => {
     expect(found.text).toContain(
       '{"pinned":true,"reactions":[{"emoji":"👍","count":1},{"emoji":"<:unknown:777777777777777777>","count":2}]}',
     );
+  });
+
+  it('(ADR 0126) get_message omits live pin state when Read is off, without calling Discord', async () => {
+    // The live message exists and is pinned, but the channel holds no Read
+    // row: the denial answers `undefined` exactly like a gone message, so
+    // the archive stands alone and the live endpoint is never reached.
+    seedArchive();
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'general',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A, pinned: true });
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('alpha plans for the guild A picnic');
+    expect(found.text).not.toContain('"pinned"');
+    expect(fakeDiscord.restCalls('fetchMessageMeta')).toEqual([]);
+  });
+
+  it('N6: a messageMeta Read denial records one ids-only line', async () => {
+    seedArchive();
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'general',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    fakeDiscord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE_A, pinned: true });
+    const lines: Array<{ fields: Record<string, unknown>; msg: string }> = [];
+    const capture = (fields: Record<string, unknown>, msg: string): void => {
+      lines.push({ fields, msg });
+    };
+    const logger = {
+      info: capture,
+      warn: capture,
+      error: capture,
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as never;
+    const logged = buildDashboardApp({ ...deps, logger });
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await mcpPost(
+            logged,
+            {
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: {
+                name: 'get_message',
+                arguments: { guildId: '111111111111111111', messageId: MESSAGE_A },
+              },
+            },
+            accessToken,
+          )
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('alpha plans for the guild A picnic');
+      expect(found.text).not.toContain('"pinned"');
+
+      const denials = lines.filter((line) => line.msg === 'mcp messageMeta read denied');
+      expect(denials).toHaveLength(1);
+      expect(denials[0]?.fields).toMatchObject({
+        guildId: GUILD_A,
+        channelId: CHANNEL,
+        purpose: 'read',
+        reason: 'not-granted',
+      });
+      expect(JSON.stringify(denials[0])).not.toContain('alpha plans');
+    } finally {
+      await logged.close();
+    }
+  });
+
+  it('(ADR 0126) get_message for a message in a No-access thread answers like an unknown id', async () => {
+    // ADR 0126 M6 supersedes the Task 15 pin-state assertion: a thread
+    // excluded on its own hides its rows entirely — `findMessage` answers
+    // `undefined` exactly like an unknown id, so neither the message text
+    // nor live pin state shows, and the live endpoint is never reached.
+    const THREAD = '488888888888888888';
+    const THREAD_MESSAGE = '489999999999999999';
+    seedArchive();
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'general',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: THREAD,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'plans-thread',
+          parent_id: CHANNEL,
+          position: 0,
+          permission_overwrites: [],
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: '2026-09-01T00:00:00.000Z',
+            locked: false,
+          },
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    channelReadRepo.allowRead(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      scopeKind: 'channel',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: THREAD_MESSAGE,
+      channelId: CHANNEL,
+      threadId: THREAD,
+      authorId: MEMBER,
+      content: 'thread plans for the guild A picnic',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), THREAD);
+    fakeDiscord.defineMessage({ channelId: THREAD, messageId: THREAD_MESSAGE, pinned: true });
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: THREAD_MESSAGE,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toBe(`No archived message ${THREAD_MESSAGE} in guild 111111111111111111.`);
+    expect(found.text).not.toContain('thread plans for the guild A picnic');
+    expect(found.text).not.toContain('"pinned"');
+    expect(fakeDiscord.restCalls('fetchMessageMeta')).toEqual([]);
   });
 
   it('(slice 2 task 6) get_message answers the archive alone when Discord no longer has it', async () => {
@@ -3626,6 +3871,451 @@ describe('/mcp resource tools across two guilds', () => {
   });
 });
 
+/**
+ * Task 9 (ADR 0126): every MCP read of archived messages hides No-access
+ * channels — the logging exclusions — while paused (Archive off) channels
+ * stay visible, and `list_channels` omits No-access channels.
+ */
+describe('/mcp archive reads obey No access', () => {
+  const CH_OK = '611111111111111111';
+  const CH_NOACCESS = '622222222222222222';
+  const CH_PAUSED = '633333333333333333';
+  const MEMBER = '666666666666666666';
+  const MSG_OK = '711111111111111111';
+  const MSG_NOACCESS = '722222222222222222';
+  const MSG_PAUSED = '733333333333333333';
+  const UNKNOWN_MSG = '799999999999999999';
+
+  const seedNoAccessWorld = (): void => {
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CH_OK,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'open-planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: CH_NOACCESS,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'sealed-vault',
+          position: 1,
+          permission_overwrites: [],
+        },
+        {
+          id: CH_PAUSED,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'paused-lounge',
+          position: 2,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    const scope = t.scopes.forGuild(GUILD_A);
+    for (const channelId of [CH_OK, CH_NOACCESS, CH_PAUSED] as const) {
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: clock });
+    }
+    archiveRepo.upsertMessage(scope, {
+      messageId: MSG_OK,
+      channelId: CH_OK,
+      authorId: MEMBER,
+      content: 'alpha picnic plans for everyone',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: MSG_NOACCESS,
+      channelId: CH_NOACCESS,
+      authorId: MEMBER,
+      content: 'bravo secret picnic plans for the vault',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scope, {
+      messageId: MSG_PAUSED,
+      channelId: CH_PAUSED,
+      authorId: MEMBER,
+      content: 'charlie picnic plans while paused',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    loggingRepo.excludeChannel(scope, CH_NOACCESS);
+    archiveRepo.pauseChannel(scope, CH_PAUSED);
+  };
+
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('get_message for a message in a No-access channel answers exactly like an unknown id', async () => {
+    seedNoAccessWorld();
+    const accessToken = await mintToken();
+
+    const denied = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MSG_NOACCESS,
+        })
+      ).body,
+    );
+    const unknown = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: UNKNOWN_MSG,
+        })
+      ).body,
+    );
+    expect(denied.isError).not.toBe(true);
+    expect(unknown.isError).not.toBe(true);
+    // No oracle: the two answers are identical modulo the echoed id.
+    expect(denied.text.replace(MSG_NOACCESS, 'X')).toBe(unknown.text.replace(UNKNOWN_MSG, 'X'));
+    expect(denied.text).toContain('No archived message');
+    expect(denied.text).not.toContain('bravo secret');
+  });
+
+  it('search_messages omits a No-access channel and keeps a paused one', async () => {
+    seedNoAccessWorld();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: '111111111111111111',
+          query: 'picnic',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    // FTS highlights the match as `[picnic]`, so the assertions pin the
+    // words around it rather than the unmarked query text.
+    expect(found.text).toContain('alpha');
+    expect(found.text).toContain('charlie');
+    expect(found.text).not.toContain('bravo secret');
+  });
+
+  it('read_channel_history for a No-access channel answers empty', async () => {
+    seedNoAccessWorld();
+    const accessToken = await mintToken();
+
+    const history = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: CH_NOACCESS,
+        })
+      ).body,
+    );
+    expect(history.isError).not.toBe(true);
+    expect(history.text).toContain('showing 0 messages');
+    expect(history.text).not.toContain('bravo secret');
+  });
+
+  it('list_channels omits a No-access channel', async () => {
+    seedNoAccessWorld();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'list_channels', {
+          guildId: '111111111111111111',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('open-planning');
+    expect(found.text).toContain('paused-lounge');
+    expect(found.text).not.toContain('sealed-vault');
+  });
+});
+
+/**
+ * M6: thread messages are archived under the parent's channel_id with
+ * thread_id set, so every channel-level No-access filter misses a thread
+ * excluded on its own. Each archived read must also drop rows whose
+ * threadId is No access.
+ */
+describe('/mcp archive reads hide a thread excluded on its own', () => {
+  const PARENT = '644444444444444444';
+  const THREAD_HIDDEN = '655555555555555555';
+  const THREAD_SHOWN = '666666666666666666';
+  const FORUM = '677777777777777777';
+  const FORUM_HIDDEN = '688888888888888888';
+  const FORUM_SHOWN = '699999999999999999';
+  const MEMBER = '611111111111111112';
+  const MSG_PARENT = '744444444444444444';
+  const MSG_HIDDEN = '755555555555555555';
+  const MSG_SHOWN = '766666666666666666';
+  const MSG_FORUM_HIDDEN = '777777777777777771';
+  const MSG_FORUM_SHOWN = '788888888888888881';
+  const UNKNOWN_MSG = '799999999999999999';
+
+  const threadMetadata = {
+    archived: false,
+    auto_archive_duration: 1440,
+    archive_timestamp: '2026-09-01T00:00:00.000Z',
+    locked: false,
+  };
+
+  const seedThreadWorld = (): void => {
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: PARENT,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'thread-parent',
+          position: 10,
+          permission_overwrites: [],
+        },
+        {
+          id: THREAD_HIDDEN,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'hidden-thread',
+          parent_id: PARENT,
+          thread_metadata: threadMetadata,
+        },
+        {
+          id: THREAD_SHOWN,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'shown-thread',
+          parent_id: PARENT,
+          thread_metadata: threadMetadata,
+        },
+        {
+          id: FORUM,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildForum,
+          name: 'help-forum',
+          position: 11,
+          permission_overwrites: [],
+        },
+        {
+          id: FORUM_HIDDEN,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'hidden-post',
+          parent_id: FORUM,
+          thread_metadata: threadMetadata,
+        },
+        {
+          id: FORUM_SHOWN,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'shown-post',
+          parent_id: FORUM,
+          thread_metadata: threadMetadata,
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    const scope = t.scopes.forGuild(GUILD_A);
+    for (const channelId of [PARENT, FORUM] as const) {
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: clock });
+    }
+    const upsert = (
+      messageId: string,
+      channelId: string,
+      content: string,
+      threadId?: string,
+    ): void => {
+      archiveRepo.upsertMessage(scope, {
+        messageId,
+        channelId,
+        ...(threadId === undefined ? {} : { threadId }),
+        authorId: MEMBER,
+        content,
+        createdAt: clock,
+        editedAt: undefined,
+        attachments: [],
+      });
+    };
+    upsert(MSG_PARENT, PARENT, 'quince parent commons');
+    upsert(MSG_HIDDEN, PARENT, 'quince hidden tango', THREAD_HIDDEN);
+    upsert(MSG_SHOWN, PARENT, 'quince shown sierra', THREAD_SHOWN);
+    upsert(MSG_FORUM_HIDDEN, FORUM, 'quince forum hidden tango', FORUM_HIDDEN);
+    upsert(MSG_FORUM_SHOWN, FORUM, 'quince forum shown sierra', FORUM_SHOWN);
+    loggingRepo.excludeChannel(scope, THREAD_HIDDEN);
+    loggingRepo.excludeChannel(scope, FORUM_HIDDEN);
+  };
+
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('search_messages omits the excluded thread while keeping its sibling', async () => {
+    seedThreadWorld();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: '111111111111111111',
+          query: 'quince',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('parent commons');
+    expect(found.text).toContain('shown sierra');
+    expect(found.text).not.toContain('hidden tango');
+  });
+
+  it('get_message for a message in the excluded thread answers exactly like an unknown id', async () => {
+    seedThreadWorld();
+    const accessToken = await mintToken();
+
+    const denied = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: MSG_HIDDEN,
+        })
+      ).body,
+    );
+    const unknown = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '111111111111111111',
+          messageId: UNKNOWN_MSG,
+        })
+      ).body,
+    );
+    expect(denied.isError).not.toBe(true);
+    expect(unknown.isError).not.toBe(true);
+    expect(denied.text.replace(MSG_HIDDEN, 'X')).toBe(unknown.text.replace(UNKNOWN_MSG, 'X'));
+    expect(denied.text).toContain('No archived message');
+    expect(denied.text).not.toContain('hidden tango');
+  });
+
+  it("read_channel_history on the forum omits the excluded post's rows", async () => {
+    seedThreadWorld();
+    const accessToken = await mintToken();
+
+    const history = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: FORUM,
+        })
+      ).body,
+    );
+    expect(history.isError).not.toBe(true);
+    expect(history.text).toContain('shown sierra');
+    expect(history.text).not.toContain('hidden tango');
+  });
+
+  it('N5 search: the total equals the visible count from SQL, not the shown count', async () => {
+    seedThreadWorld();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: '111111111111111111',
+          query: 'quince',
+          limit: 1,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    // Three visible matches (parent commons, shown sierra, forum shown
+    // sierra); the limit cuts the page, never the total.
+    const [head] = found.text.split('\n');
+    expect(head).toBe('Archive search in guild 111111111111111111: 3 matches (showing 1).');
+  });
+
+  it("N5 history: the page stays full-length when an excluded post's rows interleave", async () => {
+    seedThreadWorld();
+    const scope = t.scopes.forGuild(GUILD_A);
+    const extra = (messageId: string, threadId: string, content: string): void => {
+      archiveRepo.upsertMessage(scope, {
+        messageId,
+        channelId: FORUM,
+        threadId,
+        authorId: MEMBER,
+        content,
+        createdAt: clock,
+        editedAt: undefined,
+        attachments: [],
+      });
+    };
+    extra('790000000000000001', FORUM_SHOWN, 'quince forum new sierra');
+    extra('789000000000000001', FORUM_HIDDEN, 'quince forum mid tango');
+    extra('780000000000000001', FORUM_SHOWN, 'quince forum old sierra');
+    const accessToken = await mintToken();
+
+    const history = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: FORUM,
+          limit: 2,
+        })
+      ).body,
+    );
+    expect(history.isError).not.toBe(true);
+    const [head] = history.text.split('\n');
+    expect(head).toContain('showing 2 messages');
+    expect(history.text).toContain('new sierra');
+    expect(history.text).toContain('shown sierra');
+    expect(history.text).not.toContain('mid tango');
+  });
+});
+
 describe('/mcp with MCP_PUBLIC_URL unset', () => {
   it('answers 404 on /mcp while the SPA fallback still serves unknown paths', async () => {
     const bare = buildDashboardApp({ ...deps, mcpPublicUrl: undefined });
@@ -3895,6 +4585,74 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       const options = memberListCalls[0] as Record<string, unknown>;
       expect(options['cache']).toBe(false);
       expect(options['limit']).toBe(25);
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('get_member lastMessageAt skips No-access channels and threads', async () => {
+    // ADR 0126 Task 15 follow-up: per-author last-post times must not count
+    // messages in No-access channels or threads — only the visible message's
+    // time answers.
+    seedStorage();
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    const VISIBLE_AT = clock - 3000;
+    const THREAD_AT = clock - 2000;
+    const HIDDEN_AT = clock - 1000;
+    const HIDDEN_CHANNEL = '477777777777777777';
+    // An archived-then-excluded channel: the rows stay, the reads stop
+    // seeing them.
+    archiveRepo.enableChannel(scopeA, {
+      channelId: HIDDEN_CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: '511111111111111111',
+      channelId: PLANNING,
+      authorId: REST_MEMBER_A,
+      content: 'visible plans',
+      createdAt: VISIBLE_AT,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: '522222222222222222',
+      channelId: PLANNING,
+      threadId: PUBLIC_THREAD,
+      authorId: REST_MEMBER_A,
+      content: 'thread plans',
+      createdAt: THREAD_AT,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: '533333333333333333',
+      channelId: HIDDEN_CHANNEL,
+      authorId: REST_MEMBER_A,
+      content: 'hidden plans',
+      createdAt: HIDDEN_AT,
+      editedAt: undefined,
+      attachments: [],
+    });
+    loggingRepo.excludeChannel(scopeA, PUBLIC_THREAD);
+    loggingRepo.excludeChannel(scopeA, HIDDEN_CHANNEL);
+    const { client: discordClient } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'get_member', {
+            guildId: '111111111111111111',
+            member: REST_MEMBER_A,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(new Date(VISIBLE_AT).toISOString());
+      expect(found.text).not.toContain(new Date(THREAD_AT).toISOString());
+      expect(found.text).not.toContain(new Date(HIDDEN_AT).toISOString());
     } finally {
       await guildApp.close();
     }
@@ -4647,11 +5405,12 @@ describe('/mcp read_thread and shared private threads', () => {
   };
 
   /** The composed app with the owner id configured and thread memberships set. */
-  const buildThreadApp = (discord: FakeDiscord): FastifyInstance => {
+  const buildThreadApp = (discord: FakeDiscord, logger = deps.logger): FastifyInstance => {
     const client = buildThreadClient();
     return createServer({
       deps: {
         ...deps,
+        logger,
         instance: {
           ...deps.instance,
           redactedConfig: () => ({ BANANASAURS_OWNER_USER_ID: OWNER }),
@@ -4667,6 +5426,13 @@ describe('/mcp read_thread and shared private threads', () => {
     archiveRepo.enableChannel(t.scopes.forGuild(GUILD_A), {
       channelId: PLANNING,
       attachmentPolicy: 'none',
+      now: clock,
+    });
+    // ADR 0126: live thread reads need Read — the shared parent carries it,
+    // so the live tests below read; the Read-off test removes it again.
+    channelReadRepo.allowRead(t.scopes.forGuild(GUILD_A), {
+      channelId: PLANNING,
+      scopeKind: 'channel',
       now: clock,
     });
     archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
@@ -4764,6 +5530,156 @@ describe('/mcp read_thread and shared private threads', () => {
       expect(found.text).toContain('public-thread');
       expect(found.text).not.toContain('private, read live');
       expect(found.text).not.toContain(LIVE_TEXT);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('an excluded thread reads from the archive as empty', async () => {
+    // ADR 0126 Task 15 follow-up: No access on the thread itself hides the
+    // thread itself — `threadInfo` answers undefined, so `read_thread`
+    // answers exactly like an unknown thread, leaking neither rows nor the
+    // thread's name.
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), PUBLIC_THREAD);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: PUBLIC_THREAD,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toBe(`No thread ${PUBLIC_THREAD} in this guild.`);
+      expect(found.text).not.toContain(ARCHIVE_TEXT);
+      expect(found.text).not.toContain('public-thread');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a No-access thread answers exactly like an unknown thread, leaking no name', async () => {
+    // ADR 0126 Task 15 follow-up: `threadInfo` must not hand the thread's
+    // name to `read_thread` when the thread is No access — on itself, its
+    // parent or its category. The answer is the unknown-thread text.
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const readThread = async (threadId: string) =>
+        callText(
+          (
+            await threadCall(threadApp, accessToken, {
+              guildId: '111111111111111111',
+              threadId,
+            })
+          ).body,
+        );
+      const unknown = await readThread('455555555555555555');
+      expect(unknown.isError).not.toBe(true);
+      expect(unknown.text).toContain('No thread 455555555555555555 in this guild.');
+      const scopeA = t.scopes.forGuild(GUILD_A);
+      // Own-id exclusion.
+      loggingRepo.excludeChannel(scopeA, PUBLIC_THREAD);
+      const ownDenied = await readThread(PUBLIC_THREAD);
+      expect(ownDenied.isError).not.toBe(true);
+      expect(ownDenied.text.replaceAll(PUBLIC_THREAD, 'X')).toBe(
+        unknown.text.replaceAll('455555555555555555', 'X'),
+      );
+      expect(ownDenied.text).not.toContain('public-thread');
+      // Parent exclusion hides the thread the same way.
+      loggingRepo.unexcludeChannel(scopeA, PUBLIC_THREAD);
+      loggingRepo.excludeChannel(scopeA, PLANNING);
+      const parentDenied = await readThread(PUBLIC_THREAD);
+      expect(parentDenied.isError).not.toBe(true);
+      expect(parentDenied.text.replaceAll(PUBLIC_THREAD, 'X')).toBe(
+        unknown.text.replaceAll('455555555555555555', 'X'),
+      );
+      expect(parentDenied.text).not.toContain('public-thread');
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('a live private read with Read off on the parent answers empty', async () => {
+    // ADR 0126 Task 15: a live thread read is a live Discord fetch, so it
+    // needs Read — inherited from the parent for a private thread. With the
+    // parent row removed the shared thread reads as empty, and Discord's
+    // live endpoint is never reached.
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    expect(channelReadRepo.disallowRead(t.scopes.forGuild(GUILD_A), PLANNING, 'channel')).toBe(
+      'removed',
+    );
+    const threadApp = buildThreadApp(discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('showing 0 messages');
+      expect(found.text).not.toContain(LIVE_TEXT);
+      expect(discord.restCalls('fetchChannelMessages')).toEqual([]);
+    } finally {
+      await threadApp.close();
+    }
+  });
+
+  it('N6: a liveThreadMessages Read denial records one ids-only line', async () => {
+    const discord = new FakeDiscord({ guildId: GUILD_A });
+    seedThreads(discord);
+    expect(channelReadRepo.disallowRead(t.scopes.forGuild(GUILD_A), PLANNING, 'channel')).toBe(
+      'removed',
+    );
+    const lines: Array<{ fields: Record<string, unknown>; msg: string }> = [];
+    const capture = (fields: Record<string, unknown>, msg: string): void => {
+      lines.push({ fields, msg });
+    };
+    const logger = {
+      info: capture,
+      warn: capture,
+      error: capture,
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as never;
+    const threadApp = buildThreadApp(discord, logger);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await threadCall(threadApp, accessToken, {
+            guildId: '111111111111111111',
+            threadId: SHARED_PRIVATE,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('showing 0 messages');
+      expect(found.text).not.toContain(LIVE_TEXT);
+      expect(discord.restCalls('fetchChannelMessages')).toEqual([]);
+
+      const denials = lines.filter((line) => line.msg === 'mcp liveThreadMessages read denied');
+      expect(denials).toHaveLength(1);
+      expect(denials[0]?.fields).toMatchObject({
+        guildId: GUILD_A,
+        channelId: SHARED_PRIVATE,
+        purpose: 'read',
+        reason: 'not-granted',
+      });
+      expect(JSON.stringify(denials[0])).not.toContain(LIVE_TEXT);
     } finally {
       await threadApp.close();
     }
@@ -5611,6 +6527,120 @@ describe('/mcp digest tools over real storage', () => {
       await digestApp.close();
     }
   });
+
+  it('read_digest drops rows of an excluded thread in an allowed channel', async () => {
+    // ADR 0126 Task 15: the thread follow-up lives under HELP_CHANNEL, which
+    // stays visible — but the thread itself is No access, so its row never
+    // reaches the digest while the channel's own rows still do.
+    const now = clock;
+    seedDigest(now);
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), THREAD);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: 0,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('first digest message in help');
+      expect(found.text).not.toContain('thread follow-up under help');
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('N5 digest: an excluded thread row inside the fetched window still emits a cursor', async () => {
+    // Oldest first past `since`: two visible rows, a hidden thread row, then
+    // two more visible rows. With limit 2 the probe row lands on the hidden
+    // one — filtering after the SQL limit would eat it and silently cut the
+    // digest instead of emitting the cursor.
+    const now = clock;
+    seedDigest(now);
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    const seed = (
+      messageId: string,
+      content: string,
+      createdAt: number,
+      threadId?: string,
+    ): void => {
+      archiveRepo.upsertMessage(scopeA, {
+        messageId,
+        channelId: HELP_CHANNEL,
+        ...(threadId === undefined ? {} : { threadId }),
+        authorId: ASKER,
+        content,
+        createdAt,
+        editedAt: undefined,
+        attachments: [],
+      });
+    };
+    seed('545555555555555555', 'thread middle message in help', now - 20 * 60_000, THREAD);
+    seed('546666666666666666', 'later visible help one', now - 15 * 60_000);
+    seed('547777777777777777', 'latest visible help two', now - 5 * 60_000);
+    loggingRepo.excludeChannel(scopeA, THREAD);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'read_digest', {
+            guildId: '111111111111111111',
+            channels: [HELP_CHANNEL],
+            since: now - 60 * 60_000,
+            limit: 2,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('first digest message in help');
+      expect(found.text).toContain('Next cursor');
+      expect(found.text).not.toContain('thread middle message');
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('list_unanswered drops a mention in a No-access channel', async () => {
+    // ADR 0126 Task 15: `list_unanswered` takes no channel argument, so the
+    // port is the only gate — a mention in the excluded channel is not an
+    // open question the MCP may see, while the help channel's own question
+    // still answers.
+    const now = clock;
+    seedDigest(now);
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: '589999999999999999',
+      channelId: GENERAL,
+      authorId: ASKER,
+      content: 'sealed help question about wiring',
+      createdAt: now - 13 * 3_600_000,
+      editedAt: undefined,
+      attachments: [],
+      mentionedRoleIds: [HELP_ROLE],
+    });
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), GENERAL);
+    const digestApp = buildDigestApp(buildDigestClient());
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await digestCall(digestApp, accessToken, 'list_unanswered', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('open help question about wiring');
+      expect(found.text).not.toContain('sealed help question about wiring');
+    } finally {
+      await digestApp.close();
+    }
+  });
 });
 
 /** Network transport smoke: a separate SDK client connects to the daemon's actual HTTP listener. */
@@ -5648,6 +6678,14 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     members: [],
     emojis: [],
     unavailable: false,
+  });
+  // Channel permissions: the edit below re-verifies the destination, which
+  // lives under this category, so the fixture grants Write there.
+  mcpSendRepo.allowChannel(scope, {
+    channelId: categoryId,
+    scopeKind: 'category',
+    addedByAccountId: ACCOUNT,
+    now: clock,
   });
   const teamId = taskRepo.createTeam(
     scope,
@@ -5861,6 +6899,7 @@ describe('MCP task admin full surface (owner-only)', () => {
   const CATEGORY = '999999999999999999';
   const SECOND_CATEGORY = '577777777777777777';
   const DEST = '333333333333333333';
+  const DEST_TWO = '344444444444444444';
   const LEAD_ROLE = '611111111111111111';
   const MEMBER_ROLE = '622222222222222222';
   const PRESIDENT_ROLE = '633333333333333333';
@@ -5899,6 +6938,15 @@ describe('MCP task admin full surface (owner-only)', () => {
           position: 0,
           permission_overwrites: [],
         },
+        {
+          id: DEST_TWO,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'tasks-two',
+          parent_id: CATEGORY,
+          position: 1,
+          permission_overwrites: [],
+        },
       ],
       roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
       members: [],
@@ -5910,6 +6958,16 @@ describe('MCP task admin full surface (owner-only)', () => {
     fakeDiscord.defineRole({ id: PRESIDENT_ROLE });
     fakeDiscord.defineMember(MEMBER_A);
     fakeDiscord.defineMember(MEMBER_B);
+    // Channel permissions: every destination in this block lives under
+    // CATEGORY, so the shared fixture grants Write there — the task-admin
+    // Write gates keep their meaning and only the refusal tests below
+    // remove it.
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CATEGORY,
+      scopeKind: 'category',
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
   };
 
   const gid = (): string => String(GUILD_A);
@@ -6498,7 +7556,6 @@ describe('MCP task admin full surface (owner-only)', () => {
     // The shared harness stub resolves only DEST; this variant app resolves
     // one more channel in the same category, so a destination move passes
     // live verification and reaches the anchor check.
-    const DEST_TWO = '344444444444444444';
     const portsFor: DashboardAppDeps['portsFor'] = (scope) => {
       const base = testPortsFor(scope, () => clock);
       return {
@@ -6739,6 +7796,44 @@ describe('MCP task admin full surface (owner-only)', () => {
     const duplicate = text((await call(send, 'create_task_team', teamArgs())).body);
     expect(duplicate.isError).toBe(true);
     expect(duplicate.text).toContain('That category already has a team.');
+  });
+
+  it('create_club_task to a destination without Write is refused', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const teamId = await createTeam(send);
+    expect(mcpSendRepo.disallowChannel(t.scopes.forGuild(GUILD_A), CATEGORY, 'category')).toBe(
+      'removed',
+    );
+    const refused = text(
+      (
+        await call(send, 'create_club_task', {
+          guildId: gid(),
+          teamId,
+          title: 'Club task',
+          assignmentKind: 'team',
+          dueAt: due(),
+          timezone: 'America/Vancouver',
+          destinationId: DEST,
+          requestId: 'no-write-destination-1',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(taskRepo.listTasks(t.scopes.forGuild(GUILD_A))).toHaveLength(0);
+  });
+
+  it('create_task_team with an announcement channel without Write is refused', async () => {
+    seedTaskWorld();
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    expect(mcpSendRepo.disallowChannel(t.scopes.forGuild(GUILD_A), CATEGORY, 'category')).toBe(
+      'removed',
+    );
+    const refused = text(
+      (await call(send, 'create_task_team', teamArgs({ announcementChannelId: DEST }))).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(taskRepo.listTeams(t.scopes.forGuild(GUILD_A))).toHaveLength(0);
   });
 });
 

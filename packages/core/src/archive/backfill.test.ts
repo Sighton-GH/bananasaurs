@@ -134,6 +134,7 @@ const harness = (): Harness => {
             derivedFrom: undefined,
             cursorMessageId: channel.cursorMessageId,
             backfillState: channel.state,
+            collecting: true,
           }
         : undefined,
     upsertMessage: (input) => {
@@ -295,6 +296,47 @@ describe('archive backfill paging', () => {
     expect(h.continuations).toHaveLength(1);
   });
 
+  it('a paused own row stops the job, as "no longer enabled" does today', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 250);
+    // ADR 0126: `collecting = 0` keeps the row; the job must stop like the
+    // row were gone — no fetch, no writes, no continuation.
+    const original = h.ports.findChannel.bind(h.ports);
+    h.ports.findChannel = (channelId) => {
+      const row = original(channelId);
+      if (row === undefined) return undefined;
+      return { ...row, collecting: false };
+    };
+
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
+
+    expect(h.source.calls).toHaveLength(0);
+    expect(h.rows.size).toBe(0);
+    expect(h.continuations).toHaveLength(0);
+  });
+
+  it('a channel whose category is excluded stops, even when the channel itself is not', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 250);
+    const CATEGORY = '999999999999999999';
+    h.ports.categoryOf = () => CATEGORY;
+    // Only the category is excluded — the own id is clean. Full No-access
+    // precedence (ADR 0126) still stops the job.
+    h.ports.isChannelExcluded = (id) => id === CATEGORY;
+
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
+
+    expect(h.source.calls).toHaveLength(0);
+    expect(h.rows.size).toBe(0);
+    expect(h.continuations).toHaveLength(0);
+  });
+
   it('a channel disabled mid-backfill ends the job with no fetch and no writes', async () => {
     const h = harness();
     h.source.seed(CHANNEL, 250);
@@ -367,6 +409,44 @@ describe('archive backfill paging', () => {
 
     expect(h.source.calls).toHaveLength(1);
     expect(h.rows.size).toBe(10);
+  });
+
+  it('an excluded thread is skipped in the thread walk: never fetched, never stored', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 1);
+    h.source.seed('777777777777777777', 2, 100);
+    h.source.seed('888888888888888888', 1, 200);
+    h.ports.listThreads = async () => [
+      { id: '777777777777777777', isPrivate: false },
+      { id: '888888888888888888', isPrivate: false },
+    ];
+    // Only the first thread is excluded on its own id — the channel and the
+    // sibling thread stay covered, so the walk must skip one and keep the
+    // other rather than stopping.
+    h.ports.isChannelExcluded = (id) => id === '777777777777777777';
+    const handler = archiveBackfillHandler(h.ports);
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
+    await handler.run(
+      archiveBackfillPayload.parse({
+        channelId: CHANNEL,
+        threadWalk: h.continuations[0]?.threadWalk,
+      }),
+      h.context,
+    );
+    await handler.run(
+      archiveBackfillPayload.parse({
+        channelId: CHANNEL,
+        threadWalk: h.continuations[1]?.threadWalk,
+      }),
+      h.context,
+    );
+    expect(h.source.calls).not.toContainEqual(
+      expect.objectContaining({ channelId: '777777777777777777' }),
+    );
+    expect(
+      [...h.rows.values()].filter((row) => row.threadId !== undefined).map((row) => row.threadId),
+    ).toEqual(['888888888888888888']);
+    expect(h.channel.state).toBe('done');
   });
 
   it('maps edits and attachments, skipping an attachment without an id', async () => {

@@ -4,6 +4,7 @@ import {
   parseGuildId,
   ReminderDeliveryError,
   safeLogFields,
+  type AccessDecision,
   type DiscordPort,
   type Logger,
   type OutgoingMessage,
@@ -13,6 +14,7 @@ import {
 } from '@bananasaurs/core';
 import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
 import { filterPings, resolveSendTarget } from '../mcp/targets.js';
+import { channelAccessFor } from '../channels/access.js';
 import { neutraliseMassMentions } from './reminder-summary.js';
 
 /**
@@ -155,6 +157,20 @@ export const renderReminder = (
 };
 
 /**
+ * The production Write gate for assistant reminders (composed in
+ * `runtime/guild.ts`): the `canWrite` closure the delivery calls. A guild
+ * not yet cached or available is transient, never a denial (N1) — the throw
+ * keeps its `permanent = false` flag so the pass's retry/backoff covers it.
+ */
+export const assistantWriteGateFor =
+  (client: Client, scope: GuildScope): ((channelId: string) => Promise<AccessDecision>) =>
+  async (channelId) => {
+    if (client.guilds.cache.get(scope.guildId)?.available !== true)
+      throw new ReminderDeliveryError('guild not ready', false);
+    return channelAccessFor(client, scope).check('write', channelId);
+  };
+
+/**
  * The live facts the `origin='mcp'` re-check needs: the discord.js client
  * for cache math and membership reads, this guild's storage scope for the
  * send-scope and role-policy rows, and the logger for the ids-only lines.
@@ -181,9 +197,18 @@ export interface McpDeliveryRecheck {
 export const createReminderDelivery = (
   guildId: string,
   discord: DiscordPort,
-  mcp?: McpDeliveryRecheck,
+  canWriteOrMcp?: ((channelId: string) => Promise<boolean | AccessDecision>) | McpDeliveryRecheck,
+  mcpOverride?: McpDeliveryRecheck,
 ): ReminderDelivery => ({
   async send(reminder) {
+    // Either caller shape: the branch's `canWrite` function, main's
+    // `McpDeliveryRecheck` object, or both (the daemon's composition root
+    // passes both). A third-argument object is the recheck; a function is
+    // the Write gate. The gate may answer the full access decision so the
+    // denial line below can name the reason; a bare boolean denies as
+    // `write-denied`.
+    const canWrite = typeof canWriteOrMcp === 'function' ? canWriteOrMcp : undefined;
+    const mcp = mcpOverride ?? (typeof canWriteOrMcp === 'object' ? canWriteOrMcp : undefined);
     const row = reminder as DeliverableReminder;
     // Assistant rows go exactly through today's code: no live client, no
     // policy, no log lines. The branch is on `'assistant'`, not on "not
@@ -191,6 +216,71 @@ export const createReminderDelivery = (
     // that stopped passing it through) must never post unchecked.
     if (row.origin !== 'assistant' && row.origin !== 'mcp')
       throw new ReminderDeliveryError('reminder origin unknown', true, true);
+    // N2: the general `canWrite` gate runs for assistant rows only. MCP rows
+    // re-check Write in their own arm below, which settles terminally as
+    // `write-denied` and ends the series (ADR 0119 §2) — running this gate
+    // first moved the series to its next occurrence instead.
+    if (row.origin === 'assistant' && canWrite !== undefined) {
+      // Channel permissions: a reminder posts only where the bot holds the
+      // write row. Checked outside the try so the refusal keeps its
+      // `permanent` flag — inside it, `classifyReminderSendError` would
+      // reclassify a bare `ReminderDeliveryError` as transient and schedule
+      // pointless retries.
+      // ADR 0126 M5: the denial logs one ids-only line per reminder carrying
+      // guild, channel, purpose and reason, like the task-nudge pause line.
+      const verdict = await canWrite(reminder.destinationId);
+      const denied = typeof verdict === 'boolean' ? !verdict : !verdict.allowed;
+      if (denied) {
+        const reason =
+          typeof verdict === 'boolean' || verdict.allowed ? 'write-denied' : verdict.reason;
+        mcp?.logger.warn(
+          safeLogFields({
+            component: 'reminders',
+            guildId: reminder.guildId,
+            channelId: reminder.destinationId,
+            purpose: 'write',
+            reason,
+          }),
+          'assistant reminder write denied',
+        );
+        throw new ReminderDeliveryError(
+          'Bananasaurs is not allowed to post in that channel.',
+          true,
+        );
+      }
+    }
+    // The row's guild governs every check — never the closure guild, which
+    // only equals it when the wiring is right. A row for another guild can
+    // therefore never borrow this guild's scope.
+    const rowGuildId = parseGuildId(row.guildId);
+    if (row.origin === 'mcp') {
+      if (mcp === undefined)
+        throw new ReminderDeliveryError('mcp delivery requires live checks', true, true);
+      // N1: a guild not yet cached or available is transient, never a
+      // denial — the pass's retry/backoff covers it. Without this, a pass
+      // draining before READY fails every due reminder permanently.
+      if (mcp.client.guilds.cache.get(rowGuildId)?.available !== true)
+        throw new ReminderDeliveryError('guild not ready', false);
+      // ADR 0126 Task 15: a scheduled send posts only where the bot holds
+      // Write at delivery, not just at scheduling — the same `ChannelAccess`
+      // precedence the schedule-time target check uses. Denied settles the
+      // row terminally (`write-denied` fails it and ends the series) with one
+      // ids-only line carrying the purpose and the access reason.
+      const write = await channelAccessFor(mcp.client, mcp.scope).check('write', row.destinationId);
+      if (!write.allowed) {
+        mcp.logger.warn(
+          safeLogFields({
+            component: 'reminders',
+            guildId: row.guildId,
+            channelId: row.destinationId,
+            purpose: 'write',
+            reason: write.reason,
+          }),
+          'mcp scheduled send write denied',
+        );
+        throw new ReminderDeliveryError('write-denied', true, true);
+      }
+    }
     if (row.origin === 'assistant') {
       try {
         const rendered = renderReminder(row);
@@ -206,10 +296,6 @@ export const createReminderDelivery = (
     // No AI anywhere below: two policy reads and one post, nothing else.
     if (mcp === undefined)
       throw new ReminderDeliveryError('mcp delivery requires live checks', true, true);
-    // The row's guild governs every check — never the closure guild, which
-    // only equals it when the wiring is right. A row for another guild can
-    // therefore never borrow this guild's scope.
-    const rowGuildId = parseGuildId(row.guildId);
     const target = await resolveSendTarget(
       mcp.client,
       mcp.scope,
