@@ -698,8 +698,8 @@ export const createAssistantService = (
       // the model answers without evidence and the run is flagged
       // `resources-unavailable` instead.
       let resources: ReturnType<typeof assistantRepo.listResources> = [];
-      let ordered: typeof resources = [];
-      let catalogueLines: string[] = [];
+      let ordered: typeof resources;
+      let catalogueLines: string[];
       let preRetrieved: readonly {
         readonly resourceId: string;
         readonly chunkId: string;

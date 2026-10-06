@@ -306,7 +306,6 @@ export async function refreshGithubRepo(
       return fail(scope, resource, deps, failDetail(error));
     }
     branch = ref ?? defaultBranch;
-    ref = branch;
     let entries: readonly {
       readonly path: string;
       readonly type: 'blob' | 'tree';

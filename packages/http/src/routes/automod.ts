@@ -444,7 +444,7 @@ export const registerAutomodRoutes = (
         // the list, and only the configuration editor can narrow that.
         const detail = ports.findAutomodRuleDetail(request.params.ruleId);
         if (detail === undefined) return reply.status(404).send({ error: 'not-found' });
-        let denyMode = false;
+        let denyMode: boolean;
         try {
           denyMode = (JSON.parse(detail.config) as { mode?: unknown }).mode === 'deny';
         } catch {
