@@ -2685,7 +2685,7 @@ const checkRoleGrantTarget = async (
   roleId: string,
 ): Promise<RoleGrantCheck> => {
   if (client.guilds.cache.get(scope.guildId)?.roles.cache.get(roleId) === undefined) {
-    let found = false;
+    let found: boolean;
     try {
       found = (await discord.fetchRoles(scope.guildId)).some((role) => role.id === roleId);
     } catch {

@@ -117,7 +117,7 @@ const BASE_ZONES = [
 
 /** Common zones, plus the browser's zone when it is not already listed. */
 export const COMMON_TIME_ZONES: readonly string[] = (() => {
-  let browserZone = '';
+  let browserZone: string;
   try {
     browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
   } catch {

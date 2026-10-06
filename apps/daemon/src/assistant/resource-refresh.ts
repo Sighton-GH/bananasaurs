@@ -163,7 +163,7 @@ export async function refreshResource(
     resource.kind === 'document' ||
     resource.kind === 'repository'
   ) {
-    let isGithubPage = false;
+    let isGithubPage: boolean;
     try {
       isGithubPage = isGithubWebHost(new URL(resource.url).hostname);
     } catch {

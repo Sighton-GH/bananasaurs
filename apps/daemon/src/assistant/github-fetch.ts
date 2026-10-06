@@ -137,7 +137,7 @@ export const createGithubFetch = (options: GithubFetchOptions = {}): typeof fetc
       }
     } catch (error) {
       if (error instanceof Error && /size limit/i.test(error.message)) throw error;
-      throw new Error(`GitHub request to ${url.hostname} could not be read.`);
+      throw new Error(`GitHub request to ${url.hostname} could not be read.`, { cause: error });
     }
     const body = Buffer.concat(chunks);
     const headers = new Headers();
