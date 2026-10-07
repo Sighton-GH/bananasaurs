@@ -181,6 +181,11 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
   startedAtMs: deps.instance.startedAtMs,
   readonly: deps.instance.readonly,
   env: deps.instance.env,
+  // ADR 0131: the install-wide dry run behind `HttpDeps.taskPostsDryRun`
+  // (`BANANASAURS_DRY_RUN`), so `get_health` can say "held by dry run"
+  // instead of claiming "on" while every post is held back. Absent reads as
+  // on (fail closed), the same rule the task routes follow.
+  installDryRun: deps.taskPostsDryRun ?? true,
   now: deps.now,
   gateway: () => {
     const gateway = deps.instance.gateway();

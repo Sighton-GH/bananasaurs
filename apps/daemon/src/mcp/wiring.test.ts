@@ -7415,6 +7415,25 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(created.text).toContain('BANANASAURS_DRY_RUN=0');
   });
 
+  it('get_health says held by dry run when the switch is on but the install holds posts back', async () => {
+    guildRepo.setTaskPostsEnabled(t.scopes.forGuild(GUILD_A), true, clock);
+    await app.close();
+    app = buildDashboardApp({ ...deps, taskPostsDryRun: true });
+    const read = await mintToken();
+    const held = text((await call(read, 'get_health', {})).body);
+    expect(held.isError).not.toBe(true);
+    expect(held.text.split('\n')).toContain(
+      '  task posts on, held by dry run (BANANASAURS_DRY_RUN)',
+    );
+
+    await app.close();
+    app = buildDashboardApp({ ...deps, taskPostsDryRun: false });
+    const readAgain = await mintToken();
+    const on = text((await call(readAgain, 'get_health', {})).body);
+    expect(on.isError).not.toBe(true);
+    expect(on.text.split('\n')).toContain('  task posts on');
+  });
+
   it('create (multi-assignee) → edit → request → approve ends done with mcp_operator audit', async () => {
     seedTaskWorld();
     const send = await mintToken('bananasaurs:send bananasaurs:tasks');

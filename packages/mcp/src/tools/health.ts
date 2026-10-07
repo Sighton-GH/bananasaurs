@@ -65,6 +65,12 @@ export interface McpHealthPort {
   readonly startedAtMs: number;
   readonly readonly: boolean;
   readonly env: string;
+  /**
+   * ADR 0131: the install-wide `BANANASAURS_DRY_RUN`, which holds every task
+   * post back whatever the per-guild switch says. Read at call time beside
+   * `guilds()` — it is config, not a guild row.
+   */
+  readonly installDryRun: boolean;
   gateway(): {
     readonly connected: boolean;
     readonly pingMs: number | undefined;
@@ -134,7 +140,15 @@ export const renderHealth = (port: McpHealthPort): string => {
       const state = paused.length === 0 ? 'role changes enabled' : `paused (${paused.join(', ')})`;
       lines.push(`guild ${guild.guildId} (${name}): ${state}`);
       lines.push(`  automod ${guild.safety.automodState}`);
-      lines.push(`  task posts ${guild.safety.taskPostsEnabled ? 'on' : 'off'}`);
+      // ADR 0131: the switch alone would claim "on" while dry run holds
+      // every post back, so the held case names the reason.
+      lines.push(
+        !guild.safety.taskPostsEnabled
+          ? '  task posts off'
+          : port.installDryRun
+            ? '  task posts on, held by dry run (BANANASAURS_DRY_RUN)'
+            : '  task posts on',
+      );
     }
     const jobs = Object.entries(guild.jobCounts);
     const jobText =

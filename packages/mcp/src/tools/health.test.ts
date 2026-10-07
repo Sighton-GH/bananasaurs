@@ -24,6 +24,7 @@ const portWithName = (guildName: string | undefined): McpHealthPort => ({
   startedAtMs: 1_700_000_000_000,
   readonly: false,
   env: 'test',
+  installDryRun: false,
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
   now: () => 1_700_000_000_000 + 3_661_000,
   guilds: () => [
@@ -48,6 +49,7 @@ const portWithJobCounts = (jobCounts: Readonly<Record<string, number>>): McpHeal
   startedAtMs: 1_700_000_000_000,
   readonly: false,
   env: 'test',
+  installDryRun: false,
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
   now: () => 1_700_000_000_000 + 3_661_000,
   guilds: () => [
@@ -154,16 +156,17 @@ describe('get_health reports the automod switch (ADR 0121)', () => {
   });
 });
 
-describe('get_health reports the task posts switch (ADR 0131)', () => {
-  const portWithPosts = (taskPostsEnabled: boolean, dryRun: boolean): McpHealthPort => ({
+describe('get_health reports the task posts switch with dry run (ADR 0131)', () => {
+  const portWithPosts = (taskPostsEnabled: boolean, installDryRun: boolean): McpHealthPort => ({
     ...portWithName('guild a'),
+    installDryRun,
     guilds: () => [
       {
         guildId: GUILD,
         guildName: 'guild a',
         safety: {
           killswitch: false,
-          dryRun,
+          dryRun: false,
           breakerOpen: false,
           breakerReason: null,
           automodState: 'off',
@@ -175,12 +178,23 @@ describe('get_health reports the task posts switch (ADR 0131)', () => {
     ],
   });
 
-  it('prints on and off', () => {
-    expect(textOf(getHealthText(principalWith(GUILD), portWithPosts(true, false)))).toContain(
-      '  task posts on',
+  const linesOf = (taskPostsEnabled: boolean, installDryRun: boolean): readonly string[] =>
+    textOf(getHealthText(principalWith(GUILD), portWithPosts(taskPostsEnabled, installDryRun))).split(
+      '\n',
     );
-    expect(textOf(getHealthText(principalWith(GUILD), portWithPosts(false, false)))).toContain(
-      '  task posts off',
+
+  it('prints on when the switch is on and dry run is off', () => {
+    expect(linesOf(true, false)).toContain('  task posts on');
+  });
+
+  it('prints held by dry run when the switch is on but dry run holds every post back', () => {
+    expect(linesOf(true, true)).toContain(
+      '  task posts on, held by dry run (BANANASAURS_DRY_RUN)',
     );
+  });
+
+  it('prints off when the switch is off, dry run or not', () => {
+    expect(linesOf(false, false)).toContain('  task posts off');
+    expect(linesOf(false, true)).toContain('  task posts off');
   });
 });
