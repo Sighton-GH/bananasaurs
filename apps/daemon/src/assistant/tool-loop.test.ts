@@ -1162,9 +1162,14 @@ describe('runToolLoop daily quota (Task Q)', () => {
   });
   it('a 400 invalid-request attempt classifies provider-bad-model with the sanitized message', async () => {
     const { provider } = scripted([
-      new ProviderError('invalid-request', 'No endpoints found for bad-model Bearer sk-abc123', false, {
-        status: 400,
-      }),
+      new ProviderError(
+        'invalid-request',
+        'No endpoints found for bad-model Bearer sk-abc123',
+        false,
+        {
+          status: 400,
+        },
+      ),
     ]);
     const result = await runToolLoop(
       baseInput([entry({ provider, providerId: 'openrouter', model: 'bad-model' })]),

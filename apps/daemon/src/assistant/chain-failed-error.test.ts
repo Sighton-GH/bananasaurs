@@ -58,9 +58,7 @@ describe('ChainFailedError', () => {
   });
 
   it('carries the loop detail for a failed run', () => {
-    const attempts = [
-      { provider: 'openrouter', model: 'm', outcome: 'error' as const, ms: 5 },
-    ];
+    const attempts = [{ provider: 'openrouter', model: 'm', outcome: 'error' as const, ms: 5 }];
     const detail: AssistantTraceDetail = {
       sections: [{ name: 'question', chars: 4, estTokens: 1, text: 'what' }],
       history: [],

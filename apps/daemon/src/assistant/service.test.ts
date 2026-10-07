@@ -453,7 +453,11 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
   it('a caller outside the role gate is the refused outcome', async () => {
     const { provider } = fakeProvider([{ text: 'must not run', model: 'm' }]);
     const service = serviceWith(() => [usable(provider)]);
-    const result = await service.invoke({ ...ask, callerRoleIds: [], invocationId: 'int-role-gate' });
+    const result = await service.invoke({
+      ...ask,
+      callerRoleIds: [],
+      invocationId: 'int-role-gate',
+    });
     expect(result).toMatchObject({ ok: false, outcome: 'refused' });
   });
 

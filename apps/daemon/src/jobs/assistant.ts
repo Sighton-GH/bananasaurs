@@ -152,7 +152,9 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
     ...(attempt.providerMessage === undefined ? {} : { providerMessage: attempt.providerMessage }),
     ...(attempt.finishReason === undefined ? {} : { finishReason: attempt.finishReason }),
     ...(attempt.upstream === undefined ? {} : { upstream: attempt.upstream }),
-    ...(attempt.completionTokens === undefined ? {} : { completionTokens: attempt.completionTokens }),
+    ...(attempt.completionTokens === undefined
+      ? {}
+      : { completionTokens: attempt.completionTokens }),
     ...(attempt.reasoningTokens === undefined ? {} : { reasoningTokens: attempt.reasoningTokens }),
     ...(attempt.costUsd === undefined ? {} : { costUsd: attempt.costUsd }),
     ms: attempt.ms,
