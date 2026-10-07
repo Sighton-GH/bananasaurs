@@ -26,6 +26,7 @@ import {
   writeInstance,
 } from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
+import { ChainFailedError } from './chain-failed-error.js';
 import { createAssistantCommandSubscriber } from './commands.js';
 
 const seedCacheText = (
@@ -625,16 +626,22 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       provider: paid,
     });
     await expect(
-      service.invoke({
-        guildId: GUILD,
-        channelId: CHANNEL,
-        userId: OWNER,
-        callerRoleIds: [CLUB_ROLE],
-        behaviour,
-        command: 'ask',
-        input: { question: 'normal question' },
-        source: 'slash-command',
-      }),
+      service
+        .invoke({
+          guildId: GUILD,
+          channelId: CHANNEL,
+          userId: OWNER,
+          callerRoleIds: [CLUB_ROLE],
+          behaviour,
+          command: 'ask',
+          input: { question: 'normal question' },
+          source: 'slash-command',
+        })
+        .catch((err: unknown) => {
+          // ADR 0129 §1: the chain wraps the provider error; the spend-cap
+          // refusal travels as the cause.
+          throw err instanceof ChainFailedError ? err.cause : err;
+        }),
     ).rejects.toThrow('monthly spend cap is $0');
     expect(paidNetwork).not.toHaveBeenCalled();
 
@@ -845,17 +852,23 @@ describe('Release 3 review fixes', () => {
       },
     );
     await expect(
-      service.invoke({
-        guildId: GUILD,
-        channelId: CHANNEL,
-        userId: MEMBER,
-        callerRoleIds: [CLUB_ROLE],
-        behaviour: direct,
-        command: 'ask',
-        input: { question: 'my card is 4242 4242 4242 4242' },
-        source: 'slash-command',
-        invocationId: 'int-2',
-      }),
+      service
+        .invoke({
+          guildId: GUILD,
+          channelId: CHANNEL,
+          userId: MEMBER,
+          callerRoleIds: [CLUB_ROLE],
+          behaviour: direct,
+          command: 'ask',
+          input: { question: 'my card is 4242 4242 4242 4242' },
+          source: 'slash-command',
+          invocationId: 'int-2',
+        })
+        .catch((err: unknown) => {
+          // ADR 0129 §1: the chain wraps the provider error; the outbound
+          // scan refusal travels as the cause.
+          throw err instanceof ChainFailedError ? err.cause : err;
+        }),
     ).rejects.toThrow('pre-API scan');
     expect(network).not.toHaveBeenCalled();
     // …while ordinary dated content and channel URLs reach the provider.
