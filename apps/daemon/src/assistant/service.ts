@@ -272,7 +272,7 @@ export const createAssistantService = (
   now: () => number,
   testPorts: AssistantServiceTestPorts = {},
   liveConfig: () => Config = () => config,
-  logger: Pick<Logger, 'warn'> = { warn: () => undefined },
+  logger: Pick<Logger, 'warn' | 'info'> = { warn: () => undefined, info: () => undefined },
   discord: AssistantDiscordPorts = {
     memberChannels: () => Promise.resolve([]),
     resolveReminderTargets: () => defaultResolveReminderTargets(),
@@ -1308,6 +1308,7 @@ export const createAssistantService = (
         reserveCall,
         logger,
         guildId: scope.guildId,
+        runId: input.invocationId,
         now,
         citations,
         isCitable: isKnownResource,

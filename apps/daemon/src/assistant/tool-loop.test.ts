@@ -1172,7 +1172,7 @@ describe('runToolLoop daily quota (Task Q)', () => {
     expect(result.outcome).toBe('failed');
     const attempt = result.attempts[0]!;
     expect(attempt.code).toBe('provider-bad-model');
-    expect(attempt.httpStatus).toBeUndefined();
+    expect(attempt.httpStatus).toBe(400);
     expect(attempt.providerMessage).toBe('No endpoints found for bad-model [redacted]');
     expect(attempt.providerMessage).not.toContain('sk-abc123');
   });

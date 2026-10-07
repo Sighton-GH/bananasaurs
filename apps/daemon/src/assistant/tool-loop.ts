@@ -3,6 +3,7 @@ import {
   guardAnswer,
   ProviderError,
   safeLogFields,
+  sanitizeProviderMessage,
   type AssistantTrace,
   type GenerateTextRequest,
   type GenerateTextResponse,
@@ -207,8 +208,10 @@ export const runToolLoop = async (input: {
   readonly limits?: Partial<LoopLimits> | undefined;
   readonly quotaLedger?: QuotaLedger | undefined;
   readonly reserveCall?: ReserveCall | undefined;
-  readonly logger?: Pick<Logger, 'warn'> | undefined;
+  readonly logger?: Pick<Logger, 'warn' | 'info'> | undefined;
   readonly guildId?: string | undefined;
+  /** ADR 0129 §5: the invocation id; every assistant log line carries it. */
+  readonly runId?: string | undefined;
   readonly citations?: CitationRegistry | undefined;
   /**
    * Whether a tool result's source may be tagged for citation. Absent means
@@ -296,6 +299,36 @@ export const runToolLoop = async (input: {
   for (const entry of input.chain) {
     const started = input.now();
     const ms = (): number => Math.max(0, input.now() - started);
+    // ADR 0129 §5: every skipped entry is a journal line with the run id.
+    const logSkipped = (reason: string | undefined): void => {
+      if (input.logger === undefined) return;
+      input.logger.warn(
+        safeLogFields({
+          component: 'assistant',
+          ...(input.guildId === undefined ? {} : { guildId: input.guildId }),
+          ...(input.runId === undefined ? {} : { runId: input.runId }),
+          provider: entry.providerId,
+          model: entry.model,
+          keyLabel: entry.keyLabel,
+          ...(reason === undefined ? {} : { reason }),
+        }),
+        'assistant model skipped',
+      );
+    };
+    const logInfo = (message: 'assistant model called' | 'assistant model answered'): void => {
+      if (input.logger?.info === undefined) return;
+      input.logger.info(
+        safeLogFields({
+          component: 'assistant',
+          ...(input.guildId === undefined ? {} : { guildId: input.guildId }),
+          ...(input.runId === undefined ? {} : { runId: input.runId }),
+          provider: entry.providerId,
+          model: entry.model,
+          keyLabel: entry.keyLabel,
+        }),
+        message,
+      );
+    };
     if (entry.provider === undefined || entry.skip !== undefined) {
       attempts.push({
         provider: entry.providerId,
@@ -305,6 +338,7 @@ export const runToolLoop = async (input: {
         ...(entry.skip === undefined ? {} : { reason: entry.skip }),
         ms: ms(),
       });
+      logSkipped(entry.skip);
       continue;
     }
     const isFree = entry.model.endsWith(':free');
@@ -322,6 +356,7 @@ export const runToolLoop = async (input: {
         reason: 'daily-allowance-used',
         ms: ms(),
       });
+      logSkipped('daily-allowance-used');
       continue;
     }
     if (isFree && cappedKeys.has(entry.keyId)) {
@@ -335,9 +370,11 @@ export const runToolLoop = async (input: {
         reason: 'daily-allowance-used',
         ms: ms(),
       });
+      logSkipped('daily-allowance-used');
       continue;
     }
 
+    logInfo('assistant model called');
     const answered = await runEntry({
       entry,
       systemInstruction: input.systemInstruction,
@@ -378,12 +415,14 @@ export const runToolLoop = async (input: {
       reserveCall: input.reserveCall,
       logger: input.logger,
       guildId: input.guildId,
+      runId: input.runId,
       now: input.now,
       citations: input.citations,
       isCitable: input.isCitable,
       entryMs: ms,
     });
     if (answered !== undefined) {
+      if (answered.outcome === 'answered') logInfo('assistant model answered');
       return {
         ...answered,
         attempts,
@@ -488,8 +527,10 @@ const runEntry = async (deps: {
   readonly recordOffered: (names: readonly string[]) => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
   readonly reserveCall?: ReserveCall | undefined;
-  readonly logger?: Pick<Logger, 'warn'> | undefined;
+  readonly logger?: Pick<Logger, 'warn' | 'info'> | undefined;
   readonly guildId?: string | undefined;
+  /** ADR 0129 §5: the invocation id; every assistant log line carries it. */
+  readonly runId?: string | undefined;
   readonly citations?: CitationRegistry | undefined;
   readonly isCitable?: ((source: { title: string; url: string }) => boolean) | undefined;
   readonly now: () => number;
@@ -510,12 +551,30 @@ const runEntry = async (deps: {
       provider: entry.providerId,
       model: entry.model,
     });
+    // ADR 0129 §3: the trace keeps the adapter's message after
+    // `sanitizeProviderMessage` — scrubbed of key-shaped strings, at most 160
+    // characters. The raw text never reaches the trace.
+    const providerMessage = err instanceof Error ? sanitizeProviderMessage(err.message) : undefined;
+    const failureDetail =
+      err instanceof ProviderError
+        ? {
+            ...(err.finishReason === undefined ? {} : { finishReason: err.finishReason }),
+            ...(err.upstream === undefined ? {} : { upstream: err.upstream }),
+            ...(err.emptyAnswer?.completionTokens === undefined
+              ? {}
+              : { completionTokens: err.emptyAnswer.completionTokens }),
+            ...(err.emptyAnswer?.reasoningTokens === undefined
+              ? {}
+              : { reasoningTokens: err.emptyAnswer.reasoningTokens }),
+          }
+        : {};
     const logFailure = (): void => {
       if (deps.logger === undefined) return;
       deps.logger.warn(
         safeLogFields({
           component: 'assistant',
           ...(deps.guildId === undefined ? {} : { guildId: deps.guildId }),
+          ...(deps.runId === undefined ? {} : { runId: deps.runId }),
           provider: entry.providerId,
           model: entry.model,
           keyLabel: entry.keyLabel,
@@ -524,7 +583,9 @@ const runEntry = async (deps: {
           ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
           ...(f.host === undefined ? {} : { host: f.host }),
           ms: deps.entryMs(),
-          ...(err instanceof Error ? { providerMessage: err.message } : {}),
+          // ADR 0129 §4 (partly reverses ADR 0079 §3): the journal's evidence
+          // line keeps the sanitized short reason.
+          ...(providerMessage === undefined ? {} : { providerMessage }),
         }),
         'provider attempt failed',
       );
@@ -538,9 +599,11 @@ const runEntry = async (deps: {
         outcome: 'error',
         reason: 'daily-free',
         code: f.code,
+        ...(providerMessage === undefined ? {} : { providerMessage }),
         ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
         ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
         ...(f.host === undefined ? {} : { host: f.host }),
+        ...failureDetail,
         ms: deps.entryMs(),
       });
       logFailure();
@@ -560,13 +623,16 @@ const runEntry = async (deps: {
       keyLabel: entry.keyLabel,
       outcome,
       // Hard rule 4: the attempt keeps a fixed reason from the error's
-      // kind/status. The provider's own text stays in the Pino line only —
-      // it can echo request details, so it never reaches the trace.
+      // kind/status plus the sanitized provider message. The raw text stays in
+      // the Pino line only — it can echo request details, so it never reaches
+      // the trace unsanitized.
       ...(err instanceof Error ? { reason: attemptReasonFor(err) } : {}),
       code: f.code,
+      ...(providerMessage === undefined ? {} : { providerMessage }),
       ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
       ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
       ...(f.host === undefined ? {} : { host: f.host }),
+      ...failureDetail,
       ms: deps.entryMs(),
     });
     logFailure();
@@ -755,12 +821,39 @@ const runEntry = async (deps: {
     return toolMessages;
   };
 
+  const logRetryFailure = (failedEntry: ChainEntry, err: unknown): void => {
+    if (deps.logger === undefined) return;
+    const f = classifyProviderFailure(err, {
+      provider: failedEntry.providerId,
+      model: failedEntry.model,
+    });
+    deps.logger.warn(
+      safeLogFields({
+        component: 'assistant',
+        ...(deps.guildId === undefined ? {} : { guildId: deps.guildId }),
+        ...(deps.runId === undefined ? {} : { runId: deps.runId }),
+        provider: failedEntry.providerId,
+        model: failedEntry.model,
+        keyLabel: failedEntry.keyLabel,
+        code: f.code,
+      }),
+      'empty-answer retry failed',
+    );
+  };
+
   for (let round = 1; round <= limits.rounds; round += 1) {
     const response = await callProvider(round);
     if (response === undefined) return undefined;
     const calls = response.toolCalls ?? [];
     if (calls.length === 0) {
-      return finishEntry({ entry, provider, response, messages, deps });
+      return finishEntry({
+        entry,
+        provider,
+        response,
+        messages,
+        logRetryFailure,
+        deps,
+      });
     }
     // The assistant turn stays in the transcript so the next round sees what
     // was called; provider-specific parts are echoed back only within this
@@ -779,7 +872,7 @@ const runEntry = async (deps: {
   const extra: GenerationMessage = { role: 'user', text: ANSWER_INSTRUCTION };
   const final = await callProvider(0, [extra], false);
   if (final === undefined) return undefined;
-  return finishEntry({ entry, provider, response: final, messages: [...messages, extra], deps });
+  return finishEntry({ entry, provider, response: final, messages: [...messages, extra], logRetryFailure, deps });
 };
 
 const finishEntry = async (deps: {
@@ -787,6 +880,7 @@ const finishEntry = async (deps: {
   readonly provider: TextProvider;
   readonly response: GenerateTextResponse;
   readonly messages: readonly GenerationMessage[];
+  readonly logRetryFailure: (entry: ChainEntry, err: unknown) => void;
   readonly deps: {
     readonly protectedText: string;
     readonly systemInstruction: string;
@@ -806,6 +900,12 @@ const finishEntry = async (deps: {
       keyLabel: deps.entry.keyLabel,
       outcome: 'ok',
       ms: outer.entryMs(),
+      // ADR 0129 §4: a working answer keeps the same evidence fields, so a
+      // later diagnosis sees the finish reason, upstream and cost directly.
+      ...(deps.response.finishReason === undefined
+        ? {}
+        : { finishReason: deps.response.finishReason }),
+      ...(deps.response.upstream === undefined ? {} : { upstream: deps.response.upstream }),
     });
   };
   const guarded = guardAnswer({
@@ -903,8 +1003,10 @@ const finishEntry = async (deps: {
           guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
         };
       }
-    } catch {
-      // A failed retry is still a failed answer, not a chain error.
+    } catch (err) {
+      // A failed retry is still a failed answer, not a chain error — but the
+      // failure is a journal line (ADR 0129 §5), never a bare `catch {}`.
+      deps.logRetryFailure(deps.entry, err);
     }
   }
   outer.attempts.push({
