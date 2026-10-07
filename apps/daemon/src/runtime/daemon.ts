@@ -1,3 +1,4 @@
+import process from 'node:process';
 import type Database from 'better-sqlite3';
 import { Events, type Client } from 'discord.js';
 import {
@@ -9,6 +10,8 @@ import {
   safeLogFields,
   CLUB_ASSISTANT_SKILLS,
   seedDefaultWordList,
+  staleTaskPostsEnvWarning,
+  taskPostsState,
   type Config,
   type DiscordPort,
   type Dispatcher,
@@ -631,6 +634,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     connectionEvent(true);
   });
 
+  const staleEnvWarning = staleTaskPostsEnvWarning(process.env);
+  if (staleEnvWarning !== undefined) logger.warn({ component: 'startup' }, staleEnvWarning);
+
   // --- job loop -------------------------------------------------------------
   let taskNudgeTimer: NodeJS.Timeout | undefined;
   let taskNudgeRunning = false;
@@ -645,7 +651,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           taskNudgeRepo.pruneReplyChoices(scope, now());
           planTaskNudges(scope, now());
           await deliverTaskNudges(scope, client, discord, now(), {
-            enabled: config.TASK_NUDGE_SEND_ENABLED && !config.BANANASAURS_DRY_RUN,
+            // ADR 0131: read live from this guild's row on every pass, so
+            // flipping the dashboard switch takes effect on the next tick.
+            enabled: taskPostsState({
+              switchOn: guildRepo.readTaskPostsEnabled(scope),
+              dryRun: config.BANANASAURS_DRY_RUN,
+            }).enabled,
             quietStart: config.TASK_NUDGE_QUIET_START,
             quietEnd: config.TASK_NUDGE_QUIET_END,
             evaluate: taskUpdateEvaluator,

@@ -29,6 +29,7 @@ let liveMember = false;
 let categoryPresent = true;
 let memberRoles: string[] = [];
 let rolePresent = true;
+let deps: HttpDeps;
 
 beforeEach(async () => {
   db = openMigratedTestDatabase();
@@ -73,7 +74,7 @@ beforeEach(async () => {
     expiresAt: NOW + 100000,
     reauthAt: NOW,
   });
-  const deps: HttpDeps = {
+  deps = {
     scopes: db.scopes,
     now: () => NOW,
     guildIds: [GUILD],
@@ -277,6 +278,64 @@ describe('task read isolation', () => {
       expect(body.task.assigneeIds).toEqual([]);
       expect(body.reminders.map((r) => r.slotId)).toContain(`custom:${taskId}:${NOW + 3_600_000}`);
       expect(body.team.teamId).toBe(teamId);
+    });
+
+    describe('task posts state', () => {
+      type Posts = {
+        taskPosts: { enabled: boolean; switchOn: boolean; offReason?: string; message: string };
+      };
+      const read = async (url: string) =>
+        (await app.inject({ method: 'GET', url, headers: ownerHeaders })).json<Posts>().taskPosts;
+
+      it('is off for the switch by default, naming the Task posts switch', async () => {
+        Object.assign(deps, { taskPostsDryRun: false });
+        for (const url of ['/api/tasks', '/api/tasks/setup']) {
+          const posts = await read(url);
+          expect(posts.enabled).toBe(false);
+          expect(posts.offReason).toBe('switch');
+          expect(posts.message).toContain('Task posts switch on the Tasks page');
+        }
+      });
+
+      it('dry run wins over an on switch', async () => {
+        Object.assign(deps, { taskPostsDryRun: true });
+        guildRepo.setTaskPostsEnabled(db.scopes.forGuild(GUILD), true, NOW);
+        const posts = await read('/api/tasks');
+        expect(posts.enabled).toBe(false);
+        expect(posts.switchOn).toBe(true);
+        expect(posts.offReason).toBe('dry-run');
+        expect(posts.message).toContain('BANANASAURS_DRY_RUN');
+      });
+
+      it('absent dry-run state fails closed', async () => {
+        guildRepo.setTaskPostsEnabled(db.scopes.forGuild(GUILD), true, NOW);
+        expect((await read('/api/tasks')).offReason).toBe('dry-run');
+      });
+
+      it('is on when the switch is on and dry run is off, read live', async () => {
+        Object.assign(deps, { taskPostsDryRun: false });
+        expect((await read('/api/tasks')).enabled).toBe(false);
+        guildRepo.setTaskPostsEnabled(db.scopes.forGuild(GUILD), true, NOW);
+        for (const url of ['/api/tasks', '/api/tasks/setup']) {
+          const posts = await read(url);
+          expect(posts.enabled).toBe(true);
+          expect(posts.offReason).toBeUndefined();
+        }
+      });
+
+      it('GET /api/tasks/posting reports the switch and dry run, and refuses a plain member', async () => {
+        Object.assign(deps, { taskPostsDryRun: false });
+        const body = (
+          await app.inject({ method: 'GET', url: '/api/tasks/posting', headers: ownerHeaders })
+        ).json();
+        expect(body).toEqual({ enabled: false, dryRun: false });
+        const denied = await app.inject({
+          method: 'GET',
+          url: '/api/tasks/posting',
+          headers: { cookie: 'bs_session=task-test-cookie-token' },
+        });
+        expect(denied.statusCode).toBe(403);
+      });
     });
 
     it('warns on setup when a team has no member role', async () => {

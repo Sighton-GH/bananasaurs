@@ -131,6 +131,8 @@ export interface DashboardAppDeps {
    * `httpDeps` into `buildDashboardApp` instead of rebuilding the fields.
    */
   readonly mcpPublicUrl?: string | undefined;
+  /** `HttpDeps.taskPostsDryRun`: absent in test literals, and then posts read as off (dry run). */
+  readonly taskPostsDryRun?: HttpDeps['taskPostsDryRun'];
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
   readonly distDir: string;
@@ -238,6 +240,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
+    taskPostsDryRun: deps.taskPostsDryRun,
     // Task 20: the Try-it runner rides along when the composition root
     // built one; the route answers 503 without it.
     ...(deps.tryAssistant === undefined ? {} : { tryAssistant: deps.tryAssistant }),
@@ -365,6 +368,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
+    taskPostsDryRun: deps.config.BANANASAURS_DRY_RUN,
     ...(deps.assistantProviderConfig === undefined
       ? {}
       : { assistantProviderConfig: deps.assistantProviderConfig }),

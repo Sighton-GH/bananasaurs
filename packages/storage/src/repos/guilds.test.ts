@@ -6,7 +6,9 @@ import {
   findGuild,
   readSafetyState,
   resetBreaker,
+  readTaskPostsEnabled,
   setAutomodState,
+  setTaskPostsEnabled,
   setLimits,
   tripBreaker,
   upsertGuild,
@@ -141,5 +143,31 @@ describe('automod state (ADR 0121)', () => {
     t.raw.prepare("UPDATE guilds SET automod_state = 'bogus' WHERE guild_id = ?").run(GUILD_A);
     t.raw.pragma('ignore_check_constraints = OFF');
     expect(readSafetyState(a)?.automodState).toBe('off');
+  });
+});
+
+describe('task posts switch (ADR 0131)', () => {
+  it('is off by default', () => {
+    expect(readTaskPostsEnabled(a)).toBe(false);
+    expect(findGuild(a)?.taskPostsEnabled).toBe(0);
+  });
+
+  it('rejects a value outside 0/1 at the database', () => {
+    expect(() =>
+      t.raw.prepare(`UPDATE guilds SET task_posts_enabled = 2 WHERE guild_id = ?`).run(GUILD_A),
+    ).toThrow(/CHECK constraint failed: guilds_task_posts_enabled_bool/);
+  });
+
+  it('turns on and off for one guild without touching another', () => {
+    setTaskPostsEnabled(a, true, 1_000);
+    expect(readTaskPostsEnabled(a)).toBe(true);
+    expect(readTaskPostsEnabled(b)).toBe(false);
+    setTaskPostsEnabled(a, false, 2_000);
+    expect(readTaskPostsEnabled(a)).toBe(false);
+  });
+
+  it('reads off for a guild that was never seen', () => {
+    const c = t.scopes.forGuild(parseGuildId('333333333333333333'));
+    expect(readTaskPostsEnabled(c)).toBe(false);
   });
 });

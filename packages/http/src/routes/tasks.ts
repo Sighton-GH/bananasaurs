@@ -1,10 +1,38 @@
 import type { FastifyInstance } from 'fastify';
-import { taskRepo, taskBindingRepo, taskNudgeRepo, type GuildScope } from '@bananasaurs/storage';
+import { taskPostsBannerText, taskPostsState, type TaskPostsState } from '@bananasaurs/core';
+import {
+  guildRepo,
+  taskRepo,
+  taskBindingRepo,
+  taskNudgeRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import { canManageTasks } from '../owner.js';
 import { inspectTaskTeam } from './task-validation.js';
 import type { HttpDeps, RouteGuard } from '../server.js';
 
 const NO_TEAM_ROLE_WARNING = 'No team role set; whole-team tasks will not ping anyone';
+
+/** The posts state for one guild, read live: its switch, overridden by the install's dry run. */
+export const taskPostsFor = (deps: HttpDeps, scope: GuildScope): TaskPostsState =>
+  taskPostsState({
+    switchOn: guildRepo.readTaskPostsEnabled(scope),
+    dryRun: deps.taskPostsDryRun ?? true,
+  });
+
+/** What the dashboard shows: enabled, why not, the switch itself, and the banner text. */
+const taskPostsView = (deps: HttpDeps, scope: GuildScope) => {
+  const state = taskPostsFor(deps, scope);
+  const switchOn = guildRepo.readTaskPostsEnabled(scope);
+  return state.enabled
+    ? { enabled: true as const, switchOn, message: 'Task posts are on.' }
+    : {
+        enabled: false as const,
+        switchOn,
+        offReason: state.offReason,
+        message: taskPostsBannerText(state.offReason),
+      };
+};
 
 /** Dashboard task pages need the owner or `tasks.manage` in the session's guild (ADR 0130). Members use Discord. */
 export const registerTaskRoutes = (
@@ -12,6 +40,15 @@ export const registerTaskRoutes = (
   guard: RouteGuard,
   deps: HttpDeps,
 ): void => {
+  app.get('/api/tasks/posting', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (!session) return reply;
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
+    return reply.send({
+      enabled: guildRepo.readTaskPostsEnabled(session.scope),
+      dryRun: deps.taskPostsDryRun ?? true,
+    });
+  });
   app.get('/api/tasks', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
@@ -31,6 +68,7 @@ export const registerTaskRoutes = (
           assigneeIds: taskRepo.listTaskAssignees(session.scope, task.taskId),
         })),
       presidentRoleId: taskBindingRepo.presidentRoleId(session.scope) ?? null,
+      taskPosts: taskPostsView(deps, session.scope),
     });
   });
   app.get<{ Params: { teamId: string } }>(
@@ -150,6 +188,7 @@ export const registerTaskRoutes = (
       teams,
       presidentRoleCandidates: presidentRoles.map((r) => ({ roleId: r.roleId, name: r.name })),
       presidentRoleId,
+      taskPosts: taskPostsView(deps, session.scope),
     });
   });
   app.get<{ Params: { taskId: string } }>('/api/tasks/:taskId', (request, reply) => {

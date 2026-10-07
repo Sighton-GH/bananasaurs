@@ -118,6 +118,7 @@ const stubPort = (): McpHealthPort => ({
         breakerOpen: false,
         breakerReason: null,
         automodState: 'off',
+        taskPostsEnabled: false,
       },
       jobCounts: { queued: 1, running: 0, failed: 0 },
       schedulerLagMs: 0,

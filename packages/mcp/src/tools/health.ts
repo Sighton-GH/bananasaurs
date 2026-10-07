@@ -38,6 +38,8 @@ export interface McpGuildHealth {
         readonly breakerReason: string | null;
         /** ADR 0121: the guild-wide automod switch. */
         readonly automodState: OpsAutomodState;
+        /** ADR 0131: the guild's task-posts switch (dry run still overrides it). */
+        readonly taskPostsEnabled: boolean;
       }
     | undefined;
   readonly jobCounts: Readonly<Record<string, number>>;
@@ -132,6 +134,7 @@ export const renderHealth = (port: McpHealthPort): string => {
       const state = paused.length === 0 ? 'role changes enabled' : `paused (${paused.join(', ')})`;
       lines.push(`guild ${guild.guildId} (${name}): ${state}`);
       lines.push(`  automod ${guild.safety.automodState}`);
+      lines.push(`  task posts ${guild.safety.taskPostsEnabled ? 'on' : 'off'}`);
     }
     const jobs = Object.entries(guild.jobCounts);
     const jobText =

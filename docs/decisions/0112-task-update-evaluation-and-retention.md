@@ -8,7 +8,7 @@ The final review found that member progress replies are stored with no retention
 ## Decision
 1. Recording a progress reply stays deterministic (`isProgressUpdate`); the AI never decides whether an update is recorded.
 2. Each recorded update is then sent to the first usable entry of the assistant model chain with a fixed evaluation instruction. The model returns JSON `{ "clear": boolean, "question"?: string }`, validated by Zod. If `clear` is false the bot replies once with the question; otherwise it posts nothing. Acknowledgements are never evaluated. The assistant "who can ask" setting does not apply. A reply to the clarifying question is recorded but not evaluated again.
-3. The evaluation post is a `task_nudge_slots` row (`evaluate:<replyMessageId>`), so it is idempotent, gated by `TASK_NUDGE_SEND_ENABLED`, and skipped (no model call) when sends are off. A failed or unreachable model posts nothing; the update stays recorded.
+3. The evaluation post is a `task_nudge_slots` row (`evaluate:<replyMessageId>`), so it is idempotent, gated by the per-server task posts switch (ADR 0131), and skipped (no model call) when sends are off. A failed or unreachable model posts nothing; the update stays recorded.
 4. A pinged reply to a task post is not routed to the general assistant unless the message text itself tags the bot.
 5. Nothing about tasks is deleted automatically. Approving a task archives it in the same write. The owner deletes a task, or a single progress update, by hand (dashboard or owner MCP). PRIVACY.md discloses this.
 

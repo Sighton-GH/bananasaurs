@@ -26,6 +26,7 @@ export interface GuildRow {
   breakerTrippedAt: number | null;
   breakerReason: string | null;
   automodState: string;
+  taskPostsEnabled: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -105,6 +106,19 @@ export const setAutomodState = (scope: GuildScope, state: AutomodState, now: num
     db.update(guilds).set({ automodState: state, updatedAt: now }).where(scope.only(guilds)).run();
   });
 
+/** ADR 0131: sets the guild's task-posts switch. Guild-scoped by signature. */
+export const setTaskPostsEnabled = (scope: GuildScope, enabled: boolean, now: number): void =>
+  write(scope, ({ db }) => {
+    db.update(guilds)
+      .set({ taskPostsEnabled: enabled ? 1 : 0, updatedAt: now })
+      .where(scope.only(guilds))
+      .run();
+  });
+
+/** ADR 0131: whether this guild's switch is on. A guild never seen reads as off. */
+export const readTaskPostsEnabled = (scope: GuildScope): boolean =>
+  findGuild(scope)?.taskPostsEnabled === 1;
+
 export interface SafetyState {
   killswitch: boolean;
   dryRun: boolean;
@@ -115,6 +129,8 @@ export interface SafetyState {
   breakerThreshold: number;
   /** ADR 0121's guild-wide automod switch. */
   automodState: AutomodState;
+  /** ADR 0131's per-guild task-posts switch. */
+  taskPostsEnabled: boolean;
 }
 
 /**
@@ -135,6 +151,7 @@ export const readSafetyState = (scope: GuildScope): SafetyState | undefined => {
     reconcileBudget: row.reconcileBudget,
     breakerThreshold: row.breakerThreshold,
     automodState: toAutomodState(row.automodState),
+    taskPostsEnabled: row.taskPostsEnabled === 1,
   };
 };
 

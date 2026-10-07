@@ -463,6 +463,20 @@
       "when": 1791144516873,
       "tag": "0101_automod_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "6",
+      "when": 1791332220916,
+      "tag": "0102_task_posts_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "6",
+      "when": 1791332225117,
+      "tag": "0103_task_posts_check",
+      "breakpoints": true
     }
   ]
 }

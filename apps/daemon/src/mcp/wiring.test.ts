@@ -7347,6 +7347,74 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(revokedRead.isError).toBe(true);
   });
 
+  it('task results follow the guild switch live: off names the dashboard switch, on says posted', async () => {
+    seedTaskWorld();
+    await app.close();
+    app = buildDashboardApp({ ...deps, taskPostsDryRun: false });
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const teamId = await createTeam(send);
+    const create = async (requestId: string) =>
+      text(
+        (
+          await call(send, 'create_club_task', {
+            guildId: gid(),
+            teamId,
+            title: `Posts ${requestId}`,
+            assignmentKind: 'team',
+            dueAt: due(),
+            timezone: 'America/Vancouver',
+            destinationId: DEST,
+            requestId,
+          })
+        ).body,
+      );
+    const off = await create('posts-off-1');
+    expect(off.isError).not.toBe(true);
+    expect(off.text).toContain('task posts are off for this server');
+    expect(off.text).toContain("Task posts switch on the dashboard's Tasks page");
+    expect(off.text).not.toContain('TASK_NUDGE_SEND_ENABLED');
+
+    guildRepo.setTaskPostsEnabled(t.scopes.forGuild(GUILD_A), true, clock);
+    const on = await create('posts-on-1');
+    expect(on.text).toContain(
+      'Task posts are on: the announcement is posted to Discord within a minute.',
+    );
+    const taskId = /Created task (\S+) \(version 1\)\./.exec(on.text)?.[1];
+    if (!taskId) throw new Error(`no task id in: ${on.text}`);
+    const requested = text(
+      (await call(send, 'request_task_completion', { guildId: gid(), taskId, expectedVersion: 1 }))
+        .body,
+    );
+    expect(requested.text).toContain(
+      'Task posts are on: the approval request is posted to Discord within a minute.',
+    );
+  });
+
+  it('task results name BANANASAURS_DRY_RUN when dry run overrides an on switch', async () => {
+    seedTaskWorld();
+    guildRepo.setTaskPostsEnabled(t.scopes.forGuild(GUILD_A), true, clock);
+    await app.close();
+    app = buildDashboardApp({ ...deps, taskPostsDryRun: true });
+    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const teamId = await createTeam(send);
+    const created = text(
+      (
+        await call(send, 'create_club_task', {
+          guildId: gid(),
+          teamId,
+          title: 'Dry run',
+          assignmentKind: 'team',
+          dueAt: due(),
+          timezone: 'America/Vancouver',
+          destinationId: DEST,
+          requestId: 'dry-run-1',
+        })
+      ).body,
+    );
+    expect(created.isError).not.toBe(true);
+    expect(created.text).toContain('BANANASAURS_DRY_RUN=0');
+  });
+
   it('create (multi-assignee) → edit → request → approve ends done with mcp_operator audit', async () => {
     seedTaskWorld();
     const send = await mintToken('bananasaurs:send bananasaurs:tasks');
@@ -7381,9 +7449,9 @@ describe('MCP task admin full surface (owner-only)', () => {
       ).body,
     );
     expect(created.isError).not.toBe(true);
-    expect(created.text).toContain(
-      'Discord posts go out only when the operator has enabled task posts.',
-    );
+    // Default test deps: dry run (absent = on), so the dry-run wording.
+    expect(created.text).toContain('Nothing was posted to Discord');
+    expect(created.text).toContain('BANANASAURS_DRY_RUN');
     const taskId = /Created task (\S+) \(version 1\)\./.exec(created.text)?.[1];
     if (!taskId) throw new Error(`no task id in: ${created.text}`);
     expect(taskRepo.listTaskAssignees(scope, taskId)).toEqual(
@@ -7415,9 +7483,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     );
     expect(requested.isError).not.toBe(true);
     expect(requested.text).toContain('awaiting approval (version 3)');
-    expect(requested.text).toContain(
-      'Discord posts go out only when the operator has enabled task posts.',
-    );
+    expect(requested.text).toContain('Nothing was posted to Discord');
 
     const approved = text(
       (await call(send, 'approve_task_completion', { guildId: gid(), taskId, expectedVersion: 3 }))

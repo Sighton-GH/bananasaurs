@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { snowflakeIdSchema, timeZoneSchema } from '@bananasaurs/core';
-import { taskBindingRepo, taskRepo, taskNudgeRepo } from '@bananasaurs/storage';
+import { guildRepo, taskBindingRepo, taskRepo, taskNudgeRepo } from '@bananasaurs/storage';
 import { badRequest } from '../errors/reply.js';
 import { canManageTasks } from '../owner.js';
 import type { HttpDeps, RouteGuard } from '../server.js';
@@ -67,6 +67,27 @@ export const registerTaskWriteRoutes = (
   guard: RouteGuard,
   deps: HttpDeps,
 ): void => {
+  app.put('/api/tasks/posting', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (!session) return reply;
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    const next = parsed.data.enabled;
+    // Re-sending the current position changes nothing, so it is not audited.
+    if (guildRepo.readTaskPostsEnabled(session.scope) === next)
+      return reply.send({ enabled: next });
+    guildRepo.setTaskPostsEnabled(session.scope, next, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: next ? 'tasks.posts.enabled' : 'tasks.posts.disabled',
+      subjectType: 'guild',
+      subjectId: session.guildId,
+      before: { enabled: !next },
+      after: { enabled: next },
+    });
+    return reply.send({ enabled: next });
+  });
   app.put('/api/tasks/president-role', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;

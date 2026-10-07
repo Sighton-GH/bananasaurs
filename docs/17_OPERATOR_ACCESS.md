@@ -259,6 +259,17 @@ Three things about it are deliberate:
 
 `bootstrap reissue` refuses while any dashboard account exists, so reaching the empty state it needs is itself a deliberate act — and that act now has a supported command: `bananasaurs account delete <username> --confirm`, which revokes the account's OAuth tokens in the same transaction instead of leaving raw row deletes to the operator. That is the path the refusal message already names, so the manual and the tool agree. (To reset a forgotten password while accounts still exist, use `account set-password`, not this path — see above.)
 
+### Task posts
+
+Discord posts for club tasks (announcements, reminders, check-ins, weekly digests, approval
+and evaluation posts) are off until someone turns them on for the server: open the dashboard,
+go to **Tasks**, and use the **Task posts** switch (the owner, or anyone with Manage club tasks).
+It takes effect on the next minute tick, with no restart. `BANANASAURS_DRY_RUN=1` overrides the
+switch; set it to `0` in `.env` and restart to end dry run. Posts skipped while posts were off
+are not sent later. The old `TASK_NUDGE_SEND_ENABLED` variable is gone (ADR 0131); a leftover
+line in `.env` is ignored with a startup warning. `doctor` reports a server that has open tasks
+while posts are off.
+
 ### Rules every command follows
 
 - Guild-scoped, like every other data path.

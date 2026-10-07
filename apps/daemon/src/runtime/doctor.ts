@@ -8,7 +8,12 @@ import {
   type Guild,
 } from 'discord.js';
 import { REQUIRED_PARTIALS } from '@bananasaurs/discord';
-import { humaniseDuration, type Config } from '@bananasaurs/core';
+import {
+  humaniseDuration,
+  taskPostsOffText,
+  type Config,
+  type TaskPostsOffReason,
+} from '@bananasaurs/core';
 import { listBackups } from '@bananasaurs/storage';
 
 /**
@@ -226,6 +231,12 @@ export interface DoctorPasswordVault {
   readonly revealableAccounts: number;
 }
 
+/** Task posts are off while guilds hold open tasks: a finding, not a failure. */
+export interface DoctorTaskPostsOff {
+  readonly offReason: TaskPostsOffReason;
+  readonly guildsWithOpenTasks: number;
+}
+
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
   readonly ok: boolean;
@@ -241,6 +252,8 @@ export interface DoctorReport {
   readonly dashboardAccess?: DoctorDashboardAccess | undefined;
   /** The password vault finding (ADR 0070), when the caller assessed it. Same omission rule as `dashboardAccess`. */
   readonly passwordVault?: DoctorPasswordVault | undefined;
+  /** Present only when posts are off and some guild has an open task. Does not vote on `ok`. */
+  readonly taskPostsOff?: DoctorTaskPostsOff | undefined;
   readonly partials: {
     readonly configured: readonly string[];
     readonly missing: readonly string[];
@@ -273,6 +286,8 @@ export function buildDoctorReport(
   dashboardAccess?: DoctorDashboardAccess,
   /** The password vault finding's input (ADR 0070), same omission rule as `dashboardAccess`. */
   passwordVault?: DoctorPasswordVault,
+  /** Guilds with an open task whose posts are off, counted by the caller that has a database handle; omitted means not assessed. */
+  openTaskGuildsWithPostsOff?: number,
 ): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
@@ -317,6 +332,16 @@ export function buildDoctorReport(
     archiveGuildsNotAllowlisted.length === 0 &&
     dashboardOk;
 
+  // ADR 0131: the caller counts guilds that have an open task while posts are
+  // off for them (switch off, or dry run); this only picks the wording.
+  const taskPostsOff: DoctorTaskPostsOff | undefined =
+    openTaskGuildsWithPostsOff !== undefined && openTaskGuildsWithPostsOff > 0
+      ? {
+          offReason: config.BANANASAURS_DRY_RUN ? 'dry-run' : 'switch',
+          guildsWithOpenTasks: openTaskGuildsWithPostsOff,
+        }
+      : undefined;
+
   return {
     ok,
     partials: { configured, missing },
@@ -329,6 +354,7 @@ export function buildDoctorReport(
     // from the property being absent, and "not assessed" is absence.
     ...(dashboardAccess !== undefined && { dashboardAccess }),
     ...(passwordVault !== undefined && { passwordVault }),
+    ...(taskPostsOff !== undefined && { taskPostsOff }),
   };
 }
 
@@ -480,6 +506,14 @@ export function formatDoctorReport(report: DoctorReport): string {
         `  Account password vault: key file present, mode 0600, ${String(vault.revealableAccounts)} accounts revealable`,
       );
     }
+  }
+
+  if (report.taskPostsOff !== undefined) {
+    lines.push('');
+    lines.push(
+      `  TASK POSTS OFF (${String(report.taskPostsOff.guildsWithOpenTasks)} guild(s) have open tasks): ` +
+        taskPostsOffText(report.taskPostsOff.offReason),
+    );
   }
 
   return lines.join('\n');

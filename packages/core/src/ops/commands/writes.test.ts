@@ -38,6 +38,7 @@ const safety = (over: Partial<OpsSafetyState> = {}): OpsSafetyState => ({
   reconcileBudget: 25,
   breakerThreshold: 5,
   automodState: 'off',
+  taskPostsEnabled: false,
   ...over,
 });
 

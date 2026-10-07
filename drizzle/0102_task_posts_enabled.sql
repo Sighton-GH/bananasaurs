@@ -1,0 +1,1 @@
+ALTER TABLE `guilds` ADD `task_posts_enabled` integer DEFAULT 0 NOT NULL;

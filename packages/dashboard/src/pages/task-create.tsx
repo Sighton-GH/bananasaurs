@@ -7,11 +7,12 @@ import { describeError } from '../api/describe-error.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { TaskPostsBanner, type TaskPosts } from '../ui/TaskPostsBanner.js';
 import { COMMON_TIME_ZONES, zonedLocalToUtc } from '../lib/zoned-time.js';
 import { destinationLabel, inputClass } from '../lib/task-form.js';
 
 type Team = { teamId: string; name: string; categoryId: string };
-type Snapshot = { teams: Team[] };
+type Snapshot = { teams: Team[]; taskPosts?: TaskPosts };
 type Destination = { channelId: string; name: string; kind: string; parentName?: string };
 
 const browserZone = (): string => {
@@ -120,7 +121,7 @@ export function TaskCreatePage() {
     <>
       <PageHeader
         title="New task"
-        purpose="Assign a task to a team or member. Posts go out only when the operator turns on task posts."
+        purpose="Assign a task to a team or member."
         actions={
           <Link href="/tasks" className="text-sm underline">
             Back to tasks
@@ -136,6 +137,7 @@ export function TaskCreatePage() {
         <DataState resource={teams.resource}>
           {(data) => (
             <>
+              <TaskPostsBanner posts={data.taskPosts} />
               {createdId ? (
                 <p role="status" className="rounded border border-line bg-panel p-3 text-sm">
                   Task saved.{' '}
@@ -312,10 +314,7 @@ export function TaskCreatePage() {
                       </Button>
                     )}
                   </fieldset>
-                  <p className="text-xs text-ink-muted">
-                    Times are entered in the timezone above. Saving does not post to Discord; posts
-                    go out only when the operator turns on task posts.
-                  </p>
+                  <p className="text-xs text-ink-muted">Times are entered in the timezone above.</p>
                   <Button type="submit" variant="primary" busy={busy} className="min-h-10">
                     Save task
                   </Button>

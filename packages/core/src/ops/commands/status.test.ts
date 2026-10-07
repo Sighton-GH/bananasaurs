@@ -20,6 +20,7 @@ const HEALTHY: Partial<OpsPorts> = {
     reconcileBudget: 25,
     breakerThreshold: 5,
     automodState: 'off' as const,
+    taskPostsEnabled: false,
   }),
   jobCounts: () => ({ queued: 2, done: 17 }),
   oldestDueJobAtMs: () => undefined,
@@ -83,6 +84,7 @@ describe('bananasaurs status', () => {
         reconcileBudget: 25,
         breakerThreshold: 5,
         automodState: 'off' as const,
+        taskPostsEnabled: false,
       }),
     });
     expect(res.ok).toBe(true);
@@ -103,6 +105,7 @@ describe('bananasaurs status', () => {
         reconcileBudget: 25,
         breakerThreshold: 5,
         automodState: 'off' as const,
+        taskPostsEnabled: false,
       }),
     });
     expect(res.ok).toBe(true);

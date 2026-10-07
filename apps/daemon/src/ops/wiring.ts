@@ -7,6 +7,7 @@ import {
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,
+  taskPostsState,
   undoDedupeKey,
   type Config,
   type OpsGuildMemberInfo,
@@ -16,6 +17,7 @@ import {
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  taskRepo,
   archiveRepo,
   archiveSearchRepo,
   authzRepo,
@@ -1829,6 +1831,13 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
         deps.now(),
         dashboardAccess,
         passwordVault,
+        deps.guildScopes.filter(
+          (scope) =>
+            !taskPostsState({
+              switchOn: guildRepo.readTaskPostsEnabled(scope),
+              dryRun: deps.config.BANANASAURS_DRY_RUN,
+            }).enabled && taskRepo.listTasks(scope).length > 0,
+        ).length,
       );
       return {
         ok: report.ok,

@@ -672,6 +672,16 @@ export {
   type TaskCommandRow,
 } from './task/commands.js';
 export { isValidTimeZone, timeZoneSchema } from './task/timezone.js';
+export {
+  staleTaskPostsEnvWarning,
+  taskPostsBannerText,
+  taskPostsMessage,
+  taskPostsOffText,
+  taskPostsState,
+  type TaskPostKind,
+  type TaskPostsOffReason,
+  type TaskPostsState,
+} from './task/posts.js';
 export { ACK_PHRASES, isProgressUpdate } from './task/progress.js';
 export {
   buildTaskEvaluationInput,

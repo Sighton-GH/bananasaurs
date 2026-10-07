@@ -7,6 +7,7 @@ import { describeError } from '../api/describe-error.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { TaskPostsBanner, type TaskPosts } from '../ui/TaskPostsBanner.js';
 import { inputClass } from '../lib/task-form.js';
 
 type SetupTeam = { teamId: string; name: string; categoryId: string; issues: string[] };
@@ -15,6 +16,7 @@ type Setup = {
   teams: SetupTeam[];
   presidentRoleCandidates: RoleCandidate[];
   presidentRoleId: string | null;
+  taskPosts?: TaskPosts;
 };
 type GuildChannel = { channelId: string; name: string; kind: string; parentId?: string };
 type GuildRole = { roleId: string; name: string };
@@ -65,16 +67,10 @@ export function TaskTeamsPage() {
           </Link>
         }
       />
-      <div
-        className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-800"
-        role="status"
-      >
-        Discord posts (announcements, reminders, review requests) go out only when the operator
-        turns on task posts.
-      </div>
       <DataState resource={setup.resource}>
         {(data) => (
           <>
+            <TaskPostsBanner posts={data.taskPosts} />
             <PresidentSection
               candidates={data.presidentRoleCandidates}
               presidentRoleId={data.presidentRoleId}

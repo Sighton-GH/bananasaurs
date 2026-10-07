@@ -6,6 +6,8 @@ import { mayManageTasks } from '../api.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import type { TaskPosts } from '../ui/TaskPostsBanner.js';
+import { TaskPostsSwitch } from './task-posts-switch.js';
 import { formatInZone } from '../lib/zoned-time.js';
 
 type Team = {
@@ -37,6 +39,7 @@ type Snapshot = {
   teams: Team[];
   tasks: Task[];
   presidentRoleId: string | null;
+  taskPosts?: TaskPosts;
 };
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -114,13 +117,6 @@ export function TasksPage() {
         A task belongs to one team and may have dated steps. Members use Discord for their
         team&apos;s tasks; the owner sees every team here.
       </div>
-      <div
-        className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-800"
-        role="status"
-      >
-        Discord posts (announcements, reminders, review requests) go out only when the operator
-        turns on task posts.
-      </div>
       <DataState resource={resource.resource}>
         {(data) => {
           const visibleTasks = data.tasks.filter((t) => !teamId || t.teamId === teamId);
@@ -129,6 +125,9 @@ export function TasksPage() {
           );
           return (
             <>
+              {data.taskPosts && (
+                <TaskPostsSwitch posts={data.taskPosts} onChanged={resource.reload} />
+              )}
               <div className="mb-3 flex flex-wrap items-center gap-3">
                 <label htmlFor="task-team" className="text-sm font-medium">
                   Team

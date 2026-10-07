@@ -492,6 +492,36 @@ describe('task loop closure writes', () => {
     expect(second.json()).toMatchObject({ error: 'category-in-use' });
   });
 
+  describe('task posts switch (ADR 0131)', () => {
+    const put = (headers: Record<string, string>, payload: object) =>
+      app.inject({ method: 'PUT', url: '/api/tasks/posting', headers, payload });
+
+    it('turns the guild switch on and off, auditing each change once', async () => {
+      const headers = await loginHeaders('owner');
+      const scope = db.scopes.forGuild(GUILD);
+      const audit = () => effectRepo.tailAudit(scope, { limit: 10 });
+      expect((await put(headers, { enabled: true })).statusCode).toBe(200);
+      expect(guildRepo.readTaskPostsEnabled(scope)).toBe(true);
+      expect(audit()[0]).toMatchObject({ action: 'tasks.posts.enabled', actorType: 'dashboard' });
+      const afterOn = audit().length;
+      // Re-sending the current position changes nothing and is not audited.
+      expect((await put(headers, { enabled: true })).statusCode).toBe(200);
+      expect(audit()).toHaveLength(afterOn);
+      expect((await put(headers, { enabled: false })).statusCode).toBe(200);
+      expect(guildRepo.readTaskPostsEnabled(scope)).toBe(false);
+      expect(audit()[0]).toMatchObject({ action: 'tasks.posts.disabled' });
+    });
+
+    it('rejects a bad body, an unauthenticated call and a member without tasks.manage', async () => {
+      const headers = await loginHeaders('owner');
+      expect((await put(headers, { enabled: 'yes' })).statusCode).toBe(400);
+      expect((await put({}, { enabled: true })).statusCode).toBe(401);
+      const member = await loginHeaders('viewer');
+      expect((await put(member, { enabled: true })).statusCode).toBe(403);
+      expect(guildRepo.readTaskPostsEnabled(db.scopes.forGuild(GUILD))).toBe(false);
+    });
+  });
+
   it('writes exactly one dashboard audit row per write route', async () => {
     const headers = await loginHeaders('owner');
     const scope = db.scopes.forGuild(GUILD);

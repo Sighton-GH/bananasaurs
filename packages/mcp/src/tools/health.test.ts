@@ -36,6 +36,7 @@ const portWithName = (guildName: string | undefined): McpHealthPort => ({
         breakerOpen: false,
         breakerReason: null,
         automodState: 'off',
+        taskPostsEnabled: false,
       },
       jobCounts: { queued: 1, running: 0, failed: 0 },
       schedulerLagMs: 0,
@@ -59,6 +60,7 @@ const portWithJobCounts = (jobCounts: Readonly<Record<string, number>>): McpHeal
         breakerOpen: false,
         breakerReason: null,
         automodState: 'off',
+        taskPostsEnabled: false,
       },
       jobCounts,
       schedulerLagMs: 0,
@@ -132,6 +134,7 @@ describe('get_health reports the automod switch (ADR 0121)', () => {
           breakerOpen: false,
           breakerReason: null,
           automodState,
+          taskPostsEnabled: false,
         },
         jobCounts: {},
         schedulerLagMs: 0,
@@ -148,5 +151,36 @@ describe('get_health reports the automod switch (ADR 0121)', () => {
     const text = textOf(getHealthText(principalWith(GUILD), portWithAutomod('on', true)));
     expect(text).toContain('dry run on');
     expect(text).toContain('  automod on');
+  });
+});
+
+describe('get_health reports the task posts switch (ADR 0131)', () => {
+  const portWithPosts = (taskPostsEnabled: boolean, dryRun: boolean): McpHealthPort => ({
+    ...portWithName('guild a'),
+    guilds: () => [
+      {
+        guildId: GUILD,
+        guildName: 'guild a',
+        safety: {
+          killswitch: false,
+          dryRun,
+          breakerOpen: false,
+          breakerReason: null,
+          automodState: 'off',
+          taskPostsEnabled,
+        },
+        jobCounts: {},
+        schedulerLagMs: 0,
+      },
+    ],
+  });
+
+  it('prints on and off', () => {
+    expect(textOf(getHealthText(principalWith(GUILD), portWithPosts(true, false)))).toContain(
+      '  task posts on',
+    );
+    expect(textOf(getHealthText(principalWith(GUILD), portWithPosts(false, false)))).toContain(
+      '  task posts off',
+    );
   });
 });
