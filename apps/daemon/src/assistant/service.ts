@@ -1168,12 +1168,18 @@ export const createAssistantService = (
           });
         }
         if (failed.dailyQuota !== undefined) {
-          throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
-            quotaScope: 'daily-free',
-            ...(failed.dailyQuota.resetAt === undefined
-              ? {}
-              : { resetAt: failed.dailyQuota.resetAt }),
-          });
+          const resetAt = failed.dailyQuota.resetAt;
+          throw new ChainFailedError(
+            'quota',
+            'free-model daily allowance exhausted',
+            false,
+            failed.attempts,
+            {
+              quotaScope: 'daily-free',
+              ...(resetAt === undefined ? {} : { resetAt }),
+              detail: loopDetail(),
+            },
+          );
         }
         const tried = failed.attempts.filter((attempt) => attempt.outcome !== 'skipped');
         const lastTried = tried.at(-1);
