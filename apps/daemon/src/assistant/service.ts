@@ -51,7 +51,7 @@ import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
 import type { WebSearchRun } from './web-search.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
 import { LocalLimitError, localLimitReply, reserveEntryCall } from './local-limit.js';
-import { GUARD_FAILURE_TEXT, ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
 import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
@@ -1621,6 +1621,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       const traceId = `try_${randomUUID()}`;
       let result: AssistantInvocationResult;
       let outcome: AssistantTrace['outcome'] = 'answered';
+      let traceError: { readonly kind: string; readonly message: string } | undefined;
       try {
         result = await invokeOnce(
           {
@@ -1652,52 +1653,88 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             skipActions: true,
           },
         );
-        if (!result.ok) outcome = result.outcome === 'failed' ? 'failed' : 'refused';
+        if (!result.ok) outcome = result.outcome ?? 'refused';
       } catch (err) {
         outcome = 'failed';
+        // ADR 0129 §1: a chain or limit failure carries its attempts and the
+        // loop detail on the error; the stored trace keeps them instead of
+        // the empty detail. Member-facing texts stay exactly as they were.
+        const failureDetail = (
+          attempts: AssistantTrace['attempts'],
+          detail: AssistantTraceDetail | undefined,
+        ): AssistantTraceDetail => ({
+          sections: [...(detail?.sections ?? [])],
+          history: history.map((message) => ({ role: message.role, text: message.text })),
+          attempts: [...attempts],
+          toolCalls: [...(detail?.toolCalls ?? [])],
+          usage: { ...(detail?.usage ?? {}) },
+          ...(detail?.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
+          guard:
+            detail?.guard === undefined
+              ? { removed: [] }
+              : { ...detail.guard, removed: [...detail.guard.removed] },
+          ...(detail?.included === undefined ? {} : { included: { ...detail.included } }),
+        });
         if (err instanceof LocalLimitError) {
           result = {
             ok: false,
-            outcome: 'local-limit',
+            outcome: 'failed',
             content: localLimitReply(err.availableAt, now(), config.BANANASAURS_TIME_ZONE),
+            detail: failureDetail(err.attempts ?? [], err.detail),
           };
-          sink.detail = {
-            sections: [...err.detail.sections ?? []],
-            history: history.map((message) => ({ role: message.role, text: message.text })),
-            attempts: [...err.attempts],
-            toolCalls: [...err.detail.toolCalls],
-            usage: { ...err.detail.usage },
-            ...(err.detail.finishReason === undefined ? {} : { finishReason: err.detail.finishReason }),
-            guard: { ...err.detail.guard, removed: [...err.detail.guard.removed] },
-            ...(err.detail.included === undefined ? {} : { included: { ...err.detail.included } }),
+          traceError = {
+            kind: err.code,
+            message: 'every assistant model is at its configured limit',
           };
+        } else if (err instanceof ChainFailedError) {
+          const detail = failureDetail(err.attempts, err.detail);
+          if (err.quotaScope === 'daily-free') {
+            result = {
+              ok: false,
+              outcome: 'failed',
+              content: dailyQuotaReply(err.resetAt, now()),
+              detail,
+            };
+          } else if (err.retryable) {
+            result = { ok: false, outcome: 'failed', content: BUSY_REPLY, detail };
+          } else {
+            logger.warn(
+              safeLogFields({ component: 'assistant', guildId: scope.guildId, err }),
+              'dashboard try-it failed before a response was produced',
+            );
+            result = {
+              ok: false,
+              outcome: 'failed',
+              content: 'I could not complete that request. No action was taken.',
+              detail,
+            };
+          }
+          traceError = { kind: err.kind, message: err.summary };
         } else if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
-          result = { ok: false, outcome: 'quota', content: dailyQuotaReply(err.resetAt, now()) };
+          result = { ok: false, outcome: 'failed', content: dailyQuotaReply(err.resetAt, now()) };
+          traceError = {
+            kind: 'internal',
+            message: 'An internal error stopped the request; the daemon log has the detail.',
+          };
         } else if (err instanceof ProviderError && err.retryable) {
           result = { ok: false, outcome: 'failed', content: BUSY_REPLY };
+          traceError = {
+            kind: 'internal',
+            message: 'An internal error stopped the request; the daemon log has the detail.',
+          };
         } else {
           logger.warn(
             safeLogFields({ component: 'assistant', guildId: scope.guildId, err }),
             'dashboard try-it failed before a response was produced',
           );
-          if (err instanceof ChainFailedError) {
-            sink.detail = {
-              sections: [...(err.detail.sections ?? [])],
-              history: history.map((message) => ({ role: message.role, text: message.text })),
-              attempts: [...err.attempts],
-              toolCalls: [...err.detail.toolCalls],
-              usage: { ...err.detail.usage },
-              ...(err.detail.finishReason === undefined
-                ? {}
-                : { finishReason: err.detail.finishReason }),
-              guard: { ...err.detail.guard, removed: [...err.detail.guard.removed] },
-              ...(err.detail.included === undefined ? {} : { included: { ...err.detail.included } }),
-            };
-          }
           result = {
             ok: false,
             outcome: 'failed',
             content: 'I could not complete that request. No action was taken.',
+          };
+          traceError = {
+            kind: 'internal',
+            message: 'An internal error stopped the request; the daemon log has the detail.',
           };
         }
       }
@@ -1732,6 +1769,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         sections: detail?.sections ?? [],
         toolCalls: detail?.toolCalls ?? [],
         guard: detail?.guard ?? { removed: [] },
+        ...(traceError === undefined ? {} : { error: traceError }),
         ...(detail?.included === undefined
           ? {}
           : {
