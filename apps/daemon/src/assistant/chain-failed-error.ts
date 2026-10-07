@@ -1,27 +1,5 @@
 import { ProviderError, type AssistantTrace, type ProviderErrorKind } from '@bananasaurs/core';
-
-/**
- * The loop's working state at failure: what the AI saw. Carried on every
- * terminal failure (ADR 0129 §1) so the job can write its trace from it in
- * Task 3. The text is the fixed member-facing reply, never provider prose.
- */
-export interface LoopFailureDetail {
-  readonly text: string;
-  readonly finishReason?: string;
-  readonly usage: AssistantTrace['usage'];
-  readonly toolCalls: AssistantTrace['toolCalls'];
-  readonly guard: AssistantTrace['guard'];
-  readonly sections?: AssistantTrace['sections'];
-  readonly included?: AssistantTrace['included'];
-}
-
-/** The empty failure: a failed run with no sections yet. */
-export const emptyLoopFailureDetail: (text: string) => LoopFailureDetail = (text) => ({
-  text,
-  usage: {},
-  toolCalls: [],
-  guard: { removed: [] },
-});
+import type { AssistantTraceDetail } from './commands.js';
 
 /**
  * A retryable chain failure that carries its attempts (ADR 0079) and its loop
@@ -34,30 +12,28 @@ export const emptyLoopFailureDetail: (text: string) => LoopFailureDetail = (text
  */
 export class ChainFailedError extends ProviderError {
   readonly code = 'chain-failed';
+  /** ADR 0129 §1: what the model saw before the chain failed; absent on old call sites. */
+  readonly detail?: AssistantTraceDetail;
 
   constructor(
     kind: ProviderErrorKind,
     readonly summary: string,
     retryable: boolean,
     readonly attempts: AssistantTrace['attempts'],
-    readonly detail: LoopFailureDetail = emptyLoopFailureDetail(summary),
-    options?: ErrorOptions & {
-      quotaScope?: 'daily-free';
-      resetAt?: number;
-      status?: number;
-      netCode?: string;
-      host?: string;
-      finishReason?: string;
-      upstream?: string;
-      emptyAnswer?: {
-        readonly completionTokens?: number;
-        readonly reasoningTokens?: number;
-        readonly reasoningOnly: boolean;
-      };
+    options?: {
+      readonly detail?: AssistantTraceDetail;
+      readonly quotaScope?: 'daily-free';
+      readonly resetAt?: number;
+      readonly cause?: unknown;
     },
   ) {
-    super(kind, summary, retryable, options);
+    super(kind, summary, retryable, {
+      ...(options?.quotaScope === undefined ? {} : { quotaScope: options.quotaScope }),
+      ...(options?.resetAt === undefined ? {} : { resetAt: options.resetAt }),
+      ...(options?.cause === undefined ? {} : { cause: options.cause }),
+    });
     this.name = 'ChainFailedError';
+    if (options?.detail !== undefined) this.detail = options.detail;
   }
 }
 

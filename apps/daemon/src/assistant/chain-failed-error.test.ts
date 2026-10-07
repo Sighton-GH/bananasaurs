@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { ProviderError } from '@bananasaurs/core';
 import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
+import type { AssistantTraceDetail } from './commands.js';
 
 describe('summarizeAttempts', () => {
   it('joins each failed attempt as provider/model: code', () => {
@@ -59,15 +61,41 @@ describe('ChainFailedError', () => {
     const attempts = [
       { provider: 'openrouter', model: 'm', outcome: 'error' as const, ms: 5 },
     ];
-    const err = new ChainFailedError('invalid-request', 'No endpoints found for bad-model', false, attempts, {
-      text: 'fixed failure text',
-      finishReason: 'stop',
-      usage: { promptTokens: 1 },
+    const detail: AssistantTraceDetail = {
+      sections: [{ name: 'question', chars: 4, estTokens: 1, text: 'what' }],
+      history: [],
+      attempts,
       toolCalls: [],
+      usage: { promptTokens: 1 },
       guard: { removed: [] },
+      finishReason: 'stop',
+    };
+    const err = new ChainFailedError(
+      'invalid-request',
+      'No endpoints found for bad-model',
+      false,
+      attempts,
+      { detail },
+    );
+    expect(err.detail?.finishReason).toBe('stop');
+    expect(err.detail?.usage).toEqual({ promptTokens: 1 });
+    expect(err.detail?.sections).toHaveLength(1);
+  });
+
+  it('passes quotaScope, resetAt and cause to the ProviderError', () => {
+    const cause = new ProviderError('quota', 'free-models-per-day limit reached', false, {
+      quotaScope: 'daily-free',
+      resetAt: 123,
     });
-    expect(err.detail.text).toBe('fixed failure text');
-    expect(err.detail.finishReason).toBe('stop');
-    expect(err.detail.usage).toEqual({ promptTokens: 1 });
+    const err = new ChainFailedError('quota', 'free-model daily allowance exhausted', false, [], {
+      quotaScope: 'daily-free',
+      resetAt: 123,
+      cause,
+    });
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.quotaScope).toBe('daily-free');
+    expect(err.resetAt).toBe(123);
+    expect(err.cause).toBe(cause);
+    expect(err.detail).toBeUndefined();
   });
 });

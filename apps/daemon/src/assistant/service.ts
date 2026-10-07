@@ -1198,15 +1198,7 @@ export const createAssistantService = (
             `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`,
             true,
             failed.attempts,
-            {
-              text: BUSY_REPLY,
-              ...(failed.finishReason === undefined ? {} : { finishReason: failed.finishReason }),
-              usage: failed.usage,
-              toolCalls: failed.toolCalls,
-              guard: failed.guard,
-              sections: loopDetail().sections,
-              included: loopDetail().included,
-            },
+            { detail: loopDetail() },
           );
         }
         const allSkipped =
@@ -1254,40 +1246,17 @@ export const createAssistantService = (
         }
         if (lastTried?.outcome === 'error') {
           // ADR 0129 decision 1: every terminal path carries attempts and the
-          // loop detail. A non-guard failure keeps the last attempt's kind,
-          // retryable flag, quota scope and reset (from `failed.lastError`),
-          // so e.g. a non-daily `quota` error is not normalised into
-          // `invalid-request` — but the throw is a `ChainFailedError` the
-          // job's trace writer handles, never a raw `ProviderError`.
+          // loop detail. A non-guard failure keeps the kind and the retryable
+          // flag of the original error — but the throw is a
+          // `ChainFailedError` the job's trace writer handles, never a raw
+          // `ProviderError`.
           const last = failed.lastError;
-          const failureText = GUARD_FAILURE_TEXT;
-          const failureDetail = {
-            text: failureText,
-            ...(failed.finishReason === undefined ? {} : { finishReason: failed.finishReason }),
-            usage: failed.usage,
-            toolCalls: failed.toolCalls,
-            guard: failed.guard,
-            sections: loopDetail().sections,
-            included: loopDetail().included,
-          };
-          if (last !== undefined) {
-            throw new ChainFailedError(last.kind, `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`, last.retryable, failed.attempts, failureDetail, {
-              ...(last.quotaScope === undefined ? {} : { quotaScope: last.quotaScope }),
-              ...(last.resetAt === undefined ? {} : { resetAt: last.resetAt }),
-              ...(last.status === undefined ? {} : { status: last.status }),
-              ...(last.netCode === undefined ? {} : { netCode: last.netCode }),
-              ...(last.host === undefined ? {} : { host: last.host }),
-              ...(last.finishReason === undefined ? {} : { finishReason: last.finishReason }),
-              ...(last.upstream === undefined ? {} : { upstream: last.upstream }),
-              ...(last.emptyAnswer === undefined ? {} : { emptyAnswer: last.emptyAnswer }),
-            });
-          }
           throw new ChainFailedError(
-            'invalid-request',
+            last?.kind ?? 'invalid-request',
             `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`,
-            false,
+            last?.retryable ?? false,
             failed.attempts,
-            failureDetail,
+            { detail: loopDetail(), ...(last === undefined ? {} : { cause: last }) },
           );
         }
         // The old "I could not complete that request" fallback was
