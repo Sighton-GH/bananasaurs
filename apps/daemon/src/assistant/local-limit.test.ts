@@ -169,13 +169,24 @@ describe('reserveEntryCall and entryUsage', () => {
 describe('LocalLimitError attempts and detail', () => {
   it('carries the failed attempts and the loop detail', () => {
     const attempts = [{ provider: 'gemini', model: MODEL, outcome: 'skipped' as const, ms: 1 }];
-    const err = new LocalLimitError(5000, 'local-rpm-limit', attempts, {
-      text: 'fixed failure text',
-      toolCalls: [],
-      usage: {},
-      guard: { removed: [] },
+    const err = new LocalLimitError(5000, 'local-rpm-limit', {
+      attempts,
+      detail: {
+        sections: [],
+        history: [],
+        attempts,
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+      },
     });
     expect(err.attempts).toEqual(attempts);
-    expect(err.detail.text).toBe('fixed failure text');
+    expect(err.detail?.toolCalls).toEqual([]);
+  });
+
+  it('leaves attempts and detail absent when no options are given', () => {
+    const err = new LocalLimitError(5000, 'local-rpd-limit');
+    expect(err.attempts).toBeUndefined();
+    expect(err.detail).toBeUndefined();
   });
 });

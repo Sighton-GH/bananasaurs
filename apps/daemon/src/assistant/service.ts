@@ -1162,14 +1162,9 @@ export const createAssistantService = (
           };
         }
         if (failed.localLimit !== undefined) {
-          const localDetail = loopDetail();
-          throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code, failed.attempts, {
-            text: GUARD_FAILURE_TEXT,
-            usage: localDetail.usage,
-            toolCalls: localDetail.toolCalls,
-            guard: localDetail.guard,
-            sections: localDetail.sections,
-            included: localDetail.included,
+          throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code, {
+            attempts: failed.attempts,
+            detail: loopDetail(),
           });
         }
         if (failed.dailyQuota !== undefined) {
