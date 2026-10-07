@@ -179,18 +179,16 @@ describe('get_health reports the task posts switch with dry run (ADR 0131)', () 
   });
 
   const linesOf = (taskPostsEnabled: boolean, installDryRun: boolean): readonly string[] =>
-    textOf(getHealthText(principalWith(GUILD), portWithPosts(taskPostsEnabled, installDryRun))).split(
-      '\n',
-    );
+    textOf(
+      getHealthText(principalWith(GUILD), portWithPosts(taskPostsEnabled, installDryRun)),
+    ).split('\n');
 
   it('prints on when the switch is on and dry run is off', () => {
     expect(linesOf(true, false)).toContain('  task posts on');
   });
 
   it('prints held by dry run when the switch is on but dry run holds every post back', () => {
-    expect(linesOf(true, true)).toContain(
-      '  task posts on, held by dry run (BANANASAURS_DRY_RUN)',
-    );
+    expect(linesOf(true, true)).toContain('  task posts on, held by dry run (BANANASAURS_DRY_RUN)');
   });
 
   it('prints off when the switch is off, dry run or not', () => {

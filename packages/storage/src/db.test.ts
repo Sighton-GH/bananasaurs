@@ -1531,7 +1531,9 @@ describe('migrations 0102/0103 add the per-guild task-posts switch defaulting of
     // Seeded against the pre-switch shape: no `task_posts_enabled` column yet.
     for (const guildId of [GUILD_ONE, GUILD_TWO]) {
       raw
-        .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+        .prepare(
+          `INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`,
+        )
         .run(guildId);
     }
 
@@ -1559,7 +1561,9 @@ describe('migrations 0102/0103 add the per-guild task-posts switch defaulting of
     ).toThrow(/CHECK constraint failed: guilds_task_posts_enabled_bool/);
     // While 0 and 1 both write fine.
     for (const value of [0, 1]) {
-      raw.prepare(`UPDATE guilds SET task_posts_enabled = ? WHERE guild_id = ?`).run(value, GUILD_ONE);
+      raw
+        .prepare(`UPDATE guilds SET task_posts_enabled = ? WHERE guild_id = ?`)
+        .run(value, GUILD_ONE);
     }
     expect(raw.pragma('foreign_key_check')).toEqual([]);
 
