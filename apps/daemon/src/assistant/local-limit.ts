@@ -1,6 +1,8 @@
 import { nextProviderDayStart, providerDayStart } from '@bananasaurs/core';
+import type { AssistantTrace } from '@bananasaurs/core';
 import { modelCallsRepo, type InstanceScope } from '@bananasaurs/storage';
 import { ENV_KEY_ID, type ChainEntry } from './model-chain.js';
+import type { LoopFailureDetail } from './chain-failed-error.js';
 
 export type LocalLimitCode = 'local-rpm-limit' | 'local-rpd-limit';
 
@@ -8,6 +10,15 @@ export class LocalLimitError extends Error {
   constructor(
     readonly availableAt: number,
     readonly code: LocalLimitCode,
+    /** ADR 0129 §1: the failed attempts, so the trace writer keeps them. */
+    readonly attempts: AssistantTrace['attempts'] = [],
+    /** ADR 0129 §1: what the AI saw before the limit stopped it. */
+    readonly detail: LoopFailureDetail = {
+      text: 'every assistant model is at its configured limit',
+      usage: {},
+      toolCalls: [],
+      guard: { removed: [] },
+    },
   ) {
     super('every assistant model is at its configured limit');
     this.name = 'LocalLimitError';
