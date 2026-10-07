@@ -149,6 +149,12 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
     ...(attempt.netCode === undefined ? {} : { netCode: attempt.netCode }),
     ...(attempt.host === undefined ? {} : { host: attempt.host }),
     ...(attempt.availableAt === undefined ? {} : { availableAt: attempt.availableAt }),
+    ...(attempt.providerMessage === undefined ? {} : { providerMessage: attempt.providerMessage }),
+    ...(attempt.finishReason === undefined ? {} : { finishReason: attempt.finishReason }),
+    ...(attempt.upstream === undefined ? {} : { upstream: attempt.upstream }),
+    ...(attempt.completionTokens === undefined ? {} : { completionTokens: attempt.completionTokens }),
+    ...(attempt.reasoningTokens === undefined ? {} : { reasoningTokens: attempt.reasoningTokens }),
+    ...(attempt.costUsd === undefined ? {} : { costUsd: attempt.costUsd }),
     ms: attempt.ms,
   })),
   toolCalls: detail.toolCalls.map((call) => ({
@@ -249,12 +255,21 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
     // `resources-unavailable`) travel in the cursor alongside the job's own
     // `quote-unavailable` flags so a retry keeps both.
     const resultFlags = result.flags === undefined ? {} : { flags: [...result.flags] };
-    if (!result.ok)
+    if (result.ok === false) {
+      const failed = result as { readonly outcome?: 'failed' | 'refused' | 'not-configured' | 'quota' | 'local-limit' };
       return {
         stage,
-        result: { ok: false, content: result.content, ...resultFlags, ...trace, ...detail },
+        result: {
+          ok: false as const,
+          outcome: failed.outcome ?? 'failed',
+          content: result.content,
+          ...resultFlags,
+          ...trace,
+          ...detail,
+        },
         ...rest,
       };
+    }
     return {
       stage,
       result:

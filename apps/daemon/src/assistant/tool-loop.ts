@@ -128,7 +128,12 @@ const DEFAULT_LIMITS: LoopLimits = {
 
 const ANSWER_INSTRUCTION = 'Answer now using the results above. Do not call tools.';
 export const TOOL_RESULT_TRACE_CHARS = 6_000;
-const GUARD_FAILURE_TEXT = "I couldn't finish that answer — please try again.";
+/**
+ * ADR 0129 decision 1: the fixed member-facing text for a failed chain. The
+ * service maps failures to the same text, so it is exported for the throw
+ * sites there.
+ */
+export const GUARD_FAILURE_TEXT = "I couldn't finish that answer — please try again.";
 const PROMPT_LEAK_TEXT = "I can't share that.";
 
 /**

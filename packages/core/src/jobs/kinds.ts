@@ -547,6 +547,8 @@ export const assistantInvokeCursor = z.object({
     }),
     z.object({
       ok: z.literal(false),
+      /** ADR 0129 decision 2: whether the failure was a failure or a refusal. */
+      outcome: z.enum(['failed', 'refused', 'not-configured', 'quota', 'local-limit']).optional(),
       content: z.string(),
       flags: z.array(z.string().min(1)).optional(),
       trace: invocationTrace.optional(),

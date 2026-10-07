@@ -124,6 +124,15 @@ export type AssistantInvocationResult =
     }
   | {
       readonly ok: false;
+      /**
+       * ADR 0129 decision 2: whether the refusal was a failure or a policy
+       * stop. `failed` means the AI could not produce an answer (chain errors,
+       * empty answer, quota, local limit); `refused` means a deliberate
+       * policy stop (role gate, skill scope, provider terms, IT routing);
+       * `not-configured` means no key existed; `quota` and `local-limit`
+       * name the cap that stopped it.
+       */
+      readonly outcome: 'failed' | 'refused' | 'not-configured' | 'quota' | 'local-limit';
       readonly content: string;
       readonly flags?: readonly string[];
       readonly trace?: InvocationTrace;

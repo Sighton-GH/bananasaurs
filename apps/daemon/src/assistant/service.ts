@@ -51,7 +51,7 @@ import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
 import type { WebSearchRun } from './web-search.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
 import { LocalLimitError, localLimitReply, reserveEntryCall } from './local-limit.js';
-import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { GUARD_FAILURE_TEXT, ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
 import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
@@ -529,6 +529,7 @@ export const createAssistantService = (
       )
         return {
           ok: false,
+          outcome: 'refused',
           content: 'This behaviour is not available to your server roles. No action was taken.',
         };
       // ADR 0087: the skill's scope is the only gate, checked in code
@@ -604,6 +605,7 @@ export const createAssistantService = (
         });
         return {
           ok: false,
+          outcome: 'refused',
           content: "You don't have access to that assistant skill. No action was taken.",
         };
       }
@@ -633,6 +635,7 @@ export const createAssistantService = (
       if (chainEntries.length === 0) {
         return {
           ok: false,
+          outcome: 'not-configured',
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
@@ -676,6 +679,7 @@ export const createAssistantService = (
             });
             return {
               ok: false,
+              outcome: 'refused',
               content:
                 "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
             };
@@ -1108,6 +1112,11 @@ export const createAssistantService = (
       };
       const declarations = toolDeclarations(toolPorts);
       /**
+       * ADR 0129 decision 1 lives here: every throw out of `mapLoopFailure`
+       * is a `ChainFailedError` or a `LocalLimitError` carrying `attempts`
+       * and the loop detail — never a raw `ProviderError` — so the job's
+       * trace writer sees every failure.
+       *
        * A failed loop maps back to today's member-facing texts (ruling): a
        * daily cap throws so the job answers its reset reply; a busy last
        * attempt throws retryable so the job's spaced retries still apply;
@@ -1152,8 +1161,17 @@ export const createAssistantService = (
             detail: { ...detail, actions: [...failed.actionSummaries] },
           };
         }
-        if (failed.localLimit !== undefined)
-          throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code);
+        if (failed.localLimit !== undefined) {
+          const localDetail = loopDetail();
+          throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code, failed.attempts, {
+            text: GUARD_FAILURE_TEXT,
+            usage: localDetail.usage,
+            toolCalls: localDetail.toolCalls,
+            guard: localDetail.guard,
+            sections: localDetail.sections,
+            included: localDetail.included,
+          });
+        }
         if (failed.dailyQuota !== undefined) {
           throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
             quotaScope: 'daily-free',
@@ -1180,6 +1198,15 @@ export const createAssistantService = (
             `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`,
             true,
             failed.attempts,
+            {
+              text: BUSY_REPLY,
+              ...(failed.finishReason === undefined ? {} : { finishReason: failed.finishReason }),
+              usage: failed.usage,
+              toolCalls: failed.toolCalls,
+              guard: failed.guard,
+              sections: loopDetail().sections,
+              included: loopDetail().included,
+            },
           );
         }
         const allSkipped =
@@ -1202,6 +1229,7 @@ export const createAssistantService = (
           });
           return {
             ok: false,
+            outcome: 'refused',
             content:
               "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
             detail: loopDetail(),
@@ -1210,6 +1238,7 @@ export const createAssistantService = (
         if (failed.attempts.length === 0 || allSkipped) {
           return {
             ok: false,
+            outcome: 'not-configured',
             content:
               'The free AI provider is not configured, so no content was sent outside the server.',
             detail: loopDetail(),
@@ -1218,19 +1247,47 @@ export const createAssistantService = (
         if (lastTried?.outcome === 'error' && lastTried.reason === 'empty-answer') {
           return {
             ok: false,
+            outcome: 'failed',
             content: "I couldn't finish that answer — please try again.",
             detail: loopDetail(),
           };
         }
         if (lastTried?.outcome === 'error') {
-          // A non-guard failure keeps the last attempt's original error —
-          // same kind, same retryable flag — so e.g. a non-daily `quota`
-          // error is not normalised into `invalid-request`.
-          if (failed.lastError instanceof ProviderError) throw failed.lastError;
-          throw new ProviderError(
+          // ADR 0129 decision 1: every terminal path carries attempts and the
+          // loop detail. A non-guard failure keeps the last attempt's kind,
+          // retryable flag, quota scope and reset (from `failed.lastError`),
+          // so e.g. a non-daily `quota` error is not normalised into
+          // `invalid-request` — but the throw is a `ChainFailedError` the
+          // job's trace writer handles, never a raw `ProviderError`.
+          const last = failed.lastError;
+          const failureText = GUARD_FAILURE_TEXT;
+          const failureDetail = {
+            text: failureText,
+            ...(failed.finishReason === undefined ? {} : { finishReason: failed.finishReason }),
+            usage: failed.usage,
+            toolCalls: failed.toolCalls,
+            guard: failed.guard,
+            sections: loopDetail().sections,
+            included: loopDetail().included,
+          };
+          if (last !== undefined) {
+            throw new ChainFailedError(last.kind, `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`, last.retryable, failed.attempts, failureDetail, {
+              ...(last.quotaScope === undefined ? {} : { quotaScope: last.quotaScope }),
+              ...(last.resetAt === undefined ? {} : { resetAt: last.resetAt }),
+              ...(last.status === undefined ? {} : { status: last.status }),
+              ...(last.netCode === undefined ? {} : { netCode: last.netCode }),
+              ...(last.host === undefined ? {} : { host: last.host }),
+              ...(last.finishReason === undefined ? {} : { finishReason: last.finishReason }),
+              ...(last.upstream === undefined ? {} : { upstream: last.upstream }),
+              ...(last.emptyAnswer === undefined ? {} : { emptyAnswer: last.emptyAnswer }),
+            });
+          }
+          throw new ChainFailedError(
             'invalid-request',
-            lastTried.reason ?? 'The assistant request failed.',
+            `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`,
             false,
+            failed.attempts,
+            failureDetail,
           );
         }
         // The old "I could not complete that request" fallback was
@@ -1465,6 +1522,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         )
           return {
             ok: false,
+            outcome: 'refused',
             content:
               'This needs human action, but IT ticket routing is not fully configured. No ticket was created.',
           };
@@ -1624,25 +1682,51 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             skipActions: true,
           },
         );
-        if (!result.ok) outcome = 'refused';
+        if (!result.ok) outcome = result.outcome === 'failed' ? 'failed' : 'refused';
       } catch (err) {
         outcome = 'failed';
         if (err instanceof LocalLimitError) {
           result = {
             ok: false,
+            outcome: 'local-limit',
             content: localLimitReply(err.availableAt, now(), config.BANANASAURS_TIME_ZONE),
           };
+          sink.detail = {
+            sections: [...err.detail.sections ?? []],
+            history: history.map((message) => ({ role: message.role, text: message.text })),
+            attempts: [...err.attempts],
+            toolCalls: [...err.detail.toolCalls],
+            usage: { ...err.detail.usage },
+            ...(err.detail.finishReason === undefined ? {} : { finishReason: err.detail.finishReason }),
+            guard: { ...err.detail.guard, removed: [...err.detail.guard.removed] },
+            ...(err.detail.included === undefined ? {} : { included: { ...err.detail.included } }),
+          };
         } else if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
-          result = { ok: false, content: dailyQuotaReply(err.resetAt, now()) };
+          result = { ok: false, outcome: 'quota', content: dailyQuotaReply(err.resetAt, now()) };
         } else if (err instanceof ProviderError && err.retryable) {
-          result = { ok: false, content: BUSY_REPLY };
+          result = { ok: false, outcome: 'failed', content: BUSY_REPLY };
         } else {
           logger.warn(
             safeLogFields({ component: 'assistant', guildId: scope.guildId, err }),
             'dashboard try-it failed before a response was produced',
           );
+          if (err instanceof ChainFailedError) {
+            sink.detail = {
+              sections: [...(err.detail.sections ?? [])],
+              history: history.map((message) => ({ role: message.role, text: message.text })),
+              attempts: [...err.attempts],
+              toolCalls: [...err.detail.toolCalls],
+              usage: { ...err.detail.usage },
+              ...(err.detail.finishReason === undefined
+                ? {}
+                : { finishReason: err.detail.finishReason }),
+              guard: { ...err.detail.guard, removed: [...err.detail.guard.removed] },
+              ...(err.detail.included === undefined ? {} : { included: { ...err.detail.included } }),
+            };
+          }
           result = {
             ok: false,
+            outcome: 'failed',
             content: 'I could not complete that request. No action was taken.',
           };
         }
@@ -1660,6 +1744,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       const detail = result.detail;
       traceRepo.insertTrace(scope, {
         traceId,
+        runId: userTurnId,
         at: now(),
         userId: botUserId,
         behaviourId: behaviour.id,
