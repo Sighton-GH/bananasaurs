@@ -256,12 +256,11 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
     // `quote-unavailable` flags so a retry keeps both.
     const resultFlags = result.flags === undefined ? {} : { flags: [...result.flags] };
     if (result.ok === false) {
-      const failed = result as { readonly outcome?: 'failed' | 'refused' | 'not-configured' | 'quota' | 'local-limit' };
       return {
         stage,
         result: {
           ok: false as const,
-          outcome: failed.outcome ?? 'failed',
+          ...(result.outcome === undefined ? {} : { outcome: result.outcome }),
           content: result.content,
           ...resultFlags,
           ...trace,
