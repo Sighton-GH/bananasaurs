@@ -54,4 +54,20 @@ describe('ChainFailedError', () => {
     expect(err.attempts).toEqual(attempts);
     expect(err).toBeInstanceOf(Error);
   });
+
+  it('carries the loop detail for a failed run', () => {
+    const attempts = [
+      { provider: 'openrouter', model: 'm', outcome: 'error' as const, ms: 5 },
+    ];
+    const err = new ChainFailedError('invalid-request', 'No endpoints found for bad-model', false, attempts, {
+      text: 'fixed failure text',
+      finishReason: 'stop',
+      usage: { promptTokens: 1 },
+      toolCalls: [],
+      guard: { removed: [] },
+    });
+    expect(err.detail.text).toBe('fixed failure text');
+    expect(err.detail.finishReason).toBe('stop');
+    expect(err.detail.usage).toEqual({ promptTokens: 1 });
+  });
 });

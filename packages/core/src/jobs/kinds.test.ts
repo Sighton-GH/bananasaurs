@@ -125,6 +125,24 @@ describe('assistantInvokeCursor resolution', () => {
     });
     expect(parsed.success).toBe(false);
   });
+
+  it('accepts an ok:false cursor with every documented outcome', () => {
+    for (const outcome of ['failed', 'refused', 'not-configured', 'quota', 'local-limit'] as const) {
+      const parsed = assistantInvokeCursor.safeParse({
+        stage: 'invoke-done',
+        result: { ok: false, content: 'text', outcome },
+      });
+      expect(parsed.success, outcome).toBe(true);
+    }
+  });
+
+  it('still parses an old ok:false cursor without an outcome', () => {
+    const parsed = assistantInvokeCursor.safeParse({
+      stage: 'invoke-done',
+      result: { ok: false, content: 'text' },
+    });
+    expect(parsed.success).toBe(true);
+  });
 });
 
 describe('housekeeping dedupe keys and payload (ADR 0127)', () => {

@@ -1160,6 +1160,119 @@ describe('runToolLoop daily quota (Task Q)', () => {
     expect(result.outcome).toBe('failed');
     expect(result.dailyQuota).toEqual({ resetAt: undefined });
   });
+  it('a 400 invalid-request attempt classifies provider-bad-model with the sanitized message', async () => {
+    const { provider } = scripted([
+      new ProviderError('invalid-request', 'No endpoints found for bad-model Bearer sk-abc123', false, {
+        status: 400,
+      }),
+    ]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider, providerId: 'openrouter', model: 'bad-model' })]),
+    );
+    expect(result.outcome).toBe('failed');
+    const attempt = result.attempts[0]!;
+    expect(attempt.code).toBe('provider-bad-model');
+    expect(attempt.httpStatus).toBeUndefined();
+    expect(attempt.providerMessage).toBe('No endpoints found for bad-model [redacted]');
+    expect(attempt.providerMessage).not.toContain('sk-abc123');
+  });
+
+  it('an empty-answer error classifies provider-empty-answer with finishReason and token evidence', async () => {
+    const { provider } = scripted([
+      new ProviderError('invalid-response', 'openrouter returned no text', false, {
+        finishReason: 'stop',
+        upstream: 'lambda',
+        emptyAnswer: { completionTokens: 3, reasoningTokens: 120, reasoningOnly: true },
+      }),
+    ]);
+    const result = await runToolLoop(
+      baseInput([entry({ provider, providerId: 'openrouter', model: 'm' })]),
+    );
+    expect(result.outcome).toBe('failed');
+    const attempt = result.attempts[0]!;
+    expect(attempt.code).toBe('provider-empty-answer');
+    expect(attempt.finishReason).toBe('stop');
+    expect(attempt.upstream).toBe('lambda');
+    expect(attempt.completionTokens).toBe(3);
+    expect(attempt.reasoningTokens).toBe(120);
+  });
+
+  it('a successful response with upstream and finishReason stores them on the ok attempt', async () => {
+    const { provider } = scripted([
+      { text: 'done', model: 'm', finishReason: 'stop', upstream: 'lambda' },
+    ]);
+    const result = await runToolLoop(baseInput([entry({ provider, model: 'm' })]));
+    expect(result.outcome).toBe('answered');
+    expect(result.attempts[0]).toMatchObject({
+      outcome: 'ok',
+      finishReason: 'stop',
+      upstream: 'lambda',
+    });
+  });
+
+  it('skipped entries log assistant model skipped and carry a runId through warn and info lines', async () => {
+    const capped = new ProviderError('quota', 'free-models-per-day limit reached', false, {
+      quotaScope: 'daily-free',
+      resetAt: NOW + 3_600_000,
+    });
+    const first = scripted([capped]);
+    const second = scripted([{ text: '', model: 'm', finishReason: 'stop' }]);
+    const warn = vi.fn();
+    const info = vi.fn();
+    const logger = { warn, info };
+    // The second entry is skipped for the spent daily allowance.
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: first.provider, model: 'm:free', keyId: 'key_a' }),
+          entry({ provider: second.provider, model: 'm2:free', keyId: 'key_a' }),
+        ],
+        { logger, guildId: '123456789012345678', runId: 'run-1' },
+      ),
+    );
+    expect(result.outcome).toBe('failed');
+    expect(warn).toHaveBeenCalled();
+    for (const [fields, message] of warn.mock.calls as [Record<string, unknown>, string][]) {
+      expect(fields).toMatchObject({ runId: 'run-1' });
+      void message;
+    }
+    const skipped = warn.mock.calls.find(
+      ([, message]) => (message as string) === 'assistant model skipped',
+    );
+    expect(skipped).toBeDefined();
+    expect(skipped?.[0]).toMatchObject({
+      runId: 'run-1',
+      provider: 'gemini',
+      model: 'm2:free',
+      reason: 'daily-allowance-used',
+    });
+    expect(info).toHaveBeenCalled();
+    for (const [fields] of info.mock.calls as [Record<string, unknown>, string][]) {
+      expect(fields).toMatchObject({ runId: 'run-1' });
+    }
+  });
+
+  it('a failed finishEntry retry logs the retry failure instead of swallowing it', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider } = scripted([
+      textAnswer(toolShaped),
+      new ProviderError('outage', 'HTTP 503 Service Unavailable', true),
+    ]);
+    const warn = vi.fn();
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        logger: { warn },
+        guildId: '123456789012345678',
+        runId: 'run-9',
+      }),
+    );
+    expect(result.outcome).toBe('failed');
+    const retryLog = warn.mock.calls.find(
+      ([, message]) => (message as string) === 'empty-answer retry failed',
+    );
+    expect(retryLog).toBeDefined();
+    expect(retryLog?.[0]).toMatchObject({ runId: 'run-9' });
+  });
 });
 
 describe('Task 10 (a): classified failure code and journal line', () => {

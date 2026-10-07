@@ -7,7 +7,7 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import { ENV_KEY_ID } from './model-chain.js';
-import { entryUsage, localLimitReply, reserveEntryCall } from './local-limit.js';
+import { entryUsage, localLimitReply, LocalLimitError, reserveEntryCall } from './local-limit.js';
 
 const NOW = 1_800_000_000_000;
 const GUILD_ID = '123456789012345678';
@@ -163,5 +163,19 @@ describe('reserveEntryCall and entryUsage', () => {
     expect(usage?.today).toBe(2);
     expect(usage?.availableAt).toBe(Math.max(rpmCandidate, rpdCandidate));
     expect(usage?.availableAt).toBe(rpdCandidate);
+  });
+});
+
+describe('LocalLimitError attempts and detail', () => {
+  it('carries the failed attempts and the loop detail', () => {
+    const attempts = [{ provider: 'gemini', model: MODEL, outcome: 'skipped' as const, ms: 1 }];
+    const err = new LocalLimitError(5000, 'local-rpm-limit', attempts, {
+      text: 'fixed failure text',
+      toolCalls: [],
+      usage: {},
+      guard: { removed: [] },
+    });
+    expect(err.attempts).toEqual(attempts);
+    expect(err.detail.text).toBe('fixed failure text');
   });
 });

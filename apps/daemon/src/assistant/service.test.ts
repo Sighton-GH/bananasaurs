@@ -25,6 +25,7 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import { resolveModelChain, ENV_KEY_ID, type ChainEntry } from './model-chain.js';
+import { ChainFailedError } from './chain-failed-error.js';
 import { LocalLimitError } from './local-limit.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { createAssistantService } from './service.js';
@@ -391,6 +392,21 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     expect(calls()).toBe(1);
   });
 
+  it('a 404 bad model throws a ChainFailedError carrying attempts and detail', async () => {
+    const { provider } = fakeProvider([
+      new ProviderError('invalid-request', 'No endpoints found for bad-model', false, {
+        status: 404,
+      }),
+    ]);
+    const service = serviceWith(() => [usable(provider, { model: 'bad-model' })]);
+    const thrown = await service.invoke(ask).catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(ChainFailedError);
+    const chain = thrown as ChainFailedError;
+    expect(chain.attempts).toHaveLength(1);
+    expect(chain.attempts[0]).toMatchObject({ model: 'bad-model', outcome: 'error' });
+    expect(chain.detail.text).toBe("I couldn't finish that answer — please try again.");
+  });
+
   it('a non-daily quota error keeps its kind instead of becoming invalid-request', async () => {
     const { provider, calls } = fakeProvider([
       new ProviderError('quota', 'credit exhausted', false),
@@ -421,11 +437,25 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const result = await service.invoke(ask);
     expect(result).toMatchObject({
       ok: false,
+      outcome: 'not-configured',
       content: 'The free AI provider is not configured, so no content was sent outside the server.',
     });
   });
 
-  it('a guard failure answers the fixed text', async () => {
+  it('every entry skipped for terms is the refused outcome', async () => {
+    const service = serviceWith(() => [skipped('ineligible'), skipped('unverified')]);
+    const result = await service.invoke(ask);
+    expect(result).toMatchObject({ ok: false, outcome: 'refused' });
+  });
+
+  it('a caller outside the role gate is the refused outcome', async () => {
+    const { provider } = fakeProvider([{ text: 'must not run', model: 'm' }]);
+    const service = serviceWith(() => [usable(provider)]);
+    const result = await service.invoke({ ...ask, callerRoleIds: [], invocationId: 'int-role-gate' });
+    expect(result).toMatchObject({ ok: false, outcome: 'refused' });
+  });
+
+  it('a guard failure answers the fixed text with the failed outcome', async () => {
     const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
     const shaped = fakeProvider([
       { text: toolShaped, model: 'm' },
@@ -435,6 +465,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const result = await service.invoke(ask);
     expect(result).toMatchObject({
       ok: false,
+      outcome: 'failed',
       content: "I couldn't finish that answer — please try again.",
     });
     expect(shaped.calls()).toBe(2);
