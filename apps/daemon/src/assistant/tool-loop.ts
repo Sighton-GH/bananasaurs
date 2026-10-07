@@ -306,8 +306,8 @@ export const runToolLoop = async (input: {
     const ms = (): number => Math.max(0, input.now() - started);
     // ADR 0129 §5: every skipped entry is a journal line with the run id.
     const logSkipped = (reason: string | undefined): void => {
-      if (input.logger === undefined) return;
-      input.logger.warn(
+      if (input.logger?.info === undefined) return;
+      input.logger.info(
         safeLogFields({
           component: 'assistant',
           ...(input.guildId === undefined ? {} : { guildId: input.guildId }),
@@ -588,6 +588,8 @@ const runEntry = async (deps: {
           ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
           ...(f.host === undefined ? {} : { host: f.host }),
           ms: deps.entryMs(),
+          ...(f.finishReason === undefined ? {} : { finishReason: f.finishReason }),
+          ...(f.upstream === undefined ? {} : { upstream: f.upstream }),
           // ADR 0129 §4 (partly reverses ADR 0079 §3): the journal's evidence
           // line keeps the sanitized short reason.
           ...(providerMessage === undefined ? {} : { providerMessage }),
@@ -627,10 +629,7 @@ const runEntry = async (deps: {
       model: entry.model,
       keyLabel: entry.keyLabel,
       outcome,
-      // Hard rule 4: the attempt keeps a fixed reason from the error's
-      // kind/status plus the sanitized provider message. The raw text stays in
-      // the Pino line only — it can echo request details, so it never reaches
-      // the trace unsanitized.
+      // Hard rule 4 / ADR 0129 §3: `reason` stays a fixed string from the error's kind/status; the provider's own text is stored only sanitized, as `providerMessage`, which routes show only to config.read.
       ...(err instanceof Error ? { reason: attemptReasonFor(err) } : {}),
       code: f.code,
       ...(providerMessage === undefined ? {} : { providerMessage }),
@@ -826,26 +825,6 @@ const runEntry = async (deps: {
     return toolMessages;
   };
 
-  const logRetryFailure = (failedEntry: ChainEntry, err: unknown): void => {
-    if (deps.logger === undefined) return;
-    const f = classifyProviderFailure(err, {
-      provider: failedEntry.providerId,
-      model: failedEntry.model,
-    });
-    deps.logger.warn(
-      safeLogFields({
-        component: 'assistant',
-        ...(deps.guildId === undefined ? {} : { guildId: deps.guildId }),
-        ...(deps.runId === undefined ? {} : { runId: deps.runId }),
-        provider: failedEntry.providerId,
-        model: failedEntry.model,
-        keyLabel: failedEntry.keyLabel,
-        code: f.code,
-      }),
-      'empty-answer retry failed',
-    );
-  };
-
   for (let round = 1; round <= limits.rounds; round += 1) {
     const response = await callProvider(round);
     if (response === undefined) return undefined;
@@ -856,7 +835,6 @@ const runEntry = async (deps: {
         provider,
         response,
         messages,
-        logRetryFailure,
         deps,
       });
     }
@@ -877,7 +855,7 @@ const runEntry = async (deps: {
   const extra: GenerationMessage = { role: 'user', text: ANSWER_INSTRUCTION };
   const final = await callProvider(0, [extra], false);
   if (final === undefined) return undefined;
-  return finishEntry({ entry, provider, response: final, messages: [...messages, extra], logRetryFailure, deps });
+  return finishEntry({ entry, provider, response: final, messages: [...messages, extra], deps });
 };
 
 const finishEntry = async (deps: {
@@ -885,7 +863,6 @@ const finishEntry = async (deps: {
   readonly provider: TextProvider;
   readonly response: GenerateTextResponse;
   readonly messages: readonly GenerationMessage[];
-  readonly logRetryFailure: (entry: ChainEntry, err: unknown) => void;
   readonly deps: {
     readonly protectedText: string;
     readonly systemInstruction: string;
@@ -895,6 +872,10 @@ const finishEntry = async (deps: {
     readonly entryMs: () => number;
     readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
     readonly reserveCall?: ReserveCall | undefined;
+    readonly logger?: Pick<Logger, 'warn' | 'info'> | undefined;
+    readonly guildId?: string | undefined;
+    /** ADR 0129 §5: the invocation id; every assistant log line carries it. */
+    readonly runId?: string | undefined;
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
@@ -1011,7 +992,29 @@ const finishEntry = async (deps: {
     } catch (err) {
       // A failed retry is still a failed answer, not a chain error — but the
       // failure is a journal line (ADR 0129 §5), never a bare `catch {}`.
-      deps.logRetryFailure(deps.entry, err);
+      const outerLogger = outer.logger;
+      if (outerLogger !== undefined) {
+        const f = classifyProviderFailure(err, {
+          provider: deps.entry.providerId,
+          model: deps.entry.model,
+        });
+        outerLogger.warn(
+          safeLogFields({
+            component: 'assistant',
+            ...(outer.guildId === undefined ? {} : { guildId: outer.guildId }),
+            ...(outer.runId === undefined ? {} : { runId: outer.runId }),
+            provider: deps.entry.providerId,
+            model: deps.entry.model,
+            keyLabel: deps.entry.keyLabel,
+            code: f.code,
+            ms: outer.entryMs(),
+            ...(err instanceof Error
+              ? { providerMessage: sanitizeProviderMessage(err.message) }
+              : {}),
+          }),
+          'provider attempt failed',
+        );
+      }
     }
   }
   outer.attempts.push({
@@ -1020,6 +1023,10 @@ const finishEntry = async (deps: {
     keyLabel: deps.entry.keyLabel,
     outcome: 'error',
     reason: 'empty-answer',
+    code: 'provider-empty-answer',
+    ...(deps.response.finishReason === undefined
+      ? {}
+      : { finishReason: deps.response.finishReason }),
     ms: outer.entryMs(),
   });
   // Guard failure on the entry that answered: the loop fails here with the
