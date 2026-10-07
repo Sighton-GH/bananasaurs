@@ -197,7 +197,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
   it('disables mention parsing and caps untrusted provider output at Discord limits', async () => {
     const service: AssistantCommandService = {
       behavioursForGuild: vi.fn(async () => [behaviour('club')]),
-      invoke: vi.fn(async () => ({ ok: true, content: '@everyone ' + 'x'.repeat(2_500) })),
+      invoke: vi.fn(async () => ({ ok: true as const, content: '@everyone ' + 'x'.repeat(2_500) })),
     };
     const send = vi.fn(async (_destinationId: string, _message: OutgoingMessage) => undefined);
     const respond = vi.fn(async () => undefined);

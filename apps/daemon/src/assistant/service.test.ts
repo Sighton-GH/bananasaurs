@@ -169,7 +169,7 @@ describe('Task 6b fix round 2: ChainEntry.mayTrain training warning', () => {
         () => NOW,
         {},
         undefined,
-        { warn },
+        { warn, info: vi.fn() },
         undefined,
         () => entries,
       );
@@ -221,7 +221,7 @@ describe('Task 6b fix round 2: ChainEntry.mayTrain training warning', () => {
         provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
       },
       undefined,
-      { warn },
+      { warn, info: vi.fn() },
     );
     const result = await service.invoke({
       guildId: GUILD,
@@ -647,7 +647,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
           }),
         },
         undefined,
-        { warn },
+        { warn, info: vi.fn() },
       );
       const result = await service.invoke({ ...ask, invocationId });
       expect(result).toMatchObject({ ok: true });

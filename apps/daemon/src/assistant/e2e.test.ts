@@ -744,7 +744,7 @@ describe('Release 3 review fixes', () => {
           provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
         },
         undefined,
-        { warn },
+        { warn, info: vi.fn() },
       );
       const result = await service.invoke({
         guildId: GUILD,
@@ -816,7 +816,7 @@ describe('Release 3 review fixes', () => {
         },
       },
       undefined,
-      { warn },
+      { warn, info: vi.fn() },
     );
     await service.invoke({
       guildId: GUILD,

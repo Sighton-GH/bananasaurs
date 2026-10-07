@@ -1261,7 +1261,7 @@ describe('runToolLoop daily quota (Task Q)', () => {
     const warn = vi.fn();
     const result = await runToolLoop(
       baseInput([entry({ provider })], {
-        logger: { warn },
+        logger: { warn, info: vi.fn() },
         guildId: '123456789012345678',
         runId: 'run-9',
       }),
