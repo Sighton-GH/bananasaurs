@@ -432,12 +432,12 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     });
   });
 
-  it('every entry skipped for keys is the not-configured refusal', async () => {
+  it('every entry skipped for keys is the failed outcome', async () => {
     const service = serviceWith(() => [skipped('no-key'), skipped('disabled')]);
     const result = await service.invoke(ask);
     expect(result).toMatchObject({
       ok: false,
-      outcome: 'not-configured',
+      outcome: 'failed',
       content: 'The free AI provider is not configured, so no content was sent outside the server.',
     });
   });

@@ -635,7 +635,7 @@ export const createAssistantService = (
       if (chainEntries.length === 0) {
         return {
           ok: false,
-          outcome: 'not-configured',
+          outcome: 'failed',
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
@@ -1231,7 +1231,7 @@ export const createAssistantService = (
         if (failed.attempts.length === 0 || allSkipped) {
           return {
             ok: false,
-            outcome: 'not-configured',
+            outcome: 'failed',
             content:
               'The free AI provider is not configured, so no content was sent outside the server.',
             detail: loopDetail(),
