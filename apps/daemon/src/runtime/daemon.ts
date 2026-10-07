@@ -11,7 +11,6 @@ import {
   CLUB_ASSISTANT_SKILLS,
   seedDefaultWordList,
   staleTaskPostsEnvWarning,
-  taskPostsState,
   type Config,
   type DiscordPort,
   type Dispatcher,
@@ -54,6 +53,7 @@ import { seedChannelScopes } from '../channels/read-seed.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { ensureOwnerGuildAccess } from './owner-guild-access.js';
 import { createProviderConfigStore, providerKeyFrom } from '../assistant/provider-config.js';
+import { taskPostsEnabledFor } from './task-posts-gate.js';
 import { openWithKey, sealWithKey } from '../crypto/seal.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { applyConnectFallback } from './network.js';
@@ -653,10 +653,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           await deliverTaskNudges(scope, client, discord, now(), {
             // ADR 0131: read live from this guild's row on every pass, so
             // flipping the dashboard switch takes effect on the next tick.
-            enabled: taskPostsState({
-              switchOn: guildRepo.readTaskPostsEnabled(scope),
-              dryRun: config.BANANASAURS_DRY_RUN,
-            }).enabled,
+            enabled: taskPostsEnabledFor(scope, config.BANANASAURS_DRY_RUN),
             quietStart: config.TASK_NUDGE_QUIET_START,
             quietEnd: config.TASK_NUDGE_QUIET_END,
             evaluate: taskUpdateEvaluator,
