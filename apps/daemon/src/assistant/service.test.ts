@@ -385,10 +385,12 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
   it('every entry busy throws retryable so the job retries into BUSY_REPLY', async () => {
     const { provider, calls } = fakeProvider([new ProviderError('rate-limit', 'HTTP 429', true)]);
     const service = serviceWith(() => [usable(provider)]);
-    await expect(service.invoke(ask)).rejects.toMatchObject({
-      kind: 'rate-limit',
-      retryable: true,
-    });
+    const thrown = await service.invoke(ask).catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(ChainFailedError);
+    const chain = thrown as ChainFailedError;
+    expect(chain).toMatchObject({ kind: 'rate-limit', retryable: true });
+    expect(chain.attempts).toHaveLength(1);
+    expect(chain.detail?.sections.length).toBeGreaterThan(0);
     expect(calls()).toBe(1);
   });
 
@@ -404,7 +406,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const chain = thrown as ChainFailedError;
     expect(chain.attempts).toHaveLength(1);
     expect(chain.attempts[0]).toMatchObject({ model: 'bad-model', outcome: 'error' });
-    expect(chain.detail.text).toBe("I couldn't finish that answer — please try again.");
+    expect(chain.detail?.sections.length).toBeGreaterThan(0);
   });
 
   it('a non-daily quota error keeps its kind instead of becoming invalid-request', async () => {
@@ -455,6 +457,30 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     expect(result).toMatchObject({ ok: false, outcome: 'refused' });
   });
 
+  it('a denied skill scope is the refused outcome', async () => {
+    const { provider, calls } = fakeProvider([{ text: 'must not run', model: 'm' }]);
+    const service = serviceWith(() => [usable(provider)]);
+    const result = await service.invoke({
+      ...ask,
+      command: 'remind',
+      input: { question: 'remind me later' },
+      invocationId: 'int-skill-scope',
+    });
+    expect(result).toMatchObject({ ok: false, outcome: 'refused' });
+    expect(calls()).toBe(0);
+  });
+
+  it('IT-routing without ticket config is the refused outcome', async () => {
+    const { provider } = fakeProvider([{ text: 'ESCALATE: reset the lab password', model: 'm' }]);
+    const service = serviceWith(() => [usable(provider)]);
+    const result = await service.invoke({
+      ...ask,
+      behaviour: { ...direct, surface: 'it-services' as const },
+      invocationId: 'int-it-routing',
+    });
+    expect(result).toMatchObject({ ok: false, outcome: 'refused' });
+  });
+
   it('a guard failure answers the fixed text with the failed outcome', async () => {
     const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
     const shaped = fakeProvider([
@@ -480,12 +506,17 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       }),
     ]);
     const service = serviceWith(() => [usable(provider, { model: 'm:free' })]);
-    await expect(service.invoke(ask)).rejects.toMatchObject({
+    const thrown = await service.invoke(ask).catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(ChainFailedError);
+    const chain = thrown as ChainFailedError;
+    expect(chain).toMatchObject({
       kind: 'quota',
       quotaScope: 'daily-free',
       resetAt,
       retryable: false,
     });
+    expect(chain.attempts.length).toBeGreaterThanOrEqual(1);
+    expect(chain.detail?.sections.length).toBeGreaterThan(0);
   });
 
   it('a spent allowance is skipped without a provider call on the next request', async () => {
@@ -715,9 +746,14 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     await expect(service.invoke({ ...ask, invocationId: 'int-rpm-1' })).resolves.toMatchObject({
       ok: true,
     });
-    await expect(service.invoke({ ...ask, invocationId: 'int-rpm-2' })).rejects.toBeInstanceOf(
-      LocalLimitError,
-    );
+    const thrown = await service
+      .invoke({ ...ask, invocationId: 'int-rpm-2' })
+      .catch((err: unknown) => err);
+    expect(thrown).toBeInstanceOf(LocalLimitError);
+    const limit = thrown as LocalLimitError;
+    expect(limit).toMatchObject({ code: 'local-rpm-limit', availableAt: NOW + 60_000 });
+    expect(limit.attempts?.length).toBeGreaterThanOrEqual(1);
+    expect(limit.detail?.sections.length).toBeGreaterThan(0);
     await expect(service.invoke({ ...ask, invocationId: 'int-rpm-3' })).rejects.toMatchObject({
       code: 'local-rpm-limit',
       availableAt: NOW + 60_000,
@@ -1527,6 +1563,38 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(trace).toMatchObject({ source: 'dashboard-test', answer: 'Try-it answer.' });
     expect(trace?.flags).toContain('dashboard-account:owner-name');
     expect(jobRepo.listJobs(scope, { limit: 10 })).toEqual([]);
+  });
+
+  it('tryIt with a 404-only chain stores a failed trace with attempts, sections and the runId', async () => {
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        throw new ProviderError(
+          'invalid-request',
+          'openrouter request failed with HTTP 404 (code 404: No endpoints found for bad-model.)',
+          false,
+          { status: 404, host: 'openrouter.ai' },
+        );
+      },
+    };
+    const service = serviceWith(failing);
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'when is the meeting?',
+      accountUsername: 'owner-name',
+    });
+    const scope = t.scopes.forGuild(GUILD);
+    const trace = traceRepo.getTrace(scope, result.traceId);
+    expect(trace?.outcome).toBe('failed');
+    expect(trace?.attempts).toHaveLength(1);
+    expect(trace?.sections.length).toBeGreaterThan(0);
+    expect(trace?.error).toMatchObject({ kind: 'invalid-request' });
+    const userTurn = conversationRepo
+      .listTurns(scope, result.conversationId)
+      .find((turn) => turn.role === 'user');
+    expect(userTurn).toBeDefined();
+    expect(trace?.runId).toBe(userTurn?.turnId);
   });
 
   it('try-it never carries channel context', async () => {

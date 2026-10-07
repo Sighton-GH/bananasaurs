@@ -126,14 +126,22 @@ describe('assistantInvokeCursor resolution', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('accepts an ok:false cursor with every documented outcome', () => {
-    for (const outcome of ['failed', 'refused', 'not-configured', 'quota', 'local-limit'] as const) {
+  it('accepts an ok:false cursor with a failed or refused outcome', () => {
+    for (const outcome of ['failed', 'refused'] as const) {
       const parsed = assistantInvokeCursor.safeParse({
         stage: 'invoke-done',
         result: { ok: false, content: 'text', outcome },
       });
       expect(parsed.success, outcome).toBe(true);
     }
+  });
+
+  it("rejects an ok:false cursor with a retired outcome like 'quota'", () => {
+    const parsed = assistantInvokeCursor.safeParse({
+      stage: 'invoke-done',
+      result: { ok: false, content: 'text', outcome: 'quota' },
+    });
+    expect(parsed.success).toBe(false);
   });
 
   it('still parses an old ok:false cursor without an outcome', () => {

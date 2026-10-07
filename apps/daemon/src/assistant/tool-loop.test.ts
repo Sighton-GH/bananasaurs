@@ -1210,6 +1210,55 @@ describe('runToolLoop daily quota (Task Q)', () => {
     });
   });
 
+  it('an empty-answer error then a 404 records evidence on both attempts with the runId', async () => {
+    const first = scripted([
+      new ProviderError('invalid-response', 'openrouter returned no text', false, {
+        finishReason: 'length',
+        upstream: 'Nebius',
+        emptyAnswer: { completionTokens: 2048, reasoningTokens: 2048, reasoningOnly: true },
+      }),
+    ]);
+    const second = scripted([
+      new ProviderError(
+        'invalid-request',
+        'openrouter request failed with HTTP 404 (code 404: No endpoints found for stealth/space-bunny-alpha.)',
+        false,
+        { status: 404, host: 'openrouter.ai' },
+      ),
+    ]);
+    const warn = vi.fn();
+    const info = vi.fn();
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: first.provider, providerId: 'openrouter', model: 'm-a' }),
+          entry({
+            provider: second.provider,
+            providerId: 'openrouter',
+            model: 'stealth/space-bunny-alpha',
+          }),
+        ],
+        { logger: { warn, info }, guildId: '123456789012345678', runId: 'r1' },
+      ),
+    );
+    expect(result.outcome).toBe('failed');
+    expect(result.attempts).toHaveLength(2);
+    expect(result.attempts[0]).toMatchObject({
+      code: 'provider-empty-answer',
+      finishReason: 'length',
+      upstream: 'Nebius',
+      completionTokens: 2048,
+      reasoningTokens: 2048,
+    });
+    expect(result.attempts[0]?.providerMessage).toContain('returned no text');
+    expect(result.attempts[1]).toMatchObject({ code: 'provider-bad-model' });
+    expect(result.attempts[1]?.providerMessage).toContain('No endpoints found');
+    expect(warn).toHaveBeenCalledTimes(2);
+    for (const [fields] of warn.mock.calls as [Record<string, unknown>, string][]) {
+      expect(fields).toMatchObject({ runId: 'r1' });
+    }
+  });
+
   it('skipped entries log assistant model skipped and carry a runId through warn and info lines', async () => {
     const capped = new ProviderError('quota', 'free-models-per-day limit reached', false, {
       quotaScope: 'daily-free',
@@ -1236,7 +1285,7 @@ describe('runToolLoop daily quota (Task Q)', () => {
       expect(fields).toMatchObject({ runId: 'run-1' });
       void message;
     }
-    const skipped = warn.mock.calls.find(
+    const skipped = info.mock.calls.find(
       ([, message]) => (message as string) === 'assistant model skipped',
     );
     expect(skipped).toBeDefined();
@@ -1252,10 +1301,28 @@ describe('runToolLoop daily quota (Task Q)', () => {
     }
   });
 
+  it('a disabled entry logs exactly one info assistant model skipped line with the runId', async () => {
+    const warn = vi.fn();
+    const info = vi.fn();
+    const result = await runToolLoop(
+      baseInput([entry({ provider: undefined, skip: 'disabled', model: 'model-b' })], {
+        logger: { warn, info },
+        guildId: '123456789012345678',
+        runId: 'run-1',
+      }),
+    );
+    expect(result.outcome).toBe('failed');
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    const [fields, message] = info.mock.calls[0] as [Record<string, unknown>, string];
+    expect(message).toBe('assistant model skipped');
+    expect(fields).toMatchObject({ reason: 'disabled', runId: 'run-1' });
+  });
+
   it('a failed finishEntry retry logs the retry failure instead of swallowing it', async () => {
     const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
     const { provider } = scripted([
-      textAnswer(toolShaped),
+      { text: toolShaped, model: 'model-a', finishReason: 'length' },
       new ProviderError('outage', 'HTTP 503 Service Unavailable', true),
     ]);
     const warn = vi.fn();
@@ -1268,10 +1335,21 @@ describe('runToolLoop daily quota (Task Q)', () => {
     );
     expect(result.outcome).toBe('failed');
     const retryLog = warn.mock.calls.find(
-      ([, message]) => (message as string) === 'empty-answer retry failed',
+      ([, message]) => (message as string) === 'provider attempt failed',
     );
     expect(retryLog).toBeDefined();
-    expect(retryLog?.[0]).toMatchObject({ runId: 'run-9' });
+    expect(retryLog?.[0]).toMatchObject({
+      runId: 'run-9',
+      provider: 'gemini',
+      model: 'model-a',
+      providerMessage: 'HTTP 503 Service Unavailable',
+    });
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0]).toMatchObject({
+      reason: 'empty-answer',
+      code: 'provider-empty-answer',
+      finishReason: 'length',
+    });
   });
 });
 
