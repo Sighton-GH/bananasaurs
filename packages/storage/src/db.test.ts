@@ -1485,3 +1485,84 @@ describe('migration 0101 removes the staged rollout without losing rules, word l
     raw.close();
   });
 });
+
+describe('migrations 0102/0103 add the per-guild task-posts switch defaulting off (ADR 0131)', () => {
+  const GUILD_ONE = '111111111111111111';
+  const GUILD_TWO = '222222222222222222';
+
+  /** The same journal-prefix folder the 0101 test above builds; see its comment. */
+  const migrationsFolderUpTo = (lastIdx: number): string => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-posts-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const entries = journal.entries.filter((e) => e.idx <= lastIdx);
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries) {
+      fs.copyFileSync(
+        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+        path.join(dir, `${entry.tag}.sql`),
+      );
+    }
+    return dir;
+  };
+
+  /** The journal idx of `0101_automod_cleanup`, the migration before the switch. */
+  const BEFORE_SWITCH_IDX = (() => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: { idx: number; tag: string }[] };
+    const entry = journal.entries.find((e) => e.tag === '0101_automod_cleanup');
+    if (entry === undefined) throw new Error('0101_automod_cleanup is not in the journal');
+    return entry.idx;
+  })();
+
+  it('existing guilds read as off after the upgrade, and anything but 0/1 is refused', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    runMigrations(raw, db, migrationsFolderUpTo(BEFORE_SWITCH_IDX));
+
+    // Seeded against the pre-switch shape: no `task_posts_enabled` column yet.
+    for (const guildId of [GUILD_ONE, GUILD_TWO]) {
+      raw
+        .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+        .run(guildId);
+    }
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // Existing installs read as off, as before (ADR 0131 consequences).
+    expect(
+      raw.prepare(`SELECT guild_id, task_posts_enabled FROM guilds ORDER BY guild_id`).all(),
+    ).toEqual([
+      { guild_id: GUILD_ONE, task_posts_enabled: 0 },
+      { guild_id: GUILD_TWO, task_posts_enabled: 0 },
+    ]);
+    // The 0103 CHECK, not just the 0102 default: a 2 is refused on write…
+    expect(() =>
+      raw.prepare(`UPDATE guilds SET task_posts_enabled = 2 WHERE guild_id = ?`).run(GUILD_ONE),
+    ).toThrow(/CHECK constraint failed: guilds_task_posts_enabled_bool/);
+    // …and on insert.
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO guilds (guild_id, name, task_posts_enabled, created_at, updated_at)
+           VALUES ('333333333333333333', 'h', 2, 0, 0)`,
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed: guilds_task_posts_enabled_bool/);
+    // While 0 and 1 both write fine.
+    for (const value of [0, 1]) {
+      raw.prepare(`UPDATE guilds SET task_posts_enabled = ? WHERE guild_id = ?`).run(value, GUILD_ONE);
+    }
+    expect(raw.pragma('foreign_key_check')).toEqual([]);
+
+    raw.close();
+  });
+});
