@@ -63,6 +63,7 @@ export * as instanceSettingsRepo from './repos/instance-settings.js';
 export * as modelCallsRepo from './repos/model-calls.js';
 export * as searchKeysRepo from './repos/search-keys.js';
 export * as traceRepo from './repos/traces.js';
+export * as runRepo from './repos/runs.js';
 export * as conversationRepo from './repos/conversations.js';
 export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';

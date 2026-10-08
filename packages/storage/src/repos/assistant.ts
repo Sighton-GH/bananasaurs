@@ -33,6 +33,10 @@ import {
 } from '../schema.js';
 import { forgetAuthor } from './conversations.js';
 import { deleteTracesForConversations, deleteTracesForUser } from './traces.js';
+import {
+  deleteRunsForConversations as deleteRunsForConvs,
+  deleteRunsForUser as deleteRunsForMember,
+} from './runs.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -1303,7 +1307,9 @@ export const setMemoryOptOut = (
  *
  * A run's trace also carries the other side of the conversation, so forgetting
  * deletes the diagnostic traces of every conversation the member took part
- * in — not just the runs stored under their own user id.
+ * in — not just the runs stored under their own user id. The run ledger
+ * (ADR 0129 §6) follows the same two deletes: its rows hold metadata only,
+ * but they still name the member's runs.
  */
 export const forgetMember = (scope: GuildScope, userId: string, now: number): number => {
   const removed = write(scope, ({ db }) => {
@@ -1334,5 +1340,7 @@ export const forgetMember = (scope: GuildScope, userId: string, now: number): nu
   forgetAuthor(scope, userId);
   deleteTracesForUser(scope, userId);
   deleteTracesForConversations(scope, conversationIds);
+  deleteRunsForMember(scope, userId);
+  deleteRunsForConvs(scope, conversationIds);
   return removed;
 };

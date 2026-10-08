@@ -10,6 +10,7 @@ import {
   assistantRepo,
   conversationRepo,
   effectRepo,
+  runRepo,
   traceRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
@@ -33,11 +34,15 @@ export const conversationPruneHandler = (
   kind: JOB_KINDS.conversationPrune,
   payload: conversationPrunePayload,
   run() {
+    const now = deps.now();
+    // ADR 0129 §6: runs with no conversation prune at 30 days regardless of
+    // the conversation retention below — including keep-forever.
+    runRepo.pruneOrphanRuns(scope, now - 30 * 86_400_000);
     const days = assistantRepo.getConversationRetention(scope);
     if (days === null) return;
-    const now = deps.now();
     const { conversations, ids } = conversationRepo.pruneOlderThan(scope, now - days * 86_400_000);
     traceRepo.deleteTracesForConversations(scope, ids);
+    runRepo.deleteRunsForConversations(scope, ids);
     if (conversations === 0) return;
     effectRepo.recordAudit(scope, {
       at: now,

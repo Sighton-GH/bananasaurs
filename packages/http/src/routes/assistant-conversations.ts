@@ -6,7 +6,7 @@ import {
   renderSummary,
   type AssistantTrace,
 } from '@bananasaurs/core';
-import { assistantRepo, conversationRepo, traceRepo } from '@bananasaurs/storage';
+import { assistantRepo, conversationRepo, runRepo, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -232,6 +232,8 @@ export const registerAssistantConversationRoutes = (
     if (conversation === undefined) return reply.status(404).send({ error: 'not-found' });
     conversationRepo.deleteConversation(session.scope, request.params.id);
     const traces = traceRepo.deleteTracesForConversations(session.scope, [request.params.id]);
+    // ADR 0129 §6: the run ledger follows the conversation.
+    runRepo.deleteRunsForConversations(session.scope, [request.params.id]);
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'assistant_conversation.deleted',
