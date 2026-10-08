@@ -428,7 +428,6 @@ export class OpenAiCompatibleProvider implements TextProvider {
       text,
       model: parsed.data.model ?? request.model,
       ...(finishReason ? { finishReason: finishReason.slice(0, 40) } : {}),
-
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
       ...(upstream === undefined ? {} : { upstream: upstream.slice(0, 60) }),
       ...(usage

@@ -451,7 +451,6 @@ export const assistantInvokeHandler = (deps: {
           scope: deps.conversations.scope,
           guildId: deps.guildId,
           runId: payload.invocationId,
-
           now: deps.now,
           logger: deps.logger,
         });
@@ -463,7 +462,6 @@ export const assistantInvokeHandler = (deps: {
             runId: payload.invocationId,
             err,
           }),
-
           'assistant run ledger write failed',
         );
         return NOOP_RUN_RECORDER;
@@ -1126,41 +1124,14 @@ export const assistantInvokeHandler = (deps: {
           }
           return undefined;
         };
-        const codeOf = (value: unknown): string | undefined => {
-          const attempts = attemptsOf(value);
-          const failed = [...attempts]
-            .reverse()
-            .find((attempt) => attempt.outcome !== 'ok' && attempt.outcome !== 'skipped');
-          if (failed?.code !== undefined) return failed.code;
-          if (attempts.some((attempt) => attempt.outcome === 'skipped')) {
-            return traceFailureCode({
-              traceId: 'failure',
-              at: 0,
-              userId: '',
-              behaviourId: '',
-              command: '',
-              source: 'mention',
-              question: '',
-              outcome: 'failed',
-              durationMs: 0,
-              attempts,
-              sections: [],
-              toolCalls: [],
-              usage: {},
-              guard: { removed: [] },
-              timeline: [],
-              discordMessageIds: [],
-              sources: [],
-              ...(value instanceof ChainFailedError
-                ? { error: { kind: value.kind, message: value.summary } }
-                : {}),
-              flags: [],
-            });
-          }
-          if (value instanceof ChainFailedError) return value.code;
-          return undefined;
-        };
-
+        // ADR 0129: the same failure code History and the transcript show.
+        const codeOf = (value: unknown): string | undefined =>
+          traceFailureCode({
+            attempts: attemptsOf(value),
+            ...(value instanceof ChainFailedError
+              ? { error: { kind: value.kind, message: value.summary } }
+              : {}),
+          }) ?? (value instanceof ChainFailedError ? value.code : undefined);
         /** ADR 0129 §1: one failed trace per job attempt, for any error. Skipped when the id exists. */
         const insertFailureTrace = (
           err: unknown,

@@ -148,7 +148,15 @@ export interface TraceSummary {
   readonly totalTokens: number | null;
 }
 
-export const traceFailureCode = (trace: AssistantTrace): string | undefined => {
+/**
+ * ADR 0129: the one "why did this fail" code shared by History, the
+ * transcript, the job's log line and the log channel — the last failed
+ * attempt's code, else the last skipped attempt's code (a local or daily
+ * limit), else the trace's error kind.
+ */
+export const traceFailureCode = (
+  trace: Pick<AssistantTrace, 'attempts' | 'error'>,
+): string | undefined => {
   const failed = [...trace.attempts]
     .reverse()
     .find(

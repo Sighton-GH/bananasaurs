@@ -1078,7 +1078,6 @@ const finishEntry = async (deps: {
       ...(deps.response.upstream === undefined
         ? {}
         : { upstream: deps.response.upstream.slice(0, 60) }),
-
       ...(attemptCost === undefined ? {} : { costUsd: attemptCost }),
     });
   };
@@ -1179,6 +1178,35 @@ const finishEntry = async (deps: {
         protectedText: outer.protectedText,
         modelIds: outer.modelIds,
       });
+      // ADR 0129 §6/§8: the retry's ledger result matches the trace — ok when
+      // its answer is used (clean, or replaced by the prompt-leak text), and
+      // a failed `provider-empty-answer` when the entry fails below, so model
+      // health never counts a guard-emptied answer as a success.
+      const retryUsed = second.ok || second.reason === 'prompt-leak';
+      outer.recorder.event({
+        kind: 'model-result',
+        provider: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+        ok: retryUsed,
+        ms: Math.max(0, outer.now() - retryStarted),
+        ...(retryUsed ? {} : { code: 'provider-empty-answer' }),
+        ...(retry.usage?.promptTokens === undefined
+          ? {}
+          : { promptTokens: retry.usage.promptTokens }),
+        ...(retry.usage?.completionTokens === undefined
+          ? {}
+          : { completionTokens: retry.usage.completionTokens }),
+        ...(retry.usage?.thinkingTokens === undefined
+          ? {}
+          : { reasoningTokens: retry.usage.thinkingTokens }),
+        ...(retry.usage?.costUsd === undefined ? {} : { costUsd: retry.usage.costUsd }),
+        ...(retry.finishReason === undefined
+          ? {}
+          : { finishReason: retry.finishReason.slice(0, 40) }),
+        ...(retry.upstream === undefined ? {} : { upstream: retry.upstream.slice(0, 60) }),
+        toolCalls: retry.toolCalls?.length ?? 0,
+      });
       if (second.ok) {
         okAttempt(retry.usage?.costUsd);
         recordGuard(second.removed);
@@ -1196,30 +1224,6 @@ const finishEntry = async (deps: {
           guard: { removed: [...guarded.removed, ...second.removed] },
         };
       }
-      outer.recorder.event({
-        kind: 'model-result',
-        provider: deps.entry.providerId,
-        model: deps.entry.model,
-        keyId: deps.entry.keyId,
-        ok: false,
-        ms: Math.max(0, outer.now() - retryStarted),
-        code: 'provider-empty-answer',
-        ...(retry.usage?.promptTokens === undefined
-          ? {}
-          : { promptTokens: retry.usage.promptTokens }),
-        ...(retry.usage?.completionTokens === undefined
-          ? {}
-          : { completionTokens: retry.usage.completionTokens }),
-        ...(retry.usage?.thinkingTokens === undefined
-          ? {}
-          : { reasoningTokens: retry.usage.thinkingTokens }),
-        ...(retry.usage?.costUsd === undefined ? {} : { costUsd: retry.usage.costUsd }),
-        ...(retry.finishReason === undefined
-          ? {}
-          : { finishReason: retry.finishReason.slice(0, 40) }),
-        ...(retry.upstream === undefined ? {} : { upstream: retry.upstream.slice(0, 60) }),
-        toolCalls: retry.toolCalls?.length ?? 0,
-      });
       if (second.reason === 'prompt-leak') {
         okAttempt(retry.usage?.costUsd);
         recordGuard(second.removed, 'prompt-leak');
