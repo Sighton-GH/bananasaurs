@@ -259,7 +259,12 @@ describe('conversationPruneHandler', () => {
       source: 'mention',
       queuedAt: NOW - 31 * DAY_MS,
     });
-    runRepo.updateRun(scope, 'orphan-old', { updatedAt: NOW - 31 * DAY_MS });
+     runRepo.updateRun(scope, 'orphan-old', { updatedAt: NOW - 31 * DAY_MS });
+     traceRepo.insertTrace(
+       scope,
+       trace({ traceId: 'orphan-trace-old', at: NOW - 31 * DAY_MS, conversationId: undefined }),
+     );
+
     runRepo.ensureRun(scope, {
       runId: 'orphan-new',
       userId: MEMBER,
@@ -274,7 +279,14 @@ describe('conversationPruneHandler', () => {
       { ...context },
     );
 
-    expect(runRepo.getRun(scope, 'orphan-old')).toBeUndefined();
-    expect(runRepo.getRun(scope, 'orphan-new')).toBeDefined();
+     expect(runRepo.getRun(scope, 'orphan-old')).toMatchObject({
+       state: 'failed',
+       stage: 'done',
+       errorCode: 'stalled',
+       finishedAt: NOW,
+     });
+     expect(runRepo.getRun(scope, 'orphan-new')).toBeDefined();
+     expect(traceRepo.getTrace(scope, 'orphan-trace-old')).toBeUndefined();
+
   });
 });

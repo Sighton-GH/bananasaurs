@@ -14,7 +14,9 @@ import {
   getTrace,
   getTracesByIds,
   insertTrace,
-  listTraces,
+   listTraces,
+   pruneOrphanTraces,
+
 } from './traces.js';
 
 const GUILD_A = parseGuildId('111111111111111111');
@@ -155,6 +157,21 @@ describe('insertTrace', () => {
     expect(stored).toBeDefined();
     expect(new TextEncoder().encode(JSON.stringify(stored)).length).toBeLessThanOrEqual(200_000);
     expect(stored?.sections[0]?.text.endsWith('… [truncated]')).toBe(true);
+  });
+});
+
+describe('pruneOrphanTraces', () => {
+  it('deletes only old orphan traces in the scoped guild', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    insertTrace(scope, trace({ traceId: 'a-old', at: 1_000, conversationId: undefined }));
+    insertTrace(scope, trace({ traceId: 'a-new', at: 9_000, conversationId: undefined }));
+    insertTrace(scope, trace({ traceId: 'a-linked', at: 1_000, conversationId: 'conv-1' }));
+    insertTrace(t.scopes.forGuild(GUILD_B), trace({ traceId: 'b-old', at: 1_000 }));
+    expect(pruneOrphanTraces(scope, 5_000)).toBe(1);
+    expect(getTrace(scope, 'a-old')).toBeUndefined();
+    expect(getTrace(scope, 'a-new')).toBeDefined();
+    expect(getTrace(scope, 'a-linked')).toBeDefined();
+    expect(getTrace(t.scopes.forGuild(GUILD_B), 'b-old')).toBeDefined();
   });
 });
 

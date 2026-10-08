@@ -11,7 +11,9 @@ import {
   listRunEvents,
   listRuns,
   modelResultsSince,
-  pruneOrphanRuns,
+   pruneOrphanRuns,
+   failStaleRuns,
+
   updateRun,
 } from './runs.js';
 
@@ -203,6 +205,23 @@ describe('deleteRunsForConversations', () => {
     expect(getRun(scope, 'run-2')).toBeDefined();
     expect(listRunEvents(scope, 'run-1', 0, 10)).toEqual([]);
     expect(deleteRunsForConversations(scope, [])).toBe(0);
+  });
+});
+
+describe('failStaleRuns', () => {
+  it('fails old active runs only in the scoped guild', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed(GUILD_A, { runId: 'old', queuedAt: 1_000 });
+    seed(GUILD_A, { runId: 'new', queuedAt: 9_000 });
+    seed(GUILD_B, { runId: 'other', queuedAt: 1_000 });
+    updateRun(scope, 'old', { state: 'running', stage: 'calling-model', updatedAt: 1_000 });
+    updateRun(scope, 'new', { state: 'retry-wait', stage: 'retry-wait', updatedAt: 9_000 });
+    expect(failStaleRuns(scope, 5_000, 10_000)).toBe(1);
+    expect(getRun(scope, 'old')).toMatchObject({
+      state: 'failed', stage: 'done', errorCode: 'stalled', finishedAt: 10_000,
+    });
+    expect(getRun(scope, 'new')?.state).toBe('retry-wait');
+    expect(getRun(t.scopes.forGuild(GUILD_B), 'other')?.state).toBe('queued');
   });
 });
 

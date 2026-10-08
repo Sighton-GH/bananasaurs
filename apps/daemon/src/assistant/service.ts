@@ -64,7 +64,7 @@ import {
   type UpcomingEventItem,
 } from './tools.js';
 import { formatChannelLines } from './channel-context.js';
-import { createRunRecorder, NOOP_RUN_RECORDER } from './run-recorder.js';
+import { createRunRecorder, NOOP_RUN_RECORDER, type RunRecorder } from './run-recorder.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
@@ -1638,14 +1638,23 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       const traceId = `try_${randomUUID()}`;
       // ADR 0129 §6: Try-it runs the same ledger as a Discord request, under
       // the user turn id with `source: 'dashboard-test'`.
-      runRepo.ensureRun(scope, {
-        runId: userTurnId,
-        userId: botUserId,
-        behaviourId: behaviour.id,
-        source: 'dashboard-test',
-        queuedAt: started,
-      });
-      const recorder = createRunRecorder({ scope, runId: userTurnId, now, logger });
+       let recorder: RunRecorder = NOOP_RUN_RECORDER;
+       try {
+         runRepo.ensureRun(scope, {
+           runId: userTurnId,
+           userId: botUserId,
+           behaviourId: behaviour.id,
+           source: 'dashboard-test',
+           queuedAt: started,
+         });
+         recorder = createRunRecorder({ scope, guildId: scope.guildId, runId: userTurnId, now, logger });
+       } catch (err) {
+         logger.warn(
+           safeLogFields({ component: 'assistant', guildId: scope.guildId, runId: userTurnId, err }),
+           'assistant run ledger write failed',
+         );
+       }
+
       recorder.event({ kind: 'queued', via: 'dashboard' });
       recorder.event({ kind: 'started', attempt: 1, queueWaitMs: 0 });
       let result: AssistantInvocationResult;

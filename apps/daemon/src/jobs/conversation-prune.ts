@@ -37,7 +37,10 @@ export const conversationPruneHandler = (
     const now = deps.now();
     // ADR 0129 §6: runs with no conversation prune at 30 days regardless of
     // the conversation retention below — including keep-forever.
-    runRepo.pruneOrphanRuns(scope, now - 30 * 86_400_000);
+     runRepo.failStaleRuns(scope, now - 60 * 60_000, now);
+     runRepo.pruneOrphanRuns(scope, now - 30 * 86_400_000);
+     traceRepo.pruneOrphanTraces(scope, now - 30 * 86_400_000);
+
     const days = assistantRepo.getConversationRetention(scope);
     if (days === null) return;
     const { conversations, ids } = conversationRepo.pruneOlderThan(scope, now - days * 86_400_000);

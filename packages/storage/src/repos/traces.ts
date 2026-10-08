@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
 import {
   assistantTraceSchema,
   capTrace,
@@ -175,6 +175,22 @@ export const deleteTracesForUser = (scope: GuildScope, userId: string): number =
  * Removes every trace of the named conversations in this guild (the prune
  * job calls this alongside the conversation delete). Returns the row count.
  */
+export const pruneOrphanTraces = (scope: GuildScope, olderThan: number): number =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .delete(assistantTraces)
+        .where(
+          scope.only(
+            assistantTraces,
+            isNull(assistantTraces.conversationId),
+            lt(assistantTraces.at, olderThan),
+          ),
+        )
+        .run().changes,
+  );
+
 export const deleteTracesForConversations = (scope: GuildScope, ids: readonly string[]): number => {
   if (ids.length === 0) return 0;
   return write(

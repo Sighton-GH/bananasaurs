@@ -333,6 +333,23 @@ export const deleteRunsForUser = (scope: GuildScope, userId: string): number =>
  * days). Runs tied to a conversation follow that conversation's own
  * retention instead. Returns the run count.
  */
+export const failStaleRuns = (scope: GuildScope, olderThan: number, now: number): number =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .update(assistantRuns)
+        .set({ state: 'failed', stage: 'done', errorCode: 'stalled', finishedAt: now, updatedAt: now })
+        .where(
+          scope.only(
+            assistantRuns,
+            inArray(assistantRuns.state, [...ACTIVE_RUN_STATES]),
+            lt(assistantRuns.updatedAt, olderThan),
+          ),
+        )
+        .run().changes,
+  );
+
 export const pruneOrphanRuns = (scope: GuildScope, olderThan: number): number =>
   write(
     scope,
