@@ -1325,6 +1325,33 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.sent).toHaveLength(0);
   });
 
+  it('(F2a) a delivery retry after Write is turned off closes the run refused with channel-not-writable', async () => {
+    let writeDenied = false;
+    const access: Pick<ChannelAccess, 'check'> = {
+      check: async (purpose) =>
+        purpose === 'write' && writeDenied
+          ? { allowed: false as const, reason: 'not-granted' as const }
+          : { allowed: true as const, grantedBy: 'grant' },
+    };
+    const h = harness(() => ({ ok: true, content: 'answer' }), access);
+    const key = 'inv-retry-wo-ledger';
+    const messageId = '810000000000000067';
+    h.send.mockRejectedValueOnce(new Error('delivery boom'));
+    const first = await h.run(mention({ invocationId: key, messageId }));
+    expect(first.error).toBeInstanceOf(Error);
+    expect(first.cursor).not.toBeNull();
+    expect(h.sent).toHaveLength(0);
+    writeDenied = true;
+    const second = await h.run(mention({ invocationId: key, messageId }), first.cursor);
+    expect(second.error).toBeUndefined();
+    expect(h.sent).toHaveLength(0);
+    expect(runRepo.getRun(scope(), key)).toMatchObject({ state: 'refused' });
+    const finished = runRepo
+      .listRunEvents(scope(), key, 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'refused', code: 'channel-not-writable' });
+  });
+
   it('a mention in a Read-denied channel skips the window and the thread starter, still answers, and flags the trace', async () => {
     const h = harness(
       () => ({ ok: true, content: 'answered without context' }),
