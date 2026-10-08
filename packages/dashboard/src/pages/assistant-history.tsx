@@ -15,6 +15,7 @@ import {
   type UsageResponse,
 } from '../api/traces.js';
 import { formatRate, modelHealthUrl, type ModelHealthResponse } from '../api/model-health.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -36,18 +37,6 @@ const outcomeTone = (outcome: TraceRow['outcome']): 'ok' | 'hold' | 'danger' =>
 
 const durationText = (ms: number): string =>
   ms < 1000 ? `${String(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
-
-/** "12 minutes ago" style freshness, matching the Resources page helper. */
-const relativeTime = (atMs: number, nowMs: number): string => {
-  const diffMs = Math.max(0, nowMs - atMs);
-  const minutes = Math.round(diffMs / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${String(minutes)} minute${minutes === 1 ? '' : 's'} ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${String(hours)} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.round(hours / 24);
-  return `${String(days)} day${days === 1 ? '' : 's'} ago`;
-};
 
 /** 403 carries `no-grant`; the sentence names the plain meaning, the id second. */
 const historyError = (err: unknown): Error => {

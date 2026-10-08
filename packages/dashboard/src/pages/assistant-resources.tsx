@@ -18,6 +18,7 @@ import {
 } from '../api/assistant.js';
 import { useSession, type Session } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { fieldError } from '../api/describe-error.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
@@ -37,18 +38,6 @@ const formatSize = (bytes: number): string => {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${String(bytes)} B`;
-};
-
-/** "12 minutes ago" style freshness, coarse enough that a page left open for a while does not need to re-render to stay accurate. */
-const relativeTime = (atMs: number, nowMs: number): string => {
-  const diffMs = Math.max(0, nowMs - atMs);
-  const minutes = Math.round(diffMs / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${String(minutes)} minute${minutes === 1 ? '' : 's'} ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${String(hours)} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.round(hours / 24);
-  return `${String(days)} day${days === 1 ? '' : 's'} ago`;
 };
 
 type ResourceCacheStatus = 'ready' | 'needs-attention' | 'off';

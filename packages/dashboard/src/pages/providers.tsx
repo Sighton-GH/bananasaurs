@@ -37,6 +37,7 @@ import {
 } from '../api/model-health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
@@ -147,18 +148,6 @@ interface TestOutcome {
     readonly netCode?: string;
   };
 }
-
-/** "12 minutes ago" style freshness, matching the Resources page helper. */
-const relativeTime = (atMs: number, nowMs: number): string => {
-  const diffMs = Math.max(0, nowMs - atMs);
-  const minutes = Math.round(diffMs / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${String(minutes)} minute${minutes === 1 ? '' : 's'} ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${String(hours)} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.round(hours / 24);
-  return `${String(days)} day${days === 1 ? '' : 's'} ago`;
-};
 
 /** Model order: an OrderedList of key + model rows with a status pill and a Test button each. */
 function ModelOrderSection({
