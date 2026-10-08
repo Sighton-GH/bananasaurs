@@ -111,6 +111,7 @@ export {
   type McpBulkRolesPort,
   type McpBulkSelector,
 } from './tools/bulk-roles.js';
+export { type McpAccessPort } from './tools/guide.js';
 export {
   MCP_SERVER_NAME,
   MCP_SERVER_VERSION,

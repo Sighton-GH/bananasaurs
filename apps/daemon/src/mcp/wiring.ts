@@ -45,6 +45,7 @@ import {
 } from '../channels/access.js';
 import { taskAdminPortFor } from './task-admin-port.js';
 import { canManageTasks, canManageTasksInAny } from './task-access.js';
+import { accessPortFor } from './access-port.js';
 import {
   mcpRoleGatewayFor,
   authorizeRolesMutate,
@@ -7083,6 +7084,7 @@ export const registerMcpRoutes = (
     const server = createMcpServer({
       principal,
       health: healthPortFor(principal, deps),
+      access: accessPortFor(deps),
       archive: archivePortFor(deps, client, discord),
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
