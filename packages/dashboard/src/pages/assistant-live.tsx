@@ -184,6 +184,9 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
     fastMs: 2000,
     slowMs: 15000,
     isFast: (d) => !seenFinished.current && !d.events.some((e) => e.event.kind === 'finished'),
+    // ADR 0129: once the run's `finished` event has been seen, the log stays
+    // on screen with no further requests.
+    isDone: (d) => d.events.some((e) => e.event.kind === 'finished'),
   });
 
   // A new run starts its log from seq 1: drop the previous run's rows

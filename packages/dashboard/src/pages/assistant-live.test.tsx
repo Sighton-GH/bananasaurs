@@ -435,6 +435,46 @@ describe('StepLog', () => {
     expect(screen.getByText('Finished: answered in 1,200 ms')).toBeTruthy();
   });
 
+  it('stops polling once the finished event has been seen (ADR 0129)', async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        calls.push(url);
+        const body = url.includes('after=2') ? { events: [E3] } : { events: [E1, E2] };
+        return Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    renderWithSession(
+      <Router>
+        <StepLog runId="run-1" />
+      </Router>,
+    );
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(calls).toHaveLength(2);
+    expect(screen.getAllByText('finished')).toHaveLength(1);
+
+    // No further requests while the finished log stays on screen.
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(calls).toHaveLength(2);
+    expect(screen.getAllByText('finished')).toHaveLength(1);
+    expect(screen.getByText('Finished: answered in 1,200 ms')).toBeTruthy();
+  });
+
   it('starts over when the viewed run changes', async () => {
     vi.useFakeTimers();
     const at = 1_790_000_000_000;

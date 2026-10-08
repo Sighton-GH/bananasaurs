@@ -24,7 +24,8 @@ const visibilitySource = (): VisibilitySource | undefined =>
 /**
  * Loads like `useResource`, then polls: every `fastMs` while `isFast(data)`,
  * else every `slowMs` (ADR 0129 §7: 2 s in flight, 15 s otherwise, paused
- * while the tab is hidden).
+ * while the tab is hidden). When `isDone(data)` turns true, polling stops
+ * and the last data stays rendered.
  *
  * After the first load, a poll replaces the data without returning to
  * `loading`, and a failed poll keeps the data and sets `stale`. `reload()`
@@ -36,7 +37,12 @@ const visibilitySource = (): VisibilitySource | undefined =>
 export function useLiveResource<T>(
   request: string,
   load: () => Promise<T>,
-  opts: { readonly fastMs: number; readonly slowMs: number; readonly isFast: (data: T) => boolean },
+  opts: {
+    readonly fastMs: number;
+    readonly slowMs: number;
+    readonly isFast: (data: T) => boolean;
+    readonly isDone?: (data: T) => boolean;
+  },
 ): UseLiveResource<T> {
   const [generation, setGeneration] = useState(0);
   const [resource, setResource] = useState<Resource<T>>({ state: 'loading' });
@@ -61,7 +67,9 @@ export function useLiveResource<T>(
     function schedule(): void {
       clearTimer();
       if (cancelled || latest === undefined) return;
-      const { fastMs, slowMs, isFast } = optsRef.current;
+      const { fastMs, slowMs, isFast, isDone } = optsRef.current;
+      // ADR 0129: a finished step log stays on screen with no further requests.
+      if (isDone !== undefined && isDone(latest)) return;
       timer = setTimeout(tick, isFast(latest) ? fastMs : slowMs);
     }
 
@@ -93,7 +101,9 @@ export function useLiveResource<T>(
         return;
       }
       // Back in view: poll at once when data exists, then resume the cadence.
+      // A done resource stays put.
       if (latest !== undefined) {
+        if (optsRef.current.isDone !== undefined && optsRef.current.isDone(latest)) return;
         clearTimer();
         tick();
       }
