@@ -45,10 +45,7 @@ const elapsedText = (since: number, now: number): string => {
 /** The active-runs poll both live components share, filtered to one conversation when set. */
 function useActiveRuns(conversationId?: string) {
   const session = useSession();
-  const load = useCallback(
-    () => session.read<RunListResponse>(activeRunsUrl()),
-    [session],
-  );
+  const load = useCallback(() => session.read<RunListResponse>(activeRunsUrl()), [session]);
   const live = useLiveResource<RunListResponse>('active runs', load, {
     fastMs: 2000,
     slowMs: 15000,
@@ -167,9 +164,7 @@ export function PendingTurn(props: {
 }
 
 const timedMs = (row: RunEventRow): number | undefined =>
-  row.event.kind === 'model-result' || row.event.kind === 'tool-result'
-    ? row.event.ms
-    : undefined;
+  row.event.kind === 'model-result' || row.event.kind === 'tool-result' ? row.event.ms : undefined;
 
 export function StepLog(props: { readonly runId: string }): JSX.Element {
   const session = useSession();
@@ -185,8 +180,7 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
   const live = useLiveResource<RunEventsResponse>('step log', load, {
     fastMs: 2000,
     slowMs: 15000,
-    isFast: (d) =>
-      !seenFinished.current && !d.events.some((e) => e.event.kind === 'finished'),
+    isFast: (d) => !seenFinished.current && !d.events.some((e) => e.event.kind === 'finished'),
   });
 
   // Appends only events past the last seen seq, so a repeated poll never

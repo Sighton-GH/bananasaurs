@@ -103,17 +103,42 @@ describe('describeRunEvent', () => {
         },
         text: 'Skipped old-model: disabled',
       },
-      { event: { kind: 'tool-call', round: 1, tool: 'search_sources' }, text: 'Calling tool search_sources' },
       {
-        event: { kind: 'tool-result', round: 1, tool: 'search_sources', ok: true, ms: 15, resultChars: 42 },
+        event: { kind: 'tool-call', round: 1, tool: 'search_sources' },
+        text: 'Calling tool search_sources',
+      },
+      {
+        event: {
+          kind: 'tool-result',
+          round: 1,
+          tool: 'search_sources',
+          ok: true,
+          ms: 15,
+          resultChars: 42,
+        },
         text: 'Tool search_sources ok, 42 chars, 15 ms',
       },
       {
-        event: { kind: 'tool-result', round: 2, tool: 'read_chunk', ok: false, ms: 5, resultChars: 0 },
+        event: {
+          kind: 'tool-result',
+          round: 2,
+          tool: 'read_chunk',
+          ok: false,
+          ms: 5,
+          resultChars: 0,
+        },
         text: 'Tool read_chunk refused: failed',
       },
       {
-        event: { kind: 'tool-result', round: 2, tool: 'read_chunk', ok: false, ms: 5, resultChars: 0, refused: 'unknown handle' },
+        event: {
+          kind: 'tool-result',
+          round: 2,
+          tool: 'read_chunk',
+          ok: false,
+          ms: 5,
+          resultChars: 0,
+          refused: 'unknown handle',
+        },
         text: 'Tool read_chunk refused: unknown handle',
       },
       { event: { kind: 'guard', removed: 1 }, text: 'Output guard removed 1 item(s)' },
@@ -169,8 +194,7 @@ const RUN = {
 function stubRunsOnce() {
   const calls: string[] = [];
   const mock = vi.fn((input: RequestInfo | URL) => {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     calls.push(url);
     const body = calls.length === 1 ? { runs: [RUN] } : { runs: [] };
     return Promise.resolve(
@@ -309,7 +333,11 @@ describe('StepLog', () => {
 
   it('says plainly when the run stored no step log', async () => {
     stubFetch([
-      { url: '/api/assistant/runs/run-1/events?after=0', status: 404, body: { error: 'not-found' } },
+      {
+        url: '/api/assistant/runs/run-1/events?after=0',
+        status: 404,
+        body: { error: 'not-found' },
+      },
     ]);
     renderWithSession(
       <Router>

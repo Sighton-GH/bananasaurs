@@ -7,6 +7,21 @@ export interface UseLiveResource<T> extends UseResource<T> {
 }
 
 /**
+ * The whole of the Visibility API the poll loop needs. `tsconfig.all.json`
+ * type-checks `*.ts` without the DOM lib, so this file cannot name
+ * `document` directly; the hook reads it through this narrow structural type
+ * instead (the dashboard build still passes the real document).
+ */
+interface VisibilitySource {
+  readonly visibilityState: string;
+  addEventListener(type: 'visibilitychange', listener: () => void): void;
+  removeEventListener(type: 'visibilitychange', listener: () => void): void;
+}
+
+const visibilitySource = (): VisibilitySource | undefined =>
+  (globalThis as { readonly document?: VisibilitySource }).document;
+
+/**
  * Loads like `useResource`, then polls: every `fastMs` while `isFast(data)`,
  * else every `slowMs` (ADR 0129 §7: 2 s in flight, 15 s otherwise, paused
  * while the tab is hidden).
@@ -52,7 +67,7 @@ export function useLiveResource<T>(
 
     function tick(): void {
       timer = undefined;
-      if (cancelled || document.visibilityState === 'hidden') return;
+      if (cancelled || visibilitySource()?.visibilityState === 'hidden') return;
       load().then(
         (data) => {
           if (cancelled) return;
@@ -73,7 +88,7 @@ export function useLiveResource<T>(
 
     const onVisibility = () => {
       if (cancelled) return;
-      if (document.visibilityState === 'hidden') {
+      if (visibilitySource()?.visibilityState === 'hidden') {
         clearTimer();
         return;
       }
@@ -99,11 +114,11 @@ export function useLiveResource<T>(
         setResource({ state: 'error', request, message, error: err, retry: reload });
       },
     );
-    document.addEventListener('visibilitychange', onVisibility);
+    visibilitySource()?.addEventListener('visibilitychange', onVisibility);
     return () => {
       cancelled = true;
       clearTimer();
-      document.removeEventListener('visibilitychange', onVisibility);
+      visibilitySource()?.removeEventListener('visibilitychange', onVisibility);
     };
     // `load` is expected to be stable (wrap it in useCallback at the call site).
   }, [generation, load, request, reload]);
