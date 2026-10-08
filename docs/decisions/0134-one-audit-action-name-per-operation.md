@@ -17,7 +17,9 @@ Audit page and the Overview list only display them), so changing them breaks no 
 2. The CLI's existing names are canonical. They are the older set and already group by family (`archive.*`,
    `automod.*`, `mcp.*`, `account.<thing>.<verb>`).
 3. The names live once, in `packages/core/src/ops/audit-actions.ts`. CLI commands and dashboard routes import them;
-   neither writes the string literal. Tests on both sides assert against the same constant.
+   neither writes the string literal. Tests that pinned a renamed name assert against the constant; tests that pin
+   an unchanged name as a literal stay, since they also catch an accidental change to the constant.
+   `audit-actions.test.ts` fails if any retired name comes back as a value.
 4. A dashboard-only action whose family was renamed follows the family so a prefix search finds it:
    `archive_backfill.enqueued` → `archive.backfill_enqueued`, `account.capability_revoked` →
    `account.capability.revoked`, `account.password_revealed` → `account.password.revealed`.
@@ -70,6 +72,9 @@ Audit page and the Overview list only display them), so changing them breaks no 
 | `account.password_revealed` | `account.password.revealed` |
 
 ## Consequences
+
+The daemon's startup owner sync (ADR 0124), which grants the owner each guild as a system actor, also wrote
+`account.guild_granted`; it now writes `account.guild.granted` from the same constant.
 
 A new operation added to both surfaces gets one constant and both sides import it. An audit search for any name in
 the right-hand column finds every row written from this release on, from either surface; for rows written before
