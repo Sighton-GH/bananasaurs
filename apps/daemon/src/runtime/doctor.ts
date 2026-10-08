@@ -242,7 +242,9 @@ export interface DoctorModelHealth {
     readonly persistent: readonly {
       readonly model: string;
       readonly keyId: string;
+      readonly keyLabel?: string;
       readonly code: string;
+
       readonly count: number;
       readonly since: number;
     }[];
@@ -520,7 +522,7 @@ export function formatDoctorReport(report: DoctorReport): string {
       for (const guild of report.modelHealth.guilds) {
         for (const entry of guild.persistent) {
           lines.push(
-            `  AI model ${entry.model} (key ${entry.keyId}) failed ${String(entry.count)} times in a row with ${entry.code} since ${new Date(entry.since).toISOString()}; remove or replace it in Providers → Model order.`,
+            `  AI model ${entry.model} (key ${entry.keyLabel ?? entry.keyId}) failed ${String(entry.count)} times in a row with ${entry.code} since ${new Date(entry.since).toISOString()}; remove or replace it in Providers → Model order.`,
           );
         }
       }

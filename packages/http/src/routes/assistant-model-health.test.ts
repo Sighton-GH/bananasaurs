@@ -85,6 +85,39 @@ beforeEach(async () => {
     readonly: false,
     portsFor: (scope) => testPortsFor(scope, () => clock),
     instance: testInstanceFor(t.scopes.instance(), () => clock),
+    assistantProviderConfig: {
+      status: () => ({
+        provider: 'off',
+        enabled: false,
+        modelConfigured: false,
+        keyConfigured: false,
+        keyReadable: false,
+        costClass: 'unknown',
+        secretSource: 'missing',
+      }),
+      save: () => undefined,
+      chain: () => [
+        {
+          providerId: 'openrouter',
+          model: 'model-a',
+          keyId: 'key-1',
+          keyLabel: 'Primary',
+          provider: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+      keys: () => [
+        {
+          keyId: 'key-1',
+          provider: 'openrouter',
+          label: 'Primary',
+          costClass: 'free',
+          enabled: true,
+        },
+      ],
+    },
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'guild', now: clock });
   accountRepo.createAccount(t.scopes.instance(), {
@@ -132,6 +165,25 @@ describe('assistant model health route', () => {
     expect(body.models[0]).toMatchObject({
       model: 'model-a',
       persistent: { code: 'provider-bad-model', count: 3 },
+    });
+  });
+
+  it('marks a removed model as outside the current chain', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    seedResult('run-1', clock - 1_000, { model: 'removed', keyId: 'key-1' });
+    seedResult('run-2', clock - 2_000, { model: 'removed', keyId: 'key-1' });
+    seedResult('run-3', clock - 3_000, { model: 'removed', keyId: 'key-1' });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/model-health',
+      headers: { cookie },
+    });
+    expect(
+      response.json<{ models: { inChain: boolean; keyLabel?: string }[] }>().models[0],
+    ).toMatchObject({
+      inChain: false,
+      keyLabel: 'Primary',
     });
   });
 

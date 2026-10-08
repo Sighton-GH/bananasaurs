@@ -23,9 +23,9 @@ afterEach(() => {
 
 const recorderFor = (runId: string, warn = vi.fn()) =>
   createRunRecorder({
-     scope: t.scopes.forGuild(GUILD),
-     guildId: GUILD,
-     runId,
+    scope: t.scopes.forGuild(GUILD),
+    guildId: GUILD,
+    runId,
 
     now: () => NOW,
     logger: { warn },

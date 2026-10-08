@@ -339,7 +339,13 @@ export const failStaleRuns = (scope: GuildScope, olderThan: number, now: number)
     ({ db }) =>
       db
         .update(assistantRuns)
-        .set({ state: 'failed', stage: 'done', errorCode: 'stalled', finishedAt: now, updatedAt: now })
+        .set({
+          state: 'failed',
+          stage: 'done',
+          errorCode: 'stalled',
+          finishedAt: now,
+          updatedAt: now,
+        })
         .where(
           scope.only(
             assistantRuns,

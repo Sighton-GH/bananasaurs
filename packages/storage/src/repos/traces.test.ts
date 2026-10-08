@@ -14,9 +14,8 @@ import {
   getTrace,
   getTracesByIds,
   insertTrace,
-   listTraces,
-   pruneOrphanTraces,
-
+  listTraces,
+  pruneOrphanTraces,
 } from './traces.js';
 
 const GUILD_A = parseGuildId('111111111111111111');

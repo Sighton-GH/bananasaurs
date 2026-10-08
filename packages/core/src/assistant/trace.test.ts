@@ -4,6 +4,7 @@ import {
   capTrace,
   estimateTokens,
   summaryOfTrace,
+  traceFailureCode,
   type AssistantTrace,
 } from './trace.js';
 
@@ -235,6 +236,32 @@ describe('assistantTraceSchema', () => {
       ],
     });
     expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)))).toEqual(trace);
+  });
+});
+
+describe('traceFailureCode', () => {
+  it('prefers failed, skipped, then trace error codes', () => {
+    expect(
+      traceFailureCode(
+        fixtureTrace({
+          attempts: [
+            { provider: 'p', model: 'm', outcome: 'error', code: 'first', ms: 1 },
+            { provider: 'p', model: 'm', outcome: 'skipped', code: 'skip', ms: 1 },
+            { provider: 'p', model: 'm', outcome: 'error', code: 'last', ms: 1 },
+          ] as AssistantTrace['attempts'],
+        }),
+      ),
+    ).toBe('last');
+    expect(
+      traceFailureCode(
+        fixtureTrace({
+          attempts: [{ provider: 'p', model: 'm', outcome: 'skipped', code: 'quota', ms: 1 }],
+        }),
+      ),
+    ).toBe('quota');
+    expect(
+      traceFailureCode(fixtureTrace({ attempts: [], error: { kind: 'internal', message: 'x' } })),
+    ).toBe('internal');
   });
 });
 

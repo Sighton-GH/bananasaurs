@@ -1072,12 +1072,12 @@ const finishEntry = async (deps: {
       ms: outer.entryMs(),
       // ADR 0129 §4: a working answer keeps the same evidence fields, so a
       // later diagnosis sees the finish reason, upstream and cost directly.
-       ...(deps.response.finishReason === undefined
-         ? {}
-         : { finishReason: deps.response.finishReason.slice(0, 40) }),
-       ...(deps.response.upstream === undefined
-         ? {}
-         : { upstream: deps.response.upstream.slice(0, 60) }),
+      ...(deps.response.finishReason === undefined
+        ? {}
+        : { finishReason: deps.response.finishReason.slice(0, 40) }),
+      ...(deps.response.upstream === undefined
+        ? {}
+        : { upstream: deps.response.upstream.slice(0, 60) }),
 
       ...(attemptCost === undefined ? {} : { costUsd: attemptCost }),
     });
@@ -1174,27 +1174,6 @@ const finishEntry = async (deps: {
         thinkingBudget: outer.limits.answerThinking,
       });
       outer.recordUsage(retry.usage);
-      outer.recorder.event({
-        kind: 'model-result',
-        provider: deps.entry.providerId,
-        model: deps.entry.model,
-        keyId: deps.entry.keyId,
-        ok: true,
-        ms: Math.max(0, outer.now() - retryStarted),
-        ...(retry.usage?.promptTokens === undefined
-          ? {}
-          : { promptTokens: retry.usage.promptTokens }),
-        ...(retry.usage?.completionTokens === undefined
-          ? {}
-          : { completionTokens: retry.usage.completionTokens }),
-        ...(retry.usage?.thinkingTokens === undefined
-          ? {}
-          : { reasoningTokens: retry.usage.thinkingTokens }),
-        ...(retry.usage?.costUsd === undefined ? {} : { costUsd: retry.usage.costUsd }),
-        ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
-        ...(retry.upstream === undefined ? {} : { upstream: retry.upstream }),
-        toolCalls: retry.toolCalls?.length ?? 0,
-      });
       const second = guardAnswer({
         text: retry.text,
         protectedText: outer.protectedText,
@@ -1217,6 +1196,30 @@ const finishEntry = async (deps: {
           guard: { removed: [...guarded.removed, ...second.removed] },
         };
       }
+      outer.recorder.event({
+        kind: 'model-result',
+        provider: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+        ok: false,
+        ms: Math.max(0, outer.now() - retryStarted),
+        code: 'provider-empty-answer',
+        ...(retry.usage?.promptTokens === undefined
+          ? {}
+          : { promptTokens: retry.usage.promptTokens }),
+        ...(retry.usage?.completionTokens === undefined
+          ? {}
+          : { completionTokens: retry.usage.completionTokens }),
+        ...(retry.usage?.thinkingTokens === undefined
+          ? {}
+          : { reasoningTokens: retry.usage.thinkingTokens }),
+        ...(retry.usage?.costUsd === undefined ? {} : { costUsd: retry.usage.costUsd }),
+        ...(retry.finishReason === undefined
+          ? {}
+          : { finishReason: retry.finishReason.slice(0, 40) }),
+        ...(retry.upstream === undefined ? {} : { upstream: retry.upstream.slice(0, 60) }),
+        toolCalls: retry.toolCalls?.length ?? 0,
+      });
       if (second.reason === 'prompt-leak') {
         okAttempt(retry.usage?.costUsd);
         recordGuard(second.removed, 'prompt-leak');
@@ -1286,12 +1289,11 @@ const finishEntry = async (deps: {
     code: 'provider-empty-answer',
     ...(deps.response.finishReason === undefined
       ? {}
-       : { finishReason: deps.response.finishReason.slice(0, 40) }),
-     ...(deps.response.upstream === undefined
-       ? {}
-       : { upstream: deps.response.upstream.slice(0, 60) }),
-     ms: outer.entryMs(),
-
+      : { finishReason: deps.response.finishReason.slice(0, 40) }),
+    ...(deps.response.upstream === undefined
+      ? {}
+      : { upstream: deps.response.upstream.slice(0, 60) }),
+    ms: outer.entryMs(),
   });
   // Guard failure on the entry that answered: the loop fails here with the
   // fixed text; the caller maps it to "I couldn't finish that answer".

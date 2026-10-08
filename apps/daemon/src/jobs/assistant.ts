@@ -14,6 +14,7 @@ import {
   totalTokensOf,
   type AssistantInvokePayload,
   type AssistantInvokeCursor,
+  traceFailureCode,
   type AssistantTrace,
   type ChannelAccess,
   type ConversationResolution,
@@ -446,17 +447,22 @@ export const assistantInvokeHandler = (deps: {
           source: payload.source,
           queuedAt: startedAt,
         });
-         return createRunRecorder({
-           scope: deps.conversations.scope,
-           guildId: deps.guildId,
-           runId: payload.invocationId,
+        return createRunRecorder({
+          scope: deps.conversations.scope,
+          guildId: deps.guildId,
+          runId: payload.invocationId,
 
           now: deps.now,
           logger: deps.logger,
         });
       } catch (err) {
         deps.logger.warn(
-           safeLogFields({ component: 'assistant', guildId: deps.guildId, runId: payload.invocationId, err }),
+          safeLogFields({
+            component: 'assistant',
+            guildId: deps.guildId,
+            runId: payload.invocationId,
+            err,
+          }),
 
           'assistant run ledger write failed',
         );
@@ -1122,13 +1128,39 @@ export const assistantInvokeHandler = (deps: {
         };
         const codeOf = (value: unknown): string | undefined => {
           const attempts = attemptsOf(value);
-          const lastFailed = [...attempts]
+          const failed = [...attempts]
             .reverse()
             .find((attempt) => attempt.outcome !== 'ok' && attempt.outcome !== 'skipped');
-          if (lastFailed?.code !== undefined) return lastFailed.code;
+          if (failed?.code !== undefined) return failed.code;
+          if (attempts.some((attempt) => attempt.outcome === 'skipped')) {
+            return traceFailureCode({
+              traceId: 'failure',
+              at: 0,
+              userId: '',
+              behaviourId: '',
+              command: '',
+              source: 'mention',
+              question: '',
+              outcome: 'failed',
+              durationMs: 0,
+              attempts,
+              sections: [],
+              toolCalls: [],
+              usage: {},
+              guard: { removed: [] },
+              timeline: [],
+              discordMessageIds: [],
+              sources: [],
+              ...(value instanceof ChainFailedError
+                ? { error: { kind: value.kind, message: value.summary } }
+                : {}),
+              flags: [],
+            });
+          }
           if (value instanceof ChainFailedError) return value.code;
           return undefined;
         };
+
         /** ADR 0129 §1: one failed trace per job attempt, for any error. Skipped when the id exists. */
         const insertFailureTrace = (
           err: unknown,
@@ -1222,44 +1254,43 @@ export const assistantInvokeHandler = (deps: {
           postedMessageId: string | undefined,
         ): void => {
           if (conversationId === undefined || deps.conversations === undefined) return;
-           const conv = deps.conversations;
-           const key = payload.invocationId;
-           try {
-             const turns = conversationRepo.listTurns(conv.scope, conversationId);
-             const turnId = `turn_${key}_a`;
-             if (turns.every((turn) => turn.turnId !== turnId)) {
-               conversationRepo.appendTurn(conv.scope, {
-                 conversationId,
-                 turnId,
-                 at: nextAt(turns),
-                 role: 'assistant',
-                 authorName: conv.botDisplayName,
-                 text,
-                 traceId,
-               });
-             }
-             if (payload.messageId !== undefined) {
-               conversationRepo.linkMessages(conv.scope, conversationId, `turn_${key}_u`, 'user', [
-                 payload.messageId,
-               ]);
-             }
-             if (postedMessageId !== undefined) {
-               conversationRepo.linkMessages(conv.scope, conversationId, turnId, 'assistant', [
-                 postedMessageId,
-               ]);
-             }
-           } catch (err) {
-             deps.logger.warn(
-               safeLogFields({
-                 component: 'assistant-job',
-                 guildId: deps.guildId,
-                 runId: payload.invocationId,
-                 err,
-               }),
-               'assistant failure turn write failed',
-             );
-           }
-
+          const conv = deps.conversations;
+          const key = payload.invocationId;
+          try {
+            const turns = conversationRepo.listTurns(conv.scope, conversationId);
+            const turnId = `turn_${key}_a`;
+            if (turns.every((turn) => turn.turnId !== turnId)) {
+              conversationRepo.appendTurn(conv.scope, {
+                conversationId,
+                turnId,
+                at: nextAt(turns),
+                role: 'assistant',
+                authorName: conv.botDisplayName,
+                text,
+                traceId,
+              });
+            }
+            if (payload.messageId !== undefined) {
+              conversationRepo.linkMessages(conv.scope, conversationId, `turn_${key}_u`, 'user', [
+                payload.messageId,
+              ]);
+            }
+            if (postedMessageId !== undefined) {
+              conversationRepo.linkMessages(conv.scope, conversationId, turnId, 'assistant', [
+                postedMessageId,
+              ]);
+            }
+          } catch (err) {
+            deps.logger.warn(
+              safeLogFields({
+                component: 'assistant-job',
+                guildId: deps.guildId,
+                runId: payload.invocationId,
+                err,
+              }),
+              'assistant failure turn write failed',
+            );
+          }
         };
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of
@@ -1456,7 +1487,16 @@ export const assistantInvokeHandler = (deps: {
           // ADR 0126 F4: Write turned off while the job waited leaves the
           // staged answer unposted — the cursor stays at `invoke-done` with
           // the posted count untouched, so a later retry resumes here.
-          if (!(await writeAllowedNow())) return;
+          if (!(await writeAllowedNow())) {
+            recorder.event({
+              kind: 'finished',
+              outcome: 'refused',
+              durationMs: Math.max(0, deps.now() - startedAt),
+              code: 'channel-not-writable',
+            });
+            return;
+          }
+
           const posted = await postPart(index, parts[index]!, slashToken);
           if (posted !== undefined) postedMessageIds.push(posted);
           partsPosted = index + 1;

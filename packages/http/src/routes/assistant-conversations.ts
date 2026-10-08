@@ -4,6 +4,7 @@ import {
   PROVIDER_FAILURE_CODES,
   PROVIDER_FAILURE_TEXT,
   renderSummary,
+  traceFailureCode,
   type AssistantTrace,
 } from '@bananasaurs/core';
 import { assistantRepo, conversationRepo, runRepo, traceRepo } from '@bananasaurs/storage';
@@ -44,6 +45,7 @@ const FAILURE_KIND_TITLES: Record<string, string> = {
   internal: 'Internal error',
   'behaviour-unavailable': 'Behaviour unavailable',
   'channel-not-writable': 'Channel not writable',
+  quota: 'The free daily allowance is used up',
 };
 
 interface TurnFailure {
@@ -63,7 +65,7 @@ const failureOfTrace = (trace: AssistantTrace, showText: boolean): TurnFailure =
   const attempt = [...trace.attempts]
     .reverse()
     .find((a) => a.outcome !== 'ok' && a.outcome !== 'skipped' && a.code !== undefined);
-  const code = attempt?.code ?? trace.error?.kind ?? 'internal';
+  const code = traceFailureCode(trace) ?? 'internal';
   const title = (PROVIDER_FAILURE_CODES as readonly string[]).includes(code)
     ? PROVIDER_FAILURE_TEXT[code as (typeof PROVIDER_FAILURE_CODES)[number]].title
     : (FAILURE_KIND_TITLES[code] ?? 'The request failed');

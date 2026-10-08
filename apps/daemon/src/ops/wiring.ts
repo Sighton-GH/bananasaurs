@@ -1521,6 +1521,14 @@ export interface OpsInstanceDeps {
    * 'off', else env `AI_PROVIDER` (ADR 0061). Absent in tests: env only.
    */
   readonly chosenAiProvider?: (() => string) | undefined;
+  readonly assistantProviderConfig?: {
+    chain(): readonly {
+      readonly keyId: string;
+      readonly model: string;
+      readonly keyLabel: string;
+    }[];
+    keys(): readonly { readonly keyId: string; readonly label: string }[];
+  };
   /**
    * The account password vault (ADR 0070), resolved by `index.ts` next to
    * the assistant provider secret. Absent in tests, matching every other
@@ -1831,23 +1839,39 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       // entry per allowlisted scope, carrying only its persistent
       // failures over the last 24 h. Startup and doctor mode pass
       // nothing and skip the finding (see `doctor.ts`).
+      const chain = deps.assistantProviderConfig?.chain();
+      const keyLabels = deps.assistantProviderConfig?.keys();
+      const chainPairs =
+        chain === undefined
+          ? undefined
+          : new Set(chain.map((entry) => `${entry.keyId}\0${entry.model}`));
+      const labels =
+        keyLabels === undefined
+          ? undefined
+          : new Map(keyLabels.map((key) => [key.keyId, key.label]));
       const doctorModelHealth: DoctorModelHealth = {
         guilds: deps.guildScopes.map((scope) => ({
           guildId: scope.guildId,
           persistent: modelHealth(
             runRepo.modelResultsSince(scope, deps.now() - 86_400_000),
           ).flatMap((h) =>
-            h.persistent === undefined
+            chainPairs !== undefined && !chainPairs.has(`${h.keyId}\0${h.model}`)
               ? []
-              : [
-                  {
-                    model: h.model,
-                    keyId: h.keyId,
-                    code: h.persistent.code,
-                    count: h.persistent.count,
-                    since: h.persistent.since,
-                  },
-                ],
+              : h.persistent === undefined
+                ? []
+                : [
+                    {
+                      model: h.model,
+                      keyId: h.keyId,
+                      ...(labels?.get(h.keyId) === undefined
+                        ? {}
+                        : { keyLabel: labels.get(h.keyId)! }),
+                      code: h.persistent.code,
+
+                      count: h.persistent.count,
+                      since: h.persistent.since,
+                    },
+                  ],
           ),
         })),
       };

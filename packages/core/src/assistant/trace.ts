@@ -148,13 +148,25 @@ export interface TraceSummary {
   readonly totalTokens: number | null;
 }
 
+export const traceFailureCode = (trace: AssistantTrace): string | undefined => {
+  const failed = [...trace.attempts]
+    .reverse()
+    .find(
+      (attempt) =>
+        attempt.outcome !== 'ok' && attempt.outcome !== 'skipped' && attempt.code !== undefined,
+    );
+  if (failed?.code !== undefined) return failed.code;
+  const skipped = [...trace.attempts]
+    .reverse()
+    .find((attempt) => attempt.outcome === 'skipped' && attempt.code !== undefined);
+  return skipped?.code ?? trace.error?.kind;
+};
+
 export const summaryOfTrace = (t: AssistantTrace): TraceSummary => {
   const attempts = t.attempts;
   const model =
     [...attempts].reverse().find((a) => a.outcome === 'ok')?.model ?? attempts.at(-1)?.model;
-  const errorCode = [...attempts]
-    .reverse()
-    .find((a) => a.outcome !== 'ok' && a.outcome !== 'skipped' && a.code !== undefined)?.code;
+  const errorCode = traceFailureCode(t);
   return {
     traceId: t.traceId,
     at: t.at,

@@ -11,9 +11,8 @@ import {
   listRunEvents,
   listRuns,
   modelResultsSince,
-   pruneOrphanRuns,
-   failStaleRuns,
-
+  pruneOrphanRuns,
+  failStaleRuns,
   updateRun,
 } from './runs.js';
 
@@ -218,7 +217,10 @@ describe('failStaleRuns', () => {
     updateRun(scope, 'new', { state: 'retry-wait', stage: 'retry-wait', updatedAt: 9_000 });
     expect(failStaleRuns(scope, 5_000, 10_000)).toBe(1);
     expect(getRun(scope, 'old')).toMatchObject({
-      state: 'failed', stage: 'done', errorCode: 'stalled', finishedAt: 10_000,
+      state: 'failed',
+      stage: 'done',
+      errorCode: 'stalled',
+      finishedAt: 10_000,
     });
     expect(getRun(scope, 'new')?.state).toBe('retry-wait');
     expect(getRun(t.scopes.forGuild(GUILD_B), 'other')?.state).toBe('queued');

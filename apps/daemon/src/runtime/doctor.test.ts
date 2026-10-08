@@ -596,7 +596,14 @@ describe('model health (ADR 0129 §8)', () => {
         {
           guildId: GUILD,
           persistent: [
-            { model: 'model-a', keyId: 'key-1', code: 'provider-auth', count: 3, since: 1_000 },
+            {
+              model: 'model-a',
+              keyId: 'key-1',
+              keyLabel: 'Primary',
+              code: 'provider-auth',
+              count: 3,
+              since: 1_000,
+            },
           ],
         },
       ],
@@ -604,7 +611,7 @@ describe('model health (ADR 0129 §8)', () => {
     expect(report.ok).toBe(false);
     expect(report.modelHealth?.guilds).toHaveLength(1);
     expect(formatDoctorReport(report)).toContain(
-      'AI model model-a (key key-1) failed 3 times in a row with provider-auth since ' +
+      'AI model model-a (key Primary) failed 3 times in a row with provider-auth since ' +
         `${new Date(1_000).toISOString()}; remove or replace it in Providers → Model order.`,
     );
   });

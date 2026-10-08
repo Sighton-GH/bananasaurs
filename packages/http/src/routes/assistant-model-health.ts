@@ -40,14 +40,31 @@ export const registerAssistantModelHealthRoutes = (
     const models = modelHealth(
       runRepo.modelResultsSince(session.scope, deps.now() - WINDOW_MS[window]),
     );
+    const configured = deps.assistantProviderConfig;
+    const chain = configured?.chain?.();
+    const keys = configured?.keys?.();
+    const chainPairs =
+      chain === undefined
+        ? undefined
+        : new Set(chain.map((entry) => `${entry.keyId}\0${entry.model}`));
+    const keyLabels =
+      keys === undefined ? undefined : new Map(keys.map((key) => [key.keyId, key.label]));
+    const enriched =
+      chainPairs === undefined || keyLabels === undefined
+        ? models
+        : models.map((m) => ({
+            ...m,
+            inChain: chainPairs.has(`${m.keyId}\0${m.model}`),
+            ...(keyLabels.get(m.keyId) === undefined ? {} : { keyLabel: keyLabels.get(m.keyId) }),
+          }));
     // ADR 0129 §3: the provider's short error message is
     // configuration-shaped text — withheld without config.read.
     const showText = canReadConfig(session);
     return reply.status(200).send({
       window,
       models: showText
-        ? models
-        : models.map((m) =>
+        ? enriched
+        : enriched.map((m) =>
             m.lastError?.providerMessage === undefined
               ? m
               : {

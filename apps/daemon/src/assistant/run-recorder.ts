@@ -71,7 +71,7 @@ const patchFor = (e: RunEvent, now: number): runRepo.RunPatch | undefined => {
 
 export const createRunRecorder: (deps: {
   readonly scope: GuildScope;
-  readonly guildId: string;
+  readonly guildId?: string;
   readonly runId: string;
   readonly now: () => number;
   readonly logger: Pick<Logger, 'warn'>;
@@ -84,7 +84,12 @@ export const createRunRecorder: (deps: {
     if (warned) return;
     warned = true;
     deps.logger.warn(
-      safeLogFields({ component: 'assistant', guildId: deps.guildId, runId: deps.runId, err }),
+      safeLogFields({
+        component: 'assistant',
+        guildId: deps.guildId ?? deps.scope.guildId,
+        runId: deps.runId,
+        err,
+      }),
       'assistant run ledger write failed',
     );
   };

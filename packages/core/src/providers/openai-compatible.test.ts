@@ -547,7 +547,10 @@ describe('OpenAI-compatible providers', () => {
         ),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-      const result = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      const result = await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+      });
       expect(result.upstream).toHaveLength(60);
       expect(result.finishReason).toHaveLength(40);
     });
