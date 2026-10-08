@@ -2129,9 +2129,15 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
       readonly attempts?: AssistantTrace['attempts'];
     } = {},
   ): ChainFailedError =>
-    new ChainFailedError(over.kind ?? 'invalid-request', 'chain failed', over.retryable ?? false, over.attempts ?? [chainAttempt3()], {
-      detail: detailWithSection3(),
-    });
+    new ChainFailedError(
+      over.kind ?? 'invalid-request',
+      'chain failed',
+      over.retryable ?? false,
+      over.attempts ?? [chainAttempt3()],
+      {
+        detail: detailWithSection3(),
+      },
+    );
   const mention3 = (invocationId: string, messageId = '810000000000000301') => ({
     channelId: CHANNEL_ID,
     userId: USER_ID,
@@ -2360,7 +2366,11 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
         ok: true,
         content: 'answer',
       }),
-      { channelAccess: { check: async () => ({ allowed: false as const, reason: 'not-granted' as const }) } },
+      {
+        channelAccess: {
+          check: async () => ({ allowed: false as const, reason: 'not-granted' as const }),
+        },
+      },
     );
     const key = 't3-h1';
     await h.run(mention3(key), 1);

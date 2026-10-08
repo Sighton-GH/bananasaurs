@@ -1057,7 +1057,8 @@ export const assistantInvokeHandler = (deps: {
                 ? { kind: err.code, message: 'every assistant model is at its configured limit' }
                 : {
                     kind: 'internal',
-                    message: 'An internal error stopped the request; the daemon log has the detail.',
+                    message:
+                      'An internal error stopped the request; the daemon log has the detail.',
                   };
           traceRepo.insertTrace(conv.scope, {
             traceId,
@@ -1078,9 +1079,7 @@ export const assistantInvokeHandler = (deps: {
             toolCalls: detail?.toolCalls ?? [],
             usage: detail?.usage ?? {},
             guard: detail?.guard ?? { removed: [] },
-            ...(detail?.finishReason === undefined
-              ? {}
-              : { finishReason: detail.finishReason }),
+            ...(detail?.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
             ...(included === undefined
               ? {}
               : {
@@ -1116,8 +1115,7 @@ export const assistantInvokeHandler = (deps: {
           const turns = conversationRepo.listTurns(conv.scope, conversationId);
           const turnId = `turn_${key}_a`;
           if (turns.every((turn) => turn.turnId !== turnId)) {
-            const at =
-              turns.length === 0 ? deps.now() : Math.max(...turns.map((t) => t.at)) + 1;
+            const at = turns.length === 0 ? deps.now() : Math.max(...turns.map((t) => t.at)) + 1;
             conversationRepo.appendTurn(conv.scope, {
               conversationId,
               turnId,
