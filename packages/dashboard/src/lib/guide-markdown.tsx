@@ -13,8 +13,9 @@ import { Link } from 'wouter';
 const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\((?:[^()\s]|\([^()\s]*\))+\))/;
 const LINK = /^\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)$/;
 
+// A backslash is not internal either: browsers read "/\host" as "//host", a web address.
 const isInternalPath = (target: string): boolean =>
-  target.startsWith('/') && !target.startsWith('//');
+  target.startsWith('/') && !target.startsWith('//') && !target.includes('\\');
 
 const renderInline = (text: string): ReactNode[] =>
   text.split(INLINE).map((part, index) => {

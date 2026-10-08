@@ -62,6 +62,12 @@ describe('renderGuideMarkdown', () => {
     expect(container.textContent).toBe('Click here or there.');
   });
 
+  it('renders a target with a backslash as its plain label, since browsers read "/\\host" as "//host"', () => {
+    const container = renderText('Go [home](/\\evil.example) now.');
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.textContent).toBe('Go home now.');
+  });
+
   it('shows unknown syntax literally', () => {
     const container = renderText('# Heading\n*emphasis* and ~~struck~~\n> quoted');
     expect(container.textContent).toBe('# Heading *emphasis* and ~~struck~~ > quoted');

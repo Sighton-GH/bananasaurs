@@ -4,7 +4,7 @@
  * links to dashboard pages. The dashboard Guide page and the connected-app guide
  * tool both read this array, so the two cannot disagree.
  *
- * Every fact here is traced to the ADR, document or code it names in its change.
+ * Every fact here must be checkable against the code, an ADR or PRIVACY.md.
  * Describe current behaviour only; a fact that cannot be traced is left out.
  */
 export interface GuideTopic {
@@ -29,9 +29,9 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       "Bananasaurs is a self-hosted Discord bot for a club's server. The owner runs it on a machine they operate, and no Bananasaurs company receives the server's data (PRIVACY.md).",
       '',
       'It does three jobs:',
-      "- It keeps the server's records: an archive of messages from channels the owner turned on, moderation cases, an audit trail and logs.",
+      "- It keeps the server's records: an archive of messages from channels where Archive is on, moderation cases, an audit trail and logs.",
       "- It enforces the server's rules. Automod, roles, schedules, tasks and logging run as typed commands, and none of them depends on AI (ADR 0002).",
-      "- It answers questions. The assistant replies from the server's own records and reviewed sources, and a connected app such as Claude can read and act within the approvals the owner gives.",
+      "- It answers questions. The assistant replies from the server's own records and reviewed sources, and a connected app such as Claude can read and act within the approvals given when it was connected.",
       '',
       'The owner works in the dashboard or with the operator CLI on the host.',
     ),
@@ -64,7 +64,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       'On the host, the bananasaurs command talks to the running bot over a local socket. It never edits the database directly.',
       '',
       '- Reads, such as status, doctor, audit tail and jobs list, change nothing.',
-      '- Writes need --confirm, and each one leaves an audit row naming the Unix user.',
+      '- Writes need --confirm, and each one leaves an audit row naming the Unix user the CLI reports.',
       '- BANANASAURS_READONLY=1 makes every write command refuse.',
       '',
       'Restoring a backup is not a socket command. It runs on the host with the bot stopped.',
@@ -130,7 +130,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       'Connecting an app needs the Connect apps permission on the account. Approvals are fixed for each connection. To change them, connect again, approve the new set, and disconnect the old connection on the Connected apps page.',
       'The account you sign in as decides what the app can do. An approved app never gets more than that account has.',
       'An app only sees the tools for its approvals. A connection with only Read does not list any tool that posts.',
-      'Nothing a member says can make the bot post through a connected app. The owner types each request in their own client (PRIVACY.md).',
+      'Nothing a member says can make the bot post through a connected app. The person using the app types each request in their own client (PRIVACY.md).',
     ),
     seeAlso: [{ label: 'Connected apps', path: '/mcp' }],
   },
@@ -145,9 +145,9 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       '',
       '- **Disconnect** stops that connection working. Its tokens are revoked, and its rows are kept.',
       '- **Delete** removes the connection and its rows. A connection that still works is disconnected first.',
-      '- **Clean up** deletes every connection that no longer works, with all its rows, and every registered app left with no tokens. Connected apps are not touched.',
+      '- **Clean up** deletes every connection that no longer works, with all its rows, and every registered app that has no tokens, no sign-in in progress, and was registered over an hour ago. Working connections are not touched.',
       '',
-      'A working connection keeps its old tokens for 14 days. Replaying an old token is how a stolen one is caught, so clean up leaves them alone.',
+      'Revoked tokens of a working connection are kept until 14 days after they expire. Replaying an old token is how a stolen one is caught, so clean up leaves them alone.',
       'Disconnect, delete and clean up need the Change settings permission. Deleting never extends access.',
     ),
     seeAlso: [{ label: 'Connected apps', path: '/mcp' }],
@@ -192,7 +192,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       '- `search_messages`: full-text search of archived messages, in archive-enabled channels only.',
       '- `read_channel_history`: recent archived messages from one archive-enabled channel, newest first.',
       '- `get_message`: one archived message by id. A purged message comes back as a record without its content.',
-      '- `read_thread`: messages from one thread. Public threads come from the archive. Private threads are read live, and only when the bot and the owner are both members.',
+      '- `read_thread`: messages from one thread. Public threads come from the archive. Private threads are read live, and only when the bot and the owner are both members, or the thread was created through a connected app.',
       '- `read_digest`: every archived message in one category or channel list since a time, oldest first.',
       '- `list_unanswered`: mentions of the help role that have had no reply for a while, newest first.',
       '',
@@ -275,11 +275,11 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     title: 'Tasks through a connection',
     summary: 'Task read and write tools, and which approvals and permissions each one needs.',
     body: lines(
-      'Reading tasks needs the Read approval. Writing needs the Tasks approval as well, and the account needs Manage club tasks.',
+      'Task tools appear only for the instance owner or an account with Manage club tasks, and each call checks that permission in the server it names. Reading needs the Read approval; writing also needs the Tasks approval.',
       '',
-      '- `list_tasks`: open tasks. Approved tasks are archived, so find them with includeArchived.',
+      '- `list_tasks`: open tasks. Approved tasks are archived, so find them with includeArchived and includeDone.',
       '- `get_task`: one task with its version, dated steps, progress reports and reminder slots.',
-      '- `task_teams`: list task teams with the Read approval. Creating, configuring, deleting and changing members need the Tasks approval.',
+      '- `task_teams`: list task teams with the Read approval. Creating, configuring, deleting and changing members also need the Tasks approval.',
       '- `create_task`: create a team or individual task, with normal or urgent priority and a due date. Retrying with the same requestId returns the existing task.',
       '- `update_task`: edit a task, move it between working statuses, request, approve or send back a completion, archive it, or unarchive it.',
       '- `delete_task`: delete a task with its steps, updates and reminders, by hand. Nothing about tasks is deleted automatically.',
@@ -301,7 +301,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       '',
       'Can be undone: a message edit (the previous text comes back), an event edit, a scheduled-send edit, a scheduled-send cancellation while the send is still due, a pin or unpin, a reaction added or removed, a thread-member add, a thread archive or lock, a role grant or removal, and a role edit.',
       '',
-      'Cannot be undone: posts, deletes, scheduled-send creation, event creation, event cancellation, thread creation, forum posts, member removals, role creation, panel creation, panel edits and panel deletion, or a role change that changed nothing.',
+      'Cannot be undone: posts, deletes, scheduled-send creation, event creation, event cancellation, thread creation, forum posts, bulk role changes, member removals, role creation, panel creation, panel edits and panel deletion, or a role change that changed nothing.',
     ),
   },
   {
@@ -378,7 +378,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     body: lines(
       '- Creating a task posts an announcement in its channel or thread, pinging the assignees.',
       '- A reminder goes out 48 hours before the due date, pinging the assignees, or the team role for a whole-team task. A task created less than 48 hours before it is due gets none, because the announcement already gives the date.',
-      '- Custom reminders go out at exact times before the due date. The owner can set them when a task is created, or add them later.',
+      '- Custom reminders go out at exact times before the due date. The instance owner, or an account with Manage club tasks, can set them when a task is created, or add them later.',
       '- Each channel or thread with tasks that are Not started or In progress gets one check-in each Monday, listing them.',
       '- A team with an announcements channel gets a weekly digest each Monday.',
       '',
@@ -398,7 +398,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       '- Scheduled posts wait until quiet hours end: 48-hour and custom reminders, weekly check-ins and digests.',
       '- Event posts go out at once: task announcements, review requests and clarifying questions.',
       '',
-      'The owner can change the window for the server through MCP: task_settings with set_quiet_hours, in minutes from midnight with a time zone. The connected app needs the Tasks approval.',
+      'The instance owner, or an account with Manage club tasks, can change the window for the server through MCP: task_settings with set_quiet_hours, in minutes from midnight with a time zone. The connected app needs the Tasks approval.',
     ),
   },
   {
@@ -543,9 +543,9 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       '',
       '- Search finds the saved messages for this server. Copies stay searchable while the channel is not No access.',
       '- Messages from archived channels are kept until the owner deletes them.',
-      '- The content of a deleted archived message is removed 30 days after deletion. The fact that it existed is kept.',
+      '- The content of a deleted archived message is removed 30 days after deletion, and the fact that it existed is kept. When a deletion is logged or a moderator purges messages, the text the bot has is copied into the moderation audit log and kept with no time limit.',
       '- A message linked to a moderation case is kept until the case closes, then for 90 days.',
-      '- A message the owner marks preserved is kept without a time limit, and the audit log records who did it.',
+      '- A message marked preserved by an account with Change settings, or from the operator CLI, is kept without a time limit, and the audit log records who did it.',
       '- Attachments are kept as a file name, type and size. No file contents are downloaded.',
     ),
     seeAlso: [
@@ -661,13 +661,13 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     summary:
       'What Bananasaurs stores, where it goes, and who can see it. The full policy is PRIVACY.md.',
     body: lines(
-      'Bananasaurs stores messages only from channels the owner has turned on for recording. Recording is off everywhere else. Turning recording off stops new messages being kept, and deletes nothing already stored. Replies to task posts are kept as described under Tasks.',
+      'Bananasaurs stores messages only from channels where recording (Archive) is on. Recording is off everywhere else. Turning recording off stops new messages being kept, and deletes nothing already stored. Replies to task posts are kept as described under Tasks.',
       '',
       '- It keeps messages with their edits and deletions, so the server has a searchable history and a moderation log.',
-      '- It stays on one computer. An AI provider receives a few relevant excerpts only when someone asks a question, or when a task reply is checked.',
+      "- It stays on one computer. An AI provider receives a few relevant excerpts only when someone asks a question, or when a task reply is checked. When someone tags Bananasaurs in a channel where Read is on, that channel's last messages go with the question (15 by default; the owner can set 0 to 50).",
       '- The AI provider the owner chose may train on what it receives. The bot shows a warning while that is the case.',
-      '- If the owner turns on web search, a short query goes to Brave Search or Tavily.',
-      '- Connected apps post only when the owner types the request. Nothing a member says can cause a post. Each post is recorded with its channel, time and credential.',
+      "- If the owner turns on web search, a short query goes to Brave Search or Tavily. Tavily's terms let it keep queries and use them to improve its services, including training AI models.",
+      '- Connected apps post only when the person using the app asks for it. Nothing a member says can cause a post. Each post is recorded with its channel, time and credential.',
       '',
       'Members can see search results only from channels they can already read. A member can ask the owner what is held about them, or for it to be deleted. The /mydata and /forgetme commands are planned, not built yet.',
       'The full policy is PRIVACY.md in the repository. It also says how long each kind of data is kept.',

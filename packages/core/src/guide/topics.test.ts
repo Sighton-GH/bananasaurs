@@ -5,6 +5,10 @@ import { findGuideTopic, GUIDE_TOPICS } from './topics.js';
 
 const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/** Whether some topic body names the label in bold, as the guide writes each permission and scope. */
+const namedInBold = (label: string): boolean =>
+  GUIDE_TOPICS.some((topic) => topic.body.includes(`**${label}**`));
+
 describe('GUIDE_TOPICS', () => {
   it('gives every topic a unique kebab-case id', () => {
     const ids = GUIDE_TOPICS.map((topic) => topic.id);
@@ -53,21 +57,15 @@ describe('GUIDE_TOPICS', () => {
     }
   });
 
-  it('names every capability label in some topic body', () => {
+  it('names every capability label in bold in some topic body', () => {
     for (const info of Object.values(CAPABILITY_INFO)) {
-      expect(
-        GUIDE_TOPICS.some((topic) => topic.body.includes(info.label)),
-        info.label,
-      ).toBe(true);
+      expect(namedInBold(info.label), info.label).toBe(true);
     }
   });
 
-  it('names every MCP scope label in some topic body', () => {
+  it('names every MCP scope label in bold in some topic body', () => {
     for (const info of Object.values(MCP_SCOPE_INFO)) {
-      expect(
-        GUIDE_TOPICS.some((topic) => topic.body.includes(info.label)),
-        info.label,
-      ).toBe(true);
+      expect(namedInBold(info.label), info.label).toBe(true);
     }
   });
 });
