@@ -161,9 +161,11 @@ dashboard use):
 - **Roles** (`bananasaurs:roles`) — role grants and removals, role creation,
   role panels.
 - **Tasks** (`bananasaurs:tasks`) — the task write tools (`create_task`,
-  `update_task`, `task_steps`, `task_reminders`, `task_progress`,
-  `task_teams`, `task_settings`); needs the
-  Manage club tasks permission as well.
+  `update_task`, `delete_task`, `task_steps`, `task_reminders`,
+  `task_progress`, `task_settings`); needs the Manage club tasks permission
+  as well. `task_teams` is advertised under Read for its `list` action; its
+  create, configure, delete and member actions also need Tasks, so a
+  connection with Tasks but not Read does not see `task_teams` at all.
 
 **MCP tools, by group.** Reading: message and channel history, threads and
 digests, members, roles, cases, audit, jobs, resources, the server card, and
@@ -176,10 +178,13 @@ Schedules/events/polls: `schedule_message`, `list_scheduled`,
 `update_scheduled` (edit or cancel a send still waiting to go out), event
 tools and `create_poll`. Roles and panels: grants and removals, role
 creation and edits, bulk changes, and role panels. Tasks: the seven task
-write tools above. Actions: `undo_action` reverses one reversible action and
-`list_actions` shows recent actions with ids, never content. Every write
-takes an idempotency key to reuse on retry, and `dryRun` records without
-changing anything.
+write tools above, and `task_teams` for teams and members. Actions:
+`undo_action` reverses one reversible action and `list_actions` shows recent
+actions with ids, never content. Message, thread, event, schedule, role and
+panel writes take an idempotency key to reuse on retry, and `dryRun` to
+record without changing anything. The task writes have no `dryRun`, and only
+`create_task` and `task_progress` take a `requestId` for retries; `undo_action`
+takes neither.
 
 Tools are filtered at registration rather than refused on call: a token
 without a scope never sees that scope's tools in `tools/list`. **A token keeps

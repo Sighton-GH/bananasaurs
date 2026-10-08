@@ -206,7 +206,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
   };
 };
 
-/** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the two read-only task tools, and `list_actions`. */
+/** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the three task reads (`list_tasks`, `get_task`, `task_teams`), and `list_actions`. */
 const READ_TOOLS: readonly string[] = [
   'get_health',
   'search_messages',

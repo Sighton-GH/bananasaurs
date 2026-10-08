@@ -1827,7 +1827,7 @@ const targetRefusalFor = (
 };
 
 /**
- * The `McpThreadWritesPort` behind the six thread/forum tools (slice 3,
+ * The `McpThreadWritesPort` behind the four thread/forum tools (slice 3,
  * Task 5), field by field like `sendPortFor` above. Each method resolves its
  * target against send scope and the bot's live permissions, builds the
  * `McpActionDeps` over the storage repos, and runs the one pipeline:
@@ -2258,7 +2258,7 @@ const threadWritesPortFor = (
 };
 
 /**
- * The `McpMessageWritesPort` behind the six message-write tools (slice 3,
+ * The `McpMessageWritesPort` behind the four message-write tools (slice 3,
  * Task 6), field by field like `healthPortFor` above. Every method resolves
  * its target against send scope and the bot's live permissions, then runs
  * the one `runMcpAction` pipeline — edits and deletes in cap group `edit`,
