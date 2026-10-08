@@ -33,10 +33,7 @@ import {
 } from '../schema.js';
 import { forgetAuthor } from './conversations.js';
 import { deleteTracesForConversations, deleteTracesForUser } from './traces.js';
-import {
-  deleteRunsForConversations as deleteRunsForConvs,
-  deleteRunsForUser as deleteRunsForMember,
-} from './runs.js';
+import { deleteRunsForConversations, deleteRunsForUser } from './runs.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -1340,7 +1337,7 @@ export const forgetMember = (scope: GuildScope, userId: string, now: number): nu
   forgetAuthor(scope, userId);
   deleteTracesForUser(scope, userId);
   deleteTracesForConversations(scope, conversationIds);
-  deleteRunsForMember(scope, userId);
-  deleteRunsForConvs(scope, conversationIds);
+  deleteRunsForUser(scope, userId);
+  deleteRunsForConversations(scope, conversationIds);
   return removed;
 };
