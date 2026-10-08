@@ -2294,6 +2294,8 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
     const last = traceRepo.getTrace(scope3(), `trace_${key}_a4`);
     expect(last?.flags).toContain('gave-up');
     const convId = last?.conversationId ?? '';
+    const failureTurn = h.turnsOf(convId).find((turn) => turn.turnId === `turn_${key}_a`);
+    expect(failureTurn?.traceId).toBe(`trace_${key}_a4`);
     const turnsBefore = h.turnsOf(convId).length;
     await h.run(mention3(key), 4);
     expect(traceRepo.getTrace(scope3(), `trace_${key}_a4`)?.flags).toContain('gave-up');
@@ -2375,6 +2377,7 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
     const key = 't3-h1';
     await h.run(mention3(key), 1);
     const trace = traceRepo.getTrace(scope3(), `trace_${key}`);
+    expect(trace?.outcome).toBe('refused');
     expect(trace?.flags).toContain('channel-not-writable');
     expect(h.sent).toHaveLength(0);
   });
