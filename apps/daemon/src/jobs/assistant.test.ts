@@ -2410,12 +2410,10 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
       channelContextMessages: () => 0,
     });
     const originalAppend = conversationRepo.appendTurn;
-    const appendSpy = vi
-      .spyOn(conversationRepo, 'appendTurn')
-      .mockImplementation((scope, turn) => {
-        if (turn.role === 'assistant') throw new Error('turn write boom');
-        return originalAppend(scope, turn);
-      });
+    const appendSpy = vi.spyOn(conversationRepo, 'appendTurn').mockImplementation((scope, turn) => {
+      if (turn.role === 'assistant') throw new Error('turn write boom');
+      return originalAppend(scope, turn);
+    });
     try {
       const key = 't3-f4-turn-write';
       let error: unknown;
