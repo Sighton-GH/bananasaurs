@@ -49,7 +49,9 @@ function useActiveRuns(conversationId?: string) {
   const live = useLiveResource<RunListResponse>('active runs', load, {
     fastMs: 2000,
     slowMs: 15000,
-    isFast: (d) => d.runs.length > 0,
+    // ADR 0129: stalled runs stay listed but poll slow; only a non-stalled
+    // run keeps the fast cadence.
+    isFast: (d) => d.runs.some((r) => !r.stalled),
   });
   const runs = useMemo<readonly LiveRun[]>(
     () =>

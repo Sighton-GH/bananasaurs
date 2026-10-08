@@ -225,8 +225,13 @@ describe('InProgressPanel', () => {
     expect(screen.getByText('Stalled')).toBeTruthy();
 
     // The next poll finds no runs: the finished id is reported exactly once.
+    // The run is stalled, so the panel polls at the slow cadence.
     await act(async () => {
       vi.advanceTimersByTime(2000);
+    });
+    expect(onFinished).toHaveBeenCalledTimes(0);
+    await act(async () => {
+      vi.advanceTimersByTime(13000);
     });
     expect(onFinished).toHaveBeenCalledTimes(1);
     expect(onFinished).toHaveBeenCalledWith('run-1');
@@ -236,6 +241,60 @@ describe('InProgressPanel', () => {
       vi.advanceTimersByTime(30000);
     });
     expect(onFinished).toHaveBeenCalledTimes(1);
+  });
+
+  it('polls slow when the only runs are stalled (ADR 0129)', async () => {
+    vi.useFakeTimers();
+    const calls = stubRunsOnce();
+    renderWithSession(
+      <Router>
+        <InProgressPanel />
+      </Router>,
+    );
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+    expect(screen.getByText('Stalled')).toBeTruthy();
+
+    // A stalled-only list holds the slow cadence: 2 s polls nothing.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(calls).toHaveLength(1);
+
+    // The slow 15 s tick polls again.
+    await act(async () => {
+      vi.advanceTimersByTime(13000);
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('polls fast while a non-stalled run is active (ADR 0129)', async () => {
+    vi.useFakeTimers();
+    const active = { ...RUN, stalled: false };
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        calls.push(activeRunsUrl());
+        return Promise.resolve(
+          new Response(JSON.stringify({ runs: [active] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    renderWithSession(
+      <Router>
+        <InProgressPanel />
+      </Router>,
+    );
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(calls).toHaveLength(2);
   });
 
   it('says plainly when nothing runs', async () => {
@@ -271,8 +330,8 @@ describe('PendingTurn', () => {
 
   it('reloads the transcript when the seen run is replaced by another run', async () => {
     vi.useFakeTimers();
-    const runA = { ...RUN, runId: 'run-a', label: 'Asking nemotron (model 1 of 2)' };
-    const runB = { ...RUN, runId: 'run-b', label: 'Asking club (model 2 of 2)' };
+    const runA = { ...RUN, stalled: false, runId: 'run-a', label: 'Asking nemotron (model 1 of 2)' };
+    const runB = { ...RUN, stalled: false, runId: 'run-b', label: 'Asking club (model 2 of 2)' };
     const calls: string[] = [];
     vi.stubGlobal(
       'fetch',
