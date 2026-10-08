@@ -24,7 +24,7 @@ describe('modelHealth', () => {
     expect(health?.ok).toBe(3);
   });
 
-  it('reports null successRate and percentiles with no calls in a group', () => {
+  it('reports a 0 success rate for a group whose only call failed', () => {
     expect(modelHealth([])).toEqual([]);
     const [health] = modelHealth([result({ at: 1_000, ok: false, code: 'provider-timeout' })]);
     expect(health?.successRate).toBe(0);
