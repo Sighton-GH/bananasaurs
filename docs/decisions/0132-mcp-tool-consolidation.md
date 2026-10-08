@@ -34,7 +34,7 @@ removed, with no aliases.
 | `task_steps` | tasks | `add`→`append_task_child`, `edit`→`edit_task_child`, `complete`→`complete_task_child`, `delete`→`delete_task_child` |
 | `task_reminders` | tasks | `add`→`add_task_reminder`, `cancel`→`cancel_task_reminder` |
 | `task_progress` | tasks | `record`→`record_task_progress`, `delete_report`→`delete_task_report` |
-| `task_teams` | read (`list`) / tasks (others) | `list`→`list_task_teams` (read path, audited as today), `create`→`create_task_team`, `configure`→`configure_task_team`, `delete`→`delete_task_team`, `add_member`→`add_task_team_member`, `remove_member`→`remove_task_team_member` |
+| `task_teams` | read (`list`) / read + tasks (others; registered with the reads, so a tasks-only token does not see it) | `list`→`list_task_teams` (read path, audited as today), `create`→`create_task_team`, `configure`→`configure_task_team`, `delete`→`delete_task_team`, `add_member`→`add_task_team_member`, `remove_member`→`remove_task_team_member` |
 | `task_settings` | tasks | `set_president_role`→`set_task_president_role`, `clear_president_role`→`clear_task_president_role`, `set_quiet_hours`→`configure_task_quiet_hours` |
 
 Task 2 continues the same pattern for the remaining pairs: `react`

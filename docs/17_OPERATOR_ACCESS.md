@@ -196,10 +196,10 @@ every scope in `scopes_supported` — approve them on the sign-in page, then
 disconnect the old sign-in with `bananasaurs mcp disconnect <connection-id>
 --confirm` (`bananasaurs mcp connections` lists each sign-in with the scopes it
 was approved with, so you can see which one is the old one). A token holding
-only `bananasaurs:send` connects and then answers `-32601 Method not found`
-to `tools/list`: with no read tool registered, the MCP SDK installs no list
-handler. That is intended, so if a freshly connected client says the server
-has no methods, check which scopes were approved before anything else.
+only `bananasaurs:send` lists only the send-scoped write tools — no reads, not
+even `get_server_overview` — so if a freshly connected client shows tools but
+cannot look anything up, check which scopes were approved before anything
+else.
 
 The `account` commands mostly act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
 
