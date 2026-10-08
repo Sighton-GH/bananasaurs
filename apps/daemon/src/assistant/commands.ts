@@ -408,8 +408,13 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
       });
     } catch (err) {
       deps.logger.warn(
-        safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
-        'assistant run ledger write failed; continuing',
+        safeLogFields({
+          component: 'assistant-mention',
+          guildId: event.guildId,
+          runId: event.messageId,
+          err,
+        }),
+        'assistant run ledger write failed',
       );
     }
     const sendTyping = deps.sendTyping;
