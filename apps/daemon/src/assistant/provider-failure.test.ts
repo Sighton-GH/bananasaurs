@@ -30,6 +30,12 @@ describe('failureLogReason', () => {
     expect(failureLogReason([])).toBe(PROVIDER_FAILURE_LOG_REASON);
   });
 
+  it('falls back when attempts carry only unknown codes', () => {
+    expect(
+      failureLogReason([attempt({ outcome: 'error', code: 'not-a-known-code' })]),
+    ).toBe(PROVIDER_FAILURE_LOG_REASON);
+  });
+
   it('uses a lone skipped local-limit attempt', () => {
     expect(
       failureLogReason([attempt({ outcome: 'skipped', code: 'local-rpm-limit', model: 'm-a' })]),
