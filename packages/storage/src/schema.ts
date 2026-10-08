@@ -2433,6 +2433,7 @@ export const assistantRuns = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_runs_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_runs_user_id_snowflake', snowflakeCheck(t.userId)),
+    check('assistant_runs_channel_id_snowflake', nullableSnowflakeCheck(t.channelId)),
     check(
       'assistant_runs_state',
       sql`${t.state} IN ('queued','running','retry-wait','answered','refused','failed')`,
