@@ -49,7 +49,7 @@ const withoutSelector = (record: Record<string, unknown>, key: string): Record<s
 
 export const REACT_TOOL_NAME = 'react';
 export const REACT_TOOL_DESCRIPTION = [
-  "Add or remove the bot's own reaction on a message in an allowlisted channel of this guild.",
+  "Add or remove the bot's own reaction on a message in a channel where Write is on in this guild.",
   'add: adds the bot\u2019s own reaction. Emoji is a unicode emoji or name:id for a custom emoji of this guild.',
   'remove: removes the bot\u2019s own reaction.',
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
@@ -86,7 +86,7 @@ export const runReact = async (
 
 export const SET_PIN_TOOL_NAME = 'set_pin';
 export const SET_PIN_TOOL_DESCRIPTION = [
-  'Set the pin state of any message in an allowlisted channel of this guild. ' +
+  'Set the pin state of any message in a channel where Write is on in this guild. ' +
     'The bot needs the PinMessages or ManageMessages Discord permission in the channel.',
   'pinned true pins the message; false unpins it.',
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +

@@ -34,9 +34,9 @@ import { useToast } from '../ui/Toast.js';
  * and cleanup (`mcp disconnect`, `mcp delete-connection`, `mcp delete-token`,
  * `mcp cleanup`, `mcp revoke-client`), the send allowlist as READ-ONLY state, the send
  * ledger (`mcp sends`), and the role policy (`mcp role-policy`,
- * `mcp allow-role`, `mcp disallow-role`, ADR 0117 §2). Nothing is
- * allowlisted by default, and the allowlists are the only thing that decide
- * which roles the connector may grant or ping and where it may post.
+ * `mcp allow-role`, `mcp disallow-role`, ADR 0117 §2). Write (ADR 0126)
+ * decides where a connector may post; the role allowlists decide which roles
+ * it may grant or ping.
  *
  * The send allowlist's writers moved to the central Permissions section
  * (Bryan's lane): one page owns every operating-scope change so no second
@@ -830,8 +830,9 @@ export function McpPage() {
         scope={
           <p>
             This deletes every connection that no longer works (expired or revoked) with all its
-            tokens, and every registered app left with no tokens. Connected apps are not touched;
-            their old tokens are kept 14 days so a stolen one is still caught.
+            tokens, and every registered app that has no tokens, no sign-in in progress, and was
+            registered over an hour ago. Working connections are not touched; their revoked tokens
+            are kept until 14 days after they expire, so a stolen one is still caught.
           </p>
         }
         confirmLabel="Clean up"

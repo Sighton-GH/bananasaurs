@@ -51,7 +51,7 @@ export const UNDO_ACTION_TOOL_DESCRIPTION =
   'a thread-member add removes the same members, a thread archive or lock restores ' +
   'the previous state, a role grant removes the same role while a role removal re-grants it, ' +
   'and a role edit restores the previous name, color and mentionable. ' +
-  'Posts, deletes, scheduled-message creation, event creation, event cancellation, thread creation, forum posts, ' +
+  'Posts, deletes, scheduled-message creation, event creation, event cancellation, thread creation, forum posts, bulk role changes, ' +
   'member removals, role creation, panel creation, panel edits and panel deletion ' +
   'cannot be undone, and neither can a role change that changed nothing. Each action undoes at most once: repeating this call answers that ' +
   'it is already undone. Takes an actionId from list_actions; the undo runs as its own ' +

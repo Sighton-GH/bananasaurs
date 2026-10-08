@@ -48,14 +48,14 @@ export const THREAD_AUTO_ARCHIVE_DEFAULT = 1440;
 
 export const CREATE_THREAD_TOOL_NAME = 'create_thread';
 export const CREATE_THREAD_TOOL_DESCRIPTION =
-  'Creates a public or private thread under an allowlisted text channel of this guild. ' +
+  'Creates a public or private thread under a text channel where Write is on in this guild. ' +
   'Takes a channel id or name, a thread name up to 100 characters, and the thread type. ' +
   'Private threads are readable back through read_thread and postable through send_message. ' +
   'Member and role mentions in the first message ping under the guild ping policy, as in send_message. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will create the thread twice. ' +
   'Pass dryRun to record without creating. ' +
-  'Refuses when the guild is unreachable, the channel is not allowlisted, the channel is a forum ' +
+  'Refuses when the guild is unreachable, the channel does not have Write on, the channel is a forum ' +
   '(call create_forum_post instead), or the bot lacks the Discord permission.';
 
 export const CREATE_FORUM_POST_TOOL_NAME = 'create_forum_post';

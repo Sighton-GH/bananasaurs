@@ -9,7 +9,7 @@ import {
 
 export const LIST_TASKS_TOOL_NAME = 'list_tasks';
 export const LIST_TASKS_TOOL_DESCRIPTION =
-  'List tasks (open by default) in one reachable guild when the bearer account is the instance owner. Approved tasks are archived automatically, so finding them needs includeArchived: true (with includeDone). Read-only.';
+  'List tasks (open by default) in one reachable guild for the instance owner or an account with Manage club tasks in that guild. Approved tasks are archived automatically, so finding them needs includeArchived: true (with includeDone). Read-only.';
 export const listTasksParams = {
   guildId: z.string(),
   teamId: z.string().uuid().optional(),

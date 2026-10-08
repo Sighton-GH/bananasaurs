@@ -61,7 +61,7 @@ export const GET_PANEL_TOOL_DESCRIPTION =
 
 export const CREATE_PANEL_TOOL_NAME = 'create_panel';
 export const CREATE_PANEL_TOOL_DESCRIPTION =
-  'Creates a managed role panel in an allowlisted channel of this guild and posts it. ' +
+  'Creates a managed role panel in a channel where Write is on in this guild and posts it. ' +
   'Takes a channel id or name, a title and an optional body (posted as the message text), ' +
   'a behaviour, a component, and 1 to 25 options. Each option names a role by id or name, ' +
   'or asks for a new zero-permission role with {create:{name, color?}}, plus a label and, for reaction panels, an emoji. ' +

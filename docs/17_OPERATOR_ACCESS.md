@@ -109,15 +109,16 @@ bananasaurs mcp cleanup --confirm            # deletes every sign-in that no lon
                                              # all its rows, and registered apps left with none
                                              # (apps registered in the last hour are spared, so a
                                              # sign-in in progress survives). A working sign-in
-                                             # keeps its old tokens 14 days: replaying one is how
-                                             # a stolen token is caught
+                                             # keeps its revoked tokens until 14 days after they
+                                             # expire: replaying one is how a stolen token is caught
 bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
 bananasaurs mcp revoke-client <client-id> --confirm
 bananasaurs mcp allow-channel <channel-id> --confirm
-                                             # lets the connector post here. Nothing is
-                                             # allowlisted by default, and the allowlist is
-                                             # the only thing that decides where it can post
+                                             # turns Write on for this channel, so the
+                                             # connector may post here (ADR 0126)
 bananasaurs mcp disallow-channel <channel-id> --confirm
+                                             # turns this channel's Write off; a Write-on
+                                             # category still covers it
 bananasaurs mcp allowlist                    # the channels the connector may post to
 bananasaurs mcp sends [--since <duration>]   # every send, with channel, outcome and token id
 bananasaurs provider review <provider> --confirm
@@ -130,13 +131,15 @@ bananasaurs provider review <provider> --confirm
 message to one channel, and every bound on it is checked by the daemon, not
 by the client:
 
-- **The allowlist decides where.** Nothing is allowlisted by default, so a
-  freshly connected connector can post nowhere at all until
-  `mcp allow-channel` says otherwise. A channel that is not on it — including
-  a DM, which can never be on it — is refused before any Discord call.
-- **Mentions never ping.** The send sets `allowed_mentions` to the empty set,
-  so `@everyone`, `@here`, role and user mentions in the text are inert. This
-  is the one place in the tree that sets it; ordinary bot messages do not.
+- **Write decides where.** At first start Write is on for every category and
+  uncategorised channel the bot can see (ADR 0126). A new uncategorised channel
+  starts off until `mcp allow-channel` turns Write on for it, and a channel
+  added to a category follows the category. A channel where Write is off,
+  including any DM (which can never have Write), is refused before any Discord
+  call.
+- **Mentions ping under the ping rules.** A user or role mention in the text
+  pings that member or role if the rules allow it (ADR 0117, ADR 0128).
+  `@everyone` and `@here` never ping, and mentions inside code do not.
 - **Ten per guild per rolling hour**, counted from the durable ledger rather
   than memory, so a restart does not hand out ten more.
 - **The kill switch, the breaker and dry run all apply.** With dry run on the
@@ -155,7 +158,8 @@ do, from these four (the labels are the ones `mcp connections` and the
 dashboard use):
 
 - **Read** (`bananasaurs:read`) — every read tool (messages, members, cases,
-  settings, tasks).
+  settings, tasks). Task reads also need the instance owner or Manage club
+  tasks.
 - **Post** (`bananasaurs:send`) — posts, edits, threads, forum posts, schedules,
   events, polls.
 - **Roles** (`bananasaurs:roles`) — role grants and removals, role creation,

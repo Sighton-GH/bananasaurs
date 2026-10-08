@@ -510,7 +510,7 @@ describe('send_message happy path', () => {
 
 describe('send_message tool description (ruling M5-D8)', () => {
   it('tells the model to reuse the idempotency key on retry', () => {
-    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('allowlist');
+    expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('Write is on');
     expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('2000');
     expect(SEND_MESSAGE_TOOL_DESCRIPTION).toContain('ping');
     // The load-bearing sentence: a regenerated key on retry double-posts.

@@ -46,7 +46,7 @@ export const REACTION_EMOJI_MAX = 64;
 
 export const EDIT_MESSAGE_TOOL_NAME = 'edit_message';
 export const EDIT_MESSAGE_TOOL_DESCRIPTION =
-  'Edits a message the bot authored in an allowlisted channel of this guild. ' +
+  'Edits a message the bot authored in a channel where Write is on in this guild. ' +
   'Pass content, embeds, or both; the previous text is kept for undo. ' +
   'Role-panel messages, task posts (anchors and nudges) and messages written by anyone else are refused. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
@@ -54,7 +54,7 @@ export const EDIT_MESSAGE_TOOL_DESCRIPTION =
 
 export const DELETE_MESSAGE_TOOL_NAME = 'delete_message';
 export const DELETE_MESSAGE_TOOL_DESCRIPTION =
-  'Deletes a message the bot authored in an allowlisted channel of this guild. ' +
+  'Deletes a message the bot authored in a channel where Write is on in this guild. ' +
   'Role-panel messages, task posts (anchors and nudges) and messages written by anyone else are refused. ' +
   'A delete cannot be undone. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +

@@ -527,7 +527,9 @@ export const taskAdminPortFor = (
             actor,
             now,
           );
-          return success('Quiet hours stored. Delivery remains gated by the reminder send flag.');
+          return success(
+            "Quiet hours stored. Posts still need the server's Task posts switch on and dry run off.",
+          );
         }
       }
     } catch (err) {

@@ -67,7 +67,7 @@ export const SCHEDULE_PAST_GRACE_MS = 30_000;
 
 export const SCHEDULE_MESSAGE_TOOL_NAME = 'schedule_message';
 export const SCHEDULE_MESSAGE_TOOL_DESCRIPTION =
-  'Schedules one fixed-text message to a channel the owner has allowlisted for this guild, ' +
+  'Schedules one fixed-text message to a channel where Write is on for this guild, ' +
   'or into a thread under one; the existing reminder worker posts it when it falls due. ' +
   'Takes a channel id or name, content up to ' +
   `${String(SCHEDULE_CONTENT_MAX)} characters, and exactly one of at ` +
@@ -80,7 +80,7 @@ export const SCHEDULE_MESSAGE_TOOL_DESCRIPTION =
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will schedule the message twice. ' +
   'Pass dryRun to record without storing. ' +
-  'Refuses when the guild is unreachable, the time is in the past, the channel is not allowlisted, or the bot lacks the Discord permission.';
+  'Refuses when the guild is unreachable, the time is in the past, the channel does not have Write on, or the bot lacks the Discord permission.';
 
 export const LIST_SCHEDULED_TOOL_NAME = 'list_scheduled';
 export const LIST_SCHEDULED_TOOL_DESCRIPTION =
@@ -307,7 +307,9 @@ export const scheduleMessageParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   channel: z
     .string()
-    .describe('Channel or thread to post into when due, as an id or name; must be allowlisted.'),
+    .describe(
+      'Channel or thread to post into when due, as an id or name; Write must be on for it.',
+    ),
   content: z
     .string()
     .describe(

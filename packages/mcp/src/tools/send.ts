@@ -68,7 +68,7 @@ export const SEND_PING_USERS_MAX = 25;
 
 export const SEND_MESSAGE_TOOL_NAME = 'send_message';
 export const SEND_MESSAGE_TOOL_DESCRIPTION =
-  'Posts one message to a channel the owner has allowlisted for this guild, or into a thread under one. ' +
+  'Posts one message to a channel where Write is on for this guild, or into a thread under one. ' +
   'Content is Discord Markdown (bold, italics, lists, `-# subtext`, masked links `[text](url)`; headings `#` to `###`) ' +
   `up to ${String(SEND_CONTENT_MAX)} characters; pass content, embeds, or both. ` +
   'Member (<@USER_ID>) and role (<@&ROLE_ID>) mentions typed into the content ping, checked against the guild ping policy; ' +
@@ -79,7 +79,7 @@ export const SEND_MESSAGE_TOOL_DESCRIPTION =
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will post the message twice. ' +
   'Pass dryRun to record without posting. ' +
-  'Refuses when the guild is unreachable, the channel is not allowlisted, or the bot lacks the Discord permission.';
+  'Refuses when the guild is unreachable, the channel does not have Write on, or the bot lacks the Discord permission.';
 
 /** One embed field, in the tool's vocabulary (the daemon maps it to Discord's shape). */
 export interface SendEmbedField {
@@ -293,9 +293,7 @@ const sendArgsSchema = z
  */
 export const sendMessageParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  channelId: z
-    .string()
-    .describe('Channel to post into; the owner must have allowlisted it for this guild.'),
+  channelId: z.string().describe('Channel to post into; Write must be on for it in this guild.'),
   content: z
     .string()
     .optional()

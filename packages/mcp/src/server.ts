@@ -884,7 +884,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   }
   if (!hasReadScope(deps.principal)) return server;
   const readAudit = deps.readAudit;
-  // Task tracking remains a staged, owner-scoped surface. The port is absent in
+  // Task tools follow the Manage club tasks permission (ADR 0130); the ports are absent when the daemon omits them. The port is absent in
   // isolated legacy clients and no tool is advertised when daemon wiring omits it.
   const taskPort = deps.tasks;
   if (taskPort)

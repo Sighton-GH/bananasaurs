@@ -5,7 +5,7 @@
  * code — the `initialize` test in `server.test.ts` pins it byte for byte.
  */
 export const MCP_SERVER_INSTRUCTIONS: string =
-  "Bananasaurs is a self-hosted Discord bot for one engineering club. You are talking to it on behalf of the club's owner, from the owner's own Claude client.\n" +
+  "Bananasaurs is a self-hosted Discord bot for one engineering club. You are talking to it on behalf of the signed-in club account, from its user's own Claude client.\n" +
   '\n' +
   'How to use these tools:\n' +
   '- Every tool takes a guildId. Call get_server_overview first; it lists channels by category and the roles, with ids.\n' +
