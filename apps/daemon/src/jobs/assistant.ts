@@ -11,8 +11,10 @@ import {
   safeLogFields,
   splitForDiscord,
   stripNewTopic,
+  totalTokensOf,
   type AssistantInvokePayload,
   type AssistantInvokeCursor,
+  type AssistantTrace,
   type ChannelAccess,
   type ConversationResolution,
   type DiscordMessageRef,
@@ -38,7 +40,7 @@ import {
   HISTORY_TURNS,
 } from '../assistant/conversation-context.js';
 import { buildChannelContext } from '../assistant/channel-context.js';
-import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
+import { PROVIDER_FAILURE_LOG_REASON, failureLogReason } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 import { startTyping } from '../assistant/typing.js';
 
@@ -400,17 +402,20 @@ export const assistantInvokeHandler = (deps: {
     // One-shot delivery for the pre-invoke failure paths (deleted behaviour,
     // daily cap, exhausted busy retries): short fixed strings that predate
     // Task 14's staged posting and stay exactly as they were.
-    const answerSingle = async (content: string): Promise<void> => {
+    const answerSingle = async (content: string): Promise<string | undefined> => {
       if (payload.interaction !== undefined) {
         const token = deps.openToken(payload.interaction.sealedToken);
-        if (token === undefined) return; // fresh runs fail closed above; a stranded cursor skips the answer only
-        await deps.respond(
+        if (token === undefined) return undefined; // fresh runs fail closed above; a stranded cursor skips the answer only
+        const ref = await deps.respond(
           { interactionId: payload.interaction.interactionId, token },
           reply(content),
         );
+        return ref?.messageId;
       } else if (payload.channelId !== undefined) {
-        await deps.send(payload.channelId, reply(content));
+        const ref = await deps.send(payload.channelId, reply(content));
+        return ref?.messageId;
       }
+      return undefined;
     };
 
     // Fail closed BEFORE any side effect when the answer can never be
@@ -430,7 +435,11 @@ export const assistantInvokeHandler = (deps: {
       deps.openToken(payload.interaction.sealedToken) === undefined
     ) {
       deps.logger.warn(
-        safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+        safeLogFields({
+          component: 'assistant-job',
+          guildId: deps.guildId,
+          runId: payload.invocationId,
+        }),
         'assistant invocation dropped: interaction token is not from this process',
       );
       return;
@@ -465,6 +474,7 @@ export const assistantInvokeHandler = (deps: {
         safeLogFields({
           component: 'assistant-job',
           guildId: deps.guildId,
+          runId: payload.invocationId,
           channelId: payload.channelId,
           purpose: 'write',
           reason: decision.reason,
@@ -474,7 +484,41 @@ export const assistantInvokeHandler = (deps: {
       return false;
     };
     if (prior === undefined) {
-      if (!(await writeAllowedNow())) return;
+      if (!(await writeAllowedNow())) {
+        if (deps.conversations !== undefined) {
+          const key = payload.invocationId;
+          const traceId = `trace_${key}`;
+          if (traceRepo.getTrace(deps.conversations.scope, traceId) === undefined) {
+            traceRepo.insertTrace(deps.conversations.scope, {
+              traceId,
+              runId: payload.invocationId,
+              at: deps.now(),
+              userId: payload.userId,
+              ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
+              behaviourId: payload.behaviourId,
+              command: payload.command,
+              source: payload.source,
+              question: Object.values(payload.input).join('\n'),
+              outcome: 'refused',
+              durationMs: Math.max(0, deps.now() - startedAt),
+              attempts: [],
+              sections: [],
+              toolCalls: [],
+              usage: {},
+              guard: { removed: [] },
+              timeline: [{ label: 'received', atMs: 0 }],
+              error: {
+                kind: 'channel-not-writable',
+                message: 'Bananasaurs may not post in this channel (channel permissions).',
+              },
+              discordMessageIds: [],
+              sources: [],
+              flags: ['channel-not-writable'],
+            });
+          }
+        }
+        return;
+      }
     }
 
     const behaviourName = async (): Promise<string> =>
@@ -509,7 +553,12 @@ export const assistantInvokeHandler = (deps: {
         );
       } catch (err) {
         deps.logger.warn(
-          safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+          safeLogFields({
+            component: 'assistant-job',
+            guildId: deps.guildId,
+            runId: payload.invocationId,
+            err,
+          }),
           'assistant log channel post failed',
         );
       }
@@ -554,6 +603,38 @@ export const assistantInvokeHandler = (deps: {
         const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
         if (behaviour === undefined || !behaviour.enabled) {
           const text = 'That assistant behaviour is no longer available. No action was taken.';
+          if (deps.conversations !== undefined) {
+            const key = payload.invocationId;
+            const traceId = `trace_${key}`;
+            if (traceRepo.getTrace(deps.conversations.scope, traceId) === undefined) {
+              traceRepo.insertTrace(deps.conversations.scope, {
+                traceId,
+                runId: payload.invocationId,
+                at: deps.now(),
+                userId: payload.userId,
+                ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
+                behaviourId: payload.behaviourId,
+                command: payload.command,
+                source: payload.source,
+                question: Object.values(payload.input).join('\n'),
+                outcome: 'refused',
+                durationMs: Math.max(0, deps.now() - startedAt),
+                attempts: [],
+                sections: [],
+                toolCalls: [],
+                usage: {},
+                guard: { removed: [] },
+                timeline: [{ label: 'received', atMs: 0 }],
+                error: {
+                  kind: 'behaviour-unavailable',
+                  message: 'The behaviour was deleted or turned off before the request ran.',
+                },
+                discordMessageIds: [],
+                sources: [],
+                flags: [...flags],
+              });
+            }
+          }
           await answerSingle(text);
           await logFailure(text, 'The behaviour was deleted or turned off before the request ran.');
           return;
@@ -563,7 +644,12 @@ export const assistantInvokeHandler = (deps: {
             ...(deps.typingIntervalMs === undefined ? {} : { intervalMs: deps.typingIntervalMs }),
             onError: (err) =>
               deps.logger.warn(
-                safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                safeLogFields({
+                  component: 'assistant-job',
+                  guildId: deps.guildId,
+                  runId: payload.invocationId,
+                  err,
+                }),
                 'assistant typing indicator failed; continuing',
               ),
           });
@@ -633,7 +719,12 @@ export const assistantInvokeHandler = (deps: {
                   };
               } catch (err) {
                 deps.logger.warn(
-                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                  safeLogFields({
+                    component: 'assistant-job',
+                    guildId: deps.guildId,
+                    runId: payload.invocationId,
+                    err,
+                  }),
                   'assistant quoted message fetch failed; continuing without the quote',
                 );
                 flags.push('quote-unavailable');
@@ -796,7 +887,11 @@ export const assistantInvokeHandler = (deps: {
                 const fetched = first ?? (await deps.fetchMessageContent(channelId, channelId));
                 if (fetched === undefined) {
                   deps.logger.warn(
-                    safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+                    safeLogFields({
+                      component: 'assistant-job',
+                      guildId: deps.guildId,
+                      runId: payload.invocationId,
+                    }),
                     'assistant thread starter fetch failed; continuing without the starter',
                   );
                   flagUnavailable();
@@ -809,7 +904,12 @@ export const assistantInvokeHandler = (deps: {
                 }
               } catch (err) {
                 deps.logger.warn(
-                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                  safeLogFields({
+                    component: 'assistant-job',
+                    guildId: deps.guildId,
+                    runId: payload.invocationId,
+                    err,
+                  }),
                   'assistant thread starter fetch failed; continuing without the starter',
                 );
                 flagUnavailable();
@@ -822,7 +922,11 @@ export const assistantInvokeHandler = (deps: {
               });
               if (fetched === undefined) {
                 deps.logger.warn(
-                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+                  safeLogFields({
+                    component: 'assistant-job',
+                    guildId: deps.guildId,
+                    runId: payload.invocationId,
+                  }),
                   'assistant channel context fetch failed; continuing without the block',
                 );
                 flagUnavailable();
@@ -855,7 +959,12 @@ export const assistantInvokeHandler = (deps: {
               }
             } catch (err) {
               deps.logger.warn(
-                safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                safeLogFields({
+                  component: 'assistant-job',
+                  guildId: deps.guildId,
+                  runId: payload.invocationId,
+                  err,
+                }),
                 'assistant channel context fetch failed; continuing without the block',
               );
               flagUnavailable();
@@ -901,22 +1010,58 @@ export const assistantInvokeHandler = (deps: {
         stopTyping();
         const delays = deps.retryDelaysMs?.() ?? PROVIDER_RETRY_DELAYS_MS;
         const ceiling = delays.length + 1;
-        /**
-         * ADR 0079: a retryable chain failure leaves a trace for every job
-         * attempt that fails — `trace_<key>_a<n>` with `retry:<n>` while the
-         * job will retry, `gave-up` on the last one. Skipped when the trace
-         * already exists (a retry re-running the catch after a crash between
-         * the insert and the throw).
-         */
-        const insertChainFailureTrace = (): void => {
-          if (!(err instanceof ChainFailedError)) return;
-          if (deps.conversations === undefined) return;
+        const isQuota = err instanceof ChainFailedError && err.quotaScope === 'daily-free';
+        const isLocalLimit = err instanceof LocalLimitError;
+        const willRetry =
+          !isQuota &&
+          !isLocalLimit &&
+          err instanceof ProviderError &&
+          err.retryable &&
+          context.attempts < ceiling;
+        const final = !willRetry;
+        const attemptsOf = (value: unknown): AssistantTrace['attempts'] => {
+          if (value instanceof ChainFailedError || value instanceof LocalLimitError) {
+            return value.attempts ?? [];
+          }
+          return [];
+        };
+        const detailOf = (value: unknown): AssistantTraceDetail | undefined => {
+          if (value instanceof ChainFailedError || value instanceof LocalLimitError) {
+            return value.detail;
+          }
+          return undefined;
+        };
+        const codeOf = (value: unknown): string | undefined => {
+          const attempts = attemptsOf(value);
+          const lastFailed = [...attempts]
+            .reverse()
+            .find((attempt) => attempt.outcome !== 'ok' && attempt.outcome !== 'skipped');
+          if (lastFailed?.code !== undefined) return lastFailed.code;
+          if (value instanceof ChainFailedError) return value.code;
+          return undefined;
+        };
+        const insertFailureTrace = (opts: { readonly final: boolean }): string | undefined => {
+          if (deps.conversations === undefined) return undefined;
           const conv = deps.conversations;
-          const traceId = `trace_${payload.invocationId}_a${context.attempts}`;
-          if (traceRepo.getTrace(conv.scope, traceId) !== undefined) return;
+          const key = payload.invocationId;
+          const traceId = `trace_${key}_a${context.attempts}`;
+          if (traceRepo.getTrace(conv.scope, traceId) !== undefined) return traceId;
           const elapsed = Math.max(0, deps.now() - startedAt);
+          const detail = detailOf(err);
+          const attempts = attemptsOf(err);
+          const included = detail?.included;
+          const failureError =
+            err instanceof ChainFailedError
+              ? { kind: err.kind, message: err.summary }
+              : err instanceof LocalLimitError
+                ? { kind: err.code, message: 'every assistant model is at its configured limit' }
+                : {
+                    kind: 'internal',
+                    message: 'An internal error stopped the request; the daemon log has the detail.',
+                  };
           traceRepo.insertTrace(conv.scope, {
             traceId,
+            runId: payload.invocationId,
             at: deps.now(),
             userId: payload.userId,
             ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
@@ -924,60 +1069,123 @@ export const assistantInvokeHandler = (deps: {
             command: payload.command,
             source: payload.source,
             ...(conversationId === undefined ? {} : { conversationId }),
+            ...(opts.final && conversationId !== undefined ? { turnId: `turn_${key}_a` } : {}),
             question: Object.values(payload.input).join('\n'),
             outcome: 'failed',
             durationMs: elapsed,
-            attempts: err.attempts,
-            usage: {},
-            sections: [],
-            toolCalls: [],
-            guard: { removed: [] },
-            timeline: [
-              { label: 'received', atMs: 0 },
-              { label: 'failed', atMs: elapsed },
-            ],
-            error: { kind: err.kind, message: err.summary },
+            attempts,
+            sections: detail?.sections ?? [],
+            toolCalls: detail?.toolCalls ?? [],
+            usage: detail?.usage ?? {},
+            guard: detail?.guard ?? { removed: [] },
+            ...(detail?.finishReason === undefined
+              ? {}
+              : { finishReason: detail.finishReason }),
+            ...(included === undefined
+              ? {}
+              : {
+                  included: {
+                    toolsOffered: included.toolsOffered,
+                    snippetChunkIds: included.snippetChunkIds,
+                    quote: included.quote,
+                    historyTurns: included.historyTurns,
+                    ...(included.channelMessages === undefined
+                      ? {}
+                      : { channelMessages: included.channelMessages }),
+                    ...(included.summaryVersion === undefined
+                      ? {}
+                      : { summaryVersion: included.summaryVersion }),
+                  },
+                }),
+            timeline: [{ label: 'received', atMs: 0 }],
+            error: failureError,
             discordMessageIds: [],
             sources: [],
-            flags: [context.attempts < ceiling ? `retry:${context.attempts}` : 'gave-up'],
+            flags: [...flags, opts.final ? 'gave-up' : `retry:${context.attempts}`],
           });
+          return traceId;
+        };
+        const appendFailureTurn = (
+          text: string,
+          traceId: string,
+          postedMessageId: string | undefined,
+        ): void => {
+          if (conversationId === undefined || deps.conversations === undefined) return;
+          const conv = deps.conversations;
+          const key = payload.invocationId;
+          const turns = conversationRepo.listTurns(conv.scope, conversationId);
+          const turnId = `turn_${key}_a`;
+          if (turns.every((turn) => turn.turnId !== turnId)) {
+            const at =
+              turns.length === 0 ? deps.now() : Math.max(...turns.map((t) => t.at)) + 1;
+            conversationRepo.appendTurn(conv.scope, {
+              conversationId,
+              turnId,
+              at,
+              role: 'assistant',
+              authorName: conv.botDisplayName,
+              text,
+              traceId,
+            });
+          }
+          if (payload.messageId !== undefined) {
+            conversationRepo.linkMessages(conv.scope, conversationId, `turn_${key}_u`, 'user', [
+              payload.messageId,
+            ]);
+          }
+          if (postedMessageId !== undefined) {
+            conversationRepo.linkMessages(conv.scope, conversationId, turnId, 'assistant', [
+              postedMessageId,
+            ]);
+          }
         };
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of
         // tomorrow's requests for the same guaranteed failure.
         if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
           const text = dailyQuotaReply(err.resetAt, deps.now());
+          const traceId = insertFailureTrace({ final: true });
           deps.logger.warn(
-            safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              runId: payload.invocationId,
+              err,
+            }),
             'assistant invocation hit a daily free-model quota cap; answering at once',
           );
-          await answerSingle(text);
-          await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
+          const posted = await answerSingle(text);
+          if (traceId !== undefined) appendFailureTurn(text, traceId, posted);
+          await logFailure(text, failureLogReason(attemptsOf(err)));
           return;
         }
         // ADR 0081: every entry at its owner-set limit is answered at once
         // with the free-up time — no job retry, no RetryAfterError.
         if (err instanceof LocalLimitError) {
           const text = localLimitReply(err.availableAt, deps.now(), deps.timeZone?.() ?? 'UTC');
+          const traceId = insertFailureTrace({ final: true });
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
               guildId: deps.guildId,
+              runId: payload.invocationId,
               code: err.code,
               availableAt: err.availableAt,
             }),
             'every assistant model is at its configured limit; answering at once',
           );
-          await answerSingle(text);
-          await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
+          const posted = await answerSingle(text);
+          if (traceId !== undefined) appendFailureTurn(text, traceId, posted);
+          await logFailure(text, failureLogReason(attemptsOf(err)));
           return;
         }
         if (err instanceof ProviderError && err.retryable && context.attempts < ceiling) {
-          insertChainFailureTrace();
+          insertFailureTrace({ final: false });
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
               guildId: deps.guildId,
+              runId: payload.invocationId,
               attempt: context.attempts,
               ...(err instanceof ChainFailedError ? { code: err.code } : { err }),
             }),
@@ -987,12 +1195,14 @@ export const assistantInvokeHandler = (deps: {
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
-        insertChainFailureTrace();
+        const traceId = insertFailureTrace({ final });
+        const code = codeOf(err);
         deps.logger.error(
           safeLogFields({
             component: 'assistant-job',
             guildId: deps.guildId,
-            ...(err instanceof ChainFailedError ? { code: err.code } : { err }),
+            runId: payload.invocationId,
+            ...(code !== undefined ? { code } : { err }),
           }),
           'assistant invocation failed before a response was produced',
         );
@@ -1000,8 +1210,25 @@ export const assistantInvokeHandler = (deps: {
           err instanceof ProviderError && err.retryable
             ? BUSY_REPLY
             : 'I could not complete that request. No action was taken.';
-        await answerSingle(text);
-        await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
+        const posted = await answerSingle(text);
+        if (traceId !== undefined) appendFailureTurn(text, traceId, posted);
+        const reason =
+          err instanceof ChainFailedError || err instanceof LocalLimitError
+            ? failureLogReason(attemptsOf(err))
+            : PROVIDER_FAILURE_LOG_REASON;
+        await logFailure(text, reason);
+        deps.logger.info(
+          safeLogFields({
+            component: 'assistant-job',
+            guildId: deps.guildId,
+            runId: payload.invocationId,
+            outcome: 'failed',
+            ...(code === undefined ? {} : { code }),
+            ms: Math.max(0, deps.now() - startedAt),
+            attempt: context.attempts,
+          }),
+          'assistant run finished',
+        );
         return;
       } finally {
         // Backstop for every path after startTyping: the keepalive stops even
@@ -1044,7 +1271,11 @@ export const assistantInvokeHandler = (deps: {
         }
         if (payload.channelId === undefined) {
           deps.logger.warn(
-            safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              runId: payload.invocationId,
+            }),
             'assistant follow-up part has no channel; dropping the remainder',
           );
           return undefined;
@@ -1054,7 +1285,11 @@ export const assistantInvokeHandler = (deps: {
       }
       if (payload.channelId === undefined) {
         deps.logger.warn(
-          safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+          safeLogFields({
+            component: 'assistant-job',
+            guildId: deps.guildId,
+            runId: payload.invocationId,
+          }),
           'assistant mention answer has no channel; dropping the remainder',
         );
         return undefined;
@@ -1127,8 +1362,10 @@ export const assistantInvokeHandler = (deps: {
         const traceId = `trace_${key}`;
         if (traceRepo.getTrace(conv.scope, traceId) === undefined) {
           const detail = result.detail;
+          const outcome = result.ok ? 'answered' : (result.outcome ?? 'refused');
           traceRepo.insertTrace(conv.scope, {
             traceId,
+            runId: payload.invocationId,
             at: deps.now(),
             userId: payload.userId,
             ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
@@ -1139,7 +1376,7 @@ export const assistantInvokeHandler = (deps: {
             turnId: assistantTurnId,
             question: Object.values(payload.input).join('\n'),
             answer: result.content,
-            outcome: result.ok ? 'answered' : 'refused',
+            outcome,
             durationMs: result.trace?.latencyMs ?? 0,
             attempts: detail?.attempts ?? [],
             ...(detail?.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
@@ -1172,6 +1409,20 @@ export const assistantInvokeHandler = (deps: {
             sources: [...(result.trace?.sources ?? [])],
             flags: [...flags],
           });
+          const totalTokens = detail === undefined ? null : totalTokensOf(detail.usage);
+          deps.logger.info(
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              runId: payload.invocationId,
+              outcome,
+              ...(result.trace?.model === undefined ? {} : { model: result.trace.model }),
+              ms: result.trace?.latencyMs ?? 0,
+              ...(totalTokens === null ? {} : { totalTokens }),
+              attempt: context.attempts,
+            }),
+            'assistant run finished',
+          );
         }
       }
       saveStaged('answered', result);
@@ -1191,7 +1442,12 @@ export const assistantInvokeHandler = (deps: {
             });
           } catch (err) {
             deps.logger.warn(
-              safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+              safeLogFields({
+                component: 'assistant-job',
+                guildId: deps.guildId,
+                runId: payload.invocationId,
+                err,
+              }),
               'assistant recalled link write failed; continuing',
             );
           }
@@ -1227,7 +1483,12 @@ export const assistantInvokeHandler = (deps: {
           }
         } catch (err) {
           deps.logger.warn(
-            safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              runId: payload.invocationId,
+              err,
+            }),
             'assistant summary enqueue failed; continuing without a summary',
           );
         }
@@ -1261,7 +1522,7 @@ export const assistantInvokeHandler = (deps: {
       await deps.send(
         logChannelId,
         await logEntry({
-          outcome: result.ok ? 'answered' : 'refused',
+          outcome: result.ok ? 'answered' : (result.outcome ?? 'refused'),
           answer: result.content,
           trace: result.trace,
         }),
