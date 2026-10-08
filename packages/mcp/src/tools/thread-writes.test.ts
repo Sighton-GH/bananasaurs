@@ -17,10 +17,7 @@ import {
   type McpThreadWriteRefusal,
   type McpThreadWritesPort,
 } from './thread-writes.js';
-import {
-  SET_THREAD_STATE_TOOL_NAME,
-  THREAD_MEMBERS_TOOL_NAME,
-} from './pair-tools.js';
+import { SET_THREAD_STATE_TOOL_NAME, THREAD_MEMBERS_TOOL_NAME } from './pair-tools.js';
 import type { McpHealthPort } from './health.js';
 import type { McpArchivePort } from './archive.js';
 import type { McpGuildPort } from './guild.js';

@@ -160,9 +160,26 @@ dashboard use):
   events, polls.
 - **Roles** (`bananasaurs:roles`) — role grants and removals, role creation,
   role panels.
-- **Tasks** (`bananasaurs:tasks`) — the task write tools (`create_club_task`,
-  `edit_club_task`, approvals, archive, reminders, task teams); needs the
+- **Tasks** (`bananasaurs:tasks`) — the task write tools (`create_task`,
+  `update_task`, `task_steps`, `task_reminders`, `task_progress`,
+  `task_teams`, `task_settings`); needs the
   Manage club tasks permission as well.
+
+**MCP tools, by group.** Reading: message and channel history, threads and
+digests, members, roles, cases, audit, jobs, resources, the server card, and
+the task reads (`list_tasks`, `get_task`, `task_teams` with action `list`).
+Messages and threads: `send_message`, `edit_message`, `delete_message`,
+`set_pin` (pin or unpin), `react` (add or remove the bot's own reaction),
+`create_thread`, `thread_members` (add or remove), `create_forum_post`, and
+`set_thread_state` (archive or lock, exactly one per call).
+Schedules/events/polls: `schedule_message`, `list_scheduled`,
+`update_scheduled` (edit or cancel a send still waiting to go out), event
+tools and `create_poll`. Roles and panels: grants and removals, role
+creation and edits, bulk changes, and role panels. Tasks: the seven task
+write tools above. Actions: `undo_action` reverses one reversible action and
+`list_actions` shows recent actions with ids, never content. Every write
+takes an idempotency key to reuse on retry, and `dryRun` records without
+changing anything.
 
 Tools are filtered at registration rather than refused on call: a token
 without a scope never sees that scope's tools in `tools/list`. **A token keeps

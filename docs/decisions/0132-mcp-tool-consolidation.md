@@ -44,6 +44,26 @@ Task 2 continues the same pattern for the remaining pairs: `react`
 `lock_thread`), and `update_scheduled` (`edit_scheduled` +
 `cancel_scheduled`).
 
+## Task 2 table (2026-10-07)
+
+| tool | scope | selector → old handler |
+|---|---|---|
+| `react` | send | `action: 'add'`→`addReactionText`, `'remove'`→`removeReactionText` (selector stripped) |
+| `set_pin` | send | `pinned: true`→`pinMessageText`, `false`→`unpinMessageText` (`pinned` stripped) |
+| `thread_members` | send | `action: 'add'`→`addThreadMembersText`, `'remove'`→`removeThreadMembersText` (selector stripped) |
+| `set_thread_state` | send | `archived: boolean`→`archiveThreadText({…, archived})`, `locked: boolean`→`lockThreadText({…, locked})` (no selector to strip — the flag is the handler's own field) |
+| `update_scheduled` | send | `action: 'edit'`→`editScheduledText`, `'cancel'`→`cancelScheduledText` (selector stripped) |
+
+Unknown selector, or a parameter belonging to the other side (an edit-only
+field on an `update_scheduled` cancel), is `INVALID_ARGUMENTS_MESSAGE`
+with the handler never called; each tool's wire shape is a ZodRawShape of
+the selector plus every field `.optional()` with which side uses it, and
+the existing handlers' strict parse stays the boundary.
+
+Ruling (binding): `set_thread_state` refuses `archived` + `locked`
+together — two state changes under one idempotency key would replay the
+second as the first — and refuses neither, so exactly one flag per call.
+
 ## Consequences
 
 - MCP layer only — daemon ports, the owner-or-`tasks.manage` gates

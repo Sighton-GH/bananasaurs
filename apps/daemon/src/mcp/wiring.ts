@@ -1840,15 +1840,15 @@ const targetRefusalFor = (
  *   `addedByAccountId` is the principal's account. `firstMessage` is a second
  *   action, key `<key>:first`, through the `message.send` path into the new
  *   thread; when it fails the thread still stands and the tool says so.
-  * - `thread_members`: one action per call
-  *   (kinds `thread.members.add|remove`, cap group `structure`). An add
-  *   records `{ userIds }` as its undo (ADR 0116 §5); a removal is not
-  *   undoable.
-  * - `create_forum_post`: kind `forum.post`, cap group `message`, with the
-  *   duplicate-content guard — the content-bearing write of this family.
-  *   Always public.
-  * - `set_thread_state`: kind `thread.state`, cap group
-  *   `structure`, recording the previous state as the undo.
+ * - `thread_members`: one action per call
+ *   (kinds `thread.members.add|remove`, cap group `structure`). An add
+ *   records `{ userIds }` as its undo (ADR 0116 §5); a removal is not
+ *   undoable.
+ * - `create_forum_post`: kind `forum.post`, cap group `message`, with the
+ *   duplicate-content guard — the content-bearing write of this family.
+ *   Always public.
+ * - `set_thread_state`: kind `thread.state`, cap group
+ *   `structure`, recording the previous state as the undo.
  *
  * Member and state edits on a thread the bot owns run under `post-in-thread`
  * rather than `manage-thread`. Audit actions are `mcp.<kind>` by the shared

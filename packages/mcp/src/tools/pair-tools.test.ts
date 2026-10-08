@@ -200,15 +200,15 @@ describe('react routing', () => {
     });
   });
 
-  it.each([['unknown action', { ...reactionArgs(), action: 'explode' }], ['missing action', reactionArgs()]])(
-    '%s is the argument fault and no reaction is touched',
-    async (_label, args) => {
-      const port = messagePort();
-      const outcome = await runReact(principalWith([GUILD_A]), port, args);
-      expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
-      expect(port.calls).toHaveLength(0);
-    },
-  );
+  it.each([
+    ['unknown action', { ...reactionArgs(), action: 'explode' }],
+    ['missing action', reactionArgs()],
+  ])('%s is the argument fault and no reaction is touched', async (_label, args) => {
+    const port = messagePort();
+    const outcome = await runReact(principalWith([GUILD_A]), port, args);
+    expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(port.calls).toHaveLength(0);
+  });
 });
 
 describe('set_pin routing', () => {
@@ -390,8 +390,14 @@ describe('update_scheduled routing', () => {
   it.each([
     ['unknown action', { ...cancelArgs(), action: 'explode' }],
     ['missing action', cancelArgs()],
-    ['cancel carrying an edit-only field', { ...cancelArgs(), action: 'cancel', content: 'late change' }],
-    ['cancel carrying a re-time', { ...cancelArgs(), action: 'cancel', at: '2031-05-06T12:00:00.000Z' }],
+    [
+      'cancel carrying an edit-only field',
+      { ...cancelArgs(), action: 'cancel', content: 'late change' },
+    ],
+    [
+      'cancel carrying a re-time',
+      { ...cancelArgs(), action: 'cancel', at: '2031-05-06T12:00:00.000Z' },
+    ],
   ])('%s is the argument fault and nothing is stored', async (_label, args) => {
     const port = schedulePort();
     const outcome = await runUpdateScheduled(principalWith([GUILD_A]), port, args);

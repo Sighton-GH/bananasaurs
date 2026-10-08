@@ -106,9 +106,7 @@ export const runSetPin = async (
   if (typeof pinned !== 'boolean')
     return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   const rest = withoutSelector(record, 'pinned');
-  return pinned
-    ? pinMessageText(principal, port, rest)
-    : unpinMessageText(principal, port, rest);
+  return pinned ? pinMessageText(principal, port, rest) : unpinMessageText(principal, port, rest);
 };
 
 export const THREAD_MEMBERS_TOOL_NAME = 'thread_members';
@@ -163,7 +161,9 @@ export const setThreadStateParams = {
   archived: z
     .boolean()
     .optional()
-    .describe('Pass exactly one of archived or locked: true archives the thread; false unarchives it.'),
+    .describe(
+      'Pass exactly one of archived or locked: true archives the thread; false unarchives it.',
+    ),
   locked: z
     .boolean()
     .optional()
@@ -184,8 +184,7 @@ export const runSetThreadState = async (
   // handlers' own parse still refuses a non-boolean flag.
   const hasArchived = record['archived'] !== undefined;
   const hasLocked = record['locked'] !== undefined;
-  if (hasArchived === hasLocked)
-    return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
+  if (hasArchived === hasLocked) return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   return hasArchived
     ? archiveThreadText(principal, port, record)
     : lockThreadText(principal, port, record);
@@ -203,7 +202,13 @@ export const UPDATE_SCHEDULED_TOOL_DESCRIPTION = [
     'Pass dryRun to record without changing anything.',
 ].join('\n');
 /** Fields only the edit side takes: a cancel carrying any of them is refused here. */
-const UPDATE_SCHEDULED_EDIT_ONLY = ['content', 'at', 'recurrence', 'pingRoles', 'pingUsers'] as const;
+const UPDATE_SCHEDULED_EDIT_ONLY = [
+  'content',
+  'at',
+  'recurrence',
+  'pingRoles',
+  'pingUsers',
+] as const;
 export const updateScheduledParams = {
   guildId: z.string(),
   action: z.enum(['edit', 'cancel']),
@@ -227,10 +232,7 @@ export const runUpdateScheduled = async (
   const action = record['action'];
   if (action !== 'edit' && action !== 'cancel')
     return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
-  if (
-    action === 'cancel' &&
-    UPDATE_SCHEDULED_EDIT_ONLY.some((key) => record[key] !== undefined)
-  )
+  if (action === 'cancel' && UPDATE_SCHEDULED_EDIT_ONLY.some((key) => record[key] !== undefined))
     return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   const rest = withoutSelector(record, 'action');
   return action === 'edit'
