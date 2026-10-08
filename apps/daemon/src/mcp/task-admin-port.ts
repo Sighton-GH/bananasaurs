@@ -21,7 +21,7 @@ const NOT_AVAILABLE =
 const postsNote = (deps: HttpDeps, guildId: GuildId, kind: TaskPostKind): string =>
   taskPostsMessage(taskPostsFor(deps, deps.scopes.forGuild(guildId)), kind);
 
-/** Deterministic task id for one `create_club_task` request: the sha256 of
+/** Deterministic task id for one `create_task` request: the sha256 of
  * `task:<guildId>:<requestId>` rendered as a version-5-variant UUID, so a
  * retried call names the same row and `createTask` returns the existing task
  * instead of scheduling anything new. */

@@ -367,7 +367,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(row?.after).not.toContain('Measure chassis');
   });
 
-  it('answers a valid read-scope token with tools/list containing all twenty-nine tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty-eight tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -375,12 +375,11 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(29);
+    expect(names).toHaveLength(28);
     expect(names).toEqual([
       'list_tasks',
-      'get_task_details',
-      'list_task_teams',
-      'list_task_reminders',
+      'get_task',
+      'task_teams',
       'get_health',
       'search_messages',
       'read_channel_history',
@@ -6808,7 +6807,7 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     clock,
   );
   const read = await mintToken('bananasaurs:read');
-  const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+  const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
   const url = await app.listen({ port: 0, host: '127.0.0.1' });
   const connect = async (token: string) => {
     const client = new McpClient({ name: 'simulated-ai-agent', version: '1.0.0' });
@@ -6826,24 +6825,24 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     const readNames = (await reader.listTools()).tools.map((tool) => tool.name);
     const sendNames = (await writer.listTools()).tools.map((tool) => tool.name);
     expect(readNames).toContain('list_tasks');
-    expect(readNames).toContain('get_task_details');
-    expect(readNames).toContain('list_task_teams');
-    expect(readNames).toContain('list_task_reminders');
-    expect(sendNames).toContain('request_task_completion');
-    expect(sendNames).not.toContain('list_tasks');
-    expect(sendNames).toContain('approve_task_completion');
+    expect(readNames).toContain('get_task');
+    expect(readNames).toContain('task_teams');
+    expect(readNames).not.toContain('update_task');
+    expect(sendNames).toContain('update_task');
+    expect(sendNames).toContain('list_tasks');
     const list = await reader.callTool({ name: 'list_tasks', arguments: { guildId: GUILD_A } });
     expect(list.isError).not.toBe(true);
     expect(JSON.stringify(list.content)).toContain('Inspect suspension');
     const details = await reader.callTool({
-      name: 'get_task_details',
+      name: 'get_task',
       arguments: { guildId: GUILD_A, taskId },
     });
     expect(details.isError).not.toBe(true);
     expect(JSON.stringify(details.content)).toContain(taskId);
     const quiet = await writer.callTool({
-      name: 'configure_task_quiet_hours',
+      name: 'task_settings',
       arguments: {
+        action: 'set_quiet_hours',
         guildId: GUILD_A,
         startMinute: 60,
         endMinute: 480,
@@ -6852,14 +6851,15 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     });
     expect(quiet.isError).not.toBe(true);
     const teams = await reader.callTool({
-      name: 'list_task_teams',
-      arguments: { guildId: GUILD_A },
+      name: 'task_teams',
+      arguments: { action: 'list', guildId: GUILD_A },
     });
     expect(teams.isError).not.toBe(true);
     expect(JSON.stringify(teams.content)).toContain('Tech');
     const child = await writer.callTool({
-      name: 'append_task_child',
+      name: 'task_steps',
       arguments: {
+        action: 'add',
         guildId: GUILD_A,
         taskId,
         expectedVersion: 1,
@@ -6869,8 +6869,9 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     });
     expect(child.isError).not.toBe(true);
     const report = await writer.callTool({
-      name: 'record_task_progress',
+      name: 'task_progress',
       arguments: {
+        action: 'record',
         guildId: GUILD_A,
         taskId,
         body: 'Measurements recorded',
@@ -6879,12 +6880,12 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     });
     expect(report.isError).not.toBe(true);
     const reminder = await writer.callTool({
-      name: 'add_task_reminder',
-      arguments: { guildId: GUILD_A, taskId, at: clock + 3600000 },
+      name: 'task_reminders',
+      arguments: { action: 'add', guildId: GUILD_A, taskId, at: clock + 3600000 },
     });
     expect(reminder.isError).not.toBe(true);
     const slots = await reader.callTool({
-      name: 'list_task_reminders',
+      name: 'get_task',
       arguments: { guildId: GUILD_A, taskId },
     });
     expect(slots.isError).not.toBe(true);
@@ -6893,14 +6894,21 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     fakeDiscord.defineMember('777777777777777777');
     for (const discordUserId of ['666666666666666666', '777777777777777777']) {
       const added = await writer.callTool({
-        name: 'add_task_team_member',
-        arguments: { guildId: GUILD_A, teamId, discordUserId, kind: 'member' },
+        name: 'task_teams',
+        arguments: {
+          action: 'add_member',
+          guildId: GUILD_A,
+          teamId,
+          discordUserId,
+          kind: 'member',
+        },
       });
       expect(added.isError).not.toBe(true);
     }
     const multiEdit = await writer.callTool({
-      name: 'edit_club_task',
+      name: 'update_task',
       arguments: {
+        action: 'edit',
         guildId: GUILD_A,
         taskId: multiId,
         expectedVersion: 1,
@@ -6933,8 +6941,9 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     const contenders = await Promise.all(
       Array.from({ length: 8 }, () =>
         writer.callTool({
-          name: 'request_task_completion',
+          name: 'update_task',
           arguments: {
+            action: 'request_completion',
             guildId: GUILD_A,
             taskId: concurrentId,
             expectedVersion: 1,
@@ -6950,20 +6959,35 @@ it('simulated AI MCP client uses HTTP for task reads, completion, and fail-close
     // recordReport bumps the version when it moves the task to in_progress, so the completion request uses the live version.
     const liveVersion = taskRepo.getTask(scope, taskId)!.version;
     const completion = await writer.callTool({
-      name: 'request_task_completion',
-      arguments: { guildId: GUILD_A, taskId, expectedVersion: liveVersion },
+      name: 'update_task',
+      arguments: {
+        action: 'request_completion',
+        guildId: GUILD_A,
+        taskId,
+        expectedVersion: liveVersion,
+      },
     });
     expect(completion.isError).not.toBe(true);
     expect(taskRepo.getTask(scope, taskId)?.status).toBe('awaiting_approval');
     const replay = await writer.callTool({
-      name: 'request_task_completion',
-      arguments: { guildId: GUILD_A, taskId, expectedVersion: liveVersion },
+      name: 'update_task',
+      arguments: {
+        action: 'request_completion',
+        guildId: GUILD_A,
+        taskId,
+        expectedVersion: liveVersion,
+      },
     });
     expect(replay.isError).toBe(true);
     const awaitingVersion = taskRepo.getTask(scope, taskId)!.version;
     const approval = await writer.callTool({
-      name: 'approve_task_completion',
-      arguments: { guildId: GUILD_A, taskId, expectedVersion: awaitingVersion },
+      name: 'update_task',
+      arguments: {
+        action: 'approve_completion',
+        guildId: GUILD_A,
+        taskId,
+        expectedVersion: awaitingVersion,
+      },
     });
     expect(approval.isError).not.toBe(true);
     expect(JSON.stringify(approval.content)).toContain('Approved task');
@@ -7085,7 +7109,9 @@ describe('MCP task admin full surface (owner-only)', () => {
   });
 
   const createTeam = async (token: string, over: Record<string, unknown> = {}): Promise<string> => {
-    const found = text((await call(token, 'create_task_team', teamArgs(over))).body);
+    const found = text(
+      (await call(token, 'task_teams', { action: 'create', ...teamArgs(over) })).body,
+    );
     expect(found.isError).not.toBe(true);
     const id = /Created team (\S+)\./.exec(found.text)?.[1];
     if (!id) throw new Error(`no team id in: ${found.text}`);
@@ -7101,7 +7127,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     createTaskRequestCount += 1;
     const found = text(
       (
-        await call(token, 'create_club_task', {
+        await call(token, 'create_task', {
           guildId: gid(),
           teamId,
           title: 'Club task',
@@ -7185,14 +7211,13 @@ describe('MCP task admin full surface (owner-only)', () => {
     const names = (
       sseData(listed.body)[0] as { result?: { tools?: Array<{ name: string }> } }
     ).result?.tools?.map((tool) => tool.name);
-    expect(names).toContain('approve_task_completion');
-    expect(names).toContain('add_task_reminder');
-    expect(names).toContain('cancel_task_reminder');
-    expect(names).toContain('delete_task_team');
-    expect(names).toContain('delete_club_task');
-    expect(names).toContain('delete_task_report');
-    expect(names).toContain('clear_task_president_role');
-    expect(names).toContain('edit_task_child');
+    expect(names).toContain('update_task');
+    expect(names).toContain('task_reminders');
+    expect(names).toContain('task_progress');
+    expect(names).toContain('task_settings');
+    expect(names).toContain('create_task');
+    expect(names).toContain('delete_task');
+    expect(names).toContain('task_steps');
     expect(names).not.toContain('list_tasks');
 
     accountRepo.createAccount(t.scopes.instance(), {
@@ -7246,11 +7271,11 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     // The port still rechecks per call: a non-owner token that names a hidden
     // tool is refused, never executed.
-    const refused = text((await call(memberSend, 'create_task_team', teamArgs())).body);
+    const refused = text((await call(memberSend, 'task_teams', teamArgs())).body);
     expect(refused.isError).toBe(true);
     const refusedDeleteTask = text(
       (
-        await call(memberSend, 'delete_club_task', {
+        await call(memberSend, 'delete_task', {
           guildId: gid(),
           taskId: '00000000-0000-4000-8000-000000000000',
           expectedVersion: 1,
@@ -7260,7 +7285,8 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(refusedDeleteTask.isError).toBe(true);
     const refusedDeleteReport = text(
       (
-        await call(memberSend, 'delete_task_report', {
+        await call(memberSend, 'task_progress', {
+          action: 'delete_report',
           guildId: gid(),
           taskId: '00000000-0000-4000-8000-000000000000',
           reportId: 'report-1',
@@ -7305,7 +7331,7 @@ describe('MCP task admin full surface (owner-only)', () => {
             .body,
         )[0] as { result?: { tools?: Array<{ name: string }> } }
       ).result?.tools?.map((tool) => tool.name);
-    expect(await listNames(before)).not.toContain('create_task_team');
+    expect(await listNames(before)).not.toContain('task_teams');
     expect(await listNames(before)).not.toContain('list_tasks');
 
     authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_A), {
@@ -7320,8 +7346,8 @@ describe('MCP task admin full surface (owner-only)', () => {
       'bananasaurs:read bananasaurs:send bananasaurs:tasks',
     );
     const names = await listNames(token);
-    expect(names).toContain('create_task_team');
-    expect(names).toContain('create_club_task');
+    expect(names).toContain('task_teams');
+    expect(names).toContain('create_task');
     expect(names).toContain('list_tasks');
 
     const teamId = await createTeam(token);
@@ -7330,7 +7356,12 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     // A grant in guild A never reaches guild B.
     const otherGuild = text(
-      (await call(token, 'create_task_team', teamArgs({ guildId: String(GUILD_B) }))).body,
+      (
+        await call(token, 'task_teams', {
+          action: 'create',
+          ...teamArgs({ guildId: String(GUILD_B) }),
+        })
+      ).body,
     );
     expect(otherGuild.isError).toBe(true);
     const otherRead = text((await call(token, 'list_tasks', { guildId: String(GUILD_B) })).body);
@@ -7340,7 +7371,9 @@ describe('MCP task admin full surface (owner-only)', () => {
       accountId: MEMBER_ACCOUNT,
       capability: 'tasks.manage',
     });
-    const revoked = text((await call(token, 'delete_task_team', { guildId: gid(), teamId })).body);
+    const revoked = text(
+      (await call(token, 'task_teams', { action: 'delete', guildId: gid(), teamId })).body,
+    );
     expect(revoked.isError).toBe(true);
     expect(taskRepo.listTeams(t.scopes.forGuild(GUILD_A))).toHaveLength(1);
     const revokedRead = text((await call(token, 'list_tasks', { guildId: gid() })).body);
@@ -7351,12 +7384,12 @@ describe('MCP task admin full surface (owner-only)', () => {
     seedTaskWorld();
     await app.close();
     app = buildDashboardApp({ ...deps, taskPostsDryRun: false });
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     const create = async (requestId: string) =>
       text(
         (
-          await call(send, 'create_club_task', {
+          await call(send, 'create_task', {
             guildId: gid(),
             teamId,
             title: `Posts ${requestId}`,
@@ -7382,8 +7415,14 @@ describe('MCP task admin full surface (owner-only)', () => {
     const taskId = /Created task (\S+) \(version 1\)\./.exec(on.text)?.[1];
     if (!taskId) throw new Error(`no task id in: ${on.text}`);
     const requested = text(
-      (await call(send, 'request_task_completion', { guildId: gid(), taskId, expectedVersion: 1 }))
-        .body,
+      (
+        await call(send, 'update_task', {
+          action: 'request_completion',
+          guildId: gid(),
+          taskId,
+          expectedVersion: 1,
+        })
+      ).body,
     );
     expect(requested.text).toContain(
       'Task posts are on: the approval request is posted to Discord within a minute.',
@@ -7395,11 +7434,11 @@ describe('MCP task admin full surface (owner-only)', () => {
     guildRepo.setTaskPostsEnabled(t.scopes.forGuild(GUILD_A), true, clock);
     await app.close();
     app = buildDashboardApp({ ...deps, taskPostsDryRun: true });
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     const created = text(
       (
-        await call(send, 'create_club_task', {
+        await call(send, 'create_task', {
           guildId: gid(),
           teamId,
           title: 'Dry run',
@@ -7436,13 +7475,14 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('create (multi-assignee) → edit → request → approve ends done with mcp_operator audit', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     for (const discordUserId of [MEMBER_A, MEMBER_B]) {
       const added = text(
         (
-          await call(send, 'add_task_team_member', {
+          await call(send, 'task_teams', {
+            action: 'add_member',
             guildId: gid(),
             teamId,
             discordUserId,
@@ -7454,7 +7494,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     }
     const created = text(
       (
-        await call(send, 'create_club_task', {
+        await call(send, 'create_task', {
           guildId: gid(),
           teamId,
           title: 'Shared measurement',
@@ -7480,7 +7520,8 @@ describe('MCP task admin full surface (owner-only)', () => {
     // Multi-assignee edits are allowed over MCP: the assignee list is required.
     const edited = text(
       (
-        await call(send, 'edit_club_task', {
+        await call(send, 'update_task', {
+          action: 'edit',
           guildId: gid(),
           taskId,
           expectedVersion: 1,
@@ -7497,16 +7538,28 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(edited.text).toContain('(version 2)');
 
     const requested = text(
-      (await call(send, 'request_task_completion', { guildId: gid(), taskId, expectedVersion: 2 }))
-        .body,
+      (
+        await call(send, 'update_task', {
+          action: 'request_completion',
+          guildId: gid(),
+          taskId,
+          expectedVersion: 2,
+        })
+      ).body,
     );
     expect(requested.isError).not.toBe(true);
     expect(requested.text).toContain('awaiting approval (version 3)');
     expect(requested.text).toContain('Nothing was posted to Discord');
 
     const approved = text(
-      (await call(send, 'approve_task_completion', { guildId: gid(), taskId, expectedVersion: 3 }))
-        .body,
+      (
+        await call(send, 'update_task', {
+          action: 'approve_completion',
+          guildId: gid(),
+          taskId,
+          expectedVersion: 3,
+        })
+      ).body,
     );
     expect(approved.isError).not.toBe(true);
     expect(approved.text).toContain('Approved task');
@@ -7529,14 +7582,15 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('reject returns an awaiting task to in_progress', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
     expect(
       text(
         (
-          await call(send, 'request_task_completion', {
+          await call(send, 'update_task', {
+            action: 'request_completion',
             guildId: gid(),
             taskId,
             expectedVersion: 1,
@@ -7545,8 +7599,14 @@ describe('MCP task admin full surface (owner-only)', () => {
       ).isError,
     ).not.toBe(true);
     const rejected = text(
-      (await call(send, 'reject_task_completion', { guildId: gid(), taskId, expectedVersion: 2 }))
-        .body,
+      (
+        await call(send, 'update_task', {
+          action: 'reject_completion',
+          guildId: gid(),
+          taskId,
+          expectedVersion: 2,
+        })
+      ).body,
     );
     expect(rejected.isError).not.toBe(true);
     expect(rejected.text).toContain('(version 3)');
@@ -7554,7 +7614,8 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     const parked = text(
       (
-        await call(send, 'set_task_status', {
+        await call(send, 'update_task', {
+          action: 'set_status',
           guildId: gid(),
           taskId,
           expectedVersion: 3,
@@ -7568,13 +7629,20 @@ describe('MCP task admin full surface (owner-only)', () => {
 
   it('archive hides from list_tasks and includeArchived shows it again', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const read = await mintToken('bananasaurs:read');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId, { title: 'Archive me' });
     const archived = text(
-      (await call(send, 'archive_task', { guildId: gid(), taskId, expectedVersion: 1 })).body,
+      (
+        await call(send, 'update_task', {
+          action: 'archive',
+          guildId: gid(),
+          taskId,
+          expectedVersion: 1,
+        })
+      ).body,
     );
     expect(archived.isError).not.toBe(true);
     expect(archived.text).toContain('(version 2)');
@@ -7589,27 +7657,37 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(shown.isError).not.toBe(true);
     expect(shown.text).toContain('Archive me');
 
-    const details = text((await call(read, 'get_task_details', { guildId: gid(), taskId })).body);
+    const details = text((await call(read, 'get_task', { guildId: gid(), taskId })).body);
     expect(details.isError).not.toBe(true);
-    expect((JSON.parse(details.text) as Record<string, unknown>)['archived']).toBe(true);
+    expect(
+      (JSON.parse(details.text.split('\n\n')[0] ?? '') as Record<string, unknown>)['archived'],
+    ).toBe(true);
 
     const restored = text(
-      (await call(send, 'unarchive_task', { guildId: gid(), taskId, expectedVersion: 2 })).body,
+      (
+        await call(send, 'update_task', {
+          action: 'unarchive',
+          guildId: gid(),
+          taskId,
+          expectedVersion: 2,
+        })
+      ).body,
     );
     expect(restored.isError).not.toBe(true);
     expect(taskRepo.getTask(scope, taskId)?.archivedAt).toBeNull();
   });
 
-  it('record_task_progress twice with one requestId writes one report', async () => {
+  it('task_progress record twice with one requestId writes one report', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
     const requestId = '00000000-0000-4000-8000-000000000007';
     const first = text(
       (
-        await call(send, 'record_task_progress', {
+        await call(send, 'task_progress', {
+          action: 'record',
           guildId: gid(),
           taskId,
           body: 'Measured',
@@ -7620,7 +7698,8 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(first.isError).not.toBe(true);
     const second = text(
       (
-        await call(send, 'record_task_progress', {
+        await call(send, 'task_progress', {
+          action: 'record',
           guildId: gid(),
           taskId,
           body: 'Measured',
@@ -7633,9 +7712,9 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(taskRepo.listReports(scope, taskId)).toHaveLength(1);
   });
 
-  it('create_club_task twice with one requestId makes one task and one announce slot', async () => {
+  it('create_task twice with one requestId makes one task and one announce slot', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const args = {
@@ -7648,11 +7727,11 @@ describe('MCP task admin full surface (owner-only)', () => {
       destinationId: DEST,
       requestId: 'idempotent-create-1',
     };
-    const first = text((await call(send, 'create_club_task', args)).body);
+    const first = text((await call(send, 'create_task', args)).body);
     expect(first.isError).not.toBe(true);
     const taskId = /Created task (\S+) \(version 1\)\./.exec(first.text)?.[1];
     if (!taskId) throw new Error(`no task id in: ${first.text}`);
-    const second = text((await call(send, 'create_club_task', args)).body);
+    const second = text((await call(send, 'create_task', args)).body);
     expect(second.isError).not.toBe(true);
     expect(second.text).toContain(taskId);
     expect(second.text).toContain('nothing new was scheduled');
@@ -7662,15 +7741,16 @@ describe('MCP task admin full surface (owner-only)', () => {
     ).toHaveLength(1);
   });
 
-  it('delete_club_task removes the task with CAS; delete_task_report removes one update', async () => {
+  it('delete_task removes the task with CAS; task_progress delete_report removes one update', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
     const recorded = text(
       (
-        await call(send, 'record_task_progress', {
+        await call(send, 'task_progress', {
+          action: 'record',
           guildId: gid(),
           taskId,
           body: 'Measured',
@@ -7681,39 +7761,65 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(recorded.isError).not.toBe(true);
     // A stale version is refused and the task survives.
     const stale = text(
-      (await call(send, 'delete_club_task', { guildId: gid(), taskId, expectedVersion: 99 })).body,
+      (
+        await call(send, 'delete_task', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: 99,
+        })
+      ).body,
     );
     expect(stale.isError).toBe(true);
     expect(taskRepo.getTask(scope, taskId)).toBeDefined();
     const reportId = taskRepo.listReports(scope, taskId)[0]?.reportId;
     if (!reportId) throw new Error('no report recorded');
     const deletedReport = text(
-      (await call(send, 'delete_task_report', { guildId: gid(), taskId, reportId })).body,
+      (
+        await call(send, 'task_progress', {
+          action: 'delete_report',
+          guildId: gid(),
+          taskId,
+          reportId,
+        })
+      ).body,
     );
     expect(deletedReport.isError).not.toBe(true);
     expect(taskRepo.listReports(scope, taskId)).toHaveLength(0);
     const missingReport = text(
-      (await call(send, 'delete_task_report', { guildId: gid(), taskId, reportId })).body,
+      (
+        await call(send, 'task_progress', {
+          action: 'delete_report',
+          guildId: gid(),
+          taskId,
+          reportId,
+        })
+      ).body,
     );
     expect(missingReport.isError).toBe(true);
     const version = taskRepo.getTask(scope, taskId)?.version ?? 0;
     const deleted = text(
-      (await call(send, 'delete_club_task', { guildId: gid(), taskId, expectedVersion: version }))
-        .body,
+      (
+        await call(send, 'delete_task', {
+          guildId: gid(),
+          taskId,
+          expectedVersion: version,
+        })
+      ).body,
     );
     expect(deleted.isError).not.toBe(true);
     expect(taskRepo.getTask(scope, taskId)).toBeUndefined();
     expect(taskRepo.listTasks(scope)).toHaveLength(0);
   });
 
-  it('complete_task_child with a stale version is refused', async () => {
+  it('task_steps complete with a stale version is refused', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     const taskId = await createTeamTask(send, teamId);
     const appended = text(
       (
-        await call(send, 'append_task_child', {
+        await call(send, 'task_steps', {
+          action: 'add',
           guildId: gid(),
           taskId,
           expectedVersion: 1,
@@ -7729,7 +7835,8 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     const renamed = text(
       (
-        await call(send, 'edit_task_child', {
+        await call(send, 'task_steps', {
+          action: 'edit',
           guildId: gid(),
           taskId,
           expectedVersion: 2,
@@ -7744,7 +7851,8 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     const stale = text(
       (
-        await call(send, 'complete_task_child', {
+        await call(send, 'task_steps', {
+          action: 'complete',
           guildId: gid(),
           taskId,
           expectedVersion: 2,
@@ -7756,7 +7864,8 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     const done = text(
       (
-        await call(send, 'complete_task_child', {
+        await call(send, 'task_steps', {
+          action: 'complete',
           guildId: gid(),
           taskId,
           expectedVersion: 3,
@@ -7769,7 +7878,8 @@ describe('MCP task admin full surface (owner-only)', () => {
 
     const appendedTwo = text(
       (
-        await call(send, 'append_task_child', {
+        await call(send, 'task_steps', {
+          action: 'add',
           guildId: gid(),
           taskId,
           expectedVersion: 4,
@@ -7782,7 +7892,8 @@ describe('MCP task admin full surface (owner-only)', () => {
     if (!childTwo) throw new Error(`no child id in: ${appendedTwo.text}`);
     const deleted = text(
       (
-        await call(send, 'delete_task_child', {
+        await call(send, 'task_steps', {
+          action: 'delete',
           guildId: gid(),
           taskId,
           expectedVersion: 5,
@@ -7794,7 +7905,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(deleted.text).toContain('(version 6)');
   });
 
-  it('edit_club_task to a new channel is refused once the task was announced', async () => {
+  it('update_task edit to a new channel is refused once the task was announced', async () => {
     seedTaskWorld();
     // The shared harness stub resolves only DEST; this variant app resolves
     // one more channel in the same category, so a destination move passes
@@ -7816,7 +7927,10 @@ describe('MCP task admin full surface (owner-only)', () => {
     };
     const anchoredApp = buildDashboardApp({ ...deps, portsFor });
     try {
-      const send = await mintToken('bananasaurs:send bananasaurs:tasks', anchoredApp);
+      const send = await mintToken(
+        'bananasaurs:read bananasaurs:send bananasaurs:tasks',
+        anchoredApp,
+      );
       const teamId = await createTeam(send);
       const taskId = await createTeamTask(send, teamId);
       expect(
@@ -7837,8 +7951,9 @@ describe('MCP task admin full surface (owner-only)', () => {
               id: 1,
               method: 'tools/call',
               params: {
-                name: 'edit_club_task',
+                name: 'update_task',
                 arguments: {
+                  action: 'edit',
                   guildId: gid(),
                   taskId,
                   expectedVersion: 1,
@@ -7862,9 +7977,9 @@ describe('MCP task admin full surface (owner-only)', () => {
     }
   });
 
-  it('complete_task_child is refused when the team category no longer resolves', async () => {
+  it('task_steps complete is refused when the team category no longer resolves', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const scope = t.scopes.forGuild(GUILD_A);
     // Seeded straight through the repository: this category was never
     // injected into the gateway cache, so the live team check fails exactly
@@ -7901,7 +8016,8 @@ describe('MCP task admin full surface (owner-only)', () => {
     if (!added) throw new Error('child was not added');
     const refused = text(
       (
-        await call(send, 'complete_task_child', {
+        await call(send, 'task_steps', {
+          action: 'complete',
           guildId: gid(),
           taskId,
           expectedVersion: 2,
@@ -7913,48 +8029,64 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(taskRepo.getTask(scope, taskId)).toMatchObject({ version: 2 });
   });
 
-  it('delete_task_team with tasks is refused; an empty team deletes', async () => {
+  it('task_teams delete with tasks is refused; an empty team deletes', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     await createTeamTask(send, teamId);
-    const refused = text((await call(send, 'delete_task_team', { guildId: gid(), teamId })).body);
+    const refused = text(
+      (await call(send, 'task_teams', { action: 'delete', guildId: gid(), teamId })).body,
+    );
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('Archive or move its tasks first');
 
     const second = await createTeam(send, { name: 'Empty', categoryId: SECOND_CATEGORY });
     const deleted = text(
-      (await call(send, 'delete_task_team', { guildId: gid(), teamId: second })).body,
+      (await call(send, 'task_teams', { action: 'delete', guildId: gid(), teamId: second })).body,
     );
     expect(deleted.isError).not.toBe(true);
     expect(deleted.text).toContain(`Deleted team ${second}.`);
   });
 
-  it('cancel_task_reminder on a pending custom reminder succeeds, then refuses', async () => {
+  it('task_reminders cancel on a pending custom reminder succeeds, then refuses', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const read = await mintToken('bananasaurs:read');
     const scope = t.scopes.forGuild(GUILD_A);
     const teamId = await createTeam(send);
     const at = clock + 3600000;
     const taskId = await createTeamTask(send, teamId, { extraReminderAt: [clock + 7200000] });
     const added = text(
-      (await call(send, 'add_task_reminder', { guildId: gid(), taskId, at })).body,
+      (await call(send, 'task_reminders', { action: 'add', guildId: gid(), taskId, at })).body,
     );
     expect(added.isError).not.toBe(true);
 
-    const listed = text((await call(read, 'list_task_reminders', { guildId: gid(), taskId })).body);
+    const listed = text((await call(read, 'get_task', { guildId: gid(), taskId })).body);
     expect(listed.isError).not.toBe(true);
     expect(listed.text).toContain(`custom:${taskId}:${at}`);
 
     const slotId = `custom:${taskId}:${at}`;
     const cancelled = text(
-      (await call(send, 'cancel_task_reminder', { guildId: gid(), taskId, slotId })).body,
+      (
+        await call(send, 'task_reminders', {
+          action: 'cancel',
+          guildId: gid(),
+          taskId,
+          slotId,
+        })
+      ).body,
     );
     expect(cancelled.isError).not.toBe(true);
 
     const again = text(
-      (await call(send, 'cancel_task_reminder', { guildId: gid(), taskId, slotId })).body,
+      (
+        await call(send, 'task_reminders', {
+          action: 'cancel',
+          guildId: gid(),
+          taskId,
+          slotId,
+        })
+      ).body,
     );
     expect(again.isError).toBe(true);
     expect(again.text).toContain('Only a pending custom reminder can be cancelled.');
@@ -7964,25 +8096,38 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(trail.some((row) => row.action === 'task.reminder_cancelled')).toBe(true);
 
     const past = text(
-      (await call(send, 'add_task_reminder', { guildId: gid(), taskId, at: clock - 1000 })).body,
+      (
+        await call(send, 'task_reminders', {
+          action: 'add',
+          guildId: gid(),
+          taskId,
+          at: clock - 1000,
+        })
+      ).body,
     );
     expect(past.isError).toBe(true);
   });
 
-  it('list_task_teams returns the member role id, members, president and quiet hours', async () => {
+  it('task_teams list returns the member role id, members, president and quiet hours', async () => {
     seedTaskWorld();
     fakeDiscord.defineMember(MEMBER_A, [LEAD_ROLE]);
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const read = await mintToken('bananasaurs:read');
     const teamId = await createTeam(send, { leadRoleId: LEAD_ROLE, memberRoleId: MEMBER_ROLE });
     const president = text(
-      (await call(send, 'set_task_president_role', { guildId: gid(), roleId: PRESIDENT_ROLE }))
-        .body,
+      (
+        await call(send, 'task_settings', {
+          action: 'set_president_role',
+          guildId: gid(),
+          roleId: PRESIDENT_ROLE,
+        })
+      ).body,
     );
     expect(president.isError).not.toBe(true);
     const lead = text(
       (
-        await call(send, 'add_task_team_member', {
+        await call(send, 'task_teams', {
+          action: 'add_member',
           guildId: gid(),
           teamId,
           discordUserId: MEMBER_A,
@@ -7992,7 +8137,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     );
     expect(lead.isError).not.toBe(true);
 
-    const found = text((await call(read, 'list_task_teams', { guildId: gid() })).body);
+    const found = text((await call(read, 'task_teams', { action: 'list', guildId: gid() })).body);
     expect(found.isError).not.toBe(true);
     const parsed = JSON.parse(found.text) as {
       teams: Array<Record<string, unknown>>;
@@ -8012,13 +8157,20 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(parsed.quietHours).toMatchObject({ timezone: 'America/Los_Angeles' });
 
     const configured = text(
-      (await call(send, 'configure_task_team', { guildId: gid(), teamId, memberRoleId: null }))
-        .body,
+      (
+        await call(send, 'task_teams', {
+          action: 'configure',
+          guildId: gid(),
+          teamId,
+          memberRoleId: null,
+        })
+      ).body,
     );
     expect(configured.isError).not.toBe(true);
     const removed = text(
       (
-        await call(send, 'remove_task_team_member', {
+        await call(send, 'task_teams', {
+          action: 'remove_member',
           guildId: gid(),
           teamId,
           discordUserId: MEMBER_A,
@@ -8026,31 +8178,37 @@ describe('MCP task admin full surface (owner-only)', () => {
       ).body,
     );
     expect(removed.isError).not.toBe(true);
-    const cleared = text((await call(send, 'clear_task_president_role', { guildId: gid() })).body);
+    const cleared = text(
+      (await call(send, 'task_settings', { action: 'clear_president_role', guildId: gid() })).body,
+    );
     expect(cleared.isError).not.toBe(true);
-    const deleted = text((await call(send, 'delete_task_team', { guildId: gid(), teamId })).body);
+    const deleted = text(
+      (await call(send, 'task_teams', { action: 'delete', guildId: gid(), teamId })).body,
+    );
     expect(deleted.isError).not.toBe(true);
   });
 
   it('a duplicate category is refused with the team text', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     await createTeam(send);
-    const duplicate = text((await call(send, 'create_task_team', teamArgs())).body);
+    const duplicate = text(
+      (await call(send, 'task_teams', { action: 'create', ...teamArgs() })).body,
+    );
     expect(duplicate.isError).toBe(true);
     expect(duplicate.text).toContain('That category already has a team.');
   });
 
-  it('create_club_task to a destination without Write is refused', async () => {
+  it('create_task to a destination without Write is refused', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     const teamId = await createTeam(send);
     expect(mcpSendRepo.disallowChannel(t.scopes.forGuild(GUILD_A), CATEGORY, 'category')).toBe(
       'removed',
     );
     const refused = text(
       (
-        await call(send, 'create_club_task', {
+        await call(send, 'create_task', {
           guildId: gid(),
           teamId,
           title: 'Club task',
@@ -8066,14 +8224,19 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(taskRepo.listTasks(t.scopes.forGuild(GUILD_A))).toHaveLength(0);
   });
 
-  it('create_task_team with an announcement channel without Write is refused', async () => {
+  it('task_teams create with an announcement channel without Write is refused', async () => {
     seedTaskWorld();
-    const send = await mintToken('bananasaurs:send bananasaurs:tasks');
+    const send = await mintToken('bananasaurs:read bananasaurs:send bananasaurs:tasks');
     expect(mcpSendRepo.disallowChannel(t.scopes.forGuild(GUILD_A), CATEGORY, 'category')).toBe(
       'removed',
     );
     const refused = text(
-      (await call(send, 'create_task_team', teamArgs({ announcementChannelId: DEST }))).body,
+      (
+        await call(send, 'task_teams', {
+          action: 'create',
+          ...teamArgs({ announcementChannelId: DEST }),
+        })
+      ).body,
     );
     expect(refused.isError).toBe(true);
     expect(taskRepo.listTeams(t.scopes.forGuild(GUILD_A))).toHaveLength(0);

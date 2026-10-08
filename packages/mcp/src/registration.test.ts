@@ -26,6 +26,14 @@ import type { McpResourcesPort } from './tools/resources.js';
 import type { McpThreadsPort } from './tools/threads.js';
 import type { McpTaskDetailPort, McpTaskPort } from './tools/tasks.js';
 import { taskAdminTools, type TaskAdminPort } from './tools/task-admin.js';
+import {
+  TASK_PROGRESS_ACTIONS,
+  TASK_REMINDERS_ACTIONS,
+  TASK_SETTINGS_ACTIONS,
+  TASK_STEPS_ACTIONS,
+  TASK_TEAMS_ACTIONS,
+  UPDATE_TASK_ACTIONS,
+} from './tools/task-tools.js';
 
 /**
  * Slice 3, Task 7: the registration pin. Tool names must be unique across
@@ -198,7 +206,7 @@ const fullDeps = (principal: McpPrincipal): McpServerDeps => {
   };
 };
 
-/** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the four read-only task tools, and `list_actions`. */
+/** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the two read-only task tools, and `list_actions`. */
 const READ_TOOLS: readonly string[] = [
   'get_health',
   'search_messages',
@@ -226,9 +234,8 @@ const READ_TOOLS: readonly string[] = [
   'open_resource',
   'list_actions',
   'list_tasks',
-  'get_task_details',
-  'list_task_teams',
-  'list_task_reminders',
+  'get_task',
+  'task_teams',
 ];
 
 /** The send-scope set: `send_message`, the twelve thread/message write tools, the four event tools, the four schedule tools, and `undo_action`. */
@@ -269,33 +276,15 @@ const ROLES_TOOLS: readonly string[] = [
   'remove_role',
 ];
 
-/** The tasks-scope set: main's task-tracking write tools, sorted. */
+/** The tasks-scope set: the action-based task write tools (ADR 0132), sorted. */
 const TASK_TOOLS: readonly string[] = [
-  'add_task_reminder',
-  'add_task_team_member',
-  'append_task_child',
-  'approve_task_completion',
-  'archive_task',
-  'cancel_task_reminder',
-  'clear_task_president_role',
-  'complete_task_child',
-  'configure_task_quiet_hours',
-  'configure_task_team',
-  'create_club_task',
-  'create_task_team',
-  'delete_club_task',
-  'delete_task_child',
-  'delete_task_report',
-  'delete_task_team',
-  'edit_club_task',
-  'edit_task_child',
-  'record_task_progress',
-  'reject_task_completion',
-  'remove_task_team_member',
-  'request_task_completion',
-  'set_task_president_role',
-  'set_task_status',
-  'unarchive_task',
+  'create_task',
+  'delete_task',
+  'task_progress',
+  'task_reminders',
+  'task_settings',
+  'task_steps',
+  'update_task',
 ];
 
 const SCOPES = ['read', 'send', 'roles', 'tasks'] as const;
@@ -350,13 +339,25 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
 
 describe('registration pins every scope subset', () => {
   it('the four scope sets have the expected sizes', () => {
-    expect(READ_TOOLS).toHaveLength(29);
+    expect(READ_TOOLS).toHaveLength(28);
     expect(SEND_TOOLS).toHaveLength(22);
     expect(ROLES_TOOLS).toHaveLength(8);
-    expect(TASK_TOOLS).toHaveLength(25);
-    // The hardcoded task list is the whole registrar: no drift between this
-    // file and the tools main registers.
-    expect(Object.keys(taskAdminTools).sort()).toEqual([...TASK_TOOLS]);
+    expect(TASK_TOOLS).toHaveLength(7);
+    // The hardcoded task lists are the whole registrar: no drift between
+    // this file and the tools the server registers, and every internal
+    // task-admin name is routed by exactly one new tool action (ADR 0132).
+    expect(
+      [
+        'create_club_task',
+        'delete_club_task',
+        ...Object.values(UPDATE_TASK_ACTIONS),
+        ...Object.values(TASK_STEPS_ACTIONS),
+        ...Object.values(TASK_REMINDERS_ACTIONS),
+        ...Object.values(TASK_PROGRESS_ACTIONS),
+        ...Object.values(TASK_TEAMS_ACTIONS),
+        ...Object.values(TASK_SETTINGS_ACTIONS),
+      ].sort(),
+    ).toEqual(Object.keys(taskAdminTools).sort());
   });
 
   it('every name is unique across registrars', () => {
@@ -423,5 +424,7 @@ describe('registration pins every scope subset', () => {
     expect(tasksOnly).not.toContain('send_message');
     expect(tasksOnly).not.toContain('undo_action');
     expect(tasksOnly).not.toContain('list_tasks');
+    expect(tasksOnly).not.toContain('get_task');
+    expect(tasksOnly).not.toContain('task_teams');
   });
 });

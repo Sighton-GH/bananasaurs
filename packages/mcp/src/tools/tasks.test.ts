@@ -94,7 +94,7 @@ describe('task MCP read boundary', () => {
   });
 });
 
-describe('get_task_details with assignees, reminders and archived flag', () => {
+describe('get_task details with assignees, reminders and archived flag', () => {
   const detail = {
     taskId: 'task',
     teamId: 'team',
@@ -161,7 +161,7 @@ describe('get_task_details with assignees, reminders and archived flag', () => {
   });
 });
 
-describe('list_task_teams', () => {
+describe('task_teams list', () => {
   const view = {
     teams: [
       {
@@ -205,7 +205,7 @@ describe('list_task_teams', () => {
   });
 });
 
-describe('list_task_reminders', () => {
+describe('get_task reminders', () => {
   it('returns the task slots as JSON', () => {
     const reminders = vi.fn().mockReturnValue([
       {
