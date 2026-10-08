@@ -5,6 +5,7 @@ import {
   ProviderError,
   type ChannelAccess,
   type GenerateTextResponse,
+  type RunEvent,
   type TextProvider,
 } from '@bananasaurs/core';
 import {
@@ -18,6 +19,7 @@ import {
   jobRepo,
   modelCallsRepo,
   resourceCacheRepo,
+  runRepo,
   traceRepo,
 } from '@bananasaurs/storage';
 import {
@@ -5164,5 +5166,151 @@ describe('Task 7: No-access channels are hidden from search, recall and server_i
     expect(toolTurn(seen, 1)).toContain('#paused');
     expect(toolTurn(seen, 1)).not.toContain(NOACCESS);
     expect(toolTurn(seen, 1)).not.toContain('#noaccess');
+  });
+});
+
+describe('assistant service run recorder (ADR 0129 §6)', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const BOT = '123456789012345678';
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: BOT,
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const usable = (provider: TextProvider): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'model-a',
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+  });
+
+  const answering = (text: string): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async () => ({ text, model: 'model-a' }),
+  });
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+    assistantRepo.putSkillGrant(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const serviceWith = (provider: TextProvider) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: vi.fn(async () => []) },
+      () => [usable(provider)],
+    );
+
+  it('invoke with a recorder logs context-built then the model pair', async () => {
+    const events: RunEvent[] = [];
+    const service = serviceWith(answering('hello'));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'when is the meeting?' },
+      source: 'slash-command',
+      invocationId: 'inv-rec-1',
+      recorder: {
+        runId: 'inv-rec-1',
+        event: (e: RunEvent) => {
+          events.push(e);
+        },
+        update: () => undefined,
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(events.map((e) => e.kind)).toEqual(['context-built', 'model-call', 'model-result']);
+    const built = events[0];
+    expect(built.kind).toBe('context-built');
+    if (built.kind === 'context-built') {
+      expect(built.sections.length).toBeGreaterThan(0);
+      expect(built.toolsOffered.length).toBeGreaterThan(0);
+    }
+    expect(events[2]).toMatchObject({ ok: true });
+  });
+
+  it('tryIt creates a dashboard-test run that ends finished with the trace id', async () => {
+    const service = serviceWith(answering('Try-it answer.'));
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'when is the meeting?',
+      accountUsername: 'owner-name',
+    });
+    const scope = t.scopes.forGuild(GUILD);
+    const runs = runRepo.listRuns(scope, { limit: 10 });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      source: 'dashboard-test',
+      state: 'answered',
+      stage: 'done',
+      conversationId: result.conversationId,
+    });
+    const finished = runRepo
+      .listRunEvents(scope, runs[0]!.runId, 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'answered', traceId: result.traceId });
   });
 });

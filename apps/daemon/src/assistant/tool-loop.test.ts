@@ -5,12 +5,14 @@ import {
   type GenerateTextRequest,
   type GenerateTextResponse,
   type GenerationMessage,
+  type RunEvent,
   type TextProvider,
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
 import type { ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
+import type { RunRecorder } from './run-recorder.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopTools } from './tool-loop.js';
 import type { AssistantToolResult } from './tools.js';
 import { createCitationRegistry } from './citations.js';
@@ -1480,5 +1482,137 @@ describe('B2b: runToolLoop action summaries', () => {
     expect(result.outcome).toBe('answered');
     expect(inserts).toBe(1);
     expect(result.actionSummaries).toEqual([summary]);
+  });
+});
+
+describe('runToolLoop run recorder (ADR 0129 §6)', () => {
+  const collecting = () => {
+    const events: RunEvent[] = [];
+    const recorder: RunRecorder = {
+      runId: 'run-1',
+      event: (e: RunEvent) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    };
+    return { recorder, events };
+  };
+
+  it('a 404 on entry 0 then success on entry 1 records model-call/model-result pairs', async () => {
+    const failing = scripted([
+      new ProviderError(
+        'invalid-request',
+        'openrouter request failed with HTTP 404 (code 404: No endpoints found.)',
+        false,
+        { status: 404, host: 'openrouter.ai' },
+      ),
+    ]);
+    const answering = scripted([
+      {
+        text: 'done',
+        model: 'model-b',
+        usage: { promptTokens: 10, completionTokens: 5 },
+        finishReason: 'stop',
+      },
+    ]);
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: failing.provider, model: 'model-a', keyId: 'key_a' }),
+          entry({ provider: answering.provider, model: 'model-b', keyId: 'key_b' }),
+        ],
+        { recorder },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(events.map((e) => e.kind)).toEqual([
+      'model-call',
+      'model-result',
+      'model-call',
+      'model-result',
+    ]);
+    expect(events[0]).toMatchObject({ position: 0, of: 2, round: 1 });
+    expect(events[1]).toMatchObject({ ok: false, code: 'provider-bad-model', httpStatus: 404 });
+    expect(events[2]).toMatchObject({ position: 1, of: 2 });
+    expect(events[3]).toMatchObject({
+      ok: true,
+      promptTokens: 10,
+      completionTokens: 5,
+      finishReason: 'stop',
+    });
+  });
+
+  it('a tool round records tool-call then tool-result with the result length', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      textAnswer('Done.'),
+    ]);
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        recorder,
+        tools: loopTools(async (call) => okResult(call.name, 'result text')),
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(events.map((e) => e.kind)).toEqual([
+      'model-call',
+      'model-result',
+      'tool-call',
+      'tool-result',
+      'model-call',
+      'model-result',
+    ]);
+    expect(events[2]).toMatchObject({ round: 1, tool: 'search_sources' });
+    expect(events[3]).toMatchObject({ round: 1, tool: 'search_sources', ok: true, resultChars: 11 });
+  });
+
+  it('a refused tool records only tool-result with the reason', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      textAnswer('Done.'),
+    ]);
+    const { recorder, events } = collecting();
+    // No tools offered: every call refuses with 'tools not offered'.
+    const result = await runToolLoop(baseInput([entry({ provider })], { recorder }));
+    expect(result.outcome).toBe('answered');
+    expect(events.filter((e) => e.kind === 'tool-call')).toEqual([]);
+    expect(events.filter((e) => e.kind === 'tool-result')).toHaveLength(1);
+    expect(events.find((e) => e.kind === 'tool-result')).toMatchObject({
+      ok: false,
+      refused: 'tools not offered',
+    });
+  });
+
+  it('a skipped entry records model-skipped with the reason', async () => {
+    const { provider } = scripted([textAnswer('Done.')]);
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: undefined, skip: 'ineligible', model: 'model-a', keyId: 'key_a' }),
+          entry({ provider, model: 'model-b', keyId: 'key_b' }),
+        ],
+        { recorder },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(events.map((e) => e.kind)).toEqual([
+      'model-skipped',
+      'model-call',
+      'model-result',
+    ]);
+    expect(events[0]).toMatchObject({ model: 'model-a', reason: 'ineligible' });
+  });
+
+  it('a guard removal records guard with the removed count', async () => {
+    const { provider } = scripted([textAnswer('The model-a is great.')]);
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput([entry({ provider, model: 'model-a' })], { recorder }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(events.find((e) => e.kind === 'guard')).toMatchObject({ removed: 1 });
   });
 });

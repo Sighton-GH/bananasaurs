@@ -17,7 +17,7 @@ import {
   type OutgoingMessage,
   type RecentMessage,
 } from '@bananasaurs/core';
-import { conversationRepo, guildRepo, jobRepo, traceRepo } from '@bananasaurs/storage';
+import { conversationRepo, guildRepo, jobRepo, runRepo, traceRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -2428,5 +2428,177 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
     const reason = JSON.stringify(h.logPosts);
     expect(reason).toContain('This model is not available on this key — stealth/space-bunny-alpha');
     expect(reason).not.toContain('No endpoints found');
+  });
+});
+
+describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
+  const BOT = '901234567890123456';
+  let t: MigratedTestDatabase;
+  let nowMs: number;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+    nowMs = NOW;
+  });
+  afterEach(() => t.close());
+  const scope = () => t.scopes.forGuild(GUILD_ID);
+
+  const harness = (
+    answer: (
+      input: AssistantInvocation,
+    ) => AssistantInvocationResult | Promise<AssistantInvocationResult>,
+    opts: { readonly behaviours?: readonly AssistantBehaviour[] } = {},
+  ) => {
+    const inputs: AssistantInvocation[] = [];
+    const svc: AssistantCommandService = {
+      behavioursForGuild: async () => opts.behaviours ?? [behaviour],
+      invoke: async (input) => {
+        inputs.push(input);
+        return await answer(input);
+      },
+    };
+    const sent: { channelId: string; message: OutgoingMessage }[] = [];
+    let idSeq = 0;
+    const send = vi.fn(async (channelId: string, message: OutgoingMessage) => {
+      sent.push({ channelId, message });
+      idSeq += 1;
+      return { channelId, messageId: `8290000000000000${String(idSeq).padStart(2, '0')}` };
+    });
+    const handler = assistantInvokeHandler({
+      guildId: GUILD_ID,
+      service: svc,
+      openToken: () => undefined,
+      respond: async () => undefined,
+      send,
+      logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => nowMs,
+      conversations: { scope: scope(), botUserId: BOT, botDisplayName: 'bananasaurs' },
+      sendTyping: async () => undefined,
+      fetchMessageContent: async () => undefined,
+      fetchChannelMessages: async () => undefined,
+      channelContextMessages: () => 0,
+    });
+    return {
+      inputs,
+      sent,
+      run: async (input: Record<string, unknown>, attempts = 1) => {
+        try {
+          await handler.run(handler.payload.parse(input), {
+            jobId: 1,
+            attempts,
+            cursor: null,
+            saveCursor: () => undefined,
+          });
+          return { error: undefined as unknown };
+        } catch (error) {
+          return { error };
+        }
+      },
+    };
+  };
+
+  const mention = (invocationId: string, over: Record<string, unknown> = {}) => ({
+    channelId: CHANNEL_ID,
+    userId: USER_ID,
+    callerRoleIds: [],
+    behaviourId: behaviour.id,
+    command: 'ask' as const,
+    input: { question: 'hi' },
+    source: 'mention' as const,
+    invocationId,
+    messageId: '810000000000000001',
+    ...over,
+  });
+
+  const kindsOf = (runId: string): string[] =>
+    runRepo
+      .listRunEvents(scope(), runId, 0, 50)
+      .map((r) => r.event.kind);
+
+  it('the happy path records started, conversation, delivering, delivered, finished', async () => {
+    const h = harness(async () => ({ ok: true, content: 'answer' }));
+    await h.run(mention('rec-1'));
+    expect(kindsOf('rec-1')).toEqual([
+      'started',
+      'conversation',
+      'delivering',
+      'delivered',
+      'finished',
+    ]);
+    expect(runRepo.getRun(scope(), 'rec-1')).toMatchObject({
+      state: 'answered',
+      stage: 'done',
+      traceId: 'trace_rec-1',
+      conversationId: 'conv_rec-1',
+    });
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-1', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'answered', traceId: 'trace_rec-1' });
+  });
+
+  it('a retryable failure records retry-scheduled and parks the run in retry-wait', async () => {
+    const h = harness(async () => {
+      throw new ProviderError('rate-limit', 'HTTP 429', true);
+    });
+    const out = await h.run(mention('rec-2'), 1);
+    expect(out.error).toBeInstanceOf(RetryAfterError);
+    const events = runRepo.listRunEvents(scope(), 'rec-2', 0, 50).map((r) => r.event);
+    expect(events.map((e) => e.kind)).toEqual(['started', 'conversation', 'retry-scheduled']);
+    expect(events.at(-1)).toMatchObject({
+      code: 'internal',
+      retryAt: NOW + 10_000,
+      attempt: 1,
+    });
+    expect(runRepo.getRun(scope(), 'rec-2')).toMatchObject({
+      state: 'retry-wait',
+      stage: 'retry-wait',
+    });
+  });
+
+  it('a final failure records finished failed with the last attempt code and trace id', async () => {
+    const h = harness(async () => {
+      throw new ChainFailedError('invalid-request', 'chain failed', false, [
+        {
+          provider: 'openrouter',
+          model: 'stealth/space-bunny-alpha',
+          outcome: 'error',
+          code: 'provider-bad-model',
+          httpStatus: 404,
+          ms: 5,
+        },
+      ]);
+    });
+    await h.run(mention('rec-3'), 1);
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-3', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({
+      outcome: 'failed',
+      code: 'provider-bad-model',
+      traceId: 'trace_rec-3_a1',
+    });
+    expect(runRepo.getRun(scope(), 'rec-3')).toMatchObject({ state: 'failed', stage: 'done' });
+  });
+
+  it('a deleted behaviour records finished refused', async () => {
+    const h = harness(async () => ({ ok: true, content: 'answer' }), { behaviours: [] });
+    await h.run(mention('rec-4'), 1);
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-4', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'refused' });
+    expect(runRepo.getRun(scope(), 'rec-4')).toMatchObject({ state: 'refused', stage: 'done' });
+  });
+
+  it('no run event stores message text', async () => {
+    const h = harness(async () => ({ ok: true, content: 'answer' }));
+    await h.run(mention('rec-5', { input: { question: 'tell me about zebracorn please' } }));
+    const rows = t.raw
+      .prepare(`SELECT data_json AS "dataJson" FROM assistant_run_events WHERE guild_id = ?`)
+      .all(GUILD_ID) as { dataJson: string }[];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.dataJson).not.toContain('zebracorn');
   });
 });

@@ -64,6 +64,13 @@ const harness = (
   isTaskPost?: (messageId: string) => boolean,
   channelAccess?: Pick<ChannelAccess, 'check'>,
   botRoleId?: () => string | undefined,
+  recordQueued?: (run: {
+    readonly runId: string;
+    readonly userId: string;
+    readonly channelId: string;
+    readonly behaviourId: string;
+    readonly via: 'mention' | 'reply';
+  }) => void,
 ) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
@@ -123,6 +130,7 @@ const harness = (
       ...(isTaskPost === undefined ? {} : { isTaskPost }),
       ...(channelAccess === undefined ? {} : { channelAccess }),
       ...(botRoleId === undefined ? {} : { botRoleId }),
+      ...(recordQueued === undefined ? {} : { recordQueued }),
     }),
   };
 };
@@ -1439,5 +1447,90 @@ describe('assistant mention channel permissions (ADR 0126)', () => {
     const h = harness();
     await h.subscriber.handle(tagged('890123456789012403'));
     expect(h.queued).toHaveLength(1);
+  });
+});
+
+describe('assistant mention run ledger (ADR 0129 §6)', () => {
+  const mentionEvent = (over: Record<string, unknown> = {}) => ({
+    kind: 'messageCreate' as const,
+    parentChannelId: undefined,
+    categoryId: undefined,
+    isPrivateThread: false,
+    guildId,
+    receivedAtMs: 1,
+    channelId,
+    messageId: '890123456789012345',
+    authorId: userId,
+    authorDisplayName: undefined,
+    authorIsBot: false,
+    content: `<@&${club.mentionRoleId}> where is the handbook?`,
+    editedTimestampMs: undefined,
+    mentionedUserIds: [],
+    authorRoleIds: [],
+    mentionedRoleIds: [club.mentionRoleId!],
+    mentionsEveryone: false,
+    attachments: [],
+    ...over,
+  });
+
+  it('a routed mention calls recordQueued once with via mention', async () => {
+    const recordQueued = vi.fn();
+    const h = harness(
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      recordQueued,
+    );
+    await h.subscriber.handle(mentionEvent());
+    expect(h.queued).toHaveLength(1);
+    expect(recordQueued).toHaveBeenCalledTimes(1);
+    expect(recordQueued).toHaveBeenCalledWith({
+      runId: '890123456789012345',
+      userId,
+      channelId,
+      behaviourId: 'club',
+      via: 'mention',
+    });
+  });
+
+  it('a reply mention calls recordQueued with via reply', async () => {
+    const recordQueued = vi.fn();
+    const h = harness(
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      recordQueued,
+    );
+    await h.subscriber.handle(
+      mentionEvent({
+        referencedMessageId: '890123456789012399',
+        referencedAuthorId: '901234567890123456',
+      }),
+    );
+    expect(h.queued).toHaveLength(1);
+    expect(recordQueued).toHaveBeenCalledWith(
+      expect.objectContaining({ via: 'reply', runId: '890123456789012345' }),
+    );
+  });
+
+  it('a duplicate mention does not call recordQueued', async () => {
+    const recordQueued = vi.fn();
+    const h = harness(
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      recordQueued,
+    );
+    await h.subscriber.handle(mentionEvent());
+    expect(recordQueued).not.toHaveBeenCalled();
   });
 });
