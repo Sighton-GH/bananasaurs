@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HealthProvider } from '../app/health.js';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
@@ -59,9 +59,11 @@ describe('OverviewPage', () => {
     expect(screen.getByRole('link', { name: 'Open the queue →' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open safety →' })).toBeTruthy();
     expect(screen.queryByText(/running late/)).toBeNull();
-    expect(mock.mock.calls.map((c) => c[0] as string).sort()).toEqual(
-      ['/api/health', ...PULSE_STUBS.map((s) => s.url)].sort(),
-    );
+    await waitFor(() => {
+      expect(mock.mock.calls.map((c) => c[0] as string).sort()).toEqual(
+        ['/api/health', ...PULSE_STUBS.map((s) => s.url)].sort(),
+      );
+    });
   });
 
   it('shows the scheduler lag badge only when a due job is waiting', async () => {
