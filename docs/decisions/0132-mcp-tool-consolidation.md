@@ -54,11 +54,17 @@ Task 2 continues the same pattern for the remaining pairs: `react`
 | `set_thread_state` | send | `archived: boolean`→`archiveThreadText({…, archived})`, `locked: boolean`→`lockThreadText({…, locked})` (no selector to strip — the flag is the handler's own field) |
 | `update_scheduled` | send | `action: 'edit'`→`editScheduledText`, `'cancel'`→`cancelScheduledText` (selector stripped) |
 
-Unknown selector, or a parameter belonging to the other side (an edit-only
-field on an `update_scheduled` cancel), is `INVALID_ARGUMENTS_MESSAGE`
-with the handler never called; each tool's wire shape is a ZodRawShape of
-the selector plus every field `.optional()` with which side uses it, and
-the existing handlers' strict parse stays the boundary.
+Over MCP the selector is a `z.enum` (`pinned` is a `z.boolean()`) in each
+tool's wire shape, so the SDK refuses an unknown or missing value first,
+with its own "Input validation error", and the handler never runs.
+`INVALID_ARGUMENTS_MESSAGE` is the route's own refusal: for a call that
+reaches the route without the SDK check (the routing tests make such
+calls), for `set_thread_state` with both or neither of `archived`/`locked`,
+and for a parameter belonging to the other side (an edit-only field on an
+`update_scheduled` cancel), with the handler never called. Each tool's wire
+shape is a ZodRawShape of the selector plus every field `.optional()` with
+which side uses it, and the existing handlers' strict parse stays the
+boundary.
 
 Ruling (binding): `set_thread_state` refuses `archived` + `locked`
 together — two state changes under one idempotency key would replay the

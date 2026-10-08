@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import { INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
+import { GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
 import {
   REACT_TOOL_NAME,
   runReact,
@@ -21,12 +21,15 @@ import type { McpSchedulePort } from './schedule.js';
  * Task 2, routing: the five consolidated pair tools route to the existing
  * handlers with the selector stripped, against recording fake ports — the
  * same seam the handler tests use, so a wrong route would call the wrong
- * Discord method. An unknown action, a parameter belonging to the other
- * action, or (for `set_thread_state`) both/neither state flag is the
- * argument fault with no port call at all.
+ * Discord method. The guild id reaches the port unchanged, and a guild the
+ * principal cannot reach is refused with the shared refusal and no port
+ * call. An unknown action, a parameter belonging to the other action, or
+ * (for `set_thread_state`) both/neither state flag is the argument fault
+ * with no port call at all.
  */
 
 const GUILD_A = parseGuildId('111111111111111111');
+const GUILD_B = parseGuildId('222222222222222222');
 const CHANNEL = '333333333333333333';
 const MESSAGE = '444444444444444444';
 const THREAD = '344444444444444444';
@@ -43,14 +46,21 @@ const principalWith = (
   scopes,
 });
 
+/** One port call as the recording fakes keep it: the method, the guild it was made for, the input. */
+interface RecordedCall {
+  readonly method: string;
+  readonly guildId: GuildId;
+  readonly input: unknown;
+}
+
 const messagePort = (): McpMessageWritesPort & {
-  readonly calls: ReadonlyArray<{ readonly method: string; readonly input: unknown }>;
+  readonly calls: ReadonlyArray<RecordedCall>;
 } => {
-  const calls: Array<{ readonly method: string; readonly input: unknown }> = [];
+  const calls: RecordedCall[] = [];
   const record =
     (method: 'pin' | 'unpin' | 'addReaction' | 'removeReaction') =>
-    (_guildId: GuildId, input: Record<string, unknown>) => {
-      calls.push({ method, input });
+    (guildId: GuildId, input: Record<string, unknown>) => {
+      calls.push({ method, guildId, input });
       return Promise.resolve({
         status: 'done' as const,
         actionId: ACTION,
@@ -69,13 +79,13 @@ const messagePort = (): McpMessageWritesPort & {
 };
 
 const threadPort = (): McpThreadWritesPort & {
-  readonly calls: ReadonlyArray<{ readonly method: string; readonly input: unknown }>;
+  readonly calls: ReadonlyArray<RecordedCall>;
 } => {
-  const calls: Array<{ readonly method: string; readonly input: unknown }> = [];
+  const calls: RecordedCall[] = [];
   const record =
     (method: 'addThreadMembers' | 'removeThreadMembers' | 'setThreadState') =>
-    (_guildId: GuildId, input: Record<string, unknown>) => {
-      calls.push({ method, input });
+    (guildId: GuildId, input: Record<string, unknown>) => {
+      calls.push({ method, guildId, input });
       return Promise.resolve({ status: 'done' as const, actionId: ACTION });
     };
   return {
@@ -89,13 +99,13 @@ const threadPort = (): McpThreadWritesPort & {
 };
 
 const schedulePort = (): McpSchedulePort & {
-  readonly calls: ReadonlyArray<{ readonly method: string; readonly input: unknown }>;
+  readonly calls: ReadonlyArray<RecordedCall>;
 } => {
-  const calls: Array<{ readonly method: string; readonly input: unknown }> = [];
+  const calls: RecordedCall[] = [];
   const record =
     (method: 'editScheduled' | 'cancelScheduled') =>
-    (_guildId: GuildId, input: Record<string, unknown>) => {
-      calls.push({ method, input });
+    (guildId: GuildId, input: Record<string, unknown>) => {
+      calls.push({ method, guildId, input });
       return Promise.resolve({
         status: 'done' as const,
         actionId: ACTION,
@@ -173,6 +183,7 @@ describe('react routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('addReaction');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       channelId: CHANNEL,
       messageId: MESSAGE,
@@ -191,6 +202,7 @@ describe('react routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('removeReaction');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       channelId: CHANNEL,
       messageId: MESSAGE,
@@ -209,6 +221,16 @@ describe('react routing', () => {
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(port.calls).toHaveLength(0);
   });
+
+  it('an unreachable guild is refused and no reaction is touched', async () => {
+    const port = messagePort();
+    const outcome = await runReact(principalWith([GUILD_B]), port, {
+      ...reactionArgs(),
+      action: 'add',
+    });
+    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(port.calls).toHaveLength(0);
+  });
 });
 
 describe('set_pin routing', () => {
@@ -221,6 +243,7 @@ describe('set_pin routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('pin');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       channelId: CHANNEL,
       messageId: MESSAGE,
@@ -238,6 +261,7 @@ describe('set_pin routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('unpin');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       channelId: CHANNEL,
       messageId: MESSAGE,
@@ -255,6 +279,16 @@ describe('set_pin routing', () => {
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(port.calls).toHaveLength(0);
   });
+
+  it('an unreachable guild is refused and nothing is pinned', async () => {
+    const port = messagePort();
+    const outcome = await runSetPin(principalWith([GUILD_B]), port, {
+      ...pinArgs(),
+      pinned: true,
+    });
+    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(port.calls).toHaveLength(0);
+  });
 });
 
 describe('thread_members routing', () => {
@@ -267,6 +301,7 @@ describe('thread_members routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('addThreadMembers');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       threadId: THREAD,
       userIds: [USER],
@@ -284,6 +319,7 @@ describe('thread_members routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('removeThreadMembers');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       threadId: THREAD,
       userIds: [USER],
@@ -301,6 +337,16 @@ describe('thread_members routing', () => {
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(port.calls).toHaveLength(0);
   });
+
+  it('an unreachable guild is refused and no member changes', async () => {
+    const port = threadPort();
+    const outcome = await runThreadMembers(principalWith([GUILD_B]), port, {
+      ...membersArgs(),
+      action: 'add',
+    });
+    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(port.calls).toHaveLength(0);
+  });
 });
 
 describe('set_thread_state routing', () => {
@@ -313,6 +359,7 @@ describe('set_thread_state routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('setThreadState');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       threadId: THREAD,
       archived: true,
@@ -330,6 +377,7 @@ describe('set_thread_state routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('setThreadState');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       threadId: THREAD,
       locked: false,
@@ -347,6 +395,16 @@ describe('set_thread_state routing', () => {
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(port.calls).toHaveLength(0);
   });
+
+  it('an unreachable guild is refused and the thread state is untouched', async () => {
+    const port = threadPort();
+    const outcome = await runSetThreadState(principalWith([GUILD_B]), port, {
+      ...stateArgs(),
+      archived: true,
+    });
+    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(port.calls).toHaveLength(0);
+  });
 });
 
 describe('update_scheduled routing', () => {
@@ -359,6 +417,7 @@ describe('update_scheduled routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('editScheduled');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       reminderId: REMINDER,
       content: 'game night saturday',
@@ -380,6 +439,7 @@ describe('update_scheduled routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('cancelScheduled');
+    expect(port.calls[0]?.guildId).toBe(GUILD_A);
     expect(port.calls[0]?.input).toEqual({
       reminderId: REMINDER,
       dryRun: false,
@@ -402,6 +462,16 @@ describe('update_scheduled routing', () => {
     const port = schedulePort();
     const outcome = await runUpdateScheduled(principalWith([GUILD_A]), port, args);
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(port.calls).toHaveLength(0);
+  });
+
+  it('an unreachable guild is refused and nothing is changed', async () => {
+    const port = schedulePort();
+    const outcome = await runUpdateScheduled(principalWith([GUILD_B]), port, {
+      ...editArgs(),
+      action: 'edit',
+    });
+    expect(outcome).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
     expect(port.calls).toHaveLength(0);
   });
 });

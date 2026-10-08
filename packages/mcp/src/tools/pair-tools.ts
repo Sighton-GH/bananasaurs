@@ -20,6 +20,7 @@ import {
 import {
   cancelScheduledText,
   editScheduledText,
+  SCHEDULE_CONTENT_MAX,
   type McpSchedulePort,
   type ScheduleOutcomeText,
 } from './schedule.js';
@@ -29,10 +30,15 @@ import {
  * its selector (`action`, `pinned`, or exactly one of `archived`/`locked`)
  * plus the union of its sides' parameters as optional fields; routing
  * strips the selector and calls the existing handler, whose strict
- * per-side parse stays the real argument boundary — an unknown selector,
- * or a parameter belonging to the other side, ends as
- * `INVALID_ARGUMENTS_MESSAGE` with the handler never called. Old tool
- * names are removed, with no aliases.
+ * per-side parse stays the real argument boundary. Over MCP the selector is
+ * a `z.enum` (`pinned` is a `z.boolean()`), so the SDK refuses an unknown or
+ * missing value first, with its own "Input validation error", and the
+ * handler never runs. `INVALID_ARGUMENTS_MESSAGE` is the route's own refusal:
+ * for a call that reaches the route without the SDK check (the routing tests
+ * make such calls), for `set_thread_state` with both or neither of
+ * `archived`/`locked`, and for a parameter belonging to the other side. The
+ * handler is never called in any of those. Old tool names are removed, with
+ * no aliases.
  */
 
 const withoutSelector = (record: Record<string, unknown>, key: string): Record<string, unknown> => {
@@ -50,8 +56,8 @@ export const REACT_TOOL_DESCRIPTION = [
     'Pass dryRun to record without reacting.',
 ].join('\n');
 export const reactParams = {
-  guildId: z.string(),
-  action: z.enum(['add', 'remove']),
+  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
+  action: z.enum(['add', 'remove']).describe('add or remove.'),
   channelId: z.string().optional().describe('Every react action uses this.'),
   messageId: z.string().optional().describe('Every react action uses this.'),
   emoji: z
@@ -87,7 +93,7 @@ export const SET_PIN_TOOL_DESCRIPTION = [
     'Pass dryRun to record without changing anything.',
 ].join('\n');
 export const setPinParams = {
-  guildId: z.string(),
+  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   pinned: z.boolean().describe('True pins the message; false unpins it.'),
   channelId: z.string().optional().describe('Pinned either way, this names the channel.'),
   messageId: z.string().optional().describe('Pinned either way, this names the message.'),
@@ -118,8 +124,8 @@ export const THREAD_MEMBERS_TOOL_DESCRIPTION = [
     'Pass dryRun to record without changing anything.',
 ].join('\n');
 export const threadMembersParams = {
-  guildId: z.string(),
-  action: z.enum(['add', 'remove']),
+  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
+  action: z.enum(['add', 'remove']).describe('add or remove.'),
   threadId: z.string().optional().describe('Every thread_members action uses this.'),
   userIds: z
     .array(z.string())
@@ -156,7 +162,7 @@ export const SET_THREAD_STATE_TOOL_DESCRIPTION = [
     'Pass dryRun to record without changing anything.',
 ].join('\n');
 export const setThreadStateParams = {
-  guildId: z.string(),
+  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   threadId: z.string().optional().describe('With either flag, this names the thread.'),
   archived: z
     .boolean()
@@ -179,9 +185,10 @@ export const runSetThreadState = async (
   if (typeof raw !== 'object' || raw === null)
     return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   const record = raw as Record<string, unknown>;
-  // An explicit undefined is absent: only a real boolean selects a side, so
-  // both-or-neither (the ruling in the description) refuses here while the
-  // handlers' own parse still refuses a non-boolean flag.
+  // An explicit undefined counts as absent, so presence (`!== undefined`)
+  // picks the side: both-or-neither (the ruling in the description) refuses
+  // here, and a present but non-boolean flag is passed on, where the
+  // handler's own parse refuses it.
   const hasArchived = record['archived'] !== undefined;
   const hasLocked = record['locked'] !== undefined;
   if (hasArchived === hasLocked) return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
@@ -210,16 +217,44 @@ const UPDATE_SCHEDULED_EDIT_ONLY = [
   'pingUsers',
 ] as const;
 export const updateScheduledParams = {
-  guildId: z.string(),
-  action: z.enum(['edit', 'cancel']),
-  reminderId: z.string().optional().describe('Every update_scheduled action uses this.'),
-  content: z.string().optional().describe('edit uses this.'),
-  at: z.union([z.string(), z.number()]).optional().describe('edit uses this.'),
-  recurrence: reminderRecurrence.optional().describe('edit uses this.'),
-  pingRoles: z.array(z.string()).optional().describe('edit uses this.'),
-  pingUsers: z.array(z.string()).optional().describe('edit uses this.'),
-  dryRun: z.boolean().optional().describe('Every update_scheduled action uses this.'),
-  idempotencyKey: z.string().optional().describe('Every update_scheduled action uses this.'),
+  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
+  action: z.enum(['edit', 'cancel']).describe('edit or cancel.'),
+  reminderId: z
+    .string()
+    .optional()
+    .describe('Scheduled send to edit or cancel, from list_scheduled.'),
+  content: z
+    .string()
+    .optional()
+    .describe(`edit only: new message text, 1 to ${String(SCHEDULE_CONTENT_MAX)} characters.`),
+  at: z
+    .union([z.string(), z.number()])
+    .optional()
+    .describe(
+      'edit only: new one-shot fire time as an ISO-8601 string or epoch milliseconds; must be in the future, and clears any recurrence. Exclusive with recurrence.',
+    ),
+  recurrence: reminderRecurrence
+    .optional()
+    .describe(
+      'edit only: new recurring pattern with a time zone; the send re-anchors to its next occurrence. Exclusive with at.',
+    ),
+  pingRoles: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'edit only: replacement role pings, as names or ids; checked against the guild ping policy.',
+    ),
+  pingUsers: z
+    .array(z.string())
+    .optional()
+    .describe('edit only: replacement member pings, as ids.'),
+  dryRun: z.boolean().optional().describe('Record without changing anything.'),
+  idempotencyKey: z
+    .string()
+    .optional()
+    .describe(
+      'Caller-supplied key for this edit or cancellation; reuse the same value if you retry this call.',
+    ),
 };
 export const runUpdateScheduled = async (
   principal: McpPrincipal,

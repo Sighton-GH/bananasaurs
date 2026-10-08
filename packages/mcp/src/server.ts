@@ -361,7 +361,7 @@ export interface McpServerDeps {
    * reminder rows. Required like `send`: the daemon always provides it, and
    * a missing port must fail at construction, not serve tools that always
    * refuse. Required means the port is always present, not that the tools
-   * are always advertised: the four tools still register only when the
+   * are always advertised: the three tools still register only when the
    * principal carries the send scope — including `list_scheduled`, which is
    * a read of the connector's own outbox under the send scope, audited like
    * the other reads.
