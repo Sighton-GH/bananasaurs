@@ -44,7 +44,12 @@ const grant = (capability: Capability): void =>
 
 const seedRun = (
   runId: string,
-  over: { state?: 'queued' | 'running' | 'retry-wait' | 'answered' | 'refused' | 'failed'; stage?: string; queuedAt?: number; updatedAt?: number } = {},
+  over: {
+    state?: 'queued' | 'running' | 'retry-wait' | 'answered' | 'refused' | 'failed';
+    stage?: string;
+    queuedAt?: number;
+    updatedAt?: number;
+  } = {},
 ): void => {
   const scope = t.scopes.forGuild(GUILD);
   const queuedAt = over.queuedAt ?? clock;
@@ -59,11 +64,7 @@ const seedRun = (
   if (over.state !== undefined) patch['state'] = over.state;
   if (over.stage !== undefined) patch['stage'] = over.stage;
   if (Object.keys(patch).length > 1 || over.state !== undefined || over.stage !== undefined) {
-    runRepo.updateRun(
-      scope,
-      runId,
-      patch as unknown as { updatedAt: number },
-    );
+    runRepo.updateRun(scope, runId, patch as unknown as { updatedAt: number });
   }
 };
 
@@ -98,7 +99,11 @@ afterEach(async () => {
 describe('assistant run routes', () => {
   it('requires audit.read for the list, the detail and the events', async () => {
     const { cookie } = await signIn();
-    for (const url of ['/api/assistant/runs', '/api/assistant/runs/run-1', '/api/assistant/runs/run-1/events']) {
+    for (const url of [
+      '/api/assistant/runs',
+      '/api/assistant/runs/run-1',
+      '/api/assistant/runs/run-1/events',
+    ]) {
       expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(403);
     }
   });
@@ -141,7 +146,12 @@ describe('assistant run routes', () => {
     grant('audit.read');
     const { cookie } = await signIn();
     seedRun('run-early', { state: 'queued', stage: 'queued', queuedAt: clock });
-    seedRun('run-late', { state: 'queued', stage: 'queued', queuedAt: clock + 1000, updatedAt: clock + 1000 });
+    seedRun('run-late', {
+      state: 'queued',
+      stage: 'queued',
+      queuedAt: clock + 1000,
+      updatedAt: clock + 1000,
+    });
     const response = await app.inject({
       method: 'GET',
       url: '/api/assistant/runs?active=1',
@@ -201,7 +211,11 @@ describe('assistant run routes', () => {
       queuedAt: clock,
     });
     runRepo.appendRunEvent(scope, 'run-seq', clock, { kind: 'queued', via: 'mention' });
-    runRepo.appendRunEvent(scope, 'run-seq', clock, { kind: 'started', attempt: 1, queueWaitMs: 5 });
+    runRepo.appendRunEvent(scope, 'run-seq', clock, {
+      kind: 'started',
+      attempt: 1,
+      queueWaitMs: 5,
+    });
     runRepo.appendRunEvent(scope, 'run-seq', clock, {
       kind: 'tool-call',
       round: 0,
@@ -268,6 +282,7 @@ describe('assistant run routes', () => {
   it('answers 404 for a run seeded in another guild', async () => {
     grant('audit.read');
     const { cookie } = await signIn();
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: clock });
     runRepo.ensureRun(t.scopes.forGuild(OTHER_GUILD), {
       runId: 'run-other',
       userId: MEMBER,

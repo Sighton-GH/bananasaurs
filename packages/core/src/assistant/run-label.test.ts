@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  describeRun,
-  RUN_STALLED_MS,
-  type RunEvent,
-  type RunRow,
-} from './run-label.js';
+import { describeRun, RUN_STALLED_MS } from './run-label.js';
+import type { RunEvent, RunRow } from './run-events.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -45,9 +41,7 @@ describe('describeRun', () => {
 
   it('labels stage conversation as Reading the conversation', () => {
     const run = baseRun({ state: 'running', stage: 'conversation' });
-    expect(describeRun(run, { now: NOW, queueAhead: 0 }).label).toBe(
-      'Reading the conversation',
-    );
+    expect(describeRun(run, { now: NOW, queueAhead: 0 }).label).toBe('Reading the conversation');
   });
 
   it('labels stage context as Gathering context', () => {
