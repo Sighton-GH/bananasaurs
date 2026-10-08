@@ -2512,9 +2512,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
   });
 
   const kindsOf = (runId: string): string[] =>
-    runRepo
-      .listRunEvents(scope(), runId, 0, 50)
-      .map((r) => r.event.kind);
+    runRepo.listRunEvents(scope(), runId, 0, 50).map((r) => r.event.kind);
 
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
     const h = harness(async () => ({ ok: true, content: 'answer' }));

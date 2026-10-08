@@ -5283,7 +5283,7 @@ describe('assistant service run recorder (ADR 0129 §6)', () => {
     });
     expect(result.ok).toBe(true);
     expect(events.map((e) => e.kind)).toEqual(['context-built', 'model-call', 'model-result']);
-    const built = events[0];
+    const built = events[0]!;
     expect(built.kind).toBe('context-built');
     if (built.kind === 'context-built') {
       expect(built.sections.length).toBeGreaterThan(0);

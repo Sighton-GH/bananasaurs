@@ -70,6 +70,7 @@ import {
   pipelineRepo,
   resourceCacheRepo,
   roleRepo,
+  runRepo,
   traceRepo,
   taskNudgeRepo,
   taskRepo,
@@ -104,6 +105,7 @@ import {
 } from '../assistant/reminder-delivery.js';
 import { channelAccessFor } from '../channels/access.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
+import { createRunRecorder } from '../assistant/run-recorder.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { assistantSummariseHandler, type SummariseModelPort } from '../jobs/assistant-summarise.js';
 import { reserveEntryCall } from '../assistant/local-limit.js';
@@ -1147,6 +1149,22 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       now,
       logger,
       sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
+      // ADR 0129 §6: a newly queued mention opens the run's ledger row, so
+      // the run exists before the job starts it.
+      recordQueued: (run) => {
+        runRepo.ensureRun(scope, {
+          runId: run.runId,
+          userId: run.userId,
+          channelId: run.channelId,
+          behaviourId: run.behaviourId,
+          source: 'mention',
+          queuedAt: now(),
+        });
+        createRunRecorder({ scope, runId: run.runId, now, logger }).event({
+          kind: 'queued',
+          via: run.via,
+        });
+      },
       lookupMessage: (messageId) => conversationRepo.lookupMessage(scope, messageId),
       // ADR 0112 decision 4: a pinged reply to a task post is a progress
       // update for the reply subscriber, never a general assistant question.

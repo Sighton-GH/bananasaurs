@@ -16,6 +16,7 @@ import {
 } from '@bananasaurs/core';
 import type { CitationRegistry } from './citations.js';
 import type { ChainEntry } from './model-chain.js';
+import { NOOP_RUN_RECORDER, type RunRecorder } from './run-recorder.js';
 import type { QuotaLedger } from './quota-ledger.js';
 import type { AssistantToolResult, ToolSource } from './tools.js';
 import { attemptReasonFor } from './provider-failure.js';
@@ -217,6 +218,8 @@ export const runToolLoop = async (input: {
   readonly guildId?: string | undefined;
   /** ADR 0129 §5: the invocation id; every assistant log line carries it. */
   readonly runId?: string | undefined;
+  /** ADR 0129 §6: the run's step log; absent means nothing is recorded. */
+  readonly recorder?: RunRecorder | undefined;
   readonly citations?: CitationRegistry | undefined;
   /**
    * Whether a tool result's source may be tagged for citation. Absent means
@@ -252,6 +255,9 @@ export const runToolLoop = async (input: {
   // in first-sent order.
   const toolsOffered: string[] = [];
   const offeredSeen = new Set<string>();
+  // ADR 0129 §6: every provider call, skip, tool call and guard step lands in
+  // the run ledger; absent means nothing is recorded.
+  const recorder = input.recorder ?? NOOP_RUN_RECORDER;
 
   const recordUsage = (usage: GenerateTextResponse['usage']): void => {
     if (usage?.promptTokens !== undefined) {
@@ -301,7 +307,21 @@ export const runToolLoop = async (input: {
     return { availableAt: earliest.availableAt, code: earliest.code };
   };
 
-  for (const entry of input.chain) {
+  // ADR 0129 §6: every skipped entry is a ledger step, with the same reason
+  // the attempt carries.
+  const recordSkipped = (entry: ChainEntry, reason: string, availableAt?: number): void => {
+    recorder.event({
+      kind: 'model-skipped',
+      provider: entry.providerId,
+      model: entry.model,
+      keyId: entry.keyId,
+      reason,
+      ...(availableAt === undefined ? {} : { availableAt }),
+    });
+  };
+
+  for (let position = 0; position < input.chain.length; position += 1) {
+    const entry = input.chain[position]!;
     const started = input.now();
     const ms = (): number => Math.max(0, input.now() - started);
     // ADR 0129 §5: every skipped entry is a journal line with the run id.
@@ -343,6 +363,7 @@ export const runToolLoop = async (input: {
         ...(entry.skip === undefined ? {} : { reason: entry.skip }),
         ms: ms(),
       });
+      recordSkipped(entry, entry.skip ?? 'skipped');
       logSkipped(entry.skip);
       continue;
     }
@@ -361,6 +382,7 @@ export const runToolLoop = async (input: {
         reason: 'daily-allowance-used',
         ms: ms(),
       });
+      recordSkipped(entry, 'daily-allowance-used');
       logSkipped('daily-allowance-used');
       continue;
     }
@@ -375,6 +397,7 @@ export const runToolLoop = async (input: {
         reason: 'daily-allowance-used',
         ms: ms(),
       });
+      recordSkipped(entry, 'daily-allowance-used');
       logSkipped('daily-allowance-used');
       continue;
     }
@@ -421,6 +444,9 @@ export const runToolLoop = async (input: {
       logger: input.logger,
       guildId: input.guildId,
       runId: input.runId,
+      position,
+      of: input.chain.length,
+      recorder,
       now: input.now,
       citations: input.citations,
       isCitable: input.isCitable,
@@ -536,6 +562,11 @@ const runEntry = async (deps: {
   readonly guildId?: string | undefined;
   /** ADR 0129 §5: the invocation id; every assistant log line carries it. */
   readonly runId?: string | undefined;
+  /** ADR 0129 §6: this entry's place in the chain, for the ledger's model steps. */
+  readonly position: number;
+  readonly of: number;
+  /** ADR 0129 §6: the run's step log. */
+  readonly recorder: RunRecorder;
   readonly citations?: CitationRegistry | undefined;
   readonly isCitable?: ((source: { title: string; url: string }) => boolean) | undefined;
   readonly now: () => number;
@@ -550,13 +581,42 @@ const runEntry = async (deps: {
   // refused rather than executed.
   const toolsRunnable = deps.tools !== undefined && provider.capabilities.has('tools');
 
+  /**
+   * ADR 0129 §6: a failed attempt is a ledger step too, copying the attempt
+   * just pushed — only codes, ms and tokens, never message text.
+   */
+  const pushFailedAttempt = (attempt: Attempt): void => {
+    deps.attempts.push(attempt);
+    deps.recorder.event({
+      kind: 'model-result',
+      provider: entry.providerId,
+      model: entry.model,
+      keyId: entry.keyId,
+      ok: false,
+      ms: attempt.ms,
+      ...(attempt.code === undefined ? {} : { code: attempt.code }),
+      ...(attempt.httpStatus === undefined ? {} : { httpStatus: attempt.httpStatus }),
+      ...(attempt.netCode === undefined ? {} : { netCode: attempt.netCode }),
+      ...(attempt.finishReason === undefined ? {} : { finishReason: attempt.finishReason }),
+      ...(attempt.upstream === undefined ? {} : { upstream: attempt.upstream }),
+      ...(attempt.completionTokens === undefined
+        ? {}
+        : { completionTokens: attempt.completionTokens }),
+      ...(attempt.reasoningTokens === undefined
+        ? {}
+        : { reasoningTokens: attempt.reasoningTokens }),
+      ...(attempt.providerMessage === undefined
+        ? {}
+        : { providerMessage: attempt.providerMessage }),
+    });
+  };
+
   const failAttempt = (err: unknown): void => {
     if (err instanceof ProviderError) deps.noteError(err);
     const f = classifyProviderFailure(err, {
       provider: entry.providerId,
       model: entry.model,
-    });
-    // ADR 0129 §3: the trace keeps the adapter's message after
+    }); // ADR 0129 §3: the trace keeps the adapter's message after
     // `sanitizeProviderMessage` — scrubbed of key-shaped strings, at most 160
     // characters. The raw text never reaches the trace.
     const providerMessage = err instanceof Error ? sanitizeProviderMessage(err.message) : undefined;
@@ -599,7 +659,7 @@ const runEntry = async (deps: {
     };
     if (isDailyCap(err)) {
       deps.onDailyCap(err.resetAt);
-      deps.attempts.push({
+      pushFailedAttempt({
         provider: entry.providerId,
         model: entry.model,
         keyLabel: entry.keyLabel,
@@ -624,7 +684,7 @@ const runEntry = async (deps: {
           : isBusy(err)
             ? 'busy'
             : 'error';
-    deps.attempts.push({
+    pushFailedAttempt({
       provider: entry.providerId,
       model: entry.model,
       keyLabel: entry.keyLabel,
@@ -652,6 +712,14 @@ const runEntry = async (deps: {
       deps.attempts.push(
         skippedLocalLimitAttempt(entry, reserved.code, reserved.availableAt, deps.entryMs()),
       );
+      deps.recorder.event({
+        kind: 'model-skipped',
+        provider: entry.providerId,
+        model: entry.model,
+        keyId: entry.keyId,
+        reason: reserved.code,
+        availableAt: reserved.availableAt,
+      });
       return undefined;
     }
     const declarations = offerTools ? declarationsFor(deps.tools, provider, round) : [];
@@ -670,6 +738,18 @@ const runEntry = async (deps: {
       ...(declarations.length === 0 ? {} : { tools: declarations }),
     };
     try {
+      // ADR 0129 §6: every provider call opens a ledger step before the request.
+      deps.recorder.event({
+        kind: 'model-call',
+        position: deps.position,
+        of: deps.of,
+        provider: entry.providerId,
+        model: entry.model,
+        keyId: entry.keyId,
+        ...(entry.keyLabel === undefined ? {} : { keyLabel: entry.keyLabel }),
+        round,
+      });
+      const callStarted = deps.now();
       const response = await provider.generateText(request);
       // An adapter or injected provider may violate its TypeScript contract at runtime.
       // Never let an invalid model response reach the output guard or tool runner.
@@ -677,6 +757,26 @@ const runEntry = async (deps: {
         throw new ProviderError('invalid-response', 'Provider returned an invalid response', false);
       }
       deps.recordUsage(response.usage);
+      deps.recorder.event({
+        kind: 'model-result',
+        provider: entry.providerId,
+        model: entry.model,
+        keyId: entry.keyId,
+        ok: true,
+        ms: Math.max(0, deps.now() - callStarted),
+        ...(response.usage?.promptTokens === undefined
+          ? {}
+          : { promptTokens: response.usage.promptTokens }),
+        ...(response.usage?.completionTokens === undefined
+          ? {}
+          : { completionTokens: response.usage.completionTokens }),
+        ...(response.usage?.thinkingTokens === undefined
+          ? {}
+          : { reasoningTokens: response.usage.thinkingTokens }),
+        ...(response.finishReason === undefined ? {} : { finishReason: response.finishReason }),
+        ...(response.upstream === undefined ? {} : { upstream: response.upstream }),
+        toolCalls: response.toolCalls?.length ?? 0,
+      });
       return response;
     } catch (err) {
       failAttempt(err);
@@ -707,6 +807,16 @@ const runEntry = async (deps: {
           ms: callMs(),
           preview: '',
         });
+        // ADR 0129 §6: a refused call records only the result, never a call.
+        deps.recorder.event({
+          kind: 'tool-result',
+          round,
+          tool: call.name,
+          ok: false,
+          refused: 'tools not offered',
+          ms: callMs(),
+          resultChars: 0,
+        });
         toolMessages.push(refusedMessage(call, 'tools not offered'));
         continue;
       }
@@ -718,6 +828,15 @@ const runEntry = async (deps: {
           ms: callMs(),
           preview: '',
         });
+        deps.recorder.event({
+          kind: 'tool-result',
+          round,
+          tool: call.name,
+          ok: false,
+          refused: 'tool call budget used',
+          ms: callMs(),
+          resultChars: 0,
+        });
         toolMessages.push(refusedMessage(call, 'tool call budget used'));
         continue;
       }
@@ -728,6 +847,15 @@ const runEntry = async (deps: {
           refused: 'too many calls in this round',
           ms: callMs(),
           preview: '',
+        });
+        deps.recorder.event({
+          kind: 'tool-result',
+          round,
+          tool: call.name,
+          ok: false,
+          refused: 'too many calls in this round',
+          ms: callMs(),
+          resultChars: 0,
         });
         toolMessages.push(refusedMessage(call, 'too many calls in this round'));
         continue;
@@ -741,6 +869,15 @@ const runEntry = async (deps: {
             refused: 'not allowed after reading results',
             ms: callMs(),
             preview: '',
+          });
+          deps.recorder.event({
+            kind: 'tool-result',
+            round,
+            tool: call.name,
+            ok: false,
+            refused: 'not allowed after reading results',
+            ms: callMs(),
+            resultChars: 0,
           });
           toolMessages.push(refusedMessage(call, 'not allowed after reading results'));
           continue;
@@ -763,6 +900,15 @@ const runEntry = async (deps: {
             ms: callMs(),
             preview: '',
           });
+          deps.recorder.event({
+            kind: 'tool-result',
+            round,
+            tool: call.name,
+            ok: false,
+            refused: 'unknown id',
+            ms: callMs(),
+            resultChars: 0,
+          });
           toolMessages.push(refusedMessage(call, 'unknown id'));
           continue;
         }
@@ -775,10 +921,21 @@ const runEntry = async (deps: {
           ms: callMs(),
           preview: '',
         });
+        deps.recorder.event({
+          kind: 'tool-result',
+          round,
+          tool: call.name,
+          ok: false,
+          refused: 'result budget used',
+          ms: callMs(),
+          resultChars: 0,
+        });
         toolMessages.push(refusedMessage(call, 'result budget used'));
         continue;
       }
       deps.budgets.callsUsed += 1;
+      // ADR 0129 §6: a tool that runs is a call step plus a result step.
+      deps.recorder.event({ kind: 'tool-call', round, tool: call.name });
       const result = await run(call);
       deps.budgets.resultChars += result.text.length;
       for (const handle of result.handles ?? []) handles.add(handle);
@@ -799,6 +956,14 @@ const runEntry = async (deps: {
         ok: result.ok,
         ms: callMs(),
         preview: truncateResultForTrace(neutraliseMarkers(result.text)),
+      });
+      deps.recorder.event({
+        kind: 'tool-result',
+        round,
+        tool: call.name,
+        ok: result.ok,
+        ms: callMs(),
+        resultChars: result.text.length,
       });
       const citationText =
         result.ok && citations !== undefined
@@ -876,6 +1041,12 @@ const finishEntry = async (deps: {
     readonly guildId?: string | undefined;
     /** ADR 0129 §5: the invocation id; every assistant log line carries it. */
     readonly runId?: string | undefined;
+    /** ADR 0129 §6: this entry's place in the chain, for the ledger's retry call. */
+    readonly position: number;
+    readonly of: number;
+    /** ADR 0129 §6: the run's step log. */
+    readonly recorder: RunRecorder;
+    readonly now: () => number;
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
@@ -899,6 +1070,20 @@ const finishEntry = async (deps: {
     protectedText: outer.protectedText,
     modelIds: outer.modelIds,
   });
+  // ADR 0129 §6: a guard that stripped text or blocked the answer is a ledger
+  // step — only counts and the block reason, never the answer text.
+  const recordGuard = (removed: readonly string[], blocked?: string): void => {
+    if (removed.length === 0 && blocked === undefined) return;
+    outer.recorder.event({
+      kind: 'guard',
+      removed: removed.length,
+      ...(blocked === undefined ? {} : { blocked }),
+    });
+  };
+  recordGuard(
+    guarded.removed,
+    !guarded.ok && guarded.reason === 'prompt-leak' ? 'prompt-leak' : undefined,
+  );
   if (guarded.ok) {
     okAttempt();
     return {
@@ -942,8 +1127,28 @@ const finishEntry = async (deps: {
     outer.attempts.push(
       skippedLocalLimitAttempt(deps.entry, reserved.code, reserved.availableAt, outer.entryMs()),
     );
+    outer.recorder.event({
+      kind: 'model-skipped',
+      provider: deps.entry.providerId,
+      model: deps.entry.model,
+      keyId: deps.entry.keyId,
+      reason: reserved.code,
+      availableAt: reserved.availableAt,
+    });
   } else {
     try {
+      // ADR 0129 §6: the guard retry is its own ledger call, like any other.
+      outer.recorder.event({
+        kind: 'model-call',
+        position: outer.position,
+        of: outer.of,
+        provider: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+        ...(deps.entry.keyLabel === undefined ? {} : { keyLabel: deps.entry.keyLabel }),
+        round: 0,
+      });
+      const retryStarted = outer.now();
       const retry = await deps.provider.generateText({
         model: deps.entry.model,
         systemInstruction: outer.systemInstruction,
@@ -952,6 +1157,26 @@ const finishEntry = async (deps: {
         thinkingBudget: outer.limits.answerThinking,
       });
       outer.recordUsage(retry.usage);
+      outer.recorder.event({
+        kind: 'model-result',
+        provider: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+        ok: true,
+        ms: Math.max(0, outer.now() - retryStarted),
+        ...(retry.usage?.promptTokens === undefined
+          ? {}
+          : { promptTokens: retry.usage.promptTokens }),
+        ...(retry.usage?.completionTokens === undefined
+          ? {}
+          : { completionTokens: retry.usage.completionTokens }),
+        ...(retry.usage?.thinkingTokens === undefined
+          ? {}
+          : { reasoningTokens: retry.usage.thinkingTokens }),
+        ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
+        ...(retry.upstream === undefined ? {} : { upstream: retry.upstream }),
+        toolCalls: retry.toolCalls?.length ?? 0,
+      });
       const second = guardAnswer({
         text: retry.text,
         protectedText: outer.protectedText,
@@ -959,6 +1184,7 @@ const finishEntry = async (deps: {
       });
       if (second.ok) {
         okAttempt();
+        recordGuard(second.removed);
         return {
           outcome: 'answered',
           text: second.text,
@@ -975,6 +1201,7 @@ const finishEntry = async (deps: {
       }
       if (second.reason === 'prompt-leak') {
         okAttempt();
+        recordGuard(second.removed, 'prompt-leak');
         return {
           outcome: 'answered',
           text: PROMPT_LEAK_TEXT,
@@ -992,12 +1219,27 @@ const finishEntry = async (deps: {
     } catch (err) {
       // A failed retry is still a failed answer, not a chain error — but the
       // failure is a journal line (ADR 0129 §5), never a bare `catch {}`.
+      // ADR 0129 §6: and a ledger step, like any other failed call.
+      const f = classifyProviderFailure(err, {
+        provider: deps.entry.providerId,
+        model: deps.entry.model,
+      });
+      outer.recorder.event({
+        kind: 'model-result',
+        provider: deps.entry.providerId,
+        model: deps.entry.model,
+        keyId: deps.entry.keyId,
+        ok: false,
+        ms: outer.entryMs(),
+        code: f.code,
+        ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+        ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+        ...(f.finishReason === undefined ? {} : { finishReason: f.finishReason }),
+        ...(f.upstream === undefined ? {} : { upstream: f.upstream }),
+        ...(err instanceof Error ? { providerMessage: sanitizeProviderMessage(err.message) } : {}),
+      });
       const outerLogger = outer.logger;
       if (outerLogger !== undefined) {
-        const f = classifyProviderFailure(err, {
-          provider: deps.entry.providerId,
-          model: deps.entry.model,
-        });
         outerLogger.warn(
           safeLogFields({
             component: 'assistant',

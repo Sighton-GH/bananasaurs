@@ -1565,7 +1565,12 @@ describe('runToolLoop run recorder (ADR 0129 §6)', () => {
       'model-result',
     ]);
     expect(events[2]).toMatchObject({ round: 1, tool: 'search_sources' });
-    expect(events[3]).toMatchObject({ round: 1, tool: 'search_sources', ok: true, resultChars: 11 });
+    expect(events[3]).toMatchObject({
+      round: 1,
+      tool: 'search_sources',
+      ok: true,
+      resultChars: 11,
+    });
   });
 
   it('a refused tool records only tool-result with the reason', async () => {
@@ -1598,11 +1603,7 @@ describe('runToolLoop run recorder (ADR 0129 §6)', () => {
       ),
     );
     expect(result.outcome).toBe('answered');
-    expect(events.map((e) => e.kind)).toEqual([
-      'model-skipped',
-      'model-call',
-      'model-result',
-    ]);
+    expect(events.map((e) => e.kind)).toEqual(['model-skipped', 'model-call', 'model-result']);
     expect(events[0]).toMatchObject({ model: 'model-a', reason: 'ineligible' });
   });
 

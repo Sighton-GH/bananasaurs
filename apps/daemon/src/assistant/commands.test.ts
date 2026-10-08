@@ -1475,15 +1475,7 @@ describe('assistant mention run ledger (ADR 0129 §6)', () => {
 
   it('a routed mention calls recordQueued once with via mention', async () => {
     const recordQueued = vi.fn();
-    const h = harness(
-      undefined,
-      undefined,
-      true,
-      undefined,
-      undefined,
-      undefined,
-      recordQueued,
-    );
+    const h = harness(undefined, undefined, true, undefined, undefined, undefined, recordQueued);
     await h.subscriber.handle(mentionEvent());
     expect(h.queued).toHaveLength(1);
     expect(recordQueued).toHaveBeenCalledTimes(1);
@@ -1498,15 +1490,7 @@ describe('assistant mention run ledger (ADR 0129 §6)', () => {
 
   it('a reply mention calls recordQueued with via reply', async () => {
     const recordQueued = vi.fn();
-    const h = harness(
-      undefined,
-      undefined,
-      true,
-      undefined,
-      undefined,
-      undefined,
-      recordQueued,
-    );
+    const h = harness(undefined, undefined, true, undefined, undefined, undefined, recordQueued);
     await h.subscriber.handle(
       mentionEvent({
         referencedMessageId: '890123456789012399',
@@ -1521,15 +1505,7 @@ describe('assistant mention run ledger (ADR 0129 §6)', () => {
 
   it('a duplicate mention does not call recordQueued', async () => {
     const recordQueued = vi.fn();
-    const h = harness(
-      undefined,
-      undefined,
-      false,
-      undefined,
-      undefined,
-      undefined,
-      recordQueued,
-    );
+    const h = harness(undefined, undefined, false, undefined, undefined, undefined, recordQueued);
     await h.subscriber.handle(mentionEvent());
     expect(recordQueued).not.toHaveBeenCalled();
   });

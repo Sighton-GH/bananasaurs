@@ -15,6 +15,7 @@ import {
   type Subscriber,
 } from '@bananasaurs/core';
 import { routeAssistantMention } from '@bananasaurs/discord';
+import type { RunRecorder } from './run-recorder.js';
 
 export type AssistantCommand =
   | 'ask'
@@ -90,6 +91,8 @@ export interface AssistantInvocation {
    * trace's `included.summaryVersion`. Absent means no summary was injected.
    */
   readonly summaryVersion?: number | undefined;
+  /** ADR 0129 §6: the run's step log; absent means nothing is recorded. */
+  readonly recorder?: RunRecorder | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
@@ -251,6 +254,19 @@ export interface AssistantCommandDeps {
    * fixtures compile; absent means no gate.
    */
   readonly channelAccess?: Pick<ChannelAccess, 'check'> | undefined;
+  /**
+   * ADR 0129 §6: called once when a mention's job is newly queued. Absent
+   * means the queued step goes unrecorded.
+   */
+  readonly recordQueued?:
+    | ((run: {
+        readonly runId: string;
+        readonly userId: string;
+        readonly channelId: string;
+        readonly behaviourId: string;
+        readonly via: 'mention' | 'reply';
+      }) => void)
+    | undefined;
 }
 
 export const createAssistantCommandSubscriber = (deps: AssistantCommandDeps): Subscriber => ({
@@ -379,6 +395,23 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     // Best-effort and never awaited: the dispatch chain must not stall on it.
     // A duplicate already in the queue restarts nothing, so it gets no typing.
     if (!queued.enqueued) return;
+    // ADR 0129 §6: a newly queued mention opens the run's ledger row. A
+    // recording failure never stops the run — it is logged, and the mention
+    // still gets its typing indicator and answer.
+    try {
+      deps.recordQueued?.({
+        runId: event.messageId,
+        userId: event.authorId!,
+        channelId: event.channelId,
+        behaviourId: route.behaviour.id,
+        via: event.referencedMessageId === undefined ? 'mention' : 'reply',
+      });
+    } catch (err) {
+      deps.logger.warn(
+        safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
+        'assistant run ledger write failed; continuing',
+      );
+    }
     const sendTyping = deps.sendTyping;
     if (sendTyping !== undefined) {
       try {

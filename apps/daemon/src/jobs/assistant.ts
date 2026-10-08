@@ -24,7 +24,13 @@ import {
   type OutgoingMessage,
   type RecentMessage,
 } from '@bananasaurs/core';
-import { conversationRepo, jobRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  conversationRepo,
+  jobRepo,
+  runRepo,
+  traceRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import type {
   AssistantCommandService,
   AssistantInvocationResult,
@@ -43,6 +49,11 @@ import { buildChannelContext } from '../assistant/channel-context.js';
 import { PROVIDER_FAILURE_LOG_REASON, failureLogReason } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 import { startTyping } from '../assistant/typing.js';
+import {
+  createRunRecorder,
+  NOOP_RUN_RECORDER,
+  type RunRecorder,
+} from '../assistant/run-recorder.js';
 
 /**
  * The subscriber (`apps/daemon/src/assistant/commands.ts`) enqueues mention
@@ -418,6 +429,38 @@ export const assistantInvokeHandler = (deps: {
       return undefined;
     };
 
+    /**
+     * ADR 0129 §6: the run's step log, bound to this guild and invocation.
+     * The row is insert-or-ignore, so the subscriber's earlier `queuedAt`
+     * survives. A write failure here warns once and records nothing further —
+     * the run continues with the same outcome and reply.
+     */
+    const ledgerForRun = (): RunRecorder => {
+      if (deps.conversations === undefined) return NOOP_RUN_RECORDER;
+      try {
+        runRepo.ensureRun(deps.conversations.scope, {
+          runId: payload.invocationId,
+          userId: payload.userId,
+          ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
+          behaviourId: payload.behaviourId,
+          source: payload.source,
+          queuedAt: startedAt,
+        });
+        return createRunRecorder({
+          scope: deps.conversations.scope,
+          runId: payload.invocationId,
+          now: deps.now,
+          logger: deps.logger,
+        });
+      } catch (err) {
+        deps.logger.warn(
+          safeLogFields({ component: 'assistant', runId: payload.invocationId, err }),
+          'assistant run ledger write failed',
+        );
+        return NOOP_RUN_RECORDER;
+      }
+    };
+
     // Fail closed BEFORE any side effect when the answer can never be
     // delivered: a restart forgets the sealing key, and invoking anyway
     // would spend provider quota and write durable ticket/activity effects
@@ -516,9 +559,32 @@ export const assistantInvokeHandler = (deps: {
               flags: ['channel-not-writable'],
             });
           }
+          // ADR 0129 §6: the refused run still closes its ledger row.
+          ledgerForRun().event({
+            kind: 'finished',
+            outcome: 'refused',
+            durationMs: Math.max(0, deps.now() - startedAt),
+            traceId,
+          });
         }
         return;
       }
+    }
+
+    // ADR 0129 §6: every step of the run lands in the run ledger, on every
+    // attempt including retries.
+    const recorder = ledgerForRun();
+    {
+      let queueWaitMs = 0;
+      if (deps.conversations !== undefined) {
+        try {
+          const queuedAt = runRepo.getRun(deps.conversations.scope, payload.invocationId)?.queuedAt;
+          queueWaitMs = Math.max(0, startedAt - (queuedAt ?? startedAt));
+        } catch {
+          queueWaitMs = 0;
+        }
+      }
+      recorder.event({ kind: 'started', attempt: context.attempts, queueWaitMs });
     }
 
     const behaviourName = async (): Promise<string> =>
@@ -637,6 +703,15 @@ export const assistantInvokeHandler = (deps: {
           }
           await answerSingle(text);
           await logFailure(text, 'The behaviour was deleted or turned off before the request ran.');
+          // ADR 0129 §6: the refused run closes its ledger row.
+          recorder.event({
+            kind: 'finished',
+            outcome: 'refused',
+            durationMs: Math.max(0, deps.now() - startedAt),
+            ...(deps.conversations === undefined
+              ? {}
+              : { traceId: `trace_${payload.invocationId}` }),
+          });
           return;
         }
         if (payload.channelId !== undefined && deps.sendTyping !== undefined) {
@@ -970,6 +1045,15 @@ export const assistantInvokeHandler = (deps: {
               flagUnavailable();
             }
           }
+          // ADR 0129 §6: the conversation join is a ledger step, and the row
+          // now points at the conversation the turns went to.
+          recorder.update({ conversationId });
+          recorder.event({
+            kind: 'conversation',
+            continued: resolved.kind === 'continue',
+            historyTurns: history.filter((message) => message.role === 'user').length,
+            ...(storedSummary === undefined ? {} : { summaryVersion: storedSummary.version }),
+          });
         }
         try {
           result = await deps.service.invoke({
@@ -994,6 +1078,8 @@ export const assistantInvokeHandler = (deps: {
             ...(conversationId === undefined ? {} : { conversationId }),
             askerName: payload.authorName,
             referencedMessageId: payload.referencedMessageId,
+            // ADR 0129 §6: the service records its context and model steps.
+            recorder,
           });
         } finally {
           stopTyping();
@@ -1111,6 +1197,21 @@ export const assistantInvokeHandler = (deps: {
           });
           return traceId;
         };
+        /** ADR 0129 §6: a failed run closes its ledger row with the last
+         * failed attempt's code and the failure trace id, when present. */
+        const recordFailureFinished = (err: unknown, traceId: string | undefined): void => {
+          const detail = detailOf(err);
+          const total = detail === undefined ? null : totalTokensOf(detail.usage);
+          const code = codeOf(err);
+          recorder.event({
+            kind: 'finished',
+            outcome: 'failed',
+            durationMs: Math.max(0, deps.now() - startedAt),
+            ...(total === null ? {} : { totalTokens: total }),
+            ...(code === undefined ? {} : { code }),
+            ...(traceId === undefined ? {} : { traceId }),
+          });
+        };
         /** ADR 0129 §1: the failure reply saved as the assistant turn, linked to its trace. */
         const appendFailureTurn = (
           text: string,
@@ -1162,6 +1263,7 @@ export const assistantInvokeHandler = (deps: {
           const posted = await answerSingle(text);
           if (traceId !== undefined) appendFailureTurn(text, traceId, posted);
           await logFailure(text, failureLogReason(attemptsOf(err)));
+          recordFailureFinished(err, traceId);
           return;
         }
         // ADR 0081: every entry at its owner-set limit is answered at once
@@ -1182,6 +1284,7 @@ export const assistantInvokeHandler = (deps: {
           const posted = await answerSingle(text);
           if (traceId !== undefined) appendFailureTurn(text, traceId, posted);
           await logFailure(text, failureLogReason(attemptsOf(err)));
+          recordFailureFinished(err, traceId);
           return;
         }
         if (err instanceof ProviderError && err.retryable && context.attempts < ceiling) {
@@ -1196,7 +1299,16 @@ export const assistantInvokeHandler = (deps: {
             }),
             'assistant invocation hit a retryable provider error; job will retry',
           );
-          throw new RetryAfterError(err.message, delays[context.attempts - 1] ?? delays.at(-1)!);
+          // ADR 0129 §6: the wait is a ledger step, with the same delay the
+          // retry below uses.
+          const delayMs = delays[context.attempts - 1] ?? delays.at(-1)!;
+          recorder.event({
+            kind: 'retry-scheduled',
+            code: codeOf(err) ?? 'internal',
+            retryAt: deps.now() + delayMs,
+            attempt: context.attempts,
+          });
+          throw new RetryAfterError(err.message, delayMs);
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
@@ -1222,6 +1334,7 @@ export const assistantInvokeHandler = (deps: {
             ? failureLogReason(attemptsOf(err))
             : PROVIDER_FAILURE_LOG_REASON;
         await logFailure(text, reason);
+        recordFailureFinished(err, traceId);
         deps.logger.info(
           safeLogFields({
             component: 'assistant-job',
@@ -1320,6 +1433,8 @@ export const assistantInvokeHandler = (deps: {
       // Fresh slash runs passed the fail-closed check above, so the token is
       // good; a stranded retry with a dead token skips the whole answer.
       const answerable = payload.interaction === undefined || slashToken !== undefined;
+      // ADR 0129 §6: the delivery is two ledger steps around the posts.
+      recorder.event({ kind: 'delivering', parts: parts.length });
       if (answerable) {
         for (let index = partsPosted; index < parts.length; index += 1) {
           // ADR 0126 F4: Write turned off while the job waited leaves the
@@ -1332,6 +1447,7 @@ export const assistantInvokeHandler = (deps: {
           saveStaged('invoke-done', result);
         }
       }
+      recorder.event({ kind: 'delivered', messageIds: postedMessageIds.slice(0, 20) });
       if (conversationId !== undefined && deps.conversations !== undefined) {
         const conv = deps.conversations;
         const key = payload.invocationId;
@@ -1431,6 +1547,23 @@ export const assistantInvokeHandler = (deps: {
         }
       }
       saveStaged('answered', result);
+      // ADR 0129 §6: the answered (or refused) run closes its ledger row
+      // with the trace id the insert above wrote.
+      {
+        const key = payload.invocationId;
+        const outcome = result.ok ? 'answered' : (result.outcome ?? 'refused');
+        const detail = result.detail;
+        const total = detail === undefined ? null : totalTokensOf(detail.usage);
+        recorder.event({
+          kind: 'finished',
+          outcome,
+          durationMs: Math.max(0, deps.now() - startedAt),
+          ...(total === null ? {} : { totalTokens: total }),
+          ...(conversationId === undefined || deps.conversations === undefined
+            ? {}
+            : { traceId: `trace_${key}` }),
+        });
+      }
       // ADR 0093 decision 3: every conversation whose summary this run
       // looked back at is linked with kind `recalled`. The insert is
       // idempotent (insert-or-ignore) and this stage is skipped on a retry,

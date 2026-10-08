@@ -36,6 +36,7 @@ import {
   eligibilityRepo,
   jobRepo,
   resourceCacheRepo,
+  runRepo,
   traceRepo,
   type GuildScope,
   type InstanceScope,
@@ -63,6 +64,7 @@ import {
   type UpcomingEventItem,
 } from './tools.js';
 import { formatChannelLines } from './channel-context.js';
+import { createRunRecorder, NOOP_RUN_RECORDER } from './run-recorder.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
@@ -772,22 +774,22 @@ export const createAssistantService = (
                 ? {}
                 : { referencedMessageId: input.referencedMessageId }),
             });
+      // Try-it never reads member memories: the short-circuit keeps even
+      // the preference read from happening. The count travels to the run
+      // ledger's `context-built` step (ADR 0129 §6).
+      const memoriesSkipped =
+        opts.skipMemberMemories || assistantRepo.memoryPreference(scope, input.userId).optedOut;
+      const memoryLines = memoriesSkipped
+        ? []
+        : assistantRepo
+            .listMemories(scope)
+            .filter((memory) => memory.subjectId === undefined || memory.subjectId === input.userId)
+            .map((memory) => '- ' + memory.content);
       const context = compileAssistantContext({
         behaviour: input.behaviour,
         serverCard:
           assistantRepo.getServerCard(scope) +
-          // Try-it never reads member memories: the short-circuit keeps even
-          // the preference read from happening.
-          (opts.skipMemberMemories || assistantRepo.memoryPreference(scope, input.userId).optedOut
-            ? ''
-            : '\nCurated memory:\n' +
-              assistantRepo
-                .listMemories(scope)
-                .filter(
-                  (memory) => memory.subjectId === undefined || memory.subjectId === input.userId,
-                )
-                .map((memory) => '- ' + memory.content)
-                .join('\n')),
+          (memoriesSkipped ? '' : '\nCurated memory:\n' + memoryLines.join('\n')),
         resources,
         evidence,
         skills: permittedSkills,
@@ -1283,6 +1285,20 @@ export const createAssistantService = (
       // limited and never recorded.
       const reserveCall = (entry: ChainEntry) =>
         reserveEntryCall(instance, entry, scope.guildId, now());
+      // ADR 0129 §6: the context step lands in the run ledger with the
+      // prompt's shape (names, counts and token estimates) but never its
+      // text.
+      const recorder = input.recorder ?? NOOP_RUN_RECORDER;
+      recorder.event({
+        kind: 'context-built',
+        sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope)
+          .map(({ name, chars, estTokens }) => ({ name, chars, estTokens }))
+          .slice(0, 40),
+        snippetChunks: preRetrieved.length,
+        memories: memoryLines.length,
+        channelMessages: input.channelMessages ?? 0,
+        toolsOffered: declarations.map((declaration) => declaration.name).slice(0, 60),
+      });
       // Task 20: the sources line contains only known resources whose tags the
       // answer actually used. A web-only answer keeps just the Brave attribution,
       // and only when Brave results were used (ADR 0120 §7).
@@ -1336,6 +1352,7 @@ export const createAssistantService = (
         logger,
         guildId: scope.guildId,
         runId: input.invocationId,
+        recorder,
         now,
         citations,
         isCitable: isKnownResource,
@@ -1619,6 +1636,18 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         resourcesUnavailable?: boolean;
       } = {};
       const traceId = `try_${randomUUID()}`;
+      // ADR 0129 §6: Try-it runs the same ledger as a Discord request, under
+      // the user turn id with `source: 'dashboard-test'`.
+      runRepo.ensureRun(scope, {
+        runId: userTurnId,
+        userId: botUserId,
+        behaviourId: behaviour.id,
+        source: 'dashboard-test',
+        queuedAt: started,
+      });
+      const recorder = createRunRecorder({ scope, runId: userTurnId, now, logger });
+      recorder.event({ kind: 'queued', via: 'dashboard' });
+      recorder.event({ kind: 'started', attempt: 1, queueWaitMs: 0 });
       let result: AssistantInvocationResult;
       let outcome: AssistantTrace['outcome'] = 'answered';
       let traceError: { readonly kind: string; readonly message: string } | undefined;
@@ -1642,6 +1671,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             // ADR 0093: Try it recalls with the asker-only filter, still
             // excluding the conversation being answered in.
             conversationId,
+            recorder,
           },
           sink,
           {
@@ -1796,6 +1826,14 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
           `dashboard-account:${input.accountUsername}`,
           ...(sink.resourcesUnavailable === true ? ['resources-unavailable'] : []),
         ],
+      });
+      // ADR 0129 §6: the run closes with its trace id, tied to the conversation.
+      recorder.update({ conversationId });
+      recorder.event({
+        kind: 'finished',
+        outcome,
+        durationMs: Math.max(0, now() - started),
+        traceId,
       });
       return { answer: result.content, traceId, conversationId };
     },
