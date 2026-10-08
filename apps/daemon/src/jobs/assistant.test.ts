@@ -26,9 +26,13 @@ import type {
   AssistantCommandService,
   AssistantInvocation,
   AssistantInvocationResult,
+  AssistantTraceDetail,
 } from '../assistant/commands.js';
 import { assistantInvokeHandler } from './assistant.js';
+import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
+import { dailyQuotaReply } from '../assistant/fallback-replies.js';
+import type { AssistantTrace } from '@bananasaurs/core';
 
 const GUILD_ID = parseGuildId('111111111111111111');
 const USER_ID = '222222222222222222';
@@ -2072,5 +2076,344 @@ describe('assistantInvokeHandler (ADR 0091: summary enqueue)', () => {
     expect(h.inputs[0]?.history?.[0]!.text).toContain('Old topic');
     const stored = traceRepo.getTrace(scope(), 'trace_sum-ver');
     expect(stored?.included?.summaryVersion).toBe(1);
+  });
+});
+
+describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () => {
+  const BOT_ID2 = '901234567890123456';
+  let t3: MigratedTestDatabase;
+  let nowMs3: number;
+  let logLines3: { fields: Record<string, unknown>; msg: string }[];
+  let logger3: Logger;
+  beforeEach(() => {
+    t3 = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t3.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+    nowMs3 = NOW;
+    logLines3 = [];
+    const push = (fields: Record<string, unknown>, msg?: string): void => {
+      logLines3.push({ fields, msg: msg ?? '' });
+    };
+    logger3 = {
+      debug: push,
+      info: push,
+      warn: push,
+      error: push,
+    } as unknown as Logger;
+  });
+  afterEach(() => t3.close());
+  const scope3 = () => t3.scopes.forGuild(GUILD_ID);
+  const detailWithSection3 = (): AssistantTraceDetail => ({
+    sections: [{ name: 'identity', chars: 4, estTokens: 1, text: 'rule' }],
+    history: [],
+    attempts: [],
+    toolCalls: [],
+    usage: {},
+    guard: { removed: [] },
+  });
+  const chainAttempt3 = (
+    over: Partial<AssistantTrace['attempts'][number]> = {},
+  ): AssistantTrace['attempts'][number] => ({
+    provider: 'openrouter',
+    model: 'stealth/space-bunny-alpha',
+    outcome: 'error',
+    code: 'provider-bad-model',
+    httpStatus: 404,
+    providerMessage: 'No endpoints found',
+    ms: 5,
+    ...over,
+  });
+  const chainFailed3 = (
+    over: {
+      readonly retryable?: boolean;
+      readonly kind?: 'invalid-request' | 'rate-limit';
+      readonly attempts?: AssistantTrace['attempts'];
+    } = {},
+  ): ChainFailedError =>
+    new ChainFailedError(over.kind ?? 'invalid-request', 'chain failed', over.retryable ?? false, over.attempts ?? [chainAttempt3()], {
+      detail: detailWithSection3(),
+    });
+  const mention3 = (invocationId: string, messageId = '810000000000000301') => ({
+    channelId: CHANNEL_ID,
+    userId: USER_ID,
+    callerRoleIds: [],
+    behaviourId: behaviour.id,
+    command: 'ask' as const,
+    input: { question: 'hi' },
+    source: 'mention' as const,
+    invocationId,
+    messageId,
+  });
+  const harness3 = (
+    answer: (
+      input: AssistantInvocation,
+    ) => AssistantInvocationResult | Promise<AssistantInvocationResult>,
+    opts: {
+      readonly behaviours?: readonly AssistantBehaviour[];
+      readonly channelAccess?: Pick<ChannelAccess, 'check'>;
+      readonly logChannelId?: string;
+    } = {},
+  ) => {
+    const inputs: AssistantInvocation[] = [];
+    const svc: AssistantCommandService = {
+      behavioursForGuild: async () => opts.behaviours ?? [behaviour],
+      invoke: async (input) => {
+        inputs.push(input);
+        return await answer(input);
+      },
+    };
+    const sent: { channelId: string; message: OutgoingMessage }[] = [];
+    let idSeq = 0;
+    const nextRef = (channelId: string): DiscordMessageRef => {
+      idSeq += 1;
+      return { channelId, messageId: `8290000000000000${String(idSeq).padStart(2, '0')}` };
+    };
+    const send = vi.fn(async (channelId: string, message: OutgoingMessage) => {
+      sent.push({ channelId, message });
+      return nextRef(channelId);
+    });
+    const respond = vi.fn(async () => nextRef(CHANNEL_ID));
+    const logPosts: OutgoingMessage[] = [];
+    const handler = assistantInvokeHandler({
+      guildId: GUILD_ID,
+      service: svc,
+      openToken: () => undefined,
+      respond,
+      send: async (channelId, message) => {
+        if (opts.logChannelId !== undefined && channelId === opts.logChannelId) {
+          logPosts.push(message);
+          return undefined;
+        }
+        return send(channelId, message);
+      },
+      logger: logger3,
+      logChannelId: () => opts.logChannelId,
+      now: () => nowMs3,
+      conversations: { scope: scope3(), botUserId: BOT_ID2, botDisplayName: 'bananasaurs' },
+      sendTyping: async () => undefined,
+      fetchMessageContent: async () => undefined,
+      fetchChannelMessages: async () => undefined,
+      channelContextMessages: () => 0,
+      ...(opts.channelAccess === undefined ? {} : { channelAccess: opts.channelAccess }),
+    });
+    return {
+      run: async (input: Record<string, unknown>, attempts = 1) => {
+        let saved: string | null = null;
+        try {
+          await handler.run(handler.payload.parse(input), {
+            jobId: 1,
+            attempts,
+            cursor: null,
+            saveCursor: (c) => {
+              saved = c;
+            },
+          });
+          return { cursor: saved, error: undefined as unknown };
+        } catch (error) {
+          return { cursor: saved, error };
+        }
+      },
+      sent,
+      inputs,
+      logPosts,
+      turnsOf: (conversationId: string) => conversationRepo.listTurns(scope3(), conversationId),
+    };
+  };
+  it('(a) a non-retryable chain failure writes one failed trace plus the failure turn', async () => {
+    const h = harness3(async () => {
+      throw chainFailed3();
+    });
+    const key = 't3-a1';
+    await h.run(mention3(key));
+    const trace = traceRepo.getTrace(scope3(), `trace_${key}_a1`);
+    expect(trace?.outcome).toBe('failed');
+    expect(trace?.flags).toContain('gave-up');
+    expect(trace?.attempts).toHaveLength(1);
+    expect(trace?.sections).toHaveLength(1);
+    expect(trace?.runId).toBe(key);
+    expect(trace?.turnId).toBe(`turn_${key}_a`);
+    expect(trace?.error?.kind).toBe('invalid-request');
+    const convId = trace?.conversationId;
+    expect(convId).toBeDefined();
+    const turns = h.turnsOf(convId!);
+    const failureTurn = turns.find((turn) => turn.turnId === `turn_${key}_a`);
+    expect(failureTurn?.traceId).toBe(`trace_${key}_a1`);
+    expect(failureTurn?.text).toBe('I could not complete that request. No action was taken.');
+    expect(h.sent).toHaveLength(1);
+    expect(conversationRepo.lookupMessage(scope3(), '829000000000000001')?.conversationId).toBe(
+      convId,
+    );
+  });
+  it('(b) retry then success leaves two retry traces plus the answered trace and one turn', async () => {
+    let calls = 0;
+    const h = harness3(async () => {
+      calls += 1;
+      if (calls <= 2) throw chainFailed3({ retryable: true, kind: 'rate-limit' });
+      return {
+        ok: true,
+        content: 'answer',
+        detail: {
+          sections: [],
+          history: [],
+          attempts: [],
+          toolCalls: [],
+          usage: {},
+          guard: { removed: [] },
+        },
+      };
+    });
+    const key = 't3-b1';
+    const first = await h.run(mention3(key), 1);
+    expect(first.error).toBeInstanceOf(RetryAfterError);
+    const second = await h.run(mention3(key), 2);
+    expect(second.error).toBeInstanceOf(RetryAfterError);
+    await h.run(mention3(key), 3);
+    expect(traceRepo.getTrace(scope3(), `trace_${key}_a1`)?.flags).toContain('retry:1');
+    expect(traceRepo.getTrace(scope3(), `trace_${key}_a2`)?.flags).toContain('retry:2');
+    const answered = traceRepo.getTrace(scope3(), `trace_${key}`);
+    expect(answered?.outcome).toBe('answered');
+    expect(answered?.runId).toBe(key);
+    const turns = h.turnsOf(answered?.conversationId ?? '');
+    expect(turns.filter((turn) => turn.role === 'assistant')).toHaveLength(1);
+  });
+  it('(c) the retry ceiling leaves gave-up and a crash replay adds nothing', async () => {
+    const h = harness3(async () => {
+      throw chainFailed3({ retryable: true, kind: 'rate-limit' });
+    });
+    const key = 't3-c1';
+    for (const attempt of [1, 2, 3]) {
+      const out = await h.run(mention3(key), attempt);
+      expect(out.error).toBeInstanceOf(RetryAfterError);
+    }
+    await h.run(mention3(key), 4);
+    const last = traceRepo.getTrace(scope3(), `trace_${key}_a4`);
+    expect(last?.flags).toContain('gave-up');
+    const convId = last?.conversationId ?? '';
+    const turnsBefore = h.turnsOf(convId).length;
+    await h.run(mention3(key), 4);
+    expect(traceRepo.getTrace(scope3(), `trace_${key}_a4`)?.flags).toContain('gave-up');
+    expect(h.turnsOf(convId)).toHaveLength(turnsBefore);
+  });
+  it('(d) daily quota writes a failed trace and the quota reply with no retry', async () => {
+    const h = harness3(async () => {
+      throw new ChainFailedError('quota', 'daily free allowance spent', false, [chainAttempt3()], {
+        detail: detailWithSection3(),
+        quotaScope: 'daily-free',
+        resetAt: NOW + 3_600_000,
+      });
+    });
+    const key = 't3-d1';
+    const out = await h.run(mention3(key), 1);
+    expect(out.error).toBeUndefined();
+    const trace = traceRepo.getTrace(scope3(), `trace_${key}_a1`);
+    expect(trace?.outcome).toBe('failed');
+    const turns = h.turnsOf(trace?.conversationId ?? '');
+    expect(turns.find((turn) => turn.turnId === `turn_${key}_a`)?.text).toBe(
+      dailyQuotaReply(NOW + 3_600_000, NOW),
+    );
+  });
+  it('(e) a local limit writes a failed trace and the local-limit reply', async () => {
+    const at = NOW + 60_000;
+    const h = harness3(async () => {
+      throw new LocalLimitError(at, 'local-rpm-limit', {
+        attempts: [],
+        detail: detailWithSection3(),
+      });
+    });
+    const key = 't3-e1';
+    await h.run(mention3(key), 1);
+    const trace = traceRepo.getTrace(scope3(), `trace_${key}_a1`);
+    expect(trace?.error?.kind).toBe('local-rpm-limit');
+    expect(trace?.outcome).toBe('failed');
+    const turns = h.turnsOf(trace?.conversationId ?? '');
+    expect(turns.find((turn) => turn.turnId === `turn_${key}_a`)?.text).toBe(
+      localLimitReply(at, NOW, 'UTC'),
+    );
+  });
+  it('(f) an internal error writes a failed trace without leaking the message', async () => {
+    const h = harness3(async () => {
+      throw new Error('boom secret detail');
+    });
+    const key = 't3-f1';
+    await h.run(mention3(key), 1);
+    const trace = traceRepo.getTrace(scope3(), `trace_${key}_a1`);
+    expect(trace?.error?.kind).toBe('internal');
+    expect(JSON.stringify(trace)).not.toContain('boom');
+  });
+  it('(g) a deleted behaviour writes one refused trace', async () => {
+    const h = harness3(
+      async () => ({
+        ok: true,
+        content: 'answer',
+      }),
+      { behaviours: [] },
+    );
+    const key = 't3-g1';
+    await h.run(mention3(key), 1);
+    const trace = traceRepo.getTrace(scope3(), `trace_${key}`);
+    expect(trace?.outcome).toBe('refused');
+    expect(trace?.error?.kind).toBe('behaviour-unavailable');
+    expect(trace?.runId).toBe(key);
+  });
+  it('(h) a fresh write-denied run writes one refused trace and sends nothing', async () => {
+    const h = harness3(
+      async () => ({
+        ok: true,
+        content: 'answer',
+      }),
+      { channelAccess: { check: async () => ({ allowed: false as const, reason: 'not-granted' as const }) } },
+    );
+    const key = 't3-h1';
+    await h.run(mention3(key), 1);
+    const trace = traceRepo.getTrace(scope3(), `trace_${key}`);
+    expect(trace?.flags).toContain('channel-not-writable');
+    expect(h.sent).toHaveLength(0);
+  });
+  it('(i) ok:false outcomes pass through to the trace', async () => {
+    const failed = harness3(async () => ({ ok: false, outcome: 'failed', content: 'bad' }));
+    await failed.run(mention3('t3-i1'), 1);
+    expect(traceRepo.getTrace(scope3(), 'trace_t3-i1')?.outcome).toBe('failed');
+    const refused = harness3(async () => ({ ok: false, content: 'no' }));
+    await refused.run(mention3('t3-i2'), 1);
+    expect(traceRepo.getTrace(scope3(), 'trace_t3-i2')?.outcome).toBe('refused');
+  });
+  it('(j) success and final failure log assistant run finished with runId', async () => {
+    const ok = harness3(async () => ({
+      ok: true,
+      content: 'answer',
+      detail: {
+        sections: [],
+        history: [],
+        attempts: [],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+      },
+    }));
+    await ok.run(mention3('t3-j1'), 1);
+    const okLine = logLines3.find((line) => line.msg === 'assistant run finished')?.fields;
+    expect(okLine).toMatchObject({ runId: 't3-j1', outcome: 'answered' });
+    logLines3.length = 0;
+    const bad = harness3(async () => {
+      throw chainFailed3();
+    });
+    await bad.run(mention3('t3-j2'), 1);
+    const badLine = logLines3.find((line) => line.msg === 'assistant run finished')?.fields;
+    expect(badLine).toMatchObject({
+      runId: 't3-j2',
+      outcome: 'failed',
+      code: 'provider-bad-model',
+    });
+  });
+  it('(k) the final-failure log post names the title and model, never provider text', async () => {
+    const h = harness3(
+      async () => {
+        throw chainFailed3();
+      },
+      { logChannelId: '444444444444444444' },
+    );
+    await h.run(mention3('t3-k1'), 1);
+    const reason = JSON.stringify(h.logPosts);
+    expect(reason).toContain('This model is not available on this key — stealth/space-bunny-alpha');
+    expect(reason).not.toContain('No endpoints found');
   });
 });
