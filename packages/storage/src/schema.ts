@@ -5,6 +5,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   unique,
@@ -2395,6 +2396,90 @@ export const assistantTraces = sqliteTable(
     check('assistant_traces_outcome', sql`${t.outcome} IN ('answered','refused','failed')`),
     index('assistant_traces_recent').on(t.guildId, t.at),
     index('assistant_traces_conversation').on(t.guildId, t.conversationId),
+  ],
+);
+
+// ADR 0129 §6: one row per assistant invocation, updated in place as the run
+// moves. Metadata only — never a member's question or answer; the step log
+// lives in `assistant_run_events`. Rows die with their conversation through
+// the prune job (and the DELETE route and forgetMember), and orphans with no
+// conversation are pruned after 30 days.
+export const assistantRuns = sqliteTable(
+  'assistant_runs',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    runId: text('run_id').notNull(),
+    conversationId: text('conversation_id'),
+    traceId: text('trace_id'),
+    userId: snowflake('user_id').notNull(),
+    channelId: text('channel_id'),
+    behaviourId: text('behaviour_id').notNull(),
+    source: text('source').notNull(),
+    state: text('state').notNull(),
+    stage: text('stage').notNull(),
+    attempt: integer('attempt').notNull().default(1),
+    queuedAt: integer('queued_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    startedAt: integer('started_at'),
+    finishedAt: integer('finished_at'),
+    retryAt: integer('retry_at'),
+    model: text('model'),
+    keyLabel: text('key_label'),
+    errorCode: text('error_code'),
+    totalTokens: integer('total_tokens'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.runId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_runs_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_runs_user_id_snowflake', snowflakeCheck(t.userId)),
+    check(
+      'assistant_runs_state',
+      sql`${t.state} IN ('queued','running','retry-wait','answered','refused','failed')`,
+    ),
+    check(
+      'assistant_runs_stage',
+      sql`${t.stage} IN ('queued','starting','conversation','context','calling-model','running-tool','retry-wait','delivering','done')`,
+    ),
+    check(
+      'assistant_runs_source',
+      sql`${t.source} IN ('mention','slash-command','dashboard-test')`,
+    ),
+    index('assistant_runs_state').on(t.guildId, t.state, t.updatedAt),
+    index('assistant_runs_conversation').on(t.guildId, t.conversationId),
+  ],
+);
+
+// ADR 0129 §6: the append-only step log of a run (queued, model call, tool
+// call, …). Metadata only — timings, token counts, error codes — never
+// message text, tool arguments or tool results. Dies with its run through
+// the composite foreign key.
+export const assistantRunEvents = sqliteTable(
+  'assistant_run_events',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    runId: text('run_id').notNull(),
+    seq: integer('seq').notNull(),
+    at: integer('at').notNull(),
+    kind: text('kind').notNull(),
+    model: text('model'),
+    keyId: text('key_id'),
+    ok: integer('ok'),
+    code: text('code'),
+    ms: integer('ms'),
+    tokens: integer('tokens'),
+    costUsd: real('cost_usd'),
+    dataJson: text('data_json').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.runId, t.seq] }),
+    foreignKey({
+      columns: [t.guildId, t.runId],
+      foreignColumns: [assistantRuns.guildId, assistantRuns.runId],
+    }).onDelete('cascade'),
+    check('assistant_run_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_run_events_ok', sql`${t.ok} IS NULL OR ${t.ok} IN (0,1)`),
+    index('assistant_run_events_kind').on(t.guildId, t.kind, t.at),
   ],
 );
 
