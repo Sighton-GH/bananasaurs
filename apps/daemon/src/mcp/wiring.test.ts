@@ -62,7 +62,7 @@ import {
   bulkArgsHashFor,
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
-import { registerMcpRoutes } from './wiring.js';
+import { healthPortFor, registerMcpRoutes } from './wiring.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { mcpRoleGatewayFor, resetMcpRateLimiters } from './roles-gateway.js';
 import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
@@ -14282,5 +14282,23 @@ describe('/mcp scheduled sends through the real composition', () => {
     } finally {
       await schedApp.close();
     }
+  });
+});
+
+describe('healthPortFor: the port reads one guild at a time', () => {
+  it('guild() gives a reachable guild the entry guilds() gives it, and no other guild', () => {
+    const principal = {
+      accountId: ACCOUNT,
+      scopes: ['bananasaurs:read'],
+      reachableGuilds: [GUILD_A],
+    };
+    const port = healthPortFor(principal, deps);
+    expect(typeof port.guild, 'the port answers one guild at a time').toBe('function');
+    const entry = port.guilds().find((guild) => guild.guildId === GUILD_A);
+    expect(entry).toBeDefined();
+    expect(port.guild?.(GUILD_A)).toEqual(entry);
+    // GUILD_B is served by this daemon, but it is not in this caller's reachable set.
+    expect(port.guild?.(GUILD_B)).toBeUndefined();
+    expect(port.guild?.(parseGuildId('333333333333333333'))).toBeUndefined();
   });
 });

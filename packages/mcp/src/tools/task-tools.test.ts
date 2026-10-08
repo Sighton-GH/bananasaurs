@@ -292,6 +292,25 @@ describe('consolidated task write boundaries', () => {
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(execute).not.toHaveBeenCalled();
   });
+  // An action is looked up among its own keys only: a plain object would
+  // answer `constructor` or `toString` with an inherited function.
+  it.each(['constructor', 'toString'])(
+    'an inherited object key such as %s is an unknown action for every task write, and calls no port',
+    async (action) => {
+      for (const [run, base] of [
+        [runUpdateTask, { ...versioned }],
+        [runTaskSteps, { ...versioned }],
+        [runTaskReminders, { guildId: GUILD, taskId: UUID_A }],
+        [runTaskProgress, { guildId: GUILD, taskId: UUID_A }],
+        [runTaskSettings, { guildId: GUILD }],
+      ] as const) {
+        const { admin, execute } = adminPort();
+        const outcome = await run(tasksPrincipal, admin, { ...base, action });
+        expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+        expect(execute).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 
 describe('task_teams', () => {
@@ -380,6 +399,27 @@ describe('task_teams', () => {
     expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(execute).not.toHaveBeenCalled();
   });
+  it.each(['constructor', 'toString'])(
+    'an inherited object key such as %s is an unknown action, with or without the tasks scope, and calls no port',
+    async (action) => {
+      for (const principal of [
+        readPrincipal,
+        { ...tasksPrincipal, scopes: ['bananasaurs:read', 'bananasaurs:tasks'] },
+      ]) {
+        const tasks = tasksPort();
+        const { admin, execute } = adminPort();
+        const outcome = await runTaskTeams(
+          principal,
+          { tasks, taskAdmin: admin },
+          { guildId: GUILD, teamId: UUID_A, action },
+        );
+        expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+        expect(execute).not.toHaveBeenCalled();
+        expect(tasks.list).not.toHaveBeenCalled();
+        expect(tasks.teams).not.toHaveBeenCalled();
+      }
+    },
+  );
   it('a write action without the tasks scope answers the reconnect message', async () => {
     const tasks = tasksPort();
     const { admin, execute } = adminPort();

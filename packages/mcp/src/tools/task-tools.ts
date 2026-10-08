@@ -37,7 +37,9 @@ const runTaskAction = async (
   if (typeof raw !== 'object' || raw === null)
     return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   const { action, ...rest } = raw as Record<string, unknown>;
-  const name = typeof action === 'string' ? routes[action] : undefined;
+  // Own keys only: `routes.constructor` is an inherited function, not an action.
+  const name =
+    typeof action === 'string' && Object.hasOwn(routes, action) ? routes[action] : undefined;
   if (name === undefined) return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   return runTaskAdmin(principal, port, name, rest);
 };
@@ -310,10 +312,12 @@ export const runTaskTeams = async (
     };
   }
   // The action must name a write before the scope gate answers: an unknown
-  // action is an argument fault, not a scope refusal.
+  // action is an argument fault, not a scope refusal. Own keys only, as in
+  // `runTaskAction`.
+  const action = record['action'];
   const name =
-    typeof record['action'] === 'string'
-      ? (TASK_TEAMS_ACTIONS as Readonly<Record<string, TaskAdminName>>)[record['action']]
+    typeof action === 'string' && Object.hasOwn(TASK_TEAMS_ACTIONS, action)
+      ? (TASK_TEAMS_ACTIONS as Readonly<Record<string, TaskAdminName>>)[action]
       : undefined;
   if (name === undefined) return { ok: false as const, message: INVALID_ARGUMENTS_MESSAGE };
   if (!hasTasksScope(principal) || ports.taskAdmin === undefined)

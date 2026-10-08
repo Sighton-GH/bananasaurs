@@ -141,7 +141,12 @@ const liveSafety = (
 ): LiveSafety | undefined => {
   if (health === undefined) return undefined;
   try {
-    const entry = health.guilds().find((guild) => guild.guildId === guildId);
+    // One guild's entry when the port can give it, so the daemon reads only
+    // this guild's ports; a port without `guild()` picks it out of the list.
+    const entry =
+      health.guild !== undefined
+        ? health.guild(guildId)
+        : health.guilds().find((guild) => guild.guildId === guildId);
     if (entry?.safety === undefined) return undefined;
     return { safety: entry.safety, installDryRun: health.installDryRun ?? true };
   } catch {

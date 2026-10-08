@@ -63,7 +63,7 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
 
   it('sends clients to bananasaurs_guide for how Bananasaurs works or why a tool is missing (ADR 0133)', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain(
-      '- For how Bananasaurs works, or why a tool is missing, call bananasaurs_guide first.\n',
+      '- For how Bananasaurs works, or why a tool is missing, call bananasaurs_guide (Read approval) first.\n',
     );
   });
 });

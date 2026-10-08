@@ -83,6 +83,13 @@ export interface McpHealthPort {
   now(): number;
   /** One entry per guild in the caller's reachable set; an emptied set yields an empty list. */
   guilds(): readonly McpGuildHealth[];
+  /**
+   * One reachable guild's entry, reading only that guild; undefined for a guild
+   * outside the caller's reachable set. Optional so older port literals keep
+   * compiling. A reader that names one guild (the guide's live block) calls it
+   * when present, so it never reads every reachable guild's ports to pick one.
+   */
+  guild?(guildId: GuildId): McpGuildHealth | undefined;
 }
 
 /**

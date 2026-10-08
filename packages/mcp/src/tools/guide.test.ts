@@ -324,6 +324,19 @@ describe('the live block for a reachable guild', () => {
       onIndex.indexOf('Call bananasaurs_guide again with topic'),
     );
   });
+
+  it('reads the one guild through guild() when the port has it, and never fans out over guilds()', () => {
+    const port: McpHealthPort = {
+      ...healthPort([]),
+      guilds: () => {
+        throw new Error('guilds() must not be read when guild() is there');
+      },
+      guild: (guildId) => (guildId === GUILD ? guildHealth({ automodState: 'watch' }) : undefined),
+    };
+    const text = liveAnswer({ health: port, access: accessPort(OWNER) });
+    expect(text).toContain('- Automod: watch');
+    expect(text).not.toContain('- Safety settings: unavailable right now');
+  });
 });
 
 describe('when part of the live state is unavailable', () => {
