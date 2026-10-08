@@ -23,6 +23,7 @@ import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { MemberRef } from '../ui/MemberRef.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { InProgressPanel } from './assistant-live.js';
 
 const USAGE_DAYS = 14;
 
@@ -208,6 +209,7 @@ export function AssistantHistoryPage() {
         title="History"
         purpose="Every assistant run, with the details you need to see why it answered the way it did."
       />
+      <InProgressPanel onFinished={() => first.reload()} />
       <UsageStrip />
       <form onSubmit={apply} className="mb-4 flex max-w-3xl flex-wrap items-end gap-3">
         <Field label="Outcome">

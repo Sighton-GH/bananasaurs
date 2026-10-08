@@ -26,6 +26,7 @@ import { Field, Input } from '../ui/Field.js';
 import { MemberRef } from '../ui/MemberRef.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
+import { InProgressPanel } from './assistant-live.js';
 
 /** 403 carries `no-grant`; the sentence names the plain meaning, the id second. */
 const conversationsError = (err: unknown): Error => {
@@ -142,6 +143,7 @@ export function AssistantConversationsPage() {
       });
   }, [session, applied, sort]);
   const first = useResource('conversations', load);
+  const reloadList = first.reload;
 
   const apply = (e: React.FormEvent) => {
     e.preventDefault();
@@ -245,6 +247,9 @@ export function AssistantConversationsPage() {
           Apply
         </Button>
       </form>
+      <div className="mb-4">
+        <InProgressPanel onFinished={() => reloadList()} />
+      </div>
       <DataState
         resource={first.resource}
         isEmpty={(page) => page.conversations.length === 0 && appended.length === 0}

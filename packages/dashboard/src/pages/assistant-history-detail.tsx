@@ -12,6 +12,7 @@ import { DataTable } from '../ui/DataTable.js';
 import { MemberRef } from '../ui/MemberRef.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import type { AssistantTrace } from '@bananasaurs/core';
+import { StepLog } from './assistant-live.js';
 
 const attemptTone = (outcome: string): 'ok' | 'hold' | 'danger' | 'neutral' =>
   outcome === 'ok'
@@ -271,6 +272,7 @@ export function AssistantHistoryDetailPage() {
                   </div>
                 </dl>
               </Card>
+              {trace.runId !== undefined && <StepLog runId={trace.runId} />}
               <Card title="Model">
                 <DataTable
                   caption="Model attempts"

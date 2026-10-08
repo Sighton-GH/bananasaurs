@@ -61,6 +61,7 @@ const OLDER = {
 };
 
 const stubs = (first: unknown) => [
+  { url: '/api/assistant/runs?active=1&limit=50', body: { runs: [] } },
   { url: '/api/assistant/usage?days=14', body: USAGE },
   { url: '/api/assistant/traces?limit=50', body: first },
   { url: '/api/assistant', body: OLDER },

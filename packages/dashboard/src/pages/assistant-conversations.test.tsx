@@ -37,6 +37,7 @@ const ROW_OLD = {
 const RETENTION = { days: 182 };
 
 const stubs = (list: unknown, retention: unknown = RETENTION) => [
+  { url: '/api/assistant/runs?active=1&limit=50', body: { runs: [] } },
   { url: '/api/assistant/conversation-retention', body: retention },
   { url: '/api/assistant/conversations?sort=last-activity&order=desc&limit=50', body: list },
 ];

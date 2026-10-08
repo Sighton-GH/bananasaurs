@@ -54,6 +54,7 @@ const DETAIL = {
 
 function renderDetail(detail: unknown = DETAIL) {
   const mock = stubFetch([
+    { url: '/api/assistant/runs?active=1&limit=50', body: { runs: [] } },
     { url: '/api/assistant/conversations/conv-1', body: detail },
     { method: 'POST', url: '/api/assistant/conversations/conv-1/end', body: { status: 'ended' } },
     {
@@ -108,6 +109,7 @@ describe('AssistantConversationPage', () => {
 
   it('offers What the AI saw inline on the traced assistant turn', async () => {
     stubFetch([
+      { url: '/api/assistant/runs?active=1&limit=50', body: { runs: [] } },
       { url: '/api/assistant/conversations/conv-1', body: DETAIL },
       {
         url: '/api/assistant/traces/trace-1',
@@ -201,6 +203,7 @@ describe('AssistantConversationPage', () => {
   it('says plainly when the id is unknown', async () => {
     const { hook } = memoryLocation({ path: '/assistant/conversations/nope' });
     stubFetch([
+      { url: '/api/assistant/runs?active=1&limit=50', body: { runs: [] } },
       {
         url: '/api/assistant/conversations/nope',
         status: 404,

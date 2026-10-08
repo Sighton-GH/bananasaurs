@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import type { RunEvent } from '@bananasaurs/core';
 import { renderWithSession, stubFetch } from '../test-support.js';
-import { activeRunsUrl, describeRunEvent } from './runs.js';
+import { activeRunsUrl, describeRunEvent } from '../api/runs.js';
 import { InProgressPanel, PendingTurn, StepLog } from './assistant-live.js';
 
 afterEach(cleanup);
@@ -232,7 +232,7 @@ describe('PendingTurn', () => {
         <PendingTurn conversationId="conv-1" onFinished={() => undefined} />
       </Router>,
     );
-    expect(await screen.findByText('Asking nemotron (model 1 of 2)')).toBeTruthy();
+    expect(await screen.findAllByText(/Asking nemotron/)).toHaveLength(2);
     unmount();
     cleanup();
     renderWithSession(
@@ -241,7 +241,7 @@ describe('PendingTurn', () => {
       </Router>,
     );
     await act(async () => {});
-    expect(screen.queryByText('Asking nemotron (model 1 of 2)')).toBeNull();
+    expect(screen.queryAllByText(/Asking nemotron/)).toHaveLength(0);
   });
 });
 

@@ -19,6 +19,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
+import { PendingTurn } from './assistant-live.js';
 import { WhatTheAiSaw } from './what-the-ai-saw.js';
 
 const feedbackBadge = (feedback: 'up' | 'down') => (
@@ -288,6 +289,7 @@ export function AssistantConversationPage() {
                   ))}
                 </ol>
               )}
+              <PendingTurn conversationId={id} onFinished={() => detail.reload()} />
             </Card>
             <Card title="Linked conversations">
               {links.length === 0 ? (
