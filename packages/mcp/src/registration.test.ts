@@ -427,4 +427,53 @@ describe('registration pins every scope subset', () => {
     expect(tasksOnly).not.toContain('get_task');
     expect(tasksOnly).not.toContain('task_teams');
   });
+
+  it('(ADR 0132) an all-scope owner sees exactly the ten task tools and none of the removed names', async () => {
+    const names = await toolNamesFor(['read', 'send', 'roles', 'tasks']);
+    const taskNames = [
+      'create_task',
+      'delete_task',
+      'get_task',
+      'list_tasks',
+      'task_progress',
+      'task_reminders',
+      'task_settings',
+      'task_steps',
+      'task_teams',
+      'update_task',
+    ];
+    expect(names.filter((name) => taskNames.includes(name)).sort()).toEqual(taskNames);
+    for (const removed of [
+      'add_task_reminder',
+      'add_task_team_member',
+      'append_task_child',
+      'approve_task_completion',
+      'archive_task',
+      'cancel_task_reminder',
+      'clear_task_president_role',
+      'complete_task_child',
+      'configure_task_quiet_hours',
+      'configure_task_team',
+      'create_club_task',
+      'create_task_team',
+      'delete_club_task',
+      'delete_task_child',
+      'delete_task_report',
+      'delete_task_team',
+      'edit_club_task',
+      'edit_task_child',
+      'get_task_details',
+      'list_task_reminders',
+      'list_task_teams',
+      'record_task_progress',
+      'reject_task_completion',
+      'remove_task_team_member',
+      'request_task_completion',
+      'set_task_president_role',
+      'set_task_status',
+      'unarchive_task',
+    ]) {
+      expect(names).not.toContain(removed);
+    }
+  });
 });
