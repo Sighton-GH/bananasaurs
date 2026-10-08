@@ -313,10 +313,7 @@ export function AssistantHistoryDetailPage() {
                         if (r.finishReason !== undefined)
                           evidence.push(`Finish: ${r.finishReason}`);
                         if (r.upstream !== undefined) evidence.push(`Upstream: ${r.upstream}`);
-                        if (
-                          r.completionTokens !== undefined ||
-                          r.reasoningTokens !== undefined
-                        ) {
+                        if (r.completionTokens !== undefined || r.reasoningTokens !== undefined) {
                           evidence.push(
                             `Tokens: ${r.completionTokens ?? '—'} out, ` +
                               `${r.reasoningTokens ?? '—'} reasoning`,

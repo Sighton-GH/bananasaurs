@@ -197,9 +197,7 @@ export const registerAssistantConversationRoutes = (
             ? {}
             : {
                 outcome: trace.outcome,
-                ...(trace.outcome === 'failed'
-                  ? { failure: failureOfTrace(trace, showText) }
-                  : {}),
+                ...(trace.outcome === 'failed' ? { failure: failureOfTrace(trace, showText) } : {}),
               }),
         };
       }),

@@ -91,7 +91,8 @@ export const registerAssistantTraceRoutes = (
               ...(a.code !== undefined &&
               (PROVIDER_FAILURE_CODES as readonly string[]).includes(a.code)
                 ? {
-                    explain: PROVIDER_FAILURE_TEXT[a.code as (typeof PROVIDER_FAILURE_CODES)[number]],
+                    explain:
+                      PROVIDER_FAILURE_TEXT[a.code as (typeof PROVIDER_FAILURE_CODES)[number]],
                   }
                 : {}),
             };
