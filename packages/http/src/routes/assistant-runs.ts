@@ -28,13 +28,20 @@ const runEventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
-const queueAheadForRun = (scope: GuildScope, run: RunRow): number => {
-  if (run.state !== 'queued') return 0;
-  const activeRuns = runRepo.listRuns(scope, { active: true, limit: 100 });
-  return activeRuns.filter((other) => other.state === 'queued' && other.queuedAt < run.queuedAt)
-    .length;
-};
+/**
+ * A queued run's position: the count of queued runs that arrived earlier.
+ * Callers read the active list once per request and pass it in.
+ */
+const queueAheadOf = (run: RunRow, activeRuns: readonly RunRow[]): number =>
+  run.state === 'queued'
+    ? activeRuns.filter((other) => other.state === 'queued' && other.queuedAt < run.queuedAt).length
+    : 0;
 
+/**
+ * Only runs doing model or tool work need their step log, and only the
+ * newest model-call or tool-call in it. One small read per such run;
+ * bounded by the page limit, which is acceptable at this scale.
+ */
 const newestModelOrToolEvent = (scope: GuildScope, run: RunRow): RunEvent | undefined => {
   if (run.stage !== 'calling-model' && run.stage !== 'running-tool') return undefined;
   const events = runRepo.listRunEvents(scope, run.runId, 0, 500);
@@ -63,9 +70,10 @@ export const registerAssistantRunRoutes = (
       ...(parsed.data.before === undefined ? {} : { before: parsed.data.before }),
       limit,
     });
+    const activeRuns = runRepo.listRuns(session.scope, { active: true, limit: 100 });
     const now = deps.now();
     const labelled = runs.map((run) => {
-      const queueAhead = queueAheadForRun(session.scope, run);
+      const queueAhead = queueAheadOf(run, activeRuns);
       const lastEvent = newestModelOrToolEvent(session.scope, run);
       return {
         run,
@@ -105,7 +113,10 @@ export const registerAssistantRunRoutes = (
     const run = runRepo.getRun(session.scope, request.params.runId);
     if (run === undefined) return reply.status(404).send({ error: 'not-found' });
     const now = deps.now();
-    const queueAhead = queueAheadForRun(session.scope, run);
+    const queueAhead =
+      run.state === 'queued'
+        ? queueAheadOf(run, runRepo.listRuns(session.scope, { active: true, limit: 100 }))
+        : 0;
     const lastEvent = newestModelOrToolEvent(session.scope, run);
     return reply.status(200).send({
       run: {
