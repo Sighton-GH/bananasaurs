@@ -749,15 +749,15 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
 
   it('a send-only token sees send_message plus the write tools', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A], ['bananasaurs:send']));
-    expect(names).toHaveLength(21);
+    expect(names).toHaveLength(16);
     expect(names[0]).toBe(SEND_MESSAGE_TOOL_NAME);
   });
 
-  it('a token with both scopes sees forty-three tools', async () => {
+  it('a token with both scopes sees thirty-eight tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(43);
+    expect(names).toHaveLength(38);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

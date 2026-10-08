@@ -46,6 +46,13 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
+/**
+ * The first import of the whole package takes about five seconds cold, which
+ * is past vitest's default five-second test timeout on a busy machine. The
+ * tests measure what loads, not how fast it loads, so they get room.
+ */
+const COLD_IMPORT_TIMEOUT_MS = 30_000;
+
 const FORBIDDEN = [
   'express',
   'hono',
@@ -70,7 +77,7 @@ describe('MCP SDK runtime surface (ADR 0044 §8)', () => {
       loadedFrom(req.cache, pkg).map((path) => `${pkg}: ${path}`),
     );
     expect(found).toEqual([]);
-  });
+  }, COLD_IMPORT_TIMEOUT_MS);
 
   it('loads ajv from the SDK’s own nested node_modules', async () => {
     await import('./index.js');
@@ -83,5 +90,5 @@ describe('MCP SDK runtime surface (ADR 0044 §8)', () => {
     expect(
       ajvPaths.some((p) => p.includes('/node_modules/@modelcontextprotocol/sdk/node_modules/ajv/')),
     ).toBe(true);
-  });
+  }, COLD_IMPORT_TIMEOUT_MS);
 });
