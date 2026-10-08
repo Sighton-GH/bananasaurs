@@ -31,9 +31,8 @@ const runEventsQuerySchema = z.object({
 const queueAheadForRun = (scope: GuildScope, run: RunRow): number => {
   if (run.state !== 'queued') return 0;
   const activeRuns = runRepo.listRuns(scope, { active: true, limit: 100 });
-  return activeRuns.filter(
-    (other) => other.state === 'queued' && other.queuedAt < run.queuedAt,
-  ).length;
+  return activeRuns.filter((other) => other.state === 'queued' && other.queuedAt < run.queuedAt)
+    .length;
 };
 
 const newestModelOrToolEvent = (scope: GuildScope, run: RunRow): RunEvent | undefined => {
