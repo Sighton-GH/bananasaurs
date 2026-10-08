@@ -27,6 +27,11 @@ export interface TraceDetailResponse {
     readonly attempts: readonly TraceDetailAttempt[];
   };
   readonly member: TraceMember | null;
+  /** ADR 0129 §5: the journal window around the run. Absent on older bodies. */
+  readonly journal?: {
+    readonly since: string;
+    readonly until: string;
+  };
 }
 
 /** The classified explanation the traces route attaches per known code. */

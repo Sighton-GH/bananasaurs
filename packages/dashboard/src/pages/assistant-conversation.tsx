@@ -70,7 +70,12 @@ function Turn({ turn }: { readonly turn: ConversationTurnRow }) {
     );
   }
   const who = turn.role === 'assistant' ? 'Bananasaurs' : turn.authorName;
-  return (
+  // ADR 0129: a failed assistant turn renders inside a danger container, with
+  // the failure's title, model and provider message above the saved reply. A
+  // refused turn gets a neutral badge; answered turns are unchanged.
+  const failed = turn.role === 'assistant' && turn.outcome === 'failed';
+  const refused = turn.role === 'assistant' && turn.outcome === 'refused';
+  const inner = (
     <div>
       <p className="text-sm">
         <span className="font-medium">{who}</span>{' '}
@@ -78,8 +83,35 @@ function Turn({ turn }: { readonly turn: ConversationTurnRow }) {
           <time dateTime={at.toISOString()}>{at.toLocaleString('en-CA')}</time>
         </span>{' '}
         {turn.feedback !== undefined && feedbackBadge(turn.feedback)}
+        {refused && (
+          <>
+            {' '}
+            <Badge>Refused</Badge>
+          </>
+        )}
+        {failed && (
+          <>
+            {' '}
+            <Badge tone="danger">Failed</Badge>
+          </>
+        )}
       </p>
       {joinNote !== null && <p className="text-xs text-ink-muted">{joinNote}</p>}
+      {failed && turn.failure !== undefined && (
+        <div className="mt-1">
+          <p className="text-sm">
+            <strong>{turn.failure.title}</strong>
+            {turn.failure.model !== undefined && (
+              <span className="text-ink-muted"> — {turn.failure.model}</span>
+            )}
+          </p>
+          {turn.failure.providerMessage !== undefined && (
+            <code className="mt-1 block overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+              {turn.failure.providerMessage}
+            </code>
+          )}
+        </div>
+      )}
       <p className="mt-1 text-sm whitespace-pre-wrap">{turn.text}</p>
       {turn.role === 'assistant' && (
         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
@@ -104,6 +136,10 @@ function Turn({ turn }: { readonly turn: ConversationTurnRow }) {
       )}
     </div>
   );
+  if (failed) {
+    return <div className="rounded border border-danger/40 bg-danger/5 p-3">{inner}</div>;
+  }
+  return inner;
 }
 
 /**

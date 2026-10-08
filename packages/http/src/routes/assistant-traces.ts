@@ -1,11 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { authorize, PROVIDER_FAILURE_CODES, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
-import { authzStoreFor, traceRepo } from '@bananasaurs/storage';
+import { PROVIDER_FAILURE_CODES, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
+import { traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
-import type { SessionContext } from '../auth.js';
-import { requireCapability } from './capability.js';
+import { canReadConfig, requireCapability } from './capability.js';
 
 /**
  * The History endpoints (ADR 0076): the trace list, one trace, and the
@@ -31,12 +30,6 @@ const usageQuerySchema = z.object({
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const canReadPromptText = (session: SessionContext): boolean =>
-  authorize(
-    { store: authzStoreFor(session.scope), guildId: session.guildId, actor: session.actor },
-    'config.read',
-  ).ok;
 
 export const registerAssistantTraceRoutes = (
   app: FastifyInstance,
@@ -81,24 +74,36 @@ export const registerAssistantTraceRoutes = (
 
       const trace = traceRepo.getTrace(session.scope, request.params.traceId);
       if (trace === undefined) return reply.status(404).send({ error: 'not-found' });
-      const showText = canReadPromptText(session);
+      const showText = canReadConfig(session);
       const ports = deps.portsFor(session.scope);
       const [member] = await ports.fetchGuildMembers([trace.userId]);
       return reply.status(200).send({
         trace: {
           ...trace,
           sections: trace.sections.map((s) => ({ ...s, text: showText ? s.text : '' })),
-          attempts: trace.attempts.map((a) => ({
-            ...a,
-            ...(a.code !== undefined &&
-            (PROVIDER_FAILURE_CODES as readonly string[]).includes(a.code)
-              ? {
-                  explain: PROVIDER_FAILURE_TEXT[a.code as (typeof PROVIDER_FAILURE_CODES)[number]],
-                }
-              : {}),
-          })),
+          attempts: trace.attempts.map((a) => {
+            // ADR 0129 §3: the provider's short error message is
+            // configuration-shaped text — withheld without config.read.
+            const attempt = { ...a };
+            if (!showText) delete attempt.providerMessage;
+            return {
+              ...attempt,
+              ...(a.code !== undefined &&
+              (PROVIDER_FAILURE_CODES as readonly string[]).includes(a.code)
+                ? {
+                    explain: PROVIDER_FAILURE_TEXT[a.code as (typeof PROVIDER_FAILURE_CODES)[number]],
+                  }
+                : {}),
+            };
+          }),
         },
         member: member ?? null,
+        // ADR 0129 §5: the journal window around the run, so the trace
+        // page can print a copyable journalctl command.
+        journal: {
+          since: new Date(trace.at - trace.durationMs - 5000).toISOString(),
+          until: new Date(trace.at + 5000).toISOString(),
+        },
       });
     },
   );

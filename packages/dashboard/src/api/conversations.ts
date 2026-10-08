@@ -23,6 +23,8 @@ export interface ConversationRow {
   readonly turnCount: number;
   /** Distinct names from the human sides, first-seen order. */
   readonly people: readonly string[];
+  /** ADR 0129: how many assistant turns ended in a failed trace. */
+  readonly failedTurns?: number;
   readonly member: ConversationMember | null;
 }
 
@@ -44,6 +46,15 @@ export interface ConversationTurnRow {
   readonly joinRule?: string;
   /** Title and URL only, for the assistant turn's sources line. */
   readonly sources?: readonly { readonly title: string; readonly url: string }[];
+  /** ADR 0129: the outcome of the turn's own trace, when it was loaded. */
+  readonly outcome?: 'answered' | 'refused' | 'failed';
+  /** ADR 0129: why the turn failed — present only when outcome is failed. */
+  readonly failure?: {
+    readonly code: string;
+    readonly title: string;
+    readonly model?: string;
+    readonly providerMessage?: string;
+  };
 }
 
 /** One conversation linked to the detail conversation, in either direction. */

@@ -34,6 +34,23 @@ const argsText = (args: unknown): string => {
   }
 };
 
+/**
+ * ADR 0129 §5: the journal window as local `YYYY-MM-DD HH:MM:SS` — journalctl
+ * reads local time, while the API answers ISO instants.
+ */
+const journalLocal = (iso: string): string => {
+  const at = new Date(iso);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${String(at.getFullYear())}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ` +
+    `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+  );
+};
+
+const journalCommand = (journal: NonNullable<TraceDetailResponse['journal']>): string =>
+  `journalctl -u bananasaurs --since "${journalLocal(journal.since)}" ` +
+  `--until "${journalLocal(journal.until)}" --no-pager`;
+
 export type TraceSection = TraceDetailResponse['trace']['sections'][number];
 export type TraceToolCall = TraceDetailResponse['trace']['toolCalls'][number];
 
@@ -169,12 +186,15 @@ export function AssistantHistoryDetailPage() {
         }
       />
       <DataState resource={detail.resource}>
-        {({ trace, member }) => {
+        {({ trace, member, journal }) => {
           const messageId = trace.discordMessageIds[0];
           const discordUrl =
             trace.channelId !== undefined && messageId !== undefined
               ? `https://discord.com/channels/${guildId}/${trace.channelId}/${messageId}`
               : undefined;
+          // ADR 0129 §5: the copyable journal window for the run; absent on
+          // bodies stored before the window existed.
+          const journalText = journal === undefined ? undefined : journalCommand(journal);
           return (
             <div className="grid gap-4">
               <Card title="Summary">
@@ -191,6 +211,28 @@ export function AssistantHistoryDetailPage() {
                       )}
                     </dd>
                   </div>
+                  {trace.runId !== undefined && (
+                    <div>
+                      <dt className="text-ink-muted">Run id</dt>
+                      <dd className="font-mono text-xs">{trace.runId}</dd>
+                    </div>
+                  )}
+                  {journalText !== undefined && (
+                    <div>
+                      <dt className="text-ink-muted">Journal</dt>
+                      <dd>
+                        <code className="block overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                          {journalText}
+                        </code>
+                        <Button
+                          className="mt-1"
+                          onClick={() => void navigator.clipboard?.writeText(journalText)}
+                        >
+                          Copy
+                        </Button>
+                      </dd>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
                     <span>
                       <span className="text-ink-muted">Outcome </span>
@@ -263,8 +305,45 @@ export function AssistantHistoryDetailPage() {
                       key: 'why',
                       header: 'Why',
                       cell: (r) => {
+                        // ADR 0129 §3–4: each attempt carries its own
+                        // evidence — the provider's short error text plus
+                        // the finish reason, upstream and empty-answer token
+                        // counts when the adapter recorded them.
+                        const evidence: string[] = [];
+                        if (r.finishReason !== undefined)
+                          evidence.push(`Finish: ${r.finishReason}`);
+                        if (r.upstream !== undefined) evidence.push(`Upstream: ${r.upstream}`);
+                        if (
+                          r.completionTokens !== undefined ||
+                          r.reasoningTokens !== undefined
+                        ) {
+                          evidence.push(
+                            `Tokens: ${r.completionTokens ?? '—'} out, ` +
+                              `${r.reasoningTokens ?? '—'} reasoning`,
+                          );
+                        }
+                        const evidenceBlock = (
+                          <>
+                            {r.providerMessage !== undefined && (
+                              <code className="block overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                                {r.providerMessage}
+                              </code>
+                            )}
+                            {evidence.length > 0 && (
+                              <p className="text-xs text-ink-muted">{evidence.join(' · ')}</p>
+                            )}
+                          </>
+                        );
                         if (r.explain === undefined) {
-                          return r.reason ?? <span className="text-ink-muted">—</span>;
+                          if (r.providerMessage === undefined && evidence.length === 0) {
+                            return r.reason ?? <span className="text-ink-muted">—</span>;
+                          }
+                          return (
+                            <div className="grid gap-1 text-sm">
+                              <p>{r.reason ?? '—'}</p>
+                              {evidenceBlock}
+                            </div>
+                          );
                         }
                         const parts: string[] = [];
                         if (r.host !== undefined && r.host !== '') parts.push(r.host);
@@ -287,6 +366,7 @@ export function AssistantHistoryDetailPage() {
                             {parts.length > 0 && (
                               <p className="text-xs text-ink-muted">{parts.join(' · ')}</p>
                             )}
+                            {evidenceBlock}
                           </div>
                         );
                       },

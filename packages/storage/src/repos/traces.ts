@@ -1,4 +1,4 @@
-import { desc, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
 import {
   assistantTraceSchema,
   capTrace,
@@ -9,7 +9,7 @@ import {
   type DayUsage,
   type TraceSummary,
 } from '@bananasaurs/core';
-import { assistantTraces } from '../schema.js';
+import { assistantTraces, assistantConversationTurns } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -116,6 +116,46 @@ export const getTracesByIds = (scope: GuildScope, traceIds: readonly string[]): 
     }
     return out;
   });
+
+/**
+ * ADR 0129: per conversation, how many assistant turns ended in a failed trace. One query for the
+ * whole page (join turns → traces on guild_id + trace_id where outcome = 'failed'); conversations
+ * with none are absent from the map.
+ */
+export const failedCountsForConversations = (
+  scope: GuildScope,
+  conversationIds: readonly string[],
+): Map<string, number> => {
+  const counts = new Map<string, number>();
+  if (conversationIds.length === 0) return counts;
+  const rows = read(scope, (db) =>
+    db
+      .select({ conversationId: assistantConversationTurns.conversationId })
+      .from(assistantConversationTurns)
+      .innerJoin(
+        assistantTraces,
+        and(
+          eq(assistantConversationTurns.guildId, assistantTraces.guildId),
+          eq(assistantConversationTurns.traceId, assistantTraces.traceId),
+        ),
+      )
+      .where(
+        and(
+          scope.only(
+            assistantConversationTurns,
+            inArray(assistantConversationTurns.conversationId, [...new Set(conversationIds)]),
+            eq(assistantConversationTurns.role, 'assistant'),
+          ),
+          scope.only(assistantTraces, eq(assistantTraces.outcome, 'failed')),
+        ),
+      )
+      .all(),
+  );
+  for (const row of rows) {
+    counts.set(row.conversationId, (counts.get(row.conversationId) ?? 0) + 1);
+  }
+  return counts;
+};
 
 /**
  * Removes every trace of one member's runs in this guild (forgetMember calls

@@ -296,6 +296,16 @@ export function AssistantHistoryPage() {
                   cell: (r) => <Badge tone={outcomeTone(r.outcome)}>{r.outcome}</Badge>,
                 },
                 {
+                  key: 'error',
+                  header: 'Error',
+                  cell: (r) =>
+                    r.errorCode === undefined ? (
+                      <span className="text-ink-muted">—</span>
+                    ) : (
+                      <Badge tone="danger">{r.errorCode}</Badge>
+                    ),
+                },
+                {
                   key: 'model',
                   header: 'Model',
                   cell: (r) =>

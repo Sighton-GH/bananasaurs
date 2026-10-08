@@ -41,3 +41,15 @@ export const requireCapability = (
   }
   return true;
 };
+
+/**
+ * ADR 0129 §3: whether this session may see configuration-shaped text — the
+ * prompt sections and the provider's short error message. The non-replying
+ * `authorize` so a viewer without it still gets the run with the text
+ * withheld, never a 403. Shared by the History and Conversations routes.
+ */
+export const canReadConfig = (session: SessionContext): boolean =>
+  authorize(
+    { store: authzStoreFor(session.scope), guildId: session.guildId, actor: session.actor },
+    'config.read',
+  ).ok;

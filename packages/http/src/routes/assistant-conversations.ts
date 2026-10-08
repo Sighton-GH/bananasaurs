@@ -1,11 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { renderSummary } from '@bananasaurs/core';
+import {
+  PROVIDER_FAILURE_CODES,
+  PROVIDER_FAILURE_TEXT,
+  renderSummary,
+  type AssistantTrace,
+} from '@bananasaurs/core';
 import { assistantRepo, conversationRepo, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
-import { requireCapability } from './capability.js';
+import { canReadConfig, requireCapability } from './capability.js';
 
 /**
  * The Conversations endpoints (Task 19): the conversation list, one
@@ -30,6 +35,47 @@ const conversationListQuerySchema = z.object({
 const retentionBodySchema = z.object({
   days: z.union([z.literal(61), z.literal(182), z.literal(365), z.null()]),
 });
+
+/**
+ * ADR 0129: plain-words titles for failure kinds that are not provider codes
+ * (a failed trace with no attempts, e.g. an internal error).
+ */
+const FAILURE_KIND_TITLES: Record<string, string> = {
+  internal: 'Internal error',
+  'behaviour-unavailable': 'Behaviour unavailable',
+  'channel-not-writable': 'Channel not writable',
+};
+
+interface TurnFailure {
+  readonly code: string;
+  readonly title: string;
+  readonly model?: string;
+  readonly providerMessage?: string;
+}
+
+/**
+ * ADR 0129 §1–3: why one assistant turn failed. The code is the last
+ * non-ok, non-skipped attempt's code, else the trace error kind (defaulting
+ * to internal); the provider message is configuration-shaped text, so it is
+ * included only for sessions that can read configuration.
+ */
+const failureOfTrace = (trace: AssistantTrace, showText: boolean): TurnFailure => {
+  const attempt = [...trace.attempts]
+    .reverse()
+    .find((a) => a.outcome !== 'ok' && a.outcome !== 'skipped' && a.code !== undefined);
+  const code = attempt?.code ?? trace.error?.kind ?? 'internal';
+  const title = (PROVIDER_FAILURE_CODES as readonly string[]).includes(code)
+    ? PROVIDER_FAILURE_TEXT[code as (typeof PROVIDER_FAILURE_CODES)[number]].title
+    : (FAILURE_KIND_TITLES[code] ?? 'The request failed');
+  return {
+    code,
+    title,
+    ...(attempt?.model === undefined ? {} : { model: attempt.model }),
+    ...(showText && attempt?.providerMessage !== undefined
+      ? { providerMessage: attempt.providerMessage }
+      : {}),
+  };
+};
 
 export const registerAssistantConversationRoutes = (
   app: FastifyInstance,
@@ -74,12 +120,19 @@ export const registerAssistantConversationRoutes = (
       session.scope,
       conversations.map((c) => c.conversationId),
     );
+    // ADR 0129: how many assistant turns of each conversation ended in a
+    // failed trace — one query for the whole page, never one per row.
+    const failedCounts = traceRepo.failedCountsForConversations(
+      session.scope,
+      conversations.map((c) => c.conversationId),
+    );
     return reply.status(200).send({
       conversations: conversations.map((c) => {
         const member = directory.get(c.startedBy);
         return {
           ...c,
           people: people.get(c.conversationId) ?? [],
+          failedTurns: failedCounts.get(c.conversationId) ?? 0,
           member:
             member === undefined
               ? null
@@ -111,9 +164,13 @@ export const registerAssistantConversationRoutes = (
       ),
     ];
     const traces = traceIds.length === 0 ? [] : traceRepo.getTracesByIds(session.scope, traceIds);
+    const tracesById = new Map(traces.map((trace) => [trace.traceId, trace]));
     const sourcesByTrace = new Map(traces.map((trace) => [trace.traceId, trace.sources]));
     const links = conversationRepo.listLinks(session.scope, request.params.id);
     const storedSummary = conversationRepo.getSummary(session.scope, request.params.id);
+    // ADR 0129 §3: the provider's short error message is
+    // configuration-shaped text — gated, never re-sanitized here.
+    const showText = canReadConfig(session);
     return reply.status(200).send({
       conversation,
       summary:
@@ -130,9 +187,20 @@ export const registerAssistantConversationRoutes = (
         // The sources line only: title and URL, never the trace body — the
         // full run stays behind the History detail endpoint and its grants.
         const sources = sourcesByTrace.get(turn.traceId) ?? [];
+        const trace = tracesById.get(turn.traceId);
         return {
           ...turn,
           sources: sources.map((s) => ({ title: s.title, url: s.url })),
+          // ADR 0129 §1–2: the turn's own trace says whether it failed,
+          // from the traces already loaded above — never one query per turn.
+          ...(trace === undefined
+            ? {}
+            : {
+                outcome: trace.outcome,
+                ...(trace.outcome === 'failed'
+                  ? { failure: failureOfTrace(trace, showText) }
+                  : {}),
+              }),
         };
       }),
     });

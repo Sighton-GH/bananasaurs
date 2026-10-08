@@ -16,6 +16,7 @@ import {
 } from '../api/conversations.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
@@ -263,7 +264,16 @@ export function AssistantConversationsPage() {
                 {
                   key: 'title',
                   header: 'Title',
-                  cell: (r) => <Link href={conversationPageUrl(r.conversationId)}>{r.title}</Link>,
+                  cell: (r) => (
+                    <>
+                      <Link href={conversationPageUrl(r.conversationId)}>{r.title}</Link>
+                      {(r.failedTurns ?? 0) > 0 && (
+                        <span className="ml-2">
+                          <Badge tone="danger">{`${String(r.failedTurns)} failed`}</Badge>
+                        </span>
+                      )}
+                    </>
+                  ),
                 },
                 {
                   key: 'channel',

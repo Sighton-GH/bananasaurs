@@ -147,7 +147,7 @@ describe('assistant failure surfaces (ADR 0129)', () => {
     renderConversation();
     expect(await screen.findByText('Failed')).toBeTruthy();
     expect(screen.getByText('This model is not available on this key')).toBeTruthy();
-    expect(screen.getByText(/stealth\/space-bunny-alpha/)).toBeTruthy();
+    expect(screen.getByText('— stealth/space-bunny-alpha')).toBeTruthy();
     // The turn text itself still renders, exactly as an answered turn would.
     expect(screen.getByText('Sorry, I could not answer that.')).toBeTruthy();
   });
@@ -162,6 +162,6 @@ describe('assistant failure surfaces (ADR 0129)', () => {
   it('shows the failed attempt’s provider message and finish reason', async () => {
     renderHistoryDetail(FAILED_ATTEMPT_DETAIL);
     expect(await screen.findByText(/No endpoints found/)).toBeTruthy();
-    expect(screen.getByText('Finish: length')).toBeTruthy();
+    expect(screen.getByText(/Finish: length/)).toBeTruthy();
   });
 });
