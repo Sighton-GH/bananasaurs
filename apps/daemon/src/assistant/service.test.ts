@@ -1571,6 +1571,25 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(jobRepo.listJobs(scope, { limit: 10 })).toEqual([]);
   });
 
+  it('(M1) a ledger ensureRun failure still answers and stores the trace', async () => {
+    const service = serviceWith(answering('Try-it answer.'));
+    const spy = vi.spyOn(runRepo, 'ensureRun').mockImplementationOnce(() => {
+      throw new Error('ledger down');
+    });
+    try {
+      const result = await service.tryIt({
+        behaviourId: 'direct',
+        question: 'when is the meeting?',
+        accountUsername: 'owner-name',
+      });
+      expect(result.answer).toBe('Try-it answer.');
+      const trace = traceRepo.getTrace(t.scopes.forGuild(GUILD), result.traceId);
+      expect(trace).toMatchObject({ answer: 'Try-it answer.' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('tryIt with a 404-only chain stores a failed trace with attempts, sections and the runId', async () => {
     const failing: TextProvider = {
       id: 'fake',
