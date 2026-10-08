@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { PROVIDER_FAILURE_CODES, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
-import { traceRepo } from '@bananasaurs/storage';
+import { runRepo, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { canReadConfig, requireCapability } from './capability.js';
@@ -123,10 +123,31 @@ export const registerAssistantTraceRoutes = (
     const counts = new Map(
       traceRepo.dailyUsage(session.scope, deps.now() - days * DAY_MS).map((d) => [d.day, d]),
     );
+    // ADR 0129 §8: per-day ledger stats from the model-result steps — a failed
+    // result counts in its code bucket, every result adds its tokens to its
+    // model bucket. Grouped by UTC day, like the usage strip itself.
+    const failuresByDay = new Map<string, Record<string, number>>();
+    const tokensByDay = new Map<string, Record<string, number>>();
+    for (const r of runRepo.modelResultsSince(session.scope, deps.now() - days * DAY_MS)) {
+      const day = new Date(r.at).toISOString().slice(0, 10);
+      if (!r.ok) {
+        const failures = failuresByDay.get(day) ?? {};
+        const code = r.code ?? 'unknown';
+        failures[code] = (failures[code] ?? 0) + 1;
+        failuresByDay.set(day, failures);
+      }
+      const tokens = tokensByDay.get(day) ?? {};
+      tokens[r.model] = (tokens[r.model] ?? 0) + (r.tokens ?? 0);
+      tokensByDay.set(day, tokens);
+    }
     return reply.status(200).send({
       days: Array.from({ length: days }, (_, i) => {
         const day = new Date(deps.now() - (days - 1 - i) * DAY_MS).toISOString().slice(0, 10);
-        return counts.get(day) ?? { day, answers: 0, failures: 0, fallbacks: 0, tokens: 0 };
+        return {
+          ...(counts.get(day) ?? { day, answers: 0, failures: 0, fallbacks: 0, tokens: 0 }),
+          failuresByCode: failuresByDay.get(day) ?? {},
+          tokensByModel: tokensByDay.get(day) ?? {},
+        };
       }),
     });
   });

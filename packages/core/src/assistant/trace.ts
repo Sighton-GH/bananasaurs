@@ -75,6 +75,8 @@ export const assistantTraceSchema = z.object({
     promptTokens: z.number().optional(),
     completionTokens: z.number().optional(),
     thinkingTokens: z.number().optional(),
+    /** ADR 0129 §8: summed per-call cost, present only when a call reported one. */
+    costUsd: z.number().nonnegative().optional(),
   }),
   sections: z.array(
     z.object({
@@ -175,6 +177,10 @@ export interface DayUsage {
   /** Traces that tried more than one model and finished on a working one. */
   readonly fallbacks: number;
   readonly tokens: number;
+  /** ADR 0129 §8: ledger failures on this day, by code. Absent on rows that predate it. */
+  readonly failuresByCode?: Readonly<Record<string, number>>;
+  /** ADR 0129 §8: ledger tokens on this day, by model. Absent on rows that predate it. */
+  readonly tokensByModel?: Readonly<Record<string, number>>;
 }
 
 /** A trace used more than one model and its last attempt worked. */

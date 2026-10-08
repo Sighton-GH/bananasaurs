@@ -47,6 +47,8 @@ const responseSchema = z.object({
         .object({ reasoning_tokens: z.number().int().nonnegative().optional() })
         .partial()
         .optional(),
+      /** ADR 0129 §8: OpenRouter's per-call cost, only when `usage.include` was requested. */
+      cost: z.number().nonnegative().optional(),
     })
     .optional(),
 });
@@ -317,6 +319,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
         : {}),
       ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      // ADR 0129 §8: OpenRouter reports per-call cost only when asked; NIM
+      // has no such field, so its body stays unchanged.
+      ...(this.id === 'openrouter' ? { usage: { include: true } } : {}),
     });
     let response: Response;
     try {
@@ -436,6 +441,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
                 : {}),
               ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
               ...(reasoningTokens !== undefined ? { thinkingTokens: reasoningTokens } : {}),
+              ...(usage.cost !== undefined ? { costUsd: usage.cost } : {}),
             },
           }
         : {}),

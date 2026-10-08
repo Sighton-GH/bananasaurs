@@ -230,9 +230,33 @@ describe('assistant trace routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       days: [
-        { day: '2026-09-19', answers: 0, failures: 0, fallbacks: 0, tokens: 0 },
-        { day: '2026-09-20', answers: 0, failures: 0, fallbacks: 0, tokens: 0 },
-        { day: '2026-09-21', answers: 1, failures: 0, fallbacks: 0, tokens: 130 },
+        {
+          day: '2026-09-19',
+          answers: 0,
+          failures: 0,
+          fallbacks: 0,
+          tokens: 0,
+          failuresByCode: {},
+          tokensByModel: {},
+        },
+        {
+          day: '2026-09-20',
+          answers: 0,
+          failures: 0,
+          fallbacks: 0,
+          tokens: 0,
+          failuresByCode: {},
+          tokensByModel: {},
+        },
+        {
+          day: '2026-09-21',
+          answers: 1,
+          failures: 0,
+          fallbacks: 0,
+          tokens: 130,
+          failuresByCode: {},
+          tokensByModel: {},
+        },
       ],
     });
   });
@@ -391,7 +415,11 @@ describe('assistant trace routes', () => {
     });
     expect(response.statusCode).toBe(200);
     const days = response.json<{
-      days: { day: string; failuresByCode: Record<string, number>; tokensByModel: Record<string, number> }[];
+      days: {
+        day: string;
+        failuresByCode: Record<string, number>;
+        tokensByModel: Record<string, number>;
+      }[];
     }>().days;
     expect(days[0]).toMatchObject({ day: '2026-09-19', failuresByCode: {}, tokensByModel: {} });
     expect(days[2]).toMatchObject({

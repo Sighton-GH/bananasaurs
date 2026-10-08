@@ -1,7 +1,8 @@
-import { asc, desc, eq, gt, inArray, isNull, lt, max } from 'drizzle-orm';
+import { asc, desc, eq, gt, gte, inArray, isNull, lt, max } from 'drizzle-orm';
 import {
   ACTIVE_RUN_STATES,
   runEventSchema,
+  type ModelResult,
   type RunEvent,
   type RunEventRow,
   type RunRow,
@@ -241,6 +242,54 @@ export const listRunEvents = (
       } catch {
         // Corrupt JSON: skip the row, same as an unparseable one.
       }
+    }
+    return out;
+  });
+
+/**
+ * ADR 0129 §8: every model-result event since `since`, oldest first, for
+ * health and usage stats. Reads on the (guild_id, kind, at) index; a row
+ * whose stored JSON no longer parses (or is not a model-result) is skipped,
+ * like `listRunEvents`.
+ */
+export const modelResultsSince = (scope: GuildScope, since: number): ModelResult[] =>
+  read(scope, (db) => {
+    const rows = db
+      .select()
+      .from(assistantRunEvents)
+      .where(
+        scope.only(
+          assistantRunEvents,
+          eq(assistantRunEvents.kind, 'model-result'),
+          gte(assistantRunEvents.at, since),
+        ),
+      )
+      .orderBy(asc(assistantRunEvents.at))
+      .all();
+    const out: ModelResult[] = [];
+    for (const row of rows) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.dataJson) as unknown;
+      } catch {
+        continue;
+      }
+      const event = runEventSchema.safeParse(parsed);
+      if (!event.success || event.data.kind !== 'model-result') continue;
+      const e = event.data;
+      out.push({
+        at: row.at,
+        model: e.model,
+        keyId: e.keyId,
+        ok: e.ok,
+        ms: e.ms,
+        ...(e.code === undefined ? {} : { code: e.code }),
+        ...(e.providerMessage === undefined ? {} : { providerMessage: e.providerMessage }),
+        ...(e.costUsd === undefined ? {} : { costUsd: e.costUsd }),
+        ...(e.promptTokens === undefined && e.completionTokens === undefined
+          ? {}
+          : { tokens: (e.promptTokens ?? 0) + (e.completionTokens ?? 0) }),
+      });
     }
     return out;
   });

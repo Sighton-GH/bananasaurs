@@ -5,6 +5,7 @@ import {
   compileRule,
   isDangerousRole,
   JOB_KINDS,
+  modelHealth,
   reconcileDedupeKey,
   redactConfig,
   undoDedupeKey,
@@ -36,6 +37,7 @@ import {
   oauthRepo,
   panelRepo,
   roleRepo,
+  runRepo,
   sessionRepo,
   type GuildScope,
   type InstanceScope,
@@ -49,6 +51,7 @@ import {
   buildDoctorReport,
   formatDoctorReport,
   type DoctorDashboardAccess,
+  type DoctorModelHealth,
   type DoctorPasswordVault,
 } from '../runtime/doctor.js';
 import {
@@ -1823,12 +1826,38 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
           .listAccounts(deps.instanceScope)
           .filter((row) => !row.isOwner && row.passwordSealed !== null).length,
       };
+      // ADR 0129 §8: the model-health input, computed here — the one
+      // `buildDoctorReport` call site with a database handle. One guild
+      // entry per allowlisted scope, carrying only its persistent
+      // failures over the last 24 h. Startup and doctor mode pass
+      // nothing and skip the finding (see `doctor.ts`).
+      const doctorModelHealth: DoctorModelHealth = {
+        guilds: deps.guildScopes.map((scope) => ({
+          guildId: scope.guildId,
+          persistent: modelHealth(
+            runRepo.modelResultsSince(scope, deps.now() - 86_400_000),
+          ).flatMap((h) =>
+            h.persistent === undefined
+              ? []
+              : [
+                  {
+                    model: h.model,
+                    keyId: h.keyId,
+                    code: h.persistent.code,
+                    count: h.persistent.count,
+                    since: h.persistent.since,
+                  },
+                ],
+          ),
+        })),
+      };
       const report = buildDoctorReport(
         deps.client,
         deps.config,
         deps.now(),
         dashboardAccess,
         passwordVault,
+        doctorModelHealth,
       );
       return {
         ok: report.ok,

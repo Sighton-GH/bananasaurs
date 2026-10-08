@@ -250,7 +250,15 @@ describe('modelResultsSince (ADR 0129 §8)', () => {
       completionTokens: 5,
       costUsd: 0.0012,
     });
-    appendRunEvent(scope, 'run-1', 1_000, { kind: 'model-call', position: 0, of: 1, provider: 'openrouter', model: 'model-a', keyId: 'key-1', round: 1 });
+    appendRunEvent(scope, 'run-1', 1_000, {
+      kind: 'model-call',
+      position: 0,
+      of: 1,
+      provider: 'openrouter',
+      model: 'model-a',
+      keyId: 'key-1',
+      round: 1,
+    });
     appendRunEvent(scope, 'run-1', 1_001, {
       kind: 'model-result',
       provider: 'openrouter',

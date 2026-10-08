@@ -226,6 +226,33 @@ export interface DoctorPasswordVault {
   readonly revealableAccounts: number;
 }
 
+/**
+ * Per-allowlisted-guild persistent model failures (ADR 0129 §8), last 24 h.
+ *
+ * Advisory only (CLAUDE.md rule 1): a persistent entry never disables,
+ * reorders or skips a chain entry — it only votes `ok` and prints a line
+ * telling the operator where to act. Computed by the caller over the run
+ * ledger, like `dashboardAccess`, so this report never opens the database
+ * itself.
+ */
+export interface DoctorModelHealth {
+  /** Per allowlisted guild: its persistent failures (ModelHealth with `persistent` set), last 24 h. */
+  readonly guilds: readonly {
+    readonly guildId: string;
+    readonly persistent: readonly {
+      readonly model: string;
+      readonly keyId: string;
+      readonly code: string;
+      readonly count: number;
+      readonly since: number;
+    }[];
+  }[];
+}
+
+/** True when no guild carries a persistent entry; absent input means not assessed, never a failure. */
+export const modelHealthOk = (modelHealth: DoctorModelHealth | undefined): boolean =>
+  modelHealth === undefined || modelHealth.guilds.every((g) => g.persistent.length === 0);
+
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
   readonly ok: boolean;
@@ -241,6 +268,11 @@ export interface DoctorReport {
   readonly dashboardAccess?: DoctorDashboardAccess | undefined;
   /** The password vault finding (ADR 0070), when the caller assessed it. Same omission rule as `dashboardAccess`. */
   readonly passwordVault?: DoctorPasswordVault | undefined;
+  /**
+   * The model-health finding (ADR 0129 §8), when the caller assessed it.
+   * Same omission rule as `dashboardAccess`: absent means not assessed.
+   */
+  readonly modelHealth?: DoctorModelHealth | undefined;
   readonly partials: {
     readonly configured: readonly string[];
     readonly missing: readonly string[];
@@ -273,6 +305,13 @@ export function buildDoctorReport(
   dashboardAccess?: DoctorDashboardAccess,
   /** The password vault finding's input (ADR 0070), same omission rule as `dashboardAccess`. */
   passwordVault?: DoctorPasswordVault,
+  /**
+   * The model-health finding's input (ADR 0129 §8), computed by the caller
+   * over the run ledger — this report never opens the database itself.
+   * Omitted by call sites with no database handle (startup, doctor mode);
+   * see `modelHealth` above for what omission means.
+   */
+  modelHealth?: DoctorModelHealth,
 ): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
@@ -306,6 +345,12 @@ export function buildDoctorReport(
   // startup and every doctor-mode run.
   const dashboardOk = dashboardAccess === undefined || dashboardAccessOk(dashboardAccess);
 
+  // ADR 0129 §8: a persistent model failure fails the report — but only
+  // when assessed. An omitted input is a call site with no database, not a
+  // healthy fleet, so it votes nothing rather than failing every startup
+  // and every doctor-mode run.
+  const modelHealthVote = modelHealthOk(modelHealth);
+
   const ok =
     missing.length === 0 &&
     privileged.every((p) => p.requested) &&
@@ -315,7 +360,8 @@ export function buildDoctorReport(
     ) &&
     backupOk &&
     archiveGuildsNotAllowlisted.length === 0 &&
-    dashboardOk;
+    dashboardOk &&
+    modelHealthVote;
 
   return {
     ok,
@@ -329,6 +375,7 @@ export function buildDoctorReport(
     // from the property being absent, and "not assessed" is absence.
     ...(dashboardAccess !== undefined && { dashboardAccess }),
     ...(passwordVault !== undefined && { passwordVault }),
+    ...(modelHealth !== undefined && { modelHealth }),
   };
 }
 
@@ -459,6 +506,25 @@ export function formatDoctorReport(report: DoctorReport): string {
       `  backups: ${String(b.backupCount)}, newest ${age} old` +
         (b.stale ? '  STALE — the backup timer appears to have stopped' : ''),
     );
+  }
+
+  // ADR 0129 §8. Advisory only — never the provider message (hard rule 4
+  // keeps it out of operator output), only where to fix the chain entry.
+  // Absent input means not assessed and prints nothing.
+  if (report.modelHealth !== undefined) {
+    lines.push('');
+    const entries = report.modelHealth.guilds.flatMap((g) => g.persistent);
+    if (entries.length === 0) {
+      lines.push('  AI model health: ok (last 24 h)');
+    } else {
+      for (const guild of report.modelHealth.guilds) {
+        for (const entry of guild.persistent) {
+          lines.push(
+            `  AI model ${entry.model} (key ${entry.keyId}) failed ${String(entry.count)} times in a row with ${entry.code} since ${new Date(entry.since).toISOString()}; remove or replace it in Providers → Model order.`,
+          );
+        }
+      }
+    }
   }
 
   // ADR 0070. Never the key itself — only where it resolved from, and a count.

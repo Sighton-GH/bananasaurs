@@ -57,6 +57,8 @@ export interface ProviderUsage {
   readonly completionTokens?: number;
   readonly totalTokens?: number;
   readonly thinkingTokens?: number;
+  /** ADR 0129 §8: OpenRouter's per-call cost, present only when the provider reported it. */
+  readonly costUsd?: number;
 }
 
 export interface GenerateTextResponse {

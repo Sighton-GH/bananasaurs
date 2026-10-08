@@ -238,9 +238,11 @@ export const runToolLoop = async (input: {
   let promptTokens = 0;
   let completionTokens = 0;
   let thinkingTokens = 0;
+  let costUsd = 0;
   let sawPrompt = false;
   let sawCompletion = false;
   let sawThinking = false;
+  let sawCost = false;
   // Keys whose `:free` allowance died inside this loop, with the reset that
   // killed them (undefined when the error named none).
   const cappedKeys = new Map<string, number | undefined>();
@@ -272,11 +274,17 @@ export const runToolLoop = async (input: {
       thinkingTokens += usage.thinkingTokens;
       sawThinking = true;
     }
+    // ADR 0129 §8: OpenRouter's per-call cost sums like the token fields.
+    if (usage?.costUsd !== undefined) {
+      costUsd += usage.costUsd;
+      sawCost = true;
+    }
   };
   const usageOf = (): AssistantTrace['usage'] => ({
     ...(sawPrompt ? { promptTokens } : {}),
     ...(sawCompletion ? { completionTokens } : {}),
     ...(sawThinking ? { thinkingTokens } : {}),
+    ...(sawCost ? { costUsd } : {}),
   });
 
   const modelIds = input.chain.map((entry) => entry.model);
@@ -773,6 +781,7 @@ const runEntry = async (deps: {
         ...(response.usage?.thinkingTokens === undefined
           ? {}
           : { reasoningTokens: response.usage.thinkingTokens }),
+        ...(response.usage?.costUsd === undefined ? {} : { costUsd: response.usage.costUsd }),
         ...(response.finishReason === undefined ? {} : { finishReason: response.finishReason }),
         ...(response.upstream === undefined ? {} : { upstream: response.upstream }),
         toolCalls: response.toolCalls?.length ?? 0,
@@ -1050,7 +1059,11 @@ const finishEntry = async (deps: {
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
-  const okAttempt = (): void => {
+  const okAttempt = (costUsd?: number): void => {
+    // ADR 0129 §8: the answering response's own cost — the attempt carries no
+    // other path to it. Defaults to the entry response; the guard-retry
+    // branches below pass the retry's cost instead.
+    const attemptCost = costUsd ?? deps.response.usage?.costUsd;
     outer.attempts.push({
       provider: deps.entry.providerId,
       model: deps.entry.model,
@@ -1063,6 +1076,7 @@ const finishEntry = async (deps: {
         ? {}
         : { finishReason: deps.response.finishReason }),
       ...(deps.response.upstream === undefined ? {} : { upstream: deps.response.upstream }),
+      ...(attemptCost === undefined ? {} : { costUsd: attemptCost }),
     });
   };
   const guarded = guardAnswer({
@@ -1173,6 +1187,7 @@ const finishEntry = async (deps: {
         ...(retry.usage?.thinkingTokens === undefined
           ? {}
           : { reasoningTokens: retry.usage.thinkingTokens }),
+        ...(retry.usage?.costUsd === undefined ? {} : { costUsd: retry.usage.costUsd }),
         ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
         ...(retry.upstream === undefined ? {} : { upstream: retry.upstream }),
         toolCalls: retry.toolCalls?.length ?? 0,
@@ -1183,7 +1198,7 @@ const finishEntry = async (deps: {
         modelIds: outer.modelIds,
       });
       if (second.ok) {
-        okAttempt();
+        okAttempt(retry.usage?.costUsd);
         recordGuard(second.removed);
         return {
           outcome: 'answered',
@@ -1200,7 +1215,7 @@ const finishEntry = async (deps: {
         };
       }
       if (second.reason === 'prompt-leak') {
-        okAttempt();
+        okAttempt(retry.usage?.costUsd);
         recordGuard(second.removed, 'prompt-leak');
         return {
           outcome: 'answered',

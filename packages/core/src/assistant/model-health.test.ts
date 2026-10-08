@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  modelHealth,
-  PERSISTENT_CODES,
-  PERSISTENT_RUN,
-  type ModelResult,
-} from './model-health.js';
+import { modelHealth, PERSISTENT_CODES, PERSISTENT_RUN, type ModelResult } from './model-health.js';
 
 /** ADR 0129 §8: per-model health from the run ledger's model-result steps. */
 const result = (over: Partial<ModelResult> & { readonly at: number }): ModelResult => ({

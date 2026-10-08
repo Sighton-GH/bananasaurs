@@ -14,6 +14,7 @@ export * from './github.js';
 export * from './prompt-wizard.js';
 export * from './relative-time.js';
 export * from './trace.js';
+export * from './model-health.js';
 export * from './conversation.js';
 export * from './conversation-summary.js';
 export * from './untrusted.js';
