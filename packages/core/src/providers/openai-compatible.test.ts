@@ -207,6 +207,40 @@ describe('OpenAI-compatible providers', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('ADR 0129 §8: the OpenRouter request asks for usage, NIM does not', async () => {
+    const openRouterFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+    await createOpenRouterProvider({ apiKey: 'secret', fetch: openRouterFetch }).generateText({
+      model: 'free-model',
+      messages: [{ role: 'user', text: 'q' }],
+    });
+    expect(JSON.parse(openRouterFetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+      usage: { include: true },
+    });
+    const nimFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+    await createNvidiaNimProvider({ apiKey: 'secret', fetch: nimFetch }).generateText({
+      model: 'free-model',
+      messages: [{ role: 'user', text: 'q' }],
+    });
+    expect(JSON.parse(nimFetch.mock.calls[0]?.[1]?.body as string)).not.toHaveProperty('usage');
+  });
+
+  it('ADR 0129 §8: a response usage.cost maps to usage.costUsd', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: 'served',
+          choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3, cost: 0.0012 },
+        }),
+        { status: 200 },
+      ),
+    );
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    await expect(
+      provider.generateText({ model: 'free-model', messages: [{ role: 'user', text: 'q' }] }),
+    ).resolves.toMatchObject({ usage: { costUsd: 0.0012 } });
+  });
+
   describe('non-2xx error detail (ADR 0077)', () => {
     const dailyCapBody = JSON.stringify({
       error: { code: 429, message: 'Rate limit exceeded: free-models-per-day' },

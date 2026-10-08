@@ -587,3 +587,61 @@ describe('the printed report', () => {
     expect(text).not.toContain('native AutoMod observability');
   });
 });
+
+describe('model health (ADR 0129 §8)', () => {
+  const persistentInput = (over = {}) => ({
+    guilds: [
+      {
+        guildId: GUILD,
+        persistent: [
+          {
+            model: 'model-a',
+            keyId: 'key-1',
+            code: 'provider-auth',
+            count: 3,
+            since: 1_000,
+            ...over,
+          },
+        ],
+      },
+    ],
+  });
+
+  it('fails ok and prints the warning line for one persistent entry', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config(), Date.now(), undefined, undefined, {
+      guilds: [
+        {
+          guildId: GUILD,
+          persistent: [
+            { model: 'model-a', keyId: 'key-1', code: 'provider-auth', count: 3, since: 1_000 },
+          ],
+        },
+      ],
+    });
+    expect(report.ok).toBe(false);
+    expect(report.modelHealth?.guilds).toHaveLength(1);
+    expect(formatDoctorReport(report)).toContain(
+      'AI model model-a (key key-1) failed 3 times in a row with provider-auth since ' +
+        `${new Date(1_000).toISOString()}; remove or replace it in Providers → Model order.`,
+    );
+  });
+
+  it('shows the ok line with an empty persistent list and leaves ok alone', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config(), Date.now(), undefined, undefined, {
+      guilds: [{ guildId: GUILD, persistent: [] }],
+    });
+    expect(report.ok).toBe(true);
+    expect(formatDoctorReport(report)).toContain('AI model health: ok (last 24 h)');
+  });
+
+  it('prints nothing about model health when the input is absent', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config());
+    expect(report.modelHealth).toBeUndefined();
+    expect(report.ok).toBe(true);
+    expect(formatDoctorReport(report)).not.toContain('AI model');
+    expect(persistentInput()).toBeDefined();
+  });
+});

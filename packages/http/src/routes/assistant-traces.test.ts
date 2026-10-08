@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { parseGuildId, type AssistantTrace, type Capability } from '@bananasaurs/core';
-import { accountRepo, authzRepo, guildRepo, traceRepo } from '@bananasaurs/storage';
+import { accountRepo, authzRepo, guildRepo, runRepo, traceRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -351,5 +351,53 @@ describe('assistant trace routes', () => {
     expect(list.statusCode).toBe(200);
     const rows = list.json<{ traces: { traceId: string; errorCode?: string }[] }>().traces;
     expect(rows.find((r) => r.traceId === 'failed-1')?.errorCode).toBe('provider-bad-model');
+  });
+
+  it('ADR 0129 §8: usage days carry failuresByCode and tokensByModel on the right day', async () => {
+    clock = Date.UTC(2026, 8, 21, 12, 0, 0);
+    grant('audit.read');
+    const { cookie } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    runRepo.ensureRun(scope, {
+      runId: 'run-1',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: Date.UTC(2026, 8, 21, 1, 0, 0),
+    });
+    runRepo.appendRunEvent(scope, 'run-1', Date.UTC(2026, 8, 21, 1, 0, 0), {
+      kind: 'model-result',
+      provider: 'openrouter',
+      model: 'model-a',
+      keyId: 'key-1',
+      ok: true,
+      ms: 100,
+      promptTokens: 10,
+      completionTokens: 5,
+    });
+    runRepo.appendRunEvent(scope, 'run-1', Date.UTC(2026, 8, 21, 2, 0, 0), {
+      kind: 'model-result',
+      provider: 'openrouter',
+      model: 'model-a',
+      keyId: 'key-1',
+      ok: false,
+      ms: 30,
+      code: 'provider-auth',
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/usage?days=3',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const days = response.json<{
+      days: { day: string; failuresByCode: Record<string, number>; tokensByModel: Record<string, number> }[];
+    }>().days;
+    expect(days[0]).toMatchObject({ day: '2026-09-19', failuresByCode: {}, tokensByModel: {} });
+    expect(days[2]).toMatchObject({
+      day: '2026-09-21',
+      failuresByCode: { 'provider-auth': 1 },
+      tokensByModel: { 'model-a': 15 },
+    });
   });
 });

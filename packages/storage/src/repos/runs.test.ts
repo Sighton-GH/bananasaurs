@@ -10,6 +10,7 @@ import {
   getRun,
   listRunEvents,
   listRuns,
+  modelResultsSince,
   pruneOrphanRuns,
   updateRun,
 } from './runs.js';
@@ -231,5 +232,78 @@ describe('deleteRunsForUser', () => {
     expect(getRun(scope, 'mine')).toBeUndefined();
     expect(getRun(scope, 'theirs')).toBeDefined();
     expect(getRun(t.scopes.forGuild(GUILD_B), 'mine')).toBeDefined();
+  });
+});
+
+describe('modelResultsSince (ADR 0129 §8)', () => {
+  it('returns only model-result events at or after since, oldest first, with tokens and cost', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seed(GUILD_A, { runId: 'run-1', queuedAt: 1_000 });
+    appendRunEvent(scope, 'run-1', 900, {
+      kind: 'model-result',
+      provider: 'openrouter',
+      model: 'model-a',
+      keyId: 'key-1',
+      ok: true,
+      ms: 100,
+      promptTokens: 10,
+      completionTokens: 5,
+      costUsd: 0.0012,
+    });
+    appendRunEvent(scope, 'run-1', 1_000, { kind: 'model-call', position: 0, of: 1, provider: 'openrouter', model: 'model-a', keyId: 'key-1', round: 1 });
+    appendRunEvent(scope, 'run-1', 1_001, {
+      kind: 'model-result',
+      provider: 'openrouter',
+      model: 'model-a',
+      keyId: 'key-1',
+      ok: true,
+      ms: 120,
+      promptTokens: 10,
+      completionTokens: 5,
+      costUsd: 0.0012,
+    });
+    appendRunEvent(scope, 'run-1', 1_002, {
+      kind: 'model-result',
+      provider: 'openrouter',
+      model: 'model-b',
+      keyId: 'key-2',
+      ok: false,
+      ms: 30,
+      code: 'provider-auth',
+      providerMessage: 'bad key',
+    });
+    const results = modelResultsSince(scope, 1_000);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({
+      at: 1_001,
+      model: 'model-a',
+      keyId: 'key-1',
+      ok: true,
+      ms: 120,
+      tokens: 15,
+      costUsd: 0.0012,
+    });
+    expect(results[1]).toMatchObject({
+      at: 1_002,
+      model: 'model-b',
+      keyId: 'key-2',
+      ok: false,
+      code: 'provider-auth',
+      providerMessage: 'bad key',
+    });
+    expect(results[1]?.tokens).toBeUndefined();
+  });
+
+  it('does not return another guild’s rows', () => {
+    seed(GUILD_B, { runId: 'run-b', queuedAt: 1_000 });
+    appendRunEvent(t.scopes.forGuild(GUILD_B), 'run-b', 2_000, {
+      kind: 'model-result',
+      provider: 'openrouter',
+      model: 'model-a',
+      keyId: 'key-1',
+      ok: true,
+      ms: 100,
+    });
+    expect(modelResultsSince(t.scopes.forGuild(GUILD_A), 0)).toEqual([]);
   });
 });

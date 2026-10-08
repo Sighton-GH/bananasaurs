@@ -68,6 +68,12 @@ describe('assistantTraceSchema', () => {
     expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)))).toEqual(trace);
   });
 
+  it('ADR 0129 §8: usage.costUsd parses and still parses without it', () => {
+    const withCost = fixtureTrace({ usage: { costUsd: 0.0012 } });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withCost)))).toEqual(withCost);
+    expect(assistantTraceSchema.parse(fixtureTrace()).usage).not.toHaveProperty('costUsd');
+  });
+
   it('still parses an old trace without included', () => {
     const fullTrace = fixtureTrace({
       included: {

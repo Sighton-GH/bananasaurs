@@ -1616,4 +1616,27 @@ describe('runToolLoop run recorder (ADR 0129 §6)', () => {
     expect(result.outcome).toBe('answered');
     expect(events.find((e) => e.kind === 'guard')).toMatchObject({ removed: 1 });
   });
+
+  it('ADR 0129 §8: a response costUsd lands on the ok attempt, the loop usage and the model-result event', async () => {
+    const { provider } = scripted([
+      {
+        text: 'Done.',
+        model: 'model-a',
+        usage: { promptTokens: 10, completionTokens: 5, costUsd: 0.0012 },
+      },
+    ]);
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput([entry({ provider, model: 'model-a' })], { recorder }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.usage).toMatchObject({ costUsd: 0.0012 });
+    expect(result.attempts.find((a) => a.outcome === 'ok')).toMatchObject({
+      costUsd: 0.0012,
+    });
+    expect(events.find((e) => e.kind === 'model-result')).toMatchObject({
+      ok: true,
+      costUsd: 0.0012,
+    });
+  });
 });
