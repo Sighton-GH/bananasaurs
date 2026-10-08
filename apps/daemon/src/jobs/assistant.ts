@@ -1040,7 +1040,11 @@ export const assistantInvokeHandler = (deps: {
           if (value instanceof ChainFailedError) return value.code;
           return undefined;
         };
-        const insertFailureTrace = (opts: { readonly final: boolean }): string | undefined => {
+        /** ADR 0129 §1: one failed trace per job attempt, for any error. Skipped when the id exists. */
+        const insertFailureTrace = (
+          err: unknown,
+          opts: { readonly final: boolean },
+        ): string | undefined => {
           if (deps.conversations === undefined) return undefined;
           const conv = deps.conversations;
           const key = payload.invocationId;
@@ -1096,7 +1100,10 @@ export const assistantInvokeHandler = (deps: {
                       : { summaryVersion: included.summaryVersion }),
                   },
                 }),
-            timeline: [{ label: 'received', atMs: 0 }],
+            timeline: [
+              { label: 'received', atMs: 0 },
+              { label: 'failed', atMs: elapsed },
+            ],
             error: failureError,
             discordMessageIds: [],
             sources: [],
@@ -1104,6 +1111,7 @@ export const assistantInvokeHandler = (deps: {
           });
           return traceId;
         };
+        /** ADR 0129 §1: the failure reply saved as the assistant turn, linked to its trace. */
         const appendFailureTurn = (
           text: string,
           traceId: string,
@@ -1115,11 +1123,10 @@ export const assistantInvokeHandler = (deps: {
           const turns = conversationRepo.listTurns(conv.scope, conversationId);
           const turnId = `turn_${key}_a`;
           if (turns.every((turn) => turn.turnId !== turnId)) {
-            const at = turns.length === 0 ? deps.now() : Math.max(...turns.map((t) => t.at)) + 1;
             conversationRepo.appendTurn(conv.scope, {
               conversationId,
               turnId,
-              at,
+              at: nextAt(turns),
               role: 'assistant',
               authorName: conv.botDisplayName,
               text,
@@ -1142,7 +1149,7 @@ export const assistantInvokeHandler = (deps: {
         // tomorrow's requests for the same guaranteed failure.
         if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
           const text = dailyQuotaReply(err.resetAt, deps.now());
-          const traceId = insertFailureTrace({ final: true });
+          const traceId = insertFailureTrace(err, { final: true });
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
@@ -1161,7 +1168,7 @@ export const assistantInvokeHandler = (deps: {
         // with the free-up time — no job retry, no RetryAfterError.
         if (err instanceof LocalLimitError) {
           const text = localLimitReply(err.availableAt, deps.now(), deps.timeZone?.() ?? 'UTC');
-          const traceId = insertFailureTrace({ final: true });
+          const traceId = insertFailureTrace(err, { final: true });
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
@@ -1178,7 +1185,7 @@ export const assistantInvokeHandler = (deps: {
           return;
         }
         if (err instanceof ProviderError && err.retryable && context.attempts < ceiling) {
-          insertFailureTrace({ final: false });
+          insertFailureTrace(err, { final: false });
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
@@ -1193,7 +1200,7 @@ export const assistantInvokeHandler = (deps: {
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
-        const traceId = insertFailureTrace({ final });
+        const traceId = insertFailureTrace(err, { final });
         const code = codeOf(err);
         deps.logger.error(
           safeLogFields({
