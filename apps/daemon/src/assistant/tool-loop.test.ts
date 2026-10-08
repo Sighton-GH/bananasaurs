@@ -775,6 +775,45 @@ describe('runToolLoop output guard', () => {
     expect(result.outcome).toBe('failed');
     expect(result.usage).toMatchObject({ promptTokens: 17, completionTokens: 8 });
   });
+
+  it('(M8a) a guard-emptied first answer with a clean retry records ok:true with no code', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider } = scripted([textAnswer(toolShaped), textAnswer('Recovered.')]);
+    const events: RunEvent[] = [];
+    const recorder: RunRecorder = {
+      runId: 'run-1',
+      event: (e: RunEvent) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    };
+    const result = await runToolLoop(baseInput([entry({ provider })], { recorder }));
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Recovered.');
+    const results = events.filter((e) => e.kind === 'model-result');
+    expect(results).toHaveLength(2);
+    expect(results[1]).toMatchObject({ ok: true });
+    expect(results[1]).not.toHaveProperty('code');
+  });
+
+  it('(M8b) two guard-emptied answers record failed provider-empty-answer on the retry and the attempt', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider } = scripted([textAnswer(toolShaped), textAnswer(toolShaped)]);
+    const events: RunEvent[] = [];
+    const recorder: RunRecorder = {
+      runId: 'run-1',
+      event: (e: RunEvent) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    };
+    const result = await runToolLoop(baseInput([entry({ provider })], { recorder }));
+    expect(result.outcome).toBe('failed');
+    const results = events.filter((e) => e.kind === 'model-result');
+    expect(results).toHaveLength(2);
+    expect(results[1]).toMatchObject({ ok: false, code: 'provider-empty-answer' });
+    expect(result.attempts.at(-1)).toMatchObject({ code: 'provider-empty-answer' });
+  });
 });
 
 describe('runToolLoop chain walking', () => {
