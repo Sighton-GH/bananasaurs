@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { RULE_KINDS, snowflakeIdSchema, validateRuleConfig } from '@bananasaurs/core';
+import {
+  OPS_AUDIT_ACTIONS,
+  RULE_KINDS,
+  snowflakeIdSchema,
+  validateRuleConfig,
+} from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -366,7 +371,7 @@ export const registerAutomodRoutes = (
 
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'automod_match.verdict_recorded',
+        action: OPS_AUDIT_ACTIONS.automodVerdictRecorded,
         subjectType: 'automod_match',
         subjectId: request.params.eventId,
         before: undefined,

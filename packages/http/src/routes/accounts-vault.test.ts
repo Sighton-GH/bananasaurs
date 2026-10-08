@@ -5,7 +5,7 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import { accountRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
-import { parseGuildId } from '@bananasaurs/core';
+import { OPS_AUDIT_ACTIONS, parseGuildId } from '@bananasaurs/core';
 import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { POLICY } from '../policy.js';
@@ -146,7 +146,7 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     expect(accountRevealPasswordSpy).toHaveBeenCalledWith('mod');
 
     const rows = auditRows();
-    const row = rows.find((r) => r.action === 'account.password_revealed');
+    const row = rows.find((r) => r.action === OPS_AUDIT_ACTIONS.accountPasswordRevealed);
     expect(row).toBeDefined();
     expect(row?.subjectId).toBe('mod');
     // The audit JSON must not carry the plaintext anywhere — before, after,
@@ -212,6 +212,8 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     const headers = await signInAs('owner');
     await reveal('nobody', headers);
     await reveal('no-sealed-copy', headers);
-    expect(auditRows().some((r) => r.action === 'account.password_revealed')).toBe(false);
+    expect(auditRows().some((r) => r.action === OPS_AUDIT_ACTIONS.accountPasswordRevealed)).toBe(
+      false,
+    );
   });
 });

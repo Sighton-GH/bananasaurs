@@ -12,7 +12,7 @@ import {
   guildRepo,
   modCaseRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId, type Capability } from '@bananasaurs/core';
+import { OPS_AUDIT_ACTIONS, parseGuildId, type Capability } from '@bananasaurs/core';
 import type { GuildId } from '@bananasaurs/core';
 import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
@@ -904,7 +904,7 @@ describe('POST /api/automod/review/:eventId/verdict', () => {
       limit: 10,
       sinceMs: undefined,
     });
-    const row = rows.find((r) => r.action === 'automod_match.verdict_recorded');
+    const row = rows.find((r) => r.action === OPS_AUDIT_ACTIONS.automodVerdictRecorded);
     expect(row?.subjectType).toBe('automod_match');
     expect(row?.subjectId).toBe('e1');
     expect(row?.actorId).toBe(ACCOUNT);
@@ -956,7 +956,7 @@ describe('POST /api/automod/review/:eventId/verdict', () => {
       payload: { verdict: 'false_positive' },
     });
     expect(response.statusCode).toBe(404);
-    expect(auditActions()).not.toContain('automod_match.verdict_recorded');
+    expect(auditActions()).not.toContain(OPS_AUDIT_ACTIONS.automodVerdictRecorded);
   });
 
   it('answers 400 for a malformed verdict', async () => {
@@ -969,7 +969,7 @@ describe('POST /api/automod/review/:eventId/verdict', () => {
       payload: { verdict: 'wrong' },
     });
     expect(response.statusCode).toBe(400);
-    expect(auditActions()).not.toContain('automod_match.verdict_recorded');
+    expect(auditActions()).not.toContain(OPS_AUDIT_ACTIONS.automodVerdictRecorded);
   });
 
   it("guild B's session cannot record a verdict on guild A's event", async () => {

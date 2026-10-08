@@ -7,6 +7,7 @@ import {
   type OpsWriteResult,
 } from '../dispatch.js';
 import { parseDuration } from './reads.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The `mcp …` allowlist surface (slice M5, ADR 0044 §4).
@@ -66,7 +67,7 @@ export const mcpAllowChannelCommand = defineCommand<z.infer<typeof allowChannelA
         text: `channel ${args.channelId} is not a channel of this guild the bot can post text into; nothing changed`,
         data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
         audit: {
-          action: 'mcp.send_channel.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendChannelAllowed,
           subjectType: 'mcp_send_channel',
           subjectId: args.channelId,
           after: { outcome: 'no-such-channel', channelId: args.channelId },
@@ -82,7 +83,7 @@ export const mcpAllowChannelCommand = defineCommand<z.infer<typeof allowChannelA
         text: `channel ${args.channelId} is already allowlisted for MCP sends; nothing changed`,
         data: { channelId: args.channelId, allowed: true, changed: false },
         audit: {
-          action: 'mcp.send_channel.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendChannelAllowed,
           subjectType: 'mcp_send_channel',
           subjectId: args.channelId,
           before: { allowed: true },
@@ -95,7 +96,7 @@ export const mcpAllowChannelCommand = defineCommand<z.infer<typeof allowChannelA
       text: `channel ${args.channelId} may now receive MCP sends`,
       data: { channelId: args.channelId, allowed: true, changed: true },
       audit: {
-        action: 'mcp.send_channel.allowed',
+        action: OPS_AUDIT_ACTIONS.mcpSendChannelAllowed,
         subjectType: 'mcp_send_channel',
         subjectId: args.channelId,
         before: { allowed: false },
@@ -126,7 +127,7 @@ export const mcpDisallowChannelCommand = defineCommand<z.infer<typeof disallowCh
         text: `channel ${args.channelId} is allowlisted as a category; use mcp disallow-category`,
         data: { channelId: args.channelId, allowed: true, changed: false },
         audit: {
-          action: 'mcp.send_channel.disallowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendChannelDisallowed,
           subjectType: 'mcp_send_channel',
           subjectId: args.channelId,
           before: { allowed: true },
@@ -140,7 +141,7 @@ export const mcpDisallowChannelCommand = defineCommand<z.infer<typeof disallowCh
         text: `channel ${args.channelId} was not allowlisted for MCP sends; nothing changed`,
         data: { channelId: args.channelId, allowed: false, changed: false },
         audit: {
-          action: 'mcp.send_channel.disallowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendChannelDisallowed,
           subjectType: 'mcp_send_channel',
           subjectId: args.channelId,
           before: { allowed: false },
@@ -153,7 +154,7 @@ export const mcpDisallowChannelCommand = defineCommand<z.infer<typeof disallowCh
       text: `channel ${args.channelId} can no longer receive MCP sends`,
       data: { channelId: args.channelId, allowed: false, changed: true },
       audit: {
-        action: 'mcp.send_channel.disallowed',
+        action: OPS_AUDIT_ACTIONS.mcpSendChannelDisallowed,
         subjectType: 'mcp_send_channel',
         subjectId: args.channelId,
         before: { allowed: true },
@@ -292,7 +293,7 @@ export const mcpAllowCategoryCommand = defineCommand<z.infer<typeof categoryArgs
         text: `category ${args.channelId} is not a category of this guild; nothing changed`,
         data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
         audit: {
-          action: 'mcp.send_category.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendCategoryAllowed,
           subjectType: 'mcp_send_category',
           subjectId: args.channelId,
           after: { outcome: 'no-such-channel', channelId: args.channelId },
@@ -306,7 +307,7 @@ export const mcpAllowCategoryCommand = defineCommand<z.infer<typeof categoryArgs
           : `category ${args.channelId} is already allowlisted; nothing changed`,
       data: { channelId: args.channelId, outcome },
       audit: {
-        action: 'mcp.send_category.allowed',
+        action: OPS_AUDIT_ACTIONS.mcpSendCategoryAllowed,
         subjectType: 'mcp_send_category',
         subjectId: args.channelId,
         after: { outcome },
@@ -332,7 +333,7 @@ export const mcpDisallowCategoryCommand = defineCommand<z.infer<typeof categoryA
             : `category ${args.channelId} was not allowlisted; nothing changed`,
       data: { channelId: args.channelId, removed: outcome === 'removed' },
       audit: {
-        action: 'mcp.send_category.disallowed',
+        action: OPS_AUDIT_ACTIONS.mcpSendCategoryDisallowed,
         subjectType: 'mcp_send_category',
         subjectId: args.channelId,
         after: { removed: outcome === 'removed' },

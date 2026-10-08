@@ -6,6 +6,7 @@ import {
   type OpsContext,
   type OpsWriteResult,
 } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The `scope read …` surface (ADR 0126).
@@ -52,7 +53,7 @@ export const readScopeEnableChannelCommand = defineCommand<z.infer<typeof enable
         text: `channel ${args.channelId} is not a channel of this guild the bot can read; nothing changed`,
         data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
         audit: {
-          action: 'read_scope.allow',
+          action: OPS_AUDIT_ACTIONS.readScopeAllow,
           subjectType: 'read_scope_channel',
           subjectId: args.channelId,
           after: { outcome: 'no-such-channel', channelId: args.channelId },
@@ -68,7 +69,7 @@ export const readScopeEnableChannelCommand = defineCommand<z.infer<typeof enable
         text: `channel ${args.channelId} is already readable by Bananasaurs; nothing changed`,
         data: { channelId: args.channelId, readable: true, changed: false },
         audit: {
-          action: 'read_scope.allow',
+          action: OPS_AUDIT_ACTIONS.readScopeAllow,
           subjectType: 'read_scope_channel',
           subjectId: args.channelId,
           before: { readable: true },
@@ -81,7 +82,7 @@ export const readScopeEnableChannelCommand = defineCommand<z.infer<typeof enable
       text: `channel ${args.channelId} may now be read by Bananasaurs`,
       data: { channelId: args.channelId, readable: true, changed: true },
       audit: {
-        action: 'read_scope.allow',
+        action: OPS_AUDIT_ACTIONS.readScopeAllow,
         subjectType: 'read_scope_channel',
         subjectId: args.channelId,
         before: { readable: false },
@@ -116,7 +117,7 @@ export const readScopeDisableChannelCommand = defineCommand<z.infer<typeof disab
         text: `channel ${args.channelId} is readable as a category; use scope read disable-category`,
         data: { channelId: args.channelId, readable: true, changed: false },
         audit: {
-          action: 'read_scope.disallow',
+          action: OPS_AUDIT_ACTIONS.readScopeDisallow,
           subjectType: 'read_scope_channel',
           subjectId: args.channelId,
           before: { readable: true },
@@ -130,7 +131,7 @@ export const readScopeDisableChannelCommand = defineCommand<z.infer<typeof disab
         text: `channel ${args.channelId} was not readable by Bananasaurs; nothing changed`,
         data: { channelId: args.channelId, readable: false, changed: false },
         audit: {
-          action: 'read_scope.disallow',
+          action: OPS_AUDIT_ACTIONS.readScopeDisallow,
           subjectType: 'read_scope_channel',
           subjectId: args.channelId,
           before: { readable: false },
@@ -143,7 +144,7 @@ export const readScopeDisableChannelCommand = defineCommand<z.infer<typeof disab
       text: `channel ${args.channelId} is no longer readable by Bananasaurs`,
       data: { channelId: args.channelId, readable: false, changed: true },
       audit: {
-        action: 'read_scope.disallow',
+        action: OPS_AUDIT_ACTIONS.readScopeDisallow,
         subjectType: 'read_scope_channel',
         subjectId: args.channelId,
         before: { readable: true },
@@ -199,7 +200,7 @@ export const readScopeEnableCategoryCommand = defineCommand<z.infer<typeof categ
         text: `category ${args.channelId} is not a category of this guild; nothing changed`,
         data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
         audit: {
-          action: 'read_scope.allow',
+          action: OPS_AUDIT_ACTIONS.readScopeAllow,
           subjectType: 'read_scope_category',
           subjectId: args.channelId,
           after: { outcome: 'no-such-channel', channelId: args.channelId },
@@ -213,7 +214,7 @@ export const readScopeEnableCategoryCommand = defineCommand<z.infer<typeof categ
           : `category ${args.channelId} is already readable; nothing changed`,
       data: { channelId: args.channelId, outcome },
       audit: {
-        action: 'read_scope.allow',
+        action: OPS_AUDIT_ACTIONS.readScopeAllow,
         subjectType: 'read_scope_category',
         subjectId: args.channelId,
         after: { outcome },
@@ -243,7 +244,7 @@ export const readScopeDisableCategoryCommand = defineCommand<z.infer<typeof cate
             : `category ${args.channelId} was not readable; nothing changed`,
       data: { channelId: args.channelId, removed: outcome === 'removed' },
       audit: {
-        action: 'read_scope.disallow',
+        action: OPS_AUDIT_ACTIONS.readScopeDisallow,
         subjectType: 'read_scope_category',
         subjectId: args.channelId,
         after: { removed: outcome === 'removed' },

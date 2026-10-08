@@ -10,6 +10,7 @@ import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch
 import type { OpsLogRoute } from '../ports.js';
 import type { JsonValue } from '../protocol.js';
 import { findSetting, OPS_SETTINGS, parseSettingValue } from '../settings.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The write half of the Release 1 surface that stays inside the database:
@@ -121,7 +122,7 @@ export const configSetCommand = defineCommand<z.infer<typeof configSetArgs>>({
       text: lines.join('\n'),
       data: { key: spec.key, before, after },
       audit: {
-        action: 'config.set',
+        action: OPS_AUDIT_ACTIONS.configSet,
         subjectType: 'setting',
         subjectId: spec.key,
         before: { [spec.key]: before },
@@ -299,7 +300,7 @@ export const logRoutingCreateCommand = defineCommand<z.infer<typeof logRoutingCr
         `\n  ${contentNoteFor(route.includeContent)}`,
       data: { route: routeData(route) },
       audit: {
-        action: 'log_route.created',
+        action: OPS_AUDIT_ACTIONS.logRouteCreated,
         subjectType: 'log_route',
         subjectId: route.routeId,
         before: undefined,
@@ -360,7 +361,7 @@ export const logRoutingUpdateCommand = defineCommand<z.infer<typeof logRoutingUp
         `\n  ${contentNoteFor(updated.includeContent)}`,
       data: { route: routeData(updated) },
       audit: {
-        action: 'log_route.updated',
+        action: OPS_AUDIT_ACTIONS.logRouteUpdated,
         subjectType: 'log_route',
         subjectId: updated.routeId,
         before: routeAuditShape(before),
@@ -393,7 +394,7 @@ export const logRoutingOnCommand = defineCommand<z.infer<typeof logRoutingOnArgs
       text: `Route ${args.route.slice(0, 8)} "${before.name}" logs to <#${before.channelId}> again.`,
       data: { routeId: args.route, enabled: true },
       audit: {
-        action: 'log_route.enabled',
+        action: OPS_AUDIT_ACTIONS.logRouteEnabled,
         subjectType: 'log_route',
         subjectId: args.route,
         before: { enabled: before.enabled },
@@ -431,7 +432,7 @@ export const logRoutingOffCommand = defineCommand<z.infer<typeof logRoutingOffAr
         `  The route is kept, so \`log routing on ${args.route}\` turns it back on.`,
       data: { routeId: args.route, enabled: false },
       audit: {
-        action: 'log_route.disabled',
+        action: OPS_AUDIT_ACTIONS.logRouteDisabled,
         subjectType: 'log_route',
         subjectId: args.route,
         before: { enabled: before.enabled },
@@ -464,7 +465,7 @@ export const logRoutingDeleteCommand = defineCommand<z.infer<typeof logRoutingDe
       text: `Deleted route ${args.route.slice(0, 8)} "${before.name}".`,
       data: { routeId: args.route, deleted: true },
       audit: {
-        action: 'log_route.deleted',
+        action: OPS_AUDIT_ACTIONS.logRouteDeleted,
         subjectType: 'log_route',
         subjectId: args.route,
         before: routeAuditShape(before),
@@ -494,7 +495,7 @@ export const logRoutingExcludeCommand = defineCommand<z.infer<typeof channelArgs
         `  \`log routing list\` shows.`,
       data: { channelId: args.channel, excluded: true, changed: added },
       audit: {
-        action: 'log_exclusion.added',
+        action: OPS_AUDIT_ACTIONS.logExclusionAdded,
         subjectType: 'channel',
         subjectId: args.channel,
         before: { excluded: !added },
@@ -519,7 +520,7 @@ export const logRoutingUnexcludeCommand = defineCommand<z.infer<typeof channelAr
         `  That was the guild-wide No access list; a route that excludes the channel itself still skips it.`,
       data: { channelId: args.channel, excluded: false, changed: removed },
       audit: {
-        action: 'log_exclusion.removed',
+        action: OPS_AUDIT_ACTIONS.logExclusionRemoved,
         subjectType: 'channel',
         subjectId: args.channel,
         before: { excluded: removed },
@@ -581,7 +582,7 @@ export const jobsRetryCommand = defineCommand<z.infer<typeof jobsRetryArgs>>({
         (before?.lastError == null ? '' : `\n  It last failed with: ${before.lastError}`),
       data: { jobId: args.job, state: 'queued', kind: before?.kind ?? null },
       audit: {
-        action: 'job.retried',
+        action: OPS_AUDIT_ACTIONS.jobRetried,
         subjectType: 'job',
         subjectId: String(args.job),
         before:

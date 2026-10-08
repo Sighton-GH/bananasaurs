@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { logRouteIdSchema, logRouteInputSchema, type JsonValue } from '@bananasaurs/core';
+import {
+  OPS_AUDIT_ACTIONS,
+  logRouteIdSchema,
+  logRouteInputSchema,
+  type JsonValue,
+} from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -64,7 +69,9 @@ export const registerWriteRoutes = (
     ports.setKillswitch(parsed.data.on);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: parsed.data.on ? 'killswitch.enabled' : 'killswitch.disabled',
+      action: parsed.data.on
+        ? OPS_AUDIT_ACTIONS.killswitchEnabled
+        : OPS_AUDIT_ACTIONS.killswitchDisabled,
       subjectType: 'guild',
       subjectId: session.guildId,
       before: before === undefined ? undefined : { killswitch: before.killswitch },
@@ -86,7 +93,7 @@ export const registerWriteRoutes = (
     const route = ports.createRoute({ ...parsed.data, enabled: parsed.data.enabled ?? true });
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'log_route.created',
+      action: OPS_AUDIT_ACTIONS.logRouteCreated,
       subjectType: 'log_route',
       subjectId: route.routeId,
       before: undefined,
@@ -116,7 +123,7 @@ export const registerWriteRoutes = (
     if (route === undefined) return reply.status(404).send({ error: 'not-found' });
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'log_route.updated',
+      action: OPS_AUDIT_ACTIONS.logRouteUpdated,
       subjectType: 'log_route',
       subjectId: route.routeId,
       before: routeAuditShape(before),
@@ -140,7 +147,7 @@ export const registerWriteRoutes = (
     ports.deleteRoute(id.data);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'log_route.deleted',
+      action: OPS_AUDIT_ACTIONS.logRouteDeleted,
       subjectType: 'log_route',
       subjectId: id.data,
       before: routeAuditShape(before),

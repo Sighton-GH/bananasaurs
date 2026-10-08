@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * `bananasaurs killswitch on|off --confirm` (`docs/17` §1).
@@ -64,7 +65,7 @@ export const killswitchCommand = defineCommand<z.infer<typeof stateSchema>>({
       audit: {
         // Named for the transition rather than the command, so the trail reads
         // as a history of states and not of keystrokes.
-        action: on ? 'killswitch.enabled' : 'killswitch.disabled',
+        action: on ? OPS_AUDIT_ACTIONS.killswitchEnabled : OPS_AUDIT_ACTIONS.killswitchDisabled,
         subjectType: 'guild',
         subjectId: ctx.guildId,
         before: { killswitch: before.killswitch },

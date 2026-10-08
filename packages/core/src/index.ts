@@ -521,6 +521,7 @@ export {
   type RegisteredCommand,
 } from './ops/dispatch.js';
 export { OPERATOR_COMMANDS } from './ops/registry.js';
+export { OPS_AUDIT_ACTIONS, type OpsAuditAction } from './ops/audit-actions.js';
 export type {
   OpsAuditQuery,
   OpsAuditRow,

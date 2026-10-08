@@ -6,6 +6,7 @@ import {
   type OpsContext,
   type OpsWriteResult,
 } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * `bananasaurs account …` (ADR 0045 D6, ADR 0027).
@@ -117,7 +118,7 @@ export const accountDisableCommand = defineCommand<z.infer<typeof accountNameArg
         text: `${args.username} is already disabled; nothing changed`,
         data: { username: args.username, disabled: true, changed: false },
         audit: {
-          action: 'account.disabled',
+          action: OPS_AUDIT_ACTIONS.accountDisabled,
           subjectType: 'account',
           subjectId: args.username,
           before: { disabled: true },
@@ -152,7 +153,7 @@ export const accountDisableCommand = defineCommand<z.infer<typeof accountNameArg
         enabledOwnersRemaining: outcome.enabledOwnersRemaining,
       },
       audit: {
-        action: 'account.disabled',
+        action: OPS_AUDIT_ACTIONS.accountDisabled,
         subjectType: 'account',
         subjectId: args.username,
         before: { disabled: false },
@@ -181,7 +182,7 @@ export const accountEnableCommand = defineCommand<z.infer<typeof accountNameArgs
         text: `${args.username} is already enabled; nothing changed`,
         data: { username: args.username, disabled: false, changed: false },
         audit: {
-          action: 'account.enabled',
+          action: OPS_AUDIT_ACTIONS.accountEnabled,
           subjectType: 'account',
           subjectId: args.username,
           before: { disabled: false },
@@ -208,7 +209,7 @@ export const accountEnableCommand = defineCommand<z.infer<typeof accountNameArgs
         enabledOwnersRemaining: outcome.enabledOwnersRemaining,
       },
       audit: {
-        action: 'account.enabled',
+        action: OPS_AUDIT_ACTIONS.accountEnabled,
         subjectType: 'account',
         subjectId: args.username,
         before: { disabled: true },
@@ -275,7 +276,7 @@ export const accountDeleteCommand = defineCommand<z.infer<typeof accountDeleteAr
         accountsRemaining: outcome.accountsRemaining,
       },
       audit: {
-        action: 'account.deleted',
+        action: OPS_AUDIT_ACTIONS.accountDeleted,
         subjectType: 'account',
         subjectId: args.username,
         before: { exists: true, isOwner: outcome.wasOwner },
@@ -333,7 +334,7 @@ export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof acco
         stillEnabled: outcome.stillEnabled,
       },
       audit: {
-        action: 'account.credentials.revoked',
+        action: OPS_AUDIT_ACTIONS.accountCredentialsRevoked,
         subjectType: 'account',
         subjectId: args.username,
         before: {},
@@ -397,7 +398,7 @@ export const accountGrantGuildCommand = defineCommand<z.infer<typeof accountName
           reason: outcome,
         },
         audit: {
-          action: 'account.guild.granted',
+          action: OPS_AUDIT_ACTIONS.accountGuildGranted,
           subjectType: 'account',
           subjectId: args.username,
           before: { hadAccess: true },
@@ -418,7 +419,7 @@ export const accountGrantGuildCommand = defineCommand<z.infer<typeof accountName
         granted: true,
       },
       audit: {
-        action: 'account.guild.granted',
+        action: OPS_AUDIT_ACTIONS.accountGuildGranted,
         subjectType: 'account',
         subjectId: args.username,
         before: { hadAccess: false },
@@ -464,7 +465,7 @@ export const accountRevokeGuildCommand = defineCommand<z.infer<typeof accountNam
           reason: outcome,
         },
         audit: {
-          action: 'account.guild.revoked',
+          action: OPS_AUDIT_ACTIONS.accountGuildRevoked,
           subjectType: 'account',
           subjectId: args.username,
           before: { hadAccess: false },
@@ -489,7 +490,7 @@ export const accountRevokeGuildCommand = defineCommand<z.infer<typeof accountNam
         revoked: true,
       },
       audit: {
-        action: 'account.guild.revoked',
+        action: OPS_AUDIT_ACTIONS.accountGuildRevoked,
         subjectType: 'account',
         subjectId: args.username,
         before: { hadAccess: true },
@@ -558,7 +559,7 @@ export const accountSetPasswordCommand = defineCommand<z.infer<typeof accountNam
         guildsTouched: outcome.guildsTouched,
       },
       audit: {
-        action: 'account.password.changed',
+        action: OPS_AUDIT_ACTIONS.accountPasswordChanged,
         subjectType: 'account',
         subjectId: args.username,
         before: {},
@@ -640,7 +641,7 @@ export const accountGrantCommand = defineCommand<z.infer<typeof accountGrantArgs
           reason: outcome,
         },
         audit: {
-          action: 'account.capability.granted',
+          action: OPS_AUDIT_ACTIONS.accountCapabilityGranted,
           subjectType: 'account',
           subjectId: args.username,
           before: { held: true },
@@ -658,7 +659,7 @@ export const accountGrantCommand = defineCommand<z.infer<typeof accountGrantArgs
         granted: true,
       },
       audit: {
-        action: 'account.capability.granted',
+        action: OPS_AUDIT_ACTIONS.accountCapabilityGranted,
         subjectType: 'account',
         subjectId: args.username,
         before: { held: false },

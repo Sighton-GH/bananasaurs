@@ -6,6 +6,7 @@ import {
   type OpsContext,
   type OpsWriteResult,
 } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The `archive …` operator surface (ADR 0046, Slice M1 Task 6; search and
@@ -55,7 +56,7 @@ export const archiveEnableChannelCommand = defineCommand<z.infer<typeof archiveE
           '(file name, type and size are still archived)',
         data: { ok: false, reason: 'attachments-bytes-not-built' },
         audit: {
-          action: 'archive.channel_enabled',
+          action: OPS_AUDIT_ACTIONS.archiveChannelEnabled,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome: 'attachments-bytes-not-built', channelId: args.channelId },
@@ -80,7 +81,7 @@ export const archiveEnableChannelCommand = defineCommand<z.infer<typeof archiveE
           variable: 'BANANASAURS_ARCHIVE_GUILDS',
         },
         audit: {
-          action: 'archive.channel_enabled',
+          action: OPS_AUDIT_ACTIONS.archiveChannelEnabled,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome, channelId: args.channelId },
@@ -96,7 +97,7 @@ export const archiveEnableChannelCommand = defineCommand<z.infer<typeof archiveE
         text: `channel ${args.channelId} is already archived; nothing changed`,
         data: { ok: false, reason: outcome, channelId: args.channelId },
         audit: {
-          action: 'archive.channel_enabled',
+          action: OPS_AUDIT_ACTIONS.archiveChannelEnabled,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome, channelId: args.channelId },
@@ -111,7 +112,7 @@ export const archiveEnableChannelCommand = defineCommand<z.infer<typeof archiveE
         `(attachments: ${attachmentPolicy}); backfill queued`,
       data: { ok: true, channelId: args.channelId, attachmentPolicy },
       audit: {
-        action: 'archive.channel_enabled',
+        action: OPS_AUDIT_ACTIONS.archiveChannelEnabled,
         subjectType: 'archive_channel',
         subjectId: args.channelId,
         after: { channelId: args.channelId, attachmentPolicy },
@@ -144,7 +145,7 @@ export const archiveDeleteChannelCommand = defineCommand<z.infer<typeof archiveD
         text: `channel ${args.channelId} is archived as a category; use archive delete-category`,
         data: { ok: false, reason: result.outcome, channelId: args.channelId },
         audit: {
-          action: 'archive.channel_disabled',
+          action: OPS_AUDIT_ACTIONS.archiveChannelDisabled,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome: result.outcome, channelId: args.channelId },
@@ -167,7 +168,7 @@ export const archiveDeleteChannelCommand = defineCommand<z.infer<typeof archiveD
           categoryId: result.categoryId,
         },
         audit: {
-          action: 'archive.channel_disabled',
+          action: OPS_AUDIT_ACTIONS.archiveChannelDisabled,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: {
@@ -183,7 +184,7 @@ export const archiveDeleteChannelCommand = defineCommand<z.infer<typeof archiveD
         text: `channel ${args.channelId} is not archived; nothing changed`,
         data: { ok: false, reason: result.outcome, channelId: args.channelId },
         audit: {
-          action: 'archive.channel_disabled',
+          action: OPS_AUDIT_ACTIONS.archiveChannelDisabled,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome: result.outcome, channelId: args.channelId },
@@ -196,7 +197,7 @@ export const archiveDeleteChannelCommand = defineCommand<z.infer<typeof archiveD
         `(${String(result.messageCount)} archived message(s) removed)`,
       data: { ok: true, channelId: args.channelId, messageCount: result.messageCount },
       audit: {
-        action: 'archive.channel_disabled',
+        action: OPS_AUDIT_ACTIONS.archiveChannelDisabled,
         subjectType: 'archive_channel',
         subjectId: args.channelId,
         after: { channelId: args.channelId, messageCount: result.messageCount },
@@ -226,7 +227,7 @@ export const archivePauseChannelCommand = defineCommand<z.infer<typeof archivePa
           'Nothing was deleted (its archived messages are kept).',
         data: { ok: true, channelId: args.channelId, outcome },
         audit: {
-          action: 'archive.channel_paused',
+          action: OPS_AUDIT_ACTIONS.archiveChannelPaused,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome, channelId: args.channelId },
@@ -245,7 +246,7 @@ export const archivePauseChannelCommand = defineCommand<z.infer<typeof archivePa
       text,
       data: { ok: false, reason: outcome, channelId: args.channelId },
       audit: {
-        action: 'archive.channel_paused',
+        action: OPS_AUDIT_ACTIONS.archiveChannelPaused,
         subjectType: 'archive_channel',
         subjectId: args.channelId,
         after: { outcome, channelId: args.channelId },
@@ -271,7 +272,7 @@ export const archiveResumeChannelCommand = defineCommand<z.infer<typeof archiveP
           'Messages sent while archiving was off were not recorded.',
         data: { ok: true, channelId: args.channelId, outcome },
         audit: {
-          action: 'archive.channel_resumed',
+          action: OPS_AUDIT_ACTIONS.archiveChannelResumed,
           subjectType: 'archive_channel',
           subjectId: args.channelId,
           after: { outcome, channelId: args.channelId },
@@ -290,7 +291,7 @@ export const archiveResumeChannelCommand = defineCommand<z.infer<typeof archiveP
       text,
       data: { ok: false, reason: outcome, channelId: args.channelId },
       audit: {
-        action: 'archive.channel_resumed',
+        action: OPS_AUDIT_ACTIONS.archiveChannelResumed,
         subjectType: 'archive_channel',
         subjectId: args.channelId,
         after: { outcome, channelId: args.channelId },
@@ -314,7 +315,7 @@ export const archivePauseCategoryCommand = defineCommand<z.infer<typeof archiveP
           'Nothing was deleted (its archived messages are kept).',
         data: { ok: true, channelId: args.channelId, outcome },
         audit: {
-          action: 'archive.category_paused',
+          action: OPS_AUDIT_ACTIONS.archiveCategoryPaused,
           subjectType: 'archive_category',
           subjectId: args.channelId,
           after: { outcome, channelId: args.channelId },
@@ -333,7 +334,7 @@ export const archivePauseCategoryCommand = defineCommand<z.infer<typeof archiveP
       text,
       data: { ok: false, reason: outcome, channelId: args.channelId },
       audit: {
-        action: 'archive.category_paused',
+        action: OPS_AUDIT_ACTIONS.archiveCategoryPaused,
         subjectType: 'archive_category',
         subjectId: args.channelId,
         after: { outcome, channelId: args.channelId },
@@ -357,7 +358,7 @@ export const archiveResumeCategoryCommand = defineCommand<z.infer<typeof archive
           'Messages sent while archiving was off were not recorded.',
         data: { ok: true, channelId: args.channelId, outcome },
         audit: {
-          action: 'archive.category_resumed',
+          action: OPS_AUDIT_ACTIONS.archiveCategoryResumed,
           subjectType: 'archive_category',
           subjectId: args.channelId,
           after: { outcome, channelId: args.channelId },
@@ -376,7 +377,7 @@ export const archiveResumeCategoryCommand = defineCommand<z.infer<typeof archive
       text,
       data: { ok: false, reason: outcome, channelId: args.channelId },
       audit: {
-        action: 'archive.category_resumed',
+        action: OPS_AUDIT_ACTIONS.archiveCategoryResumed,
         subjectType: 'archive_category',
         subjectId: args.channelId,
         after: { outcome, channelId: args.channelId },
@@ -462,7 +463,7 @@ export const archivePreserveCommand = defineCommand<z.infer<typeof archivePreser
             : `message ${args.messageId} is already preserved`,
         data: { ok: false, reason: outcome, messageId: args.messageId },
         audit: {
-          action: 'archive.message_preserved',
+          action: OPS_AUDIT_ACTIONS.archiveMessagePreserved,
           subjectType: 'archive_message',
           subjectId: args.messageId,
           after: { outcome, messageId: args.messageId },
@@ -473,7 +474,7 @@ export const archivePreserveCommand = defineCommand<z.infer<typeof archivePreser
       text: `message ${args.messageId} is preserved indefinitely`,
       data: { ok: true, messageId: args.messageId },
       audit: {
-        action: 'archive.message_preserved',
+        action: OPS_AUDIT_ACTIONS.archiveMessagePreserved,
         subjectType: 'archive_message',
         subjectId: args.messageId,
         after: { messageId: args.messageId },
@@ -515,7 +516,7 @@ export const archiveLinkCaseCommand = defineCommand<z.infer<typeof archiveLinkCa
         text,
         data: { ok: false, reason: outcome, messageId: args.messageId, caseId: args.caseId },
         audit: {
-          action: 'archive.message_linked_to_case',
+          action: OPS_AUDIT_ACTIONS.archiveMessageLinkedToCase,
           subjectType: 'archive_message',
           subjectId: args.messageId,
           after: { outcome, messageId: args.messageId, caseId: args.caseId },
@@ -526,7 +527,7 @@ export const archiveLinkCaseCommand = defineCommand<z.infer<typeof archiveLinkCa
       text: `message ${args.messageId} is linked to case ${args.caseId}`,
       data: { ok: true, messageId: args.messageId, caseId: args.caseId },
       audit: {
-        action: 'archive.message_linked_to_case',
+        action: OPS_AUDIT_ACTIONS.archiveMessageLinkedToCase,
         subjectType: 'archive_message',
         subjectId: args.messageId,
         after: { caseId: args.caseId },
@@ -609,7 +610,7 @@ export const archiveReindexCommand = defineCommand<Record<string, never>>({
         `${String(indexedRows)} indexed messages`,
       data: { ok: true, indexedRows },
       audit: {
-        action: 'archive.index_rebuilt',
+        action: OPS_AUDIT_ACTIONS.archiveIndexRebuilt,
         subjectType: 'archive',
         subjectId: ctx.guildId,
         after: { indexedRows, scope: 'database-wide' },
@@ -640,7 +641,7 @@ export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archive
             : `category ${args.channelId}: ${outcome}`,
       data: { channelId: args.channelId, outcome, coverage },
       audit: {
-        action: 'archive.category_enabled',
+        action: OPS_AUDIT_ACTIONS.archiveCategoryEnabled,
         subjectType: 'archive_category',
         subjectId: args.channelId,
         after: { outcome },
@@ -665,7 +666,7 @@ export const archiveDeleteCategoryCommand = defineCommand<z.infer<typeof archive
             : `category ${args.channelId} was not archived`,
       data: { channelId: args.channelId, ...result },
       audit: {
-        action: 'archive.category_disabled',
+        action: OPS_AUDIT_ACTIONS.archiveCategoryDisabled,
         subjectType: 'archive_category',
         subjectId: args.channelId,
         after: result,
@@ -694,7 +695,7 @@ export const archiveSetThreadsCommand = defineCommand<z.infer<typeof setThreadsA
             : `channel ${args.channelId} is not archived`,
       data: { channelId: args.channelId, value: args.value, outcome },
       audit: {
-        action: 'archive.threads_set',
+        action: OPS_AUDIT_ACTIONS.archiveThreadsSet,
         subjectType: 'archive_channel',
         subjectId: args.channelId,
         after: { value: args.value, outcome },

@@ -12,10 +12,11 @@ import {
   eligibilityRepo,
   guildRepo,
   loggingRepo,
+  modCaseRepo,
   oauthRepo,
   roleRepo,
 } from '@bananasaurs/storage';
-import { CAPABILITIES, parseGuildId, type Capability } from '@bananasaurs/core';
+import { CAPABILITIES, OPS_AUDIT_ACTIONS, parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
@@ -769,7 +770,7 @@ describe('ops-write routes', () => {
     const reindexBody: { indexed: number } = response.json();
     expect(reindexBody.indexed).toBe(0);
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
-    expect(rows.map((row) => row.action)).toContain('archive_reindex.ran');
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveIndexRebuilt);
   });
 });
 
@@ -1127,7 +1128,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(again.json()).toMatchObject({ outcome: 'already-enabled' });
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
-    expect(rows.map((row) => row.action)).toContain('archive_category.enabled');
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveCategoryEnabled);
     expect(rows[0]?.actorType).toBe('dashboard');
 
     const disabled = await app.inject({
@@ -1138,7 +1139,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(disabled.statusCode).toBe(200);
     expect(disabled.json()).toMatchObject({ outcome: 'disabled' });
     const rowsAfter = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
-    expect(rowsAfter.map((row) => row.action)).toContain('archive_category.disabled');
+    expect(rowsAfter.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveCategoryDisabled);
 
     // A repeat disable changes nothing and audits nothing.
     const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length;
@@ -1209,8 +1210,8 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(archiveRepo.countMessages(scope, '333333333333333333')).toBe(1);
 
     const rows = effectRepo.tailAudit(scope, { limit: 10 });
-    expect(rows.map((row) => row.action)).toContain('archive_channel.paused');
-    expect(rows.map((row) => row.action)).toContain('archive_channel.resumed');
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveChannelPaused);
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveChannelResumed);
   });
 
   it('pauses and resumes an archive category', async () => {
@@ -1313,7 +1314,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(updated.statusCode).toBe(200);
     expect(updated.json()).toEqual({ outcome: 'updated' });
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
-    expect(rows.map((row) => row.action)).toContain('archive_channel.threads_set');
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveThreadsSet);
 
     // And the status read carries the flag for the page's toggle.
     const status = await app.inject({ method: 'GET', url: '/api/archive/status', headers });
@@ -1342,7 +1343,84 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(refused.json()).toMatchObject({ error: 'not-found' });
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 50 });
     expect(rows.length).toBe(before);
-    expect(rows.map((row) => row.action)).not.toContain('archive_message.case_linked');
+    expect(rows.map((row) => row.action)).not.toContain(
+      OPS_AUDIT_ACTIONS.archiveMessageLinkedToCase,
+    );
+  });
+
+  it('preserves an archived message and audits it under the shared name', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const headers = { cookie, [CSRF]: csrf };
+    const scope = t.scopes.forGuild(GUILD);
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels',
+      headers,
+      payload: { channelId: '333333333333333333', attachmentPolicy: 'none' },
+    });
+    expect(enabled.statusCode).toBe(200);
+    archiveRepo.upsertMessage(scope, {
+      messageId: '900000000000000020',
+      channelId: '333333333333333333',
+      authorId: '100000000000000001',
+      content: 'keep',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+
+    const preserved = await app.inject({
+      method: 'POST',
+      url: '/api/archive/messages/900000000000000020/preserve',
+      headers,
+    });
+    expect(preserved.statusCode).toBe(200);
+    expect(preserved.json()).toEqual({ outcome: 'preserved' });
+    const rows = effectRepo.tailAudit(scope, { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveMessagePreserved);
+  });
+
+  it('links an archived message to an open case and audits it under the shared name', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write', 'moderation.act']);
+    const headers = { cookie, [CSRF]: csrf };
+    const scope = t.scopes.forGuild(GUILD);
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels',
+      headers,
+      payload: { channelId: '333333333333333333', attachmentPolicy: 'none' },
+    });
+    expect(enabled.statusCode).toBe(200);
+    archiveRepo.upsertMessage(scope, {
+      messageId: '900000000000000021',
+      channelId: '333333333333333333',
+      authorId: '100000000000000001',
+      content: 'linked',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    const { caseId } = modCaseRepo.openOrResolveCase(scope, {
+      memberId: '555555555555555555',
+      now: clock,
+    });
+
+    const linked = await app.inject({
+      method: 'POST',
+      url: '/api/archive/link-case',
+      headers,
+      payload: { messageId: '900000000000000021', caseId },
+    });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json()).toEqual({ outcome: 'linked' });
+    const rows = effectRepo.tailAudit(scope, { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.archiveMessageLinkedToCase);
   });
 
   it('allows and disallows a send category with audit attribution', async () => {
@@ -1360,7 +1438,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toEqual({ outcome: 'allowed' });
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
-    expect(rows.map((row) => row.action)).toContain('send_category.allowed');
+    expect(rows.map((row) => row.action)).toContain(OPS_AUDIT_ACTIONS.mcpSendCategoryAllowed);
 
     const list = await app.inject({ method: 'GET', url: '/api/send-allowlist', headers });
     const listBody: { entries: { channelId: string; scopeKind?: string }[] } = list.json();
@@ -1375,7 +1453,9 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     });
     expect(removed.json()).toEqual({ ok: true, outcome: 'removed' });
     const rowsAfter = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
-    expect(rowsAfter.map((row) => row.action)).toContain('send_category.disallowed');
+    expect(rowsAfter.map((row) => row.action)).toContain(
+      OPS_AUDIT_ACTIONS.mcpSendCategoryDisallowed,
+    );
 
     const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length;
     const repeat = await app.inject({

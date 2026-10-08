@@ -6,6 +6,7 @@ import {
   type OpsWriteResult,
 } from '../dispatch.js';
 import { mcpScopeLabel } from '../mcp-scopes.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The `mcp …` operator surface (ADR 0045).
@@ -142,7 +143,7 @@ export const mcpRevokeCommand = defineCommand<z.infer<typeof mcpRevokeArgs>>({
       text: `revoked token ${args.tokenId} and ${String(tokensRevoked)} token(s) in its lineage`,
       data: { tokenId: args.tokenId, tokensRevoked },
       audit: {
-        action: 'mcp.token.revoked',
+        action: OPS_AUDIT_ACTIONS.mcpTokenRevoked,
         subjectType: 'instance',
         subjectId: undefined,
         before: { tokenId: args.tokenId, live: true },
@@ -174,7 +175,7 @@ export const mcpRevokeClientCommand = defineCommand<z.infer<typeof mcpRevokeClie
       text: `removed client ${args.clientId} and revoked ${String(tokensRevoked)} token(s)`,
       data: { clientId: args.clientId, tokensRevoked },
       audit: {
-        action: 'mcp.client.revoked',
+        action: OPS_AUDIT_ACTIONS.mcpClientRevoked,
         subjectType: 'instance',
         subjectId: undefined,
         before: { clientId: args.clientId },
@@ -236,7 +237,7 @@ export const mcpDisconnectCommand = defineCommand<z.infer<typeof connectionArgs>
       text: `disconnected ${args.connectionId}: revoked ${String(tokensRevoked)} token(s)`,
       data: { connectionId: args.connectionId, tokensRevoked },
       audit: {
-        action: 'mcp.connection.revoked',
+        action: OPS_AUDIT_ACTIONS.mcpConnectionRevoked,
         subjectType: 'instance',
         subjectId: undefined,
         before: { connectionId: args.connectionId },
@@ -270,7 +271,7 @@ export const mcpDeleteConnectionCommand = defineCommand<z.infer<typeof connectio
         tokensDeleted: result.deleted,
       },
       audit: {
-        action: 'mcp.connection.deleted',
+        action: OPS_AUDIT_ACTIONS.mcpConnectionDeleted,
         subjectType: 'instance',
         subjectId: undefined,
         before: { connectionId: args.connectionId },
@@ -302,7 +303,7 @@ export const mcpDeleteTokenCommand = defineCommand<z.infer<typeof mcpRevokeArgs>
       text: `deleted token ${args.tokenId} (${String(result.revoked)} revoked first)`,
       data: { tokenId: args.tokenId, tokensRevoked: result.revoked, tokensDeleted: result.deleted },
       audit: {
-        action: 'mcp.token.deleted',
+        action: OPS_AUDIT_ACTIONS.mcpTokenDeleted,
         subjectType: 'instance',
         subjectId: undefined,
         before: { tokenId: args.tokenId },
@@ -332,7 +333,7 @@ export const mcpCleanupCommand = defineCommand<Record<string, never>>({
         `${String(result.clients)} unused app(s)`,
       data: { tokensDeleted: result.tokens, clientsDeleted: result.clients },
       audit: {
-        action: 'mcp.tokens.cleaned',
+        action: OPS_AUDIT_ACTIONS.mcpTokensCleaned,
         subjectType: 'instance',
         subjectId: undefined,
         before: undefined,
