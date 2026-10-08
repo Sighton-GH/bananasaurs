@@ -214,4 +214,25 @@ describe('AssistantHistoryDetailPage', () => {
     expect(await screen.findByText('Could not connect to the AI provider')).toBeTruthy();
     expect(screen.getByText('Check the host VPN.')).toBeTruthy();
   });
+
+  it('builds the journalctl window in UTC with a UTC suffix (ADR 0129)', async () => {
+    stubFetch([
+      {
+        url: '/api/assistant/traces/trace-1',
+        body: {
+          ...DETAIL,
+          journal: {
+            since: '2026-10-01T00:00:00.000Z',
+            until: '2026-10-01T00:05:00.000Z',
+          },
+        },
+      },
+    ]);
+    renderDetail();
+    const code = await screen.findByText(/journalctl -u bananasaurs/);
+    expect(code.textContent).toBe(
+      'journalctl -u bananasaurs --since "2026-10-01 00:00:00 UTC" ' +
+        '--until "2026-10-01 00:05:00 UTC" --no-pager',
+    );
+  });
 });

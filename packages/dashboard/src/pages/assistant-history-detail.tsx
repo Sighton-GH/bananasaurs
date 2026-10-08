@@ -37,21 +37,22 @@ const argsText = (args: unknown): string => {
 };
 
 /**
- * ADR 0129 §5: the journal window as local `YYYY-MM-DD HH:MM:SS` — journalctl
- * reads local time, while the API answers ISO instants.
+ * ADR 0129 §5: the journal window as UTC `YYYY-MM-DD HH:MM:SS UTC` —
+ * journalctl reads the server's zone, while the API answers ISO instants,
+ * so the window names UTC explicitly.
  */
-const journalLocal = (iso: string): string => {
+const journalUtc = (iso: string): string => {
   const at = new Date(iso);
   const pad = (n: number): string => String(n).padStart(2, '0');
   return (
-    `${String(at.getFullYear())}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ` +
-    `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+    `${String(at.getUTCFullYear())}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())} ` +
+    `${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}:${pad(at.getUTCSeconds())} UTC`
   );
 };
 
 const journalCommand = (journal: NonNullable<TraceDetailResponse['journal']>): string =>
-  `journalctl -u bananasaurs --since "${journalLocal(journal.since)}" ` +
-  `--until "${journalLocal(journal.until)}" --no-pager`;
+  `journalctl -u bananasaurs --since "${journalUtc(journal.since)}" ` +
+  `--until "${journalUtc(journal.until)}" --no-pager`;
 
 export type TraceSection = TraceDetailResponse['trace']['sections'][number];
 export type TraceToolCall = TraceDetailResponse['trace']['toolCalls'][number];
