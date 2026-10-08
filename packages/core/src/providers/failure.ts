@@ -56,8 +56,8 @@ export type ProviderFailureCode =
   | 'provider-daily-quota'
   | 'provider-credits'
   | 'provider-outage'
-  | 'provider-empty-answer'
   | 'provider-invalid-response'
+  | 'provider-empty-answer'
   | 'provider-safety-refusal'
   | 'provider-error'
   | 'local-rpm-limit'
@@ -137,16 +137,16 @@ export const PROVIDER_FAILURE_TEXT: Readonly<Record<ProviderFailureCode, Failure
     explanation: 'The provider answered with a 5xx error.',
     hint: "Usually brief; the next chain entry is tried. Check the provider's status page if it persists.",
   },
+  'provider-invalid-response': {
+    title: "The provider's answer was unusable",
+    explanation: 'The provider answered, but with nothing Bananasaurs could use.',
+    hint: 'Try again, or choose a different model.',
+  },
   'provider-empty-answer': {
     title: 'The model returned an empty answer',
     explanation:
       'The provider answered, but the answer had no text. Reasoning models often do this when their thinking uses up the whole output budget.',
     hint: 'Check the finish reason and reasoning tokens on this attempt. If the finish reason is length, raise AI tuning → Max output tokens, or move this model down the chain.',
-  },
-  'provider-invalid-response': {
-    title: "The provider's answer was unusable",
-    explanation: 'The provider answered, but with nothing Bananasaurs could use.',
-    hint: 'Try again, or choose a different model.',
   },
   'provider-safety-refusal': {
     title: 'The provider refused on safety grounds',
@@ -186,8 +186,8 @@ export const PROVIDER_FAILURE_CODES: readonly ProviderFailureCode[] = [
   'provider-daily-quota',
   'provider-credits',
   'provider-outage',
-  'provider-empty-answer',
   'provider-invalid-response',
+  'provider-empty-answer',
   'provider-safety-refusal',
   'provider-error',
   'local-rpm-limit',
