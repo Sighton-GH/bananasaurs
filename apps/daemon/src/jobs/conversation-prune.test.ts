@@ -11,6 +11,7 @@ import {
   conversationRepo,
   effectRepo,
   guildRepo,
+  runRepo,
   traceRepo,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
@@ -209,5 +210,71 @@ describe('conversationPruneHandler', () => {
       JOB_KINDS.conversationPrune,
     );
     expect(conversationPruneDedupeKey('2026-09-25')).toBe('conversation_prune:2026-09-25');
+  });
+
+  it('ADR 0129 §6: deletes runs of pruned conversations', async () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    assistantRepo.setConversationRetention(scope, 61, nowMs);
+    seedConversation(GUILD_A, 'conv-old', NOW - 62 * DAY_MS);
+    seedConversation(GUILD_A, 'conv-new', NOW - 10 * DAY_MS);
+    runRepo.ensureRun(scope, {
+      runId: 'run-old',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: NOW - 62 * DAY_MS,
+    });
+    runRepo.updateRun(scope, 'run-old', {
+      conversationId: 'conv-old',
+      updatedAt: NOW - 62 * DAY_MS,
+    });
+    runRepo.ensureRun(scope, {
+      runId: 'run-new',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: NOW - 10 * DAY_MS,
+    });
+    runRepo.updateRun(scope, 'run-new', {
+      conversationId: 'conv-new',
+      updatedAt: NOW - 10 * DAY_MS,
+    });
+
+    await conversationPruneHandler(scope, { now: () => nowMs, logger }).run(
+      { day: '2026-09-25' },
+      { ...context },
+    );
+
+    expect(runRepo.getRun(scope, 'run-old')).toBeUndefined();
+    expect(runRepo.getRun(scope, 'run-new')).toBeDefined();
+  });
+
+  it('ADR 0129 §6: deletes old orphans even when retention is keep-forever', async () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    assistantRepo.setConversationRetention(scope, null, nowMs);
+    runRepo.ensureRun(scope, {
+      runId: 'orphan-old',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: NOW - 31 * DAY_MS,
+    });
+    runRepo.updateRun(scope, 'orphan-old', { updatedAt: NOW - 31 * DAY_MS });
+    runRepo.ensureRun(scope, {
+      runId: 'orphan-new',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: NOW,
+    });
+    runRepo.updateRun(scope, 'orphan-new', { updatedAt: NOW });
+
+    await conversationPruneHandler(scope, { now: () => nowMs, logger }).run(
+      { day: '2026-09-25' },
+      { ...context },
+    );
+
+    expect(runRepo.getRun(scope, 'orphan-old')).toBeUndefined();
+    expect(runRepo.getRun(scope, 'orphan-new')).toBeDefined();
   });
 });

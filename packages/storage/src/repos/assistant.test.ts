@@ -46,6 +46,7 @@ import {
 } from './assistant.js';
 import { appendTurn, createConversation, getConversation, recentTurns } from './conversations.js';
 import { getTrace, insertTrace } from './traces.js';
+import { ensureRun, getRun, updateRun } from './runs.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
 beforeEach(() => {
@@ -767,6 +768,67 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
     expect(getTrace(s, 'trace-b1')).toBeUndefined();
     expect(getTrace(s, 'trace-b2')).toBeDefined();
     expect(getTrace(other, 'trace-other')).toBeDefined();
+  });
+
+  it('ADR 0129 §6: forgetMember deletes the member’s runs', () => {
+    const OTHER_GUILD = parseGuildId('999999999999999999');
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const s = t.scopes.forGuild(G);
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    createConversation(s, {
+      conversationId: 'conv-shared',
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'shared question',
+      source: 'discord',
+      at: 1_000,
+    });
+    appendTurn(s, {
+      conversationId: 'conv-shared',
+      turnId: 'turn-shared',
+      at: 1_000,
+      role: 'user',
+      authorId: MEMBER,
+      authorName: 'Member A',
+      text: 'first question',
+    });
+    ensureRun(s, {
+      runId: 'run-mine',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: 1_000,
+    });
+    ensureRun(s, {
+      runId: 'run-shared',
+      userId: OTHER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: 1_000,
+    });
+    updateRun(s, 'run-shared', { conversationId: 'conv-shared', updatedAt: 1_001 });
+    ensureRun(s, {
+      runId: 'run-theirs',
+      userId: OTHER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: 1_000,
+    });
+    ensureRun(other, {
+      runId: 'run-mine',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: 1_000,
+    });
+
+    forgetMember(s, MEMBER, 3_000);
+
+    expect(getRun(s, 'run-mine')).toBeUndefined();
+    expect(getRun(s, 'run-shared')).toBeUndefined();
+    expect(getRun(s, 'run-theirs')).toBeDefined();
+    expect(getRun(other, 'run-mine')).toBeDefined();
   });
 });
 

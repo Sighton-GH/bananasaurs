@@ -13,6 +13,7 @@ import {
   conversationRepo,
   effectRepo,
   guildRepo,
+  runRepo,
   traceRepo,
 } from '@bananasaurs/storage';
 import {
@@ -395,6 +396,30 @@ describe('assistant conversation routes', () => {
     expect(`${deleted?.before ?? ''}${deleted?.after ?? ''}`).not.toContain(
       'answer text for conv-1',
     );
+  });
+
+  it('ADR 0129 §6: deletes a conversation with its runs', async () => {
+    grant('audit.read');
+    grant('config.write');
+    seedConversation('conv-1', 1_790_000_000_000, 'delete-me-title-secret-xyz');
+    const scope = t.scopes.forGuild(GUILD);
+    runRepo.ensureRun(scope, {
+      runId: 'run-1',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: 1_790_000_000_000,
+    });
+    runRepo.updateRun(scope, 'run-1', { conversationId: 'conv-1', updatedAt: 1_790_000_000_001 });
+    const { cookie, csrf } = await signIn();
+    const headers = { cookie, [CSRF_HEADER]: csrf };
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/assistant/conversations/conv-1',
+      headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(runRepo.getRun(scope, 'run-1')).toBeUndefined();
   });
 
   it('keeps one guild conversations out of another', async () => {
