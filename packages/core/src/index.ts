@@ -602,6 +602,7 @@ export {
 } from './ops/commands/reads.js';
 
 export { MCP_SCOPE_INFO, mcpScopeLabel } from './ops/mcp-scopes.js';
+export { GUIDE_TOPICS, findGuideTopic, type GuideTopic } from './guide/index.js';
 export * from './channels/scope.js';
 export * from './channels/access.js';
 export type {
