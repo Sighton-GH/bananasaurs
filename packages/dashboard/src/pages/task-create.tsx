@@ -23,7 +23,7 @@ const browserZone = (): string => {
   }
 };
 
-/** Owner-only task creation. Members use Discord; saving never posts to Discord itself. */
+/** Task creation for the owner and accounts with Manage club tasks (ADR 0130). Members use Discord; saving never posts to Discord itself. */
 export function TaskCreatePage() {
   const session = useSession();
   const load = useCallback(() => session.read<Snapshot>('/api/tasks'), [session]);

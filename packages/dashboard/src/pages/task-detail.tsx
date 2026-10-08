@@ -58,7 +58,7 @@ const STATUS_LABEL: Record<string, string> = {
   done: 'Done',
 };
 
-/** Owner-only task detail. Members use Discord; nothing here posts to Discord. */
+/** Task detail for the owner and accounts with Manage club tasks (ADR 0130). Members use Discord; nothing here posts to Discord. */
 export function TaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
   const session = useSession();

@@ -54,7 +54,7 @@ const byUrgencyThenDue = (a: Task, b: Task): number => {
   return a.dueAt - b.dueAt;
 };
 
-/** Owner-only board. Members use Discord; the dashboard never promises live sends. */
+/** Task board for the owner and accounts with Manage club tasks (ADR 0130). Members use Discord; the dashboard never promises live sends. */
 export function TasksPage() {
   const session = useSession();
   const [teamId, setTeamId] = useState('');

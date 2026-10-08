@@ -28,7 +28,7 @@ type DirectoryMember = {
   roleIds: string[];
 };
 
-/** Owner-only team setup. Members use Discord; nothing here posts to Discord. */
+/** Team setup for the owner and accounts with Manage club tasks (ADR 0130). Members use Discord; nothing here posts to Discord. */
 export function TaskTeamsPage() {
   const session = useSession();
   const setupLoad = useCallback(() => session.read<Setup>('/api/tasks/setup'), [session]);

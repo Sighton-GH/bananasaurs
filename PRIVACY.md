@@ -1,6 +1,6 @@
 # Bananasaurs — Privacy Policy
 
-**Last updated:** 2026-10-04
+**Last updated:** 2026-10-07
 **Applies to:** the Bananasaurs bot running in `<SERVER NAME>`
 **Operator:** `<OWNER NAME / CONTACT>`
 
