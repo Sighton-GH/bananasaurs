@@ -261,7 +261,9 @@ export const deleteRunsForConversations = (
     ({ db }) =>
       db
         .delete(assistantRuns)
-        .where(scope.only(assistantRuns, inArray(assistantRuns.conversationId, [...conversationIds])))
+        .where(
+          scope.only(assistantRuns, inArray(assistantRuns.conversationId, [...conversationIds])),
+        )
         .run().changes,
   );
 };
@@ -271,7 +273,9 @@ export const deleteRunsForUser = (scope: GuildScope, userId: string): number =>
   write(
     scope,
     ({ db }) =>
-      db.delete(assistantRuns).where(scope.only(assistantRuns, eq(assistantRuns.userId, userId)))
+      db
+        .delete(assistantRuns)
+        .where(scope.only(assistantRuns, eq(assistantRuns.userId, userId)))
         .run().changes,
   );
 
