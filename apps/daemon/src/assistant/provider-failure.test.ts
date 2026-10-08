@@ -31,9 +31,9 @@ describe('failureLogReason', () => {
   });
 
   it('falls back when attempts carry only unknown codes', () => {
-    expect(
-      failureLogReason([attempt({ outcome: 'error', code: 'not-a-known-code' })]),
-    ).toBe(PROVIDER_FAILURE_LOG_REASON);
+    expect(failureLogReason([attempt({ outcome: 'error', code: 'not-a-known-code' })])).toBe(
+      PROVIDER_FAILURE_LOG_REASON,
+    );
   });
 
   it('uses a lone skipped local-limit attempt', () => {
