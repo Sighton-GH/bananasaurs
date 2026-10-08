@@ -536,6 +536,22 @@ describe('OpenAI-compatible providers', () => {
       expect(err).toMatchObject({ upstream: 'X' });
     });
 
+    it('caps success metadata fields', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            provider: 'p'.repeat(100),
+            choices: [{ message: { content: 'answer' }, finish_reason: 'f'.repeat(100) }],
+          }),
+          { status: 200 },
+        ),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const result = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      expect(result.upstream).toHaveLength(60);
+      expect(result.finishReason).toHaveLength(40);
+    });
+
     it('reports upstream and thinkingTokens on success', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
         new Response(

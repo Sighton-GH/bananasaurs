@@ -427,10 +427,12 @@ export class OpenAiCompatibleProvider implements TextProvider {
     return {
       text,
       model: parsed.data.model ?? request.model,
-      ...(finishReason ? { finishReason } : {}),
+       ...(finishReason ? { finishReason: finishReason.slice(0, 40) } : {}),
+
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
-      ...(upstream === undefined ? {} : { upstream }),
-      ...(usage
+       ...(upstream === undefined ? {} : { upstream: upstream.slice(0, 60) }),
+       ...(usage
+
         ? {
             usage: {
               ...(usage.prompt_tokens !== undefined ? { promptTokens: usage.prompt_tokens } : {}),

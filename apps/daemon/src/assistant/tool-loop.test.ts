@@ -1204,6 +1204,18 @@ describe('runToolLoop daily quota (Task Q)', () => {
     expect(attempt.reasoningTokens).toBe(120);
   });
 
+  it('caps success metadata on the ok attempt', async () => {
+    const { provider } = scripted([
+      { text: 'done', model: 'm', finishReason: 'f'.repeat(100), upstream: 'p'.repeat(100) },
+    ]);
+    const result = await runToolLoop(baseInput([entry({ provider, model: 'm' })]));
+    expect(result.attempts[0]).toMatchObject({
+      outcome: 'ok',
+      finishReason: 'f'.repeat(40),
+      upstream: 'p'.repeat(60),
+    });
+  });
+
   it('a successful response with upstream and finishReason stores them on the ok attempt', async () => {
     const { provider } = scripted([
       { text: 'done', model: 'm', finishReason: 'stop', upstream: 'lambda' },

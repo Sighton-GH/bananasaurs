@@ -1072,10 +1072,13 @@ const finishEntry = async (deps: {
       ms: outer.entryMs(),
       // ADR 0129 §4: a working answer keeps the same evidence fields, so a
       // later diagnosis sees the finish reason, upstream and cost directly.
-      ...(deps.response.finishReason === undefined
-        ? {}
-        : { finishReason: deps.response.finishReason }),
-      ...(deps.response.upstream === undefined ? {} : { upstream: deps.response.upstream }),
+       ...(deps.response.finishReason === undefined
+         ? {}
+         : { finishReason: deps.response.finishReason.slice(0, 40) }),
+       ...(deps.response.upstream === undefined
+         ? {}
+         : { upstream: deps.response.upstream.slice(0, 60) }),
+
       ...(attemptCost === undefined ? {} : { costUsd: attemptCost }),
     });
   };
@@ -1112,7 +1115,7 @@ const finishEntry = async (deps: {
       },
       ...(deps.response.finishReason === undefined
         ? {}
-        : { finishReason: deps.response.finishReason }),
+        : { finishReason: deps.response.finishReason.slice(0, 40) }),
       guard: { removed: [...guarded.removed] },
     };
   }
@@ -1130,7 +1133,7 @@ const finishEntry = async (deps: {
       },
       ...(deps.response.finishReason === undefined
         ? {}
-        : { finishReason: deps.response.finishReason }),
+        : { finishReason: deps.response.finishReason.slice(0, 40) }),
       guard: { removed: [...guarded.removed], blocked: 'prompt-leak' },
     };
   }
@@ -1283,8 +1286,12 @@ const finishEntry = async (deps: {
     code: 'provider-empty-answer',
     ...(deps.response.finishReason === undefined
       ? {}
-      : { finishReason: deps.response.finishReason }),
-    ms: outer.entryMs(),
+       : { finishReason: deps.response.finishReason.slice(0, 40) }),
+     ...(deps.response.upstream === undefined
+       ? {}
+       : { upstream: deps.response.upstream.slice(0, 60) }),
+     ms: outer.entryMs(),
+
   });
   // Guard failure on the entry that answered: the loop fails here with the
   // fixed text; the caller maps it to "I couldn't finish that answer".
