@@ -2347,6 +2347,74 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
     expect(trace?.error?.kind).toBe('internal');
     expect(JSON.stringify(trace)).not.toContain('boom');
   });
+  it('(F4) a failing failure-turn write still posts once, warns with the runId and never retries', async () => {
+    const warn = vi.fn();
+    const logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn,
+      error: () => undefined,
+    } as unknown as Logger;
+    const sent: { channelId: string; message: OutgoingMessage }[] = [];
+    let idSeq = 0;
+    const svc: AssistantCommandService = {
+      behavioursForGuild: async () => [behaviour],
+      invoke: async () => {
+        throw new Error('boom secret detail');
+      },
+    };
+    const handler = assistantInvokeHandler({
+      guildId: GUILD_ID,
+      service: svc,
+      openToken: () => undefined,
+      respond: async () => ({ channelId: CHANNEL_ID, messageId: '829000000000000001' }),
+      send: async (channelId: string, message: OutgoingMessage) => {
+        sent.push({ channelId, message });
+        idSeq += 1;
+        return { channelId, messageId: `8290000000000000${String(idSeq).padStart(2, '0')}` };
+      },
+      logger,
+      logChannelId: () => undefined,
+      now: () => nowMs3,
+      conversations: { scope: scope3(), botUserId: BOT_ID2, botDisplayName: 'bananasaurs' },
+      sendTyping: async () => undefined,
+      fetchMessageContent: async () => undefined,
+      fetchChannelMessages: async () => undefined,
+      channelContextMessages: () => 0,
+    });
+    const originalAppend = conversationRepo.appendTurn;
+    const appendSpy = vi
+      .spyOn(conversationRepo, 'appendTurn')
+      .mockImplementation((scope, turn) => {
+        if (turn.role === 'assistant') throw new Error('turn write boom');
+        return originalAppend(scope, turn);
+      });
+    try {
+      const key = 't3-f4-turn-write';
+      let error: unknown;
+      try {
+        await handler.run(handler.payload.parse(mention3(key)), {
+          jobId: 1,
+          attempts: 1,
+          cursor: null,
+          saveCursor: () => undefined,
+        });
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeUndefined();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.message.content).toBe(
+        'I could not complete that request. No action was taken.',
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: key }),
+        'assistant failure turn write failed',
+      );
+    } finally {
+      appendSpy.mockRestore();
+    }
+  });
   it('(g) a deleted behaviour writes one refused trace', async () => {
     const h = harness3(
       async () => ({
