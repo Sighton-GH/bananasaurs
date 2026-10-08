@@ -4,7 +4,7 @@ import type { ModelHealth } from '@bananasaurs/core';
  * The dashboard's side of the model-health contract (ADR 0129 §8): the
  * 24-hour per-model stats behind the Model order columns, the History card
  * and the site-wide persistent-failure banner. Display only — nothing here
- * changes the chain (hard rule 1).
+ * changes the chain (ADR 0129 §8; hard rule 1).
  */
 export const modelHealthUrl = (window: '24h' | '7d' = '24h'): string =>
   `/api/assistant/model-health?window=${window}`;
