@@ -8,6 +8,8 @@ export interface NavEntry {
   readonly status: NavStatus;
   readonly group: NavGroup;
   readonly ownerOnly?: true;
+  /** Also shown to an account holding `tasks.manage` in this guild (ADR 0130). */
+  readonly taskAccess?: true;
 }
 
 /**
@@ -25,7 +27,14 @@ export const GROUPS = [
 
 export const NAV: readonly NavEntry[] = [
   { path: '/', label: 'Overview', status: 'built', group: 'Start here' },
-  { path: '/tasks', label: 'Tasks', status: 'built', group: 'Start here', ownerOnly: true },
+  {
+    path: '/tasks',
+    label: 'Tasks',
+    status: 'built',
+    group: 'Start here',
+    ownerOnly: true,
+    taskAccess: true,
+  },
   { path: '/docs', label: 'Guide', status: 'built', group: 'Start here' },
   { path: '/safety', label: 'Safety', status: 'built', group: 'Start here' },
   { path: '/permissions', label: 'Permissions', status: 'built', group: 'Start here' },
@@ -64,6 +73,14 @@ export const NAV: readonly NavEntry[] = [
   { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
 ];
 
-/** NAV without owner-only entries unless the viewer is the instance owner. */
-export const visibleNav = (instanceOwner: boolean): readonly NavEntry[] =>
-  instanceOwner ? NAV : NAV.filter((entry) => entry.ownerOnly !== true);
+/**
+ * NAV without owner-only entries unless the viewer is the instance owner. An
+ * entry flagged `taskAccess` also shows for an account that may manage this
+ * guild's tasks (ADR 0130); every other owner-only entry stays owner-only.
+ */
+export const visibleNav = (instanceOwner: boolean, canManageTasks = false): readonly NavEntry[] =>
+  instanceOwner
+    ? NAV
+    : NAV.filter(
+        (entry) => entry.ownerOnly !== true || (canManageTasks && entry.taskAccess === true),
+      );

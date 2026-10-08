@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { taskRepo, taskBindingRepo, taskNudgeRepo, type GuildScope } from '@bananasaurs/storage';
-import { isInstanceOwner } from '../owner.js';
+import { canManageTasks } from '../owner.js';
 import { inspectTaskTeam } from './task-validation.js';
 import type { HttpDeps, RouteGuard } from '../server.js';
 
 const NO_TEAM_ROLE_WARNING = 'No team role set; whole-team tasks will not ping anyone';
 
-/** Dashboard task reads are owner-only by design. Members use Discord. */
+/** Dashboard task pages need the owner or `tasks.manage` in the session's guild (ADR 0130). Members use Discord. */
 export const registerTaskRoutes = (
   app: FastifyInstance,
   guard: RouteGuard,
@@ -15,7 +15,7 @@ export const registerTaskRoutes = (
   app.get('/api/tasks', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const include = (request.query as { include?: string } | undefined)?.include
       ?.split(',')
       .map((part) => part.trim());
@@ -38,7 +38,8 @@ export const registerTaskRoutes = (
     async (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const team = taskRepo
         .listTeams(session.scope)
         .find((t) => t.teamId === request.params.teamId);
@@ -70,7 +71,8 @@ export const registerTaskRoutes = (
     async (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const team = taskRepo
         .listTeams(session.scope)
         .find((t) => t.teamId === request.params.teamId);
@@ -85,7 +87,8 @@ export const registerTaskRoutes = (
     async (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const team = taskRepo
         .listTeams(session.scope)
         .find((t) => t.teamId === request.params.teamId);
@@ -106,7 +109,7 @@ export const registerTaskRoutes = (
   app.get<{ Params: { taskId: string } }>('/api/tasks/:taskId/reminders', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     if (!taskRepo.getTask(session.scope, request.params.taskId))
       return reply.status(404).send({ error: 'task-not-found' });
     return reply.send({ reminders: listReminders(session.scope, request.params.taskId) });
@@ -114,7 +117,7 @@ export const registerTaskRoutes = (
   app.get('/api/tasks/setup', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const ports = deps.portsFor(session.scope);
     const presidentRoleId = taskBindingRepo.presidentRoleId(session.scope) ?? null;
     const teams = taskRepo.listTeams(session.scope).map((team) => ({
@@ -153,7 +156,7 @@ export const registerTaskRoutes = (
     const session = guard.require(request, reply);
     if (!session) return reply;
     // Check authority before looking up even the existence of a task.
-    if (!isInstanceOwner(deps, session)) return reply.status(404).send({ error: 'not-found' });
+    if (!canManageTasks(deps, session)) return reply.status(404).send({ error: 'not-found' });
     const task = taskRepo.getTask(session.scope, request.params.taskId);
     if (!task) return reply.status(404).send({ error: 'not-found' });
     const team = taskRepo.listTeams(session.scope).find((t) => t.teamId === task.teamId);

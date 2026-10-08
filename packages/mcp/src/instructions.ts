@@ -24,7 +24,7 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   'Writes (when these tools are present):\n' +
   '- Every write needs an idempotencyKey: reuse the same key when you retry a call, or the action happens twice. Pass dryRun to record without changing anything.\n' +
   '- undo_action reverses one reversible action (an edit, a pin, a reaction, a thread-member add, a thread state change, a role grant, removal or edit, an event edit, a scheduled-send edit or cancel); posts, deletes, thread creation, forum posts, bulk changes, role creation and panels cannot be undone. list_actions shows recent actions with ids, never content.\n' +
-  '- Pings happen only through pingRoles and pingUsers: mentions typed into text never notify anyone. Private threads created through these tools stay readable and postable.\n' +
+  '- To ping someone, write <@USER_ID> (or <@&ROLE_ID> for a role) in the text of send_message, schedule_message, a create_thread first message or create_forum_post; look ids up with search_members or list_roles. A mention the ping policy refuses still renders, does not ping, and is named in the result. @everyone and @here never ping; edits, embeds, polls and events never ping. Private threads created through these tools stay readable and postable.\n' +
   '\n' +
   'Roles (when these tools are present):\n' +
   '- A role changes hands only if allowlisted, below the bot, not managed or @everyone, with no dangerous permissions; allowlist grant mode also needs the MCP grant allowlist.\n' +

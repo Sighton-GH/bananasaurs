@@ -172,6 +172,10 @@ const ALL_CALLS: readonly Call[] = [
   { method: 'DELETE', url: '/api/read-scope/categories/333333333333333333' },
   { method: 'POST', url: '/api/mcp/tokens/t1/revoke' },
   { method: 'POST', url: '/api/mcp/clients/c1/revoke' },
+  { method: 'POST', url: '/api/mcp/connections/c1/disconnect' },
+  { method: 'POST', url: '/api/mcp/connections/c1/delete' },
+  { method: 'POST', url: '/api/mcp/tokens/t1/delete' },
+  { method: 'POST', url: '/api/mcp/cleanup' },
   { method: 'POST', url: '/api/role-policy', payload: { grant: 'allowlist' } },
   {
     method: 'POST',
@@ -359,6 +363,78 @@ describe('ops-write routes', () => {
     });
     expect(clientGone.statusCode).toBe(200);
     expect(oauthRepo.findClient(instance, 'client_1')).toBeUndefined();
+  });
+
+  it('disconnects, deletes and cleans up MCP connections, each audited (ADR 0130)', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const instance = t.scopes.instance();
+    oauthRepo.createClient(instance, {
+      clientId: 'client_1',
+      clientName: 'Claude Desktop',
+      redirectUris: ['https://claude.test/callback'],
+      createdAt: 1,
+      createdByAccountId: ACCOUNT,
+      registrationSource: 'dynamic',
+    });
+    const mint = (tokenId: string, kind: 'access' | 'refresh', code: string, expiresAt: number) =>
+      oauthRepo.createToken(instance, {
+        tokenId,
+        tokenHash: `hash_${tokenId}`,
+        kind,
+        clientId: 'client_1',
+        accountId: ACCOUNT,
+        scopes: ['bananasaurs:read'],
+        createdAt: clock,
+        expiresAt,
+        parentTokenId: null,
+        issuedFromCodeHash: code,
+      });
+    mint('a1', 'access', 'code_a', clock + 60_000);
+    mint('a2', 'refresh', 'code_a', clock + 60_000);
+    mint('b1', 'access', 'code_b', clock + 60_000);
+    mint('c1', 'access', 'code_c', clock + 60_000);
+    mint('d1', 'access', 'code_d', clock - 1);
+    const post = (url: string) =>
+      app.inject({ method: 'POST', url, headers: { cookie, [CSRF]: csrf } });
+    const audit = () => effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 });
+
+    const connA = oauthRepo.connectionIdFor('code_a');
+    const connB = oauthRepo.connectionIdFor('code_b');
+    const disconnect = await post(`/api/mcp/connections/${connA}/disconnect`);
+    expect(disconnect.statusCode).toBe(200);
+    expect(disconnect.json()).toEqual({ connectionId: connA, tokensRevoked: 2 });
+    expect(oauthRepo.findTokenById(instance, 'a2')?.revokedAt).toBe(clock);
+    expect(audit().some((r) => r.action === 'mcp.connection.revoked')).toBe(true);
+
+    const delConn = await post(`/api/mcp/connections/${connB}/delete`);
+    expect(delConn.statusCode).toBe(200);
+    expect(delConn.json()).toEqual({ connectionId: connB, tokensRevoked: 1, tokensDeleted: 1 });
+    expect(oauthRepo.findTokenById(instance, 'b1')).toBeUndefined();
+    expect(audit().some((r) => r.action === 'mcp.connection.deleted')).toBe(true);
+
+    const delTok = await post('/api/mcp/tokens/c1/delete');
+    expect(delTok.statusCode).toBe(200);
+    expect(delTok.json()).toEqual({ tokenId: 'c1', tokensRevoked: 1, tokensDeleted: 1 });
+    expect(audit().some((r) => r.action === 'mcp.token.deleted')).toBe(true);
+
+    // a1/a2 revoked, d1 expired: four rows? a1, a2 (revoked), d1 (expired) = 3.
+    const cleanup = await post('/api/mcp/cleanup');
+    expect(cleanup.statusCode).toBe(200);
+    expect(cleanup.json()).toEqual({ tokensDeleted: 3, clientsDeleted: 1 });
+    expect(audit().some((r) => r.action === 'mcp.tokens.cleaned')).toBe(true);
+
+    for (const url of [
+      '/api/mcp/connections/nope/disconnect',
+      '/api/mcp/connections/nope/delete',
+      '/api/mcp/tokens/nope/delete',
+    ]) {
+      const missing = await post(url);
+      expect(missing.statusCode, url).toBe(404);
+    }
+    const before = audit().length;
+    await post('/api/mcp/connections/nope/delete');
+    expect(audit()).toHaveLength(before);
   });
 
   it('maps usage answers to 404s', async () => {

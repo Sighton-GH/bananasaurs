@@ -2,15 +2,10 @@ import { createHash } from 'node:crypto';
 import { ChannelType, type Client } from 'discord.js';
 import { safeLogFields, type DiscordPort, type GuildId } from '@bananasaurs/core';
 import type { HttpDeps } from '@bananasaurs/http';
-import {
-  accountRepo,
-  effectRepo,
-  taskBindingRepo,
-  taskNudgeRepo,
-  taskRepo,
-} from '@bananasaurs/storage';
+import { effectRepo, taskBindingRepo, taskNudgeRepo, taskRepo } from '@bananasaurs/storage';
 import type { TaskAdminPort, TaskAdminName } from '@bananasaurs/mcp';
 import { channelAccessFor } from '../channels/access.js';
+import { canManageTasks } from './task-access.js';
 
 const refused = (message: string): { ok: false; message: string } => ({ ok: false, message });
 const success = (text: string): { ok: true; text: string } => ({ ok: true, text });
@@ -68,7 +63,7 @@ type Args = {
   endMinute: number;
 };
 
-/** Each tool call rechecks the enabled instance owner; model-supplied actor IDs are ignored. */
+/** Each tool call rechecks owner-or-`tasks.manage` in the call's guild; model-supplied actor IDs are ignored. */
 export const taskAdminPortFor = (
   deps: HttpDeps,
   client: Client,
@@ -80,8 +75,7 @@ export const taskAdminPortFor = (
     name: TaskAdminName,
     raw: Record<string, unknown>,
   ) {
-    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
-    if (!account?.isOwner || account.disabled) return refused('Unknown or unreachable guild.');
+    if (!canManageTasks(deps, accountId, guildId)) return refused('Unknown or unreachable guild.');
     // The MCP layer has already Zod-validated the tool-specific shape.
     const a = raw as Args;
     const scope = deps.scopes.forGuild(guildId);

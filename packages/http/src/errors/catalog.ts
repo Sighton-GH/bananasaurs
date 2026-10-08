@@ -120,6 +120,11 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: "This setting belongs to the bot's owner account.",
     hint: 'Sign in as the owner.',
   },
+  'tasks-forbidden': {
+    title: 'You cannot manage club tasks here',
+    explanation: 'Club tasks need the owner account, or the Manage club tasks permission.',
+    hint: 'Ask the owner to give this account Manage club tasks.',
+  },
   'owner-protected': {
     title: "That can't be changed",
     explanation: "The owner account can't be changed.",
@@ -396,6 +401,11 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     title: 'No such token',
     explanation: 'That token id is not recorded here.',
     hint: 'Pick a token from the list.',
+  },
+  'no-such-connection': {
+    title: 'No such connection',
+    explanation: 'That connection is not recorded here, or it was already deleted.',
+    hint: 'Reload the page and pick a connection from the list.',
   },
   'no-such-client': {
     title: 'No such app',

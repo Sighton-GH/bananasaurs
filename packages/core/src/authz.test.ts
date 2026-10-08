@@ -108,14 +108,16 @@ describe('TOTP is deferred, and this test is what re-arms it (ADR 0030)', () => 
     ).not.toContain(capability);
   });
 
-  it('still has the eight Release 1 capabilities plus moderation.act, mcp.authorize and accounts.manage, so the guard is not vacuous', () => {
+  it('still has the eight Release 1 capabilities plus moderation.act, mcp.authorize, accounts.manage and tasks.manage, so the guard is not vacuous', () => {
     // Each addition since Release 1 made the ADR 0012 call visibly: ADR 0035
     // (moderation.act), ADR 0045 (mcp.authorize), ADR 0056 (accounts.manage —
     // account lifecycle is neither provider-credential nor purge, so it does
-    // not re-arm TOTP; the ADR records the reasoning).
-    expect(CAPABILITIES).toHaveLength(11);
+    // not re-arm TOTP; the ADR records the reasoning), ADR 0130 (tasks.manage —
+    // club tasks are neither credential nor purge).
+    expect(CAPABILITIES).toHaveLength(12);
     expect(CAPABILITIES as readonly string[]).toContain('mcp.authorize');
     expect(CAPABILITIES as readonly string[]).toContain('accounts.manage');
+    expect(CAPABILITIES as readonly string[]).toContain('tasks.manage');
   });
 });
 

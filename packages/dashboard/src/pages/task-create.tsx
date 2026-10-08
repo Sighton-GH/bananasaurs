@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { Link } from 'wouter';
 import { useResource } from '../hooks/useResource.js';
 import { useSession } from '../app/session.js';
-import { ApiError } from '../api.js';
+import { ApiError, mayManageTasks } from '../api.js';
 import { describeError } from '../api/describe-error.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
@@ -127,10 +127,10 @@ export function TaskCreatePage() {
           </Link>
         }
       />
-      {session.info.instanceOwner !== true ? (
+      {!mayManageTasks(session.info) ? (
         <p role="status">
-          Only the instance owner can set up tasks until member identity and role checks are
-          complete.
+          Setting up tasks needs the owner, or the Manage club tasks permission. Members use
+          Discord.
         </p>
       ) : (
         <DataState resource={teams.resource}>

@@ -56,7 +56,13 @@ export const CAPABILITY_INFO: Readonly<Record<Capability, CapabilityInfo>> = {
   },
   'mcp.authorize': {
     label: 'Connect apps',
-    description: 'Approve outside apps (MCP connectors) to read this server.',
+    description:
+      "Connect outside apps such as Claude. An approved app can read this server and, with the matching approvals, post messages, change roles and manage tasks — never more than this account's own permissions.",
+  },
+  'tasks.manage': {
+    label: 'Manage club tasks',
+    description:
+      'Create, edit, approve and archive club tasks and task teams, including through a connected app.',
   },
   'accounts.manage': {
     label: 'Manage accounts',
@@ -106,6 +112,7 @@ export const ACCOUNT_ROLES: readonly AccountRole[] = [
       'killswitch.toggle',
       'undo.execute',
       'moderation.act',
+      'tasks.manage',
     ],
   },
 ];

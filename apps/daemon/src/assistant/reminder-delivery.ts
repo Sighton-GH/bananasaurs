@@ -13,7 +13,7 @@ import {
   type ReminderStore,
 } from '@bananasaurs/core';
 import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
-import { filterPings, resolveSendTarget } from '../mcp/targets.js';
+import { filterSendPings, resolveSendTarget } from '../mcp/targets.js';
 import { channelAccessFor } from '../channels/access.js';
 import { neutraliseMassMentions } from './reminder-summary.js';
 
@@ -319,11 +319,14 @@ export const createReminderDelivery = (
       // the pass fails the reminder with nothing posted.
       throw new ReminderDeliveryError('target-out-of-scope', true, true);
     }
-    const filtered = await filterPings(mcp.client, mcp.scope, rowGuildId, {
+    // The stored explicit pings plus the mentions in the text as it stands
+    // now, each best effort under the live policy and the caps (ADR 0128 §5).
+    const filtered = await filterSendPings(mcp.client, mcp.scope, rowGuildId, {
       roles: row.mentions.roleIds,
       users: row.mentions.userIds,
+      text: row.text,
     });
-    for (const drop of filtered.dropped) {
+    for (const drop of filtered.notPinged) {
       mcp.logger.info(
         safeLogFields({
           component: 'reminders',

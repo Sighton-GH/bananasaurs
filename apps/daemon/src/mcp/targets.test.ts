@@ -7,7 +7,14 @@ import {
 } from '@bananasaurs/storage/test-support';
 import { guildRepo, loggingRepo, mcpSendRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
-import { checkRolePing, filterPings, resolvePings, resolveSendTarget } from './targets.js';
+import {
+  checkRolePing,
+  filterPings,
+  resolvePings,
+  resolveSendPings,
+  resolveSendTarget,
+  textMentions,
+} from './targets.js';
 
 /**
  * Task 4 Step 1: target resolution — send scope ∩ the bot's live Discord
@@ -786,5 +793,173 @@ describe('resolveSendTarget with need manage-events', () => {
       'manage-events',
     );
     expect(resolved).toMatchObject({ ok: true, channelId: TEXT });
+  });
+});
+
+describe('textMentions (ADR 0128)', () => {
+  it('reads user, nickname-form and role mentions, in order and without repeats', () => {
+    expect(
+      textMentions(
+        `hi <@${MEMBER_USER}> and <@!${STRANGER_USER}>, <@&${LOW_ROLE}> again <@${MEMBER_USER}>`,
+      ),
+    ).toEqual({ users: [MEMBER_USER, STRANGER_USER], roles: [LOW_ROLE] });
+  });
+
+  it('skips mentions inside inline code and fenced blocks, which Discord never pings', () => {
+    expect(
+      textMentions(
+        `\`<@${STRANGER_USER}>\` then\n\`\`\`\n<@&${LOW_ROLE}>\n\`\`\`\n<@${MEMBER_USER}>`,
+      ),
+    ).toEqual({ users: [MEMBER_USER], roles: [] });
+  });
+
+  it('ignores @everyone, @here, channel mentions, bare ids and absent text', () => {
+    expect(textMentions(`@everyone @here <#${CHANNEL}> ${MEMBER_USER} <@abc>`)).toEqual({
+      users: [],
+      roles: [],
+    });
+    expect(textMentions(undefined)).toEqual({ users: [], roles: [] });
+  });
+});
+
+describe('resolveSendPings (ADR 0128)', () => {
+  /** Every lookup outside the cache answers Discord's Unknown Member. */
+  const strangersUnknown = (client: Client): Client => {
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    guild.members.fetch = (() =>
+      Promise.reject(
+        Object.assign(new Error('Unknown Member'), { code: 10007, status: 404 }),
+      )) as typeof guild.members.fetch;
+    return client;
+  };
+
+  it('a member and a pingable role mentioned in the text ping with no explicit lists', async () => {
+    const client = strangersUnknown(
+      makeClient({ roles: defaultRoles(), members: [{ id: MEMBER_USER, roles: [] }] }),
+    );
+    expect(
+      await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [],
+        users: [],
+        text: `<@${MEMBER_USER}> and <@&${LOW_ROLE}> please look`,
+      }),
+    ).toEqual({ ok: true, userIds: [MEMBER_USER], roleIds: [LOW_ROLE], notPinged: [] });
+  });
+
+  it('text mentions that fail a check are reported, not pinged, and do not refuse', async () => {
+    const client = strangersUnknown(
+      makeClient({ roles: defaultRoles(), members: [{ id: MEMBER_USER, roles: [] }] }),
+    );
+    expect(
+      await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [],
+        users: [],
+        text: `<@${STRANGER_USER}> <@&${HIGH_ROLE}> <@&${MANAGED_ROLE}> <@&${GUILD_A}> <@${MEMBER_USER}>`,
+      }),
+    ).toEqual({
+      ok: true,
+      userIds: [MEMBER_USER],
+      roleIds: [],
+      notPinged: [
+        { kind: 'role', id: HIGH_ROLE, reason: 'role-above-bot' },
+        { kind: 'role', id: MANAGED_ROLE, reason: 'role-managed-or-everyone' },
+        { kind: 'role', id: GUILD_A, reason: 'role-managed-or-everyone' },
+        { kind: 'user', id: STRANGER_USER, reason: 'user-not-member' },
+      ],
+    });
+  });
+
+  it('a dangerous role mentioned in the text is never pinged', async () => {
+    const roles = [{ id: LOW_ROLE, name: 'helpers', position: 3, permissions: '8' }];
+    expect(
+      await resolveSendPings(makeClient({ roles }), t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [],
+        users: [],
+        text: `<@&${LOW_ROLE}>`,
+      }),
+    ).toEqual({
+      ok: true,
+      userIds: [],
+      roleIds: [],
+      notPinged: [{ kind: 'role', id: LOW_ROLE, reason: 'role-dangerous' }],
+    });
+  });
+
+  it('explicit pings stay strict: a bad explicit ping refuses the call', async () => {
+    const client = strangersUnknown(makeClient({ roles: defaultRoles() }));
+    expect(
+      await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [HIGH_ROLE],
+        users: [],
+        text: 'no mentions',
+      }),
+    ).toEqual({ ok: false, reason: 'role-above-bot', ref: HIGH_ROLE });
+  });
+
+  it('explicit and text pings merge without repeats, explicit first', async () => {
+    const client = makeClient({ roles: defaultRoles(), members: [{ id: MEMBER_USER, roles: [] }] });
+    expect(
+      await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: ['helpers'],
+        users: [MEMBER_USER],
+        text: `<@${MEMBER_USER}> <@&${LOW_ROLE}>`,
+      }),
+    ).toEqual({ ok: true, userIds: [MEMBER_USER], roleIds: [LOW_ROLE], notPinged: [] });
+  });
+
+  it('a transport fault on a text mention lookup is reported, never thrown', async () => {
+    const client = makeClient({ members: [{ id: MEMBER_USER, roles: [] }] });
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    guild.members.fetch = (() =>
+      Promise.reject(new Error('connection reset'))) as typeof guild.members.fetch;
+    expect(
+      await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+        roles: [],
+        users: [],
+        text: `<@${STRANGER_USER}> <@${MEMBER_USER}>`,
+      }),
+    ).toEqual({
+      ok: true,
+      roleIds: [],
+      userIds: [MEMBER_USER],
+      notPinged: [{ kind: 'user', id: STRANGER_USER, reason: 'member-check-failed' }],
+    });
+  });
+
+  it('mentions past the cap cost no lookup', async () => {
+    const ids = Array.from({ length: 40 }, (_, i) => `8${String(i).padStart(17, '0')}`);
+    const client = makeClient();
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('guild missing from test client cache');
+    let fetches = 0;
+    guild.members.fetch = (() => {
+      fetches += 1;
+      return Promise.resolve({});
+    }) as unknown as typeof guild.members.fetch;
+    const resolved = await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+      roles: [],
+      users: [],
+      text: ids.map((id) => `<@${id}>`).join(' '),
+    });
+    expect(resolved).toMatchObject({ ok: true, userIds: ids.slice(0, 25) });
+    expect(fetches).toBe(25);
+  });
+
+  it('text mentions past the 25-user cap are reported as over-cap, not pinged', async () => {
+    const ids = Array.from({ length: 27 }, (_, i) => `7${String(i).padStart(17, '0')}`);
+    const client = makeClient({ members: ids.map((id) => ({ id, roles: [] })) });
+    const resolved = await resolveSendPings(client, t.scopes.forGuild(GUILD_A), GUILD_A, {
+      roles: [],
+      users: [ids[0] ?? ''],
+      text: ids.map((id) => `<@${id}>`).join(' '),
+    });
+    expect(resolved).toEqual({
+      ok: true,
+      roleIds: [],
+      userIds: ids.slice(0, 25),
+      notPinged: ids.slice(25).map((id) => ({ kind: 'user', id, reason: 'over-cap' })),
+    });
   });
 });

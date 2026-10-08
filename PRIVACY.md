@@ -136,8 +136,10 @@ message to this server. When that happens:
 
 - It can only post in channels the owner has explicitly allowed. It cannot
   post in a channel that is not on that list, and it cannot send you a DM.
-- Mentions in those messages never ping anyone — `@everyone`, `@here`, role
-  and user mentions are all switched off before the message is sent.
+- If the message mentions you, you get a notification, the same as when a
+  person mentions you. A role mention notifies that role only if the role
+  passes the server's ping rules (for example, no roles with admin or
+  moderator powers). `@everyone` and `@here` never notify anyone.
 - Every such message is recorded: which channel, when, and which credential
   was used. The owner can list them at any time.
 - The message is posted by the bot, under the bot's name, like any other bot

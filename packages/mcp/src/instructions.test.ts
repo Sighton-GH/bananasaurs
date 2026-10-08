@@ -50,13 +50,14 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('colour');
   });
 
-  it('has a Writes section naming keys, dry runs, undo, explicit pings and private threads', () => {
+  it('has a Writes section naming keys, dry runs, undo, text-mention pings and private threads', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('Writes');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('dryRun');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('undo_action');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('list_actions');
-    expect(MCP_SERVER_INSTRUCTIONS).toContain('pingRoles');
-    expect(MCP_SERVER_INSTRUCTIONS).toContain('pingUsers');
+    // ADR 0128: a mention written into the text is how a ping is asked for.
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('To ping someone, write <@USER_ID>');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('@everyone and @here never ping');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('Private threads');
   });
 });

@@ -71,8 +71,9 @@ export const SEND_MESSAGE_TOOL_DESCRIPTION =
   'Posts one message to a channel the owner has allowlisted for this guild, or into a thread under one. ' +
   'Content is Discord Markdown (bold, italics, lists, `-# subtext`, masked links `[text](url)`; headings `#` to `###`) ' +
   `up to ${String(SEND_CONTENT_MAX)} characters; pass content, embeds, or both. ` +
-  'Mentions typed into the content never ping: @everyone, @here, role and user mentions render but notify nobody ' +
-  'unless named in pingRoles/pingUsers, which are checked against the guild ping policy. ' +
+  'Member (<@USER_ID>) and role (<@&ROLE_ID>) mentions typed into the content ping, checked against the guild ping policy; ' +
+  'one that fails a check renders without pinging and the result names it. @everyone and @here never ping. ' +
+  'pingRoles/pingUsers add pings strictly: a bad one there refuses the call. ' +
   'Optional replyTo posts as a reply without pinging the author unless pingReplyAuthor is true; ' +
   'threadId posts into that thread. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
@@ -118,10 +119,64 @@ export interface McpSendPort {
   ) => Promise<McpSendOutcome>;
 }
 
+/**
+ * A mention typed into the text that did not ping (ADR 0128 §2–§3): the
+ * mention renders, nobody is notified for it, and the result says why. Ids
+ * only, never content.
+ */
+export interface McpNotPinged {
+  readonly kind: 'role' | 'user';
+  readonly id: string;
+  readonly reason:
+    | 'role-unknown'
+    | 'role-dangerous'
+    | 'role-managed-or-everyone'
+    | 'role-above-bot'
+    | 'role-not-allowlisted'
+    | 'user-not-member'
+    | 'member-check-failed'
+    | 'over-cap';
+}
+
+const NOT_PINGED_REASON: Record<McpNotPinged['reason'], string> = {
+  'role-unknown': 'no such role',
+  'role-dangerous': 'the role holds a permission the ping policy never allows',
+  'role-managed-or-everyone': 'managed roles and @everyone never ping',
+  'role-above-bot': "the role sits at or above the bot's highest role",
+  'role-not-allowlisted': 'the role is not on the ping allowlist',
+  'user-not-member': 'not a current member',
+  'member-check-failed': 'membership could not be checked just now',
+  'over-cap': `past the cap of ${String(SEND_PING_ROLES_MAX)} roles and ${String(SEND_PING_USERS_MAX)} members per message`,
+};
+
+/**
+ * The sentence a result appends for mentions that did not ping, or '' when
+ * every mention pinged. Shared by every tool that posts text (ADR 0128).
+ */
+export const notPingedText = (
+  notPinged: readonly McpNotPinged[] | undefined,
+  lead = 'These mentions render but did not ping',
+): string => {
+  if (notPinged === undefined || notPinged.length === 0) return '';
+  const items = notPinged.map(
+    (entry) => `${entry.kind} ${entry.id} (${NOT_PINGED_REASON[entry.reason]})`,
+  );
+  return ` ${lead}: ${items.join('; ')}.`;
+};
+
 /** Mirrors the gateway's outcomes, named in this package's own vocabulary. */
 export type McpSendOutcome =
-  | { readonly status: 'sent'; readonly messageId: string; readonly actionId: string }
-  | { readonly status: 'dry-run'; readonly actionId: string }
+  | {
+      readonly status: 'sent';
+      readonly messageId: string;
+      readonly actionId: string;
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
+    }
+  | {
+      readonly status: 'dry-run';
+      readonly actionId: string;
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
+    }
   | {
       readonly status: 'replayed';
       readonly messageId: string | undefined;
@@ -245,7 +300,7 @@ export const sendMessageParams = {
     .string()
     .optional()
     .describe(
-      `Message text in Discord Markdown (bold, italics, lists, masked links), 1 to ${String(SEND_CONTENT_MAX)} characters. Optional when embeds are present. Mentions never ping unless named in pingRoles/pingUsers.`,
+      `Message text in Discord Markdown (bold, italics, lists, masked links), 1 to ${String(SEND_CONTENT_MAX)} characters. Optional when embeds are present. <@USER_ID> and <@&ROLE_ID> mentions ping under the guild ping policy; @everyone and @here never do.`,
     ),
   embeds: z
     .array(
@@ -473,7 +528,7 @@ const sendMessageInner = async (
         ok: true,
         text:
           `Sent message ${outcome.messageId} to channel ${input.channelId} in guild ${gate.guildId} ` +
-          `(action ${outcome.actionId}).`,
+          `(action ${outcome.actionId}).${notPingedText(outcome.notPinged)}`,
       };
     case 'dry-run':
       return {
@@ -490,7 +545,7 @@ const sendMessageInner = async (
             pingUsers: input.pingUsers ?? [],
             embeds: input.embeds,
             content,
-          })}.`,
+          })}.${notPingedText(outcome.notPinged)}`,
       };
     case 'replayed':
       // Not a failure (ruling M5-D3): the message is already handled under

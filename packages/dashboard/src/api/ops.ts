@@ -212,10 +212,26 @@ export interface McpToken {
   readonly kind: 'access' | 'refresh';
   readonly clientId: string;
   readonly accountId: string;
+  /** The connection (sign-in) this row belongs to. */
+  readonly connectionId: string;
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly revokedAt: number | null;
   readonly lastUsedAt: number | null;
+}
+
+/** One row of `GET /api/mcp/connections` — mirrors `OpsMcpConnection` (ADR 0130). */
+export interface McpConnection {
+  readonly connectionId: string;
+  readonly accountId: string;
+  readonly accountUsername: string | null;
+  readonly clientId: string;
+  readonly clientName: string | null;
+  readonly scopes: readonly string[];
+  readonly createdAt: number;
+  readonly lastUsedAt: number | null;
+  readonly status: 'connected' | 'expired' | 'revoked';
+  readonly tokenCount: number;
 }
 
 /** One row of `GET /api/mcp/sends` — mirrors `OpsSendRecord`: ids and outcomes, never content. */

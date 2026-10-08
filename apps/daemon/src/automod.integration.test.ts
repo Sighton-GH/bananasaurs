@@ -445,6 +445,11 @@ describe('automod, end to end on the fake gateway', () => {
       mcpTokens: notUsedByDoctorInstance('mcpTokens'),
       mcpRevokeToken: notUsedByDoctorInstance('mcpRevokeToken'),
       mcpRevokeClient: notUsedByDoctorInstance('mcpRevokeClient'),
+      mcpConnections: notUsedByDoctorInstance('mcpConnections'),
+      mcpDisconnect: notUsedByDoctorInstance('mcpDisconnect'),
+      mcpDeleteConnection: notUsedByDoctorInstance('mcpDeleteConnection'),
+      mcpDeleteToken: notUsedByDoctorInstance('mcpDeleteToken'),
+      mcpCleanup: notUsedByDoctorInstance('mcpCleanup'),
       // All-clear, not "not used": `doctor` reads this member on every run,
       // and this test's subject is the unusable automod rule, not eligibility.
       providerEligibilityWarnings: () => [],

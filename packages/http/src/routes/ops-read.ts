@@ -328,6 +328,16 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ clients: deps.instance.mcpClients() });
   });
 
+  // ADR 0130: one entry per sign-in, with the account username, app name,
+  // scopes and status joined in by the port.
+  app.get('/api/mcp/connections', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send({ connections: deps.instance.mcpConnections() });
+  });
+
   app.get('/api/mcp/tokens', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;

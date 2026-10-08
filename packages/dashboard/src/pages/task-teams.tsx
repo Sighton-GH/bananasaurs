@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { Link } from 'wouter';
 import { useResource } from '../hooks/useResource.js';
 import { useSession } from '../app/session.js';
-import { ApiError } from '../api.js';
+import { ApiError, mayManageTasks } from '../api.js';
 import { describeError } from '../api/describe-error.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
@@ -42,11 +42,14 @@ export function TaskTeamsPage() {
   );
   const roles = useResource('roles', rolesLoad);
 
-  if (session.info.instanceOwner !== true) {
+  if (!mayManageTasks(session.info)) {
     return (
       <>
         <PageHeader title="Teams & members" purpose="Set up the teams that own tasks." />
-        <p role="status">Only the instance owner can set up teams. Members use Discord.</p>
+        <p role="status">
+          Setting up teams needs the owner, or the Manage club tasks permission. Members use
+          Discord.
+        </p>
       </>
     );
   }

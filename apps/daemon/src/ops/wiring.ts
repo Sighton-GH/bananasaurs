@@ -1985,17 +1985,55 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       createdAt: row.createdAt,
       redirectUriCount: row.redirectUris.length,
     })),
-  mcpTokens: () =>
-    oauthRepo.listTokens(deps.instanceScope).map((row) => ({
+  mcpTokens: () => {
+    const connectionIds = oauthRepo.tokenConnectionIds(deps.instanceScope);
+    return oauthRepo.listTokens(deps.instanceScope).map((row) => ({
       tokenId: row.tokenId,
       kind: row.kind,
       clientId: row.clientId,
       accountId: row.accountId,
+      connectionId: connectionIds.get(row.tokenId) ?? row.tokenId,
       createdAt: row.createdAt,
       expiresAt: row.expiresAt,
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,
-    })),
+    }));
+  },
+  // ADR 0130: connections, the unit the owner recognises. The username and
+  // app name are joined here; a deleted account or client reads as null.
+  mcpConnections: () => {
+    const clientNames = new Map(
+      oauthRepo.listClients(deps.instanceScope).map((c) => [c.clientId, c.clientName]),
+    );
+    const usernames = new Map<string, string | null>();
+    const usernameOf = (accountId: string): string | null => {
+      if (!usernames.has(accountId)) {
+        usernames.set(
+          accountId,
+          accountRepo.findAccountById(deps.instanceScope, accountId)?.username ?? null,
+        );
+      }
+      return usernames.get(accountId) ?? null;
+    };
+    return oauthRepo.listConnections(deps.instanceScope, deps.now()).map((row) => ({
+      connectionId: row.connectionId,
+      accountId: row.accountId,
+      accountUsername: usernameOf(row.accountId),
+      clientId: row.clientId,
+      clientName: clientNames.get(row.clientId) ?? null,
+      scopes: row.scopes,
+      createdAt: row.createdAt,
+      lastUsedAt: row.lastUsedAt,
+      status: row.status,
+      tokenCount: row.tokenCount,
+    }));
+  },
+  mcpDisconnect: (connectionId) =>
+    oauthRepo.revokeConnection(deps.instanceScope, connectionId, deps.now()),
+  mcpDeleteConnection: (connectionId) =>
+    oauthRepo.deleteConnection(deps.instanceScope, connectionId, deps.now()),
+  mcpDeleteToken: (tokenId) => oauthRepo.deleteToken(deps.instanceScope, tokenId, deps.now()),
+  mcpCleanup: () => oauthRepo.cleanupDead(deps.instanceScope, deps.now()),
   mcpRevokeToken: (tokenId) => {
     // A single-row revoke would leave the sibling refresh token free to mint
     // a replacement, so the operator's remedy kills the whole lineage — the

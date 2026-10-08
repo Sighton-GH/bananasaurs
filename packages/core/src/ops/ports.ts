@@ -448,6 +448,33 @@ export interface OpsMcpToken {
   readonly expiresAt: number;
   readonly revokedAt: number | null;
   readonly lastUsedAt: number | null;
+  /** The connection (sign-in) this row belongs to (ADR 0130); see `OpsMcpConnection`. */
+  readonly connectionId: string;
+}
+
+/**
+ * One connection: every token row minted from one sign-in (ADR 0130 §5). Its
+ * id is the root token's id — never the code hash. Usernames and app names
+ * are joined in by the daemon and are `null` when the account or client has
+ * since been deleted.
+ */
+export interface OpsMcpConnection {
+  readonly connectionId: string;
+  readonly accountId: string;
+  readonly accountUsername: string | null;
+  readonly clientId: string;
+  readonly clientName: string | null;
+  readonly scopes: readonly string[];
+  readonly createdAt: number;
+  readonly lastUsedAt: number | null;
+  readonly status: 'connected' | 'expired' | 'revoked';
+  readonly tokenCount: number;
+}
+
+/** What deleting a connection or token did: rows revoked first, rows deleted. */
+export interface OpsMcpDeleteResult {
+  readonly revoked: number;
+  readonly deleted: number;
 }
 
 /**
@@ -1577,6 +1604,16 @@ export interface OpsInstance {
   mcpRevokeToken(tokenId: string): number | undefined;
   /** Deletes the client and everything issued to it; returns the number of tokens revoked, or undefined if no such client. */
   mcpRevokeClient(clientId: string): number | undefined;
+  /** ADR 0130: one entry per sign-in, connected first then newest. */
+  mcpConnections(): readonly OpsMcpConnection[];
+  /** Revokes every live token of the connection, keeping the rows; `undefined` for an unknown id. */
+  mcpDisconnect(connectionId: string): number | undefined;
+  /** Revokes then deletes every row of the connection; `undefined` for an unknown id. */
+  mcpDeleteConnection(connectionId: string): OpsMcpDeleteResult | undefined;
+  /** Revokes the lineage of a live token, then deletes that one row; `undefined` for an unknown id. */
+  mcpDeleteToken(tokenId: string): OpsMcpDeleteResult | undefined;
+  /** Deletes every revoked or expired token row, then apps left with none. */
+  mcpCleanup(): { readonly tokens: number; readonly clients: number };
   /**
    * ADR 0044 §7: every eligibility row that is stale (past 90 days) or not 'no'.
    *

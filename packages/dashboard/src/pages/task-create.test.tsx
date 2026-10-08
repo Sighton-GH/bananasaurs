@@ -55,7 +55,7 @@ describe('task creation', () => {
         <TaskCreatePage />
       </Router>,
     );
-    expect(screen.getByText(/Only the instance owner can set up tasks/)).toBeTruthy();
+    expect(screen.getByText(/Setting up tasks needs the owner/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Save task' })).toBeNull();
   });
 

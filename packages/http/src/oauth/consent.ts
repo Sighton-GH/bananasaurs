@@ -8,6 +8,8 @@
  * `mcp.authorize` capability before minting anything.
  */
 
+import { MCP_SCOPE_INFO } from '@bananasaurs/core';
+
 export interface ConsentView {
   readonly clientName: string;
   /** The `cli_…` id, so two clients with the same display name are distinguishable. */
@@ -39,20 +41,14 @@ const errorLine = (error: NonNullable<ConsentView['error']>): string => {
   }
 };
 
-/** One plain-English clause per scope in the vocabulary (ruling PR-103). */
-const SCOPE_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  'bananasaurs:read': 'read messages, cases and server settings',
-  'bananasaurs:send': 'send messages as the bot',
-  'bananasaurs:roles': 'give and remove member roles and manage role panels',
-  'bananasaurs:tasks': 'create and change club tasks',
-};
-
 export const renderConsentPage = (view: ConsentView): string => {
+  // One plain-English clause per scope (ruling PR-103), from the shared map
+  // (ADR 0130 §5) so the dashboard and the CLI use the same words.
   const scopes = view.scopes
-    .map(
-      (scope) =>
-        `<li>${esc(scope)} — ${esc(SCOPE_DESCRIPTIONS[scope] ?? 'unknown permission')}</li>`,
-    )
+    .map((scope) => {
+      const info = MCP_SCOPE_INFO[scope];
+      return `<li><strong>${esc(info?.label ?? scope)}</strong> — ${esc(info?.description ?? 'unknown permission')}</li>`;
+    })
     .join('');
   const error = view.error === undefined ? '' : errorLine(view.error);
   return (
@@ -63,11 +59,10 @@ export const renderConsentPage = (view: ConsentView): string => {
     '</head>' +
     '<body>' +
     `<h1>Authorize ${esc(view.clientName)}?</h1>` +
-    `<p>Client <strong>${esc(view.clientName)}</strong> is requesting access to this server.</p>` +
+    `<h2>${esc(view.clientName)} is asking to:</h2>` +
+    `<ul>${scopes}</ul>` +
     `<p>Client id <code>${esc(view.clientId)}</code>, registered ${esc(view.registeredAt)}.</p>` +
     `<p>It will return to host <code>${esc(view.redirectUriHost)}</code>.</p>` +
-    '<p>Scopes requested:</p>' +
-    `<ul>${scopes}</ul>` +
     '<p>Approve only if you started this from a client you recognise.</p>' +
     error +
     '<form method="post" action="/oauth/authorize">' +

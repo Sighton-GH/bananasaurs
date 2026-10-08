@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { snowflakeIdSchema, timeZoneSchema } from '@bananasaurs/core';
 import { taskBindingRepo, taskRepo, taskNudgeRepo } from '@bananasaurs/storage';
 import { badRequest } from '../errors/reply.js';
-import { isInstanceOwner } from '../owner.js';
+import { canManageTasks } from '../owner.js';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { inspectTaskDestination, inspectTaskTeam } from './task-validation.js';
@@ -70,7 +70,7 @@ export const registerTaskWriteRoutes = (
   app.put('/api/tasks/president-role', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const actor = {
       actorType: 'dashboard' as const,
       actorId: session.accountId,
@@ -91,7 +91,7 @@ export const registerTaskWriteRoutes = (
   app.delete('/api/tasks/president-role', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const actor = {
       actorType: 'dashboard' as const,
       actorId: session.accountId,
@@ -103,7 +103,7 @@ export const registerTaskWriteRoutes = (
   app.post('/api/tasks/teams', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = teamSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const issues = inspectTaskTeam(deps.portsFor(session.scope), parsed.data);
@@ -125,7 +125,7 @@ export const registerTaskWriteRoutes = (
   app.put<{ Params: { teamId: string } }>('/api/tasks/teams/:teamId', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = teamEditSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const current = taskRepo
@@ -174,7 +174,7 @@ export const registerTaskWriteRoutes = (
   app.delete<{ Params: { teamId: string } }>('/api/tasks/teams/:teamId', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const actor = {
       actorType: 'dashboard' as const,
       actorId: session.accountId,
@@ -190,7 +190,8 @@ export const registerTaskWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       if (
         !z.string().uuid().safeParse(request.params.teamId).success ||
         !snowflakeIdSchema.safeParse(request.params.discordUserId).success
@@ -209,7 +210,7 @@ export const registerTaskWriteRoutes = (
   app.post('/api/tasks/memberships', async (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = membershipSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const team = taskRepo.listTeams(session.scope).find((t) => t.teamId === parsed.data.teamId);
@@ -236,7 +237,7 @@ export const registerTaskWriteRoutes = (
   app.post('/api/tasks', async (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = taskSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const team = taskRepo.listTeams(session.scope).find((t) => t.teamId === parsed.data.teamId);
@@ -284,7 +285,7 @@ export const registerTaskWriteRoutes = (
   app.put<{ Params: { taskId: string } }>('/api/tasks/:taskId', async (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = taskEditSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const task = taskRepo.getTask(session.scope, request.params.taskId);
@@ -357,7 +358,8 @@ export const registerTaskWriteRoutes = (
     app.post<{ Params: { taskId: string } }>(path, (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const parsed = schema.safeParse(request.body);
       if (!parsed.success) return badRequest(reply, parsed.error);
       if (!taskRepo.getTask(session.scope, request.params.taskId))
@@ -395,7 +397,8 @@ export const registerTaskWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const parsed = versionSchema.safeParse(request.body);
       if (!parsed.success) return badRequest(reply, parsed.error);
       if (!taskRepo.getTask(session.scope, request.params.taskId))
@@ -417,7 +420,8 @@ export const registerTaskWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const parsed = childEditSchema.safeParse(request.body);
       if (!parsed.success) return badRequest(reply, parsed.error);
       const result = taskRepo.changeChild(
@@ -442,7 +446,8 @@ export const registerTaskWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const parsed = z
         .object({ version: z.number().int().positive() })
         .strict()
@@ -463,7 +468,7 @@ export const registerTaskWriteRoutes = (
   app.post<{ Params: { taskId: string } }>('/api/tasks/:taskId/reminders', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = z.object({ at: z.number().int().positive() }).strict().safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const task = taskRepo.getTask(session.scope, request.params.taskId);
@@ -491,7 +496,8 @@ export const registerTaskWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const outcome = taskNudgeRepo.cancelCustom(
         session.scope,
         request.params.taskId,
@@ -514,7 +520,7 @@ export const registerTaskWriteRoutes = (
   app.post<{ Params: { taskId: string } }>('/api/tasks/:taskId/children', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = childSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const task = taskRepo.getTask(session.scope, request.params.taskId);
@@ -534,7 +540,7 @@ export const registerTaskWriteRoutes = (
   app.delete<{ Params: { taskId: string } }>('/api/tasks/:taskId', (request, reply) => {
     const session = guard.require(request, reply);
     if (!session) return reply;
-    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    if (!canManageTasks(deps, session)) return reply.status(403).send({ error: 'tasks-forbidden' });
     const parsed = versionSchema.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const actor = {
@@ -558,7 +564,8 @@ export const registerTaskWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (!session) return reply;
-      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (!canManageTasks(deps, session))
+        return reply.status(403).send({ error: 'tasks-forbidden' });
       const actor = {
         actorType: 'dashboard' as const,
         actorId: session.accountId,

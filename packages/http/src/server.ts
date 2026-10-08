@@ -25,7 +25,7 @@ import {
 import { dashboardAuditBase } from './routes/audit-base.js';
 import { explainError } from './errors/catalog.js';
 import { badRequest } from './errors/reply.js';
-import { isInstanceOwner } from './owner.js';
+import { canManageTasks, isInstanceOwner } from './owner.js';
 import { secretsMatch } from './secrets.js';
 import type { GithubRouteClient } from './routes/assistant-github.js';
 import type { InstanceSettingsPort } from './routes/assistant-tuning.js';
@@ -670,6 +670,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
       reauthFresh: reauthIsFresh(result.session, deps.now()),
       readonly: deps.readonly,
       instanceOwner: isInstanceOwner(deps, result.session),
+      canManageTasks: canManageTasks(deps, result.session),
     });
   });
 

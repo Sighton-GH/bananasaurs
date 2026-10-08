@@ -94,7 +94,23 @@ bananasaurs account set-password <username> --confirm
                                              # in every guild — but not its OAuth tokens
                                              # (use `account revoke-credentials` for those)
 bananasaurs mcp clients                      # registered OAuth clients (no client holds a secret)
-bananasaurs mcp tokens                       # every token row, live or revoked — ids only
+bananasaurs mcp connections                  # one line per sign-in: account, app, what it can
+                                             # do (Read/Post/Roles/Tasks), status, last use
+bananasaurs mcp tokens [--connection <id>]   # the newest 100 token rows — ids only; filter
+                                             # by connection to see the rest
+bananasaurs mcp disconnect <connection-id> --confirm
+                                             # revokes every live token of one sign-in, keeps rows
+bananasaurs mcp delete-connection <connection-id> --confirm
+                                             # revokes, then deletes every row of that sign-in
+bananasaurs mcp delete-token <token-id> --confirm
+                                             # deletes one row; its sign-in is disconnected first
+                                             # if it still works
+bananasaurs mcp cleanup --confirm            # deletes every sign-in that no longer works, with
+                                             # all its rows, and registered apps left with none
+                                             # (apps registered in the last hour are spared, so a
+                                             # sign-in in progress survives). A working sign-in
+                                             # keeps its old tokens 14 days: replaying one is how
+                                             # a stolen token is caught
 bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
 bananasaurs mcp revoke-client <client-id> --confirm
 bananasaurs mcp allow-channel <channel-id> --confirm
@@ -133,17 +149,35 @@ by the client:
 it. The message text is not in the audit trail — it is in `mcp_sends` and in
 Discord, which is where a member can see it too.
 
-**Scopes, when you connect a client (slice M4).** The consent page offers two:
-`bananasaurs:read` — read messages, cases and server settings — and
-`bananasaurs:send`, which is reserved for the write tool slice M5 adds and
-today grants nothing. Approve **`bananasaurs:read`**. The tools are filtered
-at registration rather than refused on call, so a token holding only
-`bananasaurs:send` connects successfully and then answers
-`-32601 Method not found` to `tools/list` and to every other method: with no
-tool registered, the MCP SDK never installs those handlers at all. That is
-the intended security behaviour and not a broken server, but several MCP
-clients report it as one — so if a freshly connected client says the server
-has no methods, check which scope was approved before checking anything else.
+**Scopes, when you connect a client (ADR 0114, ADR 0130).** The Bananasaurs
+sign-in page that opens when you click Connect lists what the app is asking to
+do, from these four (the labels are the ones `mcp connections` and the
+dashboard use):
+
+- **Read** (`bananasaurs:read`) — every read tool (messages, members, cases,
+  settings, tasks).
+- **Post** (`bananasaurs:send`) — posts, edits, threads, forum posts, schedules,
+  events, polls.
+- **Roles** (`bananasaurs:roles`) — role grants and removals, role creation,
+  role panels.
+- **Tasks** (`bananasaurs:tasks`) — the task write tools (`create_club_task`,
+  `edit_club_task`, approvals, archive, reminders, task teams); needs the
+  Manage club tasks permission as well.
+
+Tools are filtered at registration rather than refused on call: a token
+without a scope never sees that scope's tools in `tools/list`. **A token keeps
+the scopes it was first approved with for its whole refresh lineage**, so a
+client connected before a scope existed (the roles and tasks scopes arrived
+with MCP connector v2) keeps working but never shows those tools. To pick
+them up, disconnect and reconnect the client — a standard MCP client asks for
+every scope in `scopes_supported` — approve them on the sign-in page, then
+disconnect the old sign-in with `bananasaurs mcp disconnect <connection-id>
+--confirm` (`bananasaurs mcp connections` lists each sign-in with the scopes it
+was approved with, so you can see which one is the old one). A token holding
+only `bananasaurs:send` connects and then answers `-32601 Method not found`
+to `tools/list`: with no read tool registered, the MCP SDK installs no list
+handler. That is intended, so if a freshly connected client says the server
+has no methods, check which scopes were approved before anything else.
 
 The `account` commands mostly act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
 

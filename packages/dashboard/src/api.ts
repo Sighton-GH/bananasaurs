@@ -29,7 +29,15 @@ export interface SessionInfo {
   readonly readonly: boolean;
   /** True when this account owns the instance. Absent on older servers. */
   readonly instanceOwner?: boolean | undefined;
+  /** True when the owner, or this account holds `tasks.manage` here (ADR 0130). */
+  readonly canManageTasks?: boolean | undefined;
 }
+
+/** Whether the Tasks pages are open to this session: the owner, or `tasks.manage` in this guild. */
+export const mayManageTasks = (info: {
+  readonly instanceOwner?: boolean | undefined;
+  readonly canManageTasks?: boolean | undefined;
+}): boolean => info.instanceOwner === true || info.canManageTasks === true;
 
 /** One entry of the login refusal's `choices` and the session's `reachableGuilds`. */
 export interface ReachableGuild {

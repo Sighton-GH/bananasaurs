@@ -44,6 +44,7 @@ import {
   withoutNoAccessRows,
 } from '../channels/access.js';
 import { taskAdminPortFor } from './task-admin-port.js';
+import { canManageTasks, canManageTasksInAny } from './task-access.js';
 import {
   mcpRoleGatewayFor,
   authorizeRolesMutate,
@@ -56,7 +57,14 @@ import {
   mcpBulkRoleDedupeKey,
   mcpBulkRolePayload,
 } from '../jobs/mcp-bulk-role.js';
-import { resolvePings, resolveSendTarget, type SendTarget, type TargetNeed } from './targets.js';
+import {
+  resolvePings,
+  resolveSendPings,
+  resolveSendTarget,
+  withTextPings,
+  type SendTarget,
+  type TargetNeed,
+} from './targets.js';
 import { protectedMessageReason } from './protected.js';
 import { resolveChannel } from '../channels/resolver.js';
 import { mcpActionDepsFor } from './actions.js';
@@ -119,6 +127,7 @@ import {
   SCHEDULE_PAST_GRACE_MS,
   SCHEDULE_PREVIEW_MAX,
   parseScheduleAt,
+  type McpNotPinged,
   type McpScheduleOutcome,
   type McpSchedulePort,
   type McpScheduledView,
@@ -136,7 +145,6 @@ import {
   panelRepo,
   resourceCacheRepo,
   roleRepo,
-  accountRepo,
   mcpActionsRepo,
   mcpBulkRepo,
   mcpRolePolicyRepo,
@@ -1356,9 +1364,12 @@ const sendPortFor = (
             };
         }
       }
-      const pings = await resolvePings(client, scope, guildId, {
+      // Explicit pings refuse on the first bad one; mentions typed into the
+      // text ping best effort under the same policy (ADR 0128).
+      const pings = await resolveSendPings(client, scope, guildId, {
         roles: input.pingRoles,
         users: input.pingUsers,
+        text: input.content,
       });
       if (!pings.ok) return { status: 'refused', reason: pings.reason, detail: pings.ref };
       // Plain-text sends keep `contentHashFor(channelId, content)` so a
@@ -1409,9 +1420,10 @@ const sendPortFor = (
             // ADR 0117 §5: the tool layer already defaulted this to false,
             // so a reply never pings its author unless asked.
             pingReplyAuthor: input.pingReplyAuthor,
-            // Always `{ parse: [] }` plus only policy-approved roles/users
-            // (ADR 0117 §1): a mention typed into the content that is not in
-            // these lists renders but notifies nobody. Never `'everyone'`.
+            // Always `{ parse: [] }` plus only policy-approved roles/users,
+            // explicit or typed into the text (ADR 0117 §1 as amended by
+            // ADR 0128): a mention that failed the policy renders but
+            // notifies nobody. Never `'everyone'`.
             allowedMentions: { parse: [], roles: pings.roleIds, users: pings.userIds },
           });
           return { resultMessageId: ref.messageId };
@@ -1424,10 +1436,11 @@ const sendPortFor = (
             status: 'sent',
             messageId: outcome.result.resultMessageId,
             actionId: outcome.actionId,
+            notPinged: pings.notPinged,
           };
         }
         case 'dry-run':
-          return { status: 'dry-run', actionId: outcome.actionId };
+          return { status: 'dry-run', actionId: outcome.actionId, notPinged: pings.notPinged };
         case 'replayed':
           return {
             status: 'replayed',
@@ -1665,7 +1678,11 @@ interface ThreadActionResult {
  * gate already answered that), and the `failed` code stays in the daemon's
  * logs rather than reaching the model.
  */
-const mapThreadOutcome = (outcome: McpActionOutcome<ThreadActionResult>): McpThreadWriteOutcome => {
+const mapThreadOutcome = (
+  outcome: McpActionOutcome<ThreadActionResult>,
+  /** Mentions in the posted text that did not ping (ADR 0128 §2). */
+  notPinged?: readonly McpNotPinged[],
+): McpThreadWriteOutcome => {
   switch (outcome.status) {
     case 'done':
       return {
@@ -1677,9 +1694,14 @@ const mapThreadOutcome = (outcome: McpActionOutcome<ThreadActionResult>): McpThr
         ...(outcome.result.resultMessageId !== undefined
           ? { messageId: outcome.result.resultMessageId }
           : {}),
+        ...(notPinged !== undefined ? { notPinged } : {}),
       };
     case 'dry-run':
-      return { status: 'dry-run', actionId: outcome.actionId };
+      return {
+        status: 'dry-run',
+        actionId: outcome.actionId,
+        ...(notPinged !== undefined ? { notPinged } : {}),
+      };
     case 'replayed':
       return {
         status: 'replayed',
@@ -1860,6 +1882,7 @@ const threadWritesPortFor = (
     parentChannelId: string,
     mainKey: string,
     first: ThreadFirstMessage,
+    pings: { readonly roleIds: readonly string[]; readonly userIds: readonly string[] },
   ): Promise<{ readonly messageId?: string | undefined }> => {
     const plainText = first.embeds === undefined;
     const argsHash =
@@ -1888,7 +1911,8 @@ const threadWritesPortFor = (
           ...(first.content !== undefined ? { content: first.content } : {}),
           ...(first.embeds !== undefined ? { embeds: first.embeds.map(toDiscordEmbed) } : {}),
           pingReplyAuthor: false,
-          allowedMentions: { parse: [], roles: [], users: [] },
+          // Only the policy-approved mentions typed into the text (ADR 0128).
+          allowedMentions: { parse: [], roles: [...pings.roleIds], users: [...pings.userIds] },
         });
         return { resultMessageId: ref.messageId };
       },
@@ -1922,6 +1946,15 @@ const threadWritesPortFor = (
           input.type === 'private' ? 'create-private-thread' : 'create-public-thread',
         );
         if (!target.ok) return targetRefusalFor(target, 'channel-not-in-guild');
+        // The starter message pings what its text mentions, best effort
+        // (ADR 0128); resolved before the claim, like every other check.
+        const firstPings = await withTextPings(
+          client,
+          scope,
+          guildId,
+          { roleIds: [], userIds: [] },
+          input.firstMessage?.content,
+        );
         const argsHash = argsHashFor('thread.create', {
           channel: target.channelId,
           name: input.name,
@@ -1984,6 +2017,7 @@ const threadWritesPortFor = (
                     target.channelId,
                     input.idempotencyKey,
                     input.firstMessage,
+                    firstPings,
                   );
             return {
               resultThreadId: created.threadId,
@@ -1991,7 +2025,7 @@ const threadWritesPortFor = (
             };
           },
         );
-        return mapThreadOutcome(outcome);
+        return mapThreadOutcome(outcome, firstPings.notPinged);
       }),
     addThreadMembers: (guildId, input) =>
       loggedCallAsync(deps.logger, 'threadAddMembers', async () => {
@@ -2116,6 +2150,15 @@ const threadWritesPortFor = (
             }),
           };
         }
+        // The starter message pings what its text mentions, best effort
+        // (ADR 0128).
+        const postPings = await withTextPings(
+          client,
+          scope,
+          guildId,
+          { roleIds: [], userIds: [] },
+          input.content,
+        );
         const outcome = await runMcpAction(
           mcpActionDepsFor(deps, guildId, principal, grantContext(target)),
           {
@@ -2141,14 +2184,18 @@ const threadWritesPortFor = (
               message: {
                 ...(input.content !== undefined ? { content: input.content } : {}),
                 ...(input.embeds !== undefined ? { embeds: input.embeds.map(toDiscordEmbed) } : {}),
-                allowedMentions: { parse: [], roles: [], users: [] },
+                allowedMentions: {
+                  parse: [],
+                  roles: [...postPings.roleIds],
+                  users: [...postPings.userIds],
+                },
               },
               appliedTagIds: matched.ids,
             });
             return { resultThreadId: posted.threadId, resultMessageId: posted.messageId };
           },
         );
-        return mapThreadOutcome(outcome);
+        return mapThreadOutcome(outcome, postPings.notPinged);
       }),
     setThreadState: (guildId, input) =>
       loggedCallAsync(deps.logger, 'threadState', async () => {
@@ -5101,7 +5148,11 @@ const schedulePortFor = (
   /** The gateway's outcomes onto the schedule tools' vocabulary, ids only. */
   const gatewayOutcome = (
     outcome: McpActionOutcome<{ undo?: unknown }>,
-    ids: { readonly reminderId?: string | undefined } = {},
+    ids: {
+      readonly reminderId?: string | undefined;
+      /** Text mentions that would not ping as of this call (ADR 0128 §5). */
+      readonly notPinged?: readonly McpNotPinged[] | undefined;
+    } = {},
   ): McpScheduleOutcome => {
     switch (outcome.status) {
       case 'done':
@@ -5109,9 +5160,14 @@ const schedulePortFor = (
           status: 'done',
           actionId: outcome.actionId,
           ...(ids.reminderId !== undefined ? { reminderId: ids.reminderId } : {}),
+          ...(ids.notPinged !== undefined ? { notPinged: ids.notPinged } : {}),
         };
       case 'dry-run':
-        return { status: 'dry-run', actionId: outcome.actionId };
+        return {
+          status: 'dry-run',
+          actionId: outcome.actionId,
+          ...(ids.notPinged !== undefined ? { notPinged: ids.notPinged } : {}),
+        };
       case 'replayed':
         // The ledger holds no reminder-id column, so a replay names the
         // action; the model finds the row through `list_scheduled`.
@@ -5248,6 +5304,10 @@ const schedulePortFor = (
           users: input.pingUsers,
         });
         if (!pings.ok) return { status: 'refused', reason: pings.reason, detail: pings.ref };
+        // Only the explicit pings are stored; the text's mentions are merged
+        // in at delivery (ADR 0128 §5). This preview only reports the ones
+        // that would not ping now.
+        const textPings = await withTextPings(client, scope, guildId, pings, input.content);
         // ADR 0119: the owner authors every scheduled send. Absent owner
         // config fails closed before anything is claimed — no ledger row, no
         // cap room, no reminder.
@@ -5330,10 +5390,10 @@ const schedulePortFor = (
             return Promise.resolve({});
           },
         );
-        return gatewayOutcome(
-          outcome,
-          createdReminderId !== undefined ? { reminderId: createdReminderId } : {},
-        );
+        return gatewayOutcome(outcome, {
+          ...(createdReminderId !== undefined ? { reminderId: createdReminderId } : {}),
+          notPinged: textPings.notPinged,
+        });
       }),
     listScheduled: (guildId, input) =>
       loggedCall(deps.logger, 'listScheduled', () => {
@@ -5387,6 +5447,12 @@ const schedulePortFor = (
             here: false,
           };
         }
+        // New text is checked like scheduling checks it (ADR 0128 §5): only
+        // reported here, merged in at delivery.
+        const textPings =
+          input.content === undefined
+            ? undefined
+            : await withTextPings(client, scope, guildId, mentions, input.content);
         let dueAt = stored.dueAt;
         let recurrence = stored.recurrence;
         if (input.at !== undefined || input.recurrence !== undefined) {
@@ -5466,7 +5532,10 @@ const schedulePortFor = (
             return Promise.resolve({ undo: { reminderId: input.reminderId, previous } });
           },
         );
-        return gatewayOutcome(outcome, { reminderId: input.reminderId });
+        return gatewayOutcome(outcome, {
+          reminderId: input.reminderId,
+          ...(textPings !== undefined ? { notPinged: textPings.notPinged } : {}),
+        });
       }),
     cancelScheduled: (guildId, input) =>
       loggedCallAsync(deps.logger, 'scheduleCancel', async () => {
@@ -6764,17 +6833,13 @@ const readAuditPortFor = (
 
 /**
  * The `McpTaskDetailPort` behind `get_task_details` and `list_task_reminders`,
- * field by field like `healthPortFor` above. Each method rechecks the enabled
- * instance owner per call — the tool layer names the task, the daemon supplies
+ * field by field like `healthPortFor` above. Each method rechecks owner-or-`tasks.manage`
+ * in the call's guild per call — the tool layer names the task, the daemon supplies
  * the authority — and reads through the task repositories. Archived tasks are
  * returned with `archived: true` rather than refused, so the owner can inspect
  * what left the default listing. Nothing here writes.
  */
 const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
-  const requireOwner = (accountId: string): boolean => {
-    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
-    return account?.isOwner === true && !account.disabled;
-  };
   const reminderSlots = (guildId: GuildId, taskId: string) =>
     taskNudgeRepo.reminderSlotsForTask(deps.scopes.forGuild(guildId), taskId).map((slot) => ({
       slotId: slot.slotId,
@@ -6784,7 +6849,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
     }));
   return {
     detail: (guildId, accountId, taskId) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       const scope = deps.scopes.forGuild(guildId);
       const task = taskRepo.getTask(scope, taskId);
       if (!task) return undefined;
@@ -6819,7 +6884,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
       };
     },
     reminders: (guildId, accountId, taskId) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       if (!taskRepo.getTask(deps.scopes.forGuild(guildId), taskId)) return undefined;
       return reminderSlots(guildId, taskId);
     },
@@ -6836,13 +6901,9 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
  * the quiet-hours row (or the default when no override is stored).
  */
 const tasksPortFor = (deps: HttpDeps): McpTaskPort => {
-  const requireOwner = (accountId: string): boolean => {
-    const account = accountRepo.findAccountById(deps.scopes.instance(), accountId);
-    return account?.isOwner === true && !account.disabled;
-  };
   return {
     list: (guildId, accountId, filter) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       const scope = deps.scopes.forGuild(guildId);
       return {
         teams: taskRepo.listTeams(scope).map((team) => ({ teamId: team.teamId, name: team.name })),
@@ -6865,7 +6926,7 @@ const tasksPortFor = (deps: HttpDeps): McpTaskPort => {
       };
     },
     teams: (guildId, accountId) => {
-      if (!requireOwner(accountId)) return undefined;
+      if (!canManageTasks(deps, accountId, guildId)) return undefined;
       const scope = deps.scopes.forGuild(guildId);
       const quiet = taskRepo.getQuietHours(scope);
       return {
@@ -7035,22 +7096,19 @@ export const registerMcpRoutes = (
       context: contextPortFor(deps),
       resources: resourcesPortFor(deps),
       threads: threadsPortFor(deps, client, discord),
-      // Task tools are advertised only to the enabled instance owner at
-      // connect time, so a non-owner token never sees them in `tools/list`
-      // at all. The ports still recheck the owner on every call, so a token
-      // whose owner was disabled mid-lifetime is refused rather than served.
-      ...(() => {
-        const ownerAccount = accountRepo.findAccountById(
-          deps.scopes.instance(),
-          principal.accountId,
-        );
-        if (ownerAccount?.isOwner !== true || ownerAccount.disabled) return {};
-        return {
-          taskAdmin: taskAdminPortFor(deps, client, discord),
-          taskDetail: taskDetailPortFor(deps),
-          tasks: tasksPortFor(deps),
-        };
-      })(),
+      // Task tools are advertised only to the enabled instance owner or an
+      // account holding `tasks.manage` in a guild this token reaches (ADR
+      // 0130), so any other token never sees them in `tools/list` at all. The
+      // ports still recheck owner-or-`tasks.manage` in the call's guild on
+      // every call, so a revoked permission or a disabled account is refused
+      // rather than served.
+      ...(canManageTasksInAny(deps, principal.accountId, principal.reachableGuilds)
+        ? {
+            taskAdmin: taskAdminPortFor(deps, client, discord),
+            taskDetail: taskDetailPortFor(deps),
+            tasks: tasksPortFor(deps),
+          }
+        : {}),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

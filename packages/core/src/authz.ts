@@ -66,6 +66,12 @@ export const CAPABILITIES = [
    * a guild-level config grant must not be able to become the owner.
    */
   'accounts.manage',
+  /**
+   * ADR 0130: may create, edit, approve and archive this guild's club tasks
+   * and task teams, over MCP and on the dashboard. The instance owner may
+   * always; this lets the owner delegate it per guild.
+   */
+  'tasks.manage',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
