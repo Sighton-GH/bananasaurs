@@ -173,7 +173,13 @@ describe('react routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('addReaction');
-    expect(port.calls[0]?.input).toEqual(reactionArgs());
+    expect(port.calls[0]?.input).toEqual({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      emoji: '👍',
+      dryRun: false,
+      idempotencyKey: 'react-k1',
+    });
   });
 
   it('remove reaches removeReaction with the action stripped', async () => {
@@ -185,7 +191,13 @@ describe('react routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('removeReaction');
-    expect(port.calls[0]?.input).toEqual(reactionArgs());
+    expect(port.calls[0]?.input).toEqual({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      emoji: '👍',
+      dryRun: false,
+      idempotencyKey: 'react-k1',
+    });
   });
 
   it.each([['unknown action', { ...reactionArgs(), action: 'explode' }], ['missing action', reactionArgs()]])(
@@ -209,7 +221,12 @@ describe('set_pin routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('pin');
-    expect(port.calls[0]?.input).toEqual(pinArgs());
+    expect(port.calls[0]?.input).toEqual({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      dryRun: false,
+      idempotencyKey: 'pin-k1',
+    });
   });
 
   it('pinned false reaches unpin with the selector stripped', async () => {
@@ -221,7 +238,12 @@ describe('set_pin routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('unpin');
-    expect(port.calls[0]?.input).toEqual(pinArgs());
+    expect(port.calls[0]?.input).toEqual({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      dryRun: false,
+      idempotencyKey: 'pin-k1',
+    });
   });
 
   it.each([
@@ -245,7 +267,12 @@ describe('thread_members routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('addThreadMembers');
-    expect(port.calls[0]?.input).toEqual(membersArgs());
+    expect(port.calls[0]?.input).toEqual({
+      threadId: THREAD,
+      userIds: [USER],
+      dryRun: false,
+      idempotencyKey: 'members-k1',
+    });
   });
 
   it('remove reaches removeThreadMembers with the action stripped', async () => {
@@ -257,7 +284,12 @@ describe('thread_members routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('removeThreadMembers');
-    expect(port.calls[0]?.input).toEqual(membersArgs());
+    expect(port.calls[0]?.input).toEqual({
+      threadId: THREAD,
+      userIds: [USER],
+      dryRun: false,
+      idempotencyKey: 'members-k1',
+    });
   });
 
   it.each([
@@ -281,7 +313,12 @@ describe('set_thread_state routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('setThreadState');
-    expect(port.calls[0]?.input).toEqual({ ...stateArgs(), archived: true, dryRun: false });
+    expect(port.calls[0]?.input).toEqual({
+      threadId: THREAD,
+      archived: true,
+      dryRun: false,
+      idempotencyKey: 'state-k1',
+    });
   });
 
   it('locked reaches the lock path with the flag kept', async () => {
@@ -293,7 +330,12 @@ describe('set_thread_state routing', () => {
     expect(outcome.ok).toBe(true);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]?.method).toBe('setThreadState');
-    expect(port.calls[0]?.input).toEqual({ ...stateArgs(), locked: false, dryRun: false });
+    expect(port.calls[0]?.input).toEqual({
+      threadId: THREAD,
+      locked: false,
+      dryRun: false,
+      idempotencyKey: 'state-k1',
+    });
   });
 
   it.each([

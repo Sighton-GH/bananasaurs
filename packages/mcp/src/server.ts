@@ -72,59 +72,49 @@ import {
   type McpSendPort,
 } from './tools/send.js';
 import {
-  ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
-  ADD_THREAD_MEMBERS_TOOL_NAME,
-  ARCHIVE_THREAD_TOOL_DESCRIPTION,
-  ARCHIVE_THREAD_TOOL_NAME,
   CREATE_FORUM_POST_TOOL_DESCRIPTION,
   CREATE_FORUM_POST_TOOL_NAME,
   CREATE_THREAD_TOOL_DESCRIPTION,
   CREATE_THREAD_TOOL_NAME,
-  LOCK_THREAD_TOOL_DESCRIPTION,
-  LOCK_THREAD_TOOL_NAME,
-  REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
-  REMOVE_THREAD_MEMBERS_TOOL_NAME,
-  addThreadMembersParams,
-  addThreadMembersText,
-  archiveThreadParams,
-  archiveThreadText,
   createForumPostParams,
   createForumPostText,
   createThreadParams,
   createThreadText,
-  lockThreadParams,
-  lockThreadText,
-  removeThreadMembersParams,
-  removeThreadMembersText,
   type McpThreadWritesPort,
 } from './tools/thread-writes.js';
 import {
-  ADD_REACTION_TOOL_DESCRIPTION,
-  ADD_REACTION_TOOL_NAME,
   DELETE_MESSAGE_TOOL_DESCRIPTION,
   DELETE_MESSAGE_TOOL_NAME,
   EDIT_MESSAGE_TOOL_DESCRIPTION,
   EDIT_MESSAGE_TOOL_NAME,
-  PIN_MESSAGE_TOOL_DESCRIPTION,
-  PIN_MESSAGE_TOOL_NAME,
-  REMOVE_REACTION_TOOL_DESCRIPTION,
-  REMOVE_REACTION_TOOL_NAME,
-  UNPIN_MESSAGE_TOOL_DESCRIPTION,
-  UNPIN_MESSAGE_TOOL_NAME,
-  addReactionParams,
-  addReactionText,
   deleteMessageParams,
   deleteMessageText,
   editMessageParams,
   editMessageText,
-  pinMessageParams,
-  pinMessageText,
-  removeReactionParams,
-  removeReactionText,
-  unpinMessageParams,
-  unpinMessageText,
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
+import {
+  REACT_TOOL_DESCRIPTION,
+  REACT_TOOL_NAME,
+  reactParams,
+  runReact,
+  runSetPin,
+  runSetThreadState,
+  runThreadMembers,
+  runUpdateScheduled,
+  SET_PIN_TOOL_DESCRIPTION,
+  SET_PIN_TOOL_NAME,
+  SET_THREAD_STATE_TOOL_DESCRIPTION,
+  SET_THREAD_STATE_TOOL_NAME,
+  setPinParams,
+  setThreadStateParams,
+  THREAD_MEMBERS_TOOL_DESCRIPTION,
+  THREAD_MEMBERS_TOOL_NAME,
+  threadMembersParams,
+  UPDATE_SCHEDULED_TOOL_DESCRIPTION,
+  UPDATE_SCHEDULED_TOOL_NAME,
+  updateScheduledParams,
+} from './tools/pair-tools.js';
 import {
   CANCEL_EVENT_TOOL_DESCRIPTION,
   CANCEL_EVENT_TOOL_NAME,
@@ -145,18 +135,10 @@ import {
   type McpEventWritesPort,
 } from './tools/event-writes.js';
 import {
-  CANCEL_SCHEDULED_TOOL_DESCRIPTION,
-  CANCEL_SCHEDULED_TOOL_NAME,
-  EDIT_SCHEDULED_TOOL_DESCRIPTION,
-  EDIT_SCHEDULED_TOOL_NAME,
   LIST_SCHEDULED_TOOL_DESCRIPTION,
   LIST_SCHEDULED_TOOL_NAME,
   SCHEDULE_MESSAGE_TOOL_DESCRIPTION,
   SCHEDULE_MESSAGE_TOOL_NAME,
-  cancelScheduledParams,
-  cancelScheduledText,
-  editScheduledParams,
-  editScheduledText,
   listScheduledParams,
   listScheduledText,
   scheduleMessageParams,
@@ -346,7 +328,7 @@ export interface McpServerDeps {
   readonly send: McpSendPort;
   /**
    * The daemon's per-request thread-writes port (slice 3, Task 5): thread
-   * creation, membership, forum posts and thread state behind the six write
+   * creation, membership, forum posts and thread state behind the four write
    * tools. Required like `send`: a missing port must fail at construction,
    * not serve thread tools that always refuse. The tools still register only
    * when the principal carries the send scope.
@@ -358,7 +340,7 @@ export interface McpServerDeps {
    * reactions. Required like `send`: the daemon always provides it, and a
    * missing port must fail at construction, not serve tools that always
    * refuse. Required means the port is always present, not that the tools
-   * are always advertised: the six tools still register only when the
+   * are always advertised: the four tools still register only when the
    * principal carries the send scope.
    */
   readonly messageWrites: McpMessageWritesPort;
@@ -374,8 +356,8 @@ export interface McpServerDeps {
   readonly eventWrites: McpEventWritesPort;
   /**
    * The daemon's per-request schedule port (slice 5, Task 3): fixed-text
-   * scheduled sends behind `schedule_message`, `list_scheduled`,
-   * `edit_scheduled` and `cancel_scheduled`, stored as `origin='mcp'`
+   * scheduled sends behind `schedule_message`, `list_scheduled` and
+   * `update_scheduled`, stored as `origin='mcp'`
    * reminder rows. Required like `send`: the daemon always provides it, and
    * a missing port must fail at construction, not serve tools that always
    * refuse. Required means the port is always present, not that the tools
@@ -529,9 +511,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
-    // The six thread/forum write tools (slice 3, Task 5): same scope, same
-    // handler shape — the text function answers every outcome and the
-    // try/catch only fires on something it did not foresee.
+    // The thread/forum write tools (slice 3, Task 5, consolidated by ADR
+    // 0132 Task 2): same scope, same handler shape — the text function
+    // answers every outcome and the try/catch only fires on something it
+    // did not foresee.
     const threadWrites = deps.threadWrites;
     const writeTools = [
       [
@@ -541,16 +524,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         createThreadText,
       ],
       [
-        ADD_THREAD_MEMBERS_TOOL_NAME,
-        ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
-        addThreadMembersParams,
-        addThreadMembersText,
-      ],
-      [
-        REMOVE_THREAD_MEMBERS_TOOL_NAME,
-        REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
-        removeThreadMembersParams,
-        removeThreadMembersText,
+        THREAD_MEMBERS_TOOL_NAME,
+        THREAD_MEMBERS_TOOL_DESCRIPTION,
+        threadMembersParams,
+        runThreadMembers,
       ],
       [
         CREATE_FORUM_POST_TOOL_NAME,
@@ -559,12 +536,11 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         createForumPostText,
       ],
       [
-        ARCHIVE_THREAD_TOOL_NAME,
-        ARCHIVE_THREAD_TOOL_DESCRIPTION,
-        archiveThreadParams,
-        archiveThreadText,
+        SET_THREAD_STATE_TOOL_NAME,
+        SET_THREAD_STATE_TOOL_DESCRIPTION,
+        setThreadStateParams,
+        runSetThreadState,
       ],
-      [LOCK_THREAD_TOOL_NAME, LOCK_THREAD_TOOL_DESCRIPTION, lockThreadParams, lockThreadText],
     ] as const;
     for (const [name, description, params, text] of writeTools) {
       server.tool(name, description, params, async (args: unknown) => {
@@ -582,10 +558,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
-    // Task 6: the six message-write tools, same handler shape as
-    // `send_message` above — each text function already answers every
-    // malformed argument and every port fault, so the try/catch here only
-    // fires on something the tool layer did not foresee.
+    // Task 6 (consolidated by ADR 0132 Task 2): the message-write tools,
+    // same handler shape as `send_message` above — each text function
+    // already answers every malformed argument and every port fault, so the
+    // try/catch here only fires on something the tool layer did not foresee.
     const writes = deps.messageWrites;
     const messageWriteTools = [
       [EDIT_MESSAGE_TOOL_NAME, EDIT_MESSAGE_TOOL_DESCRIPTION, editMessageParams, editMessageText],
@@ -595,20 +571,8 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         deleteMessageParams,
         deleteMessageText,
       ],
-      [PIN_MESSAGE_TOOL_NAME, PIN_MESSAGE_TOOL_DESCRIPTION, pinMessageParams, pinMessageText],
-      [
-        UNPIN_MESSAGE_TOOL_NAME,
-        UNPIN_MESSAGE_TOOL_DESCRIPTION,
-        unpinMessageParams,
-        unpinMessageText,
-      ],
-      [ADD_REACTION_TOOL_NAME, ADD_REACTION_TOOL_DESCRIPTION, addReactionParams, addReactionText],
-      [
-        REMOVE_REACTION_TOOL_NAME,
-        REMOVE_REACTION_TOOL_DESCRIPTION,
-        removeReactionParams,
-        removeReactionText,
-      ],
+      [SET_PIN_TOOL_NAME, SET_PIN_TOOL_DESCRIPTION, setPinParams, runSetPin],
+      [REACT_TOOL_NAME, REACT_TOOL_DESCRIPTION, reactParams, runReact],
     ] as const;
     for (const [name, description, params, text] of messageWriteTools) {
       server.tool(name, description, params, async (args: unknown) => {
@@ -653,13 +617,14 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
-    // The four schedule tools (slice 5, Task 3), same handler shape as
-    // `send_message` above — each text function already answers every
-    // malformed argument and every port fault, so the try/catch here only
-    // fires on something the tool layer did not foresee. The three writes
-    // render their outcomes directly; `list_scheduled` is a read of the
-    // connector's own outbox under this same send scope, so it passes its
-    // record through the read-audit port like every other read.
+    // The schedule tools (slice 5, Task 3, consolidated by ADR 0132 Task
+    // 2), same handler shape as `send_message` above — each text function
+    // already answers every malformed argument and every port fault, so the
+    // try/catch here only fires on something the tool layer did not
+    // foresee. The write renders its outcome directly; `list_scheduled` is
+    // a read of the connector's own outbox under this same send scope, so
+    // it passes its record through the read-audit port like every other
+    // read.
     const schedule = deps.schedule;
     const scheduleWriteTools = [
       [
@@ -669,16 +634,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         scheduleMessageText,
       ],
       [
-        EDIT_SCHEDULED_TOOL_NAME,
-        EDIT_SCHEDULED_TOOL_DESCRIPTION,
-        editScheduledParams,
-        editScheduledText,
-      ],
-      [
-        CANCEL_SCHEDULED_TOOL_NAME,
-        CANCEL_SCHEDULED_TOOL_DESCRIPTION,
-        cancelScheduledParams,
-        cancelScheduledText,
+        UPDATE_SCHEDULED_TOOL_NAME,
+        UPDATE_SCHEDULED_TOOL_DESCRIPTION,
+        updateScheduledParams,
+        runUpdateScheduled,
       ],
     ] as const;
     for (const [name, description, params, text] of scheduleWriteTools) {

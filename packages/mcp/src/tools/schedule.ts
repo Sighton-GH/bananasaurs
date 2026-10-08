@@ -21,9 +21,10 @@ import {
 const SCHEDULED_NOT_PINGED_LEAD = 'As of now, these mentions in the text would not ping';
 
 /**
- * The four schedule tools, registered under the send scope: scheduling a
+ * The schedule handlers, registered under the send scope: scheduling a
  * fixed-text send, listing the connector's own outbox, and editing or
- * cancelling a scheduled send. Storage is the existing `assistant_reminders`
+ * cancelling a scheduled send behind `update_scheduled` (see
+ * `pair-tools.ts` for the merged tool). Storage is the existing `assistant_reminders`
  * table with `origin='mcp'` (ADR 0119); the daemon's reminder worker
  * delivers the rows, and this task never touches delivery.
  *
@@ -46,7 +47,7 @@ const SCHEDULED_NOT_PINGED_LEAD = 'As of now, these mentions in the text would n
  * Every write goes through `runMcpAction` on the daemon side: creates with
  * kind `schedule.create` in cap group `message`, edits and cancels with
  * kinds `schedule.edit` / `schedule.cancel` in cap group `edit`. Only edits
- * and cancels record an undo — a fresh send points at `cancel_scheduled`
+ * and cancels record an undo — a fresh send points at `update_scheduled`
  * instead, which is what the create text says.
  */
 
@@ -75,7 +76,7 @@ export const SCHEDULE_MESSAGE_TOOL_DESCRIPTION =
   'Member (<@USER_ID>) and role (<@&ROLE_ID>) mentions typed into the content ping when it is sent, ' +
   'checked against the guild ping policy then; @everyone and @here never ping. ' +
   'pingRoles/pingUsers add pings strictly: a bad one there refuses the call when scheduled. ' +
-  'Scheduling cannot be undone: to remove the send, call cancel_scheduled with its reminder id. ' +
+  'Scheduling cannot be undone: to remove the send, call update_scheduled with action cancel and its reminder id. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will schedule the message twice. ' +
   'Pass dryRun to record without storing. ' +
@@ -86,25 +87,6 @@ export const LIST_SCHEDULED_TOOL_DESCRIPTION =
   "Lists this connector's own scheduled sends in this guild — reminder ids, due times, " +
   'recurrence, status and channel, with the first 100 characters of each text as evidence. ' +
   'Assistant reminders set in chat never appear here. Read-only.';
-
-export const EDIT_SCHEDULED_TOOL_NAME = 'edit_scheduled';
-export const EDIT_SCHEDULED_TOOL_DESCRIPTION =
-  'Edits a scheduled send of this guild. ' +
-  'Only a message still waiting to send can be edited; an unknown id, or one already ' +
-  'sent, cancelled or failed, is refused. Pass at or recurrence to re-time it ' +
-  '(the two are exclusive, like at creation); new pings are checked against the guild ' +
-  'ping policy. The previous values are kept for undo. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without changing anything.';
-
-export const CANCEL_SCHEDULED_TOOL_NAME = 'cancel_scheduled';
-export const CANCEL_SCHEDULED_TOOL_DESCRIPTION =
-  'Cancels a scheduled send of this guild. ' +
-  'Only a message still waiting to send can be cancelled; an unknown id, or one already ' +
-  'sent, cancelled or failed, is refused. ' +
-  'Undo restores the send while it is still due; past its due time the undo refuses as expired. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without cancelling.';
 
 /** The statuses `list_scheduled` can filter on — the reminder lifecycle. */
 export type ScheduleStatusFilter =
@@ -374,46 +356,6 @@ export const listScheduledParams = {
     ),
 };
 
-export const editScheduledParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  reminderId: z.string().describe('Scheduled send to edit, from list_scheduled.'),
-  content: z
-    .string()
-    .optional()
-    .describe(`New message text, 1 to ${String(SCHEDULE_CONTENT_MAX)} characters.`),
-  at: z
-    .union([z.string(), z.number()])
-    .optional()
-    .describe(
-      'New one-shot fire time as an ISO-8601 string or epoch milliseconds; must be in the future, and clears any recurrence. Exclusive with recurrence.',
-    ),
-  recurrence: reminderRecurrence
-    .optional()
-    .describe(
-      'New recurring pattern with a time zone; the send re-anchors to its next occurrence. Exclusive with at.',
-    ),
-  pingRoles: z
-    .array(z.string())
-    .optional()
-    .describe('Replacement role pings, as names or ids; checked against the guild ping policy.'),
-  pingUsers: z.array(z.string()).optional().describe('Replacement member pings, as ids.'),
-  dryRun: z.boolean().optional().describe('Record without changing anything.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this edit; reuse the same value if you retry this call.'),
-};
-
-export const cancelScheduledParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  reminderId: z.string().describe('Scheduled send to cancel, from list_scheduled.'),
-  dryRun: z.boolean().optional().describe('Record without cancelling.'),
-  idempotencyKey: z
-    .string()
-    .describe(
-      'Caller-supplied key for this cancellation; reuse the same value if you retry this call.',
-    ),
-};
-
 /** Which tool is rendering, for the verbs and budget words below. */
 type ScheduleKind = 'schedule' | 'edit' | 'cancel';
 
@@ -608,7 +550,10 @@ const renderOutcome = (
               `Scheduled message ${outcome.reminderId} to channel ${target.channel ?? '?'} ` +
               `in guild ${guildId} (action ${outcome.actionId}): ${timing}. ` +
               'Scheduling cannot be undone: to remove the send, call ' +
-              `\`${CANCEL_SCHEDULED_TOOL_NAME}\` with reminderId ${outcome.reminderId}.` +
+              // ADR 0132 Task 2: the literal new tool name — importing it
+              // from `pair-tools.ts` would cycle back into this module.
+              '`update_scheduled` with action cancel and reminderId ' +
+              `${outcome.reminderId}.` +
               notPingedText(outcome.notPinged, SCHEDULED_NOT_PINGED_LEAD),
           };
         case 'edit':
