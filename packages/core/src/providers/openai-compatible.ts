@@ -355,6 +355,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         isDailyFreeQuota(request.model, detail?.error.message, metadata)
       ) {
         const resetAt = resolveResetAt(response, metadata, Date.now());
+        const upstream = upstreamFromError(metadata);
         throw new ProviderError(
           'quota',
           reason === undefined
@@ -365,14 +366,13 @@ export class OpenAiCompatibleProvider implements TextProvider {
             quotaScope: 'daily-free',
             status: response.status,
             host: this.host,
-            ...(upstreamFromError(metadata) === undefined
-              ? {}
-              : { upstream: upstreamFromError(metadata) as string }),
+            ...(upstream === undefined ? {} : { upstream }),
             ...(resetAt === undefined ? {} : { resetAt }),
           },
         );
       }
       const kind = statusKind(response.status);
+      const upstream = upstreamFromError(metadata);
       throw new ProviderError(
         kind,
         reason === undefined
@@ -382,9 +382,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         {
           status: response.status,
           host: this.host,
-          ...(upstreamFromError(metadata) === undefined
-            ? {}
-            : { upstream: upstreamFromError(metadata) as string }),
+          ...(upstream === undefined ? {} : { upstream }),
         },
       );
     }
