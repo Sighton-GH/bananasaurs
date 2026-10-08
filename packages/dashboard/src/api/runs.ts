@@ -103,8 +103,10 @@ export const describeRunEvent: (event: RunEvent) => string = (event) => {
       return text;
     }
     default: {
-      const _exhaustive: never = event;
-      return _exhaustive;
+      // A new event kind fails typecheck here; at runtime (a daemon newer
+      // than this page) the row still renders instead of crashing.
+      const unknownEvent: never = event;
+      return `Recorded step (${String((unknownEvent as { readonly kind?: unknown }).kind)})`;
     }
   }
 };
