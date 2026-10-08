@@ -330,7 +330,12 @@ describe('PendingTurn', () => {
 
   it('reloads the transcript when the seen run is replaced by another run', async () => {
     vi.useFakeTimers();
-    const runA = { ...RUN, stalled: false, runId: 'run-a', label: 'Asking nemotron (model 1 of 2)' };
+    const runA = {
+      ...RUN,
+      stalled: false,
+      runId: 'run-a',
+      label: 'Asking nemotron (model 1 of 2)',
+    };
     const runB = { ...RUN, stalled: false, runId: 'run-b', label: 'Asking club (model 2 of 2)' };
     const calls: string[] = [];
     vi.stubGlobal(
