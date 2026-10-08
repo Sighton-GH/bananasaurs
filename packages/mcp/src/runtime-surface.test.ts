@@ -67,28 +67,38 @@ const loadedFrom = (cache: NodeJS.Dict<unknown>, pkg: string): string[] =>
   Object.keys(cache).filter((k) => k.includes(`/node_modules/${pkg}/`));
 
 describe('MCP SDK runtime surface (ADR 0044 §8)', () => {
-  it('keeps the second HTTP stack and the process spawner out of the process', async () => {
-    await import('./index.js');
-    await import('@modelcontextprotocol/sdk/server/mcp.js');
-    await import('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js');
-    const { createRequire } = await import('node:module');
-    const req = createRequire(REPO_ROOT);
-    const found = FORBIDDEN.flatMap((pkg) =>
-      loadedFrom(req.cache, pkg).map((path) => `${pkg}: ${path}`),
-    );
-    expect(found).toEqual([]);
-  }, COLD_IMPORT_TIMEOUT_MS);
+  it(
+    'keeps the second HTTP stack and the process spawner out of the process',
+    async () => {
+      await import('./index.js');
+      await import('@modelcontextprotocol/sdk/server/mcp.js');
+      await import('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js');
+      const { createRequire } = await import('node:module');
+      const req = createRequire(REPO_ROOT);
+      const found = FORBIDDEN.flatMap((pkg) =>
+        loadedFrom(req.cache, pkg).map((path) => `${pkg}: ${path}`),
+      );
+      expect(found).toEqual([]);
+    },
+    COLD_IMPORT_TIMEOUT_MS,
+  );
 
-  it('loads ajv from the SDK’s own nested node_modules', async () => {
-    await import('./index.js');
-    await import('@modelcontextprotocol/sdk/server/mcp.js');
-    await import('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js');
-    const { createRequire } = await import('node:module');
-    const req = createRequire(REPO_ROOT);
-    const ajvPaths = loadedFrom(req.cache, 'ajv');
-    expect(ajvPaths.length).toBeGreaterThan(0);
-    expect(
-      ajvPaths.some((p) => p.includes('/node_modules/@modelcontextprotocol/sdk/node_modules/ajv/')),
-    ).toBe(true);
-  }, COLD_IMPORT_TIMEOUT_MS);
+  it(
+    'loads ajv from the SDK’s own nested node_modules',
+    async () => {
+      await import('./index.js');
+      await import('@modelcontextprotocol/sdk/server/mcp.js');
+      await import('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js');
+      const { createRequire } = await import('node:module');
+      const req = createRequire(REPO_ROOT);
+      const ajvPaths = loadedFrom(req.cache, 'ajv');
+      expect(ajvPaths.length).toBeGreaterThan(0);
+      expect(
+        ajvPaths.some((p) =>
+          p.includes('/node_modules/@modelcontextprotocol/sdk/node_modules/ajv/'),
+        ),
+      ).toBe(true);
+    },
+    COLD_IMPORT_TIMEOUT_MS,
+  );
 });
