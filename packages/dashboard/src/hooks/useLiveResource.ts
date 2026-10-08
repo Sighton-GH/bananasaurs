@@ -28,7 +28,10 @@ const visibilitySource = (): VisibilitySource | undefined =>
  * and the last data stays rendered.
  *
  * After the first load, a poll replaces the data without returning to
- * `loading`, and a failed poll keeps the data and sets `stale`. `reload()`
+ * `loading`, and a failed poll keeps the data and sets `stale`. A failed
+ * first load keeps retrying at `slowMs` until one succeeds (ADR 0129: the
+ * banner stays hidden through a daemon restart, then appears without a
+ * page reload); the error stays rendered until then. `reload()`
  * behaves like `useResource`'s (a fresh load with `loading`).
  *
  * `opts` rides a ref so an inline options object does not restart the loop;
@@ -101,13 +104,43 @@ export function useLiveResource<T>(
         return;
       }
       // Back in view: poll at once when data exists, then resume the cadence.
-      // A done resource stays put.
+      // A done resource stays put. With no data yet (the first load failed),
+      // retry at once instead of waiting for the slow tick.
       if (latest !== undefined) {
         if (optsRef.current.isDone !== undefined && optsRef.current.isDone(latest)) return;
         clearTimer();
         tick();
+      } else {
+        clearTimer();
+        retryInitial();
       }
     };
+
+    function scheduleInitialRetry(): void {
+      clearTimer();
+      if (cancelled) return;
+      timer = setTimeout(retryInitial, optsRef.current.slowMs);
+    }
+
+    function retryInitial(): void {
+      timer = undefined;
+      if (cancelled || visibilitySource()?.visibilityState === 'hidden') return;
+      load().then(
+        (data) => {
+          if (cancelled) return;
+          latest = data;
+          setResource({ state: 'ready', data });
+          setStale(false);
+          schedule();
+        },
+        (err: unknown) => {
+          if (cancelled) return;
+          const message = err instanceof Error ? err.message : String(err);
+          setResource({ state: 'error', request, message, error: err, retry: reload });
+          scheduleInitialRetry();
+        },
+      );
+    }
 
     setResource({ state: 'loading' });
     setStale(false);
@@ -122,6 +155,7 @@ export function useLiveResource<T>(
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
         setResource({ state: 'error', request, message, error: err, retry: reload });
+        scheduleInitialRetry();
       },
     );
     visibilitySource()?.addEventListener('visibilitychange', onVisibility);

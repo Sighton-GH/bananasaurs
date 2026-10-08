@@ -116,6 +116,39 @@ describe('useLiveResource', () => {
     expect(screen.queryByText('stale')).toBeNull();
   });
 
+  it('keeps a slow poll going after a first-load error until a load succeeds', async () => {
+    vi.useFakeTimers();
+    const load = vi
+      .fn<() => Promise<Count>>()
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce({ n: 1 })
+      .mockResolvedValue({ n: 2 });
+    render(<Probe load={load} isFast={() => true} />);
+    await act(async () => {});
+    expect(screen.getByText('error: nope')).toBeTruthy();
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // The retry waits the slow cadence, not the fast one.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('error: nope')).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(13000);
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('value: 1')).toBeTruthy();
+
+    // Then polling continues as normal at the fast cadence.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('value: 2')).toBeTruthy();
+  });
+
   it('pauses while the tab is hidden and polls once on return', async () => {
     vi.useFakeTimers();
     const load = vi.fn<() => Promise<Count>>().mockResolvedValue({ n: 1 });
