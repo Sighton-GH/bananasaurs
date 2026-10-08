@@ -3,8 +3,9 @@ import { act, cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import type { RunEvent } from '@bananasaurs/core';
-import { renderWithSession, stubFetch } from '../test-support.js';
+import { renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { activeRunsUrl, describeRunEvent } from '../api/runs.js';
+import { SessionProvider } from '../app/session.js';
 import { InProgressPanel, PendingTurn, StepLog } from './assistant-live.js';
 
 afterEach(cleanup);
@@ -249,8 +250,7 @@ describe('InProgressPanel', () => {
 });
 
 describe('PendingTurn', () => {
-  it('renders the pending bot turn only for its conversation', async () => {
-    stubFetch([{ url: activeRunsUrl(), body: { runs: [RUN] } }]);
+  it('renders the pending bot turn only for its conversation', async () => {    stubFetch([{ url: activeRunsUrl(), body: { runs: [RUN] } }]);
     const { unmount } = renderWithSession(
       <Router>
         <PendingTurn conversationId="conv-1" onFinished={() => undefined} />
@@ -266,6 +266,50 @@ describe('PendingTurn', () => {
     );
     await act(async () => {});
     expect(screen.queryAllByText(/Asking nemotron/)).toHaveLength(0);
+  });
+
+  it('reloads the transcript when the seen run is replaced by another run', async () => {
+    vi.useFakeTimers();
+    const runA = { ...RUN, runId: 'run-a', label: 'Asking nemotron (model 1 of 2)' };
+    const runB = { ...RUN, runId: 'run-b', label: 'Asking club (model 2 of 2)' };
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        calls.push(url);
+        const body = calls.length === 1 ? { runs: [runA] } : { runs: [runB] };
+        return Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    const onFinished = vi.fn();
+    renderWithSession(
+      <Router>
+        <PendingTurn conversationId="conv-1" onFinished={onFinished} />
+      </Router>,
+    );
+    await act(async () => {});
+    expect(calls[0]).toBe(activeRunsUrl());
+    expect(screen.getAllByText(/Asking nemotron/).length).toBeGreaterThan(0);
+
+    // Run A is replaced by run B between polls: A's completion still reloads once.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText(/Asking club/).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(/Asking nemotron/)).toHaveLength(0);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30000);
+    });
+    expect(onFinished).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -329,6 +373,74 @@ describe('StepLog', () => {
     expect(screen.getByText('+0.5 s')).toBeTruthy();
     expect(screen.getByText('club-model answered in 900 ms, 100 in / 20 out tokens')).toBeTruthy();
     expect(screen.getByText('Finished: answered in 1,200 ms')).toBeTruthy();
+  });
+
+  it('starts over when the viewed run changes', async () => {
+    vi.useFakeTimers();
+    const at = 1_790_000_000_000;
+    const aQueued = { seq: 1, at, event: { kind: 'queued', via: 'mention' } };
+    const aDone = {
+      seq: 2,
+      at: at + 500,
+      event: { kind: 'finished', outcome: 'answered', durationMs: 1200 },
+    };
+    const bPosting = { seq: 1, at, event: { kind: 'delivering', parts: 2 } };
+    const bTool = {
+      seq: 2,
+      at: at + 500,
+      event: { kind: 'tool-call', round: 1, tool: 'search_sources' },
+    };
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        calls.push(url);
+        const events = url.includes('after=0')
+          ? url.includes('/run-a/')
+            ? [aQueued, aDone]
+            : [bPosting, bTool]
+          : [];
+        return Promise.resolve(
+          new Response(JSON.stringify({ events }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    const view = renderWithSession(
+      <Router>
+        <StepLog runId="run-a" />
+      </Router>,
+    );
+    await act(async () => {});
+    expect(calls[0]).toContain('run-a');
+    expect(calls[0]).toContain('after=0');
+    expect(screen.getByText('Finished: answered in 1,200 ms')).toBeTruthy();
+
+    view.rerender(
+      <SessionProvider session={TEST_SESSION} onLoggedOut={() => undefined}>
+        <Router>
+          <StepLog runId="run-b" />
+        </Router>
+      </SessionProvider>,
+    );
+    await act(async () => {});
+    // Only B's events from seq 1: B polls from after=0, not from A's last seq.
+    expect(calls.some((c) => c.includes('run-b') && c.includes('after=0'))).toBe(true);
+    expect(screen.getByText('Posting the answer (2 part(s))')).toBeTruthy();
+    expect(screen.getByText('Calling tool search_sources')).toBeTruthy();
+    expect(screen.queryByText('Finished: answered in 1,200 ms')).toBeNull();
+
+    // B is still running, so the log keeps the fast cadence for B.
+    const pollsBefore = calls.filter((c) => c.includes('run-b')).length;
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(calls.filter((c) => c.includes('run-b')).length).toBeGreaterThan(pollsBefore);
+    expect(calls.some((c) => c.includes('run-b') && c.includes('after=2'))).toBe(true);
   });
 
   it('says plainly when the run stored no step log', async () => {
