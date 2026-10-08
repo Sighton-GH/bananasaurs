@@ -139,14 +139,15 @@ export function PendingTurn(props: {
   const { onFinished } = props;
   const run = runs[0];
 
-  // When the matching run disappears, the transcript reloads once to show
-  // the real (or failed) turn in its place.
+  // When the previously seen run leaves the matching set — finished or
+  // replaced by another run — the transcript reloads once to show the real
+  // (or failed) turn in its place.
   const prevId = useRef<string | undefined>(undefined);
   useEffect(() => {
     const current = run?.runId;
     const prev = prevId.current;
     prevId.current = current;
-    if (prev !== undefined && current === undefined) onFinished();
+    if (prev !== undefined && current !== prev) onFinished();
   }, [run?.runId, onFinished]);
 
   if (run === undefined) return null;
@@ -182,6 +183,19 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
     slowMs: 15000,
     isFast: (d) => !seenFinished.current && !d.events.some((e) => e.event.kind === 'finished'),
   });
+
+  // A new run starts its log from seq 1: drop the previous run's rows
+  // while rendering, so the first poll for the new run asks from after=0
+  // and the previous run's finished event cannot slow the new cadence. This
+  // must happen during render: an effect would run after the poll hook's
+  // own effect, a fetch too late.
+  const prevRunId = useRef(runId);
+  if (prevRunId.current !== runId) {
+    prevRunId.current = runId;
+    lastSeq.current = 0;
+    seenFinished.current = false;
+    setEvents([]);
+  }
 
   // Appends only events past the last seen seq, so a repeated poll never
   // duplicates a row.
