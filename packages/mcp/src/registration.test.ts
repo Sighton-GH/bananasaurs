@@ -238,29 +238,24 @@ const READ_TOOLS: readonly string[] = [
   'task_teams',
 ];
 
-/** The send-scope set: `send_message`, the twelve thread/message write tools, the four event tools, the four schedule tools, and `undo_action`. */
+/** The send-scope set: `send_message`, the eight thread/message write tools (ADR 0132 Task 2), the four event tools, the three schedule tools, and `undo_action`. */
 const SEND_TOOLS: readonly string[] = [
   'send_message',
   'create_thread',
-  'add_thread_members',
-  'remove_thread_members',
+  'thread_members',
   'create_forum_post',
-  'archive_thread',
-  'lock_thread',
+  'set_thread_state',
   'edit_message',
   'delete_message',
-  'pin_message',
-  'unpin_message',
-  'add_reaction',
-  'remove_reaction',
+  'set_pin',
+  'react',
   'create_event',
   'edit_event',
   'cancel_event',
   'create_poll',
   'schedule_message',
+  'update_scheduled',
   'list_scheduled',
-  'edit_scheduled',
-  'cancel_scheduled',
   'undo_action',
 ];
 
@@ -340,7 +335,7 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
 describe('registration pins every scope subset', () => {
   it('the four scope sets have the expected sizes', () => {
     expect(READ_TOOLS).toHaveLength(28);
-    expect(SEND_TOOLS).toHaveLength(22);
+    expect(SEND_TOOLS).toHaveLength(17);
     expect(ROLES_TOOLS).toHaveLength(8);
     expect(TASK_TOOLS).toHaveLength(7);
     // The hardcoded task lists are the whole registrar: no drift between
@@ -474,6 +469,90 @@ describe('registration pins every scope subset', () => {
       'unarchive_task',
     ]) {
       expect(names).not.toContain(removed);
+    }
+  });
+
+  it('(ADR 0132 Task 2) an all-scope owner sees exactly the full tool set, with the five pair tools', async () => {
+    // The snapshot later consolidation tasks update: every advertised tool
+    // name, sorted. `undo_action` registers under send or roles from one
+    // shared block, so it appears once.
+    const expected: readonly string[] = [
+      'bulk_role_change',
+      'cancel_event',
+      'create_event',
+      'create_forum_post',
+      'create_panel',
+      'create_poll',
+      'create_role',
+      'create_task',
+      'create_thread',
+      'delete_message',
+      'delete_panel',
+      'delete_task',
+      'edit_event',
+      'edit_message',
+      'edit_panel',
+      'edit_role',
+      'get_health',
+      'get_job',
+      'get_member',
+      'get_message',
+      'get_mod_case',
+      'get_panel',
+      'get_server_context',
+      'get_server_overview',
+      'get_task',
+      'grant_role',
+      'list_actions',
+      'list_audit_events',
+      'list_channels',
+      'list_jobs',
+      'list_members',
+      'list_mod_cases',
+      'list_panels',
+      'list_roles',
+      'list_scheduled',
+      'list_tasks',
+      'list_threads',
+      'list_unanswered',
+      'open_resource',
+      'react',
+      'read_channel_history',
+      'read_digest',
+      'read_thread',
+      'remove_role',
+      'schedule_message',
+      'search_members',
+      'search_messages',
+      'search_resources',
+      'send_message',
+      'set_pin',
+      'set_thread_state',
+      'task_progress',
+      'task_reminders',
+      'task_settings',
+      'task_steps',
+      'task_teams',
+      'thread_members',
+      'undo_action',
+      'update_scheduled',
+      'update_task',
+    ];
+    expect(expected).toEqual([...expected].sort());
+    expect(await toolNamesFor(['read', 'send', 'roles', 'tasks'])).toEqual(expected);
+    for (const removed of [
+      'add_reaction',
+      'remove_reaction',
+      'pin_message',
+      'unpin_message',
+      'add_thread_members',
+      'remove_thread_members',
+      'archive_thread',
+      'lock_thread',
+      'edit_scheduled',
+      'cancel_scheduled',
+    ]) {
+      expect(expected).not.toContain(removed);
     }
   });
 });
