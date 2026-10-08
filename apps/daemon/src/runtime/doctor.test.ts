@@ -589,24 +589,6 @@ describe('the printed report', () => {
 });
 
 describe('model health (ADR 0129 §8)', () => {
-  const persistentInput = (over = {}) => ({
-    guilds: [
-      {
-        guildId: GUILD,
-        persistent: [
-          {
-            model: 'model-a',
-            keyId: 'key-1',
-            code: 'provider-auth',
-            count: 3,
-            since: 1_000,
-            ...over,
-          },
-        ],
-      },
-    ],
-  });
-
   it('fails ok and prints the warning line for one persistent entry', () => {
     addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config(), Date.now(), undefined, undefined, {
@@ -642,6 +624,5 @@ describe('model health (ADR 0129 §8)', () => {
     expect(report.modelHealth).toBeUndefined();
     expect(report.ok).toBe(true);
     expect(formatDoctorReport(report)).not.toContain('AI model');
-    expect(persistentInput()).toBeDefined();
   });
 });
