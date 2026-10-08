@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId } from '@bananasaurs/core';
 import type { AssistantTrace } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
+import type { GuildScope } from '../scope.js';
+import { createConversation, appendTurn } from './conversations.js';
 import { upsertGuild } from './guilds.js';
 import {
   addTraceFlag,
   dailyUsage,
   deleteTracesForConversations,
   deleteTracesForUser,
+  failedCountsForConversations,
   getTrace,
   getTracesByIds,
   insertTrace,
@@ -269,5 +272,63 @@ describe('deleteTracesForUser', () => {
     expect(getTrace(a, 'mine')).toBeUndefined();
     expect(getTrace(a, 'theirs')).toBeDefined();
     expect(getTrace(b, 'mine')).toBeDefined();
+  });
+});
+
+describe('failedCountsForConversations (ADR 0129)', () => {
+  const seedConversationWithTrace = (
+    scope: GuildScope,
+    conversationId: string,
+    traceId: string,
+    outcome: AssistantTrace['outcome'],
+  ): void => {
+    createConversation(scope, {
+      conversationId,
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: USER,
+      title: `title-${conversationId}`,
+      source: 'discord',
+      at: 1_000,
+    });
+    appendTurn(scope, {
+      conversationId,
+      turnId: `${conversationId}-turn-user`,
+      at: 1_000,
+      role: 'user',
+      authorId: USER,
+      authorName: 'Bryan',
+      text: 'a question',
+    });
+    appendTurn(scope, {
+      conversationId,
+      turnId: `${conversationId}-turn-assistant`,
+      at: 1_001,
+      role: 'assistant',
+      authorName: 'Bananasaurs',
+      text: 'an answer',
+      traceId,
+    });
+    insertTrace(
+      scope,
+      trace({ traceId, conversationId, turnId: `${conversationId}-turn-assistant`, outcome }),
+    );
+  };
+
+  it('counts one failed assistant turn for conv1 and nothing for the answered conv2', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedConversationWithTrace(scope, 'conv1', 'trace-fail-1', 'failed');
+    seedConversationWithTrace(scope, 'conv2', 'trace-ok-1', 'answered');
+    expect(failedCountsForConversations(scope, ['conv1', 'conv2'])).toEqual(
+      new Map([['conv1', 1]]),
+    );
+  });
+
+  it('ignores another guild’s failed trace and answers an empty map for no ids', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    seedConversationWithTrace(scope, 'conv1', 'trace-fail-1', 'failed');
+    seedConversationWithTrace(t.scopes.forGuild(GUILD_B), 'conv1', 'trace-fail-1', 'failed');
+    expect(failedCountsForConversations(scope, ['conv1'])).toEqual(new Map([['conv1', 1]]));
+    expect(failedCountsForConversations(scope, [])).toEqual(new Map());
   });
 });

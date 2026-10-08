@@ -267,4 +267,89 @@ describe('assistant trace routes', () => {
     }>();
     expect(body.trace.attempts[0]?.explain?.title).toBe('The provider rejected the API key');
   });
+
+  it('ADR 0129: withholds providerMessage without config.read, returns it with the grant', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    traceRepo.insertTrace(
+      t.scopes.forGuild(GUILD),
+      trace({
+        outcome: 'failed',
+        attempts: [
+          {
+            provider: 'openrouter',
+            model: 'stealth/space-bunny-alpha',
+            outcome: 'error',
+            reason: 'bad-model',
+            ms: 5,
+            code: 'provider-bad-model',
+            providerMessage: 'leak sk-or-v1-0123456789abcdef0123456789abcdef',
+          },
+        ],
+      }),
+    );
+    const without = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces/trace-1',
+      headers: { cookie },
+    });
+    expect(without.statusCode).toBe(200);
+    expect(JSON.stringify(without.json())).not.toContain('providerMessage');
+    expect(JSON.stringify(without.json())).not.toContain('sk-or-v1');
+
+    grant('config.read');
+    const withGrant = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces/trace-1',
+      headers: { cookie },
+    });
+    expect(withGrant.statusCode).toBe(200);
+    expect(
+      withGrant.json<{ trace: { attempts: { providerMessage?: string }[] } }>().trace.attempts[0]
+        ?.providerMessage,
+    ).toBe('leak sk-or-v1-0123456789abcdef0123456789abcdef');
+  });
+
+  it('ADR 0129: the detail answers a journal window around the run', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    traceRepo.insertTrace(t.scopes.forGuild(GUILD), trace({ at: 1_790_000_000_000 }));
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces/trace-1',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const journal = response.json<{ journal: { since: string; until: string } }>().journal;
+    expect(journal.since < journal.until).toBe(true);
+  });
+
+  it('ADR 0129: the list row carries the error code of a failed run', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    traceRepo.insertTrace(
+      t.scopes.forGuild(GUILD),
+      trace({
+        traceId: 'failed-1',
+        outcome: 'failed',
+        attempts: [
+          {
+            provider: 'openrouter',
+            model: 'stealth/space-bunny-alpha',
+            outcome: 'error',
+            ms: 5,
+            code: 'provider-bad-model',
+          },
+        ],
+      }),
+    );
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces',
+      headers: { cookie },
+    });
+    expect(list.statusCode).toBe(200);
+    const rows = list.json<{ traces: { traceId: string; errorCode?: string }[] }>().traces;
+    expect(rows.find((r) => r.traceId === 'failed-1')?.errorCode).toBe('provider-bad-model');
+  });
 });

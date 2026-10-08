@@ -162,6 +162,61 @@ const seedConversation = (
   );
 };
 
+/** Like `seedConversation` but the assistant turn ended in a failed trace. */
+const seedFailingConversation = (conversationId: string, at: number): void => {
+  const scope = t.scopes.forGuild(GUILD);
+  conversationRepo.createConversation(scope, {
+    conversationId,
+    channelId: CHANNEL,
+    behaviourId: 'club',
+    startedBy: MEMBER,
+    title: `title-${conversationId}`,
+    source: 'discord',
+    at,
+  });
+  conversationRepo.appendTurn(scope, {
+    conversationId,
+    turnId: `${conversationId}-turn-user`,
+    at,
+    role: 'user',
+    authorId: MEMBER,
+    authorName: 'Bryan',
+    text: `question text for ${conversationId}`,
+  });
+  conversationRepo.appendTurn(scope, {
+    conversationId,
+    turnId: `${conversationId}-turn-assistant`,
+    at: at + 1,
+    role: 'assistant',
+    authorName: 'Bananasaurs',
+    text: `answer text for ${conversationId}`,
+    traceId: `${conversationId}-trace`,
+  });
+  traceRepo.insertTrace(
+    scope,
+    trace({
+      traceId: `${conversationId}-trace`,
+      at: at + 1,
+      conversationId,
+      turnId: `${conversationId}-turn-assistant`,
+      outcome: 'failed',
+      attempts: [
+        {
+          provider: 'openrouter',
+          model: 'stealth/space-bunny-alpha',
+          outcome: 'error',
+          reason: 'bad-model',
+          ms: 5,
+          code: 'provider-bad-model',
+          providerMessage:
+            'openrouter request failed with HTTP 404 (code 404: No endpoints found for stealth/space-bunny-alpha.)',
+        },
+      ],
+      error: { kind: 'provider-bad-model', message: 'the model is not available' },
+    }),
+  );
+};
+
 beforeEach(async () => {
   t = openMigratedTestDatabase();
   batchedCalls.people = 0;
@@ -693,5 +748,102 @@ describe('assistant conversation routes', () => {
       version: 1,
       updatedAt: 9_000,
     });
+  });
+
+  it('ADR 0129: the list counts each conversation’s failed turns', async () => {
+    grant('audit.read');
+    seedConversation('conv-ok', 1_000);
+    seedFailingConversation('conv-fail', 2_000);
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const rows = response.json<{
+      conversations: { conversationId: string; failedTurns: number }[];
+    }>().conversations;
+    expect(rows.find((c) => c.conversationId === 'conv-fail')?.failedTurns).toBe(1);
+    expect(rows.find((c) => c.conversationId === 'conv-ok')?.failedTurns).toBe(0);
+  });
+
+  it('ADR 0129: the failed transcript turn names the code, model and gated message', async () => {
+    grant('audit.read');
+    seedFailingConversation('conv-fail', 2_000);
+    const { cookie } = await signIn();
+    const without = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-fail',
+      headers: { cookie },
+    });
+    expect(without.statusCode).toBe(200);
+    const failedTurn = without
+      .json<{ turns: { role: string; outcome?: string; failure?: Record<string, unknown> }[] }>()
+      .turns.find((turn) => turn.role === 'assistant');
+    expect(failedTurn?.outcome).toBe('failed');
+    expect(failedTurn?.failure).toMatchObject({
+      code: 'provider-bad-model',
+      title: 'This model is not available on this key',
+      model: 'stealth/space-bunny-alpha',
+    });
+    expect(failedTurn?.failure).not.toHaveProperty('providerMessage');
+    expect(JSON.stringify(without.json())).not.toContain('No endpoints found');
+
+    grant('config.read');
+    const withGrant = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-fail',
+      headers: { cookie },
+    });
+    expect(withGrant.statusCode).toBe(200);
+    const gatedTurn = withGrant
+      .json<{ turns: { role: string; failure?: { providerMessage?: string } }[] }>()
+      .turns.find((turn) => turn.role === 'assistant');
+    expect(gatedTurn?.failure?.providerMessage).toContain('No endpoints found');
+  });
+
+  it('ADR 0129: a failed turn with no attempts falls back to the trace error kind', async () => {
+    grant('audit.read');
+    const scope = t.scopes.forGuild(GUILD);
+    conversationRepo.createConversation(scope, {
+      conversationId: 'conv-internal',
+      channelId: CHANNEL,
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'title-conv-internal',
+      source: 'discord',
+      at: 1_000,
+    });
+    conversationRepo.appendTurn(scope, {
+      conversationId: 'conv-internal',
+      turnId: 'conv-internal-turn-assistant',
+      at: 1_001,
+      role: 'assistant',
+      authorName: 'Bananasaurs',
+      text: 'answer text for conv-internal',
+      traceId: 'conv-internal-trace',
+    });
+    traceRepo.insertTrace(
+      scope,
+      trace({
+        traceId: 'conv-internal-trace',
+        conversationId: 'conv-internal',
+        outcome: 'failed',
+        attempts: [],
+        error: { kind: 'internal', message: 'boom' },
+      }),
+    );
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-internal',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const failedTurn = response
+      .json<{ turns: { role: string; failure?: { title?: string } }[] }>()
+      .turns.find((turn) => turn.role === 'assistant');
+    expect(failedTurn?.failure?.title).toBe('Internal error');
   });
 });
