@@ -93,6 +93,7 @@ const stubPage = (setup: unknown, assistant: unknown = assistantBody()) =>
     { url: '/api/assistant', body: assistant },
     { url: '/api/providers/eligibility', body: { warnings: [] } },
     { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+    { url: '/api/assistant/model-health?window=24h', body: { window: '24h', models: [] } },
   ]);
 
 const inputOf = (element: HTMLElement): HTMLInputElement => {
@@ -165,6 +166,7 @@ describe('ProvidersPage sections', () => {
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
       { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+      { url: '/api/assistant/model-health?window=24h', body: { window: '24h', models: [] } },
     ]);
     const { hook } = memoryLocation({ path: '/providers' });
     renderWithSession(

@@ -36,6 +36,7 @@ function renderAt(path: string, session: SessionInfo = TEST_SESSION) {
       body: { conversations: [] },
     },
     { method: 'POST', url: '/api/logout', body: {} },
+    { url: '/api/assistant/model-health?window=24h', body: { window: '24h', models: [] } },
   ]);
   const { hook } = memoryLocation({ path });
   renderWithSession(
@@ -138,6 +139,7 @@ describe('Shell', () => {
         body: { matches: [], nativeHits: [], nativeBlocked: 0, verdicts: {} },
       },
       { method: 'POST', url: '/api/session/guild', body: { guildId: CLUB } },
+      { url: '/api/assistant/model-health?window=24h', body: { window: '24h', models: [] } },
     ]);
     const onLoggedOut = vi.fn();
     const { hook } = memoryLocation({ path: '/' });

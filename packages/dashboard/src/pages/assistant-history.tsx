@@ -4,7 +4,9 @@ import { ApiError } from '../api.js';
 import { ASSISTANT_URL, type ActivityRow, type AssistantData } from '../api/assistant.js';
 import {
   EMPTY_TRACE_FILTERS,
+  failuresLine,
   historyUrl,
+  tokensLine,
   traceListUrl,
   usageUrl,
   type TraceFilters,
@@ -12,10 +14,12 @@ import {
   type TraceRow,
   type UsageResponse,
 } from '../api/traces.js';
+import { formatRate, modelHealthUrl, type ModelHealthResponse } from '../api/model-health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
+import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
@@ -32,6 +36,18 @@ const outcomeTone = (outcome: TraceRow['outcome']): 'ok' | 'hold' | 'danger' =>
 
 const durationText = (ms: number): string =>
   ms < 1000 ? `${String(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+
+/** "12 minutes ago" style freshness, matching the Resources page helper. */
+const relativeTime = (atMs: number, nowMs: number): string => {
+  const diffMs = Math.max(0, nowMs - atMs);
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${String(minutes)} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${String(hours)} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${String(days)} day${days === 1 ? '' : 's'} ago`;
+};
 
 /** 403 carries `no-grant`; the sentence names the plain meaning, the id second. */
 const historyError = (err: unknown): Error => {
@@ -63,7 +79,13 @@ function UsageStrip() {
             <div
               role="img"
               aria-label={`${d.day}: ${d.answers} answers, ${d.failures} failures`}
-              title={`${d.day}: ${d.answers} answers, ${d.failures} failures, ${d.fallbacks} fallbacks, ${d.tokens} tokens`}
+              title={[
+                `${d.day}: ${d.answers} answers, ${d.failures} failures, ${d.fallbacks} fallbacks, ${d.tokens} tokens`,
+                failuresLine(d),
+                tokensLine(d),
+              ]
+                .filter((line) => line !== undefined)
+                .join('\n')}
               className="h-10 rounded-sm bg-panel"
             >
               <div
@@ -78,6 +100,45 @@ function UsageStrip() {
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * ADR 0129 §8: one line per model called in the last 24 hours. The key
+ * label is not available on this page, so each line names the key id. A
+ * load that fails (usually the same missing grant) hides the card rather
+ * than the list — like the strip, it is never itself an error.
+ */
+function ModelHealthCard() {
+  const session = useSession();
+  const load = useCallback(
+    () => session.read<ModelHealthResponse>(modelHealthUrl('24h')),
+    [session],
+  );
+  const health = useResource('model health', load);
+  if (health.resource.state !== 'ready') return null;
+  const models = health.resource.data.models;
+  return (
+    <div className="mb-4">
+      <Card title="Model health (24h)">
+        {models.length === 0 ? (
+          <p className="text-sm text-ink-muted">No model calls in the last 24 hours.</p>
+        ) : (
+          <ul className="grid gap-1 text-sm">
+            {models.map((m) => (
+              <li key={`${m.keyId} ${m.model}`}>
+                <span className="font-mono text-xs">{m.model}</span> · {m.keyId} · {m.calls}{' '}
+                calls · {formatRate(m.successRate)} · p95{' '}
+                {m.p95Ms === null ? '—' : `${String(m.p95Ms)} ms`} · last error{' '}
+                {m.lastError === undefined
+                  ? '—'
+                  : `${m.lastError.code} ${relativeTime(m.lastError.at, Date.now())}`}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
   );
 }
 
@@ -210,6 +271,7 @@ export function AssistantHistoryPage() {
         purpose="Every assistant run, with the details you need to see why it answered the way it did."
       />
       <InProgressPanel onFinished={() => first.reload()} />
+      <ModelHealthCard />
       <UsageStrip />
       <form onSubmit={apply} className="mb-4 flex max-w-3xl flex-wrap items-end gap-3">
         <Field label="Outcome">

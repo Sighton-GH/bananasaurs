@@ -43,6 +43,7 @@ import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { PermissionsPage } from '../pages/permissions.js';
 import { Brand } from '../ui/Brand.js';
+import { ModelHealthBanner } from '../ui/ModelHealthBanner.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
 import { JumpNav } from './JumpNav.js';
@@ -248,6 +249,7 @@ export function Shell() {
           <StateStrip />
           <DesktopHeader />
           <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+            <ModelHealthBanner />
             <Pages />
           </main>
         </div>

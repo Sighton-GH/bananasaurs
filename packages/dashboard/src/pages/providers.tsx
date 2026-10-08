@@ -29,6 +29,12 @@ import {
 import type { EligibilityWarning, ProviderReviewResult } from '../api/ops.js';
 import { ApiError } from '../api.js';
 import { fieldError } from '../api/describe-error.js';
+import {
+  formatRate,
+  formatUsd,
+  modelHealthUrl,
+  type ModelHealthResponse,
+} from '../api/model-health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -142,6 +148,18 @@ interface TestOutcome {
   };
 }
 
+/** "12 minutes ago" style freshness, matching the Resources page helper. */
+const relativeTime = (atMs: number, nowMs: number): string => {
+  const diffMs = Math.max(0, nowMs - atMs);
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${String(minutes)} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${String(hours)} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${String(days)} day${days === 1 ? '' : 's'} ago`;
+};
+
 /** Model order: an OrderedList of key + model rows with a status pill and a Test button each. */
 function ModelOrderSection({
   setup,
@@ -170,6 +188,22 @@ function ModelOrderSection({
   const keyOf = (keyId: string): SetupKeyRow | undefined =>
     setup.keys.find((key) => key.keyId === keyId);
   const labelOf = (keyId: string): string => keyOf(keyId)?.label ?? keyId;
+
+  // ADR 0129 §8: one 24-hour health fetch for the page. A failure or 403
+  // resolves to no models, so each row below shows — instead of an error.
+  const healthLoad = useCallback(
+    () =>
+      session
+        .read<ModelHealthResponse>(modelHealthUrl('24h'))
+        .catch(() => ({ window: '24h', models: [] }) as ModelHealthResponse),
+    [session],
+  );
+  const health = useResource('model health', healthLoad);
+  const healthByPair = new Map(
+    health.resource.state === 'ready'
+      ? health.resource.data.models.map((m) => [`${m.keyId} ${m.model}`, m] as const)
+      : [],
+  );
 
   useEffect(() => {
     if (!setup.keys.some((key) => key.provider === 'gemini')) return;
@@ -269,6 +303,7 @@ function ModelOrderSection({
             const number = index + 1;
             const key = keyOf(row.keyId);
             const saved = savedByPair.get(`${row.keyId} ${row.model}`);
+            const pairHealth = healthByPair.get(`${row.keyId} ${row.model}`);
             const result = results[index];
             const pill =
               saved === undefined ? (
@@ -396,6 +431,9 @@ function ModelOrderSection({
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   {pill}
+                  {pairHealth?.persistent !== undefined && (
+                    <Badge tone="danger">Persistent failure</Badge>
+                  )}
                   {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
                 </div>
                 {saved?.usage !== undefined && (
@@ -407,6 +445,33 @@ function ModelOrderSection({
                     {saved.usage.availableAt !== undefined
                       ? ` · frees up ${new Date(saved.usage.availableAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                       : ''}
+                  </p>
+                )}
+                {/* ADR 0129 §8: the row's 24-hour health; — in each slot with no match. */}
+                {pairHealth === undefined ? (
+                  <p className="text-xs text-ink-muted">
+                    Success (24h) — · p50 / p95 — · Last error — · Cost (24h) —
+                  </p>
+                ) : (
+                  <p className="text-xs text-ink-muted">
+                    Success (24h) {formatRate(pairHealth.successRate)} ({pairHealth.calls}{' '}
+                    calls) · p50 / p95{' '}
+                    {pairHealth.p50Ms === null ? '—' : `${String(pairHealth.p50Ms)} ms`} /{' '}
+                    {pairHealth.p95Ms === null ? '—' : `${String(pairHealth.p95Ms)} ms`} · Last
+                    error{' '}
+                    {pairHealth.lastError === undefined ? (
+                      '—'
+                    ) : (
+                      <span
+                        {...(pairHealth.lastError.providerMessage === undefined
+                          ? {}
+                          : { title: pairHealth.lastError.providerMessage })}
+                      >
+                        {pairHealth.lastError.code}{' '}
+                        {relativeTime(pairHealth.lastError.at, Date.now())}
+                      </span>
+                    )}{' '}
+                    · Cost (24h) {formatUsd(pairHealth.costUsd)}
                   </p>
                 )}
                 <div className="flex flex-wrap items-center gap-2">

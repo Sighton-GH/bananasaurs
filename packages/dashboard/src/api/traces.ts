@@ -77,3 +77,28 @@ export const historyUrl = (traceId: string): string =>
   `/assistant/history/${encodeURIComponent(traceId)}`;
 
 export const usageUrl = (days = 14): string => `${USAGE_URL}?days=${String(days)}`;
+
+/**
+ * ADR 0129 §8: the usage strip's per-day breakdown lines. `Failures:
+ * <code> ×<n>, …`, or undefined when the day recorded none — rows that
+ * predate the ledger have no `failuresByCode` and stay on the bare totals.
+ */
+export const failuresLine = (day: DayUsage): string | undefined => {
+  const entries = Object.entries(day.failuresByCode ?? {}).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  if (entries.length === 0) return undefined;
+  return `Failures: ${entries.map(([code, n]) => `${code} ×${String(n)}`).join(', ')}`;
+};
+
+/**
+ * ADR 0129 §8: `Tokens: <model> <n>, …`, or undefined when the day recorded
+ * none — same absent-on-old-rows rule as `failuresLine`.
+ */
+export const tokensLine = (day: DayUsage): string | undefined => {
+  const entries = Object.entries(day.tokensByModel ?? {}).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  if (entries.length === 0) return undefined;
+  return `Tokens: ${entries.map(([model, n]) => `${model} ${String(n)}`).join(', ')}`;
+};

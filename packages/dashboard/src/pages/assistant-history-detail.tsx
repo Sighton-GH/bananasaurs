@@ -1,6 +1,7 @@
 import { useCallback, type ReactElement } from 'react';
 import { Link, useParams } from 'wouter';
 import { ApiError } from '../api.js';
+import { formatUsd } from '../api/model-health.js';
 import { traceUrl, type TraceDetailResponse } from '../api/traces.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -255,6 +256,13 @@ export function AssistantHistoryDetailPage() {
                       <span className="text-ink-muted">Duration </span>
                       {trace.durationMs} ms
                     </span>
+                    {/* ADR 0129 §9: the summed per-call cost, when a call reported one. */}
+                    {trace.usage.costUsd !== undefined && (
+                      <span>
+                        <span className="text-ink-muted">Cost </span>
+                        {formatUsd(trace.usage.costUsd)}
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
                     {trace.conversationId !== undefined && (
@@ -371,6 +379,17 @@ export function AssistantHistoryDetailPage() {
                       },
                     },
                     { key: 'ms', header: 'Duration', numeric: true, cell: (r) => `${r.ms} ms` },
+                    {
+                      key: 'cost',
+                      header: 'Cost',
+                      numeric: true,
+                      cell: (r) =>
+                        r.costUsd === undefined ? (
+                          <span className="text-ink-muted">—</span>
+                        ) : (
+                          formatUsd(r.costUsd)
+                        ),
+                    },
                   ]}
                 />
                 <dl className="mt-2 grid gap-1 text-sm">
