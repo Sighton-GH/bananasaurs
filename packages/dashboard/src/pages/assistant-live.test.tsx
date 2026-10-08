@@ -250,7 +250,8 @@ describe('InProgressPanel', () => {
 });
 
 describe('PendingTurn', () => {
-  it('renders the pending bot turn only for its conversation', async () => {    stubFetch([{ url: activeRunsUrl(), body: { runs: [RUN] } }]);
+  it('renders the pending bot turn only for its conversation', async () => {
+    stubFetch([{ url: activeRunsUrl(), body: { runs: [RUN] } }]);
     const { unmount } = renderWithSession(
       <Router>
         <PendingTurn conversationId="conv-1" onFinished={() => undefined} />
