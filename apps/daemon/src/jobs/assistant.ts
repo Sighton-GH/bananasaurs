@@ -446,15 +446,18 @@ export const assistantInvokeHandler = (deps: {
           source: payload.source,
           queuedAt: startedAt,
         });
-        return createRunRecorder({
-          scope: deps.conversations.scope,
-          runId: payload.invocationId,
+         return createRunRecorder({
+           scope: deps.conversations.scope,
+           guildId: deps.guildId,
+           runId: payload.invocationId,
+
           now: deps.now,
           logger: deps.logger,
         });
       } catch (err) {
         deps.logger.warn(
-          safeLogFields({ component: 'assistant', runId: payload.invocationId, err }),
+           safeLogFields({ component: 'assistant', guildId: deps.guildId, runId: payload.invocationId, err }),
+
           'assistant run ledger write failed',
         );
         return NOOP_RUN_RECORDER;
@@ -1219,31 +1222,44 @@ export const assistantInvokeHandler = (deps: {
           postedMessageId: string | undefined,
         ): void => {
           if (conversationId === undefined || deps.conversations === undefined) return;
-          const conv = deps.conversations;
-          const key = payload.invocationId;
-          const turns = conversationRepo.listTurns(conv.scope, conversationId);
-          const turnId = `turn_${key}_a`;
-          if (turns.every((turn) => turn.turnId !== turnId)) {
-            conversationRepo.appendTurn(conv.scope, {
-              conversationId,
-              turnId,
-              at: nextAt(turns),
-              role: 'assistant',
-              authorName: conv.botDisplayName,
-              text,
-              traceId,
-            });
-          }
-          if (payload.messageId !== undefined) {
-            conversationRepo.linkMessages(conv.scope, conversationId, `turn_${key}_u`, 'user', [
-              payload.messageId,
-            ]);
-          }
-          if (postedMessageId !== undefined) {
-            conversationRepo.linkMessages(conv.scope, conversationId, turnId, 'assistant', [
-              postedMessageId,
-            ]);
-          }
+           const conv = deps.conversations;
+           const key = payload.invocationId;
+           try {
+             const turns = conversationRepo.listTurns(conv.scope, conversationId);
+             const turnId = `turn_${key}_a`;
+             if (turns.every((turn) => turn.turnId !== turnId)) {
+               conversationRepo.appendTurn(conv.scope, {
+                 conversationId,
+                 turnId,
+                 at: nextAt(turns),
+                 role: 'assistant',
+                 authorName: conv.botDisplayName,
+                 text,
+                 traceId,
+               });
+             }
+             if (payload.messageId !== undefined) {
+               conversationRepo.linkMessages(conv.scope, conversationId, `turn_${key}_u`, 'user', [
+                 payload.messageId,
+               ]);
+             }
+             if (postedMessageId !== undefined) {
+               conversationRepo.linkMessages(conv.scope, conversationId, turnId, 'assistant', [
+                 postedMessageId,
+               ]);
+             }
+           } catch (err) {
+             deps.logger.warn(
+               safeLogFields({
+                 component: 'assistant-job',
+                 guildId: deps.guildId,
+                 runId: payload.invocationId,
+                 err,
+               }),
+               'assistant failure turn write failed',
+             );
+           }
+
         };
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of
