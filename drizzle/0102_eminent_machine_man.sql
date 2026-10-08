@@ -44,6 +44,7 @@ CREATE TABLE `assistant_runs` (
 	FOREIGN KEY (`guild_id`) REFERENCES `guilds`(`guild_id`) ON UPDATE no action ON DELETE cascade,
 	CONSTRAINT "assistant_runs_guild_id_snowflake" CHECK(("assistant_runs"."guild_id" NOT GLOB '*[^0-9]*' AND length("assistant_runs"."guild_id") BETWEEN 17 AND 20)),
 	CONSTRAINT "assistant_runs_user_id_snowflake" CHECK(("assistant_runs"."user_id" NOT GLOB '*[^0-9]*' AND length("assistant_runs"."user_id") BETWEEN 17 AND 20)),
+	CONSTRAINT "assistant_runs_channel_id_snowflake" CHECK(("assistant_runs"."channel_id" IS NULL OR ("assistant_runs"."channel_id" NOT GLOB '*[^0-9]*' AND length("assistant_runs"."channel_id") BETWEEN 17 AND 20))),
 	CONSTRAINT "assistant_runs_state" CHECK("assistant_runs"."state" IN ('queued','running','retry-wait','answered','refused','failed')),
 	CONSTRAINT "assistant_runs_stage" CHECK("assistant_runs"."stage" IN ('queued','starting','conversation','context','calling-model','running-tool','retry-wait','delivering','done')),
 	CONSTRAINT "assistant_runs_source" CHECK("assistant_runs"."source" IN ('mention','slash-command','dashboard-test'))

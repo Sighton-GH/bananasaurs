@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c67d171e-1846-4674-9f03-92b52bdda839",
+  "id": "99eced2c-64df-42cf-ab6c-d73ddf717e90",
   "prevId": "96b248be-d0c9-457b-9590-6584a0c0f21b",
   "tables": {
     "account_capabilities": {
@@ -2709,6 +2709,10 @@
         "assistant_runs_user_id_snowflake": {
           "name": "assistant_runs_user_id_snowflake",
           "value": "(\"assistant_runs\".\"user_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_runs\".\"user_id\") BETWEEN 17 AND 20)"
+        },
+        "assistant_runs_channel_id_snowflake": {
+          "name": "assistant_runs_channel_id_snowflake",
+          "value": "(\"assistant_runs\".\"channel_id\" IS NULL OR (\"assistant_runs\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_runs\".\"channel_id\") BETWEEN 17 AND 20))"
         },
         "assistant_runs_state": {
           "name": "assistant_runs_state",
