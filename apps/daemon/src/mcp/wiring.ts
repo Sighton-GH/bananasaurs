@@ -1840,15 +1840,15 @@ const targetRefusalFor = (
  *   `addedByAccountId` is the principal's account. `firstMessage` is a second
  *   action, key `<key>:first`, through the `message.send` path into the new
  *   thread; when it fails the thread still stands and the tool says so.
- * - `add_thread_members` / `remove_thread_members`: one action per call
- *   (kinds `thread.members.add|remove`, cap group `structure`). An add
- *   records `{ userIds }` as its undo (ADR 0116 §5); a removal is not
- *   undoable.
- * - `create_forum_post`: kind `forum.post`, cap group `message`, with the
- *   duplicate-content guard — the content-bearing write of this family.
- *   Always public.
- * - `archive_thread` / `lock_thread`: kind `thread.state`, cap group
- *   `structure`, recording the previous state as the undo.
+  * - `thread_members`: one action per call
+  *   (kinds `thread.members.add|remove`, cap group `structure`). An add
+  *   records `{ userIds }` as its undo (ADR 0116 §5); a removal is not
+  *   undoable.
+  * - `create_forum_post`: kind `forum.post`, cap group `message`, with the
+  *   duplicate-content guard — the content-bearing write of this family.
+  *   Always public.
+  * - `set_thread_state`: kind `thread.state`, cap group
+  *   `structure`, recording the previous state as the undo.
  *
  * Member and state edits on a thread the bot owns run under `post-in-thread`
  * rather than `manage-thread`. Audit actions are `mcp.<kind>` by the shared
@@ -5091,8 +5091,8 @@ const eventWritesPortFor = (
 };
 
 /**
- * The `McpSchedulePort` behind `schedule_message`, `list_scheduled`,
- * `edit_scheduled` and `cancel_scheduled` (slice 5, Task 3), field by field
+ * The `McpSchedulePort` behind `schedule_message`, `list_scheduled` and
+ * `update_scheduled` (slice 5, Task 3), field by field
  * like `sendPortFor` above. Storage is the existing `assistant_reminders`
  * table with `origin='mcp'` (ADR 0119); the daemon's reminder worker
  * delivers the rows, and nothing here touches delivery.
@@ -6838,7 +6838,7 @@ const readAuditPortFor = (
 });
 
 /**
- * The `McpTaskDetailPort` behind `get_task_details` and `list_task_reminders`,
+ * The `McpTaskDetailPort` behind `get_task`,
  * field by field like `healthPortFor` above. Each method rechecks owner-or-`tasks.manage`
  * in the call's guild per call — the tool layer names the task, the daemon supplies
  * the authority — and reads through the task repositories. Archived tasks are
@@ -6898,7 +6898,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
 };
 
 /**
- * The `McpTaskPort` behind `list_tasks` and `list_task_teams`, field by field
+ * The `McpTaskPort` behind `list_tasks` and `task_teams`, field by field
  * like `healthPortFor` above. Each method rechecks the enabled instance owner
  * per call and reads through the task repositories — nothing here writes.
  * `list` passes the caller's visibility filter straight to the repository, so

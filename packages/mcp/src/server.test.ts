@@ -36,23 +36,22 @@ import { MCP_READ_LIST_THREADS } from './read-audit.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 import {
-  ADD_THREAD_MEMBERS_TOOL_NAME,
-  ARCHIVE_THREAD_TOOL_NAME,
   CREATE_FORUM_POST_TOOL_NAME,
   CREATE_THREAD_TOOL_NAME,
-  LOCK_THREAD_TOOL_NAME,
-  REMOVE_THREAD_MEMBERS_TOOL_NAME,
   type McpThreadWritesPort,
 } from './tools/thread-writes.js';
 import {
-  ADD_REACTION_TOOL_NAME,
   DELETE_MESSAGE_TOOL_NAME,
   EDIT_MESSAGE_TOOL_NAME,
-  PIN_MESSAGE_TOOL_NAME,
-  REMOVE_REACTION_TOOL_NAME,
-  UNPIN_MESSAGE_TOOL_NAME,
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
+import {
+  REACT_TOOL_NAME,
+  SET_PIN_TOOL_NAME,
+  SET_THREAD_STATE_TOOL_NAME,
+  THREAD_MEMBERS_TOOL_NAME,
+  UPDATE_SCHEDULED_TOOL_NAME,
+} from './tools/pair-tools.js';
 import type { McpRoleWritesPort } from './tools/role-writes.js';
 import {
   CANCEL_EVENT_TOOL_NAME,
@@ -62,8 +61,6 @@ import {
   type McpEventWritesPort,
 } from './tools/event-writes.js';
 import {
-  CANCEL_SCHEDULED_TOOL_NAME,
-  EDIT_SCHEDULED_TOOL_NAME,
   LIST_SCHEDULED_TOOL_NAME,
   SCHEDULE_MESSAGE_TOOL_NAME,
   type McpSchedulePort,
@@ -362,34 +359,29 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message and the twenty-one send-scope tools first, alongside the twenty-five read tools', async () => {
+  it('lists send_message and the sixteen send-scope tools first, alongside the twenty-five read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(47);
+      expect(list.tools).toHaveLength(42);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         CREATE_THREAD_TOOL_NAME,
-        ADD_THREAD_MEMBERS_TOOL_NAME,
-        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        THREAD_MEMBERS_TOOL_NAME,
         CREATE_FORUM_POST_TOOL_NAME,
-        ARCHIVE_THREAD_TOOL_NAME,
-        LOCK_THREAD_TOOL_NAME,
+        SET_THREAD_STATE_TOOL_NAME,
         EDIT_MESSAGE_TOOL_NAME,
         DELETE_MESSAGE_TOOL_NAME,
-        PIN_MESSAGE_TOOL_NAME,
-        UNPIN_MESSAGE_TOOL_NAME,
-        ADD_REACTION_TOOL_NAME,
-        REMOVE_REACTION_TOOL_NAME,
+        SET_PIN_TOOL_NAME,
+        REACT_TOOL_NAME,
         CREATE_EVENT_TOOL_NAME,
         EDIT_EVENT_TOOL_NAME,
         CANCEL_EVENT_TOOL_NAME,
         CREATE_POLL_TOOL_NAME,
         SCHEDULE_MESSAGE_TOOL_NAME,
-        EDIT_SCHEDULED_TOOL_NAME,
-        CANCEL_SCHEDULED_TOOL_NAME,
+        UPDATE_SCHEDULED_TOOL_NAME,
         LIST_SCHEDULED_TOOL_NAME,
         UNDO_ACTION_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
@@ -463,37 +455,33 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ruling M4-D17) a send-only principal gets send_message and the twenty-one send-scope tools', async () => {
+  it('(ruling M4-D17) a send-only principal gets send_message and the sixteen send-scope tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
     try {
-      // `send_message`, the six thread-write tools (Task 5), the six
-      // message-write tools (Task 6), the four event tools, the four schedule
-      // tools (slice 5 Task 3) and `undo_action` (Task 7) register under the
+      // `send_message`, the four thread-write tools (Task 5, consolidated by
+      // ADR 0132 Task 2), the four message-write tools (Task 6, likewise),
+      // the four event tools, the three schedule tools (slice 5 Task 3,
+      // likewise) and `undo_action` (Task 7) register under the
       // send scope independently of the read-scope block, so a send-only
-      // server lists exactly twenty-two tools — and still no resource, which
+      // server lists exactly seventeen tools — and still no resource, which
       // stays behind the read scope.
       const list = await client.listTools();
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         CREATE_THREAD_TOOL_NAME,
-        ADD_THREAD_MEMBERS_TOOL_NAME,
-        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        THREAD_MEMBERS_TOOL_NAME,
         CREATE_FORUM_POST_TOOL_NAME,
-        ARCHIVE_THREAD_TOOL_NAME,
-        LOCK_THREAD_TOOL_NAME,
+        SET_THREAD_STATE_TOOL_NAME,
         EDIT_MESSAGE_TOOL_NAME,
         DELETE_MESSAGE_TOOL_NAME,
-        PIN_MESSAGE_TOOL_NAME,
-        UNPIN_MESSAGE_TOOL_NAME,
-        ADD_REACTION_TOOL_NAME,
-        REMOVE_REACTION_TOOL_NAME,
+        SET_PIN_TOOL_NAME,
+        REACT_TOOL_NAME,
         CREATE_EVENT_TOOL_NAME,
         EDIT_EVENT_TOOL_NAME,
         CANCEL_EVENT_TOOL_NAME,
         CREATE_POLL_TOOL_NAME,
         SCHEDULE_MESSAGE_TOOL_NAME,
-        EDIT_SCHEDULED_TOOL_NAME,
-        CANCEL_SCHEDULED_TOOL_NAME,
+        UPDATE_SCHEDULED_TOOL_NAME,
         LIST_SCHEDULED_TOOL_NAME,
         UNDO_ACTION_TOOL_NAME,
       ]);

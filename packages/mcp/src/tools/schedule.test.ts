@@ -7,9 +7,7 @@ import { MCP_READ_LIST_SCHEDULED } from '../read-audit.js';
 import { EVIDENCE_CLOSE, EVIDENCE_OPEN, EVIDENCE_PREAMBLE } from '../envelope.js';
 import { undoActionText, type McpActionsPort } from './actions.js';
 import {
-  CANCEL_SCHEDULED_TOOL_NAME,
   cancelScheduledText,
-  EDIT_SCHEDULED_TOOL_NAME,
   editScheduledText,
   LIST_SCHEDULED_TOOL_NAME,
   listScheduledText,
@@ -23,15 +21,17 @@ import {
   type McpScheduleRefusal,
   type McpScheduledView,
 } from './schedule.js';
+import { UPDATE_SCHEDULED_TOOL_NAME } from './pair-tools.js';
 
 /**
- * Task 3, tool layer: the four schedule tools against a fake
+ * Task 3, tool layer: the schedule handlers against a fake
  * `McpSchedulePort` — the same seam the daemon's schedule wiring implements,
  * so the guard behaviour pinned here (guild gate, argument boundary, refusal
  * rendering, evidence framing) holds whichever implementation sits behind
  * it. Scope filtering (ruling M4-D17) is pinned in `registration.test.ts`
- * (the send set grows by four) and in the scope sections of the older write
- * tool tests; this file pins the four tools' own contract.
+ * (the send set grows by three) and in the scope sections of the older write
+ * tool tests; this file pins the schedule tools' own contract. Edits and
+ * cancels run behind `update_scheduled` (see `pair-tools.ts`).
  */
 
 const GUILD_A = parseGuildId('111111111111111111');
@@ -267,7 +267,7 @@ describe('schedule_message argument boundary (hard rule 3)', () => {
   });
 });
 
-describe('edit_scheduled and cancel_scheduled argument boundary', () => {
+describe('update_scheduled argument boundary', () => {
   it.each([
     ['empty reminder id', { ...editArgs(), reminderId: '' }],
     ['missing reminder id', { guildId: '111111111111111111', idempotencyKey: 'k' }],
@@ -488,7 +488,7 @@ describe('schedule happy path', () => {
   it('scheduling says it cannot be undone and names the cancelling tool', async () => {
     const port = fakeSchedulePort();
     const text = textOf(await scheduleMessageText(principalWith([GUILD_A]), port, scheduleArgs()));
-    expect(text).toContain(CANCEL_SCHEDULED_TOOL_NAME);
+    expect(text).toContain(UPDATE_SCHEDULED_TOOL_NAME);
     expect(text).toContain('cannot be undone');
   });
 
@@ -666,7 +666,7 @@ describe('schedule tool descriptions', () => {
     expect(SCHEDULE_MESSAGE_TOOL_DESCRIPTION).toContain('same value');
     expect(SCHEDULE_MESSAGE_TOOL_DESCRIPTION).toContain('dryRun');
     expect(SCHEDULE_MESSAGE_TOOL_DESCRIPTION).toContain('cannot be undone');
-    expect(SCHEDULE_MESSAGE_TOOL_DESCRIPTION).toContain(CANCEL_SCHEDULED_TOOL_NAME);
+    expect(SCHEDULE_MESSAGE_TOOL_DESCRIPTION).toContain(UPDATE_SCHEDULED_TOOL_NAME);
     expect(SCHEDULE_MESSAGE_TOOL_DESCRIPTION).toContain('2000');
   });
 });
@@ -681,10 +681,9 @@ describe('schedule.ts boundary (ADR 0044 §4, ruling M4-D14)', () => {
 });
 
 describe('tool names', () => {
-  it('are the four contracted names', () => {
+  it('are the two contracted names, with edits and cancels behind update_scheduled', () => {
     expect(SCHEDULE_MESSAGE_TOOL_NAME).toBe('schedule_message');
     expect(LIST_SCHEDULED_TOOL_NAME).toBe('list_scheduled');
-    expect(EDIT_SCHEDULED_TOOL_NAME).toBe('edit_scheduled');
-    expect(CANCEL_SCHEDULED_TOOL_NAME).toBe('cancel_scheduled');
+    expect(UPDATE_SCHEDULED_TOOL_NAME).toBe('update_scheduled');
   });
 });

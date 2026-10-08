@@ -454,10 +454,11 @@ describe('/mcp behind the bearer guard', () => {
     // tests, broken in the daemon" defects this slice already found.
     //
     // Since M5 Task 4 the daemon always threads the real send port (ruling
-    // M5-D11), so a send-scoped token lists `send_message` plus the six
-    // thread-write tools (slice 3 Task 5), the six message-write tools
-    // (Task 6), the four event tools (slice 5 Task 5), the four schedule
-    // tools (slice 5 Task 3) and `undo_action`
+    // M5-D11), so a send-scoped token lists `send_message` plus the four
+    // thread-write tools (slice 3 Task 5, consolidated by ADR 0132 Task 2),
+    // the four message-write tools (Task 6, likewise), the four event tools
+    // (slice 5 Task 5), the three schedule tools (slice 5 Task 3, likewise)
+    // and `undo_action`
     // (Task 7), all the same scope — the eleven
     // read tools stay behind the read scope it does not carry, and the
     // task-tracking write tools stay behind the tasks scope (ADR 0114).
@@ -470,24 +471,19 @@ describe('/mcp behind the bearer guard', () => {
     expect(result.result?.tools?.map((tool) => tool.name)).toEqual([
       'send_message',
       'create_thread',
-      'add_thread_members',
-      'remove_thread_members',
+      'thread_members',
       'create_forum_post',
-      'archive_thread',
-      'lock_thread',
+      'set_thread_state',
       'edit_message',
       'delete_message',
-      'pin_message',
-      'unpin_message',
-      'add_reaction',
-      'remove_reaction',
+      'set_pin',
+      'react',
       'create_event',
       'edit_event',
       'cancel_event',
       'create_poll',
       'schedule_message',
-      'edit_scheduled',
-      'cancel_scheduled',
+      'update_scheduled',
       'list_scheduled',
       'undo_action',
     ]);
@@ -1739,10 +1735,11 @@ describe('/mcp thread writes through the real composition', () => {
       // owns the thread it just created.
       const added = callText(
         (
-          await mcpCall(threadApp, accessToken, 'add_thread_members', {
+          await mcpCall(threadApp, accessToken, 'thread_members', {
             guildId: '111111111111111111',
             threadId,
             userIds: [MEMBER],
+            action: 'add',
             idempotencyKey: 'add-k1',
           })
         ).body,
@@ -1760,10 +1757,11 @@ describe('/mcp thread writes through the real composition', () => {
 
       const removed = callText(
         (
-          await mcpCall(threadApp, accessToken, 'remove_thread_members', {
+          await mcpCall(threadApp, accessToken, 'thread_members', {
             guildId: '111111111111111111',
             threadId,
             userIds: [MEMBER],
+            action: 'remove',
             idempotencyKey: 'remove-k1',
           })
         ).body,
@@ -1791,7 +1789,7 @@ describe('/mcp thread writes through the real composition', () => {
 
       const archived = callText(
         (
-          await mcpCall(threadApp, accessToken, 'archive_thread', {
+          await mcpCall(threadApp, accessToken, 'set_thread_state', {
             guildId: '111111111111111111',
             threadId,
             archived: true,
@@ -1807,7 +1805,7 @@ describe('/mcp thread writes through the real composition', () => {
 
       const restored = callText(
         (
-          await mcpCall(threadApp, accessToken, 'archive_thread', {
+          await mcpCall(threadApp, accessToken, 'set_thread_state', {
             guildId: '111111111111111111',
             threadId,
             archived: false,
@@ -1820,7 +1818,7 @@ describe('/mcp thread writes through the real composition', () => {
 
       const locked = callText(
         (
-          await mcpCall(threadApp, accessToken, 'lock_thread', {
+          await mcpCall(threadApp, accessToken, 'set_thread_state', {
             guildId: '111111111111111111',
             threadId,
             locked: true,
@@ -1852,10 +1850,11 @@ describe('/mcp thread writes through the real composition', () => {
       const accessToken = await mintToken('bananasaurs:send');
       const refusedAdd = callText(
         (
-          await mcpCall(threadApp, accessToken, 'add_thread_members', {
+          await mcpCall(threadApp, accessToken, 'thread_members', {
             guildId: '111111111111111111',
             threadId: OTHER_THREAD,
             userIds: [MEMBER],
+            action: 'add',
             idempotencyKey: 'add-other',
           })
         ).body,
@@ -1864,7 +1863,7 @@ describe('/mcp thread writes through the real composition', () => {
       expect(refusedAdd.text).toContain('ManageThreads');
       const refusedArchive = callText(
         (
-          await mcpCall(threadApp, accessToken, 'archive_thread', {
+          await mcpCall(threadApp, accessToken, 'set_thread_state', {
             guildId: '111111111111111111',
             threadId: OTHER_THREAD,
             archived: true,
@@ -1895,7 +1894,7 @@ describe('/mcp thread writes through the real composition', () => {
       const accessToken = await mintToken('bananasaurs:send');
       const refused = callText(
         (
-          await mcpCall(threadApp, accessToken, 'archive_thread', {
+          await mcpCall(threadApp, accessToken, 'set_thread_state', {
             guildId: '111111111111111111',
             threadId: OTHER_THREAD,
             archived: true,
@@ -1929,7 +1928,7 @@ describe('/mcp thread writes through the real composition', () => {
       injectThread(client, threadId, PLANNING, ChannelType.GuildPublicThread, MEMBER);
       const archived = callText(
         (
-          await mcpCall(threadApp, accessToken, 'archive_thread', {
+          await mcpCall(threadApp, accessToken, 'set_thread_state', {
             guildId: '111111111111111111',
             threadId,
             archived: true,
@@ -1967,10 +1966,11 @@ describe('/mcp thread writes through the real composition', () => {
       injectThread(client, threadId, PLANNING, ChannelType.GuildPrivateThread);
       const refused = callText(
         (
-          await mcpCall(threadApp, accessToken, 'add_thread_members', {
+          await mcpCall(threadApp, accessToken, 'thread_members', {
             guildId: '111111111111111111',
             threadId,
             userIds: [STRANGER],
+            action: 'add',
             idempotencyKey: 'add-stranger',
           })
         ).body,
@@ -2525,10 +2525,11 @@ describe('/mcp message writes through the real composition', () => {
     const accessToken = await mintToken('bananasaurs:send');
     const refused = readCall(
       (
-        await writeCall(accessToken, 'pin_message', {
+        await writeCall(accessToken, 'set_pin', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: PIN_MESSAGE,
+          pinned: true,
           idempotencyKey: 'pin-denied',
         })
       ).body,
@@ -2551,10 +2552,11 @@ describe('/mcp message writes through the real composition', () => {
     const accessToken = await mintToken('bananasaurs:send');
     const found = readCall(
       (
-        await writeCall(accessToken, 'pin_message', {
+        await writeCall(accessToken, 'set_pin', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: PIN_MESSAGE,
+          pinned: true,
           idempotencyKey: 'pin-ok',
         })
       ).body,
@@ -2567,10 +2569,11 @@ describe('/mcp message writes through the real composition', () => {
 
     const unpinned = readCall(
       (
-        await writeCall(accessToken, 'unpin_message', {
+        await writeCall(accessToken, 'set_pin', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: PIN_MESSAGE,
+          pinned: false,
           idempotencyKey: 'unpin-ok',
         })
       ).body,
@@ -2592,11 +2595,12 @@ describe('/mcp message writes through the real composition', () => {
     const accessToken = await mintToken('bananasaurs:send');
     const refused = readCall(
       (
-        await writeCall(accessToken, 'add_reaction', {
+        await writeCall(accessToken, 'react', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: BOT_MESSAGE,
           emoji: `party:${FOREIGN_EMOJI_ID}`,
+          action: 'add',
           idempotencyKey: 'react-foreign',
         })
       ).body,
@@ -2618,11 +2622,12 @@ describe('/mcp message writes through the real composition', () => {
     const accessToken = await mintToken('bananasaurs:send');
     const first = readCall(
       (
-        await writeCall(accessToken, 'add_reaction', {
+        await writeCall(accessToken, 'react', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: BOT_MESSAGE,
           emoji: '👍',
+          action: 'add',
           idempotencyKey: 'react-unicode',
         })
       ).body,
@@ -2630,11 +2635,12 @@ describe('/mcp message writes through the real composition', () => {
     expect(first.isError).not.toBe(true);
     const second = readCall(
       (
-        await writeCall(accessToken, 'add_reaction', {
+        await writeCall(accessToken, 'react', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: BOT_MESSAGE,
           emoji: 'party:777777777777777777',
+          action: 'add',
           idempotencyKey: 'react-custom',
         })
       ).body,
@@ -2652,11 +2658,12 @@ describe('/mcp message writes through the real composition', () => {
 
     const removed = readCall(
       (
-        await writeCall(accessToken, 'remove_reaction', {
+        await writeCall(accessToken, 'react', {
           guildId: '111111111111111111',
           channelId: CHANNEL,
           messageId: BOT_MESSAGE,
           emoji: '👍',
+          action: 'remove',
           idempotencyKey: 'unreact-unicode',
         })
       ).body,
@@ -7247,24 +7254,19 @@ describe('MCP task admin full surface (owner-only)', () => {
     ).toEqual([
       'send_message',
       'create_thread',
-      'add_thread_members',
-      'remove_thread_members',
+      'thread_members',
       'create_forum_post',
-      'archive_thread',
-      'lock_thread',
+      'set_thread_state',
       'edit_message',
       'delete_message',
-      'pin_message',
-      'unpin_message',
-      'add_reaction',
-      'remove_reaction',
+      'set_pin',
+      'react',
       'create_event',
       'edit_event',
       'cancel_event',
       'create_poll',
       'schedule_message',
-      'edit_scheduled',
-      'cancel_scheduled',
+      'update_scheduled',
       'list_scheduled',
       'undo_action',
     ]);
@@ -13487,8 +13489,8 @@ describe('/mcp event writes through the real composition', () => {
 });
 
 /**
- * Slice 5 Task 3, daemon side: `schedule_message`, `list_scheduled`,
- * `edit_scheduled` and `cancel_scheduled` through the real stack — Fastify +
+ * Slice 5 Task 3, daemon side: `schedule_message`, `list_scheduled` and
+ * `update_scheduled` through the real stack — Fastify +
  * `registerMcpRoutes` + `createMcpServer` + the real schedule port over the
  * real repositories — with tokens minted through the real OAuth flow.
  *
@@ -13739,10 +13741,11 @@ describe('/mcp scheduled sends through the real composition', () => {
       const reminderId = row?.id ?? '';
       const edited = callText(
         (
-          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+          await schedCall(schedApp, accessToken, 'update_scheduled', {
             guildId: '111111111111111111',
             reminderId,
             content: CONTENT_EDITED,
+            action: 'edit',
             idempotencyKey: 'sched-flow-edit',
           })
         ).body,
@@ -13753,9 +13756,10 @@ describe('/mcp scheduled sends through the real composition', () => {
 
       const cancelled = callText(
         (
-          await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+          await schedCall(schedApp, accessToken, 'update_scheduled', {
             guildId: '111111111111111111',
             reminderId,
+            action: 'cancel',
             idempotencyKey: 'sched-flow-cancel',
           })
         ).body,
@@ -13920,19 +13924,21 @@ describe('/mcp scheduled sends through the real composition', () => {
         ],
         ['list_scheduled', { guildId: '222222222222222222' }],
         [
-          'edit_scheduled',
+          'update_scheduled',
           {
             guildId: '222222222222222222',
             reminderId: 'rem-b',
             content: CONTENT,
+            action: 'edit',
             idempotencyKey: 'sched-b-edit',
           },
         ],
         [
-          'cancel_scheduled',
+          'update_scheduled',
           {
             guildId: '222222222222222222',
             reminderId: 'rem-b',
+            action: 'cancel',
             idempotencyKey: 'sched-b-cancel',
           },
         ],
@@ -13988,9 +13994,10 @@ describe('/mcp scheduled sends through the real composition', () => {
         idempotencyKey: 'sched-undo-cancel',
       });
       const reminderId = mcpRows()[0]?.id ?? '';
-      await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+      await schedCall(schedApp, accessToken, 'update_scheduled', {
         guildId: '111111111111111111',
         reminderId,
+        action: 'cancel',
         idempotencyKey: 'sched-undo-cancel-do',
       });
       expect(mcpRows()[0]?.status).toBe('cancelled');
@@ -14025,9 +14032,10 @@ describe('/mcp scheduled sends through the real composition', () => {
       const row = mcpRows()[0];
       const reminderId = row?.id ?? '';
       const dueIso = new Date(row?.dueAt ?? 0).toISOString();
-      await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+      await schedCall(schedApp, accessToken, 'update_scheduled', {
         guildId: '111111111111111111',
         reminderId,
+        action: 'cancel',
         idempotencyKey: 'sched-undo-expired-do',
       });
       // Past the due time, the send can no longer be restored.
@@ -14062,10 +14070,11 @@ describe('/mcp scheduled sends through the real composition', () => {
         idempotencyKey: 'sched-undo-edit',
       });
       const reminderId = mcpRows()[0]?.id ?? '';
-      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+      await schedCall(schedApp, accessToken, 'update_scheduled', {
         guildId: '111111111111111111',
         reminderId,
         content: CONTENT_EDITED,
+        action: 'edit',
         idempotencyKey: 'sched-undo-edit-do',
       });
       expect(mcpRows()[0]?.text).toBe(CONTENT_EDITED);
@@ -14103,10 +14112,11 @@ describe('/mcp scheduled sends through the real composition', () => {
       const newAt = clock + 7_200_000;
       const edited = callText(
         (
-          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+          await schedCall(schedApp, accessToken, 'update_scheduled', {
             guildId: '111111111111111111',
             reminderId,
             at: new Date(newAt).toISOString(),
+            action: 'edit',
             idempotencyKey: 'sched-retime-at-do',
           })
         ).body,
@@ -14145,10 +14155,11 @@ describe('/mcp scheduled sends through the real composition', () => {
       const before = mcpRows()[0];
       expect(before?.recurrence).toBeUndefined();
       const reminderId = before?.id ?? '';
-      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+      await schedCall(schedApp, accessToken, 'update_scheduled', {
         guildId: '111111111111111111',
         reminderId,
         recurrence: { pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' },
+        action: 'edit',
         idempotencyKey: 'sched-retime-rec-do',
       });
       expect(mcpRows()[0]?.recurrence?.pattern.kind).toBe('daily');
@@ -14183,10 +14194,11 @@ describe('/mcp scheduled sends through the real composition', () => {
       const reminderId = mcpRows()[0]?.id ?? '';
       const originalDue = mcpRows()[0]?.dueAt ?? 0;
       const newAt = clock + 7_200_000;
-      await schedCall(schedApp, accessToken, 'edit_scheduled', {
+      await schedCall(schedApp, accessToken, 'update_scheduled', {
         guildId: '111111111111111111',
         reminderId,
         at: new Date(newAt).toISOString(),
+        action: 'edit',
         idempotencyKey: 'sched-retime-expired-do',
       });
       // The original due time is now behind us: restoring it would send at once.
@@ -14232,10 +14244,11 @@ describe('/mcp scheduled sends through the real composition', () => {
       const accessToken = await mintToken('bananasaurs:send');
       const edited = callText(
         (
-          await schedCall(schedApp, accessToken, 'edit_scheduled', {
+          await schedCall(schedApp, accessToken, 'update_scheduled', {
             guildId: '111111111111111111',
             reminderId: 'assistant-row-1',
             content: CONTENT,
+            action: 'edit',
             idempotencyKey: 'sched-assistant-edit',
           })
         ).body,
@@ -14244,9 +14257,10 @@ describe('/mcp scheduled sends through the real composition', () => {
       expect(edited.text).toContain('No scheduled message');
       const cancelled = callText(
         (
-          await schedCall(schedApp, accessToken, 'cancel_scheduled', {
+          await schedCall(schedApp, accessToken, 'update_scheduled', {
             guildId: '111111111111111111',
             reminderId: 'assistant-row-1',
+            action: 'cancel',
             idempotencyKey: 'sched-assistant-cancel',
           })
         ).body,

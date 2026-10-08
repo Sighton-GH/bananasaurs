@@ -37,6 +37,6 @@ export const MCP_SERVER_INSTRUCTIONS: string =
   '\n' +
   'Schedules, events and polls (when these tools are present):\n' +
   '- schedule_message posts fixed text later, once (at) or on a recurrence. The channel and pings are checked again at send time: a ping the policy no longer allows is dropped, and a channel that left the allowlist fails the send. Scheduled sends never ping @everyone or @here.\n' +
-  '- list_scheduled shows only sends scheduled here; edit_scheduled and cancel_scheduled work until the send goes out.\n' +
+  '- list_scheduled shows only sends scheduled here; update_scheduled edits or cancels one until the send goes out.\n' +
   '- create_event, edit_event and cancel_event manage Discord events; an external event needs a place and an end time. A cancelled event cannot be restored.\n' +
   '- create_poll posts a native poll through the send path; polls never ping.';
