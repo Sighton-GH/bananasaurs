@@ -174,6 +174,8 @@ dashboard use):
 **MCP tools, by group.** Reading: message and channel history, threads and
 digests, members, roles, cases, audit, jobs, resources, the server card, and
 the task reads (`list_tasks`, `get_task`, `task_teams` with action `list`).
+Help: `bananasaurs_guide` describes how Bananasaurs works and, with a `guildId`, this
+server's live safety settings and this connection's permissions.
 Messages and threads: `send_message`, `edit_message`, `delete_message`,
 `set_pin` (pin or unpin), `react` (add or remove the bot's own reaction),
 `create_thread`, `thread_members` (add or remove), `create_forum_post`, and

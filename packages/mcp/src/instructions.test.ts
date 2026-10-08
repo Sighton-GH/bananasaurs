@@ -60,4 +60,10 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('@everyone and @here never ping');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('Private threads');
   });
+
+  it('sends clients to bananasaurs_guide for how Bananasaurs works or why a tool is missing (ADR 0133)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain(
+      '- For how Bananasaurs works, or why a tool is missing, call bananasaurs_guide first.\n',
+    );
+  });
 });
