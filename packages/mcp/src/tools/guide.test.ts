@@ -278,6 +278,23 @@ describe('the live block for a reachable guild', () => {
     expect(text).toContain('- Your permissions on this server: none');
   });
 
+  it('shows the instance owner as managing club tasks even without that grant (ADR 0130)', () => {
+    const withNone = liveAnswer({
+      health: healthPort([guildHealth()]),
+      access: accessPort({ username: 'owner', isOwner: true, permissions: [] }),
+    });
+    expect(withNone).toContain(
+      '- Your permissions on this server: Manage club tasks (as instance owner)',
+    );
+    const withOthers = liveAnswer({
+      health: healthPort([guildHealth()]),
+      access: accessPort({ username: 'owner', isOwner: true, permissions: ['config.read'] }),
+    });
+    expect(withOthers).toContain(
+      '- Your permissions on this server: View settings, Manage club tasks (as instance owner)',
+    );
+  });
+
   it('escapes the account name, which is free text, like the guild name in get_health', () => {
     const text = liveAnswer({
       health: healthPort([guildHealth()]),

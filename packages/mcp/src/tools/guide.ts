@@ -188,8 +188,11 @@ const accountLines = (found: McpGuildAccess | undefined): readonly string[] => {
     return [`- Your account: ${UNAVAILABLE}`, `- Your permissions on this server: ${UNAVAILABLE}`];
   }
   const standing = found.isOwner ? 'the instance owner' : 'not the instance owner';
-  const permissions =
-    found.permissions.length === 0 ? 'none' : found.permissions.map(capabilityLabel).join(', ');
+  const labels = found.permissions.map(capabilityLabel);
+  // ADR 0130: the instance owner may always manage club tasks, grant or not.
+  if (found.isOwner && !found.permissions.includes('tasks.manage'))
+    labels.push(`${capabilityLabel('tasks.manage')} (as instance owner)`);
+  const permissions = labels.length === 0 ? 'none' : labels.join(', ');
   return [
     `- Your account: ${escapeEvidenceText(found.username)} (${standing})`,
     `- Your permissions on this server: ${permissions}`,
