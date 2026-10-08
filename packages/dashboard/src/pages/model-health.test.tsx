@@ -3,11 +3,7 @@ import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Route, Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
-import {
-  ASSISTANT_PROVIDERS_URL,
-  ASSISTANT_URL,
-  SEARCH_KEYS_URL,
-} from '../api/assistant.js';
+import { ASSISTANT_PROVIDERS_URL, ASSISTANT_URL, SEARCH_KEYS_URL } from '../api/assistant.js';
 import { formatRate, formatUsd } from '../api/model-health.js';
 import { renderWithSession, stubFetch } from '../test-support.js';
 import { AssistantHistoryDetailPage } from './assistant-history-detail.js';

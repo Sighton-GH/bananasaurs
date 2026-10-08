@@ -127,9 +127,9 @@ function ModelHealthCard() {
           <ul className="grid gap-1 text-sm">
             {models.map((m) => (
               <li key={`${m.keyId} ${m.model}`}>
-                <span className="font-mono text-xs">{m.model}</span> · {m.keyId} · {m.calls}{' '}
-                calls · {formatRate(m.successRate)} · p95{' '}
-                {m.p95Ms === null ? '—' : `${String(m.p95Ms)} ms`} · last error{' '}
+                <span className="font-mono text-xs">{m.model}</span> · {m.keyId} · {m.calls} calls ·{' '}
+                {formatRate(m.successRate)} · p95 {m.p95Ms === null ? '—' : `${String(m.p95Ms)} ms`}{' '}
+                · last error{' '}
                 {m.lastError === undefined
                   ? '—'
                   : `${m.lastError.code} ${relativeTime(m.lastError.at, Date.now())}`}

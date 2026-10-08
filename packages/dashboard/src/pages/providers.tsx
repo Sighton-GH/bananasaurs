@@ -195,7 +195,7 @@ function ModelOrderSection({
     () =>
       session
         .read<ModelHealthResponse>(modelHealthUrl('24h'))
-        .catch(() => ({ window: '24h', models: [] }) as ModelHealthResponse),
+        .catch(() => ({ window: '24h', models: [] })),
     [session],
   );
   const health = useResource('model health', healthLoad);
@@ -454,9 +454,8 @@ function ModelOrderSection({
                   </p>
                 ) : (
                   <p className="text-xs text-ink-muted">
-                    Success (24h) {formatRate(pairHealth.successRate)} ({pairHealth.calls}{' '}
-                    calls) · p50 / p95{' '}
-                    {pairHealth.p50Ms === null ? '—' : `${String(pairHealth.p50Ms)} ms`} /{' '}
+                    Success (24h) {formatRate(pairHealth.successRate)} ({pairHealth.calls} calls) ·
+                    p50 / p95 {pairHealth.p50Ms === null ? '—' : `${String(pairHealth.p50Ms)} ms`} /{' '}
                     {pairHealth.p95Ms === null ? '—' : `${String(pairHealth.p95Ms)} ms`} · Last
                     error{' '}
                     {pairHealth.lastError === undefined ? (

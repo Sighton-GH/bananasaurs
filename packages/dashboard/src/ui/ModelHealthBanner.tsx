@@ -6,8 +6,7 @@ import { useSession } from '../app/session.js';
 import { useLiveResource } from '../hooks/useLiveResource.js';
 
 const failureTitle = (code: string): string =>
-  (PROVIDER_FAILURE_TEXT as Readonly<Record<string, FailureText | undefined>>)[code]?.title ??
-  code;
+  (PROVIDER_FAILURE_TEXT as Readonly<Record<string, FailureText | undefined>>)[code]?.title ?? code;
 
 /** One line per stuck model; the link to the editor follows the list, once. */
 function PersistentLine({ model }: { readonly model: ModelHealth }) {
@@ -15,8 +14,8 @@ function PersistentLine({ model }: { readonly model: ModelHealth }) {
   if (persistent === undefined) return null;
   return (
     <li>
-      <strong className="font-mono text-xs">{model.model}</strong> has failed{' '}
-      {persistent.count} times in a row since {new Date(persistent.since).toLocaleString()} —{' '}
+      <strong className="font-mono text-xs">{model.model}</strong> has failed {persistent.count}{' '}
+      times in a row since {new Date(persistent.since).toLocaleString()} —{' '}
       {failureTitle(persistent.code)}.
     </li>
   );
