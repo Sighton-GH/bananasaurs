@@ -103,8 +103,8 @@ export const describeRunEvent: (event: RunEvent) => string = (event) => {
       return text;
     }
     default: {
-      const kind = (event as { readonly kind: string }).kind;
-      return `Recorded step (${kind})`;
+      const _exhaustive: never = event;
+      return _exhaustive;
     }
   }
 };
