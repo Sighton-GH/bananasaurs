@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { describeRun, type RunEvent } from '@bananasaurs/core';
-import { runRepo } from '@bananasaurs/storage';
+import { describeRun, type RunEvent, type RunRow } from '@bananasaurs/core';
+import { runRepo, type GuildScope } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { canReadConfig, requireCapability } from './capability.js';
@@ -13,7 +13,7 @@ import { canReadConfig, requireCapability } from './capability.js';
  * Read-only, like `assistant-traces.ts` — every handler goes through
  * `guard.require` plus `audit.read`. A `model-result` event's
  * `providerMessage` is configuration-shaped text, so it needs `config.read`,
- * checked with the non-replying `authorize` so a viewer without it still gets
+ * checked with `canReadConfig` so a viewer without it still gets
  * the events with the text withheld, never a 403.
  */
 
@@ -27,6 +27,24 @@ const runEventsQuerySchema = z.object({
   after: z.coerce.number().int().min(0).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
+
+const queueAheadForRun = (scope: GuildScope, run: RunRow): number => {
+  if (run.state !== 'queued') return 0;
+  const activeRuns = runRepo.listRuns(scope, { active: true, limit: 100 });
+  return activeRuns.filter(
+    (other) => other.state === 'queued' && other.queuedAt < run.queuedAt,
+  ).length;
+};
+
+const newestModelOrToolEvent = (scope: GuildScope, run: RunRow): RunEvent | undefined => {
+  if (run.stage !== 'calling-model' && run.stage !== 'running-tool') return undefined;
+  const events = runRepo.listRunEvents(scope, run.runId, 0, 500);
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const candidate = events[i]?.event;
+    if (candidate?.kind === 'model-call' || candidate?.kind === 'tool-call') return candidate;
+  }
+  return undefined;
+};
 
 export const registerAssistantRunRoutes = (
   app: FastifyInstance,
@@ -46,31 +64,10 @@ export const registerAssistantRunRoutes = (
       ...(parsed.data.before === undefined ? {} : { before: parsed.data.before }),
       limit,
     });
-    // Queue positions come from one active-list read per request: the queued
-    // runs ordered by when they arrived, so "N ahead" is the count of queued
-    // runs with an earlier `queuedAt`.
-    const activeRuns = runRepo.listRuns(session.scope, { active: true, limit: 100 });
     const now = deps.now();
     const labelled = runs.map((run) => {
-      const queueAhead =
-        run.state === 'queued'
-          ? activeRuns.filter((other) => other.state === 'queued' && other.queuedAt < run.queuedAt)
-              .length
-          : 0;
-      // Only runs doing model or tool work need their step log, and only the
-      // newest model-call or tool-call in it. Bounded by the page limit, so
-      // one small read per such row; acceptable at this scale.
-      let lastEvent: RunEvent | undefined = undefined;
-      if (run.stage === 'calling-model' || run.stage === 'running-tool') {
-        const events = runRepo.listRunEvents(session.scope, run.runId, 0, 500);
-        for (let i = events.length - 1; i >= 0; i -= 1) {
-          const candidate = events[i]?.event;
-          if (candidate?.kind === 'model-call' || candidate?.kind === 'tool-call') {
-            lastEvent = candidate;
-            break;
-          }
-        }
-      }
+      const queueAhead = queueAheadForRun(session.scope, run);
+      const lastEvent = newestModelOrToolEvent(session.scope, run);
       return {
         run,
         label: describeRun(run, {
@@ -109,24 +106,8 @@ export const registerAssistantRunRoutes = (
     const run = runRepo.getRun(session.scope, request.params.runId);
     if (run === undefined) return reply.status(404).send({ error: 'not-found' });
     const now = deps.now();
-    let queueAhead = 0;
-    if (run.state === 'queued') {
-      const activeRuns = runRepo.listRuns(session.scope, { active: true, limit: 100 });
-      queueAhead = activeRuns.filter(
-        (other) => other.state === 'queued' && other.queuedAt < run.queuedAt,
-      ).length;
-    }
-    let lastEvent: RunEvent | undefined = undefined;
-    if (run.stage === 'calling-model' || run.stage === 'running-tool') {
-      const events = runRepo.listRunEvents(session.scope, run.runId, 0, 500);
-      for (let i = events.length - 1; i >= 0; i -= 1) {
-        const candidate = events[i]?.event;
-        if (candidate?.kind === 'model-call' || candidate?.kind === 'tool-call') {
-          lastEvent = candidate;
-          break;
-        }
-      }
-    }
+    const queueAhead = queueAheadForRun(session.scope, run);
+    const lastEvent = newestModelOrToolEvent(session.scope, run);
     return reply.status(200).send({
       run: {
         ...run,
