@@ -88,7 +88,7 @@ function RunRow({ run, now }: { readonly run: LiveRun; readonly now: number }) {
 }
 
 export function InProgressPanel(props: {
-  /** Only runs of this conversation, when set (the transcript's pending turn uses this). */
+  /** Only runs of this conversation, when set. */
   readonly conversationId?: string;
   /** Called once per run id that was active and is no longer, so the page can reload. */
   readonly onFinished?: (runId: string) => void;
