@@ -30,6 +30,7 @@ const GUILD = parseGuildId('111111111111111111');
 /** The read-scope set: the twenty-two long-standing read tools, the two panel reads, the three task reads (`list_tasks`, `get_task`, `task_teams`), and `list_actions`. */
 const READ_TOOLS: readonly string[] = [
   'get_health',
+  'bananasaurs_guide',
   'search_messages',
   'read_channel_history',
   'get_message',
@@ -155,7 +156,7 @@ const toolNamesFor = async (subset: readonly ScopeShort[]): Promise<readonly str
 
 describe('registration pins every scope subset', () => {
   it('the four scope sets have the expected sizes', () => {
-    expect(READ_TOOLS).toHaveLength(28);
+    expect(READ_TOOLS).toHaveLength(29);
     expect(SEND_TOOLS).toHaveLength(17);
     expect(ROLES_TOOLS).toHaveLength(8);
     expect(TASK_TOOLS).toHaveLength(7);
@@ -298,6 +299,7 @@ describe('registration pins every scope subset', () => {
     // name, sorted. `undo_action` registers under send or roles from one
     // shared block, so it appears once.
     const expected: readonly string[] = [
+      'bananasaurs_guide',
       'bulk_role_change',
       'cancel_event',
       'create_event',

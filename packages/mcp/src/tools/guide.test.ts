@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GUIDE_TOPICS, parseGuildId, type GuideTopic, type GuildId } from '@bananasaurs/core';
+import { GUIDE_TOPICS, parseGuildId, type GuildId } from '@bananasaurs/core';
 import { EVIDENCE_CLOSE } from '../envelope.js';
 import { performReadRecord } from '../read-audit.js';
 import type { ReadOutcome } from '../register.js';
@@ -97,12 +97,6 @@ const textOf = (outcome: ReadOutcome): string => {
 const refusalOf = (outcome: ReadOutcome): string => {
   if (outcome.ok) throw new Error('expected a refusal, got an answer');
   return outcome.message;
-};
-
-const topicNamed = (id: string): GuideTopic => {
-  const topic = GUIDE_TOPICS.find((candidate) => candidate.id === id);
-  if (topic === undefined) throw new Error(`no guide topic named ${id}`);
-  return topic;
 };
 
 /** The live block for the caller's own guild, with the index as the topic text. */

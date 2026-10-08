@@ -359,13 +359,13 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('lists send_message and the sixteen send-scope tools first, alongside the twenty-five read tools', async () => {
+  it('lists send_message and the sixteen send-scope tools first, alongside the twenty-six read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(42);
+      expect(list.tools).toHaveLength(43);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         CREATE_THREAD_TOOL_NAME,
@@ -385,6 +385,7 @@ describe('createMcpServer', () => {
         LIST_SCHEDULED_TOOL_NAME,
         UNDO_ACTION_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
+        'bananasaurs_guide',
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,

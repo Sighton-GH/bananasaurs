@@ -367,7 +367,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(row?.after).not.toContain('Measure chassis');
   });
 
-  it('answers a valid read-scope token with tools/list containing all twenty-eight tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twenty-nine tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -375,12 +375,13 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(28);
+    expect(names).toHaveLength(29);
     expect(names).toEqual([
       'list_tasks',
       'get_task',
       'task_teams',
       'get_health',
+      'bananasaurs_guide',
       'search_messages',
       'read_channel_history',
       'get_message',

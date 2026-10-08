@@ -2,6 +2,7 @@ import type { McpServerDeps } from '../server.js';
 import type { McpPrincipal } from '../scope.js';
 import type { McpReadAuditPort } from '../read-audit.js';
 import type { McpHealthPort } from '../tools/health.js';
+import type { McpAccessPort } from '../tools/guide.js';
 import type { McpArchivePort } from '../tools/archive.js';
 import type { McpGuildPort } from '../tools/guild.js';
 import type { McpRecordsPort } from '../tools/records.js';
@@ -44,6 +45,7 @@ export const fullDeps = (principal: McpPrincipal): McpServerDeps => {
     now: () => 1_700_000_000_000,
     guilds: () => [],
   };
+  const access: McpAccessPort = { forGuild: () => undefined };
   const archive: McpArchivePort = {
     now: () => 1_700_000_000_000,
     listArchiveChannelIds: () => [],
@@ -142,6 +144,7 @@ export const fullDeps = (principal: McpPrincipal): McpServerDeps => {
   return {
     principal,
     health,
+    access,
     archive,
     guild,
     records,

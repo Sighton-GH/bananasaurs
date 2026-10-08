@@ -5,6 +5,7 @@ import {
   getHealthText,
   type McpHealthPort,
 } from './tools/health.js';
+import { registerGuideTool, type McpAccessPort } from './tools/guide.js';
 import {
   GET_MESSAGE_TOOL_DESCRIPTION,
   GET_MESSAGE_TOOL_NAME,
@@ -294,6 +295,14 @@ export interface McpServerDeps {
   readonly principal: McpPrincipal;
   /** The daemon's per-request projection of `OpsInstance`/`OpsPorts`. */
   readonly health: McpHealthPort;
+  /**
+   * The daemon's per-request access port (ADR 0133, Task 4): one account's
+   * username, owner flag and permissions in one guild, read by the live block
+   * of `bananasaurs_guide`. Optional: without it that block says the account
+   * part is unavailable rather than failing the call. The daemon always
+   * provides it (see `accessPortFor` in `apps/daemon/src/mcp/access-port.ts`).
+   */
+  readonly access?: McpAccessPort | undefined;
   /**
    * The daemon's per-request archive port (Task 4b). Required so a caller
    * that forgets it fails at construction time rather than silently serving
@@ -990,6 +999,12 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       };
     }
   });
+  // ADR 0133, Task 4: `bananasaurs_guide`, a read tool. Its live block reads the
+  // health and access ports; a missing one reads as unavailable, never a failed call.
+  registerGuideTool(
+    { server, principal: deps.principal, readAudit },
+    { health: deps.health, access: deps.access },
+  );
   // The `try/catch` in each handler is belt over braces: the text functions
   // already answer every malformed argument as the shared refusal and never
   // throw, so this only fires on something the tool layer did not foresee —
