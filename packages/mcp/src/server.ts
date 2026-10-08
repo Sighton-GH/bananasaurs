@@ -234,26 +234,53 @@ import { registerThreadTools, type McpThreadsPort } from './tools/threads.js';
 import { registerDigestTools } from './tools/digest.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import {
-  GET_TASK_DETAILS_TOOL_DESCRIPTION,
-  GET_TASK_DETAILS_TOOL_NAME,
-  getTaskDetailsParams,
-  getTaskDetailsText,
-  LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
-  LIST_TASK_REMINDERS_TOOL_NAME,
-  LIST_TASK_TEAMS_TOOL_DESCRIPTION,
-  LIST_TASK_TEAMS_TOOL_NAME,
   LIST_TASKS_TOOL_NAME,
   LIST_TASKS_TOOL_DESCRIPTION,
-  listTaskRemindersParams,
-  listTaskRemindersText,
-  listTaskTeamsParams,
-  listTaskTeamsText,
   listTasksParams,
   listTasksText,
   type McpTaskPort,
   type McpTaskDetailPort,
 } from './tools/tasks.js';
-import { taskAdminTools, runTaskAdmin, type TaskAdminPort } from './tools/task-admin.js';
+import {
+  CREATE_TASK_TOOL_DESCRIPTION,
+  CREATE_TASK_TOOL_NAME,
+  createTaskParams,
+  DELETE_TASK_TOOL_DESCRIPTION,
+  DELETE_TASK_TOOL_NAME,
+  deleteTaskParams,
+  GET_TASK_READ_ACTION,
+  GET_TASK_TOOL_DESCRIPTION,
+  GET_TASK_TOOL_NAME,
+  getTaskParams,
+  getTaskText,
+  runCreateTask,
+  runDeleteTask,
+  runTaskProgress,
+  runTaskReminders,
+  runTaskSettings,
+  runTaskSteps,
+  runTaskTeams,
+  runUpdateTask,
+  TASK_PROGRESS_TOOL_DESCRIPTION,
+  TASK_PROGRESS_TOOL_NAME,
+  TASK_REMINDERS_TOOL_DESCRIPTION,
+  TASK_REMINDERS_TOOL_NAME,
+  TASK_SETTINGS_TOOL_DESCRIPTION,
+  TASK_SETTINGS_TOOL_NAME,
+  TASK_STEPS_TOOL_DESCRIPTION,
+  TASK_STEPS_TOOL_NAME,
+  TASK_TEAMS_TOOL_DESCRIPTION,
+  TASK_TEAMS_TOOL_NAME,
+  taskProgressParams,
+  taskRemindersParams,
+  taskSettingsParams,
+  taskStepsParams,
+  taskTeamsParams,
+  UPDATE_TASK_TOOL_DESCRIPTION,
+  UPDATE_TASK_TOOL_NAME,
+  updateTaskParams,
+} from './tools/task-tools.js';
+import type { TaskAdminPort } from './tools/task-admin.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import {
   GUILD_REFUSAL_MESSAGE,
@@ -856,20 +883,40 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       );
     }
   }
-  // ADR 0114 (ADR 0101's follow-up): the task-tracking write tools register
-  // under the tasks scope, not send. A token carrying only `bananasaurs:send`
+  // ADR 0114 (ADR 0101's follow-up), ADR 0132: the task-tracking write tools
+  // register under the tasks scope, not send — as seven action-based tools
+  // over the same daemon dispatch. A token carrying only `bananasaurs:send`
   // can post messages but never touch tasks; read-only task tools stay under
   // read below.
   if (hasTasksScope(deps.principal) && deps.taskAdmin) {
     const taskAdmin = deps.taskAdmin;
-    for (const [name, spec] of Object.entries(taskAdminTools)) {
-      server.tool(name, spec.description, spec.params, async (args: unknown) => {
-        const outcome = await runTaskAdmin(
-          deps.principal,
-          taskAdmin,
-          name as keyof typeof taskAdminTools,
-          args,
-        );
+    const taskWriteTools = [
+      [CREATE_TASK_TOOL_NAME, CREATE_TASK_TOOL_DESCRIPTION, createTaskParams, runCreateTask],
+      [UPDATE_TASK_TOOL_NAME, UPDATE_TASK_TOOL_DESCRIPTION, updateTaskParams, runUpdateTask],
+      [DELETE_TASK_TOOL_NAME, DELETE_TASK_TOOL_DESCRIPTION, deleteTaskParams, runDeleteTask],
+      [TASK_STEPS_TOOL_NAME, TASK_STEPS_TOOL_DESCRIPTION, taskStepsParams, runTaskSteps],
+      [
+        TASK_REMINDERS_TOOL_NAME,
+        TASK_REMINDERS_TOOL_DESCRIPTION,
+        taskRemindersParams,
+        runTaskReminders,
+      ],
+      [
+        TASK_PROGRESS_TOOL_NAME,
+        TASK_PROGRESS_TOOL_DESCRIPTION,
+        taskProgressParams,
+        runTaskProgress,
+      ],
+      [
+        TASK_SETTINGS_TOOL_NAME,
+        TASK_SETTINGS_TOOL_DESCRIPTION,
+        taskSettingsParams,
+        runTaskSettings,
+      ],
+    ] as const;
+    for (const [name, description, params, run] of taskWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        const outcome = await run(deps.principal, taskAdmin, args);
         return outcome.ok
           ? { content: [{ type: 'text' as const, text: outcome.text }] }
           : { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
@@ -905,58 +952,63 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     });
   if (deps.taskDetail) {
     const detailPort = deps.taskDetail;
-    server.tool(
-      GET_TASK_DETAILS_TOOL_NAME,
-      GET_TASK_DETAILS_TOOL_DESCRIPTION,
-      getTaskDetailsParams,
-      (args) => {
-        try {
-          const outcome = getTaskDetailsText(deps.principal, detailPort, args);
-          if (!outcome.ok)
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          return okReadResult(readAudit, {
-            ok: true,
-            text: outcome.text,
-            read: {
-              kind: 'content',
-              action: 'mcp.read.get_task_details',
-              guildId: outcome.guildId,
-              subjectType: 'club_task',
-              subjectId: outcome.taskId,
-              resultCount: 1,
-            },
-          });
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
-        }
-      },
-    );
+    server.tool(GET_TASK_TOOL_NAME, GET_TASK_TOOL_DESCRIPTION, getTaskParams, (args) => {
+      try {
+        const outcome = getTaskText(deps.principal, detailPort, args);
+        if (!outcome.ok)
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        return okReadResult(readAudit, {
+          ok: true,
+          text: outcome.text,
+          read: {
+            kind: 'content',
+            action: GET_TASK_READ_ACTION,
+            guildId: outcome.guildId,
+            subjectType: 'club_task',
+            subjectId: outcome.taskId,
+            resultCount: 1,
+          },
+        });
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    });
   }
+  // ADR 0132: `task_teams` registers with the read tools when the daemon
+  // threads the tasks port. Its `list` action reads through the port like
+  // every other read; the write actions answer the reconnect message without
+  // the tasks scope or the admin port.
   if (taskPort)
     server.tool(
-      LIST_TASK_TEAMS_TOOL_NAME,
-      LIST_TASK_TEAMS_TOOL_DESCRIPTION,
-      listTaskTeamsParams,
-      (args) => {
+      TASK_TEAMS_TOOL_NAME,
+      TASK_TEAMS_TOOL_DESCRIPTION,
+      taskTeamsParams,
+      async (args) => {
         try {
-          const outcome = listTaskTeamsText(deps.principal, taskPort, args);
+          const outcome = await runTaskTeams(
+            deps.principal,
+            { tasks: taskPort, taskAdmin: deps.taskAdmin },
+            args,
+          );
           if (!outcome.ok)
             return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          return okReadResult(readAudit, {
-            ok: true,
-            text: outcome.text,
-            read: {
-              kind: 'content',
-              action: 'mcp.read.list_task_teams',
-              guildId: outcome.guildId,
-              subjectType: 'guild',
-              subjectId: undefined,
-              resultCount: outcome.itemCount,
-            },
-          });
+          if (outcome.read !== undefined)
+            return okReadResult(readAudit, {
+              ok: true,
+              text: outcome.text,
+              read: {
+                kind: 'content',
+                action: 'mcp.read.list_task_teams',
+                guildId: outcome.read.guildId,
+                subjectType: 'guild',
+                subjectId: undefined,
+                resultCount: outcome.read.itemCount,
+              },
+            });
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
         } catch {
           return {
             content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -965,38 +1017,6 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
-  if (deps.taskDetail) {
-    const detailPort = deps.taskDetail;
-    server.tool(
-      LIST_TASK_REMINDERS_TOOL_NAME,
-      LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
-      listTaskRemindersParams,
-      (args) => {
-        try {
-          const outcome = listTaskRemindersText(deps.principal, detailPort, args);
-          if (!outcome.ok)
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          return okReadResult(readAudit, {
-            ok: true,
-            text: outcome.text,
-            read: {
-              kind: 'content',
-              action: 'mcp.read.list_task_reminders',
-              guildId: outcome.guildId,
-              subjectType: 'club_task',
-              subjectId: outcome.taskId,
-              resultCount: outcome.itemCount,
-            },
-          });
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
-        }
-      },
-    );
-  }
   server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, () => {
     try {
       const outcome = getHealthText(deps.principal, deps.health);

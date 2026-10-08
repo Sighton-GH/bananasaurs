@@ -73,6 +73,7 @@ describe('consolidated task write routing', () => {
         guildId: GUILD,
         teamId: UUID_A,
         title: 'Measure chassis',
+        priority: 'normal',
         assignmentKind: 'team',
         dueAt: DUE,
         timezone: TZ,
@@ -95,6 +96,7 @@ describe('consolidated task write routing', () => {
       args: {
         ...versioned,
         title: 'Measure chassis',
+        priority: 'normal',
         assignmentKind: 'team',
         dueAt: DUE,
         timezone: TZ,
@@ -225,8 +227,7 @@ describe('consolidated task write routing', () => {
     '%s routes with the action stripped',
     async (_label, entry) => {
       const { admin, execute } = adminPort();
-      const raw =
-        entry.action === '(none)' ? entry.args : { ...entry.args, action: entry.action };
+      const raw = entry.action === '(none)' ? entry.args : { ...entry.args, action: entry.action };
       const outcome = await entry.run(tasksPrincipal, admin, raw);
       expect(outcome).toEqual({ ok: true, text: 'stored' });
       expect(execute).toHaveBeenCalledWith(GUILD, 'owner', entry.name, entry.args);
@@ -257,7 +258,13 @@ describe('consolidated task write boundaries', () => {
     },
     {
       run: runTaskProgress,
-      raw: { guildId: GUILD, taskId: UUID_A, action: 'delete_report', body: 'x', requestId: UUID_B },
+      raw: {
+        guildId: GUILD,
+        taskId: UUID_A,
+        action: 'delete_report',
+        body: 'x',
+        requestId: UUID_B,
+      },
     },
     {
       run: runTaskSettings,
@@ -418,9 +425,7 @@ describe(GET_TASK_TOOL_NAME, () => {
     reports: [],
     reminders: [],
   };
-  const slots = [
-    { slotId: `custom:task:${DUE}`, kind: 'custom', dueAt: DUE, state: 'pending' },
-  ];
+  const slots = [{ slotId: `custom:task:${DUE}`, kind: 'custom', dueAt: DUE, state: 'pending' }];
   const detailPort = () => ({
     detail: vi.fn().mockReturnValue(detail),
     reminders: vi.fn().mockReturnValue(slots),

@@ -102,7 +102,7 @@ export const taskAdminTools = {
   },
   edit_club_task: {
     description:
-      'Owner-only: replace editable task fields, checking the expected version from get_task_details. Multi-assignee edits supply the full assignee list.',
+      'Owner-only: replace editable task fields, checking the expected version from get_task. Multi-assignee edits supply the full assignee list.',
     params: { ...withGuild, taskId, expectedVersion: version, ...editTaskFields },
   },
   append_task_child: {
@@ -138,17 +138,17 @@ export const taskAdminTools = {
   },
   approve_task_completion: {
     description:
-      'Owner-only: approve an awaiting task, moving it to done using the expected version from get_task_details.',
+      'Owner-only: approve an awaiting task, moving it to done using the expected version from get_task.',
     params: { ...withGuild, taskId, expectedVersion: version },
   },
   reject_task_completion: {
     description:
-      'Owner-only: send an awaiting task back to in progress using the expected version from get_task_details.',
+      'Owner-only: send an awaiting task back to in progress using the expected version from get_task.',
     params: { ...withGuild, taskId, expectedVersion: version },
   },
   set_task_status: {
     description:
-      'Owner-only: set an unarchived task back to a working status using the expected version from get_task_details.',
+      'Owner-only: set an unarchived task back to a working status using the expected version from get_task.',
     params: {
       ...withGuild,
       taskId,
@@ -158,12 +158,12 @@ export const taskAdminTools = {
   },
   archive_task: {
     description:
-      'Owner-only: archive a task so it leaves the default listing, using the expected version from get_task_details.',
+      'Owner-only: archive a task so it leaves the default listing, using the expected version from get_task.',
     params: { ...withGuild, taskId, expectedVersion: version },
   },
   unarchive_task: {
     description:
-      'Owner-only: restore an archived task to the default listing, using the expected version from get_task_details.',
+      'Owner-only: restore an archived task to the default listing, using the expected version from get_task.',
     params: { ...withGuild, taskId, expectedVersion: version },
   },
   delete_club_task: {
