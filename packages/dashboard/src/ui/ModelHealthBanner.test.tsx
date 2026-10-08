@@ -71,6 +71,29 @@ describe('ModelHealthBanner', () => {
     expect(document.body.textContent ?? '').not.toContain('times in a row');
   });
 
+  it('renders nothing when the only persistent model left the chain (ADR 0129)', async () => {
+    const mock = stubFetch([
+      {
+        url: HEALTH_URL,
+        body: {
+          window: '24h',
+          models: [
+            {
+              ...PERSISTENT.models[0],
+              inChain: false,
+              keyLabel: 'Old key',
+            },
+          ],
+        },
+      },
+    ]);
+    renderWithSession(<ModelHealthBanner />);
+    await vi.waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(screen.queryByRole('link', { name: 'Open Model order' })).toBeNull();
+    expect(document.body.textContent ?? '').not.toContain('times in a row');
+  });
+
   it('renders nothing on a 403, and does not throw', async () => {
     const mock = stubFetch([{ url: HEALTH_URL, status: 403, body: { error: 'forbidden' } }]);
     renderWithSession(<ModelHealthBanner />);

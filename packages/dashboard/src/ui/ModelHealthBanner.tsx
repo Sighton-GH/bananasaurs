@@ -1,7 +1,11 @@
 import { useCallback, type JSX } from 'react';
 import { Link } from 'wouter';
 import { PROVIDER_FAILURE_TEXT, type FailureText, type ModelHealth } from '@bananasaurs/core';
-import { modelHealthUrl, type ModelHealthResponse } from '../api/model-health.js';
+import {
+  modelHealthUrl,
+  type DashboardModelHealth,
+  type ModelHealthResponse,
+} from '../api/model-health.js';
 import { useSession } from '../app/session.js';
 import { useLiveResource } from '../hooks/useLiveResource.js';
 
@@ -9,7 +13,7 @@ const failureTitle = (code: string): string =>
   (PROVIDER_FAILURE_TEXT as Readonly<Record<string, FailureText | undefined>>)[code]?.title ?? code;
 
 /** One line per stuck model; the link to the editor follows the list, once. */
-function PersistentLine({ model }: { readonly model: ModelHealth }) {
+function PersistentLine({ model }: { readonly model: ModelHealth | DashboardModelHealth }) {
   const persistent = model.persistent;
   if (persistent === undefined) return null;
   return (
@@ -37,7 +41,11 @@ export function ModelHealthBanner(): JSX.Element | null {
     isFast: () => false,
   });
   if (live.resource.state !== 'ready') return null;
-  const persistent = live.resource.data.models.filter((m) => m.persistent !== undefined);
+  // ADR 0129: warn only about persistent models still in the current chain.
+  // A missing `inChain` (older responses) counts as in the chain.
+  const persistent = live.resource.data.models.filter(
+    (m) => m.persistent !== undefined && m.inChain !== false,
+  );
   if (persistent.length === 0) return null;
   return (
     <section
