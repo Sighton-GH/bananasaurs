@@ -38,6 +38,8 @@ export interface McpGuildHealth {
         readonly breakerReason: string | null;
         /** ADR 0121: the guild-wide automod switch. */
         readonly automodState: OpsAutomodState;
+        /** ADR 0131: the guild's task-posts switch (dry run still overrides it). */
+        readonly taskPostsEnabled: boolean;
       }
     | undefined;
   readonly jobCounts: Readonly<Record<string, number>>;
@@ -63,6 +65,15 @@ export interface McpHealthPort {
   readonly startedAtMs: number;
   readonly readonly: boolean;
   readonly env: string;
+  /**
+   * ADR 0131: the install-wide `BANANASAURS_DRY_RUN`, which holds every task
+   * post back whatever the per-guild switch says. Read at call time beside
+   * `guilds()` — it is config, not a guild row. Optional so older port
+   * literals keep compiling; absent reads as on (fail closed), the same rule
+   * `HttpDeps.taskPostsDryRun` follows, so no surface claims posts it cannot
+   * confirm.
+   */
+  readonly installDryRun?: boolean | undefined;
   gateway(): {
     readonly connected: boolean;
     readonly pingMs: number | undefined;
@@ -72,6 +83,13 @@ export interface McpHealthPort {
   now(): number;
   /** One entry per guild in the caller's reachable set; an emptied set yields an empty list. */
   guilds(): readonly McpGuildHealth[];
+  /**
+   * One reachable guild's entry, reading only that guild; undefined for a guild
+   * outside the caller's reachable set. Optional so older port literals keep
+   * compiling. A reader that names one guild (the guide's live block) calls it
+   * when present, so it never reads every reachable guild's ports to pick one.
+   */
+  guild?(guildId: GuildId): McpGuildHealth | undefined;
 }
 
 /**
@@ -132,6 +150,16 @@ export const renderHealth = (port: McpHealthPort): string => {
       const state = paused.length === 0 ? 'role changes enabled' : `paused (${paused.join(', ')})`;
       lines.push(`guild ${guild.guildId} (${name}): ${state}`);
       lines.push(`  automod ${guild.safety.automodState}`);
+      // ADR 0131: the switch alone would claim "on" while dry run holds
+      // every post back, so the held case names the reason. Absent reads as
+      // on (fail closed) — see `installDryRun`.
+      lines.push(
+        !guild.safety.taskPostsEnabled
+          ? '  task posts off'
+          : (port.installDryRun ?? true)
+            ? '  task posts on, held by dry run (BANANASAURS_DRY_RUN)'
+            : '  task posts on',
+      );
     }
     const jobs = Object.entries(guild.jobCounts);
     const jobText =

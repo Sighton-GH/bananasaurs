@@ -9,7 +9,7 @@ import {
 
 export const LIST_TASKS_TOOL_NAME = 'list_tasks';
 export const LIST_TASKS_TOOL_DESCRIPTION =
-  'List tasks (open by default) in one reachable guild when the bearer account is the instance owner. Approved tasks are archived automatically, so finding them needs includeArchived: true (with includeDone). Read-only.';
+  'List tasks (open by default) in one reachable guild for the instance owner or an account with Manage club tasks in that guild. Approved tasks are archived automatically, so finding them needs includeArchived: true (with includeDone). Read-only.';
 export const listTasksParams = {
   guildId: z.string(),
   teamId: z.string().uuid().optional(),
@@ -107,9 +107,6 @@ export interface McpTaskReminderSlot {
   readonly dueAt: number;
   readonly state: string;
 }
-export const GET_TASK_DETAILS_TOOL_NAME = 'get_task_details';
-export const GET_TASK_DETAILS_TOOL_DESCRIPTION =
-  'Owner-only: get one task, its version, dated children and progress reports for an authorized guild. Read-only.';
 export const getTaskDetailsParams = { guildId: z.string(), taskId: z.string().uuid() };
 const detailSchema = z.object(getTaskDetailsParams).strict();
 export interface McpTaskDetail {
@@ -182,9 +179,6 @@ export const getTaskDetailsText = (
   };
 };
 
-export const LIST_TASK_TEAMS_TOOL_NAME = 'list_task_teams';
-export const LIST_TASK_TEAMS_TOOL_DESCRIPTION =
-  'Owner-only: list task teams with their category, roles, members, the president role and quiet hours for an authorized guild. Read-only.';
 export const listTaskTeamsParams = { guildId: z.string() };
 const teamsSchema = z.object(listTaskTeamsParams).strict();
 export const listTaskTeamsText = (
@@ -212,9 +206,6 @@ export const listTaskTeamsText = (
   return { ok: true, text, guildId: scoped.guildId, itemCount: view.teams.length };
 };
 
-export const LIST_TASK_REMINDERS_TOOL_NAME = 'list_task_reminders';
-export const LIST_TASK_REMINDERS_TOOL_DESCRIPTION =
-  'Owner-only: list the reminder slots of one task for an authorized guild. Read-only.';
 export const listTaskRemindersParams = { guildId: z.string(), taskId: z.string().uuid() };
 const remindersSchema = z.object(listTaskRemindersParams).strict();
 export const listTaskRemindersText = (

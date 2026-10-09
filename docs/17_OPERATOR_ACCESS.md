@@ -109,15 +109,16 @@ bananasaurs mcp cleanup --confirm            # deletes every sign-in that no lon
                                              # all its rows, and registered apps left with none
                                              # (apps registered in the last hour are spared, so a
                                              # sign-in in progress survives). A working sign-in
-                                             # keeps its old tokens 14 days: replaying one is how
-                                             # a stolen token is caught
+                                             # keeps its revoked tokens until 14 days after they
+                                             # expire: replaying one is how a stolen token is caught
 bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
 bananasaurs mcp revoke-client <client-id> --confirm
 bananasaurs mcp allow-channel <channel-id> --confirm
-                                             # lets the connector post here. Nothing is
-                                             # allowlisted by default, and the allowlist is
-                                             # the only thing that decides where it can post
+                                             # turns Write on for this channel, so the
+                                             # connector may post here (ADR 0126)
 bananasaurs mcp disallow-channel <channel-id> --confirm
+                                             # turns this channel's Write off; a Write-on
+                                             # category still covers it
 bananasaurs mcp allowlist                    # the channels the connector may post to
 bananasaurs mcp sends [--since <duration>]   # every send, with channel, outcome and token id
 bananasaurs provider review <provider> --confirm
@@ -130,13 +131,15 @@ bananasaurs provider review <provider> --confirm
 message to one channel, and every bound on it is checked by the daemon, not
 by the client:
 
-- **The allowlist decides where.** Nothing is allowlisted by default, so a
-  freshly connected connector can post nowhere at all until
-  `mcp allow-channel` says otherwise. A channel that is not on it — including
-  a DM, which can never be on it — is refused before any Discord call.
-- **Mentions never ping.** The send sets `allowed_mentions` to the empty set,
-  so `@everyone`, `@here`, role and user mentions in the text are inert. This
-  is the one place in the tree that sets it; ordinary bot messages do not.
+- **Write decides where.** At first start Write is on for every category and
+  uncategorised channel the bot can see (ADR 0126). A new uncategorised channel
+  starts off until `mcp allow-channel` turns Write on for it, and a channel
+  added to a category follows the category. A channel where Write is off,
+  including any DM (which can never have Write), is refused before any Discord
+  call.
+- **Mentions ping under the ping rules.** A user or role mention in the text
+  pings that member or role if the rules allow it (ADR 0117, ADR 0128).
+  `@everyone` and `@here` never ping, and mentions inside code do not.
 - **Ten per guild per rolling hour**, counted from the durable ledger rather
   than memory, so a restart does not hand out ten more.
 - **The kill switch, the breaker and dry run all apply.** With dry run on the
@@ -155,14 +158,39 @@ do, from these four (the labels are the ones `mcp connections` and the
 dashboard use):
 
 - **Read** (`bananasaurs:read`) — every read tool (messages, members, cases,
-  settings, tasks).
+  settings, tasks). Task reads also need the instance owner or Manage club
+  tasks.
 - **Post** (`bananasaurs:send`) — posts, edits, threads, forum posts, schedules,
   events, polls.
 - **Roles** (`bananasaurs:roles`) — role grants and removals, role creation,
   role panels.
-- **Tasks** (`bananasaurs:tasks`) — the task write tools (`create_club_task`,
-  `edit_club_task`, approvals, archive, reminders, task teams); needs the
-  Manage club tasks permission as well.
+- **Tasks** (`bananasaurs:tasks`) — the task write tools (`create_task`,
+  `update_task`, `delete_task`, `task_steps`, `task_reminders`,
+  `task_progress`, `task_settings`); needs the Manage club tasks permission
+  as well. `task_teams` is advertised under Read for its `list` action; its
+  create, configure, delete and member actions also need Tasks, so a
+  connection with Tasks but not Read does not see `task_teams` at all.
+
+**MCP tools, by group.** Reading: message and channel history, threads and
+digests, members, roles, cases, audit, jobs, resources, the server card, and
+the task reads (`list_tasks`, `get_task`, `task_teams` with action `list`).
+Help: `bananasaurs_guide` describes how Bananasaurs works and, with a `guildId`, this
+server's live safety settings and this connection's permissions.
+Messages and threads: `send_message`, `edit_message`, `delete_message`,
+`set_pin` (pin or unpin), `react` (add or remove the bot's own reaction),
+`create_thread`, `thread_members` (add or remove), `create_forum_post`, and
+`set_thread_state` (archive or lock, exactly one per call).
+Schedules/events/polls: `schedule_message`, `list_scheduled`,
+`update_scheduled` (edit or cancel a send still waiting to go out), event
+tools and `create_poll`. Roles and panels: grants and removals, role
+creation and edits, bulk changes, and role panels. Tasks: the seven task
+write tools above, and `task_teams` for teams and members. Actions:
+`undo_action` reverses one reversible action and `list_actions` shows recent
+actions with ids, never content. Message, thread, event, schedule, role and
+panel writes take an idempotency key to reuse on retry, and `dryRun` to
+record without changing anything. The task writes have no `dryRun`, and only
+`create_task` and `task_progress` take a `requestId` for retries; `undo_action`
+takes neither.
 
 Tools are filtered at registration rather than refused on call: a token
 without a scope never sees that scope's tools in `tools/list`. **A token keeps
@@ -174,10 +202,10 @@ every scope in `scopes_supported` — approve them on the sign-in page, then
 disconnect the old sign-in with `bananasaurs mcp disconnect <connection-id>
 --confirm` (`bananasaurs mcp connections` lists each sign-in with the scopes it
 was approved with, so you can see which one is the old one). A token holding
-only `bananasaurs:send` connects and then answers `-32601 Method not found`
-to `tools/list`: with no read tool registered, the MCP SDK installs no list
-handler. That is intended, so if a freshly connected client says the server
-has no methods, check which scopes were approved before anything else.
+only `bananasaurs:send` lists only the send-scope tools — none of the read-scope
+tools, not even `get_server_overview` — so if a freshly connected client shows
+tools but cannot look anything up, check which scopes were approved before
+anything else.
 
 The `account` commands mostly act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
 
@@ -258,6 +286,17 @@ Three things about it are deliberate:
   deliberately and then run this.
 
 `bootstrap reissue` refuses while any dashboard account exists, so reaching the empty state it needs is itself a deliberate act — and that act now has a supported command: `bananasaurs account delete <username> --confirm`, which revokes the account's OAuth tokens in the same transaction instead of leaving raw row deletes to the operator. That is the path the refusal message already names, so the manual and the tool agree. (To reset a forgotten password while accounts still exist, use `account set-password`, not this path — see above.)
+
+### Task posts
+
+Discord posts for club tasks (announcements, reminders, check-ins, weekly digests, approval
+and evaluation posts) are off until someone turns them on for the server: open the dashboard,
+go to **Tasks**, and use the **Task posts** switch (the owner, or anyone with Manage club tasks).
+It takes effect on the next minute tick, with no restart. `BANANASAURS_DRY_RUN=1` overrides the
+switch; set it to `0` in `.env` and restart to end dry run. Posts skipped while posts were off
+are not sent later. The old `TASK_NUDGE_SEND_ENABLED` variable is gone (ADR 0131); a leftover
+line in `.env` is ignored with a startup warning. `doctor` reports a server that has open tasks
+while posts are off.
 
 ### Rules every command follows
 

@@ -211,6 +211,8 @@ export interface OpsSafetyState {
   readonly reconcileBudget: number;
   readonly breakerThreshold: number;
   readonly automodState: OpsAutomodState;
+  /** ADR 0131: the guild's task-posts switch. */
+  readonly taskPostsEnabled: boolean;
 }
 
 // `packages/core` may not import from `@bananasaurs/storage` (ADR 0014;

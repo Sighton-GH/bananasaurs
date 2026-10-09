@@ -20,32 +20,29 @@ import type { McpEventWritesPort } from './event-writes.js';
 import type { McpSchedulePort } from './schedule.js';
 import type { McpRoleWritesPort } from './role-writes.js';
 import {
-  ADD_REACTION_TOOL_NAME,
   DELETE_MESSAGE_TOOL_NAME,
   EDIT_MESSAGE_TOOL_NAME,
-  PIN_MESSAGE_TOOL_NAME,
-  REMOVE_REACTION_TOOL_NAME,
-  UNPIN_MESSAGE_TOOL_NAME,
-  addReactionText,
   deleteMessageText,
   editMessageText,
   pinMessageText,
   removeReactionText,
+  addReactionText,
   unpinMessageText,
   type McpMessageWriteOutcome,
   type McpMessageWriteRefusal,
   type McpMessageWritesPort,
 } from './message-writes.js';
+import { REACT_TOOL_NAME, SET_PIN_TOOL_NAME } from './pair-tools.js';
 
 /**
- * Task 6 Step 1, tool layer: the six message-write tools against a fake
+ * Task 6 Step 1, tool layer: the message-write handlers against a fake
  * `McpMessageWritesPort` — the same seam the daemon's gateway wiring
  * implements, so the guard behaviour pinned here (guild gate, argument
  * boundary, emoji shape, refusal rendering) holds whichever implementation
  * sits behind it.
  *
  * Scope filtering is pinned through a real MCP round-trip at the bottom: a
- * read-only token must not see any of the six in `tools/list` at all, and a
+ * read-only token must not see any of the four in `tools/list` at all, and a
  * send-only token must see them alongside `send_message` and nothing else.
  */
 
@@ -144,10 +141,10 @@ const messageOf = (outcome: { readonly ok: boolean; readonly message?: string })
 const handlers = [
   ['edit_message', editMessageText, validEditArgs] as const,
   ['delete_message', deleteMessageText, validDeleteArgs] as const,
-  ['pin_message', pinMessageText, validPinArgs] as const,
-  ['unpin_message', unpinMessageText, validPinArgs] as const,
-  ['add_reaction', addReactionText, validReactionArgs] as const,
-  ['remove_reaction', removeReactionText, validReactionArgs] as const,
+  ['set_pin pinned', pinMessageText, validPinArgs] as const,
+  ['set_pin unpinned', unpinMessageText, validPinArgs] as const,
+  ['react add', addReactionText, validReactionArgs] as const,
+  ['react remove', removeReactionText, validReactionArgs] as const,
 ];
 
 describe('message-write guild gate (CLAUDE.md rule 2)', () => {
@@ -329,7 +326,7 @@ describe('reaction emoji shape (hard rule 3)', () => {
     expect(totalCalls(port)).toBe(0);
   });
 
-  it('remove_reaction enforces the same shape', async () => {
+  it('react remove enforces the same shape', async () => {
     const port = fakeWritesPort({ status: 'done', actionId: ACTION, messageId: MESSAGE });
     const outcome = await removeReactionText(principalWith([GUILD_A]), port, {
       ...validReactionArgs(),
@@ -586,13 +583,11 @@ describe('message-write scope filtering (ruling M4-D17)', () => {
     'send_message',
     EDIT_MESSAGE_TOOL_NAME,
     DELETE_MESSAGE_TOOL_NAME,
-    PIN_MESSAGE_TOOL_NAME,
-    UNPIN_MESSAGE_TOOL_NAME,
-    ADD_REACTION_TOOL_NAME,
-    REMOVE_REACTION_TOOL_NAME,
+    SET_PIN_TOOL_NAME,
+    REACT_TOOL_NAME,
   ];
 
-  it('a read-only token sees none of the six message-write tools', async () => {
+  it('a read-only token sees none of the four message-write tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD_A], ['bananasaurs:read']));
     try {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
@@ -602,13 +597,13 @@ describe('message-write scope filtering (ruling M4-D17)', () => {
     }
   });
 
-  it('a send-only token sees send_message and the six message-write tools', async () => {
+  it('a send-only token sees send_message and the four message-write tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD_A], ['bananasaurs:send']));
     try {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
       // The thread-write tools (Task 5), the event tools and the schedule
-      // tools share the scope; this file pins its own six.
-      expect(names).toHaveLength(21);
+      // tools share the scope; this file pins its own four.
+      expect(names).toHaveLength(16);
       expect(names).toEqual(expect.arrayContaining(SEND_TOOL_NAMES));
     } finally {
       await close();

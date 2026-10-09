@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../../ids.js';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The `mcp role-policy` / `mcp allow-role` / `mcp disallow-role` surface
@@ -98,7 +99,7 @@ export const mcpRolePolicyCommand = defineCommand<z.infer<typeof rolePolicyArgs>
         : `role policy is already grant=${after.grantMode} ping=${after.pingMode}; nothing changed`,
       data: { before: beforeJson, after: afterJson, changed },
       audit: {
-        action: 'mcp.role_policy.updated',
+        action: OPS_AUDIT_ACTIONS.mcpRolePolicyUpdated,
         subjectType: 'mcp_role_policy',
         before: beforeJson,
         after: { ...afterJson, changed },
@@ -139,7 +140,7 @@ export const mcpAllowRoleCommand = defineCommand<z.infer<typeof allowRoleArgs>>(
         text: `role ${args.roleId} is not a role of this guild; nothing changed`,
         data: { ok: false, reason: outcome, ...base },
         audit: {
-          action: 'mcp.role_allowlist.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
           subjectType: 'mcp_role_allowlist',
           subjectId: args.roleId,
           after: { outcome, ...base },
@@ -152,7 +153,7 @@ export const mcpAllowRoleCommand = defineCommand<z.infer<typeof allowRoleArgs>>(
         text: `role ${args.roleId} is @everyone, which can never be allowlisted; nothing changed`,
         data: { ok: false, reason: outcome, ...base },
         audit: {
-          action: 'mcp.role_allowlist.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
           subjectType: 'mcp_role_allowlist',
           subjectId: args.roleId,
           after: { outcome, ...base },
@@ -165,7 +166,7 @@ export const mcpAllowRoleCommand = defineCommand<z.infer<typeof allowRoleArgs>>(
         text: `role ${args.roleId} is managed by an integration and can never be allowlisted; nothing changed`,
         data: { ok: false, reason: outcome, ...base },
         audit: {
-          action: 'mcp.role_allowlist.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
           subjectType: 'mcp_role_allowlist',
           subjectId: args.roleId,
           after: { outcome, ...base },
@@ -178,7 +179,7 @@ export const mcpAllowRoleCommand = defineCommand<z.infer<typeof allowRoleArgs>>(
         text: `role ${args.roleId} holds a dangerous permission (ADR 0117 floor) and can never be allowlisted; nothing changed`,
         data: { ok: false, reason: outcome, ...base },
         audit: {
-          action: 'mcp.role_allowlist.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
           subjectType: 'mcp_role_allowlist',
           subjectId: args.roleId,
           after: { outcome, ...base },
@@ -191,7 +192,7 @@ export const mcpAllowRoleCommand = defineCommand<z.infer<typeof allowRoleArgs>>(
         text: `role ${args.roleId} is already allowlisted for ${args.purpose}; nothing changed`,
         data: { ...base, allowed: true, changed: false },
         audit: {
-          action: 'mcp.role_allowlist.allowed',
+          action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
           subjectType: 'mcp_role_allowlist',
           subjectId: args.roleId,
           before: { allowed: true },
@@ -204,7 +205,7 @@ export const mcpAllowRoleCommand = defineCommand<z.infer<typeof allowRoleArgs>>(
       text: `role ${args.roleId} may now be ${args.purpose === 'grant' ? 'granted' : 'pinged'} by the MCP connector`,
       data: { ...base, allowed: true, changed: true },
       audit: {
-        action: 'mcp.role_allowlist.allowed',
+        action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
         subjectType: 'mcp_role_allowlist',
         subjectId: args.roleId,
         before: { allowed: false },
@@ -235,7 +236,7 @@ export const mcpDisallowRoleCommand = defineCommand<z.infer<typeof disallowRoleA
         text: `role ${args.roleId} was not allowlisted for ${args.purpose}; nothing changed`,
         data: { ...base, allowed: false, changed: false },
         audit: {
-          action: 'mcp.role_allowlist.disallowed',
+          action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistDisallowed,
           subjectType: 'mcp_role_allowlist',
           subjectId: args.roleId,
           before: { allowed: false },
@@ -248,7 +249,7 @@ export const mcpDisallowRoleCommand = defineCommand<z.infer<typeof disallowRoleA
       text: `role ${args.roleId} is no longer allowlisted for ${args.purpose}`,
       data: { ...base, allowed: false, changed: true },
       audit: {
-        action: 'mcp.role_allowlist.disallowed',
+        action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistDisallowed,
         subjectType: 'mcp_role_allowlist',
         subjectId: args.roleId,
         before: { allowed: true },

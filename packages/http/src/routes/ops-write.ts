@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   CAPABILITIES,
   MAX_PANEL_OPTIONS,
+  OPS_AUDIT_ACTIONS,
   PANEL_BEHAVIOURS,
   PANEL_COMPONENTS,
   logRouteIdSchema,
@@ -240,7 +241,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'job.retried',
+      action: OPS_AUDIT_ACTIONS.jobRetried,
       subjectType: 'job',
       subjectId: String(jobId),
       before: undefined,
@@ -327,7 +328,7 @@ export const registerOpsWriteRoutes = (
     ports.createPanel(definition, newlyAllowlisted);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'panel.created',
+      action: OPS_AUDIT_ACTIONS.panelCreated,
       subjectType: 'panel',
       subjectId: definition.panelId,
       before: undefined,
@@ -403,7 +404,7 @@ export const registerOpsWriteRoutes = (
     ports.applySetting(parsed.data);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'setting.applied',
+      action: OPS_AUDIT_ACTIONS.configSet,
       subjectType: 'setting',
       subjectId: parsed.data.key,
       before: undefined,
@@ -432,7 +433,9 @@ export const registerOpsWriteRoutes = (
       if (!existed) return reply.status(404).send({ error: 'not-found' });
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: bodyParsed.data.enabled ? 'log_route.enabled' : 'log_route.disabled',
+        action: bodyParsed.data.enabled
+          ? OPS_AUDIT_ACTIONS.logRouteEnabled
+          : OPS_AUDIT_ACTIONS.logRouteDisabled,
         subjectType: 'log_route',
         subjectId: idParsed.data,
         before: { enabled: before.enabled },
@@ -454,7 +457,7 @@ export const registerOpsWriteRoutes = (
     const added = ports.excludeChannel(parsed.data.channelId);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'log_exclusion.added',
+      action: OPS_AUDIT_ACTIONS.logExclusionAdded,
       subjectType: 'channel',
       subjectId: parsed.data.channelId,
       before: { excluded: !added },
@@ -478,7 +481,7 @@ export const registerOpsWriteRoutes = (
       if (removed) {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'log_exclusion.removed',
+          action: OPS_AUDIT_ACTIONS.logExclusionRemoved,
           subjectType: 'channel',
           subjectId: parsed.data,
           before: { excluded: true },
@@ -504,7 +507,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'archive_channel.enabled',
+      action: OPS_AUDIT_ACTIONS.archiveChannelEnabled,
       subjectType: 'channel',
       subjectId: parsed.data.channelId,
       before: { enabled: outcome === 'already-enabled' },
@@ -525,7 +528,7 @@ export const registerOpsWriteRoutes = (
       const outcome = ports.archivePauseChannel(parsed.data);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_channel.paused',
+        action: OPS_AUDIT_ACTIONS.archiveChannelPaused,
         subjectType: 'channel',
         subjectId: parsed.data,
         before: { collecting: outcome === 'already-paused' ? false : true },
@@ -547,7 +550,7 @@ export const registerOpsWriteRoutes = (
       const outcome = ports.archiveResumeChannel(parsed.data);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_channel.resumed',
+        action: OPS_AUDIT_ACTIONS.archiveChannelResumed,
         subjectType: 'channel',
         subjectId: parsed.data,
         before: { collecting: outcome === 'already-collecting' },
@@ -571,7 +574,7 @@ export const registerOpsWriteRoutes = (
       const outcome = ports.archiveDisableChannel(parsed.data);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_channel.disabled',
+        action: OPS_AUDIT_ACTIONS.archiveChannelDisabled,
         subjectType: 'channel',
         subjectId: parsed.data,
         before: { enabled: outcome.outcome === 'disabled' },
@@ -609,7 +612,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'archive_category.enabled',
+      action: OPS_AUDIT_ACTIONS.archiveCategoryEnabled,
       subjectType: 'archive_category',
       subjectId: parsed.data.channelId,
       before: { enabled: outcome === 'already-enabled' },
@@ -633,7 +636,7 @@ export const registerOpsWriteRoutes = (
       if (outcome === 'no-such-channel') return reply.status(404).send({ error: outcome });
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_category.paused',
+        action: OPS_AUDIT_ACTIONS.archiveCategoryPaused,
         subjectType: 'archive_category',
         subjectId: parsed.data,
         before: { collecting: outcome === 'already-paused' ? false : true },
@@ -656,7 +659,7 @@ export const registerOpsWriteRoutes = (
       if (outcome === 'no-such-channel') return reply.status(404).send({ error: outcome });
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_category.resumed',
+        action: OPS_AUDIT_ACTIONS.archiveCategoryResumed,
         subjectType: 'archive_category',
         subjectId: parsed.data,
         before: { collecting: outcome === 'already-collecting' },
@@ -681,7 +684,7 @@ export const registerOpsWriteRoutes = (
       if (outcome.outcome === 'disabled') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'archive_category.disabled',
+          action: OPS_AUDIT_ACTIONS.archiveCategoryDisabled,
           subjectType: 'archive_category',
           subjectId: parsed.data,
           before: { enabled: true },
@@ -718,7 +721,7 @@ export const registerOpsWriteRoutes = (
       }
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_channel.threads_set',
+        action: OPS_AUDIT_ACTIONS.archiveThreadsSet,
         subjectType: 'channel',
         subjectId: id.data,
         before: { threads: prior === false ? 'none' : 'all' },
@@ -745,7 +748,7 @@ export const registerOpsWriteRoutes = (
       }
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_message.preserved',
+        action: OPS_AUDIT_ACTIONS.archiveMessagePreserved,
         subjectType: 'archive_message',
         subjectId: parsed.data,
         before: undefined,
@@ -770,7 +773,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'archive_message.case_linked',
+      action: OPS_AUDIT_ACTIONS.archiveMessageLinkedToCase,
       subjectType: 'archive_message',
       subjectId: parsed.data.messageId,
       before: undefined,
@@ -793,7 +796,7 @@ export const registerOpsWriteRoutes = (
       ports.enqueueArchiveBackfill(parsed.data);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'archive_backfill.enqueued',
+        action: OPS_AUDIT_ACTIONS.archiveBackfillEnqueued,
         subjectType: 'channel',
         subjectId: parsed.data,
         before: undefined,
@@ -812,7 +815,7 @@ export const registerOpsWriteRoutes = (
     const indexed = ports.archiveReindex();
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'archive_reindex.ran',
+      action: OPS_AUDIT_ACTIONS.archiveIndexRebuilt,
       subjectType: 'guild',
       subjectId: session.guildId,
       before: undefined,
@@ -839,7 +842,7 @@ export const registerOpsWriteRoutes = (
     const enqueued = ports.enqueueUndo(parsed.data);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'undo.enqueued',
+      action: OPS_AUDIT_ACTIONS.batchUndoRequested,
       subjectType: 'effect_batch',
       subjectId: parsed.data.batchId,
       before: { undoneAt: batch.undoneAt },
@@ -863,7 +866,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'send_channel.allowed',
+      action: OPS_AUDIT_ACTIONS.mcpSendChannelAllowed,
       subjectType: 'channel',
       subjectId: parsed.data.channelId,
       before: { allowed: outcome === 'already-allowed' },
@@ -887,7 +890,7 @@ export const registerOpsWriteRoutes = (
       if (removed) {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'send_channel.disallowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendChannelDisallowed,
           subjectType: 'channel',
           subjectId: parsed.data,
           before: { allowed: true },
@@ -916,7 +919,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'send_category.allowed',
+      action: OPS_AUDIT_ACTIONS.mcpSendCategoryAllowed,
       subjectType: 'send_category',
       subjectId: parsed.data.channelId,
       before: { allowed: outcome === 'already-allowed' },
@@ -940,7 +943,7 @@ export const registerOpsWriteRoutes = (
       if (outcome === 'removed') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'send_category.disallowed',
+          action: OPS_AUDIT_ACTIONS.mcpSendCategoryDisallowed,
           subjectType: 'send_category',
           subjectId: parsed.data,
           before: { allowed: true },
@@ -974,7 +977,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'read_scope.allow',
+      action: OPS_AUDIT_ACTIONS.readScopeAllow,
       subjectType: 'channel',
       subjectId: parsed.data.channelId,
       before: { allowed: outcome === 'already-allowed' },
@@ -999,7 +1002,7 @@ export const registerOpsWriteRoutes = (
     if (outcome === 'removed') {
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'read_scope.disallow',
+        action: OPS_AUDIT_ACTIONS.readScopeDisallow,
         subjectType: 'channel',
         subjectId: parsed.data,
         before: { allowed: true },
@@ -1030,7 +1033,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'read_scope.allow',
+      action: OPS_AUDIT_ACTIONS.readScopeAllow,
       subjectType: 'read_scope_category',
       subjectId: parsed.data.channelId,
       before: { allowed: outcome === 'already-allowed' },
@@ -1057,7 +1060,7 @@ export const registerOpsWriteRoutes = (
       if (outcome === 'removed') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'read_scope.disallow',
+          action: OPS_AUDIT_ACTIONS.readScopeDisallow,
           subjectType: 'read_scope_category',
           subjectId: parsed.data,
           before: { allowed: true },
@@ -1088,7 +1091,7 @@ export const registerOpsWriteRoutes = (
     const changed = before.grantMode !== after.grantMode || before.pingMode !== after.pingMode;
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'role_policy.updated',
+      action: OPS_AUDIT_ACTIONS.mcpRolePolicyUpdated,
       subjectType: 'role_policy',
       subjectId: undefined,
       before: { grantMode: before.grantMode, pingMode: before.pingMode },
@@ -1117,7 +1120,7 @@ export const registerOpsWriteRoutes = (
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'role_allowlist.allowed',
+      action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistAllowed,
       subjectType: 'role_allowlist',
       subjectId: parsed.data.roleId,
       before: { allowed: outcome === 'already-allowed' },
@@ -1141,7 +1144,7 @@ export const registerOpsWriteRoutes = (
     if (outcome === 'removed') {
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'role_allowlist.disallowed',
+        action: OPS_AUDIT_ACTIONS.mcpRoleAllowlistDisallowed,
         subjectType: 'role_allowlist',
         subjectId: roleId.data,
         before: { allowed: true },
@@ -1165,7 +1168,7 @@ export const registerOpsWriteRoutes = (
     const after = ports.adoptionAllowance();
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'adoption_allowance.granted',
+      action: OPS_AUDIT_ACTIONS.adoptionAllowanceGranted,
       subjectType: 'guild',
       subjectId: session.guildId,
       before: { allowance: before },
@@ -1194,7 +1197,7 @@ export const registerOpsWriteRoutes = (
       if (outcome === 'added') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'invite_allowlist.added',
+          action: OPS_AUDIT_ACTIONS.automodInviteAllowlistAdded,
           subjectType: 'automod_rule',
           subjectId: request.params.ruleId,
           before: undefined,
@@ -1222,7 +1225,7 @@ export const registerOpsWriteRoutes = (
       if (outcome === 'removed') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'invite_allowlist.removed',
+          action: OPS_AUDIT_ACTIONS.automodInviteAllowlistRemoved,
           subjectType: 'automod_rule',
           subjectId: request.params.ruleId,
           before: { code: request.params.code },
@@ -1254,7 +1257,7 @@ export const registerOpsWriteRoutes = (
       if (result.outcome === 'added') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'link_domain.added',
+          action: OPS_AUDIT_ACTIONS.automodLinkDomainAdded,
           subjectType: 'automod_rule',
           subjectId: request.params.ruleId,
           before: undefined,
@@ -1286,7 +1289,7 @@ export const registerOpsWriteRoutes = (
       if (result.outcome === 'removed') {
         ports.recordAudit({
           ...dashboardAuditBase(session, deps.now()),
-          action: 'link_domain.removed',
+          action: OPS_AUDIT_ACTIONS.automodLinkDomainRemoved,
           subjectType: 'automod_rule',
           subjectId: request.params.ruleId,
           before: { domain: request.params.domain },
@@ -1309,7 +1312,7 @@ export const registerOpsWriteRoutes = (
     const ports = deps.portsFor(session.scope);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: result.ok ? 'backup.ran' : 'backup.failed',
+      action: result.ok ? OPS_AUDIT_ACTIONS.backupCreated : OPS_AUDIT_ACTIONS.backupFailed,
       subjectType: 'instance',
       subjectId: 'instance',
       before: undefined,
@@ -1336,7 +1339,7 @@ export const registerOpsWriteRoutes = (
       const ports = deps.portsFor(session.scope);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'provider.reviewed',
+        action: OPS_AUDIT_ACTIONS.providerReviewed,
         subjectType: 'provider',
         subjectId: request.params.provider,
         before: undefined,
@@ -1423,7 +1426,9 @@ export const registerOpsWriteRoutes = (
       const ports = deps.portsFor(session.scope);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: result.disabled ? 'account.disabled' : 'account.enabled',
+        action: result.disabled
+          ? OPS_AUDIT_ACTIONS.accountDisabled
+          : OPS_AUDIT_ACTIONS.accountEnabled,
         subjectType: 'account',
         subjectId: result.username,
         before: { disabled: !result.disabled },
@@ -1509,7 +1514,7 @@ export const registerOpsWriteRoutes = (
     const ports = deps.portsFor(session.scope);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'account.deleted',
+      action: OPS_AUDIT_ACTIONS.accountDeleted,
       subjectType: 'account',
       subjectId: result.username,
       before: { isOwner: result.wasOwner },
@@ -1537,7 +1542,7 @@ export const registerOpsWriteRoutes = (
       const ports = deps.portsFor(session.scope);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.credentials_revoked',
+        action: OPS_AUDIT_ACTIONS.accountCredentialsRevoked,
         subjectType: 'account',
         subjectId: result.username,
         before: undefined,
@@ -1576,7 +1581,7 @@ export const registerOpsWriteRoutes = (
       const ports = deps.portsFor(session.scope);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.password_reset',
+        action: OPS_AUDIT_ACTIONS.accountPasswordChanged,
         subjectType: 'account',
         subjectId: result.username,
         before: undefined,
@@ -1592,7 +1597,7 @@ export const registerOpsWriteRoutes = (
 
   // ADR 0069: set a chosen password, or generate one when the body names
   // none. The legacy POST reset above stays working (the dashboard still
-  // calls it until Task 5); both land in the same `account.password_reset`
+  // calls it until Task 5); both land in the same `account.password.changed`
   // audit, whose `after` names only whether the password was chosen — never
   // the password itself.
   app.put<{ Params: { username: string } }>(
@@ -1624,7 +1629,7 @@ export const registerOpsWriteRoutes = (
       const ports = deps.portsFor(session.scope);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.password_reset',
+        action: OPS_AUDIT_ACTIONS.accountPasswordChanged,
         subjectType: 'account',
         subjectId: result.username,
         before: undefined,
@@ -1665,7 +1670,7 @@ export const registerOpsWriteRoutes = (
       const ports = deps.portsFor(session.scope);
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.password_revealed',
+        action: OPS_AUDIT_ACTIONS.accountPasswordRevealed,
         subjectType: 'account',
         subjectId: result.username,
         before: undefined,
@@ -1692,7 +1697,7 @@ export const registerOpsWriteRoutes = (
       }
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.guild_granted',
+        action: OPS_AUDIT_ACTIONS.accountGuildGranted,
         subjectType: 'account',
         subjectId: request.params.username,
         before: { hadAccess: outcome === 'already-had-it' },
@@ -1717,7 +1722,7 @@ export const registerOpsWriteRoutes = (
       }
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.guild_revoked',
+        action: OPS_AUDIT_ACTIONS.accountGuildRevoked,
         subjectType: 'account',
         subjectId: request.params.username,
         before: { hadAccess: true },
@@ -1763,7 +1768,7 @@ export const registerOpsWriteRoutes = (
       }
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.capability.granted',
+        action: OPS_AUDIT_ACTIONS.accountCapabilityGranted,
         subjectType: 'account',
         subjectId: request.params.username,
         before: { held: outcome === 'already-held' },
@@ -1803,7 +1808,7 @@ export const registerOpsWriteRoutes = (
       }
       ports.recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'account.capability_revoked',
+        action: OPS_AUDIT_ACTIONS.accountCapabilityRevoked,
         subjectType: 'account',
         subjectId: request.params.username,
         before: { held: outcome === 'revoked' },
@@ -1832,7 +1837,7 @@ export const registerOpsWriteRoutes = (
     }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'mcp.token.revoked',
+      action: OPS_AUDIT_ACTIONS.mcpTokenRevoked,
       subjectType: 'instance',
       subjectId: 'instance',
       before: { tokenId: request.params.tokenId, live: true },
@@ -1857,7 +1862,7 @@ export const registerOpsWriteRoutes = (
     }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'mcp.connection.revoked',
+      action: OPS_AUDIT_ACTIONS.mcpConnectionRevoked,
       subjectType: 'instance',
       subjectId: 'instance',
       before: { connectionId: id },
@@ -1885,7 +1890,7 @@ export const registerOpsWriteRoutes = (
     };
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'mcp.connection.deleted',
+      action: OPS_AUDIT_ACTIONS.mcpConnectionDeleted,
       subjectType: 'instance',
       subjectId: 'instance',
       before: { connectionId: id },
@@ -1907,7 +1912,7 @@ export const registerOpsWriteRoutes = (
     const after = { tokenId: id, tokensRevoked: result.revoked, tokensDeleted: result.deleted };
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'mcp.token.deleted',
+      action: OPS_AUDIT_ACTIONS.mcpTokenDeleted,
       subjectType: 'instance',
       subjectId: 'instance',
       before: { tokenId: id },
@@ -1925,7 +1930,7 @@ export const registerOpsWriteRoutes = (
     const after = { tokensDeleted: result.tokens, clientsDeleted: result.clients };
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'mcp.tokens.cleaned',
+      action: OPS_AUDIT_ACTIONS.mcpTokensCleaned,
       subjectType: 'instance',
       subjectId: 'instance',
       before: undefined,
@@ -1949,7 +1954,7 @@ export const registerOpsWriteRoutes = (
       }
       deps.portsFor(session.scope).recordAudit({
         ...dashboardAuditBase(session, deps.now()),
-        action: 'mcp.client.revoked',
+        action: OPS_AUDIT_ACTIONS.mcpClientRevoked,
         subjectType: 'instance',
         subjectId: 'instance',
         before: { clientId: request.params.clientId },

@@ -10,9 +10,10 @@ import { idsAreWellFormed } from '../ids.js';
 import type { SendEmbed } from './send.js';
 
 /**
- * The six message-write tools, registered under the send scope: editing and
- * deleting the bot's own messages, pinning and unpinning any in-scope
- * message, and adding and removing the bot's own reactions.
+ * The message-write handlers, registered under the send scope: editing and
+ * deleting the bot's own messages directly, pinning and unpinning any
+ * in-scope message behind `set_pin`, and the bot's own reactions behind
+ * `react` (see `pair-tools.ts` for the two merged tools).
  *
  * The same five steps as `send_message` in `send.ts` — Zod parse →
  * `requireReachableGuild` → port call → render — so hard rule 3 holds by
@@ -45,7 +46,7 @@ export const REACTION_EMOJI_MAX = 64;
 
 export const EDIT_MESSAGE_TOOL_NAME = 'edit_message';
 export const EDIT_MESSAGE_TOOL_DESCRIPTION =
-  'Edits a message the bot authored in an allowlisted channel of this guild. ' +
+  'Edits a message the bot authored in a channel where Write is on in this guild. ' +
   'Pass content, embeds, or both; the previous text is kept for undo. ' +
   'Role-panel messages, task posts (anchors and nudges) and messages written by anyone else are refused. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
@@ -53,39 +54,11 @@ export const EDIT_MESSAGE_TOOL_DESCRIPTION =
 
 export const DELETE_MESSAGE_TOOL_NAME = 'delete_message';
 export const DELETE_MESSAGE_TOOL_DESCRIPTION =
-  'Deletes a message the bot authored in an allowlisted channel of this guild. ' +
+  'Deletes a message the bot authored in a channel where Write is on in this guild. ' +
   'Role-panel messages, task posts (anchors and nudges) and messages written by anyone else are refused. ' +
   'A delete cannot be undone. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
   'Pass dryRun to record without deleting.';
-
-export const PIN_MESSAGE_TOOL_NAME = 'pin_message';
-export const PIN_MESSAGE_TOOL_DESCRIPTION =
-  'Pins any message in an allowlisted channel of this guild. ' +
-  'The bot needs the PinMessages or ManageMessages Discord permission in the channel. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without pinning.';
-
-export const UNPIN_MESSAGE_TOOL_NAME = 'unpin_message';
-export const UNPIN_MESSAGE_TOOL_DESCRIPTION =
-  'Unpins a message in an allowlisted channel of this guild. ' +
-  'The bot needs the PinMessages or ManageMessages Discord permission in the channel. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without unpinning.';
-
-export const ADD_REACTION_TOOL_NAME = 'add_reaction';
-export const ADD_REACTION_TOOL_DESCRIPTION =
-  'Adds the bot\u2019s own reaction to a message in an allowlisted channel of this guild. ' +
-  'Emoji is a unicode emoji or name:id for a custom emoji of this guild. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without reacting.';
-
-export const REMOVE_REACTION_TOOL_NAME = 'remove_reaction';
-export const REMOVE_REACTION_TOOL_DESCRIPTION =
-  'Removes the bot\u2019s own reaction from a message in an allowlisted channel of this guild. ' +
-  'Emoji is a unicode emoji or name:id for a custom emoji of this guild. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without reacting.';
 
 /** What the daemon's message-write wiring must satisfy (Task 6 implements it). */
 export interface McpMessageWritesPort {
@@ -318,42 +291,6 @@ export const deleteMessageParams = {
     .string()
     .describe('Caller-supplied key for this delete; reuse the same value if you retry this call.'),
 };
-
-export const pinMessageParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  channelId: z.string().describe('Channel holding the message.'),
-  messageId: z.string().describe('Message to pin.'),
-  dryRun: z.boolean().optional().describe('Record without pinning: nothing reaches Discord.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this pin; reuse the same value if you retry this call.'),
-};
-
-export const unpinMessageParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  channelId: z.string().describe('Channel holding the message.'),
-  messageId: z.string().describe('Message to unpin.'),
-  dryRun: z.boolean().optional().describe('Record without unpinning: nothing reaches Discord.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this unpin; reuse the same value if you retry this call.'),
-};
-
-const reactionParamsDescription = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  channelId: z.string().describe('Channel holding the message.'),
-  messageId: z.string().describe('Message to react to.'),
-  emoji: z.string().describe('A unicode emoji, or name:id for a custom emoji of this guild.'),
-  dryRun: z.boolean().optional().describe('Record without reacting: nothing reaches Discord.'),
-  idempotencyKey: z
-    .string()
-    .describe(
-      'Caller-supplied key for this reaction; reuse the same value if you retry this call.',
-    ),
-};
-
-export const addReactionParams = { ...reactionParamsDescription };
-export const removeReactionParams = { ...reactionParamsDescription };
 
 /** Which tool is rendering, for the verbs and budget words below. */
 type MessageWriteKind = 'edit' | 'delete' | 'pin' | 'unpin' | 'add-reaction' | 'remove-reaction';

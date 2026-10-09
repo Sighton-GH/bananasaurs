@@ -52,7 +52,7 @@ export const POLL_DURATION_MAX_HOURS = 168;
 export const CREATE_EVENT_TOOL_NAME = 'create_event';
 export const CREATE_EVENT_TOOL_DESCRIPTION =
   'Creates a Discord scheduled event (voice, stage or external) in this guild. ' +
-  'A voice or stage event needs an allowlisted voice or stage channel where the bot holds ' +
+  'A voice or stage event needs a voice or stage channel where Write is on and the bot holds ' +
   'the ManageEvents Discord permission; an external event needs a place, an end time, and ' +
   'the guild-level ManageEvents permission. ' +
   'Event creation cannot be undone: to remove the event, call cancel_event with its event id. ' +
@@ -79,7 +79,7 @@ export const CANCEL_EVENT_TOOL_DESCRIPTION =
 
 export const CREATE_POLL_TOOL_NAME = 'create_poll';
 export const CREATE_POLL_TOOL_DESCRIPTION =
-  'Posts a message carrying a native poll to an allowlisted channel of this guild, ' +
+  'Posts a message carrying a native poll to a channel where Write is on in this guild, ' +
   'through the same send path as send_message: the same target, ping (polls never ping) ' +
   'and idempotency rules hold. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
@@ -415,7 +415,7 @@ export const createPollParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   channelId: z
     .string()
-    .describe('Channel to post the poll into; the owner must have allowlisted it for this guild.'),
+    .describe('Channel to post the poll into; Write must be on for it in this guild.'),
   question: z
     .string()
     .describe(`Poll question, 1 to ${String(POLL_QUESTION_MAX)} characters. Polls never ping.`),

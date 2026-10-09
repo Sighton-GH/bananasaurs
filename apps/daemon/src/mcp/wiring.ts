@@ -45,6 +45,7 @@ import {
 } from '../channels/access.js';
 import { taskAdminPortFor } from './task-admin-port.js';
 import { canManageTasks, canManageTasksInAny } from './task-access.js';
+import { accessPortFor } from './access-port.js';
 import {
   mcpRoleGatewayFor,
   authorizeRolesMutate,
@@ -169,6 +170,35 @@ import {
 export const MCP_ROUTE_PATH = '/mcp';
 
 /**
+ * One reachable guild's share of the health report, read at `nowMs`. `guilds()`
+ * and `guild()` both build their entries here, so the two cannot disagree.
+ */
+const guildHealthFor = (deps: HttpDeps, guildId: GuildId, nowMs: number): McpGuildHealth => {
+  const ports = deps.portsFor(deps.scopes.forGuild(guildId));
+  const safety = ports.safetyState();
+  const dueAtMs = ports.oldestDueJobAtMs(nowMs);
+  return {
+    guildId,
+    guildName: ports.guildName(),
+    safety:
+      safety === undefined
+        ? undefined
+        : {
+            killswitch: safety.killswitch,
+            dryRun: safety.dryRun,
+            breakerOpen: safety.breakerOpen,
+            breakerReason: safety.breakerReason,
+            automodState: safety.automodState,
+            taskPostsEnabled: safety.taskPostsEnabled,
+          },
+    jobCounts: ports.jobCounts(),
+    // Clamped at zero so a clock that moved backwards reports "not behind"
+    // rather than a negative lag — the same rule `/status` follows.
+    schedulerLagMs: dueAtMs === undefined ? 0 : Math.max(0, nowMs - dueAtMs),
+  };
+};
+
+/**
  * Projects the operator surface down to the narrow port `get_health` needs,
  * field by field. `OpsInstance` itself is never passed: it carries write
  * members (`mcpRevokeToken`, `accountSetDisabled`, …) no MCP tool may reach,
@@ -177,10 +207,15 @@ export const MCP_ROUTE_PATH = '/mcp';
  * guild argument — and an emptied reachable set yields an empty list, which
  * is what `get_health` refuses on (ADR 0044 §4 obligation 1).
  */
-const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort => ({
+export const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort => ({
   startedAtMs: deps.instance.startedAtMs,
   readonly: deps.instance.readonly,
   env: deps.instance.env,
+  // ADR 0131: the install-wide dry run behind `HttpDeps.taskPostsDryRun`
+  // (`BANANASAURS_DRY_RUN`), so `get_health` can say "held by dry run"
+  // instead of claiming "on" while every post is held back. Absent reads as
+  // on (fail closed), the same rule the task routes follow.
+  installDryRun: deps.taskPostsDryRun ?? true,
   now: deps.now,
   gateway: () => {
     const gateway = deps.instance.gateway();
@@ -199,30 +234,14 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
   // all.
   guilds: (): readonly McpGuildHealth[] => {
     const nowMs = deps.now();
-    return principal.reachableGuilds.map((guildId) => {
-      const ports = deps.portsFor(deps.scopes.forGuild(guildId));
-      const safety = ports.safetyState();
-      const dueAtMs = ports.oldestDueJobAtMs(nowMs);
-      return {
-        guildId,
-        guildName: ports.guildName(),
-        safety:
-          safety === undefined
-            ? undefined
-            : {
-                killswitch: safety.killswitch,
-                dryRun: safety.dryRun,
-                breakerOpen: safety.breakerOpen,
-                breakerReason: safety.breakerReason,
-                automodState: safety.automodState,
-              },
-        jobCounts: ports.jobCounts(),
-        // Clamped at zero so a clock that moved backwards reports "not behind"
-        // rather than a negative lag — the same rule `/status` follows.
-        schedulerLagMs: dueAtMs === undefined ? 0 : Math.max(0, nowMs - dueAtMs),
-      };
-    });
+    return principal.reachableGuilds.map((guildId) => guildHealthFor(deps, guildId, nowMs));
   },
+  // One guild's entry, for a reader that names one. Outside the caller's
+  // reachable set it answers undefined and reads no port at all.
+  guild: (guildId: GuildId): McpGuildHealth | undefined =>
+    principal.reachableGuilds.includes(guildId)
+      ? guildHealthFor(deps, guildId, deps.now())
+      : undefined,
 });
 
 /**
@@ -1821,7 +1840,7 @@ const targetRefusalFor = (
 };
 
 /**
- * The `McpThreadWritesPort` behind the six thread/forum tools (slice 3,
+ * The `McpThreadWritesPort` behind the four thread/forum tools (slice 3,
  * Task 5), field by field like `sendPortFor` above. Each method resolves its
  * target against send scope and the bot's live permissions, builds the
  * `McpActionDeps` over the storage repos, and runs the one pipeline:
@@ -1834,14 +1853,14 @@ const targetRefusalFor = (
  *   `addedByAccountId` is the principal's account. `firstMessage` is a second
  *   action, key `<key>:first`, through the `message.send` path into the new
  *   thread; when it fails the thread still stands and the tool says so.
- * - `add_thread_members` / `remove_thread_members`: one action per call
+ * - `thread_members`: one action per call
  *   (kinds `thread.members.add|remove`, cap group `structure`). An add
  *   records `{ userIds }` as its undo (ADR 0116 §5); a removal is not
  *   undoable.
  * - `create_forum_post`: kind `forum.post`, cap group `message`, with the
  *   duplicate-content guard — the content-bearing write of this family.
  *   Always public.
- * - `archive_thread` / `lock_thread`: kind `thread.state`, cap group
+ * - `set_thread_state`: kind `thread.state`, cap group
  *   `structure`, recording the previous state as the undo.
  *
  * Member and state edits on a thread the bot owns run under `post-in-thread`
@@ -2252,7 +2271,7 @@ const threadWritesPortFor = (
 };
 
 /**
- * The `McpMessageWritesPort` behind the six message-write tools (slice 3,
+ * The `McpMessageWritesPort` behind the four message-write tools (slice 3,
  * Task 6), field by field like `healthPortFor` above. Every method resolves
  * its target against send scope and the bot's live permissions, then runs
  * the one `runMcpAction` pipeline — edits and deletes in cap group `edit`,
@@ -5085,8 +5104,8 @@ const eventWritesPortFor = (
 };
 
 /**
- * The `McpSchedulePort` behind `schedule_message`, `list_scheduled`,
- * `edit_scheduled` and `cancel_scheduled` (slice 5, Task 3), field by field
+ * The `McpSchedulePort` behind `schedule_message`, `list_scheduled` and
+ * `update_scheduled` (slice 5, Task 3), field by field
  * like `sendPortFor` above. Storage is the existing `assistant_reminders`
  * table with `origin='mcp'` (ADR 0119); the daemon's reminder worker
  * delivers the rows, and nothing here touches delivery.
@@ -6832,7 +6851,7 @@ const readAuditPortFor = (
 });
 
 /**
- * The `McpTaskDetailPort` behind `get_task_details` and `list_task_reminders`,
+ * The `McpTaskDetailPort` behind `get_task`,
  * field by field like `healthPortFor` above. Each method rechecks owner-or-`tasks.manage`
  * in the call's guild per call — the tool layer names the task, the daemon supplies
  * the authority — and reads through the task repositories. Archived tasks are
@@ -6892,7 +6911,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
 };
 
 /**
- * The `McpTaskPort` behind `list_tasks` and `list_task_teams`, field by field
+ * The `McpTaskPort` behind `list_tasks` and `task_teams`, field by field
  * like `healthPortFor` above. Each method rechecks the enabled instance owner
  * per call and reads through the task repositories — nothing here writes.
  * `list` passes the caller's visibility filter straight to the repository, so
@@ -7077,6 +7096,7 @@ export const registerMcpRoutes = (
     const server = createMcpServer({
       principal,
       health: healthPortFor(principal, deps),
+      access: accessPortFor(deps),
       archive: archivePortFor(deps, client, discord),
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),

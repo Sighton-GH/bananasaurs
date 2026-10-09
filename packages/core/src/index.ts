@@ -521,6 +521,7 @@ export {
   type RegisteredCommand,
 } from './ops/dispatch.js';
 export { OPERATOR_COMMANDS } from './ops/registry.js';
+export { OPS_AUDIT_ACTIONS, type OpsAuditAction } from './ops/audit-actions.js';
 export type {
   OpsAuditQuery,
   OpsAuditRow,
@@ -602,6 +603,7 @@ export {
 } from './ops/commands/reads.js';
 
 export { MCP_SCOPE_INFO, mcpScopeLabel } from './ops/mcp-scopes.js';
+export { GUIDE_TOPICS, findGuideTopic, type GuideTopic } from './guide/index.js';
 export * from './channels/scope.js';
 export * from './channels/access.js';
 export type {
@@ -675,6 +677,16 @@ export {
   type TaskCommandRow,
 } from './task/commands.js';
 export { isValidTimeZone, timeZoneSchema } from './task/timezone.js';
+export {
+  staleTaskPostsEnvWarning,
+  taskPostsBannerText,
+  taskPostsMessage,
+  taskPostsOffText,
+  taskPostsState,
+  type TaskPostKind,
+  type TaskPostsOffReason,
+  type TaskPostsState,
+} from './task/posts.js';
 export { ACK_PHRASES, isProgressUpdate } from './task/progress.js';
 export {
   buildTaskEvaluationInput,

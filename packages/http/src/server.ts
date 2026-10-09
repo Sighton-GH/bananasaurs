@@ -96,6 +96,12 @@ export interface HttpDeps extends AuthDeps {
    */
   readonly mcpPublicUrl?: string | undefined;
   /**
+   * `BANANASAURS_DRY_RUN`, which overrides the per-guild task-posts switch
+   * (ADR 0131). Absent reads as on (fail closed), so no surface claims posts
+   * it cannot confirm.
+   */
+  readonly taskPostsDryRun?: boolean | undefined;
+  /**
    * One `OpsPorts` per guild, supplied by the composition root.
    *
    * `packages/http` cannot import `apps/daemon` (ADR 0014), and building an

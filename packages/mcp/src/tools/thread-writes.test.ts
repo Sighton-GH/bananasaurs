@@ -5,12 +5,8 @@ import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
 import { createMcpServer } from '../server.js';
 import {
-  ADD_THREAD_MEMBERS_TOOL_NAME,
-  ARCHIVE_THREAD_TOOL_NAME,
   CREATE_FORUM_POST_TOOL_NAME,
   CREATE_THREAD_TOOL_NAME,
-  LOCK_THREAD_TOOL_NAME,
-  REMOVE_THREAD_MEMBERS_TOOL_NAME,
   addThreadMembersText,
   archiveThreadText,
   createForumPostText,
@@ -21,6 +17,7 @@ import {
   type McpThreadWriteRefusal,
   type McpThreadWritesPort,
 } from './thread-writes.js';
+import { SET_THREAD_STATE_TOOL_NAME, THREAD_MEMBERS_TOOL_NAME } from './pair-tools.js';
 import type { McpHealthPort } from './health.js';
 import type { McpArchivePort } from './archive.js';
 import type { McpGuildPort } from './guild.js';
@@ -38,7 +35,7 @@ import type { McpSchedulePort } from './schedule.js';
 import type { McpRoleWritesPort } from './role-writes.js';
 
 /**
- * Task 5, tool layer: the six thread/forum write tools against a fake
+ * Task 5, tool layer: the thread/forum write handlers against a fake
  * `McpThreadWritesPort` — the same seam the daemon's gateway wiring
  * implements, so the guard behaviour pinned here (guild gate, argument
  * boundary, refusal rendering) holds whichever implementation sits behind
@@ -275,19 +272,19 @@ describe('thread-write ids are snowflakes before any port call (REST path safety
   const TRAVERSAL = '../../../guilds/111111111111111111/members/222222222222222222';
   it.each([
     ['create_thread fromMessageId', createThreadText, createArgs({ fromMessageId: TRAVERSAL })],
-    ['add_thread_members userIds', addThreadMembersText, membersArgs({ userIds: [TRAVERSAL] })],
+    ['thread_members add userIds', addThreadMembersText, membersArgs({ userIds: [TRAVERSAL] })],
     [
-      'remove_thread_members userIds',
+      'thread_members remove userIds',
       removeThreadMembersText,
       membersArgs({ userIds: [USER, TRAVERSAL] }),
     ],
     [
-      'remove_thread_members threadId',
+      'thread_members remove threadId',
       removeThreadMembersText,
       membersArgs({ threadId: TRAVERSAL }),
     ],
-    ['archive_thread threadId', archiveThreadText, archiveArgs({ threadId: TRAVERSAL })],
-    ['lock_thread threadId', lockThreadText, lockArgs({ threadId: TRAVERSAL })],
+    ['set_thread_state archived threadId', archiveThreadText, archiveArgs({ threadId: TRAVERSAL })],
+    ['set_thread_state locked threadId', lockThreadText, lockArgs({ threadId: TRAVERSAL })],
   ] as const)('%s refuses a path-traversal id', async (_label, text, args) => {
     const port = fakeThreadPort({ status: 'done', actionId: ACTION, threadId: THREAD });
     expect(messageOf(await text(principalWith([GUILD_A]), port, args))).toBe(
@@ -717,21 +714,19 @@ const connectPair = async (
 };
 
 describe('thread-write scope filtering (ruling M4-D17)', () => {
-  it('a send-only token sees send_message plus the six thread-write tools', async () => {
+  it('a send-only token sees send_message plus the four thread-write tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD_A]));
     try {
       const list = await client.listTools();
-      // The message-write and event tools share the scope; this file pins its own six.
+      // The message-write and event tools share the scope; this file pins its own four.
       const names = list.tools.map((tool) => tool.name);
-      expect(names).toHaveLength(21);
-      expect(names.slice(0, 7)).toEqual([
+      expect(names).toHaveLength(16);
+      expect(names.slice(0, 5)).toEqual([
         'send_message',
         CREATE_THREAD_TOOL_NAME,
-        ADD_THREAD_MEMBERS_TOOL_NAME,
-        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        THREAD_MEMBERS_TOOL_NAME,
         CREATE_FORUM_POST_TOOL_NAME,
-        ARCHIVE_THREAD_TOOL_NAME,
-        LOCK_THREAD_TOOL_NAME,
+        SET_THREAD_STATE_TOOL_NAME,
       ]);
     } finally {
       await close();
@@ -745,11 +740,9 @@ describe('thread-write scope filtering (ruling M4-D17)', () => {
       const names = list.tools.map((tool) => tool.name);
       for (const name of [
         CREATE_THREAD_TOOL_NAME,
-        ADD_THREAD_MEMBERS_TOOL_NAME,
-        REMOVE_THREAD_MEMBERS_TOOL_NAME,
+        THREAD_MEMBERS_TOOL_NAME,
         CREATE_FORUM_POST_TOOL_NAME,
-        ARCHIVE_THREAD_TOOL_NAME,
-        LOCK_THREAD_TOOL_NAME,
+        SET_THREAD_STATE_TOOL_NAME,
       ]) {
         expect(names).not.toContain(name);
       }

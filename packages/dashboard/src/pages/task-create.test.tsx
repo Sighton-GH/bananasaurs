@@ -31,9 +31,10 @@ const ASSIGNEES = {
 
 function renderCreate(
   extraRoutes: readonly { method?: string; url: string; status?: number; body: unknown }[] = [],
+  taskPosts?: unknown,
 ) {
   const mock = stubFetch([
-    { url: '/api/tasks', body: TEAMS },
+    { url: '/api/tasks', body: taskPosts === undefined ? TEAMS : { ...TEAMS, taskPosts } },
     { url: '/api/tasks/teams/one/destinations', body: DESTINATIONS },
     { url: '/api/tasks/teams/one/assignees', body: ASSIGNEES },
     ...extraRoutes,
@@ -48,6 +49,23 @@ function renderCreate(
 }
 
 describe('task creation', () => {
+  it('warns with the off text when posts are off', async () => {
+    renderCreate([], {
+      enabled: false,
+      offReason: 'switch',
+      switchOn: false,
+      message:
+        'Task posts are off for this server — tasks are saved but nothing is posted to Discord. Turn them on with the Task posts switch on the Tasks page.',
+    });
+    const banner = await screen.findByText(/Task posts switch on the Tasks page/);
+    expect(banner.closest('[role="status"]')).toBeTruthy();
+  });
+
+  it('shows a short line when posts are on', async () => {
+    renderCreate([], { enabled: true, switchOn: true, message: 'Task posts are on.' });
+    expect(await screen.findByText('Task posts are on.')).toBeTruthy();
+  });
+
   it('does not show the form to non-owner sessions', () => {
     stubFetch([]);
     renderWithSession(

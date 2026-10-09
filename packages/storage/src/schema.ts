@@ -54,6 +54,11 @@ export const guilds = sqliteTable(
     // table — when a column and its CHECK land in the same call.
     automodState: text('automod_state').notNull().default('off'),
 
+    // ADR 0131: the per-guild task-posts switch (0/1). Off by default; posts
+    // go out only when this is on and BANANASAURS_DRY_RUN is off. Column and
+    // CHECK are generated in separate runs, for the drizzle-kit reason above.
+    taskPostsEnabled: integer('task_posts_enabled').notNull().default(0),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -68,6 +73,7 @@ export const guilds = sqliteTable(
       'guilds_positive_limits',
       sql`${t.roleRatePerMin} > 0 AND ${t.reconcileBudget} > 0 AND ${t.breakerThreshold} > 0`,
     ),
+    check('guilds_task_posts_enabled_bool', boolCheck(t.taskPostsEnabled)),
     check('guilds_automod_state', sql`${t.automodState} IN ('off','watch','on')`),
   ],
 );

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { panelDefinitionSchema, type PanelDefinition } from '../../panels/model.js';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * `panel create` — writes a validated panel definition, and nothing else.
@@ -54,7 +55,7 @@ export const panelCreateCommand = defineCommand<PanelCreateArgs>({
       text,
       data: { ok: false, reason },
       audit: {
-        action: 'panel.created',
+        action: OPS_AUDIT_ACTIONS.panelCreated,
         subjectType: 'panel',
         after: { outcome: reason },
       },
@@ -132,7 +133,7 @@ export const panelCreateCommand = defineCommand<PanelCreateArgs>({
         'when you are ready.',
       data: { ok: true, panelId: definition.panelId, optionCount, published: false },
       audit: {
-        action: 'panel.created',
+        action: OPS_AUDIT_ACTIONS.panelCreated,
         subjectType: 'panel',
         subjectId: definition.panelId,
         after: {

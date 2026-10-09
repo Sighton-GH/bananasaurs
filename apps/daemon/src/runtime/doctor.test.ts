@@ -556,6 +556,37 @@ describe('account password vault (ADR 0070)', () => {
   });
 });
 
+describe('task posts finding', () => {
+  const text = (over: Record<string, string>, guilds: number | undefined): string => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    return formatDoctorReport(
+      buildDoctorReport(client, config(over), Date.now(), undefined, undefined, guilds),
+    );
+  };
+
+  it('points at the dashboard switch when a guild has open tasks and posts are off', () => {
+    const out = text({ BANANASAURS_DRY_RUN: '0' }, 1);
+    expect(out).toContain('TASK POSTS OFF');
+    expect(out).toContain("Task posts switch on the dashboard's Tasks page");
+    expect(out).toContain('not sent later');
+    expect(out).not.toContain('TASK_NUDGE_SEND_ENABLED');
+  });
+
+  it('names dry run when that is why posts are off', () => {
+    expect(text({ BANANASAURS_DRY_RUN: '1' }, 1)).toContain('BANANASAURS_DRY_RUN=0');
+  });
+
+  it('is silent with no such guild or when not assessed', () => {
+    expect(text({ BANANASAURS_DRY_RUN: '0' }, 0)).not.toContain('TASK POSTS OFF');
+    expect(text({ BANANASAURS_DRY_RUN: '0' }, undefined)).not.toContain('TASK POSTS OFF');
+  });
+
+  it('does not make an otherwise healthy report fail', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    expect(buildDoctorReport(client, config(), Date.now(), undefined, undefined, 2).ok).toBe(true);
+  });
+});
+
 describe('the printed report', () => {
   it('is legible and carries no secret', () => {
     addGuild(GUILD, String(REQUIRED_PERMISSIONS));
@@ -591,23 +622,31 @@ describe('the printed report', () => {
 describe('model health (ADR 0129 §8)', () => {
   it('fails ok and prints the warning line for one persistent entry', () => {
     addGuild(GUILD, String(REQUIRED_PERMISSIONS));
-    const report = buildDoctorReport(client, config(), Date.now(), undefined, undefined, {
-      guilds: [
-        {
-          guildId: GUILD,
-          persistent: [
-            {
-              model: 'model-a',
-              keyId: 'key-1',
-              keyLabel: 'Primary',
-              code: 'provider-auth',
-              count: 3,
-              since: 1_000,
-            },
-          ],
-        },
-      ],
-    });
+    const report = buildDoctorReport(
+      client,
+      config(),
+      Date.now(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        guilds: [
+          {
+            guildId: GUILD,
+            persistent: [
+              {
+                model: 'model-a',
+                keyId: 'key-1',
+                keyLabel: 'Primary',
+                code: 'provider-auth',
+                count: 3,
+                since: 1_000,
+              },
+            ],
+          },
+        ],
+      },
+    );
     expect(report.ok).toBe(false);
     expect(report.modelHealth?.guilds).toHaveLength(1);
     expect(formatDoctorReport(report)).toContain(
@@ -618,9 +657,17 @@ describe('model health (ADR 0129 §8)', () => {
 
   it('shows the ok line with an empty persistent list and leaves ok alone', () => {
     addGuild(GUILD, String(REQUIRED_PERMISSIONS));
-    const report = buildDoctorReport(client, config(), Date.now(), undefined, undefined, {
-      guilds: [{ guildId: GUILD, persistent: [] }],
-    });
+    const report = buildDoctorReport(
+      client,
+      config(),
+      Date.now(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        guilds: [{ guildId: GUILD, persistent: [] }],
+      },
+    );
     expect(report.ok).toBe(true);
     expect(formatDoctorReport(report)).toContain('AI model health: ok (last 24 h)');
   });

@@ -454,6 +454,7 @@ const safety = (overrides: Partial<OpsSafetyState> = {}): OpsSafetyState => ({
   reconcileBudget: 100,
   breakerThreshold: 5,
   automodState: 'off',
+  taskPostsEnabled: false,
   ...overrides,
 });
 

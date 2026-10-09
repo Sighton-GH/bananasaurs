@@ -34,7 +34,7 @@ Status: accepted for the task-tracking branch (owners, 2026-09-29).
 
 **R8.** `/task complete` takes no typed ID; it shows the member a select menu of up to 25 tasks they can complete.
 
-**R9.** `TASK_NUDGE_SEND_ENABLED` (default `0`) is the one switch for all task posts. With it off, posts settle as `planned` and are not retried later.
+**R9.** (Switch amended by ADR 0131: a per-server dashboard switch replaces `TASK_NUDGE_SEND_ENABLED`.) One switch gates all task posts. With it off, posts settle as `planned` and are not retried later.
 
 **R10.** The dormant dashboard-account binding table, repository and routes are dropped.
 

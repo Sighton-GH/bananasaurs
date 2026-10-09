@@ -8,6 +8,7 @@ import {
 } from '../dispatch.js';
 import type { OpsReviewableMatch } from '../ports.js';
 import type { JsonValue } from '../protocol.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /** Indents every line of a rendered trace so it reads as nested under its match. */
 const indented = (text: string, by = 4): string =>
@@ -171,7 +172,7 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
         text: `no match ${args.eventId} in this guild's review queue`,
         data: { ok: false, reason: 'no-such-event', eventId: args.eventId },
         audit: {
-          action: 'automod.verdict_recorded',
+          action: OPS_AUDIT_ACTIONS.automodVerdictRecorded,
           subjectType: 'mod_case_event',
           subjectId: args.eventId,
           after: { outcome: 'no-such-event' },
@@ -187,7 +188,7 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
         verdict: args.verdict,
       },
       audit: {
-        action: 'automod.verdict_recorded',
+        action: OPS_AUDIT_ACTIONS.automodVerdictRecorded,
         subjectType: 'mod_case_event',
         subjectId: args.eventId,
         after: { verdict: args.verdict },
@@ -317,7 +318,7 @@ export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInv
         text: `no rule ${args.ruleId} in this guild`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
         audit: {
-          action: 'automod.invite_allowlist_added',
+          action: OPS_AUDIT_ACTIONS.automodInviteAllowlistAdded,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'no-such-rule', code: args.code },
@@ -335,7 +336,7 @@ export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInv
         text: `rule ${args.ruleId} is not an invite rule; invite-allow only edits invite rules`,
         data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
         audit: {
-          action: 'automod.invite_allowlist_added',
+          action: OPS_AUDIT_ACTIONS.automodInviteAllowlistAdded,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'wrong-kind', code: args.code },
@@ -360,7 +361,7 @@ export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInv
         allowlist: projectInviteAllowlist(list),
       },
       audit: {
-        action: 'automod.invite_allowlist_added',
+        action: OPS_AUDIT_ACTIONS.automodInviteAllowlistAdded,
         subjectType: 'mod_rule',
         subjectId: args.ruleId,
         after: { code: args.code, label: args.label, alreadyPresent },
@@ -393,7 +394,7 @@ export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInvi
         text: `no rule ${args.ruleId} in this guild`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
         audit: {
-          action: 'automod.invite_allowlist_removed',
+          action: OPS_AUDIT_ACTIONS.automodInviteAllowlistRemoved,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'no-such-rule', code: args.code },
@@ -406,7 +407,7 @@ export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInvi
         text: `rule ${args.ruleId} is not an invite rule; invite-deny only edits invite rules`,
         data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
         audit: {
-          action: 'automod.invite_allowlist_removed',
+          action: OPS_AUDIT_ACTIONS.automodInviteAllowlistRemoved,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'wrong-kind', code: args.code },
@@ -426,7 +427,7 @@ export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInvi
         renderInviteAllowlist(args.ruleId, list),
       data: { ok: true, code: args.code, removed, allowlist: projectInviteAllowlist(list) },
       audit: {
-        action: 'automod.invite_allowlist_removed',
+        action: OPS_AUDIT_ACTIONS.automodInviteAllowlistRemoved,
         subjectType: 'mod_rule',
         subjectId: args.ruleId,
         after: { code: args.code, removed },
@@ -465,7 +466,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
         text: `no rule ${args.ruleId} in this guild`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
         audit: {
-          action: 'automod.link_domain_added',
+          action: OPS_AUDIT_ACTIONS.automodLinkDomainAdded,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'no-such-rule', domain: args.domain },
@@ -481,7 +482,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
         text: `rule ${args.ruleId} is not a link_domain rule; domain-add only edits link_domain rules`,
         data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
         audit: {
-          action: 'automod.link_domain_added',
+          action: OPS_AUDIT_ACTIONS.automodLinkDomainAdded,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'wrong-kind', domain: args.domain },
@@ -517,7 +518,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
         domains: projectLinkDomains(list),
       },
       audit: {
-        action: 'automod.link_domain_added',
+        action: OPS_AUDIT_ACTIONS.automodLinkDomainAdded,
         subjectType: 'mod_rule',
         subjectId: args.ruleId,
         after: { domain: args.domain, listType: storedListType, alreadyPresent },
@@ -550,7 +551,7 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
         text: `no rule ${args.ruleId} in this guild`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
         audit: {
-          action: 'automod.link_domain_removed',
+          action: OPS_AUDIT_ACTIONS.automodLinkDomainRemoved,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'no-such-rule', domain: args.domain },
@@ -563,7 +564,7 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
         text: `rule ${args.ruleId} is not a link_domain rule; domain-rm only edits link_domain rules`,
         data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
         audit: {
-          action: 'automod.link_domain_removed',
+          action: OPS_AUDIT_ACTIONS.automodLinkDomainRemoved,
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'wrong-kind', domain: args.domain },
@@ -587,7 +588,7 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
       ),
       data: { ok: true, domain: args.domain, removed, domains: projectLinkDomains(list) },
       audit: {
-        action: 'automod.link_domain_removed',
+        action: OPS_AUDIT_ACTIONS.automodLinkDomainRemoved,
         subjectType: 'mod_rule',
         subjectId: args.ruleId,
         after: { domain: args.domain, removed },

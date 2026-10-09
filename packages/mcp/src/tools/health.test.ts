@@ -24,6 +24,7 @@ const portWithName = (guildName: string | undefined): McpHealthPort => ({
   startedAtMs: 1_700_000_000_000,
   readonly: false,
   env: 'test',
+  installDryRun: false,
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
   now: () => 1_700_000_000_000 + 3_661_000,
   guilds: () => [
@@ -36,6 +37,7 @@ const portWithName = (guildName: string | undefined): McpHealthPort => ({
         breakerOpen: false,
         breakerReason: null,
         automodState: 'off',
+        taskPostsEnabled: false,
       },
       jobCounts: { queued: 1, running: 0, failed: 0 },
       schedulerLagMs: 0,
@@ -47,6 +49,7 @@ const portWithJobCounts = (jobCounts: Readonly<Record<string, number>>): McpHeal
   startedAtMs: 1_700_000_000_000,
   readonly: false,
   env: 'test',
+  installDryRun: false,
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
   now: () => 1_700_000_000_000 + 3_661_000,
   guilds: () => [
@@ -59,6 +62,7 @@ const portWithJobCounts = (jobCounts: Readonly<Record<string, number>>): McpHeal
         breakerOpen: false,
         breakerReason: null,
         automodState: 'off',
+        taskPostsEnabled: false,
       },
       jobCounts,
       schedulerLagMs: 0,
@@ -132,6 +136,7 @@ describe('get_health reports the automod switch (ADR 0121)', () => {
           breakerOpen: false,
           breakerReason: null,
           automodState,
+          taskPostsEnabled: false,
         },
         jobCounts: {},
         schedulerLagMs: 0,
@@ -148,5 +153,46 @@ describe('get_health reports the automod switch (ADR 0121)', () => {
     const text = textOf(getHealthText(principalWith(GUILD), portWithAutomod('on', true)));
     expect(text).toContain('dry run on');
     expect(text).toContain('  automod on');
+  });
+});
+
+describe('get_health reports the task posts switch with dry run (ADR 0131)', () => {
+  const portWithPosts = (taskPostsEnabled: boolean, installDryRun: boolean): McpHealthPort => ({
+    ...portWithName('guild a'),
+    installDryRun,
+    guilds: () => [
+      {
+        guildId: GUILD,
+        guildName: 'guild a',
+        safety: {
+          killswitch: false,
+          dryRun: false,
+          breakerOpen: false,
+          breakerReason: null,
+          automodState: 'off',
+          taskPostsEnabled,
+        },
+        jobCounts: {},
+        schedulerLagMs: 0,
+      },
+    ],
+  });
+
+  const linesOf = (taskPostsEnabled: boolean, installDryRun: boolean): readonly string[] =>
+    textOf(
+      getHealthText(principalWith(GUILD), portWithPosts(taskPostsEnabled, installDryRun)),
+    ).split('\n');
+
+  it('prints on when the switch is on and dry run is off', () => {
+    expect(linesOf(true, false)).toContain('  task posts on');
+  });
+
+  it('prints held by dry run when the switch is on but dry run holds every post back', () => {
+    expect(linesOf(true, true)).toContain('  task posts on, held by dry run (BANANASAURS_DRY_RUN)');
+  });
+
+  it('prints off when the switch is off, dry run or not', () => {
+    expect(linesOf(false, false)).toContain('  task posts off');
+    expect(linesOf(false, true)).toContain('  task posts off');
   });
 });

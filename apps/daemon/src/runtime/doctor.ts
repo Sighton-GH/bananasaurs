@@ -8,7 +8,12 @@ import {
   type Guild,
 } from 'discord.js';
 import { REQUIRED_PARTIALS } from '@bananasaurs/discord';
-import { humaniseDuration, type Config } from '@bananasaurs/core';
+import {
+  humaniseDuration,
+  taskPostsOffText,
+  type Config,
+  type TaskPostsOffReason,
+} from '@bananasaurs/core';
 import { listBackups } from '@bananasaurs/storage';
 
 /**
@@ -244,7 +249,6 @@ export interface DoctorModelHealth {
       readonly keyId: string;
       readonly keyLabel?: string;
       readonly code: string;
-
       readonly count: number;
       readonly since: number;
     }[];
@@ -254,6 +258,12 @@ export interface DoctorModelHealth {
 /** True when no guild carries a persistent entry; absent input means not assessed, never a failure. */
 export const modelHealthOk = (modelHealth: DoctorModelHealth | undefined): boolean =>
   modelHealth === undefined || modelHealth.guilds.every((g) => g.persistent.length === 0);
+
+/** Task posts are off while guilds hold open tasks: a finding, not a failure. */
+export interface DoctorTaskPostsOff {
+  readonly offReason: TaskPostsOffReason;
+  readonly guildsWithOpenTasks: number;
+}
 
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
@@ -270,6 +280,8 @@ export interface DoctorReport {
   readonly dashboardAccess?: DoctorDashboardAccess | undefined;
   /** The password vault finding (ADR 0070), when the caller assessed it. Same omission rule as `dashboardAccess`. */
   readonly passwordVault?: DoctorPasswordVault | undefined;
+  /** Present only when posts are off and some guild has an open task. Does not vote on `ok`. */
+  readonly taskPostsOff?: DoctorTaskPostsOff | undefined;
   /**
    * The model-health finding (ADR 0129 §8), when the caller assessed it.
    * Same omission rule as `dashboardAccess`: absent means not assessed.
@@ -307,6 +319,8 @@ export function buildDoctorReport(
   dashboardAccess?: DoctorDashboardAccess,
   /** The password vault finding's input (ADR 0070), same omission rule as `dashboardAccess`. */
   passwordVault?: DoctorPasswordVault,
+  /** Guilds with an open task whose posts are off, counted by the caller that has a database handle; omitted means not assessed. */
+  openTaskGuildsWithPostsOff?: number,
   /**
    * The model-health finding's input (ADR 0129 §8), computed by the caller
    * over the run ledger — this report never opens the database itself.
@@ -365,6 +379,16 @@ export function buildDoctorReport(
     dashboardOk &&
     modelHealthVote;
 
+  // ADR 0131: the caller counts guilds that have an open task while posts are
+  // off for them (switch off, or dry run); this only picks the wording.
+  const taskPostsOff: DoctorTaskPostsOff | undefined =
+    openTaskGuildsWithPostsOff !== undefined && openTaskGuildsWithPostsOff > 0
+      ? {
+          offReason: config.BANANASAURS_DRY_RUN ? 'dry-run' : 'switch',
+          guildsWithOpenTasks: openTaskGuildsWithPostsOff,
+        }
+      : undefined;
+
   return {
     ok,
     partials: { configured, missing },
@@ -377,6 +401,7 @@ export function buildDoctorReport(
     // from the property being absent, and "not assessed" is absence.
     ...(dashboardAccess !== undefined && { dashboardAccess }),
     ...(passwordVault !== undefined && { passwordVault }),
+    ...(taskPostsOff !== undefined && { taskPostsOff }),
     ...(modelHealth !== undefined && { modelHealth }),
   };
 }
@@ -548,6 +573,14 @@ export function formatDoctorReport(report: DoctorReport): string {
         `  Account password vault: key file present, mode 0600, ${String(vault.revealableAccounts)} accounts revealable`,
       );
     }
+  }
+
+  if (report.taskPostsOff !== undefined) {
+    lines.push('');
+    lines.push(
+      `  TASK POSTS OFF (${String(report.taskPostsOff.guildsWithOpenTasks)} guild(s) have open tasks): ` +
+        taskPostsOffText(report.taskPostsOff.offReason),
+    );
   }
 
   return lines.join('\n');

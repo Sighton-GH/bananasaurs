@@ -8,6 +8,7 @@ import {
   modelHealth,
   reconcileDedupeKey,
   redactConfig,
+  taskPostsState,
   undoDedupeKey,
   type Config,
   type OpsGuildMemberInfo,
@@ -17,6 +18,7 @@ import {
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  taskRepo,
   archiveRepo,
   archiveSearchRepo,
   authzRepo,
@@ -1867,7 +1869,6 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
                         ? {}
                         : { keyLabel: labels.get(h.keyId)! }),
                       code: h.persistent.code,
-
                       count: h.persistent.count,
                       since: h.persistent.since,
                     },
@@ -1881,6 +1882,13 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
         deps.now(),
         dashboardAccess,
         passwordVault,
+        deps.guildScopes.filter(
+          (scope) =>
+            !taskPostsState({
+              switchOn: guildRepo.readTaskPostsEnabled(scope),
+              dryRun: deps.config.BANANASAURS_DRY_RUN,
+            }).enabled && taskRepo.listTasks(scope).length > 0,
+        ).length,
         doctorModelHealth,
       );
       return {

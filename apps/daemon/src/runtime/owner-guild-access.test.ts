@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
-import { CAPABILITIES, parseGuildId } from '@bananasaurs/core';
+import { CAPABILITIES, OPS_AUDIT_ACTIONS, parseGuildId } from '@bananasaurs/core';
 import {
   accountRepo,
   authzRepo,
@@ -63,7 +63,9 @@ describe('ensureOwnerGuildAccess (ADR 0124)', () => {
 
   it('audits the grant in the guild granted, as the system', () => {
     run(a);
-    const rows = effectRepo.tailAudit(a).filter((row) => row.action === 'account.guild_granted');
+    const rows = effectRepo
+      .tailAudit(a)
+      .filter((row) => row.action === OPS_AUDIT_ACTIONS.accountGuildGranted);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       actorType: 'system',
@@ -91,7 +93,7 @@ describe('ensureOwnerGuildAccess (ADR 0124)', () => {
     run(a);
     expect(run(a)).toEqual([]);
     expect(
-      effectRepo.tailAudit(a).filter((row) => row.action === 'account.guild_granted'),
+      effectRepo.tailAudit(a).filter((row) => row.action === OPS_AUDIT_ACTIONS.accountGuildGranted),
     ).toHaveLength(1);
   });
 

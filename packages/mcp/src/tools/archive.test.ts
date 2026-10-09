@@ -1024,6 +1024,7 @@ describe('archive tools on the MCP server', () => {
       const { READ_DIGEST_TOOL_NAME, LIST_UNANSWERED_TOOL_NAME } = await import('./digest.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
+        'bananasaurs_guide',
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,

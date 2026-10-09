@@ -84,7 +84,6 @@ export const configSchema = z.object({
 
   BANANASAURS_ENV: z.enum(['development', 'production']).default('development'),
   BANANASAURS_DRY_RUN: bool01.default('1'),
-  TASK_NUDGE_SEND_ENABLED: bool01.default('0'),
   TASK_NUDGE_QUIET_START: z.coerce.number().int().min(0).max(23).default(0),
   TASK_NUDGE_QUIET_END: z.coerce.number().int().min(0).max(23).default(8),
   BANANASAURS_READONLY: bool01.default('0'),

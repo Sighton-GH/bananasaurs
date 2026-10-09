@@ -1,6 +1,6 @@
 # Bananasaurs — Privacy Policy
 
-**Last updated:** 2026-10-04
+**Last updated:** 2026-10-07
 **Applies to:** the Bananasaurs bot running in `<SERVER NAME>`
 **Operator:** `<OWNER NAME / CONTACT>`
 
@@ -132,11 +132,12 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 ## Messages the bot posts on the owner's behalf
 
-The owner can connect their own AI client to Bananasaurs and ask it to post a
-message to this server. When that happens:
+The owner, or an account the owner has given the Connect apps permission, can
+connect their own AI client to Bananasaurs and ask it to post a message to this
+server. When that happens:
 
-- It can only post in channels the owner has explicitly allowed. It cannot
-  post in a channel that is not on that list, and it cannot send you a DM.
+- It can only post in channels where the bot's Write permission is on. It
+  cannot post anywhere else, and it cannot send you a DM.
 - If the message mentions you, you get a notification, the same as when a
   person mentions you. A role mention notifies that role only if the role
   passes the server's ping rules (for example, no roles with admin or
@@ -146,8 +147,8 @@ message to this server. When that happens:
 - The message is posted by the bot, under the bot's name, like any other bot
   message. Nothing is posted as you or attributed to you.
 
-The trigger is always the owner typing a request in their own client. Nothing
-a member says can cause the bot to post one of these.
+The trigger is always a person typing a request in the client they connected.
+Nothing a member says can cause the bot to post one of these.
 
 ## How long it is kept
 
@@ -164,7 +165,7 @@ a member says can cause the bot to post one of these.
 | Archived messages that were deleted | Content removed 30 days after deletion; the fact that a message existed is kept |
 | Previous versions of edited archived messages | Kept with the message; removed when the message's content is removed |
 | Archived messages linked to a moderation case | Content kept until the case closes, then 90 days |
-| Archived messages the owner marked preserved | Kept indefinitely; the audit log records who preserved it and when |
+| Archived messages marked preserved by an account with Change settings, or from the operator CLI | Kept indefinitely; the audit log records who preserved it and when |
 | Attachments on archived messages | File name, type and size only; no file contents are downloaded |
 | The record of each message the bot posted on the owner's behalf | Kept indefinitely. It holds the channel, the time, which credential sent it, and a fingerprint of the text — **not the message itself**. It is what stops a retry posting the same message twice, and what lets the owner list what was posted; the message you can read is the one in the channel |
 | The record that Claude — the AI tool the owner uses to read the server — is set not to train on your messages | Kept for as long as the tool is in use. The owner re-checks that account setting by hand, and the bot warns when the check is more than 90 days old, when the record says the tool does train on input, or when it says the tool is not approved for this use |

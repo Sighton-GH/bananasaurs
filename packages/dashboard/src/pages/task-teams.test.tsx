@@ -30,9 +30,10 @@ const ROLES = {
 
 function renderTeams(
   extraRoutes: readonly { method?: string; url: string; status?: number; body: unknown }[] = [],
+  taskPosts?: unknown,
 ) {
   const mock = stubFetch([
-    { url: '/api/tasks/setup', body: SETUP },
+    { url: '/api/tasks/setup', body: taskPosts === undefined ? SETUP : { ...SETUP, taskPosts } },
     { url: '/api/guild/channels', body: CHANNELS },
     { url: '/api/guild/roles', body: ROLES },
     { url: '/api/tasks/teams/team-1/members', body: { members: [] } },
@@ -48,6 +49,23 @@ function renderTeams(
 }
 
 describe('task teams page', () => {
+  it('warns with the off text when posts are off', async () => {
+    renderTeams([], {
+      enabled: false,
+      offReason: 'switch',
+      switchOn: false,
+      message:
+        'Task posts are off for this server — tasks are saved but nothing is posted to Discord. Turn them on with the Task posts switch on the Tasks page.',
+    });
+    const banner = await screen.findByText(/Task posts switch on the Tasks page/);
+    expect(banner.closest('[role="status"]')).toBeTruthy();
+  });
+
+  it('shows a short line when posts are on', async () => {
+    renderTeams([], { enabled: true, switchOn: true, message: 'Task posts are on.' });
+    expect(await screen.findByText('Task posts are on.')).toBeTruthy();
+  });
+
   it('clears the president role with a DELETE', async () => {
     const mock = renderTeams([{ method: 'DELETE', url: '/api/tasks/president-role', body: {} }]);
     const select = await screen.findByLabelText(/president role/i);

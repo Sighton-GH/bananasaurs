@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * `bananasaurs provider review <provider> --confirm` (ruling M4-D20).
@@ -84,7 +85,7 @@ export const providerReviewCommand = defineCommand<z.infer<typeof providerReview
         previouslyReviewedAt: outcome.previouslyReviewedAt,
       },
       audit: {
-        action: 'provider.reviewed',
+        action: OPS_AUDIT_ACTIONS.providerReviewed,
         subjectType: 'provider',
         subjectId: outcome.provider,
         before: { reviewedAt: outcome.previouslyReviewedAt },

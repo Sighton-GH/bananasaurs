@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * The three Release 1 write commands that cause Discord side effects:
@@ -179,7 +180,7 @@ export const undoCommand = defineCommand<z.infer<typeof undoArgs>>({
         enqueued: queued.enqueued,
       },
       audit: {
-        action: 'batch.undo_requested',
+        action: OPS_AUDIT_ACTIONS.batchUndoRequested,
         subjectType: 'batch',
         subjectId: args.batch,
         before: { undoneAt: null, reversible: counted.reversible },
@@ -224,7 +225,7 @@ export const adoptionAllowCommand = defineCommand<z.infer<typeof adoptionAllowAr
         `  changes are waiting.`,
       data: { granted: args.count, allowanceBefore: before, allowanceAfter: after },
       audit: {
-        action: 'adoption.allowance_granted',
+        action: OPS_AUDIT_ACTIONS.adoptionAllowanceGranted,
         subjectType: 'guild',
         subjectId: ctx.guildId,
         before: { allowance: before },

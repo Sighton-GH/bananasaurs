@@ -5,7 +5,7 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import { accountRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
-import { parseGuildId, type Capability } from '@bananasaurs/core';
+import { OPS_AUDIT_ACTIONS, parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
@@ -326,7 +326,7 @@ describe('revoke one permission (ADR 0069)', () => {
     ).toEqual([]);
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
-    const row = rows.find((r) => r.action === 'account.capability_revoked');
+    const row = rows.find((r) => r.action === OPS_AUDIT_ACTIONS.accountCapabilityRevoked);
     expect(row).toBeDefined();
     expect(row!.subjectId).toBe('sam');
     expect(JSON.parse(row!.after ?? '{}')).toMatchObject({
@@ -391,7 +391,7 @@ describe('chosen passwords (ADR 0069)', () => {
     expect(body.password).toBe(chosen);
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
-    const reset = rows.find((r) => r.action === 'account.password_reset');
+    const reset = rows.find((r) => r.action === OPS_AUDIT_ACTIONS.accountPasswordChanged);
     expect(reset).toBeDefined();
     expect(JSON.parse(reset!.after ?? '{}')).toMatchObject({ chosen: true });
     // The plaintext appears in no audit row and no log call.
@@ -413,7 +413,7 @@ describe('chosen passwords (ADR 0069)', () => {
     expect(body.password.length).toBeGreaterThan(0);
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
-    const reset = rows.find((r) => r.action === 'account.password_reset');
+    const reset = rows.find((r) => r.action === OPS_AUDIT_ACTIONS.accountPasswordChanged);
     expect(reset).toBeDefined();
     expect(JSON.parse(reset!.after ?? '{}')).toMatchObject({ chosen: false });
   });

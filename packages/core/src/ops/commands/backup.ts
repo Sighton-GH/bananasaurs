@@ -5,6 +5,7 @@ import {
   type OpsContext,
   type OpsWriteResult,
 } from '../dispatch.js';
+import { OPS_AUDIT_ACTIONS } from '../audit-actions.js';
 
 /**
  * `bananasaurs backup now --confirm` and `bananasaurs backup list` (ADR 0034).
@@ -50,7 +51,7 @@ export const backupNowCommand = defineCommand<Record<string, never>>({
         prunedCount: outcome.prunedCount,
       },
       audit: {
-        action: 'backup.created',
+        action: OPS_AUDIT_ACTIONS.backupCreated,
         subjectType: 'instance',
         subjectId: undefined,
         before: { backupCount: before },

@@ -5,6 +5,7 @@ import {
   getHealthText,
   type McpHealthPort,
 } from './tools/health.js';
+import { registerGuideTool, type McpAccessPort } from './tools/guide.js';
 import {
   GET_MESSAGE_TOOL_DESCRIPTION,
   GET_MESSAGE_TOOL_NAME,
@@ -72,59 +73,49 @@ import {
   type McpSendPort,
 } from './tools/send.js';
 import {
-  ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
-  ADD_THREAD_MEMBERS_TOOL_NAME,
-  ARCHIVE_THREAD_TOOL_DESCRIPTION,
-  ARCHIVE_THREAD_TOOL_NAME,
   CREATE_FORUM_POST_TOOL_DESCRIPTION,
   CREATE_FORUM_POST_TOOL_NAME,
   CREATE_THREAD_TOOL_DESCRIPTION,
   CREATE_THREAD_TOOL_NAME,
-  LOCK_THREAD_TOOL_DESCRIPTION,
-  LOCK_THREAD_TOOL_NAME,
-  REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
-  REMOVE_THREAD_MEMBERS_TOOL_NAME,
-  addThreadMembersParams,
-  addThreadMembersText,
-  archiveThreadParams,
-  archiveThreadText,
   createForumPostParams,
   createForumPostText,
   createThreadParams,
   createThreadText,
-  lockThreadParams,
-  lockThreadText,
-  removeThreadMembersParams,
-  removeThreadMembersText,
   type McpThreadWritesPort,
 } from './tools/thread-writes.js';
 import {
-  ADD_REACTION_TOOL_DESCRIPTION,
-  ADD_REACTION_TOOL_NAME,
   DELETE_MESSAGE_TOOL_DESCRIPTION,
   DELETE_MESSAGE_TOOL_NAME,
   EDIT_MESSAGE_TOOL_DESCRIPTION,
   EDIT_MESSAGE_TOOL_NAME,
-  PIN_MESSAGE_TOOL_DESCRIPTION,
-  PIN_MESSAGE_TOOL_NAME,
-  REMOVE_REACTION_TOOL_DESCRIPTION,
-  REMOVE_REACTION_TOOL_NAME,
-  UNPIN_MESSAGE_TOOL_DESCRIPTION,
-  UNPIN_MESSAGE_TOOL_NAME,
-  addReactionParams,
-  addReactionText,
   deleteMessageParams,
   deleteMessageText,
   editMessageParams,
   editMessageText,
-  pinMessageParams,
-  pinMessageText,
-  removeReactionParams,
-  removeReactionText,
-  unpinMessageParams,
-  unpinMessageText,
   type McpMessageWritesPort,
 } from './tools/message-writes.js';
+import {
+  REACT_TOOL_DESCRIPTION,
+  REACT_TOOL_NAME,
+  reactParams,
+  runReact,
+  runSetPin,
+  runSetThreadState,
+  runThreadMembers,
+  runUpdateScheduled,
+  SET_PIN_TOOL_DESCRIPTION,
+  SET_PIN_TOOL_NAME,
+  SET_THREAD_STATE_TOOL_DESCRIPTION,
+  SET_THREAD_STATE_TOOL_NAME,
+  setPinParams,
+  setThreadStateParams,
+  THREAD_MEMBERS_TOOL_DESCRIPTION,
+  THREAD_MEMBERS_TOOL_NAME,
+  threadMembersParams,
+  UPDATE_SCHEDULED_TOOL_DESCRIPTION,
+  UPDATE_SCHEDULED_TOOL_NAME,
+  updateScheduledParams,
+} from './tools/pair-tools.js';
 import {
   CANCEL_EVENT_TOOL_DESCRIPTION,
   CANCEL_EVENT_TOOL_NAME,
@@ -145,18 +136,10 @@ import {
   type McpEventWritesPort,
 } from './tools/event-writes.js';
 import {
-  CANCEL_SCHEDULED_TOOL_DESCRIPTION,
-  CANCEL_SCHEDULED_TOOL_NAME,
-  EDIT_SCHEDULED_TOOL_DESCRIPTION,
-  EDIT_SCHEDULED_TOOL_NAME,
   LIST_SCHEDULED_TOOL_DESCRIPTION,
   LIST_SCHEDULED_TOOL_NAME,
   SCHEDULE_MESSAGE_TOOL_DESCRIPTION,
   SCHEDULE_MESSAGE_TOOL_NAME,
-  cancelScheduledParams,
-  cancelScheduledText,
-  editScheduledParams,
-  editScheduledText,
   listScheduledParams,
   listScheduledText,
   scheduleMessageParams,
@@ -234,26 +217,53 @@ import { registerThreadTools, type McpThreadsPort } from './tools/threads.js';
 import { registerDigestTools } from './tools/digest.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import {
-  GET_TASK_DETAILS_TOOL_DESCRIPTION,
-  GET_TASK_DETAILS_TOOL_NAME,
-  getTaskDetailsParams,
-  getTaskDetailsText,
-  LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
-  LIST_TASK_REMINDERS_TOOL_NAME,
-  LIST_TASK_TEAMS_TOOL_DESCRIPTION,
-  LIST_TASK_TEAMS_TOOL_NAME,
   LIST_TASKS_TOOL_NAME,
   LIST_TASKS_TOOL_DESCRIPTION,
-  listTaskRemindersParams,
-  listTaskRemindersText,
-  listTaskTeamsParams,
-  listTaskTeamsText,
   listTasksParams,
   listTasksText,
   type McpTaskPort,
   type McpTaskDetailPort,
 } from './tools/tasks.js';
-import { taskAdminTools, runTaskAdmin, type TaskAdminPort } from './tools/task-admin.js';
+import {
+  CREATE_TASK_TOOL_DESCRIPTION,
+  CREATE_TASK_TOOL_NAME,
+  createTaskParams,
+  DELETE_TASK_TOOL_DESCRIPTION,
+  DELETE_TASK_TOOL_NAME,
+  deleteTaskParams,
+  GET_TASK_READ_ACTION,
+  GET_TASK_TOOL_DESCRIPTION,
+  GET_TASK_TOOL_NAME,
+  getTaskParams,
+  getTaskText,
+  runCreateTask,
+  runDeleteTask,
+  runTaskProgress,
+  runTaskReminders,
+  runTaskSettings,
+  runTaskSteps,
+  runTaskTeams,
+  runUpdateTask,
+  TASK_PROGRESS_TOOL_DESCRIPTION,
+  TASK_PROGRESS_TOOL_NAME,
+  TASK_REMINDERS_TOOL_DESCRIPTION,
+  TASK_REMINDERS_TOOL_NAME,
+  TASK_SETTINGS_TOOL_DESCRIPTION,
+  TASK_SETTINGS_TOOL_NAME,
+  TASK_STEPS_TOOL_DESCRIPTION,
+  TASK_STEPS_TOOL_NAME,
+  TASK_TEAMS_TOOL_DESCRIPTION,
+  TASK_TEAMS_TOOL_NAME,
+  taskProgressParams,
+  taskRemindersParams,
+  taskSettingsParams,
+  taskStepsParams,
+  taskTeamsParams,
+  UPDATE_TASK_TOOL_DESCRIPTION,
+  UPDATE_TASK_TOOL_NAME,
+  updateTaskParams,
+} from './tools/task-tools.js';
+import type { TaskAdminPort } from './tools/task-admin.js';
 import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import {
   GUILD_REFUSAL_MESSAGE,
@@ -285,6 +295,14 @@ export interface McpServerDeps {
   readonly principal: McpPrincipal;
   /** The daemon's per-request projection of `OpsInstance`/`OpsPorts`. */
   readonly health: McpHealthPort;
+  /**
+   * The daemon's per-request access port (ADR 0133, Task 4): one account's
+   * username, owner flag and permissions in one guild, read by the live block
+   * of `bananasaurs_guide`. Optional: without it that block says the account
+   * part is unavailable rather than failing the call. The daemon always
+   * provides it (see `accessPortFor` in `apps/daemon/src/mcp/access-port.ts`).
+   */
+  readonly access?: McpAccessPort | undefined;
   /**
    * The daemon's per-request archive port (Task 4b). Required so a caller
    * that forgets it fails at construction time rather than silently serving
@@ -319,7 +337,7 @@ export interface McpServerDeps {
   readonly send: McpSendPort;
   /**
    * The daemon's per-request thread-writes port (slice 3, Task 5): thread
-   * creation, membership, forum posts and thread state behind the six write
+   * creation, membership, forum posts and thread state behind the four write
    * tools. Required like `send`: a missing port must fail at construction,
    * not serve thread tools that always refuse. The tools still register only
    * when the principal carries the send scope.
@@ -331,7 +349,7 @@ export interface McpServerDeps {
    * reactions. Required like `send`: the daemon always provides it, and a
    * missing port must fail at construction, not serve tools that always
    * refuse. Required means the port is always present, not that the tools
-   * are always advertised: the six tools still register only when the
+   * are always advertised: the four tools still register only when the
    * principal carries the send scope.
    */
   readonly messageWrites: McpMessageWritesPort;
@@ -347,12 +365,12 @@ export interface McpServerDeps {
   readonly eventWrites: McpEventWritesPort;
   /**
    * The daemon's per-request schedule port (slice 5, Task 3): fixed-text
-   * scheduled sends behind `schedule_message`, `list_scheduled`,
-   * `edit_scheduled` and `cancel_scheduled`, stored as `origin='mcp'`
+   * scheduled sends behind `schedule_message`, `list_scheduled` and
+   * `update_scheduled`, stored as `origin='mcp'`
    * reminder rows. Required like `send`: the daemon always provides it, and
    * a missing port must fail at construction, not serve tools that always
    * refuse. Required means the port is always present, not that the tools
-   * are always advertised: the four tools still register only when the
+   * are always advertised: the three tools still register only when the
    * principal carries the send scope — including `list_scheduled`, which is
    * a read of the connector's own outbox under the send scope, audited like
    * the other reads.
@@ -502,9 +520,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
-    // The six thread/forum write tools (slice 3, Task 5): same scope, same
-    // handler shape — the text function answers every outcome and the
-    // try/catch only fires on something it did not foresee.
+    // The thread/forum write tools (slice 3, Task 5, consolidated by ADR
+    // 0132 Task 2): same scope, same handler shape — the text function
+    // answers every outcome and the try/catch only fires on something it
+    // did not foresee.
     const threadWrites = deps.threadWrites;
     const writeTools = [
       [
@@ -514,16 +533,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         createThreadText,
       ],
       [
-        ADD_THREAD_MEMBERS_TOOL_NAME,
-        ADD_THREAD_MEMBERS_TOOL_DESCRIPTION,
-        addThreadMembersParams,
-        addThreadMembersText,
-      ],
-      [
-        REMOVE_THREAD_MEMBERS_TOOL_NAME,
-        REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION,
-        removeThreadMembersParams,
-        removeThreadMembersText,
+        THREAD_MEMBERS_TOOL_NAME,
+        THREAD_MEMBERS_TOOL_DESCRIPTION,
+        threadMembersParams,
+        runThreadMembers,
       ],
       [
         CREATE_FORUM_POST_TOOL_NAME,
@@ -532,12 +545,11 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         createForumPostText,
       ],
       [
-        ARCHIVE_THREAD_TOOL_NAME,
-        ARCHIVE_THREAD_TOOL_DESCRIPTION,
-        archiveThreadParams,
-        archiveThreadText,
+        SET_THREAD_STATE_TOOL_NAME,
+        SET_THREAD_STATE_TOOL_DESCRIPTION,
+        setThreadStateParams,
+        runSetThreadState,
       ],
-      [LOCK_THREAD_TOOL_NAME, LOCK_THREAD_TOOL_DESCRIPTION, lockThreadParams, lockThreadText],
     ] as const;
     for (const [name, description, params, text] of writeTools) {
       server.tool(name, description, params, async (args: unknown) => {
@@ -555,10 +567,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
-    // Task 6: the six message-write tools, same handler shape as
-    // `send_message` above — each text function already answers every
-    // malformed argument and every port fault, so the try/catch here only
-    // fires on something the tool layer did not foresee.
+    // Task 6 (consolidated by ADR 0132 Task 2): the message-write tools,
+    // same handler shape as `send_message` above — each text function
+    // already answers every malformed argument and every port fault, so the
+    // try/catch here only fires on something the tool layer did not foresee.
     const writes = deps.messageWrites;
     const messageWriteTools = [
       [EDIT_MESSAGE_TOOL_NAME, EDIT_MESSAGE_TOOL_DESCRIPTION, editMessageParams, editMessageText],
@@ -568,20 +580,8 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         deleteMessageParams,
         deleteMessageText,
       ],
-      [PIN_MESSAGE_TOOL_NAME, PIN_MESSAGE_TOOL_DESCRIPTION, pinMessageParams, pinMessageText],
-      [
-        UNPIN_MESSAGE_TOOL_NAME,
-        UNPIN_MESSAGE_TOOL_DESCRIPTION,
-        unpinMessageParams,
-        unpinMessageText,
-      ],
-      [ADD_REACTION_TOOL_NAME, ADD_REACTION_TOOL_DESCRIPTION, addReactionParams, addReactionText],
-      [
-        REMOVE_REACTION_TOOL_NAME,
-        REMOVE_REACTION_TOOL_DESCRIPTION,
-        removeReactionParams,
-        removeReactionText,
-      ],
+      [SET_PIN_TOOL_NAME, SET_PIN_TOOL_DESCRIPTION, setPinParams, runSetPin],
+      [REACT_TOOL_NAME, REACT_TOOL_DESCRIPTION, reactParams, runReact],
     ] as const;
     for (const [name, description, params, text] of messageWriteTools) {
       server.tool(name, description, params, async (args: unknown) => {
@@ -626,13 +626,14 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       });
     }
-    // The four schedule tools (slice 5, Task 3), same handler shape as
-    // `send_message` above — each text function already answers every
-    // malformed argument and every port fault, so the try/catch here only
-    // fires on something the tool layer did not foresee. The three writes
-    // render their outcomes directly; `list_scheduled` is a read of the
-    // connector's own outbox under this same send scope, so it passes its
-    // record through the read-audit port like every other read.
+    // The schedule tools (slice 5, Task 3, consolidated by ADR 0132 Task
+    // 2), same handler shape as `send_message` above — each text function
+    // already answers every malformed argument and every port fault, so the
+    // try/catch here only fires on something the tool layer did not
+    // foresee. The write renders its outcome directly; `list_scheduled` is
+    // a read of the connector's own outbox under this same send scope, so
+    // it passes its record through the read-audit port like every other
+    // read.
     const schedule = deps.schedule;
     const scheduleWriteTools = [
       [
@@ -642,16 +643,10 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         scheduleMessageText,
       ],
       [
-        EDIT_SCHEDULED_TOOL_NAME,
-        EDIT_SCHEDULED_TOOL_DESCRIPTION,
-        editScheduledParams,
-        editScheduledText,
-      ],
-      [
-        CANCEL_SCHEDULED_TOOL_NAME,
-        CANCEL_SCHEDULED_TOOL_DESCRIPTION,
-        cancelScheduledParams,
-        cancelScheduledText,
+        UPDATE_SCHEDULED_TOOL_NAME,
+        UPDATE_SCHEDULED_TOOL_DESCRIPTION,
+        updateScheduledParams,
+        runUpdateScheduled,
       ],
     ] as const;
     for (const [name, description, params, text] of scheduleWriteTools) {
@@ -856,20 +851,40 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       );
     }
   }
-  // ADR 0114 (ADR 0101's follow-up): the task-tracking write tools register
-  // under the tasks scope, not send. A token carrying only `bananasaurs:send`
+  // ADR 0114 (ADR 0101's follow-up), ADR 0132: the task-tracking write tools
+  // register under the tasks scope, not send — as seven action-based tools
+  // over the same daemon dispatch. A token carrying only `bananasaurs:send`
   // can post messages but never touch tasks; read-only task tools stay under
   // read below.
   if (hasTasksScope(deps.principal) && deps.taskAdmin) {
     const taskAdmin = deps.taskAdmin;
-    for (const [name, spec] of Object.entries(taskAdminTools)) {
-      server.tool(name, spec.description, spec.params, async (args: unknown) => {
-        const outcome = await runTaskAdmin(
-          deps.principal,
-          taskAdmin,
-          name as keyof typeof taskAdminTools,
-          args,
-        );
+    const taskWriteTools = [
+      [CREATE_TASK_TOOL_NAME, CREATE_TASK_TOOL_DESCRIPTION, createTaskParams, runCreateTask],
+      [UPDATE_TASK_TOOL_NAME, UPDATE_TASK_TOOL_DESCRIPTION, updateTaskParams, runUpdateTask],
+      [DELETE_TASK_TOOL_NAME, DELETE_TASK_TOOL_DESCRIPTION, deleteTaskParams, runDeleteTask],
+      [TASK_STEPS_TOOL_NAME, TASK_STEPS_TOOL_DESCRIPTION, taskStepsParams, runTaskSteps],
+      [
+        TASK_REMINDERS_TOOL_NAME,
+        TASK_REMINDERS_TOOL_DESCRIPTION,
+        taskRemindersParams,
+        runTaskReminders,
+      ],
+      [
+        TASK_PROGRESS_TOOL_NAME,
+        TASK_PROGRESS_TOOL_DESCRIPTION,
+        taskProgressParams,
+        runTaskProgress,
+      ],
+      [
+        TASK_SETTINGS_TOOL_NAME,
+        TASK_SETTINGS_TOOL_DESCRIPTION,
+        taskSettingsParams,
+        runTaskSettings,
+      ],
+    ] as const;
+    for (const [name, description, params, run] of taskWriteTools) {
+      server.tool(name, description, params, async (args: unknown) => {
+        const outcome = await run(deps.principal, taskAdmin, args);
         return outcome.ok
           ? { content: [{ type: 'text' as const, text: outcome.text }] }
           : { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
@@ -878,7 +893,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   }
   if (!hasReadScope(deps.principal)) return server;
   const readAudit = deps.readAudit;
-  // Task tracking remains a staged, owner-scoped surface. The port is absent in
+  // Task tools follow the Manage club tasks permission (ADR 0130); the ports are absent when the daemon omits them. The port is absent in
   // isolated legacy clients and no tool is advertised when daemon wiring omits it.
   const taskPort = deps.tasks;
   if (taskPort)
@@ -905,58 +920,63 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     });
   if (deps.taskDetail) {
     const detailPort = deps.taskDetail;
-    server.tool(
-      GET_TASK_DETAILS_TOOL_NAME,
-      GET_TASK_DETAILS_TOOL_DESCRIPTION,
-      getTaskDetailsParams,
-      (args) => {
-        try {
-          const outcome = getTaskDetailsText(deps.principal, detailPort, args);
-          if (!outcome.ok)
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          return okReadResult(readAudit, {
-            ok: true,
-            text: outcome.text,
-            read: {
-              kind: 'content',
-              action: 'mcp.read.get_task_details',
-              guildId: outcome.guildId,
-              subjectType: 'club_task',
-              subjectId: outcome.taskId,
-              resultCount: 1,
-            },
-          });
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
-        }
-      },
-    );
+    server.tool(GET_TASK_TOOL_NAME, GET_TASK_TOOL_DESCRIPTION, getTaskParams, (args) => {
+      try {
+        const outcome = getTaskText(deps.principal, detailPort, args);
+        if (!outcome.ok)
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        return okReadResult(readAudit, {
+          ok: true,
+          text: outcome.text,
+          read: {
+            kind: 'content',
+            action: GET_TASK_READ_ACTION,
+            guildId: outcome.guildId,
+            subjectType: 'club_task',
+            subjectId: outcome.taskId,
+            resultCount: 1,
+          },
+        });
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    });
   }
+  // ADR 0132: `task_teams` registers with the read tools when the daemon
+  // threads the tasks port. Its `list` action reads through the port like
+  // every other read; the write actions answer the reconnect message without
+  // the tasks scope or the admin port.
   if (taskPort)
     server.tool(
-      LIST_TASK_TEAMS_TOOL_NAME,
-      LIST_TASK_TEAMS_TOOL_DESCRIPTION,
-      listTaskTeamsParams,
-      (args) => {
+      TASK_TEAMS_TOOL_NAME,
+      TASK_TEAMS_TOOL_DESCRIPTION,
+      taskTeamsParams,
+      async (args) => {
         try {
-          const outcome = listTaskTeamsText(deps.principal, taskPort, args);
+          const outcome = await runTaskTeams(
+            deps.principal,
+            { tasks: taskPort, taskAdmin: deps.taskAdmin },
+            args,
+          );
           if (!outcome.ok)
             return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          return okReadResult(readAudit, {
-            ok: true,
-            text: outcome.text,
-            read: {
-              kind: 'content',
-              action: 'mcp.read.list_task_teams',
-              guildId: outcome.guildId,
-              subjectType: 'guild',
-              subjectId: undefined,
-              resultCount: outcome.itemCount,
-            },
-          });
+          if (outcome.read !== undefined)
+            return okReadResult(readAudit, {
+              ok: true,
+              text: outcome.text,
+              read: {
+                kind: 'content',
+                action: 'mcp.read.list_task_teams',
+                guildId: outcome.read.guildId,
+                subjectType: 'guild',
+                subjectId: undefined,
+                resultCount: outcome.read.itemCount,
+              },
+            });
+          return { content: [{ type: 'text' as const, text: outcome.text }] };
         } catch {
           return {
             content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -965,38 +985,6 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         }
       },
     );
-  if (deps.taskDetail) {
-    const detailPort = deps.taskDetail;
-    server.tool(
-      LIST_TASK_REMINDERS_TOOL_NAME,
-      LIST_TASK_REMINDERS_TOOL_DESCRIPTION,
-      listTaskRemindersParams,
-      (args) => {
-        try {
-          const outcome = listTaskRemindersText(deps.principal, detailPort, args);
-          if (!outcome.ok)
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          return okReadResult(readAudit, {
-            ok: true,
-            text: outcome.text,
-            read: {
-              kind: 'content',
-              action: 'mcp.read.list_task_reminders',
-              guildId: outcome.guildId,
-              subjectType: 'club_task',
-              subjectId: outcome.taskId,
-              resultCount: outcome.itemCount,
-            },
-          });
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
-        }
-      },
-    );
-  }
   server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, () => {
     try {
       const outcome = getHealthText(deps.principal, deps.health);
@@ -1011,6 +999,12 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       };
     }
   });
+  // ADR 0133, Task 4: `bananasaurs_guide`, a read tool. Its live block reads the
+  // health and access ports; a missing one reads as unavailable, never a failed call.
+  registerGuideTool(
+    { server, principal: deps.principal, readAudit },
+    { health: deps.health, access: deps.access },
+  );
   // The `try/catch` in each handler is belt over braces: the text functions
   // already answer every malformed argument as the shared refusal and never
   // throw, so this only fires on something the tool layer did not foresee —

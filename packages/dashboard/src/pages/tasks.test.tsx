@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
-import { renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
+import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { TasksPage } from './tasks.js';
 
 afterEach(cleanup);
@@ -79,8 +79,13 @@ const BOARD = {
   presidentRoleId: null,
 };
 
-function renderBoard() {
-  stubFetch([{ url: '/api/tasks?include=done,archived', body: BOARD }]);
+function renderBoard(taskPosts?: unknown) {
+  stubFetch([
+    {
+      url: '/api/tasks?include=done,archived',
+      body: taskPosts === undefined ? BOARD : { ...BOARD, taskPosts },
+    },
+  ]);
   renderWithSession(
     <Router>
       <TasksPage />
@@ -125,5 +130,62 @@ describe('tasks board', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
     expect(screen.queryByLabelText(/president/i)).toBeNull();
+  });
+
+  const OFF = {
+    enabled: false,
+    offReason: 'switch',
+    switchOn: false,
+    message:
+      'Task posts are off for this server — tasks are saved but nothing is posted to Discord. Turn them on with the Task posts switch on the Tasks page.',
+  };
+
+  it('shows the Task posts card with the off text and a Turn on button when posts are off', async () => {
+    renderBoard(OFF);
+    expect(await screen.findByText(/Task posts switch on the Tasks page/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Turn on task posts' })).toBeTruthy();
+  });
+
+  it('says dry run is the reason when the switch is on but dry run overrides it', async () => {
+    renderBoard({
+      enabled: false,
+      offReason: 'dry-run',
+      switchOn: true,
+      message: 'Task posts are off because dry run is on for this install (BANANASAURS_DRY_RUN).',
+    });
+    expect(await screen.findByText(/BANANASAURS_DRY_RUN/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Turn off task posts' })).toBeTruthy();
+  });
+
+  it('turning on asks for confirmation, then PUTs enabled true', async () => {
+    const mock = stubFetch([
+      { url: '/api/tasks?include=done,archived', body: { ...BOARD, taskPosts: OFF } },
+      { method: 'PUT', url: '/api/tasks/posting', body: { enabled: true } },
+    ]);
+    renderWithSession(
+      <Router>
+        <TasksPage />
+      </Router>,
+      { session: { ...TEST_SESSION, instanceOwner: true } },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn on task posts' }));
+    expect(
+      await screen.findByText(/post new tasks, reminders, check-ins and weekly digests/),
+    ).toBeTruthy();
+    expect((mock.mock.calls as unknown[][]).some(([url]) => url === '/api/tasks/posting')).toBe(
+      false,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on' }));
+    await vi.waitFor(() => {
+      const put = (mock.mock.calls as unknown[][]).find(([url]) => url === '/api/tasks/posting');
+      expect(put).toBeTruthy();
+      expect(bodyOf(put!)).toEqual({ enabled: true });
+    });
+  });
+
+  it('shows only a short muted line and a Turn off button when posts are on', async () => {
+    renderBoard({ enabled: true, switchOn: true, message: 'Task posts are on.' });
+    expect(await screen.findByText('Task posts are on.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Turn off task posts' })).toBeTruthy();
   });
 });

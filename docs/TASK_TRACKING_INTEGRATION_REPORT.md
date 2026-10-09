@@ -24,7 +24,7 @@ Branch: `feature/task-tracking`, integrated locally. No push, deployment, or mer
 
 ## Activation gates
 
-Claude review and the owners' review come first. This is staged, not deployable: build a verified Discord lead/president approval interaction, a durable verified anchor-posting path, while keeping the dashboard owner-only; no non-owner dashboard read activation is planned. Run actual-guild checks, full package tests and visual UI inspection. Only after test-guild reminder checks should `TASK_NUDGE_SEND_ENABLED` be considered for activation. Its default stays `0` here.
+Claude review and the owners' review come first. This is staged, not deployable: build a verified Discord lead/president approval interaction, a durable verified anchor-posting path, while keeping the dashboard owner-only; no non-owner dashboard read activation is planned. Run actual-guild checks, full package tests and visual UI inspection. Only after test-guild reminder checks should the per-server Task posts switch (ADR 0131, formerly `TASK_NUDGE_SEND_ENABLED`) be considered for activation. It stays off by default here.
 
 ## Verification follow-up (2026-09-29)
 

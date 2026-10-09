@@ -249,21 +249,21 @@ for sends; the connector authorised with `bananasaurs:read` **and**
 3. **`create_thread` (private) then `send_message` into it.** Create a
    private thread with a first message. Confirm `read_thread` reads it and
    a follow-up `send_message` with `threadId` posts into it.
-4. **`add_thread_members` / `remove_thread_members`.** Add a member, confirm
+4. **`thread_members` (`add`, then `remove`).** Add a member, confirm
    they see the thread; remove them, confirm they no longer do.
 5. **`create_forum_post`.** Post with a title and one tag. Confirm the post
    appears in the forum with the tag applied; an unknown tag refuses
    listing the available names.
-6. **`archive_thread` / `lock_thread`.** Archive the thread from step 3,
+6. **`set_thread_state` (`archived`, then `locked`).** Archive the thread from step 3,
    confirm it archives; unarchive it. Lock it, confirm posting is refused
    to non-moderators; unlock it.
 7. **`edit_message` then `undo_action`.** Edit a bot message, confirm the
    new text; call `undo_action` with the edit's action id, confirm the
    previous text returns and a second undo answers "already undone".
-8. **`pin_message` / `unpin_message`.** Pin a message, confirm it pins;
+8. **`set_pin` (`pinned: true`, then `false`).** Pin a message, confirm it pins;
    unpin it. A channel where the bot lacks the pin permission refuses
    naming it.
-9. **`add_reaction` / `remove_reaction`.** Add a unicode reaction to a bot
+9. **`react` (`add`, then `remove`).** Add a unicode reaction to a bot
    message, confirm it appears; remove it. A foreign guild's custom emoji
    refuses.
 10. **`delete_message`.** Delete a bot message, confirm it disappears, and
@@ -359,10 +359,10 @@ bot holds ManageEvents on the voice channel; the connector is authorised with
    framing), the role is notified, and `list_scheduled` now shows it
    delivered.
 2. **A recurring schedule, cancelled and undone.** Schedule a daily send.
-   Confirm `list_scheduled` shows its first occurrence. `cancel_scheduled`
+   Confirm `list_scheduled` shows its first occurrence. `update_scheduled` (`cancel`)
    it, then `undo_action` the cancel: it is scheduled again. Cancel it once
    more to leave nothing behind.
-3. **`edit_scheduled`, then undo.** Schedule a one-shot an hour ahead, edit
+3. **`update_scheduled` (`edit`), then undo.** Schedule a one-shot an hour ahead, edit
    its content and re-time it with `at`. Confirm the listing shows the new
    text and time; `undo_action` the edit and confirm the old text and time
    are back. Cancel it.

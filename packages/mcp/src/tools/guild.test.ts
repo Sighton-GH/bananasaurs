@@ -599,12 +599,13 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all twenty-two tools and still no send_message', async () => {
+  it('lists all twenty-three tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
+        'bananasaurs_guide',
         'search_messages',
         'read_channel_history',
         'get_message',

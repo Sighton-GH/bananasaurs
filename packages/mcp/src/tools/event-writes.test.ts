@@ -735,9 +735,9 @@ describe('event-write scope filtering (ruling M4-D17)', () => {
     const { client, close } = await connectPair(principalWith([GUILD_A], ['bananasaurs:send']));
     try {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
-      // send_message, the six thread tools, the six message-write tools and
-      // the four schedule tools share the scope; this file pins its own four.
-      expect(names).toHaveLength(21);
+      // send_message, the four thread tools, the four message-write tools and
+      // the three schedule tools share the scope; this file pins its own four.
+      expect(names).toHaveLength(16);
       expect(names).toEqual(expect.arrayContaining(SEND_TOOL_NAMES));
     } finally {
       await close();

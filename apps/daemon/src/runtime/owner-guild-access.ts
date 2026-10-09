@@ -1,4 +1,4 @@
-import { CAPABILITIES, safeLogFields, type Logger } from '@bananasaurs/core';
+import { CAPABILITIES, OPS_AUDIT_ACTIONS, safeLogFields, type Logger } from '@bananasaurs/core';
 import { accountRepo, effectRepo, type GuildScope, type InstanceScope } from '@bananasaurs/storage';
 
 /**
@@ -39,7 +39,7 @@ export function ensureOwnerGuildAccess(input: {
       at: input.now,
       actorType: 'system',
       actorId: undefined,
-      action: 'account.guild_granted',
+      action: OPS_AUDIT_ACTIONS.accountGuildGranted,
       subjectType: 'account',
       subjectId: accountId,
       before: { hadAccess: false },

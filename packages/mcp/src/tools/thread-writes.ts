@@ -17,7 +17,10 @@ import {
 } from './send.js';
 
 /**
- * The six thread/forum write tools, registered under the send scope.
+ * The thread/forum write handlers, registered under the send scope:
+ * `create_thread` and `create_forum_post` directly, thread membership
+ * behind `thread_members` and thread state behind `set_thread_state` (see
+ * `pair-tools.ts` for the two merged tools).
  *
  * They follow the same five steps as `send_message` — Zod parse →
  * `requireReachableGuild` → port call → render — so hard rule 3 holds by
@@ -45,27 +48,15 @@ export const THREAD_AUTO_ARCHIVE_DEFAULT = 1440;
 
 export const CREATE_THREAD_TOOL_NAME = 'create_thread';
 export const CREATE_THREAD_TOOL_DESCRIPTION =
-  'Creates a public or private thread under an allowlisted text channel of this guild. ' +
+  'Creates a public or private thread under a text channel where Write is on in this guild. ' +
   'Takes a channel id or name, a thread name up to 100 characters, and the thread type. ' +
   'Private threads are readable back through read_thread and postable through send_message. ' +
   'Member and role mentions in the first message ping under the guild ping policy, as in send_message. ' +
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will create the thread twice. ' +
   'Pass dryRun to record without creating. ' +
-  'Refuses when the guild is unreachable, the channel is not allowlisted, the channel is a forum ' +
+  'Refuses when the guild is unreachable, the channel does not have Write on, the channel is a forum ' +
   '(call create_forum_post instead), or the bot lacks the Discord permission.';
-
-export const ADD_THREAD_MEMBERS_TOOL_NAME = 'add_thread_members';
-export const ADD_THREAD_MEMBERS_TOOL_DESCRIPTION =
-  'Adds up to 25 guild members to a thread. Each member must be in this guild. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without changing anything.';
-
-export const REMOVE_THREAD_MEMBERS_TOOL_NAME = 'remove_thread_members';
-export const REMOVE_THREAD_MEMBERS_TOOL_DESCRIPTION =
-  'Removes up to 25 members from a thread. Removing a non-member is a no-op. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without changing anything.';
 
 export const CREATE_FORUM_POST_TOOL_NAME = 'create_forum_post';
 export const CREATE_FORUM_POST_TOOL_DESCRIPTION =
@@ -75,18 +66,6 @@ export const CREATE_FORUM_POST_TOOL_DESCRIPTION =
   'Pass an idempotencyKey with every call and reuse the same value if you retry this call ' +
   '(for example after a timeout): a new key on a retry will post twice. ' +
   'Pass dryRun to record without posting.';
-
-export const ARCHIVE_THREAD_TOOL_NAME = 'archive_thread';
-export const ARCHIVE_THREAD_TOOL_DESCRIPTION =
-  'Archives or unarchives a thread. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without changing anything.';
-
-export const LOCK_THREAD_TOOL_NAME = 'lock_thread';
-export const LOCK_THREAD_TOOL_DESCRIPTION =
-  'Locks or unlocks a thread. A locked thread accepts no new messages except by moderators. ' +
-  'Pass an idempotencyKey with every call and reuse the same value if you retry this call. ' +
-  'Pass dryRun to record without changing anything.';
 
 /** The starter message `create_thread` posts into the new thread. */
 export interface ThreadFirstMessage {
@@ -383,26 +362,6 @@ export const createThreadParams = {
     ),
 };
 
-export const addThreadMembersParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  threadId: z.string().describe('Thread to add members to.'),
-  userIds: z.array(z.string()).describe('Up to 25 guild members to add, as ids.'),
-  dryRun: z.boolean().optional().describe('Record without changing: nobody is added.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this edit; reuse the same value if you retry this call.'),
-};
-
-export const removeThreadMembersParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  threadId: z.string().describe('Thread to remove members from.'),
-  userIds: z.array(z.string()).describe('Up to 25 members to remove, as ids.'),
-  dryRun: z.boolean().optional().describe('Record without changing: nobody is removed.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this edit; reuse the same value if you retry this call.'),
-};
-
 export const createForumPostParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   forum: z.string().describe('Forum channel to post into, as an id or name.'),
@@ -433,26 +392,6 @@ export const createForumPostParams = {
   idempotencyKey: z
     .string()
     .describe('Caller-supplied key for this post; reuse the same value if you retry this call.'),
-};
-
-export const archiveThreadParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  threadId: z.string().describe('Thread to archive or unarchive.'),
-  archived: z.boolean().describe('True archives the thread; false unarchives it.'),
-  dryRun: z.boolean().optional().describe('Record without changing: the thread is untouched.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this change; reuse the same value if you retry this call.'),
-};
-
-export const lockThreadParams = {
-  guildId: z.string().describe('Guild id; must be reachable by the caller.'),
-  threadId: z.string().describe('Thread to lock or unlock.'),
-  locked: z.boolean().describe('True locks the thread; false unlocks it.'),
-  dryRun: z.boolean().optional().describe('Record without changing: the thread is untouched.'),
-  idempotencyKey: z
-    .string()
-    .describe('Caller-supplied key for this change; reuse the same value if you retry this call.'),
 };
 
 const refuse = (): ThreadWriteOutcomeText => ({ ok: false, message: GUILD_REFUSAL_MESSAGE });

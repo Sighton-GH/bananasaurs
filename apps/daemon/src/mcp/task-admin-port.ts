@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { ChannelType, type Client } from 'discord.js';
-import { safeLogFields, type DiscordPort, type GuildId } from '@bananasaurs/core';
-import type { HttpDeps } from '@bananasaurs/http';
+import {
+  safeLogFields,
+  taskPostsMessage,
+  type DiscordPort,
+  type GuildId,
+  type TaskPostKind,
+} from '@bananasaurs/core';
+import { taskPostsFor, type HttpDeps } from '@bananasaurs/http';
 import { effectRepo, taskBindingRepo, taskNudgeRepo, taskRepo } from '@bananasaurs/storage';
 import type { TaskAdminPort, TaskAdminName } from '@bananasaurs/mcp';
 import { channelAccessFor } from '../channels/access.js';
@@ -11,9 +17,11 @@ const refused = (message: string): { ok: false; message: string } => ({ ok: fals
 const success = (text: string): { ok: true; text: string } => ({ ok: true, text });
 const NOT_AVAILABLE =
   'Task or team is unavailable or has changed. Read its current state and retry.';
-const POSTS_GATE = 'Discord posts go out only when the operator has enabled task posts.';
+/** What this guild's posts will do right now, read live from its switch and the install's dry run. */
+const postsNote = (deps: HttpDeps, guildId: GuildId, kind: TaskPostKind): string =>
+  taskPostsMessage(taskPostsFor(deps, deps.scopes.forGuild(guildId)), kind);
 
-/** Deterministic task id for one `create_club_task` request: the sha256 of
+/** Deterministic task id for one `create_task` request: the sha256 of
  * `task:<guildId>:<requestId>` rendered as a version-5-variant UUID, so a
  * retried call names the same row and `createTask` returns the existing task
  * instead of scheduling anything new. */
@@ -280,7 +288,9 @@ export const taskAdminPortFor = (
               now,
               taskId,
             );
-            return success(`Created task ${id} (version 1). ${POSTS_GATE}`);
+            return success(
+              `Created task ${id} (version 1). ${postsNote(deps, guildId, 'announcement')}`,
+            );
           } catch (err) {
             if (
               err instanceof Error &&
@@ -427,7 +437,7 @@ export const taskAdminPortFor = (
           if (!taskRepo.requestCompletion(scope, a.taskId, a.expectedVersion, actor, now))
             return refused(NOT_AVAILABLE);
           return success(
-            `Task ${a.taskId} is awaiting approval (version ${a.expectedVersion + 1}). ${POSTS_GATE}`,
+            `Task ${a.taskId} is awaiting approval (version ${a.expectedVersion + 1}). ${postsNote(deps, guildId, 'approval request')}`,
           );
         }
         case 'approve_task_completion': {
@@ -517,7 +527,9 @@ export const taskAdminPortFor = (
             actor,
             now,
           );
-          return success('Quiet hours stored. Delivery remains gated by the reminder send flag.');
+          return success(
+            "Quiet hours stored. Posts still need the server's Task posts switch on and dry run off.",
+          );
         }
       }
     } catch (err) {
