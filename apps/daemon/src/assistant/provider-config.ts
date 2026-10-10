@@ -19,6 +19,7 @@ import {
   type ProviderId,
 } from './model-chain.js';
 import { entryUsage, reserveEntryCall, type ReserveOutcome } from './local-limit.js';
+import type { ModelListing, OpenRouterModelCatalogue } from './openrouter-models.js';
 import { braveWebSearch } from './brave-search.js';
 import { tavilyWebSearch } from './tavily-search.js';
 import {
@@ -151,6 +152,13 @@ export interface ProviderConfigStore {
     | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
     | undefined;
   /**
+   * Task 10: the OpenRouter listing for a chain entry — `undefined` for
+   * non-OpenRouter entries and while the catalogue has never fetched.
+   */
+  modelListing(
+    entry: Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'>,
+  ): ModelListing | undefined;
+  /**
    * A chain test is a real provider call, so it reserves against the entry's
    * limits and is recorded with the owner's session guild. Out-of-range
    * positions reserve nothing.
@@ -251,6 +259,7 @@ export const createProviderConfigStore = (
     readonly providerTimeoutMs?: () => number;
     readonly now?: () => number;
     readonly logger?: Pick<Logger, 'warn'> | undefined;
+    readonly modelCatalogue?: OpenRouterModelCatalogue | undefined;
   } = {},
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
@@ -498,6 +507,10 @@ export const createProviderConfigStore = (
     },
     modelUsage(entry) {
       return entryUsage(instance, entry, clock());
+    },
+    modelListing(entry) {
+      if (entry.providerId !== 'openrouter') return undefined;
+      return options.modelCatalogue?.peek(entry.model);
     },
     reserveTestCall(position, guildId) {
       const entry = this.chain()[position];

@@ -54,6 +54,7 @@ import { seedChannelScopes } from '../channels/read-seed.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { ensureOwnerGuildAccess } from './owner-guild-access.js';
 import { createProviderConfigStore, providerKeyFrom } from '../assistant/provider-config.js';
+import { createOpenRouterModelCatalogue } from '../assistant/openrouter-models.js';
 import { taskPostsEnabledFor } from './task-posts-gate.js';
 import { openWithKey, sealWithKey } from '../crypto/seal.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
@@ -110,6 +111,8 @@ export interface DaemonDeps {
    * posture `providerSecret` above documents.
    */
   readonly passwordVault?: PasswordVault | undefined;
+  /** Outbound fetch for the OpenRouter model list; tests pass a stub. */
+  readonly fetchImpl?: typeof fetch;
 }
 
 export interface Daemon {
@@ -203,6 +206,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           open: (s) => openWithKey(providerKeyFrom(providerSecret.secret), s),
         }),
   });
+  const modelCatalogue = createOpenRouterModelCatalogue({
+    fetchImpl: deps.fetchImpl ?? fetch,
+    now: Date.now,
+    log: logger,
+  });
+  void modelCatalogue.refresh();
   const providerStore =
     providerSecret.source === 'missing'
       ? undefined
@@ -212,7 +221,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           providerSecret.source,
           config,
           undefined,
-          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs'), logger },
+          {
+            providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs'),
+            logger,
+            modelCatalogue,
+          },
         );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
   // ADR 0080: the connect fallback wait applies to new connections at once —

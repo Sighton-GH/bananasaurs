@@ -136,6 +136,9 @@ const start = (over: Record<string, string> = {}): Daemon => {
     client,
     logger,
     now: () => discord.now(),
+    fetchImpl: async () => {
+      throw new Error('network disabled in tests');
+    },
   });
   built.start();
   return built;
@@ -637,6 +640,9 @@ describe('the bot user id', () => {
       client,
       logger,
       now: () => discord.now(),
+      fetchImpl: async () => {
+        throw new Error('network disabled in tests');
+      },
       onFatal: (reason) => fatal.push(reason),
     });
     built.start();

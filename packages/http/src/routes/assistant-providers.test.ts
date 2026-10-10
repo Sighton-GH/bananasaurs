@@ -78,6 +78,21 @@ const fakeStore = (
     }) =>
       | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
       | undefined;
+    modelListing?: (entry: {
+      readonly keyId: string;
+      readonly model: string;
+      readonly providerId: string;
+      readonly rpmLimit: number | null;
+      readonly rpdLimit: number | null;
+    }) =>
+      | {
+          readonly listed: boolean;
+          readonly image: boolean;
+          readonly file: boolean;
+          readonly tools: boolean;
+          readonly reasoning: boolean;
+        }
+      | undefined;
   } = {},
 ) => {
   let keys: FakeKey[] = over.keys ?? [
@@ -211,6 +226,7 @@ const fakeStore = (
       chain = rows.map((r) => ({ ...r }));
     },
     ...(over.modelUsage === undefined ? {} : { modelUsage: over.modelUsage }),
+    ...(over.modelListing === undefined ? {} : { modelListing: over.modelListing }),
     saveGithubToken: () => undefined,
     isKeyReadable: () => true,
     githubTokenConfigured: () => over.githubConfigured ?? false,
@@ -1073,5 +1089,61 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
     expect(
       'usage' in (withoutUsage.json<{ chain: Record<string, unknown>[] }>().chain[0] ?? {}),
     ).toBe(false);
+  });
+
+  it('GET carries the OpenRouter listing on OpenRouter rows and none on Gemini rows', async () => {
+    deps = {
+      ...deps,
+      assistantProviderConfig: fakeStore({
+        keys: [
+          {
+            keyId: 'key_a',
+            provider: 'gemini',
+            label: 'Main key',
+            costClass: 'free',
+            enabled: true,
+          },
+          {
+            keyId: 'key_b',
+            provider: 'openrouter',
+            label: 'Spare key',
+            costClass: 'free',
+            enabled: true,
+          },
+        ],
+        chain: [
+          { keyId: 'key_a', model: 'gemini-2.5-flash' },
+          { keyId: 'key_b', model: 'gone-model' },
+        ],
+        eligibility: {
+          gemini: { trainsOnInput: 'no', productionUseAllowed: true },
+          openrouter: { trainsOnInput: 'no', productionUseAllowed: true },
+        },
+        modelListing: (entry) =>
+          entry.providerId === 'openrouter'
+            ? { listed: false, image: false, file: false, tools: false, reasoning: false }
+            : undefined,
+      }) as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+    const owner = await signInAs('owner');
+    const fetched = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/providers',
+      headers: { cookie: owner.cookie },
+    });
+    const chain = fetched.json<{
+      chain: { provider: string; listing?: { listed: boolean } }[];
+    }>().chain;
+    expect(chain).toHaveLength(2);
+    expect('listing' in (chain[0] ?? {})).toBe(false);
+    expect(chain[1]?.listing).toEqual({
+      listed: false,
+      image: false,
+      file: false,
+      tools: false,
+      reasoning: false,
+    });
   });
 });

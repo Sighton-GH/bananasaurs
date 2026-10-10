@@ -206,6 +206,21 @@ export interface HttpDeps extends AuthDeps {
         }):
           | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
           | undefined;
+        modelListing?(entry: {
+          readonly keyId: string;
+          readonly model: string;
+          readonly providerId: string;
+          readonly rpmLimit: number | null;
+          readonly rpdLimit: number | null;
+        }):
+          | {
+              readonly listed: boolean;
+              readonly image: boolean;
+              readonly file: boolean;
+              readonly tools: boolean;
+              readonly reasoning: boolean;
+            }
+          | undefined;
         saveGithubToken?(token: string | null): void;
         isKeyReadable?(keyId: string): boolean;
         githubTokenConfigured?(): boolean;
