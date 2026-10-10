@@ -151,11 +151,14 @@ export class JobWorker {
     return count;
   }
 
-  /** Claims and runs at most one job. */
-  async runOnce(): Promise<RunOutcome> {
+  /** Claims at most one job, without running it. */
+  claim(filter?: ClaimFilter): ClaimedJob | undefined {
+    return this.deps.store.claimNext(this.deps.now(), filter);
+  }
+
+  /** Runs an already-claimed job to completion or failure. */
+  async execute(job: ClaimedJob): Promise<RunOutcome> {
     const { store, logger } = this.deps;
-    const job = store.claimNext(this.deps.now());
-    if (!job) return { status: 'idle' };
 
     const handler = this.#byKind.get(job.kind);
     if (!handler) {
@@ -208,6 +211,13 @@ export class JobWorker {
       'job completed',
     );
     return { status: 'completed', jobId: job.jobId, kind: job.kind };
+  }
+
+  /** Claims and runs at most one job. */
+  async runOnce(): Promise<RunOutcome> {
+    const job = this.claim();
+    if (!job) return { status: 'idle' };
+    return this.execute(job);
   }
 
   /**

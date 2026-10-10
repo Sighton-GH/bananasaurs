@@ -312,6 +312,62 @@ describe('handler registration', () => {
   });
 });
 
+describe('claim plus execute equals runOnce', () => {
+  it('runs a claimed job to success', async () => {
+    s.add();
+    const worker = build([handlerFor(ran)]);
+    const job = worker.claim();
+    expect(job?.jobId).toBe(1);
+    expect(await worker.execute(job!)).toEqual({ status: 'completed', jobId: 1, kind: 'sweep' });
+    expect(ran).toHaveLength(1);
+    expect(s.completed).toEqual([1]);
+  });
+
+  it('fails via the store when the handler throws', async () => {
+    s.add();
+    const worker = build([handlerFor(ran, 'throw')]);
+    const outcome = await worker.execute(worker.claim()!);
+    expect(outcome).toMatchObject({ status: 'failed', willRetry: true });
+    expect(s.failures[0]?.permanent).toBe(false);
+  });
+
+  it('fails permanently for an unknown kind', async () => {
+    s.add({ kind: 'not-registered' });
+    const worker = build([handlerFor(ran)]);
+    const outcome = await worker.execute(worker.claim()!);
+    expect(outcome).toMatchObject({ status: 'failed', willRetry: false });
+    expect(s.failures[0]?.permanent).toBe(true);
+  });
+
+  it('fails permanently for an invalid payload', async () => {
+    s.add({ payload: '{"olderThanMs":"not a number"}' });
+    const worker = build([handlerFor(ran)]);
+    const outcome = await worker.execute(worker.claim()!);
+    expect(outcome).toMatchObject({ status: 'failed', willRetry: false });
+    expect(s.failures[0]?.permanent).toBe(true);
+    expect(ran).toHaveLength(0);
+  });
+
+  it('claim returns undefined when there is nothing to do', () => {
+    expect(build([handlerFor(ran)]).claim()).toBeUndefined();
+  });
+
+  it('claim forwards the filter to the store', () => {
+    s.add();
+    const seen: unknown[] = [];
+    const forwarding = {
+      ...s.store,
+      claimNext: (nowMs: number, filter?: unknown) => {
+        seen.push(filter);
+        return s.store.claimNext(nowMs);
+      },
+    };
+    const worker = new JobWorker({ store: forwarding, handlers: [handlerFor(ran)], logger, now: () => 1000 });
+    worker.claim({ kinds: ['sweep'], laneBusy: true });
+    expect(seen).toEqual([{ kinds: ['sweep'], laneBusy: true }]);
+  });
+});
+
 describe('Task 10 (d): job failed line carries a string code', () => {
   it('logs code chain-failed when the thrown error carries one', async () => {
     const { logger: capturing, lines } = capturingLogger();
