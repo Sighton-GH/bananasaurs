@@ -1,7 +1,12 @@
 import type { AssistantBehaviour, AssistantSkill } from './types.js';
 import type { ClubResource } from './resources.js';
 import { surfaceInstruction } from './behaviours.js';
-import { BOUNDARIES_ANSWER_BRIEFLY } from './prompt-wizard.js';
+import {
+  BOUNDARIES_ANSWER_BRIEFLY,
+  BOUNDARIES_HELPFUL,
+  FOCUS_HEADER,
+  SOURCES_ORDER_LINES,
+} from './prompt-wizard.js';
 import { SAFETY_SUFFIX } from './safety-suffix.js';
 import { buildCapabilityBlock } from './capabilities.js';
 import { TOOL_CATALOGUE } from './tool-catalogue.js';
@@ -69,10 +74,13 @@ export const LEGACY_CITE_SENTENCE =
  * The compiler rewrites it to the current wording so existing behaviours get
  * it without a re-save (next to LEGACY_TOOL_SENTENCE and friends).
  */
+export const LEGACY_HELPS_HEADER = 'WHAT YOU HELP WITH';
+export const LEGACY_SOURCES_SENTENCE =
+  "Check the club's sources before answering from general knowledge.";
 export const LEGACY_BOUNDARIES_SENTENCE =
   "For questions outside what you help with, answer briefly if you can; otherwise say it's outside what you help with.";
 /** The wizard's current BOUNDARIES wording, re-exported so the rewrite cannot drift. */
-export const BOUNDARIES_SENTENCE = BOUNDARIES_ANSWER_BRIEFLY;
+export const BOUNDARIES_SENTENCE = BOUNDARIES_HELPFUL;
 
 /**
  * The old wizard emitted the sources sentences as their own lines. The
@@ -176,10 +184,26 @@ export const compileAssistantContext = (input: {
             .filter(Boolean)
             .join('\n\n');
         })();
+  const behaviourName = input.behaviour.name;
+  const rewriteLegacyWizard = (text: string): string =>
+    text
+      .replaceAll(LEGACY_BOUNDARIES_SENTENCE, BOUNDARIES_HELPFUL)
+      .replaceAll(BOUNDARIES_ANSWER_BRIEFLY, BOUNDARIES_HELPFUL)
+      .split('\n')
+      .map((line) => {
+        const trimmed = line.trim();
+        if (trimmed === LEGACY_HELPS_HEADER) return FOCUS_HEADER;
+        if (trimmed === LEGACY_SOURCES_SENTENCE) return SOURCES_ORDER_LINES.join('\n');
+        return line;
+      })
+      .join('\n')
+      .replace(
+        `You are ${behaviourName}, the assistant in the Discord server of`,
+        'You are Bananasaurs, the assistant in the Discord server of',
+      );
   const behaviourPrompt = clean(
-    dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')).replaceAll(
-      LEGACY_BOUNDARIES_SENTENCE,
-      BOUNDARIES_SENTENCE,
+    rewriteLegacyWizard(
+      dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
     ),
     4_000,
   );

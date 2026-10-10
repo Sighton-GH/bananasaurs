@@ -87,8 +87,8 @@ const OFF_TOPIC_OPTIONS: readonly {
   readonly value: PromptWizardAnswers['offTopic'];
   readonly label: string;
 }[] = [
-  { value: 'answer-briefly', label: 'Answer briefly' },
-  { value: 'redirect', label: 'Redirect to a person or channel' },
+  { value: 'answer-briefly', label: 'Help with anything reasonable' },
+  { value: 'redirect', label: 'Stay on the focus areas and redirect the rest' },
 ];
 
 const FORMAT_OPTIONS: readonly {
@@ -348,7 +348,7 @@ function Wizard({
                 />
               </ul>
             </section>
-            <Field label="Bot name" hint="Leave blank to use the behaviour name.">
+            <Field label="Bot name" hint="Leave blank to use Bananasaurs.">
               <Input
                 value={answers.botName}
                 maxLength={40}

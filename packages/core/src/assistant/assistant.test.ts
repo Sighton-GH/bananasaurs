@@ -593,9 +593,8 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       skills: [CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!],
       evidence: [],
     });
-    expect(compiled.systemInstruction).toContain(
-      "For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it's outside what you help with.",
-    );
+    expect(compiled.systemInstruction).toContain(BOUNDARIES_HELPFUL);
+    expect(compiled.systemInstruction).not.toContain("say it's outside what you help with");
     expect(compiled.systemInstruction).not.toContain(LEGACY_BOUNDARIES_SENTENCE);
   });
 
@@ -604,7 +603,8 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     const compiled = compileAssistantContext({
       behaviour: {
         ...behaviour,
-        systemPrompt: 'WHAT YOU HELP WITH\n- Answer questions about the club.',
+        systemPrompt:
+          'FOCUS (where to look first, not a limit)\n- Answer questions about the club.',
       },
       serverCard: 'card',
       resources: [],
