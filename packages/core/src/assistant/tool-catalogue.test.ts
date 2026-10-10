@@ -48,8 +48,6 @@ describe('TOOL_CATALOGUE', () => {
 
   it('lists only real skill ids, and the search skill on every read tool', () => {
     const skillIds = new Set(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id));
-    // Task 5 adds the 'web-search' skill to CLUB_ASSISTANT_SKILLS and removes this line.
-    skillIds.add('web-search');
     for (const tool of TOOL_CATALOGUE) {
       for (const skillId of tool.skills) {
         expect(skillIds.has(skillId), skillId).toBe(true);

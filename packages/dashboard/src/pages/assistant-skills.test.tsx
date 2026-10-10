@@ -132,6 +132,35 @@ describe('AssistantSkillsPage', () => {
     expect(screen.getAllByRole('link', { name: 'Assistant history' }).length).toBeGreaterThan(0);
   });
 
+  it('lists the web-search skill with its scope control', async () => {
+    renderPage({
+      ...FULL,
+      skills: [
+        ...FULL.skills,
+        {
+          id: 'web-search',
+          name: 'Search the web',
+          description:
+            'Search the public web for general and current questions when club sources have nothing.',
+          effect: 'read',
+          requiredPermission: 'assistant.search',
+          requiresConfirmation: false,
+        },
+      ],
+      skillScopes: {
+        ...FULL.skillScopes,
+        'web-search': { mode: 'everyone', roleIds: [], isDefault: true },
+      },
+    });
+    const catalogue = (await screen.findByRole('heading', { name: 'Skill catalogue' })).closest(
+      'section',
+    )!;
+    const link = within(catalogue).getByRole('link', { name: 'Search the web' });
+    expect(link.getAttribute('href')).toBe('/assistant/skills/web-search');
+    expect(within(link).getByText('Search the web')).toBeTruthy();
+    expect(within(link).getByText('Everyone who can ask')).toBeTruthy();
+  });
+
   it('does not edit per-behaviour skills: preferences live on the Behaviours tab', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
