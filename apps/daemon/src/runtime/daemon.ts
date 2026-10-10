@@ -111,6 +111,8 @@ export interface DaemonDeps {
    * posture `providerSecret` above documents.
    */
   readonly passwordVault?: PasswordVault | undefined;
+  /** Outbound fetch for the OpenRouter model list; tests pass a stub. */
+  readonly fetchImpl?: typeof fetch;
 }
 
 export interface Daemon {
@@ -205,7 +207,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         }),
   });
   const modelCatalogue = createOpenRouterModelCatalogue({
-    fetchImpl: fetch,
+    fetchImpl: deps.fetchImpl ?? fetch,
     now: Date.now,
     log: logger,
   });

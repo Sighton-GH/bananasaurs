@@ -23,19 +23,17 @@ export interface OpenRouterModelCatalogue {
 }
 
 const openRouterModelsResponse = z.object({
-  data: z
-    .array(
-      z.object({
-        id: z.string(),
-        architecture: z
-          .object({
-            input_modalities: z.array(z.string()).optional(),
-          })
-          .optional(),
-        supported_parameters: z.array(z.string()).optional(),
-      }),
-    )
-    .default([]),
+  data: z.array(
+    z.object({
+      id: z.string(),
+      architecture: z
+        .object({
+          input_modalities: z.array(z.string()).optional(),
+        })
+        .optional(),
+      supported_parameters: z.array(z.string()).optional(),
+    }),
+  ),
 });
 
 const NOT_LISTED: ModelListing = {
@@ -55,7 +53,12 @@ export const createOpenRouterModelCatalogue = (deps: {
   const ttlMs = deps.ttlMs ?? 3_600_000;
   let cache = new Map<string, ModelListing>();
   let fetchedAt: number | undefined = undefined;
+  let lastFailureAt: number | undefined = undefined;
   let inFlight: Promise<void> | undefined = undefined;
+
+  const recordFailure = (): void => {
+    lastFailureAt = deps.now();
+  };
 
   const doFetch = async (): Promise<void> => {
     let response: Response;
@@ -66,6 +69,7 @@ export const createOpenRouterModelCatalogue = (deps: {
       });
     } catch (err) {
       deps.log.warn({ host: 'openrouter.ai', err }, 'OpenRouter model list fetch failed');
+      recordFailure();
       return;
     }
     if (!response.ok) {
@@ -73,6 +77,7 @@ export const createOpenRouterModelCatalogue = (deps: {
         { host: 'openrouter.ai', status: response.status },
         'OpenRouter model list fetch failed',
       );
+      recordFailure();
       return;
     }
     let body: unknown;
@@ -80,11 +85,13 @@ export const createOpenRouterModelCatalogue = (deps: {
       body = await response.json();
     } catch (err) {
       deps.log.warn({ host: 'openrouter.ai', err }, 'OpenRouter model list fetch failed');
+      recordFailure();
       return;
     }
     const parsed = openRouterModelsResponse.safeParse(body);
     if (!parsed.success) {
       deps.log.warn({ host: 'openrouter.ai' }, 'OpenRouter model list fetch failed');
+      recordFailure();
       return;
     }
     const next = new Map<string, ModelListing>();
@@ -101,11 +108,13 @@ export const createOpenRouterModelCatalogue = (deps: {
     }
     cache = next;
     fetchedAt = deps.now();
+    lastFailureAt = undefined;
   };
 
   const refresh = async (): Promise<void> => {
     const at = fetchedAt;
     if (at !== undefined && deps.now() - at < ttlMs) return;
+    if (lastFailureAt !== undefined && deps.now() - lastFailureAt < 60_000) return;
     if (inFlight !== undefined) {
       await inFlight;
       return;
@@ -120,11 +129,7 @@ export const createOpenRouterModelCatalogue = (deps: {
 
   return {
     peek(model) {
-      if (fetchedAt !== undefined && deps.now() - fetchedAt >= ttlMs) {
-        void refresh();
-      } else if (fetchedAt === undefined) {
-        void refresh();
-      }
+      void refresh();
       if (fetchedAt === undefined) return undefined;
       return cache.get(model) ?? { ...NOT_LISTED };
     },

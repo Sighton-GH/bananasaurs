@@ -97,3 +97,35 @@ it('refetches only after the TTL', async () => {
   await cat.refresh();
   expect(fetchImpl).toHaveBeenCalledTimes(2);
 });
+
+it('keeps the previous cache when the next body has no data', async () => {
+  let t = 0;
+  const warn = vi.fn();
+  const good = new Response(JSON.stringify(body), { status: 200 });
+  const empty = new Response(JSON.stringify({}), { status: 200 });
+  const fetchImpl = vi.fn(async (): Promise<Response> => {
+    if (t > 3_600_000) return empty.clone();
+    return good.clone();
+  });
+  const cat = createOpenRouterModelCatalogue({ fetchImpl, now: () => t, log: { warn } });
+  await cat.refresh();
+  expect(cat.peek('google/gemma-4-31b-it:free')).toMatchObject({ listed: true });
+  t = 3_600_001;
+  await cat.refresh();
+  expect(cat.peek('google/gemma-4-31b-it:free')).toMatchObject({ listed: true, image: true });
+  expect(warn).toHaveBeenCalled();
+});
+
+it('retries a failed fetch at most once per 60 s', async () => {
+  let t = 0;
+  const fetchImpl = vi.fn(async (): Promise<Response> => {
+    throw new Error('down');
+  });
+  const cat = createOpenRouterModelCatalogue({ fetchImpl, now: () => t, log: { warn: vi.fn() } });
+  await cat.refresh();
+  await cat.refresh();
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  t = 60_000;
+  await cat.refresh();
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+});

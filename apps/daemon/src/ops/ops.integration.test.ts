@@ -99,6 +99,9 @@ const startDaemon = (over: Record<string, string> = {}): void => {
     client,
     logger,
     now: () => discord.now(),
+    fetchImpl: async () => {
+      throw new Error('network disabled in tests');
+    },
   });
   socket.serve((raw) => daemon.ops.dispatch(raw));
 };
@@ -201,6 +204,9 @@ describe('the operator CLI, end to end', () => {
       client,
       logger,
       now: () => discord.now(),
+      fetchImpl: async () => {
+        throw new Error('network disabled in tests');
+      },
     });
     socket.serve((raw) => daemon.ops.dispatch(raw));
 
@@ -221,6 +227,9 @@ describe('the operator CLI, end to end', () => {
       client,
       logger,
       now: () => discord.now(),
+      fetchImpl: async () => {
+        throw new Error('network disabled in tests');
+      },
     });
     const result = await cli('status');
     expect(result.code).toBe(1);
@@ -292,6 +301,9 @@ describe('the operator CLI, end to end', () => {
         client,
         logger,
         now: () => discord.now(),
+        fetchImpl: async () => {
+          throw new Error('network disabled in tests');
+        },
       });
       socket.serve((raw) => daemon.ops.dispatch(raw));
 
@@ -706,6 +718,9 @@ describe('the operator CLI, end to end', () => {
           client,
           logger,
           now: () => discord.now(),
+          fetchImpl: async () => {
+            throw new Error('network disabled in tests');
+          },
         });
       }).not.toThrow();
       socket.serve((raw) => daemon.ops.dispatch(raw));
@@ -727,6 +742,9 @@ describe('the operator CLI, end to end', () => {
         client,
         logger,
         now: () => discord.now(),
+        fetchImpl: async () => {
+          throw new Error('network disabled in tests');
+        },
       });
       socket.serve((raw) => daemon.ops.dispatch(raw));
 
@@ -1530,6 +1548,9 @@ describe('the dashboard recovery path, end to end (ADR 0012)', () => {
       client,
       logger,
       now: () => discord.now(),
+      fetchImpl: async () => {
+        throw new Error('network disabled in tests');
+      },
     });
     socket.serve((raw) => daemon.ops.dispatch(raw));
 
