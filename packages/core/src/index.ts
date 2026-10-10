@@ -98,6 +98,7 @@ export {
   laneOf,
   type JobLane,
 } from './jobs/lanes.js';
+export { LaneScheduler, type LaneConfig } from './jobs/scheduler.js';
 export {
   assistantInvokeDedupeKey,
   assistantInvokePayload,
