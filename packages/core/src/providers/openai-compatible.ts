@@ -71,6 +71,10 @@ const statusKind = (status: number): ProviderErrorKind => {
   return 'invalid-response';
 };
 
+/** Shared by the fetch catch and the success-body catch: the timeout signal fires in either place. */
+const isTimeoutError = (error: unknown): boolean =>
+  error instanceof DOMException && error.name === 'TimeoutError';
+
 /** ADR 0077: the OpenRouter (and NVIDIA NIM) error body shape. */
 const errorBodySchema = z.object({
   error: z.object({
@@ -336,7 +340,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         signal,
       });
     } catch (error) {
-      const timeout = error instanceof DOMException && error.name === 'TimeoutError';
+      const timeout = isTimeoutError(error);
       const netCode = netCodeOf(error);
       throw new ProviderError(
         timeout ? 'timeout' : 'outage',
@@ -386,7 +390,25 @@ export class OpenAiCompatibleProvider implements TextProvider {
         },
       );
     }
-    const parsed = responseSchema.safeParse(await response.json());
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch (error) {
+      if (isTimeoutError(error))
+        throw new ProviderError('timeout', `${this.id} request timed out`, true, {
+          cause: error,
+          host: this.host,
+        });
+      if (error instanceof SyntaxError)
+        throw new ProviderError('invalid-response', `${this.id} returned an invalid response`, false, {
+          cause: error,
+        });
+      throw new ProviderError('outage', `${this.id} request failed`, true, {
+        cause: error,
+        host: this.host,
+      });
+    }
+    const parsed = responseSchema.safeParse(raw);
     if (!parsed.success)
       throw new ProviderError(
         'invalid-response',
