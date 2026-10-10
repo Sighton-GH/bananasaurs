@@ -86,6 +86,7 @@ const harness = (
   const send = vi.fn(async () => undefined);
   const sendTyping = vi.fn(async () => undefined);
   const queued: AssistantInvokePayload[] = [];
+  const enqueuedInputs: { readonly orderingKey: string }[] = [];
   const sealer = createInteractionTokenSealer();
   const handler = assistantInvokeHandler({
     guildId,
@@ -114,6 +115,7 @@ const harness = (
     send,
     sendTyping,
     queued,
+    enqueuedInputs,
     flush,
     subscriber: createAssistantCommandSubscriber({
       botUserId: '901234567890123456',
@@ -121,6 +123,7 @@ const harness = (
       service,
       enqueue: (input) => {
         queued.push(input.payload);
+        enqueuedInputs.push(input);
         return { enqueued: reportEnqueued };
       },
       now: () => 1,
@@ -234,6 +237,56 @@ describe('assistant command subscriber', () => {
       attachments: [],
     });
     expect(h.queued[0]?.threadParentId).toBe('678901234567890123');
+  });
+
+  it('enqueues a channel mention with the channel ordering key', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012347',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> channel question`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.enqueuedInputs[0]?.orderingKey).toBe(`chan:${channelId}`);
+  });
+
+  it('enqueues a thread mention with the parent-channel ordering key', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId: '789012345678901234',
+      parentChannelId: '678901234567890123',
+      categoryId: undefined,
+      isPrivateThread: true,
+      messageId: '890123456789012348',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> thread question`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.enqueuedInputs[0]?.orderingKey).toBe('chan:678901234567890123');
   });
 
   it('posts one safe IT escalation to the configured channel and reviewer roles', async () => {

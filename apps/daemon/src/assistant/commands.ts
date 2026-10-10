@@ -1,5 +1,6 @@
 import {
   assistantInvokeDedupeKey,
+  assistantOrderingKey,
   JOB_KINDS,
   safeLogFields,
   type AssistantBehaviour,
@@ -202,6 +203,7 @@ export interface AssistantCommandDeps {
     kind: typeof JOB_KINDS.assistantInvoke;
     payload: AssistantInvokePayload;
     dedupeKey: string;
+    orderingKey: string;
     now: number;
   }) => { readonly enqueued: boolean };
   readonly now: () => number;
@@ -390,6 +392,11 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
           : { authorName: event.authorDisplayName.slice(0, 200) }),
       },
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
+      orderingKey: assistantOrderingKey({
+        channelId: event.channelId,
+        threadParentId: event.parentChannelId,
+        userId: event.authorId!,
+      }),
       now: deps.now(),
     });
     // Best-effort and never awaited: the dispatch chain must not stall on it.

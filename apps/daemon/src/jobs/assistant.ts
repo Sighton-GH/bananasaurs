@@ -1,6 +1,7 @@
 import {
   assistantInvokeCursor,
   assistantInvokePayload,
+  assistantOrderingKey,
   assistantSummariseDedupeKey,
   JOB_KINDS,
   renderSummary,
@@ -1642,6 +1643,11 @@ export const assistantInvokeHandler = (deps: {
                   keyId: answeredBy.keyId,
                 }),
                 dedupeKey: assistantSummariseDedupeKey(conversationId, newest.at),
+                orderingKey: assistantOrderingKey({
+                  channelId: payload.channelId,
+                  threadParentId: payload.threadParentId,
+                  userId: payload.userId,
+                }),
                 now: deps.now(),
               });
             }
