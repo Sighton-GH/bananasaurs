@@ -127,7 +127,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'search_archive',
     description:
-      "Search past messages in this Discord server's archived channels that the asking member can see. To check whether a particular member said something, pass their name as from.",
+      "Search past messages in this server's archived channels that the asking member can see. Use it when a member asks what was said or decided in the server, or when club sources have nothing. Don't use it to collect what one person said. To check whether a particular member said something, pass their name as from.",
     parameters: {
       type: 'object',
       properties: {
@@ -154,7 +154,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'open_resource',
     description:
-      'Open one of the club resources listed in the instructions by its resource id, with the outline of a document-like resource; or list the headings of one cached document by its doc id.',
+      'Open one club resource by its resource id (with an outline of a document), or list the headings of one cached document by its doc id. Use it when a member wants a link or an overview of a known resource, or after search_sources returned a doc id. Give either resourceId or docId.',
     parameters: {
       type: 'object',
       properties: {
@@ -182,7 +182,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'web_search',
     description:
-      'Search the public web. Never put names, contact details or private club information in the query.',
+      "Search the public web. Use it when the question is general or about current events, or when club sources came up empty; check club sources first for anything about the club. Don't guess or say you don't know before trying it. Never put names, contact details or private club information in the query.",
     parameters: QUERY_PARAMETERS,
     rounds: 'all',
     outputLimit: RESULT_LIMIT,
@@ -192,7 +192,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'server_info',
-    description: "The server's description and the channels the asking member can see.",
+    description:
+      "The server's description and the channels the asking member can see. Use it when a member asks where something is or which channel to use, or for new-member questions. It does not list members.",
     parameters: NO_PARAMETERS,
     rounds: 'all',
     outputLimit: RESULT_LIMIT,
@@ -201,7 +202,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'current_time',
-    description: "Today's date and the current time in the club's time zone.",
+    description:
+      "Today's date and the current time in the club's time zone. The date and time are already in your instructions under NOW; use this only if you need the time again later in a long answer.",
     parameters: NO_PARAMETERS,
     rounds: 'all',
     outputLimit: RESULT_LIMIT,
@@ -211,7 +213,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'my_reminders',
     description:
-      "The asking member's own reminders that have not finished, with ids for edit_reminder and cancel_reminder. The server owner may pass all=true to see everyone's.",
+      "The asking member's unfinished reminders and scheduled posts, with ids for edit_reminder and cancel_reminder. Use it when a member asks what is scheduled, or before changing or cancelling one. The server owner may pass all=true to see everyone's.",
     parameters: {
       type: 'object',
       properties: {
@@ -231,7 +233,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'set_reminder',
     description:
-      "Set a reminder. Only when the member asks for one. If the time, the channel or who to ping is unclear, ask the member instead of calling this. `when` is ISO 8601 with its UTC offset, in the club's time zone (use current_time first if you need today's date).",
+      "Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club's time zone; today's date is under NOW. Example: \"remind Claire at 23:00 to go to sleep\" becomes text \"go to sleep\", when \"2026-10-10T23:00:00-07:00\", members: [\"Claire H\"].",
     parameters: {
       type: 'object',
       properties: {
@@ -317,7 +319,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'edit_reminder',
-    description: 'Change one of your reminders by its id.',
+    description:
+      "Change one of the asking member's reminders by its id (from my_reminders): text, time, channel, pings or repeat. Use it when a member asks to move, reword or stop repeating a reminder they set.",
     parameters: {
       type: 'object',
       properties: {
@@ -394,7 +397,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'cancel_reminder',
-    description: 'Cancel one of your reminders by its id.',
+    description:
+      "Cancel one of the asking member's reminders by its id (from my_reminders). Use it when a member asks to cancel or delete a reminder they set. If several match, ask which.",
     parameters: {
       type: 'object',
       properties: {
@@ -417,7 +421,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'propose_memory',
     description:
-      'Propose something for the club to remember. An owner reviews it before anything is remembered.',
+      "Propose something for the club to remember long term (a fact, preference or rule). An owner reviews it before anything is remembered. Use it when a member asks the bot to remember something about the club. Don't use it for one-off details.",
     parameters: {
       type: 'object',
       properties: {
@@ -444,7 +448,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'propose_decision',
-    description: 'Propose a club decision. It is saved as a draft for owner review.',
+    description:
+      "Save a club decision as a draft for owner review, with what was decided. Use it when a member asks to record a decision or to review a plan as a draft. Nothing becomes policy until an owner approves it.",
     parameters: {
       type: 'object',
       properties: {
@@ -471,7 +476,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'search_sources',
     description:
-      'Search the cached club sources for passages about the query. Without a query it lists the cached sources, with their ids for read_chunk, open_resource and refresh_source.',
+      "Search the club's cached sources (website, docs, repositories) for passages about the query; without a query it lists the sources with their ids. Use it first for any question about the club, its events, rules or projects. Follow up with read_chunk to read a hit in full.",
     parameters: {
       type: 'object',
       properties: {
@@ -504,7 +509,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'read_chunk',
-    description: 'Read one cached passage by its chunk id, with neighbouring passages.',
+    description:
+      "Read one cached passage by its chunk id, with neighbouring passages. Use it after search_sources or open_resource returned a chunk id and you need the full text to answer accurately.",
     parameters: {
       type: 'object',
       properties: {
@@ -530,7 +536,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'refresh_source',
     description:
-      'Request a fresh fetch of one club source; updated content arrives in about a minute.',
+      "Ask for a fresh fetch of one club source; updated content arrives in about a minute. Use it when a member says a source is out of date or a page changed recently. Then answer from what you have now and say it is refreshing.",
     parameters: {
       type: 'object',
       properties: {
@@ -554,7 +560,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'upcoming_events',
     description:
-      'Upcoming Discord scheduled events and channel reminders in the next 30 days, soonest first, for channels every viewer of the answer channel can read.',
+      "Upcoming Discord scheduled events and channel reminders in the next 30 days, soonest first. Use it when a member asks what's coming up, when the next meeting is, or what's scheduled.",
     parameters: NO_PARAMETERS,
     rounds: 'all',
     outputLimit: RESULT_LIMIT,
@@ -564,7 +570,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'search_conversations',
     description:
-      'Look back at summaries of earlier conversations in channels everyone here can read.',
+      'Search summaries of earlier conversations with the bot in channels everyone here can read. Use it when a member refers to something discussed with the bot before, such as "what did we decide last week".',
     parameters: {
       type: 'object',
       properties: {
@@ -585,7 +591,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'channel_history',
     description:
-      'Read older messages in the current channel, paging back with the before id from an earlier result.',
+      "Read older messages in the current channel, paging back with the before id from an earlier result. Use it when a member asks to summarise or catch up on the conversation, or refers to something said earlier here.",
     parameters: {
       type: 'object',
       properties: {
