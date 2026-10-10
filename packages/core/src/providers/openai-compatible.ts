@@ -400,9 +400,14 @@ export class OpenAiCompatibleProvider implements TextProvider {
           host: this.host,
         });
       if (error instanceof SyntaxError)
-        throw new ProviderError('invalid-response', `${this.id} returned an invalid response`, false, {
-          cause: error,
-        });
+        throw new ProviderError(
+          'invalid-response',
+          `${this.id} returned an invalid response`,
+          false,
+          {
+            cause: error,
+          },
+        );
       throw new ProviderError('outage', `${this.id} request failed`, true, {
         cause: error,
         host: this.host,

@@ -821,7 +821,7 @@ describe('runToolLoop output guard', () => {
     const failing: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText: async (request: GenerateTextRequest) => {
+      generateText: async () => {
         calls += 1;
         if (calls === 1) {
           now += 8000;
