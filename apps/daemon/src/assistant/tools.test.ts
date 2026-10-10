@@ -145,6 +145,13 @@ describe('toolDeclarations', () => {
     expect(names(ports({ searchConversations: undefined }))).not.toContain('search_conversations');
   });
 
+  it('drops web_search when the web-search skill is not allowed, even with search on', () => {
+    const names = toolDeclarations(ports({ skillAllowed: (id) => id !== 'web-search' })).map(
+      (d) => d.name,
+    );
+    expect(names).not.toContain('web_search');
+  });
+
   it('hides upcoming_events and channel_history when their port is absent', () => {
     const names = (p: AssistantToolPorts) => toolDeclarations(p).map((tool) => tool.name);
     expect(names(ports({ upcomingEvents: undefined }))).not.toContain('upcoming_events');
@@ -424,6 +431,16 @@ describe('runAssistantTool', () => {
       }),
     );
     expect(result).toMatchObject({ ok: false, text: 'Web search failed.' });
+  });
+
+  it('refuses a web_search call when the skill is not allowed', async () => {
+    const citations = createCitationRegistry();
+    const result = await runAssistantTool(
+      { name: 'web_search', args: { query: 'boiling point of nitrogen' } },
+      ports({ skillAllowed: (id) => id !== 'web-search' }),
+      citations,
+    );
+    expect(result.ok).toBe(false);
   });
 
   it('reports a web search HTTP failure with the status only', async () => {
