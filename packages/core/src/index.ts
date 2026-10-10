@@ -81,6 +81,7 @@ export {
   JobWorker,
   RetryAfterError,
   type AnyJobHandler,
+  type ClaimFilter,
   type ClaimedJob,
   type FailOptions,
   type JobContext,
@@ -90,6 +91,13 @@ export {
   type PayloadSchema,
   type RunOutcome,
 } from './jobs/worker.js';
+export {
+  assistantOrderingKey,
+  JOB_LANES,
+  kindsInLane,
+  laneOf,
+  type JobLane,
+} from './jobs/lanes.js';
 export {
   assistantInvokeDedupeKey,
   assistantInvokePayload,

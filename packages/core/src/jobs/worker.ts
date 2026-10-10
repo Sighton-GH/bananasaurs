@@ -18,6 +18,18 @@ export interface ClaimedJob {
   attempts: number;
   maxAttempts: number;
   cursor: string | null;
+  readonly orderingKey?: string | null;
+}
+
+export interface ClaimFilter {
+  /** Claim only these kinds. */
+  readonly kinds?: readonly string[];
+  /** Never claim these kinds (applied together with `kinds` if both given). */
+  readonly excludeKinds?: readonly string[];
+  /** Ordering keys currently running in this lane; rows with one of them are skipped. */
+  readonly busyOrderingKeys?: readonly string[];
+  /** True when any job of this lane is running (an exclusive, keyless job then waits). */
+  readonly laneBusy?: boolean;
 }
 
 export interface FailOptions {
@@ -50,7 +62,7 @@ export class RetryAfterError extends Error {
 }
 
 export interface JobStore {
-  claimNext(nowMs: number): ClaimedJob | undefined;
+  claimNext(nowMs: number, filter?: ClaimFilter): ClaimedJob | undefined;
   complete(jobId: number, nowMs: number): void;
   fail(jobId: number, error: string, nowMs: number, options?: FailOptions): { willRetry: boolean };
   saveCursor(jobId: number, cursor: string | null, nowMs: number): void;
