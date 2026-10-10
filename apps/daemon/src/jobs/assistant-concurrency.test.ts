@@ -286,4 +286,54 @@ describe('assistant lanes concurrency (ADR 0135 Task 4)', () => {
       h.close();
     }
   });
+
+  it('two answers in one channel never overlap and run in order', async () => {
+    const h = createHarness(false);
+    try {
+      h.enqueueMention({
+        channelId: CHANNEL_A,
+        userId: U1,
+        invocationId: 'inv-m1',
+        messageId: '810000000000000111',
+        question: 'first question',
+        authorName: 'Ama',
+      });
+      h.enqueueMention({
+        channelId: CHANNEL_A,
+        userId: U2,
+        invocationId: 'inv-m2',
+        messageId: '810000000000000112',
+        question: 'second question',
+        authorName: 'Bo',
+      });
+
+      expect(h.scheduler.tick()).toBe(1);
+      await flush();
+      expect(h.entered.map((call) => call.invocationId)).toEqual(['inv-m1']);
+      // Further ticks before resolving start nothing.
+      expect(h.scheduler.tick()).toBe(0);
+      expect(h.scheduler.tick()).toBe(0);
+      await flush();
+      expect(h.entered.map((call) => call.invocationId)).toEqual(['inv-m1']);
+
+      h.resolveGate('inv-m1');
+      await flush();
+      await h.scheduler.idle();
+      expect(h.scheduler.tick()).toBe(1);
+      await flush();
+      expect(h.entered.map((call) => call.invocationId)).toEqual(['inv-m1', 'inv-m2']);
+
+      h.resolveGate('inv-m2');
+      await h.scheduler.idle();
+
+      expect(h.active.max).toBe(1);
+      expect(h.sent.map((post) => post.message.content)).toEqual([
+        'answer for inv-m1',
+        'answer for inv-m2',
+      ]);
+      expect(jobStates(h)).toEqual(['done', 'done']);
+    } finally {
+      h.close();
+    }
+  });
 });
