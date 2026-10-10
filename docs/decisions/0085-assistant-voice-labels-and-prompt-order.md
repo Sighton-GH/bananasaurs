@@ -1,7 +1,7 @@
 # 0085. Assistant voice, speaker labels and prompt order
 
 Date: 2026-09-27
-Status: Accepted (owner decisions D1–D9 in `docs/23_ASSISTANT_MEMORY_PLAN.md`, 2026-09-27)
+Status: Accepted (owner decisions D1–D9 in `docs/23_ASSISTANT_MEMORY_PLAN.md`, 2026-09-27) Amended by ADR 0136.
 
 ## Context
 
