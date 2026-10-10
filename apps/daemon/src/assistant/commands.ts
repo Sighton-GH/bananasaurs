@@ -368,11 +368,12 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     }
   }
   try {
+    const userId = event.authorId!;
     const queued = deps.enqueue({
       kind: JOB_KINDS.assistantInvoke,
       payload: {
         channelId: event.channelId,
-        userId: event.authorId!,
+        userId,
         callerRoleIds: [...(event.authorRoleIds ?? [])],
         behaviourId: route.behaviour.id,
         command: 'ask',
@@ -395,7 +396,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
       orderingKey: assistantOrderingKey({
         channelId: event.channelId,
         threadParentId: event.parentChannelId,
-        userId: event.authorId!,
+        userId,
       }),
       now: deps.now(),
     });
