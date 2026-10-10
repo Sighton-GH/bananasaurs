@@ -968,7 +968,10 @@ describe('refreshGithubRepo (authenticated)', () => {
         status: 'ok',
       });
     }
-    const notModified = new FakeFetcher(async () => ({ ok: true as const, notModified: true as const }));
+    const notModified = new FakeFetcher(async () => ({
+      ok: true as const,
+      notModified: true as const,
+    }));
     const first = deps(client, notModified, store, cache, () => 1_000);
     expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('not-modified');
     expect(notModified.calls).toHaveLength(2);

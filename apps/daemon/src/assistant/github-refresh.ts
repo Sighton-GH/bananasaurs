@@ -329,7 +329,11 @@ export async function refreshGithubRepo(
       include === undefined ? undefined : { include: [...include] },
     ).map((path) => {
       const sha = shaByPath.get(path);
-      return { path, url: rawGitHubUrl(owner, repo, branch, path), ...(sha !== undefined ? { sha } : {}) };
+      return {
+        path,
+        url: rawGitHubUrl(owner, repo, branch, path),
+        ...(sha !== undefined ? { sha } : {}),
+      };
     });
   } else {
     // Without a token a private repository cannot be read at all (ADR 0083
