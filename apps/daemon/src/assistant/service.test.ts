@@ -3062,7 +3062,9 @@ describe('B2b: acting tool ports are wired', () => {
     const toolTexts = (seen[1]?.messages as readonly { role: string; text: string }[])
       .filter((m) => m.role === 'tool')
       .map((m) => m.text);
-    expect(toolTexts[0]).toContain("You're not allowed to use that here.");
+    expect(toolTexts[0]).toContain(
+      "This member isn't allowed to use that. Tell them plainly; don't retry.",
+    );
   });
 
   it('an invocation without an id declares no acting tool', async () => {

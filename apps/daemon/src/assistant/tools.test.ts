@@ -205,7 +205,7 @@ describe('runAssistantTool', () => {
     const p = ports();
     await expect(runAssistantTool({ name: 'delete_channel', args: {} }, p)).resolves.toMatchObject({
       ok: false,
-      text: 'Unknown tool.',
+      text: 'No such tool. Use only the tools listed under WHAT YOU CAN DO RIGHT NOW.',
     });
     await expect(
       runAssistantTool({ name: 'search_archive', args: { query: '' } }, p),
@@ -221,11 +221,14 @@ describe('runAssistantTool', () => {
     const p = ports();
     await expect(runAssistantTool({ name: 'list_sources', args: {} }, p)).resolves.toMatchObject({
       ok: false,
-      text: 'Unknown tool.',
+      text: 'No such tool. Use only the tools listed under WHAT YOU CAN DO RIGHT NOW.',
     });
     await expect(
       runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'Unknown tool.' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'No such tool. Use only the tools listed under WHAT YOU CAN DO RIGHT NOW.',
+    });
   });
 
   it('searches the archive as the asking member and links each hit', async () => {
@@ -346,7 +349,10 @@ describe('runAssistantTool', () => {
     expect(opened.text).not.toContain('lead@example.com');
     await expect(
       runAssistantTool({ name: 'open_resource', args: { resourceId: 'off' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'Unknown id. Use an id from an earlier result in this request, or search again.',
+    });
   });
 
   it('returns web results with their links as sources and marks them as Brave results', async () => {
@@ -430,7 +436,10 @@ describe('runAssistantTool', () => {
         }),
       }),
     );
-    expect(result).toMatchObject({ ok: false, text: 'Web search failed.' });
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Web search failed. Try once more with a simpler query, or answer without it.',
+    });
   });
 
   it('refuses a web_search call when the skill is not allowed', async () => {
@@ -452,7 +461,10 @@ describe('runAssistantTool', () => {
         }),
       }),
     );
-    expect(result).toMatchObject({ ok: false, text: 'Web search failed (HTTP 503).' });
+    expect(result).toMatchObject({
+      ok: false,
+      text: 'Web search failed (HTTP 503). Try once more with a simpler query, or answer without it.',
+    });
   });
 
   it('gives the time in the club time zone', async () => {
@@ -615,7 +627,10 @@ describe('acting tools (B2a)', () => {
       { name: 'set_reminder', args: { text: 'hi', when: '2026-09-24T12:30:00-07:00' } },
       p,
     );
-    expect(result).toMatchObject({ ok: false, text: "You're not allowed to use that here." });
+    expect(result).toMatchObject({
+      ok: false,
+      text: "This member isn't allowed to use that. Tell them plainly; don't retry.",
+    });
     expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'denied');
   });
 
@@ -754,7 +769,10 @@ describe('acting tools (B2a)', () => {
         },
         p,
       ),
-    ).resolves.toMatchObject({ ok: false, text: 'The repeat pattern was not valid.' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'The repeat pattern was not valid: give kind (daily, weekdays, weekly or monthly), plus days for weekly or dayOfMonth for monthly.',
+    });
     expect(insert).not.toHaveBeenCalled();
   });
 
@@ -778,10 +796,9 @@ describe('acting tools (B2a)', () => {
       { text: 'hi', when, roles: Array(11).fill('role') },
     ];
     for (const args of cases) {
-      await expect(runAssistantTool({ name: 'set_reminder', args }, p)).resolves.toMatchObject({
-        ok: false,
-        text: 'The tool arguments were not valid.',
-      });
+      const result = await runAssistantTool({ name: 'set_reminder', args }, p);
+      expect(result.ok).toBe(false);
+      expect(result.text).toMatch(/^The arguments were not valid: /);
     }
     expect(insert).not.toHaveBeenCalled();
   });
@@ -1010,7 +1027,10 @@ describe('acting tools (B2a)', () => {
         { name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } },
         stranger,
       ),
-    ).resolves.toMatchObject({ ok: false, text: 'You can only change reminders you set.' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'That reminder belongs to someone else; only they or the owner can change it. Tell the member.',
+    });
     const owner = ports({
       userId: '999999999999999999',
       isOwner: true,
@@ -1024,7 +1044,10 @@ describe('acting tools (B2a)', () => {
     expect(result.actionSummary).toContain('✏️ Reminder updated: **new**');
     await expect(
       runAssistantTool({ name: 'edit_reminder', args: { reminderId: 'missing', text: 'x' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'No reminder has that id. Call my_reminders for current ids, then try again.',
+    });
   });
 
   it('omits Where and Pings from an edit summary when the targets did not change', async () => {
@@ -1093,7 +1116,10 @@ describe('acting tools (B2a)', () => {
     });
     await expect(
       runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'rem1' } }, stranger),
-    ).resolves.toMatchObject({ ok: false, text: 'You can only change reminders you set.' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'That reminder belongs to someone else; only they or the owner can change it. Tell the member.',
+    });
     expect(rows.get('rem1')?.status).toBe('scheduled');
   });
 
@@ -1101,7 +1127,10 @@ describe('acting tools (B2a)', () => {
     const { p } = reminderPorts();
     await expect(
       runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'missing' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'No reminder has that id. Call my_reminders for current ids, then try again.',
+    });
   });
 
   it('names the closest reminder fix when the id is unknown', async () => {
@@ -1347,13 +1376,19 @@ describe('cache tools (Task 16)', () => {
       { name: 'search_sources', args: { query: 'battery care', sourceIds: ['nope'] } },
       cachePorts({ cacheSearch }),
     );
-    expect(unknown).toMatchObject({ ok: false, text: 'unknown id' });
+    expect(unknown).toMatchObject({
+      ok: false,
+      text: 'Unknown id. Use an id from an earlier result in this request, or search again.',
+    });
     expect(cacheSearch).not.toHaveBeenCalled();
     const disabled = await runAssistantTool(
       { name: 'search_sources', args: { query: 'battery care', sourceIds: ['off'] } },
       cachePorts({ cacheSearch }),
     );
-    expect(disabled).toMatchObject({ ok: false, text: 'unknown id' });
+    expect(disabled).toMatchObject({
+      ok: false,
+      text: 'Unknown id. Use an id from an earlier result in this request, or search again.',
+    });
     expect(cacheSearch).not.toHaveBeenCalled();
   });
 
@@ -1405,7 +1440,10 @@ describe('cache tools (Task 16)', () => {
     });
     await expect(
       runAssistantTool({ name: 'read_chunk', args: { chunkId: 'c_off_0' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'Unknown id. Use an id from an earlier result in this request, or search again.',
+    });
   });
 
   it('open_resource with a docId on a disabled resource answers unknown id', async () => {
@@ -1420,7 +1458,10 @@ describe('cache tools (Task 16)', () => {
     });
     await expect(
       runAssistantTool({ name: 'open_resource', args: { docId: 'd_off' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'Unknown id. Use an id from an earlier result in this request, or search again.',
+    });
   });
 
   it('search_sources without a query answers no match with the ruled sentence', async () => {
@@ -1526,7 +1567,7 @@ describe('cache tools (Task 16)', () => {
       cachePorts(),
     );
     expect(unknown.ok).toBe(false);
-    expect(unknown.text).toContain('unknown id');
+    expect(unknown.text).toContain('Unknown id');
   });
 
   it('open_resource with a docId lists headings with chunk ids inside 1500 chars', async () => {
@@ -1547,7 +1588,7 @@ describe('cache tools (Task 16)', () => {
       { name: 'open_resource', args: { docId: 'd_nope' } },
       cachePorts(),
     );
-    expect(unknown.text).toContain('unknown id');
+    expect(unknown.text).toContain('Unknown id');
   });
 
   it('open_resource with a docId on a known doc with no chunks answers No headings cached.', async () => {
@@ -1640,7 +1681,7 @@ describe('cache tools (Task 16)', () => {
       { name: 'refresh_source', args: { resourceId: 'nope' } },
       cachePorts(),
     );
-    expect(unknown.text).toContain('unknown id');
+    expect(unknown.text).toContain('Unknown id');
   });
 
   it('search_sources clips a 9000-char heading path so both hits still appear', async () => {
@@ -1949,27 +1990,29 @@ describe('upcoming_events and channel_history', () => {
 
   it('channel_history refuses malformed arguments', async () => {
     const p = ports();
-    await expect(
-      runAssistantTool({ name: 'channel_history', args: { limit: 0 } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
-    await expect(
-      runAssistantTool({ name: 'channel_history', args: { limit: 51 } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
-    await expect(
-      runAssistantTool({ name: 'channel_history', args: { before: 'short' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'The tool arguments were not valid.' });
+    for (const args of [{ limit: 0 }, { limit: 51 }, { before: 'short' }]) {
+      const result = await runAssistantTool({ name: 'channel_history', args }, p);
+      expect(result.ok).toBe(false);
+      expect(result.text).toMatch(/^The arguments were not valid: /);
+    }
   });
 
   it("channel_history refuses when the port is absent or couldn't read", async () => {
     await expect(
       runAssistantTool({ name: 'channel_history', args: {} }, ports({ channelHistory: undefined })),
-    ).resolves.toMatchObject({ ok: false, text: "I couldn't read the channel history." });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: "I couldn't read the channel history. Answer from the recent messages you already have.",
+    });
     await expect(
       runAssistantTool(
         { name: 'channel_history', args: {} },
         ports({ channelHistory: vi.fn(async () => undefined) }),
       ),
-    ).resolves.toMatchObject({ ok: false, text: "I couldn't read the channel history." });
+    ).resolves.toMatchObject({
+      ok: false,
+      text: "I couldn't read the channel history. Answer from the recent messages you already have.",
+    });
   });
 });
 
