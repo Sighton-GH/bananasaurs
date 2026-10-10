@@ -479,7 +479,11 @@ export async function refreshGithubRepo(
       bytes,
       status: 'ok' as const,
     };
-    if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash) {
+    if (
+      existing !== undefined &&
+      existing.status === 'ok' &&
+      existing.contentHash === contentHash
+    ) {
       deps.cache.upsertDocument(scope, {
         ...docBase,
         ...(wantedSha !== undefined ? { blobSha: wantedSha } : {}),
