@@ -29,7 +29,12 @@ describe('assistant skill scopes', () => {
 
   it('has a non-acting web-search skill open to everyone by default', () => {
     const s = CLUB_ASSISTANT_SKILLS.find((x) => x.id === 'web-search');
-    expect(s).toMatchObject({ acts: false, defaultScope: 'everyone', effect: 'read', name: 'Search the web' });
+    expect(s).toMatchObject({
+      acts: false,
+      defaultScope: 'everyone',
+      effect: 'read',
+      name: 'Search the web',
+    });
   });
 
   it('defaults the reminders skill to owner scope', () => {
