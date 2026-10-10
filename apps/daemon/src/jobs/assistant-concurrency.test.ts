@@ -8,8 +8,6 @@ import {
   LaneScheduler,
   parseGuildId,
   type AssistantBehaviour,
-  type AssistantInvocation,
-  type AssistantInvocationResult,
   type DiscordMessageRef,
   type OutgoingMessage,
 } from '@bananasaurs/core';
@@ -20,11 +18,12 @@ import {
   jobStoreFor,
   type GuildScope,
 } from '@bananasaurs/storage';
-import {
-  openMigratedTestDatabase,
-  type MigratedTestDatabase,
-} from '@bananasaurs/storage/test-support';
-import type { AssistantCommandService } from '../assistant/commands.js';
+import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import type {
+  AssistantCommandService,
+  AssistantInvocation,
+  AssistantInvocationResult,
+} from '../assistant/commands.js';
 import { assistantInvokeHandler } from './assistant.js';
 
 /**
@@ -110,11 +109,9 @@ const mentionPayload = (def: MentionDef): Record<string, unknown> => ({
 });
 
 interface Harness {
-  readonly t: MigratedTestDatabase;
   readonly scope: GuildScope;
   /** Every `invoke` entry, in order, with its channel. */
   readonly entered: { invocationId: string; channelId: string | undefined }[];
-  readonly gates: Map<string, Gate>;
   /** Overlap tracking: incremented on invoke entry, decremented on settle. */
   readonly active: { current: number; max: number };
   readonly sent: { channelId: string; message: OutgoingMessage }[];
@@ -142,11 +139,13 @@ const createHarness = (immediate: boolean): Harness => {
   const svc: AssistantCommandService = {
     behavioursForGuild: async () => [behaviour],
     invoke: async (input: AssistantInvocation) => {
-      entered.push({ invocationId: input.invocationId, channelId: input.channelId });
+      const invocationId = input.invocationId;
+      if (invocationId === undefined) throw new Error('assistant invoke without invocationId');
+      entered.push({ invocationId, channelId: input.channelId });
       active.current += 1;
       active.max = Math.max(active.max, active.current);
       try {
-        if (immediate) return answerFor(input.invocationId);
+        if (immediate) return answerFor(invocationId);
         let resolve!: (result: AssistantInvocationResult) => void;
         const promise = new Promise<AssistantInvocationResult>((res) => {
           resolve = res;
@@ -161,7 +160,7 @@ const createHarness = (immediate: boolean): Harness => {
             }
           },
         };
-        gates.set(input.invocationId, gate);
+        gates.set(invocationId, gate);
         return await promise;
       } finally {
         active.current -= 1;
@@ -194,7 +193,12 @@ const createHarness = (immediate: boolean): Harness => {
     fetchChannelMessages: vi.fn(async () => undefined),
     channelContextMessages: () => 0,
   });
-  const worker = new JobWorker({ store: jobStoreFor(scope), handlers: [handler], logger, now: () => NOW });
+  const worker = new JobWorker({
+    store: jobStoreFor(scope),
+    handlers: [handler],
+    logger,
+    now: () => NOW,
+  });
   const scheduler = new LaneScheduler({
     worker,
     lanes: [{ lane: 'assistant', concurrency: () => 4 }],
@@ -202,10 +206,8 @@ const createHarness = (immediate: boolean): Harness => {
   });
 
   return {
-    t,
     scope,
     entered,
-    gates,
     active,
     sent,
     worker,
@@ -239,8 +241,7 @@ const createHarness = (immediate: boolean): Harness => {
   };
 };
 
-const jobStates = (h: Harness): string[] =>
-  jobRepo.listJobs(h.scope, {}).map((job) => job.state);
+const jobStates = (h: Harness): string[] => jobRepo.listJobs(h.scope, {}).map((job) => job.state);
 
 /**
  * Ticks the scheduler and hand-resolves every pending `invoke` until no job
@@ -490,5 +491,81 @@ describe('assistant lanes concurrency (ADR 0135 Task 4)', () => {
     expect(serialSnap.length).toBeGreaterThan(0);
     expect(serialSnap.flatMap((conversation) => conversation.turns)).toHaveLength(6);
     expect(parallelSnap).toEqual(serialSnap);
+  });
+
+  it("different channels interleaved keep each channel's conversation intact", async () => {
+    const defs: MentionDef[] = [
+      {
+        channelId: CHANNEL_A,
+        userId: U1,
+        invocationId: 'inv-i1',
+        messageId: '810000000000000141',
+        question: 'alpha question one',
+        authorName: 'Ama',
+      },
+      {
+        channelId: CHANNEL_B,
+        userId: U2,
+        invocationId: 'inv-i2',
+        messageId: '810000000000000142',
+        question: 'beta question two',
+        authorName: 'Bo',
+      },
+      {
+        channelId: CHANNEL_A,
+        userId: U1,
+        invocationId: 'inv-i3',
+        messageId: '810000000000000143',
+        question: 'alpha question three',
+        authorName: 'Ama',
+      },
+      {
+        channelId: CHANNEL_B,
+        userId: U2,
+        invocationId: 'inv-i4',
+        messageId: '810000000000000144',
+        question: 'beta question four',
+        authorName: 'Bo',
+      },
+    ];
+
+    // (i) Serial: enqueue in order, then drain.
+    const serial = createHarness(true);
+    let serialSnap: ConversationSnapshot[];
+    try {
+      for (const def of defs) serial.enqueueMention(def);
+      await serial.worker.drain();
+      expect(jobStates(serial)).toEqual(['done', 'done', 'done', 'done']);
+      serialSnap = snapshotConversations(serial.scope);
+    } finally {
+      serial.close();
+    }
+
+    // (ii) Scheduler: A and B run in parallel while each channel stays ordered.
+    const parallel = createHarness(false);
+    let parallelSnap: ConversationSnapshot[];
+    try {
+      for (const def of defs) parallel.enqueueMention(def);
+      parallel.scheduler.tick();
+      await flush();
+      // Both channels started together.
+      expect(parallel.active.max).toBe(2);
+      await driveSchedulerUntilDone(parallel);
+      expect(jobStates(parallel)).toEqual(['done', 'done', 'done', 'done']);
+      parallelSnap = snapshotConversations(parallel.scope);
+    } finally {
+      parallel.close();
+    }
+
+    expect(parallelSnap).toEqual(serialSnap);
+    // No turn from channel A leaks into channel B's conversation or back.
+    for (const conversation of parallelSnap) {
+      const texts = conversation.turns.map((turn) => turn.text).join('\n');
+      if (conversation.channelId === CHANNEL_A) {
+        expect(texts).not.toContain('beta question');
+      } else {
+        expect(texts).not.toContain('alpha question');
+      }
+    }
   });
 });
