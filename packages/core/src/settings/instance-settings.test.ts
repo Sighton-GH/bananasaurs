@@ -50,7 +50,7 @@ describe('instance settings registry', () => {
   it('defaults equal today\u2019s constants', () => {
     const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
     expect(valueOf('assistant.retryDelaysMs')).toEqual([10_000, 30_000, 90_000]);
-    expect(valueOf('assistant.providerTimeoutMs')).toBe(30_000);
+    expect(valueOf('assistant.providerTimeoutMs')).toBe(60_000);
     expect(valueOf('assistant.maxToolRounds')).toBe(4);
     expect(valueOf('assistant.maxToolCalls')).toBe(12);
     expect(valueOf('assistant.maxOutputTokens')).toBe(2048);

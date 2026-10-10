@@ -25,7 +25,7 @@ const SETTINGS = [
     display: 'seconds',
     bounds: { min: 5000, max: 120000 },
     value: 60000,
-    defaultValue: 30000,
+    defaultValue: 60000,
     isDefault: false,
   },
   {
@@ -203,7 +203,7 @@ describe('AssistantTuningPage', () => {
   });
 
   it('reset on a non-default row sends DELETE', async () => {
-    const reset = { ...SETTINGS[1], value: 30000, isDefault: true };
+    const reset = { ...SETTINGS[1], value: 60000, isDefault: true };
     const mock = stubFetch([
       { url: TUNING_URL, body: { settings: SETTINGS } },
       {

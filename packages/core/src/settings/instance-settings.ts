@@ -67,7 +67,7 @@ const providerTimeout: SettingDefinition<number> = {
   help: 'How long one request to an AI provider may take before it is abandoned.',
   display: 'seconds',
   schema: z.number().int().min(5000).max(120000),
-  defaultValue: 30000,
+  defaultValue: 60000,
   bounds: { min: 5000, max: 120000 },
 };
 
