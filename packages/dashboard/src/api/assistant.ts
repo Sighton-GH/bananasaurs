@@ -334,6 +334,13 @@ export interface SetupChainRow {
     readonly today: number;
     readonly availableAt?: number;
   };
+  readonly listing?: {
+    readonly listed: boolean;
+    readonly image: boolean;
+    readonly file: boolean;
+    readonly tools: boolean;
+    readonly reasoning: boolean;
+  };
 }
 export interface AssistantSetupData {
   readonly providers: readonly SetupProviderRow[];

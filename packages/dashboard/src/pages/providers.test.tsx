@@ -631,6 +631,59 @@ describe('ProvidersPage model order', () => {
     expect(await screen.findByRole('combobox', { name: 'Model for row 1' })).toBeTruthy();
     expect(inputOf(screen.getByLabelText('Model for row 2')).value).toBe('some-open-model');
   });
+
+  it('warns on an unlisted OpenRouter row and chips a listed one', async () => {
+    stubPage(
+      setupBody({
+        keys: [
+          {
+            keyId: 'key_a',
+            provider: 'openrouter',
+            label: 'Spare key',
+            costClass: 'free',
+            enabled: true,
+            readable: true,
+          },
+          {
+            keyId: 'key_b',
+            provider: 'openrouter',
+            label: 'Other key',
+            costClass: 'free',
+            enabled: true,
+            readable: true,
+          },
+        ],
+        chain: [
+          {
+            position: 0,
+            keyId: 'key_a',
+            keyLabel: 'Spare key',
+            provider: 'openrouter',
+            model: 'gone-model',
+            status: 'ready',
+            listing: { listed: false, image: false, file: false, tools: false, reasoning: false },
+          },
+          {
+            position: 1,
+            keyId: 'key_b',
+            keyLabel: 'Other key',
+            provider: 'openrouter',
+            model: 'live-model',
+            status: 'ready',
+            listing: { listed: true, image: true, file: false, tools: true, reasoning: false },
+          },
+        ],
+      }),
+    );
+    renderWithSession(<ProvidersPage />);
+    const section = (await screen.findByRole('heading', { name: 'Model order' })).closest(
+      'section',
+    );
+    if (!(section instanceof HTMLElement)) throw new Error('no Model order section');
+    const inSection = within(section);
+    expect(inSection.getByText(/OpenRouter no longer lists this model/)).toBeTruthy();
+    expect(inSection.getByText('Reads images')).toBeTruthy();
+  });
 });
 
 describe('ProvidersPage GitHub token', () => {

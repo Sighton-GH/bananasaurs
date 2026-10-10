@@ -119,6 +119,7 @@ export const registerAssistantProviderRoutes = (
       const reset = resetsAt(entry.keyId);
       const status = reset !== undefined ? 'allowance-used' : (entry.skip ?? 'ready');
       const usage = configured.modelUsage?.(entry);
+      const listing = configured.modelListing?.(entry);
       return {
         position,
         keyId: entry.keyId,
@@ -130,6 +131,7 @@ export const registerAssistantProviderRoutes = (
         rpdLimit: entry.rpdLimit,
         ...(reset === undefined ? {} : { allowanceResetsAt: reset }),
         ...(usage === undefined ? {} : { usage }),
+        ...(listing === undefined ? {} : { listing }),
       };
     });
     const providers = PROVIDERS.map((provider) => ({

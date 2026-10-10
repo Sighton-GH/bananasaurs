@@ -279,6 +279,12 @@ function ModelOrderSection({
 
   return (
     <Card title="Model order">
+      <p className="flex flex-wrap items-center gap-1 text-xs text-ink-muted">
+        Model capabilities
+        <HelpTip label="Model capabilities">
+          Read from OpenRouter&apos;s model list, refreshed hourly.
+        </HelpTip>
+      </p>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-muted">
           No models yet. Add a key below, then add a row here to choose what answers first.
@@ -425,6 +431,20 @@ function ModelOrderSection({
                   )}
                   {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
                 </div>
+                {saved?.listing?.listed === false && (
+                  <p role="alert" className="text-sm text-danger">
+                    OpenRouter no longer lists this model; requests to it will fail. Pick another
+                    model.
+                  </p>
+                )}
+                {saved?.listing?.listed !== false && saved?.listing !== undefined && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {saved.listing.image && <Badge>Reads images</Badge>}
+                    {saved.listing.file && <Badge>Reads PDFs</Badge>}
+                    {saved.listing.tools && <Badge>Uses tools</Badge>}
+                    {saved.listing.reasoning && <Badge>Thinks</Badge>}
+                  </div>
+                )}
                 {saved?.usage !== undefined && (
                   <p className="text-xs text-ink-muted">
                     RPM {saved.usage.lastMinute}
