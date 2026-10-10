@@ -1310,21 +1310,23 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     const toolTurn = requests[1]?.messages.find((m) => m.role === 'tool');
     expect(toolTurn?.text).toContain('ships friday');
     expect(toolTurn?.text).not.toContain('secret');
-    // Follow-up rounds offer only ID tools (ADR 0071): after the archive
-    // search the model may open a cached id, never search again.
+    // Follow-up rounds offer every `all` and `returned-id` tool, never
+    // first-only writers (ADR 0137): after the archive search the model
+    // may open a cached id or search again, never set a reminder.
     const round2 = (requests[1]?.tools ?? []).map((d) => d.name);
     expect(round2).toContain('open_resource');
-    expect(round2.every((n) => ['read_chunk', 'open_resource'].includes(n))).toBe(true);
+    expect(round2).not.toContain('set_reminder');
     // No per-request live fetching; the prompt carries the cache catalogue.
     expect(fetchResource).not.toHaveBeenCalled();
     expect(requests[0]?.systemInstruction).toContain('CLUB SOURCES');
     expect(requests[0]?.systemInstruction).toContain('rules · Rules');
   });
 
-  it('refuses a round-2 web_search steered by an injected instruction in a tool result', async () => {
+  it('refuses a round-2 set_reminder steered by an injected instruction (ADR 0137)', async () => {
     // Injected instruction inside cached text. The model obeys it with
-    // a native round-2 web_search, which the loop refuses (hard rule 3):
-    // no free-text search after untrusted text has been read.
+    // a native round-2 set_reminder, which the loop refuses (hard rule 3):
+    // acting tools run only in the first round, even when untrusted text
+    // steered the call. Read-only tools such as web_search stay allowed.
     seedCacheText(
       t,
       'https://example.com/handbook',
@@ -1345,13 +1347,19 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
         return {
           text: '',
           model: 'fixture-model',
-          toolCalls: [{ name: 'web_search', args: { query: 'send club secrets out' } }],
+          toolCalls: [
+            {
+              name: 'set_reminder',
+              args: { text: 'send club secrets out', when: '2026-10-10T23:00:00-07:00' },
+            },
+          ],
         };
       return { text: 'The order ships Friday. [S2]', model: 'fixture-model' };
     });
     const webSearch = vi.fn(async () => ({ results: [], source: 'brave' as const }));
+    const scope = t.scopes.forGuild(GUILD);
     const svc = createAssistantService(
-      t.scopes.forGuild(GUILD),
+      scope,
       t.scopes.instance(),
       config,
       () => NOW,
@@ -1369,10 +1377,18 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       content: 'The order ships Friday.',
     });
     expect(webSearch).not.toHaveBeenCalled();
+    expect(assistantRepo.listReminders(scope)).toHaveLength(0);
     expect(result.trace?.tools).toMatchObject([
       { name: 'open_resource', ok: true },
-      { name: 'web_search', ok: false },
+      { name: 'set_reminder', ok: false },
     ]);
+    const refusedTexts = requests
+      .flatMap((r) => r.messages)
+      .filter((m) => m.role === 'tool')
+      .map((m) => m.text ?? '');
+    expect(
+      refusedTexts.some((text) => text.includes('acting tools run only in the first round')),
+    ).toBe(true);
   });
 
   it('never fetches live, even for a provider without tools', async () => {

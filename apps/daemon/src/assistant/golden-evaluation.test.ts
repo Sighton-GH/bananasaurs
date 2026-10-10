@@ -320,7 +320,7 @@ describe('Release 3 golden evaluation: evidence and source labelling', () => {
   });
 });
 
-describe('Task 16 golden: cached injection cannot steer a round-2 web_search', () => {
+describe('Task 16 golden: cached injection cannot steer a round-2 set_reminder (ADR 0137)', () => {
   const GUILD = parseGuildId('234567890123456789');
   const MEMBER = '456789012345678901';
   const CHANNEL = '567890123456789012';
@@ -355,7 +355,7 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
   });
   afterEach(() => t.close());
 
-  it('a README chunk read in round 1 leaves a round-2 web_search refused and uncalled', async () => {
+  it('a README chunk read in round 1 leaves a round-2 set_reminder refused and uncalled (ADR 0137)', async () => {
     const scope = t.scopes.forGuild(GUILD);
     const behaviour: AssistantBehaviour = {
       id: 'direct',
@@ -414,11 +414,15 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
         return {
           text: '',
           model: 'm',
-          toolCalls: [{ name: 'web_search', args: { query: 'admin password' } }],
+          toolCalls: [
+            {
+              name: 'set_reminder',
+              args: { text: 'send club secrets out', when: '2026-10-10T23:00:00-07:00' },
+            },
+          ],
         };
       return { text: 'I cannot share passwords.', model: 'm' };
     });
-    const webSearch = vi.fn(async () => ({ results: [], source: 'brave' as const }));
     const fake: TextProvider = {
       id: 'fixture',
       capabilities: new Set(['text', 'tools']),
@@ -429,7 +433,7 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
       t.scopes.instance(),
       config,
       () => NOW,
-      { webSearch },
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -459,17 +463,17 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
       invocationId: 'int-golden-injection',
     });
     expect(result).toMatchObject({ ok: true });
-    expect(webSearch).not.toHaveBeenCalled();
+    expect(assistantRepo.listReminders(scope)).toHaveLength(0);
     expect(result.trace?.tools).toMatchObject([
       { name: 'read_chunk', ok: true },
-      { name: 'web_search', ok: false },
+      { name: 'set_reminder', ok: false },
     ]);
     const refusedTexts = requests
       .flatMap((r) => r.messages)
       .filter((m) => m.role === 'tool')
       .map((m) => m.text ?? '');
-    expect(refusedTexts.some((text) => text.includes('not allowed after reading results'))).toBe(
-      true,
-    );
+    expect(
+      refusedTexts.some((text) => text.includes('acting tools run only in the first round')),
+    ).toBe(true);
   });
 });

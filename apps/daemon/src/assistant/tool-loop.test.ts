@@ -144,7 +144,9 @@ describe('later-round policy (ADR 0137)', () => {
       toolAnswer([{ name: 'web_search', args: { query: 'TRIUMF tour grade 9' } }]),
       textAnswer('Here it is.'),
     ]);
-    const run = vi.fn(async (call: ToolCall) => okResult(call.name, call.name === 'search_sources' ? 'No passages found.' : 'tour info'));
+    const run = vi.fn(async (call: ToolCall) =>
+      okResult(call.name, call.name === 'search_sources' ? 'No passages found.' : 'tour info'),
+    );
     const result = await runToolLoop(baseInput([entry({ provider })], { tools: allTools(run) }));
     expect(result.toolCalls).toMatchObject([
       { round: 1, name: 'search_sources', ok: true },
@@ -155,14 +157,23 @@ describe('later-round policy (ADR 0137)', () => {
   it('refuses set_reminder in round 2 with an actionable message', async () => {
     const { provider, calls } = scripted([
       toolAnswer([{ name: 'current_time', args: {} }]),
-      toolAnswer([{ name: 'set_reminder', args: { text: 'sleep', when: '2026-10-10T23:00:00-07:00' } }]),
+      toolAnswer([
+        { name: 'set_reminder', args: { text: 'sleep', when: '2026-10-10T23:00:00-07:00' } },
+      ]),
       textAnswer('Want me to set it?'),
     ]);
     const run = vi.fn(async (call: ToolCall) => okResult(call.name));
     const result = await runToolLoop(baseInput([entry({ provider })], { tools: allTools(run) }));
     expect(run).toHaveBeenCalledTimes(1);
-    expect(result.toolCalls?.[1]).toMatchObject({ round: 2, name: 'set_reminder', ok: false, refused: 'acting tools run only in the first round' });
-    const toolTexts = (calls[2]?.messages ?? []).filter((m) => m.role === 'tool').map((m) => m.text);
+    expect(result.toolCalls?.[1]).toMatchObject({
+      round: 2,
+      name: 'set_reminder',
+      ok: false,
+      refused: 'acting tools run only in the first round',
+    });
+    const toolTexts = (calls[2]?.messages ?? [])
+      .filter((m) => m.role === 'tool')
+      .map((m) => m.text);
     expect(toolTexts.at(-1)).toContain('Ask the member to confirm');
   });
 
@@ -174,16 +185,34 @@ describe('later-round policy (ADR 0137)', () => {
         textAnswer('Done.'),
       ]);
       const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> =>
-        call.name === 'my_reminders' ? { ...okResult(call.name, 'rem_1 · …'), handles: ['rem_1'] } : okResult(call.name));
+        call.name === 'my_reminders'
+          ? { ...okResult(call.name, 'rem_1 · …'), handles: ['rem_1'] }
+          : okResult(call.name),
+      );
       return runToolLoop(baseInput([entry({ provider })], { tools: allTools(run) }));
     };
-    expect((await runWith('rem_1')).toolCalls?.[1]).toMatchObject({ round: 2, name: 'cancel_reminder', ok: true });
-    expect((await runWith('rem_invented')).toolCalls?.[1]).toMatchObject({ round: 2, name: 'cancel_reminder', refused: 'unknown id' });
+    expect((await runWith('rem_1')).toolCalls?.[1]).toMatchObject({
+      round: 2,
+      name: 'cancel_reminder',
+      ok: true,
+    });
+    expect((await runWith('rem_invented')).toolCalls?.[1]).toMatchObject({
+      round: 2,
+      name: 'cancel_reminder',
+      refused: 'unknown id',
+    });
   });
 
   it('offers read-only and returned-id tools in later rounds, never first-only writers', () => {
     const later = laterRoundDeclarations(
-      ['web_search', 'search_sources', 'set_reminder', 'cancel_reminder', 'read_chunk', 'propose_memory'].map(decl),
+      [
+        'web_search',
+        'search_sources',
+        'set_reminder',
+        'cancel_reminder',
+        'read_chunk',
+        'propose_memory',
+      ].map(decl),
     ).map((d) => d.name);
     expect(later).toEqual(['web_search', 'search_sources', 'cancel_reminder', 'read_chunk']);
   });
@@ -374,7 +403,7 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
   });
 
   it('round 2 calling search_sources is allowed by the catalogue policy', async () => {
-    const { provider, calls } = scripted([
+    const { provider } = scripted([
       toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
       toolAnswer([{ name: 'search_sources', args: { query: 'y' } }]),
       textAnswer('Answered anyway.'),
@@ -389,7 +418,7 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
     ]);
   });
 
-  it('round 2 calling refresh_source is refused while search_sources remains allowed', async () => {
+  it('round 2 calling refresh_source and search_sources both run in round 2 (ADR 0137)', async () => {
     const { provider } = scripted([
       toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
       toolAnswer([
@@ -403,7 +432,7 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
     expect(run).toHaveBeenCalledTimes(3);
     expect(result.toolCalls).toMatchObject([
       { round: 1, name: 'search_sources', ok: true },
-      { round: 2, name: 'refresh_source', ok: false, refused: 'acting tools run only in the first round' },
+      { round: 2, name: 'refresh_source', ok: true },
       { round: 2, name: 'search_sources', ok: true },
     ]);
   });
