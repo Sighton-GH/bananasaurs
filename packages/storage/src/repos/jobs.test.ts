@@ -449,6 +449,85 @@ describe('oldestDueAt', () => {
   });
 });
 
+describe('claimNext with ordering keys (ADR 0135)', () => {
+  it('(a) enqueue with orderingKey stores it, and claimNext returns it', () => {
+    put(a, { dedupeKey: 'keyed', orderingKey: 'chan:C1' });
+    expect(findJob(a, 1)?.orderingKey).toBe('chan:C1');
+    expect(claimNext(a, 1000)?.orderingKey).toBe('chan:C1');
+  });
+
+  it('(a) a job enqueued without an ordering key reads back null', () => {
+    put(a, { dedupeKey: 'plain' });
+    expect(findJob(a, 1)?.orderingKey).toBeNull();
+    expect(claimNext(a, 1000)?.orderingKey).toBeNull();
+  });
+
+  it('(b) with no filter, claims oldest-first ignoring keys', () => {
+    put(a, { dedupeKey: 'later', runAfter: 900, orderingKey: 'chan:A' });
+    put(a, { dedupeKey: 'earlier', runAfter: 100, orderingKey: 'chan:B' });
+    expect(claimNext(a, 1000)?.dedupeKey).toBe('earlier');
+  });
+
+  it('(c) kinds restricts the claim', () => {
+    put(a, { dedupeKey: 'other', kind: 'other_kind' });
+    put(a, { dedupeKey: 'wanted', kind: 'wanted_kind' });
+    expect(claimNext(a, 1000, { kinds: ['wanted_kind'] })?.dedupeKey).toBe('wanted');
+  });
+
+  it('(c) excludeKinds excludes', () => {
+    put(a, { dedupeKey: 'first', kind: 'excluded_kind' });
+    put(a, { dedupeKey: 'second', kind: 'kept_kind' });
+    expect(claimNext(a, 1000, { excludeKinds: ['excluded_kind'] })?.dedupeKey).toBe(
+      'second',
+    );
+  });
+
+  it('(d) a busy key is skipped and the next different-key row is claimed', () => {
+    put(a, { dedupeKey: 'busy', runAfter: 100, orderingKey: 'chan:A' });
+    put(a, { dedupeKey: 'free', runAfter: 200, orderingKey: 'chan:B' });
+    expect(
+      claimNext(a, 1000, { busyOrderingKeys: ['chan:A'] })?.dedupeKey,
+    ).toBe('free');
+  });
+
+  it('(e) the oldest row keyless with laneBusy true gives undefined, even with a newer keyed row due', () => {
+    put(a, { dedupeKey: 'exclusive', runAfter: 100 });
+    put(a, { dedupeKey: 'keyed', runAfter: 200, orderingKey: 'chan:A' });
+    expect(claimNext(a, 1000, { laneBusy: true })).toBeUndefined();
+    // Nothing was claimed: both rows are still queued.
+    expect(countByState(a)).toEqual({ queued: 2 });
+  });
+
+  it('(f) the oldest row keyless with laneBusy false or absent is claimed', () => {
+    put(a, { dedupeKey: 'exclusive', runAfter: 100 });
+    put(a, { dedupeKey: 'keyed', runAfter: 200, orderingKey: 'chan:A' });
+    expect(claimNext(a, 1000, { laneBusy: false })?.dedupeKey).toBe('exclusive');
+  });
+
+  it('(f) laneBusy absent claims the keyless oldest row', () => {
+    put(a, { dedupeKey: 'exclusive', runAfter: 100 });
+    put(a, { dedupeKey: 'keyed', runAfter: 200, orderingKey: 'chan:A' });
+    expect(claimNext(a, 1000, {})?.dedupeKey).toBe('exclusive');
+  });
+
+  it('(g) keyed rows ahead are claimed first; the keyless row only when oldest', () => {
+    put(a, { dedupeKey: 'keyed', runAfter: 100, orderingKey: 'chan:A' });
+    put(a, { dedupeKey: 'exclusive', runAfter: 200 });
+    // The keyed row is oldest, so it is claimed first.
+    expect(claimNext(a, 1000, {})?.dedupeKey).toBe('keyed');
+    // Now the keyless row is oldest: it waits while the lane is busy.
+    expect(claimNext(a, 1000, { laneBusy: true })).toBeUndefined();
+    // And is claimed once the lane is empty.
+    expect(claimNext(a, 1000, { laneBusy: false })?.dedupeKey).toBe('exclusive');
+  });
+
+  it('(h) another guild rows are never claimed, with a filter', () => {
+    put(b, { dedupeKey: 'theirs', orderingKey: 'chan:A' });
+    expect(claimNext(a, 1000, { kinds: ['reconcile'] })).toBeUndefined();
+    expect(countByState(b)).toEqual({ queued: 1 });
+  });
+});
+
 describe('listJobs', () => {
   it('returns the newest jobs first, so a tail is the default view', () => {
     put(a, { dedupeKey: 'k1', now: 100 });

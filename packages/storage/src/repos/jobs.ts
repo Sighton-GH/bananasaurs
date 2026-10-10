@@ -1,4 +1,5 @@
-import { and, asc, count, desc, eq, inArray, lt, lte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, lt, lte, notInArray } from 'drizzle-orm';
+import type { ClaimFilter } from '@bananasaurs/core';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { jobs } from '../schema.js';
@@ -25,6 +26,8 @@ export interface JobRow {
   maxAttempts: number;
   cursor: string | null;
   lastError: string | null;
+  /** ADR 0135: the assistant lane's per-channel ordering key; null = no key. */
+  orderingKey: string | null;
 }
 
 const columns = {
@@ -38,6 +41,7 @@ const columns = {
   maxAttempts: jobs.maxAttempts,
   cursor: jobs.cursor,
   lastError: jobs.lastError,
+  orderingKey: jobs.orderingKey,
 };
 
 export interface EnqueueInput {
@@ -47,6 +51,8 @@ export interface EnqueueInput {
   dedupeKey: string;
   runAfter?: number;
   maxAttempts?: number;
+  /** ADR 0135: the lane ordering key, written to `jobs.ordering_key`, null when absent. */
+  orderingKey?: string;
   /**
    * Progress the new row starts already knowing, for a job that enqueues its
    * own continuation (the purge job, ADR 0037 — `packages/core/src/mod/
@@ -103,6 +109,7 @@ export const enqueue = (scope: GuildScope, input: EnqueueInput): EnqueueResult =
         runAfter: input.runAfter ?? input.now,
         maxAttempts: input.maxAttempts ?? 5,
         cursor: input.cursor ?? null,
+        orderingKey: input.orderingKey ?? null,
         createdAt: input.now,
         updatedAt: input.now,
       })
@@ -125,25 +132,94 @@ export const enqueue = (scope: GuildScope, input: EnqueueInput): EnqueueResult =
  * Select-then-update inside one `write()`. better-sqlite3 is synchronous and
  * `write()` forbids an await, so nothing can interleave between the two
  * statements.
+ *
+ * With no filter, this is exactly the old oldest-first claim. With a filter
+ * (ADR 0135):
+ * 1. Find `oldest`: the first due `queued` row in this guild matching `kinds`
+ *    and `excludeKinds`, ordered by `run_after, job_id`. None means `undefined`.
+ * 2. When `oldest` has no ordering key, claim it only when `laneBusy` is not
+ *    true — a keyless job waits for the lane to empty, and nothing newer jumps
+ *    it, so it cannot starve.
+ * 3. Otherwise claim the first due `queued` row matching `kinds` and
+ *    `excludeKinds` whose key is not busy, ordered by `run_after, job_id`.
  */
-export const claimNext = (scope: GuildScope, now: number): JobRow | undefined =>
+export const claimNext = (
+  scope: GuildScope,
+  now: number,
+  filter?: ClaimFilter,
+): JobRow | undefined =>
   write(scope, ({ db }) => {
-    const next = db
+    if (filter === undefined) {
+      const next = db
+        .select(columns)
+        .from(jobs)
+        .where(scope.only(jobs, eq(jobs.state, 'queued'), lte(jobs.runAfter, now)))
+        .orderBy(asc(jobs.runAfter), asc(jobs.jobId))
+        .limit(1)
+        .get();
+
+      if (!next) return undefined;
+
+      db.update(jobs)
+        .set({ state: 'running', attempts: next.attempts + 1, updatedAt: now })
+        .where(scope.only(jobs, eq(jobs.jobId, next.jobId)))
+        .run();
+
+      return { ...next, state: 'running', attempts: next.attempts + 1 };
+    }
+
+    const claim = (row: JobRow): JobRow => {
+      db.update(jobs)
+        .set({ state: 'running', attempts: row.attempts + 1, updatedAt: now })
+        .where(scope.only(jobs, eq(jobs.jobId, row.jobId)))
+        .run();
+      return { ...row, state: 'running', attempts: row.attempts + 1 };
+    };
+
+    const kindConditions = [
+      ...(filter.kinds === undefined ? [] : [inArray(jobs.kind, [...filter.kinds])]),
+      ...(filter.excludeKinds === undefined
+        ? []
+        : [notInArray(jobs.kind, [...filter.excludeKinds])]),
+    ];
+
+    const oldest = db
       .select(columns)
       .from(jobs)
-      .where(scope.only(jobs, eq(jobs.state, 'queued'), lte(jobs.runAfter, now)))
+      .where(
+        scope.only(jobs, eq(jobs.state, 'queued'), lte(jobs.runAfter, now), ...kindConditions),
+      )
       .orderBy(asc(jobs.runAfter), asc(jobs.jobId))
       .limit(1)
       .get();
 
-    if (!next) return undefined;
+    if (!oldest) return undefined;
 
-    db.update(jobs)
-      .set({ state: 'running', attempts: next.attempts + 1, updatedAt: now })
-      .where(scope.only(jobs, eq(jobs.jobId, next.jobId)))
-      .run();
+    if (oldest.orderingKey === null) {
+      if (filter.laneBusy === true) return undefined;
+      return claim(oldest);
+    }
 
-    return { ...next, state: 'running', attempts: next.attempts + 1 };
+    const busy = filter.busyOrderingKeys ?? [];
+    const keyed = db
+      .select(columns)
+      .from(jobs)
+      .where(
+        scope.only(
+          jobs,
+          eq(jobs.state, 'queued'),
+          lte(jobs.runAfter, now),
+          ...kindConditions,
+          isNotNull(jobs.orderingKey),
+          ...(busy.length === 0 ? [] : [notInArray(jobs.orderingKey, [...busy])]),
+        ),
+      )
+      .orderBy(asc(jobs.runAfter), asc(jobs.jobId))
+      .limit(1)
+      .get();
+
+    if (!keyed) return undefined;
+    return claim(keyed);
   });
 
 export const completeJob = (scope: GuildScope, jobId: number, now: number): void =>

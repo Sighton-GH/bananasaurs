@@ -458,6 +458,8 @@ export const jobs = sqliteTable(
     maxAttempts: integer('max_attempts').notNull().default(5),
     cursor: text('cursor'),
     lastError: text('last_error'),
+    // ADR 0135: the assistant lane's per-channel ordering key; null = no key (exclusive in a keyed lane).
+    orderingKey: text('ordering_key'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },

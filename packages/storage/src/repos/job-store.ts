@@ -1,4 +1,4 @@
-import type { ClaimedJob, FailOptions, JobStore } from '@bananasaurs/core';
+import type { ClaimedJob, ClaimFilter, FailOptions, JobStore } from '@bananasaurs/core';
 import type { GuildScope } from '../scope.js';
 import {
   claimNext,
@@ -25,11 +25,12 @@ const toClaimedJob = (row: JobRow): ClaimedJob => ({
   attempts: row.attempts,
   maxAttempts: row.maxAttempts,
   cursor: row.cursor,
+  orderingKey: row.orderingKey,
 });
 
 export const jobStoreFor = (scope: GuildScope): JobStore => ({
-  claimNext(nowMs) {
-    const row = claimNext(scope, nowMs);
+  claimNext(nowMs, filter?: ClaimFilter) {
+    const row = claimNext(scope, nowMs, filter);
     return row ? toClaimedJob(row) : undefined;
   },
   complete(jobId, nowMs) {
