@@ -242,6 +242,53 @@ const createHarness = (immediate: boolean): Harness => {
 const jobStates = (h: Harness): string[] =>
   jobRepo.listJobs(h.scope, {}).map((job) => job.state);
 
+/**
+ * Ticks the scheduler and hand-resolves every pending `invoke` until no job
+ * is left queued or running, then waits for in-flight work. No sleeps.
+ */
+const driveSchedulerUntilDone = async (h: Harness): Promise<void> => {
+  for (let round = 0; round < 100; round += 1) {
+    h.scheduler.tick();
+    await flush();
+    h.resolveAllGates();
+    await flush();
+    if (
+      jobRepo.listJobs(h.scope, {}).every((job) => job.state === 'done' || job.state === 'failed')
+    ) {
+      break;
+    }
+  }
+  await h.scheduler.idle();
+};
+
+interface ConversationSnapshot {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly turns: readonly { role: string; authorId: string | undefined; text: string }[];
+  readonly links: readonly {
+    otherConversationId: string;
+    otherTitle: string;
+    kind: string;
+    direction: string;
+    at: number;
+  }[];
+}
+
+/** The number of conversations, each conversation's ordered turns, and the link rows. */
+const snapshotConversations = (scope: GuildScope): ConversationSnapshot[] =>
+  conversationRepo
+    .listConversations(scope, { sort: 'started', order: 'asc', limit: 100 })
+    .map((conversation) => ({
+      conversationId: conversation.conversationId,
+      channelId: conversation.channelId,
+      turns: conversationRepo.listTurns(scope, conversation.conversationId).map((turn) => ({
+        role: turn.role,
+        authorId: turn.authorId,
+        text: turn.text,
+      })),
+      links: conversationRepo.listLinks(scope, conversation.conversationId),
+    }));
+
 describe('assistant lanes concurrency (ADR 0135 Task 4)', () => {
   it('answers in different channels run at the same time', async () => {
     const h = createHarness(false);
@@ -386,5 +433,62 @@ describe('assistant lanes concurrency (ADR 0135 Task 4)', () => {
     } finally {
       h.close();
     }
+  });
+
+  it('one channel under the scheduler produces the same conversations as serial execution', async () => {
+    const defs: MentionDef[] = [
+      {
+        channelId: CHANNEL_A,
+        userId: U1,
+        invocationId: 'inv-s1',
+        messageId: '810000000000000131',
+        question: 'first question from Ama',
+        authorName: 'Ama',
+      },
+      {
+        channelId: CHANNEL_A,
+        userId: U1,
+        invocationId: 'inv-s2',
+        messageId: '810000000000000132',
+        question: 'second question from Ama',
+        authorName: 'Ama',
+      },
+      {
+        channelId: CHANNEL_A,
+        userId: U2,
+        invocationId: 'inv-s3',
+        messageId: '810000000000000133',
+        question: 'question from Bo',
+        authorName: 'Bo',
+      },
+    ];
+
+    // (i) Serial: enqueue all three, then drain.
+    const serial = createHarness(true);
+    let serialSnap: ConversationSnapshot[];
+    try {
+      for (const def of defs) serial.enqueueMention(def);
+      await serial.worker.drain();
+      expect(jobStates(serial)).toEqual(['done', 'done', 'done']);
+      serialSnap = snapshotConversations(serial.scope);
+    } finally {
+      serial.close();
+    }
+
+    // (ii) Scheduler: enqueue all three, then tick with hand resolution.
+    const parallel = createHarness(false);
+    let parallelSnap: ConversationSnapshot[];
+    try {
+      for (const def of defs) parallel.enqueueMention(def);
+      await driveSchedulerUntilDone(parallel);
+      expect(jobStates(parallel)).toEqual(['done', 'done', 'done']);
+      parallelSnap = snapshotConversations(parallel.scope);
+    } finally {
+      parallel.close();
+    }
+
+    expect(serialSnap.length).toBeGreaterThan(0);
+    expect(serialSnap.flatMap((conversation) => conversation.turns)).toHaveLength(6);
+    expect(parallelSnap).toEqual(serialSnap);
   });
 });
