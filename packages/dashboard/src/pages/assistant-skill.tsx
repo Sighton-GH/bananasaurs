@@ -52,6 +52,13 @@ function limitsText(prop: SkillTool['parameters']['properties'][string]): string
   return parts.length === 0 ? '—' : parts.join(', ');
 }
 
+/** Plain words for a tool's round scope. */
+const ROUNDS_LABEL: Record<SkillTool['rounds'], string> = {
+  first: 'First round only',
+  all: 'Any round',
+  'returned-id': 'Round 1, or later with a returned id',
+};
+
 function ToolCard({ tool }: { readonly tool: SkillTool }) {
   const params = Object.entries(tool.parameters.properties);
   const required = new Set(tool.parameters.required ?? []);
@@ -59,7 +66,7 @@ function ToolCard({ tool }: { readonly tool: SkillTool }) {
     <li className="rounded-md border border-line bg-canvas p-3">
       <div className="flex items-start justify-between gap-3">
         <p className="font-mono text-sm font-medium">{tool.name}</p>
-        <Badge tone="neutral">{tool.rounds === 'first' ? 'First round only' : 'Any round'}</Badge>
+        <Badge tone="neutral">{ROUNDS_LABEL[tool.rounds]}</Badge>
       </div>
       <p className="mt-1 text-xs text-ink-muted">{tool.description}</p>
       {params.length === 0 ? (

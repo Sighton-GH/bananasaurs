@@ -183,6 +183,22 @@ describe('AssistantSkillPage', () => {
     expect(screen.queryByText('Runs without asking')).toBeNull();
   });
 
+  it('labels a returned-id tool as round 1, or later with a returned id', async () => {
+    renderPage({
+      ...SKILL_DETAIL,
+      tools: [
+        {
+          name: 'read_chunk',
+          description: 'Read one chunk of a reviewed resource.',
+          parameters: { type: 'object', properties: {} },
+          rounds: 'returned-id',
+          outputLimit: 'Up to 6,000 characters of results.',
+        },
+      ],
+    });
+    expect(await screen.findByText('Round 1, or later with a returned id')).toBeTruthy();
+  });
+
   it('renders the current scope mode selected, with the default note', async () => {
     renderPage();
     const who = (await screen.findByRole('heading', { name: 'Who can use this' })).closest(
