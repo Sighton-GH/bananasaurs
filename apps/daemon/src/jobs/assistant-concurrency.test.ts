@@ -179,7 +179,10 @@ const createHarness = (immediate: boolean): Harness => {
     guildId: GUILD_ID,
     service: svc,
     openToken: () => undefined,
-    respond: async () => nextRef(CHANNEL_A),
+    // Mention payloads carry no interaction, so the handler never calls respond here; throw if that changes.
+    respond: async () => {
+      throw new Error('respond is for slash interactions, not mention payloads');
+    },
     send: async (channelId: string, message: OutgoingMessage) => {
       sent.push({ channelId, message });
       return nextRef(channelId);
