@@ -1,5 +1,5 @@
 import { Writable } from 'node:stream';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import { z } from 'zod';
 import { JOB_KINDS } from './kinds.js';
@@ -324,6 +324,35 @@ describe('LaneScheduler', () => {
     // retries it and starts the new job too.
     expect(scheduler.tick()).toBe(2);
     expect(h.started).toContain('next');
+  });
+
+  it('(k) a rejected execute logs, releases the lane, and the lane keeps working', async () => {
+    const h = setup(gates);
+    s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'first' });
+    s.queue(JOB_KINDS.assistantInvoke, 'chan:B', { token: 'second' });
+    const { logger, lines } = capturingLogger();
+    const worker = new JobWorker({
+      store: s.store,
+      handlers: [h.immediate(JOB_KINDS.assistantInvoke)],
+      logger,
+      now: () => 1000,
+    });
+    const scheduler = new LaneScheduler({
+      worker,
+      lanes: [{ lane: 'assistant', concurrency: () => 4 }],
+      logger,
+    });
+    vi.spyOn(worker, 'execute').mockRejectedValueOnce(new Error('boom'));
+    expect(scheduler.tick()).toBe(2);
+    await scheduler.idle();
+    const logged = lines.join('');
+    expect(logged).toContain('job execution threw');
+    expect(logged).toContain('"jobId":1');
+    expect(scheduler.runningCount('assistant')).toBe(0);
+    s.queue(JOB_KINDS.assistantInvoke, 'chan:C', { token: 'third' });
+    expect(scheduler.tick()).toBe(1);
+    await scheduler.idle();
+    expect(h.started).toContain('third');
   });
 
   it('(i) the concurrency function is re-read every tick', () => {
