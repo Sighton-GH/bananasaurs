@@ -1781,7 +1781,7 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
     expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
-  it('returns the eight sections in order with sizes, and never member memories', async () => {
+  it('returns the capability section in order with sizes, and never member memories (ADR 0136)', async () => {
     grant('config.read');
     grant('config.write');
     const { cookie, csrf } = await signIn();
@@ -1816,7 +1816,7 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
       'evidence-rule',
       'server-card',
       'resources',
-      'skills',
+      'capabilities',
     ]);
     for (const section of parsed.sections) {
       expect(section.chars).toBe(section.text.length);

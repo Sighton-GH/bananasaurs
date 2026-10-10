@@ -1345,7 +1345,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(userMessage?.text).toContain('[quoted message: not kept in the trace]');
   });
 
-  it('returns trace detail with compiled sections plus a history section when history was sent', async () => {
+  it('returns trace detail with capability sections plus history when history was sent (ADR 0136)', async () => {
     const { service } = capturing();
     const history = [{ role: 'user' as const, text: 'first question' }];
     const result = await service.invoke(ask({ history }));
@@ -1357,7 +1357,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
         'safety-suffix',
         'server-card',
         'resources',
-        'skills',
+        'capabilities',
         'history',
       ]),
     );
@@ -2647,7 +2647,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(generateText).toHaveBeenCalledTimes(1);
   });
 
-  it('a behaviour whose preference lacks reminders still offers set_reminder to an owner (ADR 0087 regression)', async () => {
+  it('a behaviour whose preference lacks reminders shows the offered capability (ADR 0136)', async () => {
     const declared: string[][] = [];
     const systems: string[] = [];
     const provider: TextProvider = {
@@ -2672,10 +2672,12 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     );
     expect(result.ok).toBe(true);
     expect(declared[0]).toContain('set_reminder');
-    expect(systems[0]).toContain('reminders:');
+    expect(systems[0]).toContain('Reminders and scheduled posts (');
   });
 
-  it('a non-owner denied by owner scope gets a plain NOT AVAILABLE line and no reminder tools', async () => {
+  it.todo('re-enabled in Task 6 (offeredTools wiring): non-owner prompt omits set_reminder');
+
+  it('a non-owner denied by owner scope gets a plain NOT AVAILABLE line (ADR 0136)', async () => {
     const declared: string[][] = [];
     const systems: string[] = [];
     const provider: TextProvider = {
@@ -2697,7 +2699,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
       }),
     );
     expect(result.ok).toBe(true);
-    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER RIGHT NOW');
     expect(systems[0]).toContain('Reminders: owner only');
     for (const names of declared) expect(names).not.toContain('set_reminder');
   });
@@ -2729,7 +2731,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
       }),
     );
     expect(result.ok).toBe(true);
-    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER RIGHT NOW');
     expect(systems[0]).toContain('Reminders: only for certain roles');
     for (const names of declared) expect(names).not.toContain('set_reminder');
   });
@@ -2762,7 +2764,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
       }),
     );
     expect(result.ok).toBe(true);
-    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(systems[0]).toContain('NOT AVAILABLE TO THIS MEMBER RIGHT NOW');
     expect(systems[0]).toContain('Reminders: only for Robotics Leads');
   });
 });
