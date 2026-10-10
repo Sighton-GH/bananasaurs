@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BOUNDARIES_HELPFUL,
   buildSystemPrompt,
   DEFAULT_PERSONALITY,
   DEFAULT_WIZARD_ANSWERS,
   promptWizardAnswers,
+  SOURCES_ORDER_LINES,
   type PromptWizardAnswers,
 } from './prompt-wizard.js';
 
@@ -87,6 +89,37 @@ describe('buildSystemPrompt — old stored answers still parse', () => {
     const prompt = buildSystemPrompt(parsed, CONTEXT);
     expect(prompt).toContain('ROLE');
     expect(prompt.length).toBeLessThanOrEqual(4_000);
+  });
+});
+
+describe('buildSystemPrompt — helpful defaults (ADR 0136)', () => {
+  it('builds a helpful boundary, a FOCUS header, the sources order and the Bananasaurs name (ADR 0136)', () => {
+    const prompt = buildSystemPrompt(
+      {
+        ...minimalAnswers,
+        botName: '',
+        clubName: '',
+        offTopic: 'answer-briefly',
+        preferClubSources: true,
+      },
+      { clubName: 'UHill Physineering Club', behaviourName: 'Default assistant' },
+    );
+    expect(prompt).toContain(
+      'You are Bananasaurs, the assistant in the Discord server of UHill Physineering Club',
+    );
+    expect(prompt).not.toContain('Default assistant');
+    expect(prompt).toContain('FOCUS (where to look first, not a limit)');
+    expect(prompt).not.toContain('WHAT YOU HELP WITH');
+    expect(prompt).toContain(BOUNDARIES_HELPFUL);
+    expect(prompt).not.toContain("say it's outside what you help with");
+    for (const line of SOURCES_ORDER_LINES) expect(prompt).toContain(line);
+  });
+  it('keeps the owner-chosen bot name', () => {
+    const prompt = buildSystemPrompt(
+      { ...minimalAnswers, botName: 'Banana' },
+      { clubName: 'X', behaviourName: 'Default assistant' },
+    );
+    expect(prompt).toContain('You are Banana, the assistant');
   });
 });
 
