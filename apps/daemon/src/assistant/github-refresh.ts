@@ -43,6 +43,7 @@ export interface StoredDoc {
   readonly contentHash: string;
   readonly bytes: number;
   readonly status: 'ok' | 'error';
+  readonly blobSha?: string;
 }
 
 export interface GithubResourceStore {
@@ -243,6 +244,7 @@ export async function refreshGithubOrg(
 interface SelectedFile {
   readonly path: string;
   readonly url: string;
+  readonly sha?: string;
 }
 
 /**
@@ -310,6 +312,7 @@ export async function refreshGithubRepo(
       readonly path: string;
       readonly type: 'blob' | 'tree';
       readonly size?: number;
+      readonly sha?: string;
     }[];
     try {
       entries = (await deps.client.listTree(owner, repo, branch)).entries;
@@ -317,10 +320,17 @@ export async function refreshGithubRepo(
       return fail(scope, current, deps, failDetail(error));
     }
     const include = current.meta?.include;
+    const shaByPath = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.type === 'blob' && entry.sha !== undefined) shaByPath.set(entry.path, entry.sha);
+    }
     files = selectRepoFiles(
       entries,
       include === undefined ? undefined : { include: [...include] },
-    ).map((path) => ({ path, url: rawGitHubUrl(owner, repo, branch, path) }));
+    ).map((path) => {
+      const sha = shaByPath.get(path);
+      return { path, url: rawGitHubUrl(owner, repo, branch, path), ...(sha !== undefined ? { sha } : {}) };
+    });
   } else {
     // Without a token a private repository cannot be read at all (ADR 0083
     // decision 4): turn it off instead of caching its README in the open.
@@ -392,7 +402,28 @@ export async function refreshGithubRepo(
   let firstFileError: string | undefined;
   const wanted = new Set(files.map((f) => f.url));
   for (const file of files) {
+    const wantedSha = file.sha;
     const existing = deps.cache.getDocumentByUrl(scope, file.url);
+    if (wantedSha !== undefined && existing?.status === 'ok' && existing.blobSha === wantedSha) {
+      // The tree says this file's content is unchanged since its last
+      // successful download — no request. The row is still rewritten with
+      // the new fetchedAt (exactly what the notModified branch writes).
+      deps.cache.upsertDocument(scope, {
+        resourceId: current.id,
+        docId: existing.docId,
+        url: file.url,
+        path: existing.path,
+        title: existing.path,
+        ...(existing.etag !== undefined ? { etag: existing.etag } : {}),
+        ...(existing.lastModified !== undefined ? { lastModified: existing.lastModified } : {}),
+        contentHash: existing.contentHash,
+        fetchedAt,
+        bytes: existing.bytes,
+        status: 'ok',
+        blobSha: wantedSha,
+      });
+      continue;
+    }
     const conditional: ResourceConditional = {
       ...(existing?.etag !== undefined ? { etag: existing.etag } : {}),
       ...(existing?.lastModified !== undefined ? { lastModified: existing.lastModified } : {}),
@@ -418,6 +449,7 @@ export async function refreshGithubRepo(
           fetchedAt,
           bytes: existing.bytes,
           status: 'ok',
+          ...(wantedSha !== undefined ? { blobSha: wantedSha } : {}),
         });
       }
       continue;
@@ -442,6 +474,7 @@ export async function refreshGithubRepo(
       fetchedAt,
       bytes,
       status: 'ok',
+      ...(wantedSha !== undefined ? { blobSha: wantedSha } : {}),
     });
     if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash)
       continue;

@@ -42,6 +42,7 @@ export interface UpsertDocumentInput {
   readonly status: 'ok' | 'error';
   readonly error?: string;
   readonly errorCode?: string;
+  readonly blobSha?: string;
 }
 
 export interface ResourceRefreshRepo {

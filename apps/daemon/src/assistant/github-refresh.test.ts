@@ -77,6 +77,8 @@ class FakeClient {
   orgRepos: unknown[] | Error = [];
   repoDetail: unknown = { defaultBranch: 'main', description: null, private: false };
   tree: unknown = { entries: [], truncated: false };
+  /** Overrides the default stable-per-path sha for a tree entry. */
+  readonly shaOverrides = new Map<string, string>();
   fileRaw: unknown = { notModified: false, text: 'private file text', etag: '"v1"' };
   readonly calls = { listOrgRepos: 0, getRepo: 0, listTree: 0, getFileRaw: 0 };
   readonly fileRawCalls: {
@@ -100,7 +102,17 @@ class FakeClient {
   async listTree(_owner: string, _repo: string, _ref: string) {
     this.calls.listTree += 1;
     if (this.tree instanceof Error) throw this.tree;
-    return this.tree as never;
+    const body = this.tree as {
+      entries: readonly { path: string; type: 'blob' | 'tree'; size?: number; sha?: string }[];
+      truncated: boolean;
+    };
+    return {
+      entries: body.entries.map((e) => ({
+        ...e,
+        sha: this.shaOverrides.get(e.path) ?? e.sha ?? `sha:${e.path}`,
+      })),
+      truncated: body.truncated,
+    } as never;
   }
   async getFileRaw(owner: string, repo: string, ref: string, path: string, etag?: string) {
     this.calls.getFileRaw += 1;
@@ -679,6 +691,8 @@ describe('refreshGithubRepo (authenticated)', () => {
     expect(first.cache.chunkCalls).toHaveLength(1);
 
     client.fileRaw = { notModified: true };
+    // The blob sha changed, so the file is fetched again (and answers 304).
+    client.shaOverrides.set('README.md', 'sha:README.md:v2');
     const secondFetcher = new FakeFetcher(() => {
       throw new Error('public fetcher never runs for a private repo');
     });
@@ -794,6 +808,8 @@ describe('refreshGithubRepo (authenticated)', () => {
       ok: true as const,
       notModified: true as const,
     }));
+    // The blob sha changed, so the file is fetched again (and answers 304).
+    client.shaOverrides.set('README.md', 'sha:README.md:v2');
     const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
     const outcome = await refreshGithubRepo(SCOPE, repo(), second.deps);
 
@@ -803,6 +819,201 @@ describe('refreshGithubRepo (authenticated)', () => {
     expect(first.cache.docs.get(docId)?.fetchedAt).toBe(2_000);
     // The conditional request carried the stored etag.
     expect(secondFetcher.calls[0]?.conditional).toMatchObject({ etag: '"v1"' });
+  });
+
+  it('a second refresh with identical shas makes zero file requests', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const fetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const first = deps(client, fetcher, new FakeStore(), new FakeCache(), () => 1_000);
+    first.store.rows.set('gh-acme-widget', repo());
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('ok');
+    expect(fetcher.calls).toHaveLength(2);
+
+    const secondFetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
+    const outcome = await refreshGithubRepo(SCOPE, repo(), second.deps);
+
+    expect(outcome).toBe('not-modified');
+    expect(secondFetcher.calls).toHaveLength(0);
+    expect(client.calls.listTree).toBe(2);
+    for (const doc of second.cache.docs.values()) {
+      expect(doc.status).toBe('ok');
+      expect(doc.fetchedAt).toBe(2_000);
+    }
+  });
+
+  it('fetches only the file whose blob sha changed', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const fetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const first = deps(client, fetcher, new FakeStore(), new FakeCache(), () => 1_000);
+    first.store.rows.set('gh-acme-widget', repo());
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('ok');
+
+    client.shaOverrides.set('docs/guide.md', 'sha:docs/guide.md:v2');
+    const secondFetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
+    await refreshGithubRepo(SCOPE, repo(), second.deps);
+
+    expect(secondFetcher.calls.map((c) => c.url)).toEqual([
+      'https://raw.githubusercontent.com/acme/widget/main/docs/guide.md',
+    ]);
+  });
+
+  it('fetches a new file and deletes the document of a removed file', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const fetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const first = deps(client, fetcher, new FakeStore(), new FakeCache(), () => 1_000);
+    first.store.rows.set('gh-acme-widget', repo());
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('ok');
+    expect(first.cache.docs.size).toBe(2);
+
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/new.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const secondFetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
+    await refreshGithubRepo(SCOPE, repo(), second.deps);
+
+    expect(secondFetcher.calls.map((c) => c.url)).toEqual([
+      'https://raw.githubusercontent.com/acme/widget/main/docs/new.md',
+    ]);
+    const guideUrl = 'https://raw.githubusercontent.com/acme/widget/main/docs/guide.md';
+    expect(second.cache.deleted).toEqual([computeDocId(guideUrl)]);
+    expect([...second.cache.docs.values()].map((doc) => doc.url).sort()).toEqual(
+      [
+        'https://raw.githubusercontent.com/acme/widget/main/README.md',
+        'https://raw.githubusercontent.com/acme/widget/main/docs/new.md',
+      ].sort(),
+    );
+  });
+
+  it('retries a failed file on the next refresh and only that file', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const guideUrl = 'https://raw.githubusercontent.com/acme/widget/main/docs/guide.md';
+    const failing = new FakeFetcher(async (url: string) =>
+      url === guideUrl
+        ? { ok: false as const, code: 'http-status', message: 'GitHub returned HTTP 500.' }
+        : okFile(url, `# text for ${url}`),
+    );
+    const first = deps(client, failing, new FakeStore(), new FakeCache(), () => 1_000);
+    first.store.rows.set('gh-acme-widget', repo());
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('error');
+    expect(first.cache.docs.get(computeDocId(guideUrl))).toBeUndefined();
+
+    const secondFetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
+    expect(await refreshGithubRepo(SCOPE, repo(), second.deps)).toBe('ok');
+
+    expect(secondFetcher.calls.map((c) => c.url)).toEqual([guideUrl]);
+    expect(second.cache.docs.get(computeDocId(guideUrl))?.status).toBe('ok');
+  });
+
+  it('fetches rows with no blobSha once, then skips them on the following refresh', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const store = new FakeStore();
+    const cache = new FakeCache();
+    store.rows.set('gh-acme-widget', repo());
+    // A pre-migration cache: ok rows with etags but no blobSha.
+    for (const path of ['README.md', 'docs/guide.md']) {
+      const url = `https://raw.githubusercontent.com/acme/widget/main/${path}`;
+      cache.docs.set(computeDocId(url), {
+        resourceId: 'gh-acme-widget',
+        docId: computeDocId(url),
+        url,
+        path,
+        title: path,
+        etag: '"v1"',
+        contentHash: 'old-hash',
+        fetchedAt: 500,
+        bytes: 8,
+        status: 'ok',
+      });
+    }
+    const notModified = new FakeFetcher(async () => ({ ok: true as const, notModified: true as const }));
+    const first = deps(client, notModified, store, cache, () => 1_000);
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('not-modified');
+    expect(notModified.calls).toHaveLength(2);
+
+    const secondFetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const second = deps(client, secondFetcher, store, cache, () => 2_000);
+    expect(await refreshGithubRepo(SCOPE, repo(), second.deps)).toBe('not-modified');
+    expect(secondFetcher.calls).toHaveLength(0);
+  });
+
+  it('a private repo makes zero getFileRaw calls on a second refresh with identical shas', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    client.fileRaw = ({ path }: { path: string }) => ({
+      notModified: false,
+      text: `# text for ${path}`,
+      etag: '"v1"',
+    });
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('public fetcher never runs for a private repo');
+    });
+    const first = deps(client, fetcher, new FakeStore(), new FakeCache(), () => 1_000);
+    first.store.rows.set('gh-acme-widget', repo());
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('ok');
+    expect(client.calls.getFileRaw).toBe(2);
+
+    const secondFetcher = new FakeFetcher(() => {
+      throw new Error('public fetcher never runs for a private repo');
+    });
+    const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
+    const outcome = await refreshGithubRepo(SCOPE, repo(), second.deps);
+
+    expect(outcome).toBe('not-modified');
+    expect(client.calls.getFileRaw).toBe(2);
+    for (const doc of second.cache.docs.values()) {
+      expect(doc.status).toBe('ok');
+      expect(doc.fetchedAt).toBe(2_000);
+    }
   });
 });
 
