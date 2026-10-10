@@ -42,15 +42,66 @@ export interface ToolCatalogueEntry {
   readonly name: string;
   readonly description: string;
   readonly parameters: JSONSchema;
-  /** Round 1 may call any allowed read-only tool; rounds 2-4 are narrower (hard rule 3, ADR 0071). */
-  readonly rounds: 'first' | 'all';
+  /**
+   * Which rounds may call this tool. `first` runs only in round 1;
+   * `all` runs in any round; `returned-id` runs in a follow-up round only
+   * (it needs an id an earlier result returned). Hard rule 3, ADR 0071.
+   */
+  readonly rounds: 'first' | 'all' | 'returned-id';
   /** Plain words for the cap the daemon enforces on this tool's result text. */
   readonly outputLimit: string;
   /** Ids of every skill (`CLUB_ASSISTANT_SKILLS`) whose use involves this tool. */
   readonly skills: readonly string[];
   /** The acting skill that must be allowed for the tool to be declared (B2a). */
   readonly actsForSkill?: string;
+  /** Capability group this tool belongs to (ADR 0136). */
+  readonly group: ToolGroupId;
+  /** The skill that must be allowed for the tool to be declared, beyond `skills`. */
+  readonly requiresSkill?: string;
+  /** Marks the tools that change state; they never run in every round. */
+  readonly writes?: true;
 }
+
+export type ToolGroupId =
+  'reminders' | 'club-knowledge' | 'channel' | 'web' | 'server' | 'time' | 'proposals';
+
+export const TOOL_GROUPS: readonly {
+  readonly id: ToolGroupId;
+  readonly label: string;
+  readonly description: string;
+}[] = [
+  {
+    id: 'reminders',
+    label: 'Reminders and scheduled posts',
+    description:
+      'post a message later in a channel, once or repeating, and ping members or roles; list, change or cancel ones the member set',
+  },
+  {
+    id: 'club-knowledge',
+    label: 'Club knowledge',
+    description:
+      "search and read the club's reviewed sources, archived messages and earlier conversation summaries",
+  },
+  {
+    id: 'channel',
+    label: 'This channel',
+    description: 'read older messages in the current channel',
+  },
+  {
+    id: 'web',
+    label: 'The web',
+    description:
+      'current events, facts, how-tos and anything general you are not sure of; check club sources first for club questions',
+  },
+  { id: 'server', label: 'This server', description: "the server's channels and upcoming events" },
+  { id: 'time', label: 'Time', description: "today's date and time in the club's time zone" },
+  {
+    id: 'proposals',
+    label: 'Proposals for owner review',
+    description:
+      'propose something for the club to remember, or draft a decision record; an owner reviews it',
+  },
+];
 
 const QUERY_PARAMETERS: JSONSchema = {
   type: 'object',
@@ -95,9 +146,10 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: ['query'],
     },
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club'],
+    group: 'club-knowledge',
   },
   {
     name: 'open_resource',
@@ -122,34 +174,39 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: [],
     },
-    rounds: 'all',
+    rounds: 'returned-id',
     outputLimit: 'Up to 4,000 characters of cached content.',
     skills: ['search-club', 'open-resource', 'review-plan'],
+    group: 'club-knowledge',
   },
   {
     name: 'web_search',
     description:
       'Search the public web. Never put names, contact details or private club information in the query.',
     parameters: QUERY_PARAMETERS,
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
-    skills: ['search-club'],
+    skills: ['search-club', 'web-search'],
+    group: 'web',
+    requiresSkill: 'web-search',
   },
   {
     name: 'server_info',
     description: "The server's description and the channels the asking member can see.",
     parameters: NO_PARAMETERS,
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club', 'onboarding-guide'],
+    group: 'server',
   },
   {
     name: 'current_time',
     description: "Today's date and the current time in the club's time zone.",
     parameters: NO_PARAMETERS,
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club', 'reminders'],
+    group: 'time',
   },
   {
     name: 'my_reminders',
@@ -165,10 +222,11 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: [],
     },
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club', 'reminders'],
     actsForSkill: 'reminders',
+    group: 'reminders',
   },
   {
     name: 'set_reminder',
@@ -254,6 +312,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     outputLimit: RESULT_LIMIT,
     skills: ['reminders'],
     actsForSkill: 'reminders',
+    group: 'reminders',
+    writes: true,
   },
   {
     name: 'edit_reminder',
@@ -325,10 +385,12 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: ['reminderId'],
     },
-    rounds: 'first',
+    rounds: 'returned-id',
     outputLimit: RESULT_LIMIT,
     skills: ['reminders'],
     actsForSkill: 'reminders',
+    group: 'reminders',
+    writes: true,
   },
   {
     name: 'cancel_reminder',
@@ -345,10 +407,12 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: ['reminderId'],
     },
-    rounds: 'first',
+    rounds: 'returned-id',
     outputLimit: RESULT_LIMIT,
     skills: ['reminders'],
     actsForSkill: 'reminders',
+    group: 'reminders',
+    writes: true,
   },
   {
     name: 'propose_memory',
@@ -375,6 +439,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     outputLimit: RESULT_LIMIT,
     skills: ['propose-memory'],
     actsForSkill: 'propose-memory',
+    group: 'proposals',
+    writes: true,
   },
   {
     name: 'propose_decision',
@@ -399,6 +465,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     outputLimit: RESULT_LIMIT,
     skills: ['record-decision'],
     actsForSkill: 'record-decision',
+    group: 'proposals',
+    writes: true,
   },
   {
     name: 'search_sources',
@@ -429,9 +497,10 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: [],
     },
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: 'Up to 30 lines, one per source, without a query; up to 6 hits otherwise.',
     skills: ['search-club'],
+    group: 'club-knowledge',
   },
   {
     name: 'read_chunk',
@@ -453,9 +522,10 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: ['chunkId'],
     },
-    rounds: 'all',
+    rounds: 'returned-id',
     outputLimit: 'Up to 4,000 characters including neighbours.',
     skills: ['search-club'],
+    group: 'club-knowledge',
   },
   {
     name: 'refresh_source',
@@ -473,18 +543,23 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: ['resourceId'],
     },
-    rounds: 'first',
+    // refresh_source only enqueues a refresh job. That is a side effect, but
+    // not a Discord write; it is idempotent per 10-minute bucket and has no
+    // member-visible effect, so it may run in any round.
+    rounds: 'all',
     outputLimit: 'One line confirming the refresh.',
     skills: ['search-club'],
+    group: 'club-knowledge',
   },
   {
     name: 'upcoming_events',
     description:
       'Upcoming Discord scheduled events and channel reminders in the next 30 days, soonest first, for channels every viewer of the answer channel can read.',
     parameters: NO_PARAMETERS,
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club'],
+    group: 'server',
   },
   {
     name: 'search_conversations',
@@ -502,9 +577,10 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: ['query'],
     },
-    rounds: 'first',
+    rounds: 'all',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club'],
+    group: 'club-knowledge',
   },
   {
     name: 'channel_history',
@@ -528,8 +604,23 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       },
       required: [],
     },
-    rounds: 'all',
+    rounds: 'returned-id',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club'],
+    group: 'channel',
   },
 ] as const;
+
+const ID_ARG_NAMES: Readonly<Record<string, readonly string[]>> = {
+  read_chunk: ['chunkId'],
+  open_resource: ['resourceId', 'docId'],
+  channel_history: ['before'],
+  edit_reminder: ['reminderId'],
+  cancel_reminder: ['reminderId'],
+};
+export const RETURNED_ID_ARGS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
+  TOOL_CATALOGUE.filter((e) => e.rounds === 'returned-id').map((e) => [
+    e.name,
+    ID_ARG_NAMES[e.name] ?? [],
+  ]),
+);

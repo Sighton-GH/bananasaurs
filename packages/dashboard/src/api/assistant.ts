@@ -513,7 +513,7 @@ export interface SkillTool {
   readonly name: string;
   readonly description: string;
   readonly parameters: JSONSchema;
-  readonly rounds: 'first' | 'all';
+  readonly rounds: 'first' | 'all' | 'returned-id';
   readonly outputLimit: string;
 }
 export interface SkillDetail {

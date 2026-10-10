@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CLUB_ASSISTANT_SKILLS } from './skills.js';
-import { TOOL_CATALOGUE } from './tool-catalogue.js';
+import { RETURNED_ID_ARGS, TOOL_CATALOGUE, TOOL_GROUPS } from './tool-catalogue.js';
 
 describe('TOOL_CATALOGUE', () => {
   it('names every tool once, with a JSON Schema object and a round scope', () => {
@@ -27,25 +27,29 @@ describe('TOOL_CATALOGUE', () => {
     expect(new Set(names).size).toBe(names.length);
     for (const tool of TOOL_CATALOGUE) {
       expect(tool.parameters.type).toBe('object');
-      expect(['first', 'all']).toContain(tool.rounds);
+      expect(['first', 'all', 'returned-id']).toContain(tool.rounds);
       expect(tool.outputLimit.length).toBeGreaterThan(0);
     }
   });
 
-  it('opens every round except read_chunk, open_resource and channel_history, which stay reachable in a follow-up round (ADR 0071)', () => {
+  it('keeps follow-up tools that need a returned id out of round one alone (ADR 0071, ADR 0137)', () => {
     for (const tool of TOOL_CATALOGUE) {
       if (
         tool.name === 'read_chunk' ||
         tool.name === 'open_resource' ||
-        tool.name === 'channel_history'
+        tool.name === 'channel_history' ||
+        tool.name === 'edit_reminder' ||
+        tool.name === 'cancel_reminder'
       )
-        expect(tool.rounds).toBe('all');
-      else expect(tool.rounds).toBe('first');
+        expect(tool.rounds).toBe('returned-id');
+      else expect(['first', 'all']).toContain(tool.rounds);
     }
   });
 
   it('lists only real skill ids, and the search skill on every read tool', () => {
     const skillIds = new Set(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id));
+    // Task 5 adds the 'web-search' skill to CLUB_ASSISTANT_SKILLS and removes this line.
+    skillIds.add('web-search');
     for (const tool of TOOL_CATALOGUE) {
       for (const skillId of tool.skills) {
         expect(skillIds.has(skillId), skillId).toBe(true);
@@ -62,19 +66,20 @@ describe('TOOL_CATALOGUE', () => {
     expect(TOOL_CATALOGUE.map((tool) => tool.name)).not.toContain('create-reminder');
   });
 
-  it('declares the six acting and listing tools round-first with their acting skill', () => {
-    const expected: Readonly<Record<string, string>> = {
-      my_reminders: 'reminders',
-      set_reminder: 'reminders',
-      edit_reminder: 'reminders',
-      cancel_reminder: 'reminders',
-      propose_memory: 'propose-memory',
-      propose_decision: 'record-decision',
-    };
-    for (const [name, skill] of Object.entries(expected)) {
+  it('declares the acting and listing tools with their acting skill and round scope', () => {
+    const expected: Readonly<Record<string, { readonly skill: string; readonly rounds: string }>> =
+      {
+        my_reminders: { skill: 'reminders', rounds: 'all' },
+        set_reminder: { skill: 'reminders', rounds: 'first' },
+        edit_reminder: { skill: 'reminders', rounds: 'returned-id' },
+        cancel_reminder: { skill: 'reminders', rounds: 'returned-id' },
+        propose_memory: { skill: 'propose-memory', rounds: 'first' },
+        propose_decision: { skill: 'record-decision', rounds: 'first' },
+      };
+    for (const [name, { skill, rounds }] of Object.entries(expected)) {
       const entry = TOOL_CATALOGUE.find((tool) => tool.name === name);
       expect(entry, name).toBeDefined();
-      expect(entry?.rounds).toBe('first');
+      expect(entry?.rounds).toBe(rounds);
       expect(entry?.actsForSkill).toBe(skill);
     }
     const idTools = new Set(['read_chunk', 'open_resource']);
@@ -160,7 +165,7 @@ describe('TOOL_CATALOGUE', () => {
       maxLength: 128,
     });
     expect(open.parameters.required ?? []).toEqual([]);
-    expect(open.rounds).toBe('all');
+    expect(open.rounds).toBe('returned-id');
   });
 
   it('gives the cache tools camelCase parameters with the ruled bounds', () => {
@@ -177,15 +182,15 @@ describe('TOOL_CATALOGUE', () => {
     });
     expect(search.parameters.required ?? []).not.toContain('filter');
     expect(search.description).toContain('Without a query it lists');
-    expect(search.rounds).toBe('first');
+    expect(search.rounds).toBe('all');
     const read = TOOL_CATALOGUE.find((tool) => tool.name === 'read_chunk')!;
     expect(read.parameters.properties.chunkId).toMatchObject({ type: 'string' });
     expect(read.parameters.required).toEqual(['chunkId']);
-    expect(read.rounds).toBe('all');
+    expect(read.rounds).toBe('returned-id');
     const refresh = TOOL_CATALOGUE.find((tool) => tool.name === 'refresh_source')!;
     expect(refresh.parameters.properties.resourceId).toMatchObject({ type: 'string' });
     expect(refresh.parameters.required).toEqual(['resourceId']);
-    expect(refresh.rounds).toBe('first');
+    expect(refresh.rounds).toBe('all');
   });
 
   it('names neither list_sources nor outline anywhere in the catalogue', () => {
@@ -220,12 +225,12 @@ describe('TOOL_CATALOGUE', () => {
 
   it('gives upcoming_events no parameters and channel_history a bounded before and limit', () => {
     const upcoming = TOOL_CATALOGUE.find((tool) => tool.name === 'upcoming_events')!;
-    expect(upcoming.rounds).toBe('first');
+    expect(upcoming.rounds).toBe('all');
     expect(upcoming.skills).toEqual(['search-club']);
     expect(upcoming.actsForSkill).toBeUndefined();
     expect(Object.keys(upcoming.parameters.properties)).toEqual([]);
     const history = TOOL_CATALOGUE.find((tool) => tool.name === 'channel_history')!;
-    expect(history.rounds).toBe('all');
+    expect(history.rounds).toBe('returned-id');
     expect(history.skills).toEqual(['search-club']);
     expect(history.actsForSkill).toBeUndefined();
     expect(history.parameters.properties.before).toMatchObject({ type: 'string' });
@@ -248,7 +253,72 @@ describe('TOOL_CATALOGUE', () => {
       maxLength: 200,
     });
     expect(search.parameters.required).toEqual(['query']);
-    expect(search.rounds).toBe('first');
+    expect(search.rounds).toBe('all');
     expect(search.skills).toEqual(['search-club']);
+  });
+});
+
+describe('catalogue groups and round policy (ADR 0136, 0137)', () => {
+  it('puts every tool in a known group, and every group has a tool', () => {
+    const ids = new Set(TOOL_GROUPS.map((g) => g.id));
+    for (const entry of TOOL_CATALOGUE) expect(ids.has(entry.group)).toBe(true);
+    for (const group of TOOL_GROUPS)
+      expect(TOOL_CATALOGUE.some((e) => e.group === group.id)).toBe(true);
+  });
+
+  it('lets read-only tools run in any round and keeps acting tools first or returned-id', () => {
+    const byName = new Map(TOOL_CATALOGUE.map((e) => [e.name, e]));
+    for (const name of [
+      'web_search',
+      'search_sources',
+      'search_archive',
+      'search_conversations',
+      'server_info',
+      'current_time',
+      'my_reminders',
+      'upcoming_events',
+      'refresh_source',
+    ])
+      expect(byName.get(name)?.rounds).toBe('all');
+    for (const name of [
+      'read_chunk',
+      'open_resource',
+      'channel_history',
+      'edit_reminder',
+      'cancel_reminder',
+    ])
+      expect(byName.get(name)?.rounds).toBe('returned-id');
+    for (const name of ['set_reminder', 'propose_memory', 'propose_decision'])
+      expect(byName.get(name)?.rounds).toBe('first');
+  });
+
+  it('never lets a tool that writes run in every round', () => {
+    const writers = TOOL_CATALOGUE.filter((e) => e.writes === true)
+      .map((e) => e.name)
+      .sort();
+    expect(writers).toEqual([
+      'cancel_reminder',
+      'edit_reminder',
+      'propose_decision',
+      'propose_memory',
+      'set_reminder',
+    ]);
+    for (const entry of TOOL_CATALOGUE)
+      if (entry.writes === true) expect(entry.rounds, entry.name).not.toBe('all');
+  });
+
+  it('derives the returned-id arguments from the catalogue', () => {
+    expect(RETURNED_ID_ARGS).toEqual({
+      open_resource: ['resourceId', 'docId'],
+      edit_reminder: ['reminderId'],
+      cancel_reminder: ['reminderId'],
+      read_chunk: ['chunkId'],
+      channel_history: ['before'],
+    });
+    expect(Object.values(RETURNED_ID_ARGS).every((a) => a.length > 0)).toBe(true);
+  });
+
+  it('gates web_search behind the web-search skill', () => {
+    expect(TOOL_CATALOGUE.find((e) => e.name === 'web_search')?.requiresSkill).toBe('web-search');
   });
 });
