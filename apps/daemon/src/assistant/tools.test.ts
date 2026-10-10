@@ -1104,6 +1104,26 @@ describe('acting tools (B2a)', () => {
     ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
   });
 
+  it('names the closest reminder fix when the id is unknown', async () => {
+    const citations = createCitationRegistry();
+    const r = await runAssistantTool(
+      { name: 'cancel_reminder', args: { reminderId: 'nope' } },
+      ports(),
+      citations,
+    );
+    expect(r.text).toBe('No reminder has that id. Call my_reminders for current ids, then try again.');
+  });
+
+  it('says which argument was invalid', async () => {
+    const citations = createCitationRegistry();
+    const r = await runAssistantTool(
+      { name: 'set_reminder', args: { when: 'tomorrow' } },
+      ports(),
+      citations,
+    );
+    expect(r.text).toMatch(/^The arguments were not valid: text: /);
+  });
+
   it('files memory and decision proposals with review wording', async () => {
     const proposed: { id: string; kind: string; summary: string }[] = [];
     const p = ports({
