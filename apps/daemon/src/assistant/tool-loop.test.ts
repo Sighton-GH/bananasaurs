@@ -814,6 +814,46 @@ describe('runToolLoop output guard', () => {
     expect(results[1]).toMatchObject({ ok: false, code: 'provider-empty-answer' });
     expect(result.attempts.at(-1)).toMatchObject({ code: 'provider-empty-answer' });
   });
+
+  it('a failed model-result event carries only the failing call duration, not entryMs', async () => {
+    let now = NOW;
+    let calls = 0;
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (request: GenerateTextRequest) => {
+        calls += 1;
+        if (calls === 1) {
+          now += 8000;
+          return toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]);
+        }
+        now += 2000;
+        throw new ProviderError('outage', 'boom', true);
+      },
+    };
+    const events: RunEvent[] = [];
+    const recorder: RunRecorder = {
+      runId: 'run-1',
+      event: (e: RunEvent) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    };
+    const result = await runToolLoop(
+      baseInput([entry({ provider: failing })], {
+        now: () => now,
+        recorder,
+        tools: loopTools(async () => okResult('search_sources')),
+      }),
+    );
+    expect(result.outcome).toBe('failed');
+    const results = events.filter((e) => e.kind === 'model-result');
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ ok: true, ms: 8000 });
+    expect(results[1]).toMatchObject({ ok: false, ms: 2000 });
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts.at(-1)).toMatchObject({ ms: 10000 });
+  });
 });
 
 describe('runToolLoop chain walking', () => {

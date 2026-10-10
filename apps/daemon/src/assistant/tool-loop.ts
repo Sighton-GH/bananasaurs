@@ -591,9 +591,11 @@ const runEntry = async (deps: {
 
   /**
    * ADR 0129 §6: a failed attempt is a ledger step too, copying the attempt
-   * just pushed — only codes, ms and tokens, never message text.
+   * just pushed — only codes, ms and tokens, never message text. The event's
+   * `ms` is the failed call's own duration when the caller passes it;
+   * `attempt.ms` keeps its entry-based meaning.
    */
-  const pushFailedAttempt = (attempt: Attempt): void => {
+  const pushFailedAttempt = (attempt: Attempt, eventMs?: number): void => {
     deps.attempts.push(attempt);
     deps.recorder.event({
       kind: 'model-result',
@@ -601,7 +603,7 @@ const runEntry = async (deps: {
       model: entry.model,
       keyId: entry.keyId,
       ok: false,
-      ms: attempt.ms,
+      ms: eventMs ?? attempt.ms,
       ...(attempt.code === undefined ? {} : { code: attempt.code }),
       ...(attempt.httpStatus === undefined ? {} : { httpStatus: attempt.httpStatus }),
       ...(attempt.netCode === undefined ? {} : { netCode: attempt.netCode }),
@@ -619,7 +621,7 @@ const runEntry = async (deps: {
     });
   };
 
-  const failAttempt = (err: unknown): void => {
+  const failAttempt = (err: unknown, callMs?: number): void => {
     if (err instanceof ProviderError) deps.noteError(err);
     const f = classifyProviderFailure(err, {
       provider: entry.providerId,
@@ -667,20 +669,23 @@ const runEntry = async (deps: {
     };
     if (isDailyCap(err)) {
       deps.onDailyCap(err.resetAt);
-      pushFailedAttempt({
-        provider: entry.providerId,
-        model: entry.model,
-        keyLabel: entry.keyLabel,
-        outcome: 'error',
-        reason: 'daily-free',
-        code: f.code,
-        ...(providerMessage === undefined ? {} : { providerMessage }),
-        ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
-        ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
-        ...(f.host === undefined ? {} : { host: f.host }),
-        ...failureDetail,
-        ms: deps.entryMs(),
-      });
+      pushFailedAttempt(
+        {
+          provider: entry.providerId,
+          model: entry.model,
+          keyLabel: entry.keyLabel,
+          outcome: 'error',
+          reason: 'daily-free',
+          code: f.code,
+          ...(providerMessage === undefined ? {} : { providerMessage }),
+          ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+          ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+          ...(f.host === undefined ? {} : { host: f.host }),
+          ...failureDetail,
+          ms: deps.entryMs(),
+        },
+        callMs,
+      );
       logFailure();
       return;
     }
@@ -692,21 +697,24 @@ const runEntry = async (deps: {
           : isBusy(err)
             ? 'busy'
             : 'error';
-    pushFailedAttempt({
-      provider: entry.providerId,
-      model: entry.model,
-      keyLabel: entry.keyLabel,
-      outcome,
-      // Hard rule 4 / ADR 0129 §3: `reason` stays a fixed string from the error's kind/status; the provider's own text is stored only sanitized, as `providerMessage`, which routes show only to config.read.
-      ...(err instanceof Error ? { reason: attemptReasonFor(err) } : {}),
-      code: f.code,
-      ...(providerMessage === undefined ? {} : { providerMessage }),
-      ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
-      ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
-      ...(f.host === undefined ? {} : { host: f.host }),
-      ...failureDetail,
-      ms: deps.entryMs(),
-    });
+    pushFailedAttempt(
+      {
+        provider: entry.providerId,
+        model: entry.model,
+        keyLabel: entry.keyLabel,
+        outcome,
+        // Hard rule 4 / ADR 0129 §3: `reason` stays a fixed string from the error's kind/status; the provider's own text is stored only sanitized, as `providerMessage`, which routes show only to config.read.
+        ...(err instanceof Error ? { reason: attemptReasonFor(err) } : {}),
+        code: f.code,
+        ...(providerMessage === undefined ? {} : { providerMessage }),
+        ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+        ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+        ...(f.host === undefined ? {} : { host: f.host }),
+        ...failureDetail,
+        ms: deps.entryMs(),
+      },
+      callMs,
+    );
     logFailure();
   };
 
@@ -745,6 +753,7 @@ const runEntry = async (deps: {
       thinkingBudget: declarations.length > 0 ? limits.toolThinking : limits.answerThinking,
       ...(declarations.length === 0 ? {} : { tools: declarations }),
     };
+    const callStarted = deps.now();
     try {
       // ADR 0129 §6: every provider call opens a ledger step before the request.
       deps.recorder.event({
@@ -757,7 +766,6 @@ const runEntry = async (deps: {
         ...(entry.keyLabel === undefined ? {} : { keyLabel: entry.keyLabel }),
         round,
       });
-      const callStarted = deps.now();
       const response = await provider.generateText(request);
       // An adapter or injected provider may violate its TypeScript contract at runtime.
       // Never let an invalid model response reach the output guard or tool runner.
@@ -788,7 +796,7 @@ const runEntry = async (deps: {
       });
       return response;
     } catch (err) {
-      failAttempt(err);
+      failAttempt(err, Math.max(0, deps.now() - callStarted));
       return undefined;
     }
   };
@@ -1152,6 +1160,8 @@ const finishEntry = async (deps: {
       availableAt: reserved.availableAt,
     });
   } else {
+    // Hoisted so the catch below records the retry call's own duration.
+    const retryStarted = outer.now();
     try {
       // ADR 0129 §6: the guard retry is its own ledger call, like any other.
       outer.recorder.event({
@@ -1164,7 +1174,6 @@ const finishEntry = async (deps: {
         ...(deps.entry.keyLabel === undefined ? {} : { keyLabel: deps.entry.keyLabel }),
         round: 0,
       });
-      const retryStarted = outer.now();
       const retry = await deps.provider.generateText({
         model: deps.entry.model,
         systemInstruction: outer.systemInstruction,
@@ -1255,7 +1264,7 @@ const finishEntry = async (deps: {
         model: deps.entry.model,
         keyId: deps.entry.keyId,
         ok: false,
-        ms: outer.entryMs(),
+        ms: Math.max(0, outer.now() - retryStarted),
         code: f.code,
         ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
         ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
