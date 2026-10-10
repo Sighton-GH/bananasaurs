@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 17 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(17);
+  it('has 18 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(18);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
@@ -51,6 +51,7 @@ describe('instance settings registry', () => {
     const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
     expect(valueOf('assistant.retryDelaysMs')).toEqual([10_000, 30_000, 90_000]);
     expect(valueOf('assistant.providerTimeoutMs')).toBe(60_000);
+    expect(valueOf('assistant.maxConcurrentRuns')).toBe(4);
     expect(valueOf('assistant.maxToolRounds')).toBe(4);
     expect(valueOf('assistant.maxToolCalls')).toBe(12);
     expect(valueOf('assistant.maxOutputTokens')).toBe(2048);

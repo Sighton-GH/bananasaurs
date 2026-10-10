@@ -71,6 +71,17 @@ const providerTimeout: SettingDefinition<number> = {
   bounds: { min: 5000, max: 120000 },
 };
 
+const maxConcurrentRuns: SettingDefinition<number> = {
+  key: 'assistant.maxConcurrentRuns',
+  group: 'Assistant retries',
+  label: 'Questions answered at once',
+  help: 'How many questions the assistant may answer at the same time, in different channels. Questions in one channel are always answered one at a time.',
+  display: 'count',
+  schema: z.number().int().min(1).max(8),
+  defaultValue: 4,
+  bounds: { min: 1, max: 8 },
+};
+
 const maxToolRounds: SettingDefinition<number> = {
   key: 'assistant.maxToolRounds',
   group: 'Assistant tool loop',
@@ -246,6 +257,7 @@ const mcpCapPinReact: SettingDefinition<number> = {
 export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   retryDelays,
   providerTimeout,
+  maxConcurrentRuns,
   maxToolRounds,
   maxToolCalls,
   maxOutputTokens,
@@ -266,6 +278,7 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
 export interface InstanceSettingValues {
   readonly 'assistant.retryDelaysMs': number[];
   readonly 'assistant.providerTimeoutMs': number;
+  readonly 'assistant.maxConcurrentRuns': number;
   readonly 'assistant.maxToolRounds': number;
   readonly 'assistant.maxToolCalls': number;
   readonly 'assistant.maxOutputTokens': number;
