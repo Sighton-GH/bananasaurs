@@ -3,7 +3,6 @@ export * from './behaviours.js';
 export * from './skills.js';
 export * from './resources.js';
 export * from './context.js';
-export * from './capabilities.js';
 export * from './reminders.js';
 export * from './recurrence.js';
 export * from './tool-catalogue.js';

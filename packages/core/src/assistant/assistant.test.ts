@@ -734,7 +734,7 @@ describe('compileAssistantContext preferred skills and unavailable skills (ADR 0
     expect(compiled.systemInstruction).toContain('NOT AVAILABLE TO THIS MEMBER RIGHT NOW');
     expect(compiled.systemInstruction).toContain('- Reminders: owner only');
     expect(compiled.systemInstruction).toContain('Do not suggest asking someone else to do it.');
-    expect(compiled.protectedText).toContain('NOT AVAILABLE TO THIS MEMBER');
+    expect(compiled.protectedText).toContain('NOT AVAILABLE TO THIS MEMBER RIGHT NOW');
   });
 
   it('renders unavailable role-scope reasons (ADR 0136)', () => {
