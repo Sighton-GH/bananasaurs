@@ -12,7 +12,9 @@ describe('buildCapabilityBlock (ADR 0136)', () => {
       unavailable: [],
     });
     expect(text.startsWith('WHAT YOU CAN DO RIGHT NOW')).toBe(true);
-    expect(text).toContain('- Reminders and scheduled posts (my_reminders, set_reminder): post a message later');
+    expect(text).toContain(
+      '- Reminders and scheduled posts (my_reminders, set_reminder): post a message later',
+    );
     expect(text).toContain('- Club knowledge (search_sources):');
     expect(text).toContain('- The web (web_search):');
     expect(text).not.toContain('This channel');
@@ -20,12 +22,21 @@ describe('buildCapabilityBlock (ADR 0136)', () => {
   });
 
   it('never names a tool that was not offered', () => {
-    const text = buildCapabilityBlock({ offeredTools: ['search_sources'], skills: [], unavailable: [] });
-    for (const absent of ['set_reminder', 'web_search', 'cancel_reminder']) expect(text).not.toContain(absent);
+    const text = buildCapabilityBlock({
+      offeredTools: ['search_sources'],
+      skills: [],
+      unavailable: [],
+    });
+    for (const absent of ['set_reminder', 'web_search', 'cancel_reminder'])
+      expect(text).not.toContain(absent);
   });
 
   it('tells the model the list is authoritative, to use it, to answer capability questions, and to batch lookups', () => {
-    const text = buildCapabilityBlock({ offeredTools: ['search_sources'], skills: [], unavailable: [] });
+    const text = buildCapabilityBlock({
+      offeredTools: ['search_sources'],
+      skills: [],
+      unavailable: [],
+    });
     expect(text).toContain('complete, current list');
     expect(text).toContain('When a member asks for something these cover, do it.');
     expect(text).toContain('When asked what you can do, describe these in plain words.');
@@ -35,7 +46,9 @@ describe('buildCapabilityBlock (ADR 0136)', () => {
 
   it('lists prose skills under "You also help with", without the old suffixes', () => {
     const text = buildCapabilityBlock({
-      offeredTools: [], skills: [skill('draft-agenda'), skill('reminders')], unavailable: [],
+      offeredTools: [],
+      skills: [skill('draft-agenda'), skill('reminders')],
+      unavailable: [],
     });
     expect(text).toContain('You also help with:');
     expect(text).toContain('Draft a meeting agenda: Draft a meeting agenda from club context');
@@ -45,8 +58,10 @@ describe('buildCapabilityBlock (ADR 0136)', () => {
 
   it('names what is not available to this member and why, addressed by name', () => {
     const text = buildCapabilityBlock({
-      offeredTools: ['search_sources'], skills: [],
-      unavailable: [{ name: 'Reminders', reason: 'owner only' }], askerName: 'Kacey',
+      offeredTools: ['search_sources'],
+      skills: [],
+      unavailable: [{ name: 'Reminders', reason: 'owner only' }],
+      askerName: 'Kacey',
     });
     expect(text).toContain('NOT AVAILABLE TO KACEY RIGHT NOW');
     expect(text).toContain('- Reminders: owner only');
@@ -55,6 +70,8 @@ describe('buildCapabilityBlock (ADR 0136)', () => {
 
   it('with no tools at all says to answer only', () => {
     const text = buildCapabilityBlock({ offeredTools: [], skills: [], unavailable: [] });
-    expect(text).toContain('No tools this turn. Answer from what you know; do not claim an action.');
+    expect(text).toContain(
+      'No tools this turn. Answer from what you know; do not claim an action.',
+    );
   });
 });

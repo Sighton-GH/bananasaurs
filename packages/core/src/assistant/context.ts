@@ -218,7 +218,10 @@ export const compileAssistantContext = (input: {
     { name: 'server-card', text: `SERVER CARD\n${clean(input.serverCard, 3_000)}` },
     { name: 'resources', text: resources },
     { name: 'task-context', text: clean(input.taskSection ?? '', 2400) },
-    { name: 'now', text: input.nowLine === undefined ? '' : `NOW\nIt is ${clean(input.nowLine, 200)}.` },
+    {
+      name: 'now',
+      text: input.nowLine === undefined ? '' : `NOW\nIt is ${clean(input.nowLine, 200)}.`,
+    },
     { name: 'capabilities', text: capabilities },
   ].filter((section) => section.text !== '');
   const protectedText = `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${capabilities}`;
