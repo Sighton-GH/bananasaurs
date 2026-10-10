@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { Events, type Client } from 'discord.js';
 import {
   createDispatcher,
+  LaneScheduler,
   OPERATOR_COMMANDS,
   parseGuildId,
   Pipeline,
@@ -147,6 +148,9 @@ export interface Daemon {
 
 /** How often the job loop looks for work. */
 const JOB_POLL_MS = 1_000;
+
+/** How long `stop()` waits for in-flight jobs before giving up (ADR 0135). */
+const STOP_GRACE_MS = 25_000;
 
 /**
  * Confines a subscriber to the guild it was built for.
@@ -692,6 +696,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     while (inFlight.size > 0) await Promise.all([...inFlight]);
   };
 
+  // ADR 0135: one scheduler per guild, built after recoverStranded() in
+  // `start()` (they close over the guild's worker and the live settings).
+  let schedulers: LaneScheduler[] = [];
+
   const ops = createDispatcher({
     commands: OPERATOR_COMMANDS,
     guildIds,
@@ -734,16 +742,36 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
     start() {
       for (const { runtime } of byGuild.values()) runtime.worker.recoverStranded();
+      schedulers = [...byGuild.values()].map(
+        ({ runtime }) =>
+          new LaneScheduler({
+            worker: runtime.worker,
+            lanes: [
+              {
+                lane: 'assistant',
+                concurrency: () => instanceSettings.get('assistant.maxConcurrentRuns'),
+              },
+              { lane: 'background', concurrency: () => 1 },
+              { lane: 'default', concurrency: () => 1 },
+            ],
+            logger,
+          }),
+      );
       if (!config.BANANASAURS_READONLY)
         for (const { scope } of byGuild.values()) taskNudgeRepo.reconcileClaims(scope, now());
       void nudgePass();
       taskNudgeTimer = setInterval(() => void nudgePass(), 60_000);
       taskNudgeTimer.unref();
-      timer = setInterval(() => {
-        void drainJobs().catch((err: unknown) => {
-          logger.error(safeLogFields({ component: 'jobs', err }), 'job drain failed');
-        });
-      }, JOB_POLL_MS);
+      const tickJobs = (): void => {
+        for (const scheduler of schedulers) {
+          try {
+            scheduler.tick();
+          } catch (err) {
+            logger.error(safeLogFields({ component: 'jobs', err }), 'job tick failed');
+          }
+        }
+      };
+      timer = setInterval(tickJobs, JOB_POLL_MS);
       // Node keeps the process alive for a pending timer, and the socket is
       // what should do that. A daemon whose gateway died must exit, not idle.
       timer.unref();
@@ -766,6 +794,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       reminderDeliveryTimer.stop();
       resourceRefreshTimer.stop();
       housekeepingTimer.stop();
+      // ADR 0135: wait for in-flight jobs, bounded, so a deploy no longer
+      // abandons an answer mid-call. The delay's timer is unref'd so it never
+      // keeps the process alive by itself.
+      const grace = new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, STOP_GRACE_MS);
+        timeout.unref();
+      });
+      await Promise.race([Promise.all(schedulers.map((s) => s.idle())), grace]);
+      schedulers = [];
       await settle();
     },
 

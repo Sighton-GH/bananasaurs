@@ -827,3 +827,36 @@ describe('the seeded default assistant', () => {
     expect(flagged.map((b) => b.id)).toEqual(['default']);
   });
 });
+
+describe('the job poll (ADR 0135)', () => {
+  it('runs queued work on its interval through the lane schedulers', async () => {
+    vi.useFakeTimers();
+    try {
+      const scope = t.scopes.forGuild(GUILD);
+      daemon = start();
+      const { jobId } = jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.sweepEventDedupe,
+        payload: JSON.stringify({ olderThanMs: 0 }),
+        dedupeKey: 'sweep:test',
+        now: discord.now(),
+      });
+      expect(jobId).toBeDefined();
+
+      // One tick per background job, flushing between ticks so each started
+      // job settles: the two startup housekeeping jobs own the first two
+      // ticks (the keyless sweep waits for the lane to empty, ADR 0135 §3),
+      // and the sweep enqueued above runs on the third.
+      const flush = async (): Promise<void> => {
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      };
+      for (let tick = 0; tick < 3; tick += 1) {
+        vi.advanceTimersByTime(1_000);
+        await flush();
+      }
+
+      expect(jobRepo.findJob(scope, jobId ?? -1)?.state).toBe('done');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
