@@ -275,6 +275,62 @@ describe('GeminiProvider', () => {
       expect(error instanceof Error ? error.message : String(error)).toContain('MAX_TOKENS');
     });
   });
+
+  describe('success body reads', () => {
+    it('a timeout while reading the response body is a retryable timeout', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+        const signal = init?.signal ?? undefined;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              signal?.addEventListener('abort', () => controller.error(signal.reason));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch, timeoutMs: 20 });
+      const error = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error).toMatchObject({ kind: 'timeout', retryable: true });
+    });
+
+    it('a body stream failure becomes a retryable outage', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError('terminated'));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+      const error = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error).toMatchObject({ kind: 'outage', retryable: true });
+    });
+
+    it('malformed JSON becomes a non-retryable invalid-response', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response('{not json', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+      const error = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error).toMatchObject({ kind: 'invalid-response', retryable: false });
+    });
+  });
 });
 
 describe('listGeminiModels (ADR 0068)', () => {
