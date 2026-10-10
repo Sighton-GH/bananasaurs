@@ -470,6 +470,15 @@ describe('runAssistantTool', () => {
     expect(result.text).toContain('r1 ·');
   });
 
+  it('my_reminders returns the reminder ids as handles', async () => {
+    const reminder = storedReminder({ id: 'rem_1' });
+    const result = await runAssistantTool(
+      { name: 'my_reminders', args: {} },
+      ports({ reminderStore: { ...ports().reminderStore, listForCreator: () => [reminder] } }),
+    );
+    expect(result.handles).toEqual(['rem_1']);
+  });
+
   it('lets the owner list everyone with all=true, members see only their own', async () => {
     const mine = storedReminder({ id: 'r1', text: 'Bring the charger' });
     const theirs = storedReminder({

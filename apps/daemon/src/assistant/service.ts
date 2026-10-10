@@ -52,7 +52,7 @@ import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
 import type { WebSearchRun } from './web-search.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
 import { LocalLimitError, localLimitReply, reserveEntryCall } from './local-limit.js';
-import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { laterRoundDeclarations, runToolLoop, type LoopResult } from './tool-loop.js';
 import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
@@ -1328,7 +1328,7 @@ export const createAssistantService = (
         ],
         tools: {
           firstRound: declarations,
-          idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
+          laterRounds: laterRoundDeclarations(declarations),
           // ADR 0090 D3: the tool result's own sources seed the known set,
           // so `isKnownResource` accepts exactly the message links code
           // issued in this request — nothing the model writes can add one.

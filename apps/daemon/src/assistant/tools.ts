@@ -828,23 +828,26 @@ export const runAssistantTool = async (
             (r) => r.status === 'scheduled' || r.status === 'delivering',
           );
           if (unfinished.length === 0) return evidence(name, 'No upcoming reminders.');
-          return evidence(
-            name,
-            unfinished
-              .map((r) => {
-                const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
-                if (r.recurrence !== undefined)
-                  parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
-                const pings =
-                  r.mentions.userIds.length +
-                  r.mentions.roleIds.length +
-                  (r.mentions.everyone ? 1 : 0) +
-                  (r.mentions.here ? 1 : 0);
-                parts.push(`pings ${pings}`);
-                return parts.join(' · ');
-              })
-              .join('\n'),
-          );
+          return {
+            ...evidence(
+              name,
+              unfinished
+                .map((r) => {
+                  const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
+                  if (r.recurrence !== undefined)
+                    parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
+                  const pings =
+                    r.mentions.userIds.length +
+                    r.mentions.roleIds.length +
+                    (r.mentions.everyone ? 1 : 0) +
+                    (r.mentions.here ? 1 : 0);
+                  parts.push(`pings ${pings}`);
+                  return parts.join(' · ');
+                })
+                .join('\n'),
+            ),
+            handles: unfinished.map((r) => r.id),
+          };
         } catch (err) {
           return failed(ports, name, 'reminders', err);
         }
