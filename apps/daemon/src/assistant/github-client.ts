@@ -49,6 +49,7 @@ export interface GitHubTreeEntry {
   readonly path: string;
   readonly type: 'blob' | 'tree';
   readonly size?: number;
+  readonly sha?: string;
 }
 
 export interface GitHubTreeResult {
@@ -112,6 +113,7 @@ const treeEntrySchema = z.object({
   path: z.string(),
   type: z.enum(['blob', 'tree', 'commit']),
   size: z.number().optional(),
+  sha: z.string().optional(),
 });
 
 const treeResponseSchema = z.object({
@@ -123,6 +125,7 @@ const toTreeEntry = (entry: z.infer<typeof treeEntrySchema>): GitHubTreeEntry =>
   path: entry.path,
   type: entry.type as 'blob' | 'tree',
   ...(entry.size !== undefined ? { size: entry.size } : {}),
+  ...(entry.sha !== undefined ? { sha: entry.sha } : {}),
 });
 
 export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {

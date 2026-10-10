@@ -271,6 +271,27 @@ describe('createGitHubClient — listTree', () => {
       truncated: true,
     });
   });
+
+  it('returns the git object sha on entries when the API body has it', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      ok({
+        tree: [
+          { path: 'README.md', type: 'blob', size: 120, sha: 'abc123' },
+          { path: 'docs', type: 'tree', sha: 'def456' },
+        ],
+        truncated: false,
+      }),
+    );
+    const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
+    const result = await client.listTree('acme', 'widget', 'main');
+    expect(result).toEqual({
+      entries: [
+        { path: 'README.md', type: 'blob', size: 120, sha: 'abc123' },
+        { path: 'docs', type: 'tree', sha: 'def456' },
+      ],
+      truncated: false,
+    });
+  });
 });
 
 describe('createGitHubClient — getFileRaw', () => {
