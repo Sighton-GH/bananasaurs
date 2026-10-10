@@ -895,38 +895,38 @@ const runEntry = async (deps: {
           toolMessages.push(refusedMessage(call, 'acting tools run only in the first round'));
           continue;
         }
-        const idArgs = rounds === 'returned-id' ? RETURNED_ID_ARGS[call.name] ?? [] : undefined;
+        const idArgs = rounds === 'returned-id' ? (RETURNED_ID_ARGS[call.name] ?? []) : undefined;
         if (idArgs !== undefined) {
-        const argsRecord =
-          typeof call.args === 'object' && call.args !== null
-            ? (call.args as Record<string, unknown>)
-            : undefined;
-        // A call passes when any of the tool's id arguments carries an id an
-        // earlier result returned; `open_resource` takes either id shape.
-        const known = idArgs.some((idArg) => {
-          const idValue = argsRecord?.[idArg];
-          return typeof idValue === 'string' && handles.has(idValue);
-        });
-        if (!known) {
-          deps.toolCalls.push({
-            ...traceBase,
-            ok: false,
-            refused: 'unknown id',
-            ms: callMs(),
-            preview: '',
+          const argsRecord =
+            typeof call.args === 'object' && call.args !== null
+              ? (call.args as Record<string, unknown>)
+              : undefined;
+          // A call passes when any of the tool's id arguments carries an id an
+          // earlier result returned; `open_resource` takes either id shape.
+          const known = idArgs.some((idArg) => {
+            const idValue = argsRecord?.[idArg];
+            return typeof idValue === 'string' && handles.has(idValue);
           });
-          deps.recorder.event({
-            kind: 'tool-result',
-            round,
-            tool: call.name,
-            ok: false,
-            refused: 'unknown id',
-            ms: callMs(),
-            resultChars: 0,
-          });
-          toolMessages.push(refusedMessage(call, 'unknown id'));
-          continue;
-        }
+          if (!known) {
+            deps.toolCalls.push({
+              ...traceBase,
+              ok: false,
+              refused: 'unknown id',
+              ms: callMs(),
+              preview: '',
+            });
+            deps.recorder.event({
+              kind: 'tool-result',
+              round,
+              tool: call.name,
+              ok: false,
+              refused: 'unknown id',
+              ms: callMs(),
+              resultChars: 0,
+            });
+            toolMessages.push(refusedMessage(call, 'unknown id'));
+            continue;
+          }
         }
       }
       if (deps.budgets.resultChars >= limits.resultChars) {

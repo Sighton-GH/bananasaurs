@@ -833,16 +833,16 @@ export const runAssistantTool = async (
               name,
               unfinished
                 .map((r) => {
-                const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
-                if (r.recurrence !== undefined)
-                  parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
-                const pings =
-                  r.mentions.userIds.length +
-                  r.mentions.roleIds.length +
-                  (r.mentions.everyone ? 1 : 0) +
-                  (r.mentions.here ? 1 : 0);
-                parts.push(`pings ${pings}`);
-                return parts.join(' · ');
+                  const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
+                  if (r.recurrence !== undefined)
+                    parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
+                  const pings =
+                    r.mentions.userIds.length +
+                    r.mentions.roleIds.length +
+                    (r.mentions.everyone ? 1 : 0) +
+                    (r.mentions.here ? 1 : 0);
+                  parts.push(`pings ${pings}`);
+                  return parts.join(' · ');
                 })
                 .join('\n'),
             ),
