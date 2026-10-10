@@ -466,7 +466,7 @@ export async function refreshGithubRepo(
     const contentHash = sha256Hex(text);
     const bytes = Buffer.byteLength(text, 'utf8');
     const docId = computeDocId(file.url);
-    deps.cache.upsertDocument(scope, {
+    const docBase = {
       resourceId: current.id,
       docId,
       url: file.url,
@@ -477,11 +477,19 @@ export async function refreshGithubRepo(
       contentHash,
       fetchedAt,
       bytes,
-      status: 'ok',
-      ...(wantedSha !== undefined ? { blobSha: wantedSha } : {}),
-    });
-    if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash)
+      status: 'ok' as const,
+    };
+    if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash) {
+      deps.cache.upsertDocument(scope, {
+        ...docBase,
+        ...(wantedSha !== undefined ? { blobSha: wantedSha } : {}),
+      });
       continue;
+    }
+    // The sha is recorded only after the chunks land: a failure between the
+    // two must not leave an `ok` row with a sha whose chunks were never
+    // written, or that file would be skipped forever.
+    deps.cache.upsertDocument(scope, docBase);
     fresh = true;
     deps.cache.replaceChunks(
       scope,
@@ -489,6 +497,9 @@ export async function refreshGithubRepo(
       current.id,
       chunkDocument({ text, mediaType: result.evidence.mediaType, path: file.path }),
     );
+    if (wantedSha !== undefined) {
+      deps.cache.upsertDocument(scope, { ...docBase, blobSha: wantedSha });
+    }
   }
 
   for (const doc of deps.cache.listDocuments(scope, current.id)) {

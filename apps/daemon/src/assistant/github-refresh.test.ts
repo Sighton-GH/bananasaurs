@@ -940,6 +940,47 @@ describe('refreshGithubRepo (authenticated)', () => {
     expect(second.cache.docs.get(computeDocId(guideUrl))?.status).toBe('ok');
   });
 
+  it('a chunk-write failure leaves no blobSha, so the next refresh retries the file', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [
+        { path: 'README.md', type: 'blob' as const, size: 120 },
+        { path: 'docs/guide.md', type: 'blob' as const, size: 120 },
+      ],
+      truncated: false,
+    };
+    const fetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const store = new FakeStore();
+    const cache = new FakeCache();
+    store.rows.set('gh-acme-widget', repo());
+    // Fail the chunk write for the guide only, once.
+    const guideUrl = 'https://raw.githubusercontent.com/acme/widget/main/docs/guide.md';
+    const guideDocId = computeDocId(guideUrl);
+    const realReplace = cache.replaceChunks.bind(cache);
+    let failedOnce = false;
+    cache.replaceChunks = (scope, docId, resourceId, chunks) => {
+      if (!failedOnce && docId === guideDocId) {
+        failedOnce = true;
+        throw new Error('chunk write failed');
+      }
+      realReplace(scope, docId, resourceId, chunks);
+    };
+    const first = deps(client, fetcher, store, cache, () => 1_000);
+    await expect(refreshGithubRepo(SCOPE, repo(), first.deps)).rejects.toThrow(
+      'chunk write failed',
+    );
+
+    // The failed file's row carries no blobSha, so it is not treated as cached.
+    expect(cache.docs.get(guideDocId)?.blobSha).toBeUndefined();
+
+    const secondFetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
+    const second = deps(client, secondFetcher, store, cache, () => 2_000);
+    await refreshGithubRepo(SCOPE, repo(), second.deps);
+
+    expect(secondFetcher.calls.map((c) => c.url)).toEqual([guideUrl]);
+    expect(cache.docs.get(guideDocId)?.blobSha).toBe('sha:docs/guide.md');
+  });
+
   it('fetches rows with no blobSha once, then skips them on the following refresh', async () => {
     const client = new FakeClient();
     client.tree = {
