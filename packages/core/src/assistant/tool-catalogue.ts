@@ -233,7 +233,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'set_reminder',
     description:
-      "Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club's time zone; today's date is under NOW. Example: \"remind Claire at 23:00 to go to sleep\" becomes text \"go to sleep\", when \"2026-10-10T23:00:00-07:00\", members: [\"Claire H\"].",
+      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "2026-10-10T23:00:00-07:00", members: ["Sam L"].',
     parameters: {
       type: 'object',
       properties: {
@@ -449,7 +449,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'propose_decision',
     description:
-      "Save a club decision as a draft for owner review, with what was decided. Use it when a member asks to record a decision or to review a plan as a draft. Nothing becomes policy until an owner approves it.",
+      'Save a club decision as a draft for owner review, with what was decided. Use it when a member asks to record a decision or to review a plan as a draft. Nothing becomes policy until an owner approves it.',
     parameters: {
       type: 'object',
       properties: {
@@ -510,7 +510,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'read_chunk',
     description:
-      "Read one cached passage by its chunk id, with neighbouring passages. Use it after search_sources or open_resource returned a chunk id and you need the full text to answer accurately.",
+      'Read one cached passage by its chunk id, with neighbouring passages. Use it after search_sources or open_resource returned a chunk id and you need the full text to answer accurately.',
     parameters: {
       type: 'object',
       properties: {
@@ -536,7 +536,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'refresh_source',
     description:
-      "Ask for a fresh fetch of one club source; updated content arrives in about a minute. Use it when a member says a source is out of date or a page changed recently. Then answer from what you have now and say it is refreshing.",
+      'Ask for a fresh fetch of one club source; updated content arrives in about a minute. Use it when a member says a source is out of date or a page changed recently. Then answer from what you have now and say it is refreshing.',
     parameters: {
       type: 'object',
       properties: {
@@ -591,7 +591,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'channel_history',
     description:
-      "Read older messages in the current channel, paging back with the before id from an earlier result. Use it when a member asks to summarise or catch up on the conversation, or refers to something said earlier here.",
+      'Read older messages in the current channel, paging back with the before id from an earlier result. Use it when a member asks to summarise or catch up on the conversation, or refers to something said earlier here.',
     parameters: {
       type: 'object',
       properties: {

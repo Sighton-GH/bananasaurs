@@ -69,11 +69,13 @@ describe('TOOL_CATALOGUE', () => {
   it('describes every tool with what it does and when to use it (ADR 0136, spec 1b)', () => {
     for (const entry of TOOL_CATALOGUE) {
       expect(entry.description.length, entry.name).toBeGreaterThanOrEqual(120);
-      expect(entry.description, entry.name).toMatch(/\bUse (it |this )?(when|whenever|after|first|only)\b/i);
+      expect(entry.description, entry.name).toMatch(
+        /\bUse (it |this )?(when|whenever|after|first|only)\b/i,
+      );
     }
     const reminder = TOOL_CATALOGUE.find((e) => e.name === 'set_reminder')!.description;
     expect(reminder).toContain('Example:');
-    expect(reminder).toContain('members: ["Claire H"]');
+    expect(reminder).toContain('members: ["Sam L"]');
     expect(reminder).not.toContain('use current_time first');
     const web = TOOL_CATALOGUE.find((e) => e.name === 'web_search')!.description;
     expect(web).toContain('club sources first');
