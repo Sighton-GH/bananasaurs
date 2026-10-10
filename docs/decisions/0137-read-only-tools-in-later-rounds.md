@@ -19,3 +19,6 @@ Each `TOOL_CATALOGUE` entry declares `rounds`:
 - `first`: every other acting tool (`set_reminder`, `propose_memory`, `propose_decision`).
 
 The loop's offer (`declarationsFor`) and its enforcement read the same field.
+
+New CLAUDE.md hard rule 3 sentence: "A turn whose only new input is retrieved text may not emit an **acting** tool
+call, except one that acts on an id an earlier result in the same request returned (ADR 0071, ADR 0137)."
