@@ -102,6 +102,10 @@ const statusKind = (status: number): ProviderErrorKind => {
   return 'invalid-response';
 };
 
+/** Shared by the fetch catch and the success-body catch: the timeout signal fires in either place. */
+const isTimeoutError = (error: unknown): boolean =>
+  error instanceof DOMException && error.name === 'TimeoutError';
+
 export class GeminiProvider implements TextProvider {
   public readonly id = 'gemini';
   public readonly capabilities: ReadonlySet<ProviderCapability> = new Set([
@@ -172,7 +176,7 @@ export class GeminiProvider implements TextProvider {
         },
       );
     } catch (error) {
-      const timeoutError = error instanceof DOMException && error.name === 'TimeoutError';
+      const timeoutError = isTimeoutError(error);
       const netCode = netCodeOf(error);
       throw new ProviderError(
         timeoutError ? 'timeout' : 'outage',
@@ -192,7 +196,24 @@ export class GeminiProvider implements TextProvider {
       );
     }
 
-    const raw: unknown = await response.json();
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch (error) {
+      if (isTimeoutError(error))
+        throw new ProviderError('timeout', 'Gemini request timed out', true, {
+          cause: error,
+          host: this.host,
+        });
+      if (error instanceof SyntaxError)
+        throw new ProviderError('invalid-response', 'Gemini returned an invalid response', false, {
+          cause: error,
+        });
+      throw new ProviderError('outage', 'Gemini request failed', true, {
+        cause: error,
+        host: this.host,
+      });
+    }
     const parsed = geminiResponseSchema.safeParse(raw);
     if (!parsed.success) {
       throw new ProviderError('invalid-response', 'Gemini returned an invalid response', false, {
