@@ -57,6 +57,7 @@ import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
   runAssistantTool,
+  formatClock,
   relativeUpdated,
   toolDeclarations,
   type ArchiveResult,
@@ -785,20 +786,6 @@ export const createAssistantService = (
             .listMemories(scope)
             .filter((memory) => memory.subjectId === undefined || memory.subjectId === input.userId)
             .map((memory) => '- ' + memory.content);
-      const context = compileAssistantContext({
-        behaviour: input.behaviour,
-        serverCard:
-          assistantRepo.getServerCard(scope) +
-          (memoriesSkipped ? '' : '\nCurated memory:\n' + memoryLines.join('\n')),
-        resources,
-        evidence,
-        skills: permittedSkills,
-        preferredSkillIds: input.behaviour.preferredSkillIds,
-        unavailableSkills,
-        toolsAvailable,
-        catalogueLines,
-        taskSection,
-      });
       const isIt = input.behaviour.surface === 'it-services';
       const enqueueAssistantRefresh = (resourceId: string): boolean => {
         const tenMinuteBucket = Math.floor(now() / 600_000);
@@ -1113,6 +1100,23 @@ export const createAssistantService = (
         enqueueRefresh: enqueueAssistantRefresh,
       };
       const declarations = toolDeclarations(toolPorts);
+      const context = compileAssistantContext({
+        behaviour: input.behaviour,
+        serverCard:
+          assistantRepo.getServerCard(scope) +
+          (memoriesSkipped ? '' : '\nCurated memory:\n' + memoryLines.join('\n')),
+        resources,
+        evidence,
+        skills: permittedSkills,
+        preferredSkillIds: input.behaviour.preferredSkillIds,
+        unavailableSkills,
+        toolsAvailable,
+        catalogueLines,
+        taskSection,
+        offeredTools: declarations.map((d) => d.name),
+        nowLine: formatClock(currentConfig.BANANASAURS_TIME_ZONE, now()),
+        ...(input.askerName === undefined ? {} : { askerName: input.askerName }),
+      });
       /**
        * ADR 0129 decision 1 lives here: every throw out of `mapLoopFailure`
        * is a `ChainFailedError` or a `LocalLimitError` carrying `attempts`
@@ -1278,6 +1282,7 @@ export const createAssistantService = (
         channelContext: input.channelContext,
         evidenceEnvelope: context.evidenceEnvelope,
         quoteEnvelope: input.quoteEnvelope,
+        abilitiesNote: historyForLoop.some((message) => message.role === 'assistant'),
       });
       // ADR 0081: every provider call is reserved against its chain entry's
       // owner-set RPM/RPD limits first; a refused entry is skipped without

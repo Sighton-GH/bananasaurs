@@ -563,13 +563,16 @@ const failed = (ports: AssistantToolPorts, name: string, skill: string, _err: un
   return refused(name, FAILED_TEXT);
 };
 
-const clock = (ports: AssistantToolPorts, at: number): string =>
+export const formatClock = (timeZone: string, at: number): string =>
   new Intl.DateTimeFormat('en-CA', {
-    timeZone: ports.timeZone,
+    timeZone,
     dateStyle: 'full',
     timeStyle: 'short',
     hourCycle: 'h23',
   }).format(at);
+
+const clock = (ports: AssistantToolPorts, at: number): string =>
+  formatClock(ports.timeZone, at);
 
 /**
  * "3 hours ago" / "not fetched yet" for catalogue and search_sources lines.
