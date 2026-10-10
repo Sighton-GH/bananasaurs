@@ -12,6 +12,8 @@ import {
   type TextProvider,
   type ToolCall,
   type ToolDeclaration,
+  RETURNED_ID_ARGS,
+  TOOL_CATALOGUE,
   TRUNCATION_SUFFIX,
 } from '@bananasaurs/core';
 import type { CitationRegistry } from './citations.js';
@@ -22,27 +24,11 @@ import type { AssistantToolResult, ToolSource } from './tools.js';
 import { attemptReasonFor } from './provider-failure.js';
 import { neutraliseMarkers } from './untrusted.js';
 
-/**
- * The id arguments of every follow-up tool (ADR 0071). Round 2+ offers only
- * these tools, and only with an id an earlier result in the same request
- * returned (or in the catalogue the harness put in the prompt). Both —
- * `read_chunk` and `open_resource` — are implemented; the enforcement below
- * still names them. `open_resource` takes either id: the resource id opens
- * the resource, the doc id lists its headings (ADR 0092 decision 3).
- * `channel_history` pages with the `before` id an earlier page returned; in
- * round 1 a call without `before` is allowed (ADR 0092 decision 2).
- */
-export const ID_TOOL_ARGS: Readonly<Record<string, readonly string[]>> = {
-  read_chunk: ['chunkId'],
-  open_resource: ['resourceId', 'docId'],
-  channel_history: ['before'],
-};
-
 export interface LoopTools {
   /** Round 1 may call any allowed read-only tool. */
   readonly firstRound: readonly ToolDeclaration[];
-  /** Rounds 2+: only ID_TOOL_ARGS names; filtered again before sending. */
-  readonly idRound: readonly ToolDeclaration[];
+  /** Rounds 2+: catalogue-approved declarations, filtered again before sending. */
+  readonly laterRounds: readonly ToolDeclaration[];
   readonly run: (call: ToolCall) => Promise<AssistantToolResult>;
 }
 
@@ -498,6 +484,16 @@ export const runToolLoop = async (input: {
   };
 };
 
+export const laterRoundDeclarations = (
+  declarations: readonly ToolDeclaration[],
+): readonly ToolDeclaration[] => {
+  const policy = new Map(TOOL_CATALOGUE.map((entry) => [entry.name, entry.rounds]));
+  return declarations.filter((declaration) => {
+    const rounds = policy.get(declaration.name);
+    return rounds === 'all' || rounds === 'returned-id';
+  });
+};
+
 const declarationsFor = (
   tools: LoopTools | undefined,
   provider: TextProvider,
@@ -505,10 +501,7 @@ const declarationsFor = (
 ): readonly ToolDeclaration[] => {
   if (tools === undefined) return [];
   if (!provider.capabilities.has('tools')) return [];
-  const offered = round === 1 ? tools.firstRound : tools.idRound;
-  // Follow-up rounds offer only the ID tools (`read_chunk`,
-  // `open_resource`), filtered against the round's declarations.
-  return round === 1 ? [...offered] : offered.filter((d) => d.name in ID_TOOL_ARGS);
+  return round === 1 ? [...tools.firstRound] : [...tools.laterRounds];
 };
 
 interface EntrySuccess {
@@ -529,7 +522,10 @@ const refusedMessage = (call: ToolCall, reason: string): GenerationMessage => ({
   role: 'tool',
   toolName: call.name,
   ...(call.id === undefined ? {} : { toolCallId: call.id }),
-  text: `Refused: ${reason}`,
+  text:
+    reason === 'acting tools run only in the first round'
+      ? 'Refused: acting tools run only in the first round. Ask the member to confirm in one short sentence; it will run when they reply.'
+      : `Refused: ${reason}`,
 });
 
 /** A tool-result title made safe to print in a "Cite as" line. */
@@ -878,12 +874,12 @@ const runEntry = async (deps: {
         continue;
       }
       if (round >= 2) {
-        const idArgs = ID_TOOL_ARGS[call.name];
-        if (idArgs === undefined) {
+        const rounds = TOOL_CATALOGUE.find((entry) => entry.name === call.name)?.rounds;
+        if (rounds === 'first' || rounds === undefined) {
           deps.toolCalls.push({
             ...traceBase,
             ok: false,
-            refused: 'not allowed after reading results',
+            refused: 'acting tools run only in the first round',
             ms: callMs(),
             preview: '',
           });
@@ -892,13 +888,15 @@ const runEntry = async (deps: {
             round,
             tool: call.name,
             ok: false,
-            refused: 'not allowed after reading results',
+            refused: 'acting tools run only in the first round',
             ms: callMs(),
             resultChars: 0,
           });
-          toolMessages.push(refusedMessage(call, 'not allowed after reading results'));
+          toolMessages.push(refusedMessage(call, 'acting tools run only in the first round'));
           continue;
         }
+        const idArgs = rounds === 'returned-id' ? RETURNED_ID_ARGS[call.name] ?? [] : undefined;
+        if (idArgs !== undefined) {
         const argsRecord =
           typeof call.args === 'object' && call.args !== null
             ? (call.args as Record<string, unknown>)
@@ -928,6 +926,7 @@ const runEntry = async (deps: {
           });
           toolMessages.push(refusedMessage(call, 'unknown id'));
           continue;
+        }
         }
       }
       if (deps.budgets.resultChars >= limits.resultChars) {
