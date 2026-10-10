@@ -12,6 +12,7 @@ import {
   resolveAssistantBehaviour,
   SAFETY_SUFFIX,
   skillInstructionLine,
+  TOOL_CATALOGUE,
   validateResourceUrl,
 } from './index.js';
 import { redactEvidenceText, scanOutboundRequest } from '../providers/outbound-safety.js';
@@ -273,13 +274,14 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
     );
   });
 
-  it('says nothing about a tool when the provider has none', () => {
+  it('says nothing about a tool when the provider has none (ADR 0136)', () => {
     const compiled = compileAssistantContext({
       behaviour,
       serverCard: 'card',
       resources: [resource('rules', 'Rules')],
       skills: [],
       evidence: [],
+      offeredTools: [],
     });
     expect(compiled.systemInstruction).toContain(
       'OTHER CLUB RESOURCES\nrules: Rules - https://example.com/rules',
@@ -444,7 +446,37 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.protectedText).not.toContain('OUTPUT RULES');
   });
 
-  it('names no tool in prose when the catalogue section is present (ADR 0136)', () => {
+  it('puts now and capabilities last, after task context', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+      taskSection: 'TASKS\n- one',
+      nowLine: 'Friday, October 9, 2026 at 23:14 (America/Vancouver)',
+      offeredTools: ['set_reminder'],
+    });
+    const names = compiled.sections.map((s) => s.name);
+    expect(names.slice(-3)).toEqual(['task-context', 'now', 'capabilities']);
+    expect(compiled.systemInstruction).toContain(
+      'NOW\nIt is Friday, October 9, 2026 at 23:14 (America/Vancouver).',
+    );
+  });
+
+  it('protects the capability block from being quoted back', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+      offeredTools: ['web_search'],
+    });
+    expect(compiled.protectedText).toContain('WHAT YOU CAN DO RIGHT NOW');
+  });
+
+  it('names tools only in the capabilities section (ADR 0136)', () => {
     const compiled = compileAssistantContext({
       behaviour,
       serverCard: 'card',
@@ -453,8 +485,17 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       evidence: [],
       toolsAvailable: true,
       catalogueLines: ['web · Website (website) · updated 2h ago'],
+      offeredTools: ['search_sources', 'web_search'],
     });
-    for (const name of forbidden) expect(compiled.systemInstruction).not.toContain(name);
+    const toolNames = TOOL_CATALOGUE.map((tool) => tool.name);
+    const capabilities =
+      compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
+    expect(capabilities).toContain('search_sources');
+    expect(capabilities).toContain('web_search');
+    for (const section of compiled.sections) {
+      if (section.name === 'capabilities') continue;
+      for (const name of toolNames) expect(section.text).not.toContain(name);
+    }
   });
 
   it('lists offered tools with id/title/url resources (ADR 0136)', () => {
@@ -472,7 +513,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     );
   });
 
-  it('strips the legacy tool sentence from the behaviour prompt and protectedText', () => {
+  it('strips the legacy tool sentence from the behaviour prompt and protectedText (ADR 0136)', () => {
     const legacyBehaviour = {
       ...behaviour,
       systemPrompt: `Search the club's resources before answering from general knowledge.${LEGACY_TOOL_SENTENCE}`,
@@ -483,6 +524,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       resources: [],
       skills: [],
       evidence: [],
+      offeredTools: [],
     });
     const byName = new Map(compiled.sections.map((section) => [section.name, section.text]));
     expect(byName.get('behaviour-prompt')).toBe(
@@ -588,7 +630,8 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     expect(promptAt).toBeGreaterThanOrEqual(0);
     expect(suffixAt).toBeGreaterThan(promptAt + prompt.length);
     expect(cardAt).toBeGreaterThan(suffixAt + SAFETY_SUFFIX.length);
-    const capabilities = compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
+    const capabilities =
+      compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
     expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${capabilities}`);
     expect(compiled.sections.map((section) => section.name)).toEqual([
       'surface',
@@ -613,7 +656,10 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
   });
 
   it('skillInstructionLine is the exact per-skill line the compiler emits (factored, not duplicated)', () => {
-    const skill = CLUB_ASSISTANT_SKILLS[0]!;
+    // draft-agenda is prose-only (no catalogue tool lists it), so the
+    // compiler renders it under "You also help with" (ADR 0136).
+    // CLUB_ASSISTANT_SKILLS[0] (search-club) has tools and renders by group.
+    const skill = CLUB_ASSISTANT_SKILLS.find((entry) => entry.id === 'draft-agenda')!;
     const line = skillInstructionLine(skill);
     expect(line).toBe(`${skill.name}: ${skill.promptLine}`);
     expect(line).not.toContain('Effect=');
