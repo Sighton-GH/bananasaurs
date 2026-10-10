@@ -1,7 +1,7 @@
 # 0071. Follow-up tool rounds open only returned IDs
 
 Date: 2026-09-24
-Status: Accepted (owner approved spec 2026-09-24)
+Status: Accepted (owner approved spec 2026-09-24) Amended by ADR 0137.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 0087. A skill's scope is its only gate; behaviours prefer skills, they don't allow them
 
-Status: accepted (owner decision, 2026-09-28). Amends ADR 0086 decision 1 and ADR 0064.
+Status: accepted (owner decision, 2026-09-28). Amends ADR 0086 decision 1 and ADR 0064. Amended by ADR 0136.
 
 ## Context
 
