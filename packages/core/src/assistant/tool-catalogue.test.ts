@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CLUB_ASSISTANT_SKILLS } from './skills.js';
-import { TOOL_CATALOGUE } from './tool-catalogue.js';
+import { RETURNED_ID_ARGS, TOOL_CATALOGUE, TOOL_GROUPS } from './tool-catalogue.js';
 
 describe('TOOL_CATALOGUE', () => {
   it('names every tool once, with a JSON Schema object and a round scope', () => {
@@ -250,5 +250,47 @@ describe('TOOL_CATALOGUE', () => {
     expect(search.parameters.required).toEqual(['query']);
     expect(search.rounds).toBe('first');
     expect(search.skills).toEqual(['search-club']);
+  });
+});
+
+describe('catalogue groups and round policy (ADR 0136, 0137)', () => {
+  it('puts every tool in a known group, and every group has a tool', () => {
+    const ids = new Set(TOOL_GROUPS.map((g) => g.id));
+    for (const entry of TOOL_CATALOGUE) expect(ids.has(entry.group)).toBe(true);
+    for (const group of TOOL_GROUPS)
+      expect(TOOL_CATALOGUE.some((e) => e.group === group.id)).toBe(true);
+  });
+
+  it('lets read-only tools run in any round and keeps acting tools first or returned-id', () => {
+    const byName = new Map(TOOL_CATALOGUE.map((e) => [e.name, e]));
+    for (const name of [
+      'web_search', 'search_sources', 'search_archive', 'search_conversations',
+      'server_info', 'current_time', 'my_reminders', 'upcoming_events', 'refresh_source',
+    ]) expect(byName.get(name)?.rounds).toBe('all');
+    for (const name of ['read_chunk', 'open_resource', 'channel_history', 'edit_reminder', 'cancel_reminder'])
+      expect(byName.get(name)?.rounds).toBe('returned-id');
+    for (const name of ['set_reminder', 'propose_memory', 'propose_decision'])
+      expect(byName.get(name)?.rounds).toBe('first');
+  });
+
+  it('never lets a tool that writes run in every round', () => {
+    const writers = TOOL_CATALOGUE.filter((e) => e.writes === true).map((e) => e.name).sort();
+    expect(writers).toEqual(['cancel_reminder', 'edit_reminder', 'propose_decision', 'propose_memory', 'set_reminder']);
+    for (const entry of TOOL_CATALOGUE) if (entry.writes === true) expect(entry.rounds, entry.name).not.toBe('all');
+  });
+
+  it('derives the returned-id arguments from the catalogue', () => {
+    expect(RETURNED_ID_ARGS).toEqual({
+      open_resource: ['resourceId', 'docId'],
+      edit_reminder: ['reminderId'],
+      cancel_reminder: ['reminderId'],
+      read_chunk: ['chunkId'],
+      channel_history: ['before'],
+    });
+    expect(Object.values(RETURNED_ID_ARGS).every((a) => a.length > 0)).toBe(true);
+  });
+
+  it('gates web_search behind the web-search skill', () => {
+    expect(TOOL_CATALOGUE.find((e) => e.name === 'web_search')?.requiresSkill).toBe('web-search');
   });
 });
