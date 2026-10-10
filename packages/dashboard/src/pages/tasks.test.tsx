@@ -37,7 +37,8 @@ const BOARD = {
       assignmentKind: 'team',
       assigneeId: null,
       assigneeIds: [],
-      dueAt: Date.UTC(2026, 9, 10, 17, 0),
+      // Far future: this task must never become overdue.
+      dueAt: Date.UTC(2099, 9, 10, 17, 0),
       timezone: 'UTC',
       destinationId: 'dest-1',
       version: 1,
