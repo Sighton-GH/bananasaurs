@@ -677,6 +677,7 @@ export {
   type SpendPolicy,
 } from './providers/spend-policy.js';
 export * from './assistant/index.js';
+export * from './assistant/capabilities.js';
 export * from './assistant/run-events.js';
 export * from './assistant/run-label.js';
 
