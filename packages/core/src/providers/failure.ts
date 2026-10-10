@@ -307,6 +307,13 @@ export const classifyProviderFailure: (
     return { code: 'provider-timeout', ...base };
   }
 
+  // Rule 3b: defence in depth for an adapter that leaks the raw abort
+  // reason: a bare DOMException TimeoutError is a client-side timeout too,
+  // and retrying is safe.
+  if (err instanceof DOMException && err.name === 'TimeoutError') {
+    return { code: 'provider-timeout', ...base, retryable: true };
+  }
+
   // Rule 4: by status, or by kind when no status arrived.
   const status = fields.httpStatus;
   if (status !== undefined) {

@@ -73,6 +73,15 @@ describe('classifyProviderFailure', () => {
     expect(failure.retryable).toBe(true);
   });
 
+  it('maps a bare DOMException TimeoutError to provider-timeout, retryable', () => {
+    const failure = classifyProviderFailure(
+      new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+      { provider: 'p', model: 'm' },
+    );
+    expect(failure.code).toBe('provider-timeout');
+    expect(failure.retryable).toBe(true);
+  });
+
   it.each([
     [401, 'authentication', false, 'provider-auth'],
     [403, 'authentication', false, 'provider-auth'],
