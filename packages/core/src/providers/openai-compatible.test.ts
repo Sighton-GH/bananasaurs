@@ -241,6 +241,62 @@ describe('OpenAI-compatible providers', () => {
     ).resolves.toMatchObject({ usage: { costUsd: 0.0012 } });
   });
 
+  describe('success body reads', () => {
+    it('a timeout while reading the response body is a retryable timeout', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+        const signal = init?.signal ?? undefined;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              signal?.addEventListener('abort', () => controller.error(signal.reason));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, timeoutMs: 20 });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+    });
+
+    it('a body stream failure becomes a retryable outage', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError('terminated'));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+    });
+
+    it('malformed JSON becomes a non-retryable invalid-response', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response('{not json', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err).toMatchObject({ kind: 'invalid-response', retryable: false });
+    });
+  });
+
   describe('non-2xx error detail (ADR 0077)', () => {
     const dailyCapBody = JSON.stringify({
       error: { code: 429, message: 'Rate limit exceeded: free-models-per-day' },
