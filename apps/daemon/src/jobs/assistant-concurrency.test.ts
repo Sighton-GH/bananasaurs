@@ -336,4 +336,55 @@ describe('assistant lanes concurrency (ADR 0135 Task 4)', () => {
       h.close();
     }
   });
+
+  it('a thread answer waits for its parent channel', async () => {
+    const h = createHarness(false);
+    try {
+      h.enqueueMention({
+        channelId: CHANNEL_A,
+        userId: U1,
+        invocationId: 'inv-parent',
+        messageId: '810000000000000121',
+        question: 'question in the channel',
+        authorName: 'Ama',
+      });
+      h.enqueueMention({
+        channelId: THREAD_T,
+        threadParentId: CHANNEL_A,
+        userId: U2,
+        invocationId: 'inv-thread',
+        messageId: '810000000000000122',
+        question: 'question in the thread',
+        authorName: 'Bo',
+      });
+
+      // The thread shares its parent channel's ordering key, so only the
+      // parent-channel answer starts.
+      expect(h.scheduler.tick()).toBe(1);
+      await flush();
+      expect(h.entered.map((call) => call.invocationId)).toEqual(['inv-parent']);
+      expect(h.scheduler.tick()).toBe(0);
+      await flush();
+      expect(h.entered.map((call) => call.invocationId)).toEqual(['inv-parent']);
+
+      h.resolveGate('inv-parent');
+      await flush();
+      await h.scheduler.idle();
+      expect(h.scheduler.tick()).toBe(1);
+      await flush();
+      expect(h.entered.map((call) => call.invocationId)).toEqual(['inv-parent', 'inv-thread']);
+
+      h.resolveGate('inv-thread');
+      await h.scheduler.idle();
+
+      expect(h.active.max).toBe(1);
+      expect(h.sent.map((post) => post.message.content)).toEqual([
+        'answer for inv-parent',
+        'answer for inv-thread',
+      ]);
+      expect(jobStates(h)).toEqual(['done', 'done']);
+    } finally {
+      h.close();
+    }
+  });
 });
