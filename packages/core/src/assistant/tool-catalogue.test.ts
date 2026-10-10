@@ -66,6 +66,22 @@ describe('TOOL_CATALOGUE', () => {
     expect(TOOL_CATALOGUE.map((tool) => tool.name)).not.toContain('create-reminder');
   });
 
+  it('describes every tool with what it does and when to use it (ADR 0136, spec 1b)', () => {
+    for (const entry of TOOL_CATALOGUE) {
+      expect(entry.description.length, entry.name).toBeGreaterThanOrEqual(120);
+      expect(entry.description, entry.name).toMatch(
+        /\bUse (it |this )?(when|whenever|after|first|only)\b/i,
+      );
+    }
+    const reminder = TOOL_CATALOGUE.find((e) => e.name === 'set_reminder')!.description;
+    expect(reminder).toContain('Example:');
+    expect(reminder).toContain('members: ["Sam L"]');
+    expect(reminder).not.toContain('use current_time first');
+    const web = TOOL_CATALOGUE.find((e) => e.name === 'web_search')!.description;
+    expect(web).toContain('club sources first');
+    expect(web).toContain('Never put names');
+  });
+
   it('declares the acting and listing tools with their acting skill and round scope', () => {
     const expected: Readonly<Record<string, { readonly skill: string; readonly rounds: string }>> =
       {
@@ -90,7 +106,7 @@ describe('TOOL_CATALOGUE', () => {
     const mine = TOOL_CATALOGUE.find((tool) => tool.name === 'my_reminders')!;
     expect(mine.skills).toEqual(['search-club', 'reminders']);
     expect(mine.description).toBe(
-      "The asking member's own reminders that have not finished, with ids for edit_reminder and cancel_reminder. The server owner may pass all=true to see everyone's.",
+      "The asking member's unfinished reminders and scheduled posts, with ids for edit_reminder and cancel_reminder. Use it when a member asks what is scheduled, or before changing or cancelling one. The server owner may pass all=true to see everyone's.",
     );
     expect(mine.parameters.properties.all).toMatchObject({ type: 'boolean' });
     expect(mine.parameters.required ?? []).not.toContain('all');
@@ -181,7 +197,7 @@ describe('TOOL_CATALOGUE', () => {
       maxLength: 80,
     });
     expect(search.parameters.required ?? []).not.toContain('filter');
-    expect(search.description).toContain('Without a query it lists');
+    expect(search.description).toContain('without a query it lists');
     expect(search.rounds).toBe('all');
     const read = TOOL_CATALOGUE.find((tool) => tool.name === 'read_chunk')!;
     expect(read.parameters.properties.chunkId).toMatchObject({ type: 'string' });
@@ -245,7 +261,7 @@ describe('TOOL_CATALOGUE', () => {
   it('gives search_conversations a bounded query string on the search skill (ADR 0093)', () => {
     const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_conversations')!;
     expect(search.description).toBe(
-      'Look back at summaries of earlier conversations in channels everyone here can read.',
+      'Search summaries of earlier conversations with the bot in channels everyone here can read. Use it when a member refers to something discussed with the bot before, such as "what did we decide last week".',
     );
     expect(search.parameters.properties.query).toMatchObject({
       type: 'string',
