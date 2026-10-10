@@ -1,0 +1,1 @@
+ALTER TABLE `resource_documents` ADD `blob_sha` text;

@@ -41,6 +41,7 @@ export interface StoredDocument {
   readonly status: 'ok' | 'error';
   readonly error?: string;
   readonly errorCode?: string;
+  readonly blobSha?: string;
 }
 
 export interface StoredChunk {
@@ -68,6 +69,7 @@ export interface UpsertDocumentInput {
   readonly status: 'ok' | 'error';
   readonly error?: string;
   readonly errorCode?: string;
+  readonly blobSha?: string;
 }
 
 const toDocument = (r: typeof resourceDocuments.$inferSelect): StoredDocument => ({
@@ -84,6 +86,7 @@ const toDocument = (r: typeof resourceDocuments.$inferSelect): StoredDocument =>
   status: r.status as 'ok' | 'error',
   ...(r.error === null ? {} : { error: r.error }),
   ...(r.errorCode === null ? {} : { errorCode: r.errorCode }),
+  ...(r.blobSha === null ? {} : { blobSha: r.blobSha }),
 });
 
 const toChunk = (r: typeof resourceChunks.$inferSelect): StoredChunk => ({
@@ -117,6 +120,7 @@ export const upsertDocument = (scope: GuildScope, d: UpsertDocumentInput): void 
       // Null when absent or when the fetch succeeded — an ok document never
       // carries a stale code from an earlier failure.
       errorCode: d.status === 'ok' ? null : (d.errorCode ?? null),
+      blobSha: d.blobSha ?? null,
     };
     db.insert(resourceDocuments)
       .values(values)

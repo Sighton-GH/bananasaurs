@@ -187,6 +187,40 @@ describe('upsertDocument / getDocumentByUrl / listDocuments', () => {
     expect(okDoc?.status).toBe('ok');
     expect(okDoc).not.toHaveProperty('errorCode');
   });
+
+  it('round-trips blobSha through getDocumentByUrl and listDocuments, and clears it when absent', () => {
+    seedResource(a, 'res-1', 'https://example.com/guide');
+    const docId = computeDocId('https://example.com/guide');
+    upsertDocument(a, {
+      resourceId: 'res-1',
+      docId,
+      url: 'https://example.com/guide',
+      path: '/guide',
+      title: 'Guide',
+      contentHash: 'hash-1',
+      fetchedAt: 1000,
+      bytes: 42,
+      status: 'ok',
+      blobSha: 'abc',
+    });
+    expect(getDocumentByUrl(a, 'https://example.com/guide')).toMatchObject({ blobSha: 'abc' });
+    expect(listDocuments(a, 'res-1')[0]).toMatchObject({ blobSha: 'abc' });
+
+    upsertDocument(a, {
+      resourceId: 'res-1',
+      docId,
+      url: 'https://example.com/guide',
+      path: '/guide',
+      title: 'Guide',
+      contentHash: 'hash-1',
+      fetchedAt: 2000,
+      bytes: 42,
+      status: 'ok',
+    });
+    const cleared = getDocumentByUrl(a, 'https://example.com/guide');
+    expect(cleared).not.toHaveProperty('blobSha');
+    expect(listDocuments(a, 'res-1')[0]).not.toHaveProperty('blobSha');
+  });
 });
 
 describe('replaceChunks / getChunk / neighbours / outline', () => {

@@ -2515,6 +2515,9 @@ export const resourceDocuments = sqliteTable(
     // The provider or fetch failure code (e.g. a bot challenge), if any.
     // Null when absent or when the fetch succeeded.
     errorCode: text('error_code'),
+    // The git blob SHA of a GitHub file as of its last successful download
+    // (ADR 0135 plan, Task 2). Null for websites, notes, and failed fetches.
+    blobSha: text('blob_sha'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.docId] }),
