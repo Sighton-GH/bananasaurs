@@ -364,16 +364,21 @@ async function main(): Promise<void> {
     shuttingDown = true;
     log.info(safeLogFields({ component: 'shutdown', reason }), 'shutting down');
     try {
-      // Order matters: stop taking new events, let the ones in flight finish,
-      // then close the database. Closing first would fail them mid-write.
-      // The operator socket goes first of all, so a `bananasaurs` invocation
+      // Order matters: stop taking new events, let the in-flight jobs finish
+      // while the client can still deliver their answers, then destroy the
+      // client, handle events that arrived meanwhile, and close the database.
+      // Closing first would fail them mid-write. The operator socket goes
+      // first of all, so a `bananasaurs` invocation
       // during shutdown is refused at connect rather than half-served. The
       // dashboard goes with it, and for the same reason: an HTTP request
       // arriving mid-shutdown is refused at connect rather than half-served.
       await opsSocket.close();
       await dashboard?.close();
-      await client.destroy();
+      // ADR 0135: jobs first, while the client can still deliver their answers.
       await daemon.stop();
+      await client.destroy();
+      // Events that arrived while jobs finished are handled before the database closes.
+      await daemon.settle();
     } finally {
       opened.close();
     }

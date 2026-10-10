@@ -48,7 +48,7 @@ or in connected conversations, must not break each other.
 4. Concurrency never increases the number of provider calls, only how many overlap. The local RPM/RPD limits still
    bound bursts per model.
 5. `stop()` waits for in-flight jobs. A deploy no longer abandons an answer mid-call (it would have been requeued
-   by `recoverStranded` and answered twice over).
+   by `recoverStranded` and answered twice over). Shutdown stops the job scheduler before destroying the Discord client, so an answer finishing inside the grace can still post.
 6. `JobWorker.runOnce` and `drain` keep their serial behaviour. Tests use them, and production no longer does.
 
 ## Consequences
