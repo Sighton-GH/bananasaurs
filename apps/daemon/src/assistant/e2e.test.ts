@@ -302,7 +302,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     expect(taskRepo.getTask(scope, taskId)).toMatchObject({ status: 'not_started', version: 1 });
     expect(taskRepo.listReports(scope, taskId)).toHaveLength(0);
   });
-  it('runs organisation, resource, reminder, decision and IT flows without a real Discord send', async () => {
+  it('runs organisation, resource, reminder, decision and IT flows without a real Discord send (ADR 0136)', async () => {
     const scope = t.scopes.forGuild(GUILD);
     const direct = {
       id: 'direct',
@@ -390,7 +390,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       source: 'slash-command',
     });
     expect(agenda).toMatchObject({ ok: true });
-    expect(fixture.generateText.mock.calls[0]?.[0].systemInstruction).toContain('draft-agenda');
+    expect(fixture.generateText.mock.calls[0]?.[0].systemInstruction).toContain(
+      'Draft a meeting agenda: Draft a meeting agenda from club context without publishing it.',
+    );
     expect(fixture.generateText.mock.calls[0]?.[0].messages[0]?.text).toContain('UNTRUSTED');
     expect(fetchResource).not.toHaveBeenCalled();
     expect(fixture.generateText.mock.calls[0]?.[0].systemInstruction).toContain('CLUB SOURCES');
