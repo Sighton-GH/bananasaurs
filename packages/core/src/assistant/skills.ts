@@ -26,6 +26,17 @@ export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
     requiresConfirmation: false,
   },
   {
+    id: 'web-search',
+    name: 'Search the web',
+    description: 'Search the public web for general and current questions when club sources have nothing.',
+    promptLine: 'Search the web for general or current questions, after checking club sources for club questions.',
+    effect: 'read',
+    requiredPermission: 'assistant.search',
+    acts: false,
+    defaultScope: 'everyone',
+    requiresConfirmation: false,
+  },
+  {
     id: 'reminders',
     name: 'Reminders',
     description:

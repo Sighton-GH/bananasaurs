@@ -374,7 +374,8 @@ export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =
       (entry.name !== 'upcoming_events' || ports.upcomingEvents !== undefined) &&
       (entry.name !== 'channel_history' || ports.channelHistory !== undefined) &&
       (entry.name !== 'search_conversations' || ports.searchConversations !== undefined) &&
-      (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)),
+      (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)) &&
+      (entry.requiresSkill === undefined || ports.skillAllowed(entry.requiresSkill)),
   ).map((entry) => ({
     name: entry.name,
     description: entry.description,
@@ -776,6 +777,8 @@ export const runAssistantTool = async (
       }
       case 'web_search': {
         const { query: q } = parsed.data as z.infer<typeof query>;
+        const gate = requireSkill(ports, name, 'web-search');
+        if (gate !== undefined) return gate;
         if (ports.webSearch === undefined) return refused(name, 'Web search is off.');
         // The query leaves for the search provider: the same local scan as member input.
         if (
