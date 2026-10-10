@@ -477,17 +477,13 @@ describe('claimNext with ordering keys (ADR 0135)', () => {
   it('(c) excludeKinds excludes', () => {
     put(a, { dedupeKey: 'first', kind: 'excluded_kind' });
     put(a, { dedupeKey: 'second', kind: 'kept_kind' });
-    expect(claimNext(a, 1000, { excludeKinds: ['excluded_kind'] })?.dedupeKey).toBe(
-      'second',
-    );
+    expect(claimNext(a, 1000, { excludeKinds: ['excluded_kind'] })?.dedupeKey).toBe('second');
   });
 
   it('(d) a busy key is skipped and the next different-key row is claimed', () => {
     put(a, { dedupeKey: 'busy', runAfter: 100, orderingKey: 'chan:A' });
     put(a, { dedupeKey: 'free', runAfter: 200, orderingKey: 'chan:B' });
-    expect(
-      claimNext(a, 1000, { busyOrderingKeys: ['chan:A'] })?.dedupeKey,
-    ).toBe('free');
+    expect(claimNext(a, 1000, { busyOrderingKeys: ['chan:A'] })?.dedupeKey).toBe('free');
   });
 
   it('(e) the oldest row keyless with laneBusy true gives undefined, even with a newer keyed row due', () => {

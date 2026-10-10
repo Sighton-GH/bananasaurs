@@ -186,9 +186,7 @@ export const claimNext = (
     const oldest = db
       .select(columns)
       .from(jobs)
-      .where(
-        scope.only(jobs, eq(jobs.state, 'queued'), lte(jobs.runAfter, now), ...kindConditions),
-      )
+      .where(scope.only(jobs, eq(jobs.state, 'queued'), lte(jobs.runAfter, now), ...kindConditions))
       .orderBy(asc(jobs.runAfter), asc(jobs.jobId))
       .limit(1)
       .get();

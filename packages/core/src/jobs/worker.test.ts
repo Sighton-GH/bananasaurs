@@ -362,7 +362,12 @@ describe('claim plus execute equals runOnce', () => {
         return s.store.claimNext(nowMs);
       },
     };
-    const worker = new JobWorker({ store: forwarding, handlers: [handlerFor(ran)], logger, now: () => 1000 });
+    const worker = new JobWorker({
+      store: forwarding,
+      handlers: [handlerFor(ran)],
+      logger,
+      now: () => 1000,
+    });
     worker.claim({ kinds: ['sweep'], laneBusy: true });
     expect(seen).toEqual([{ kinds: ['sweep'], laneBusy: true }]);
   });

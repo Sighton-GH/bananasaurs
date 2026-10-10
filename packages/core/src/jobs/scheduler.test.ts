@@ -19,6 +19,7 @@ const deferred = () => {
 interface Row {
   jobId: number;
   kind: string;
+  payload: string;
   orderingKey: string | null;
   state: 'queued' | 'running' | 'done' | 'failed';
   runAfter: number;
@@ -37,8 +38,7 @@ const fakeStore = () => {
 
   const matches = (row: Row, filter: ClaimFilter | undefined): boolean => {
     if (filter?.kinds !== undefined && !filter.kinds.includes(row.kind)) return false;
-    if (filter?.excludeKinds !== undefined && filter.excludeKinds.includes(row.kind))
-      return false;
+    if (filter?.excludeKinds !== undefined && filter.excludeKinds.includes(row.kind)) return false;
     return true;
   };
 
@@ -97,15 +97,13 @@ const fakeStore = () => {
     rows.push({
       jobId,
       kind,
+      payload: JSON.stringify(payload),
       orderingKey,
       state: 'queued',
       runAfter,
       attempts: 0,
       maxAttempts: 3,
-      ...(payload as object),
-    } as Row & { payload: string });
-    const row = rows[rows.length - 1]!;
-    (row as unknown as { payload: string }).payload = JSON.stringify(payload);
+    });
     return jobId;
   };
 
@@ -117,7 +115,7 @@ type Store = ReturnType<typeof fakeStore>;
 const payloadSchema = z.object({ token: z.string().optional(), boom: z.boolean().optional() });
 
 /** Handlers block on deferred promises the test resolves by hand; nothing sleeps. */
-const setup = (s: Store, gates: Map<string, ReturnType<typeof deferred>>) => {
+const setup = (gates: Map<string, ReturnType<typeof deferred>>) => {
   const started: string[] = [];
   const blocking = (kind: string): AnyJobHandler => ({
     kind,
@@ -185,7 +183,7 @@ beforeEach(() => {
 
 describe('LaneScheduler', () => {
   it('(a) a blocked background job does not stop other lanes in the same tick', () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set(JOB_KINDS.resourceRefresh, deferred());
     gates.set(JOB_KINDS.assistantInvoke, deferred());
     s.queue(JOB_KINDS.resourceRefresh, null, { token: JOB_KINDS.resourceRefresh });
@@ -193,7 +191,11 @@ describe('LaneScheduler', () => {
     s.queue(JOB_KINDS.reconcileGuild, null, { token: 'reconcile' });
     const scheduler = build(
       s,
-      [h.blocking(JOB_KINDS.resourceRefresh), h.blocking(JOB_KINDS.assistantInvoke), h.immediate(JOB_KINDS.reconcileGuild)],
+      [
+        h.blocking(JOB_KINDS.resourceRefresh),
+        h.blocking(JOB_KINDS.assistantInvoke),
+        h.immediate(JOB_KINDS.reconcileGuild),
+      ],
       () => 4,
     );
     expect(scheduler.tick()).toBe(3);
@@ -203,7 +205,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(b) assistant concurrency 2 runs two invokes and holds the third', async () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     for (const key of ['chan:A', 'chan:B', 'chan:C']) gates.set(key, deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'chan:A' });
     s.queue(JOB_KINDS.assistantInvoke, 'chan:B', { token: 'chan:B' });
@@ -219,7 +221,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(c) two invokes on one key run in enqueue order, one at a time', async () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('first', deferred());
     gates.set('second', deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'first' });
@@ -235,7 +237,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(d) a thread invoke keyed by its parent waits for the parent-channel invoke', () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('parent', deferred());
     gates.set('thread', deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'parent' });
@@ -247,7 +249,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(e) a summarise on chan:A waits for a running invoke on chan:A', () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('invoke', deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'invoke' });
     s.queue(JOB_KINDS.assistantSummarise, 'chan:A', { token: 'summary' });
@@ -261,7 +263,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(f) a keyless prune waits for lane empty, and blocks the lane while running', async () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('invoke', deferred());
     gates.set('prune', deferred());
     gates.set('later', deferred());
@@ -288,7 +290,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(g) the default lane runs strictly one at a time, in FIFO order', async () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('first', deferred());
     gates.set('second', deferred());
     s.queue(JOB_KINDS.reconcileGuild, null, { token: 'first' });
@@ -308,16 +310,11 @@ describe('LaneScheduler', () => {
   });
 
   it('(h) a throwing handler fails via the store without breaking the scheduler', async () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'bad', boom: true });
     s.queue(JOB_KINDS.assistantInvoke, 'chan:B', { token: 'good' });
     const { logger, lines } = capturingLogger();
-    const scheduler = build(
-      s,
-      [h.immediate(JOB_KINDS.assistantInvoke)],
-      () => 4,
-      logger,
-    );
+    const scheduler = build(s, [h.immediate(JOB_KINDS.assistantInvoke)], () => 4, logger);
     expect(scheduler.tick()).toBe(2);
     await scheduler.idle();
     expect(s.failures.map((f) => f.jobId)).toEqual([1]);
@@ -330,7 +327,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(i) the concurrency function is re-read every tick', () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     for (const key of ['chan:A', 'chan:B']) gates.set(key, deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'chan:A' });
     s.queue(JOB_KINDS.assistantInvoke, 'chan:B', { token: 'chan:B' });
@@ -343,7 +340,7 @@ describe('LaneScheduler', () => {
   });
 
   it('(j) idle resolves only after every started job settles', async () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('one', deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'one' });
     const scheduler = build(s, [h.blocking(JOB_KINDS.assistantInvoke)], () => 4);
@@ -360,7 +357,7 @@ describe('LaneScheduler', () => {
   });
 
   it('treats concurrency below 1 as 1', () => {
-    const h = setup(s, gates);
+    const h = setup(gates);
     gates.set('one', deferred());
     s.queue(JOB_KINDS.assistantInvoke, 'chan:A', { token: 'one' });
     const scheduler = build(s, [h.blocking(JOB_KINDS.assistantInvoke)], () => 0);

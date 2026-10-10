@@ -36,7 +36,11 @@ export class LaneScheduler {
   readonly #running = new Map<JobLane, Set<ClaimedJob>>();
   readonly #inFlight = new Set<Promise<void>>();
 
-  constructor(deps: { readonly worker: JobWorker; readonly lanes: readonly LaneConfig[]; readonly logger: Logger }) {
+  constructor(deps: {
+    readonly worker: JobWorker;
+    readonly lanes: readonly LaneConfig[];
+    readonly logger: Logger;
+  }) {
     this.#worker = deps.worker;
     this.#lanes = deps.lanes;
     this.#logger = deps.logger;
@@ -85,10 +89,7 @@ export class LaneScheduler {
           laneBusy: running.length > 0,
         });
       } catch (err) {
-        this.#logger.error(
-          safeLogFields({ component: 'jobs', lane, err }),
-          'job claim failed',
-        );
+        this.#logger.error(safeLogFields({ component: 'jobs', lane, err }), 'job claim failed');
         break;
       }
       if (job === undefined) break;

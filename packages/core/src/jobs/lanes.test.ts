@@ -5,7 +5,7 @@ import { assistantOrderingKey, JOB_LANES, kindsInLane, laneOf } from './lanes.js
 describe('job lanes', () => {
   it('maps every JOB_KINDS value to a lane', () => {
     for (const kind of Object.values(JOB_KINDS)) {
-      expect(JOB_LANES[kind as keyof typeof JOB_LANES]).toBeDefined();
+      expect(JOB_LANES[kind]).toBeDefined();
     }
   });
 
@@ -41,8 +41,8 @@ describe('job lanes', () => {
   it('assistantOrderingKey covers all three cases', () => {
     expect(assistantOrderingKey({ userId: 'U1' })).toBe('user:U1');
     expect(assistantOrderingKey({ channelId: 'C1', userId: 'U1' })).toBe('chan:C1');
-    expect(
-      assistantOrderingKey({ channelId: 'T1', threadParentId: 'P1', userId: 'U1' }),
-    ).toBe('chan:P1');
+    expect(assistantOrderingKey({ channelId: 'T1', threadParentId: 'P1', userId: 'U1' })).toBe(
+      'chan:P1',
+    );
   });
 });
