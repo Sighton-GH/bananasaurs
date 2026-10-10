@@ -365,7 +365,9 @@ export const registerTaskWriteRoutes = (
   });
   const childEditSchema = childSchema;
   const versionSchema = z.object({ version: z.number().int().positive() }).strict();
-  const lifecycle = (action: 'approve' | 'reject' | 'status' | 'archive' | 'unarchive'): void => {
+  const lifecycle = (
+    action: 'approve' | 'reject' | 'complete' | 'status' | 'archive' | 'unarchive',
+  ): void => {
     const path = action === 'status' ? '/api/tasks/:taskId/status' : `/api/tasks/:taskId/${action}`;
     const schema =
       action === 'status'
@@ -397,6 +399,8 @@ export const registerTaskWriteRoutes = (
       const write: Record<typeof action, () => boolean> = {
         approve: () => taskRepo.approveTask(session.scope, taskId, version, actor, now),
         reject: () => taskRepo.rejectTask(session.scope, taskId, version, actor, now),
+        // ADR 0138: a dashboard manager's direct completion, from a working status only.
+        complete: () => taskRepo.completeTask(session.scope, taskId, version, actor, now),
         archive: () => taskRepo.archiveTask(session.scope, taskId, version, actor, now),
         unarchive: () => taskRepo.unarchiveTask(session.scope, taskId, version, actor, now),
         status: () =>
@@ -410,6 +414,7 @@ export const registerTaskWriteRoutes = (
   };
   lifecycle('approve');
   lifecycle('reject');
+  lifecycle('complete');
   lifecycle('status');
   lifecycle('archive');
   lifecycle('unarchive');

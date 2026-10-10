@@ -356,19 +356,36 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'panels.manage', reply)) return reply;
 
     const ports = deps.portsFor(session.scope);
-    if (ports.findPanel(request.params.id) === undefined) {
+    const panel = ports.findPanel(request.params.id);
+    if (panel === undefined) {
       return reply.status(404).send({ error: 'not-found' });
     }
+    // ADR 0139: the same two rules as `panel sync`. A panel something took out
+    // of service is not put back in front of members by a publish.
+    if (panel.status !== 'enabled') {
+      return reply.status(409).send({
+        error: 'panel-not-enabled',
+        status: panel.status,
+        // Title and hint come from the error catalog; the message names this panel.
+        message:
+          `Panel ${panel.panelId} is ${panel.status}, so publishing it would put it back in ` +
+          'front of members after something took it out of service.',
+      });
+    }
     const result = await ports.publishPanel(request.params.id);
+    // An adopted panel's message is not ours to rewrite, so publish only seeds
+    // its emoji; the re-check grants roles to anyone who had already reacted.
+    const queued = panel.kind === 'adopted' ? ports.enqueueReconcile(request.params.id) : undefined;
+    const reconcileJobId = queued?.jobId ?? null;
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'panel.published',
       subjectType: 'panel',
       subjectId: request.params.id,
       before: undefined,
-      after: { action: result.action, messageId: result.messageId ?? null },
+      after: { action: result.action, messageId: result.messageId ?? null, reconcileJobId },
     });
-    return reply.status(200).send(result);
+    return reply.status(200).send({ ...result, reconcileJobId });
   });
 
   app.post<{ Params: { id: string } }>('/api/panels/:id/reconcile', (request, reply) => {

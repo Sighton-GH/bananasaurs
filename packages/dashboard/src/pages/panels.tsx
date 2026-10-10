@@ -26,9 +26,11 @@ import { PanelBuilder } from './panel-builder.js';
  * as the production creation path (ADR 0053), and the two actions the
  * operator CLI gates behind `--confirm` (ADR 0051 D3/D4). Publish posts
  * or edits the panel's Discord message right now — a live side effect, so it
- * states its scope first. Reconcile only enqueues a job: the worker
- * reconciles against Discord under the current kill switch and dry-run
- * state, which is the observe-safe half.
+ * states its scope first. For a reaction role (an adopted panel) the message
+ * is someone else's, so publish adds the emoji and queues a re-check instead
+ * (ADR 0139). "Re-check reactions" only enqueues that job: the worker
+ * matches roles to the message's reactions under the current kill switch and
+ * dry-run state. Button and dropdown panels have no reactions to re-check.
  */
 export function PanelsPage() {
   const session = useSession();
@@ -84,17 +86,28 @@ export function PanelsPage() {
       );
       if (result !== undefined) {
         const failed = result.reactionsFailed.length;
-        toast({
-          tone: result.action === 'not-managed' || failed > 0 ? 'hold' : 'ok',
-          title:
-            result.action === 'not-managed'
-              ? 'Panel not managed — Discord refused the edit'
-              : `Panel ${result.action}`,
+        // `not-managed` is an adopted panel's normal answer, not a refusal: the
+        // bot may not edit someone else's message, so it only adds the emoji.
+        const adopted = result.action === 'not-managed';
+        const detail = [
+          ...(adopted
+            ? [
+                'The emoji are on the existing message; its text is unchanged.' +
+                  (result.reconcileJobId !== null
+                    ? ` Anyone who had already reacted gets their role shortly (job #${String(result.reconcileJobId)}).`
+                    : ''),
+              ]
+            : []),
           ...(failed > 0
-            ? {
-                message: `${String(failed)} emoji refused: ${result.reactionsFailed.map((f) => f.emojiKey).join(', ')}.`,
-              }
-            : {}),
+            ? [
+                `${String(failed)} emoji refused: ${result.reactionsFailed.map((f) => f.emojiKey).join(', ')}.`,
+              ]
+            : []),
+        ];
+        toast({
+          tone: failed > 0 ? 'hold' : 'ok',
+          title: adopted ? 'Reaction role is live' : `Panel ${result.action}`,
+          ...(detail.length > 0 ? { message: detail.join(' ') } : {}),
         });
         panels.reload();
         if (selected !== undefined) await view(selected);
@@ -114,8 +127,8 @@ export function PanelsPage() {
       toast({
         tone: 'ok',
         title: result.enqueued
-          ? `Reconcile enqueued for ${panel.panelId}`
-          : 'A reconcile was already pending',
+          ? `Re-checking the reactions on ${panel.panelId}`
+          : 'A re-check was already queued',
         ...(result.jobId !== undefined ? { message: `job #${String(result.jobId)}` } : {}),
       });
     }
@@ -125,7 +138,7 @@ export function PanelsPage() {
     <>
       <PageHeader
         title="Self-granted roles"
-        purpose="Members give themselves roles here: by reacting with an emoji on a message that already exists, or by using buttons or a dropdown on one the bot posts. Build them here, see whether Discord still agrees, and drive publish and reconcile."
+        purpose="Members give themselves roles here: by reacting with an emoji on a message that already exists, or by using buttons or a dropdown on one the bot posts. Build them here, then publish them to Discord."
         actions={
           building ? undefined : (
             <Button variant="primary" onClick={() => setBuilding(true)}>
@@ -241,10 +254,19 @@ export function PanelsPage() {
               <Button variant="primary" busy={busy} onClick={() => setPublishing(selected)}>
                 Publish to Discord
               </Button>
-              <Button busy={busy} onClick={() => void reconcile(selected)}>
-                Enqueue reconcile
-              </Button>
+              {selected.kind === 'adopted' && (
+                <Button busy={busy} onClick={() => void reconcile(selected)}>
+                  Re-check reactions
+                </Button>
+              )}
             </div>
+            {selected.kind === 'adopted' && (
+              <p className="mt-2 text-sm text-ink-muted">
+                Re-check reactions brings members&apos; roles back in line with their reactions on
+                the message, for reactions added or removed while the bot was offline. It also runs
+                on its own after a publish and whenever the bot reconnects to Discord.
+              </p>
+            )}
           </Card>
           <Card title="Options">
             {selected.options.length === 0 ? (
@@ -279,11 +301,18 @@ export function PanelsPage() {
         open={publishing !== undefined}
         title={`Publish panel ${publishing?.panelId ?? ''}?`}
         scope={
-          <p>
-            Posts or edits the panel&apos;s message in Discord channel {publishing?.channelId ?? ''}{' '}
-            right now — members see the result immediately. To check drift without touching Discord,
-            enqueue a reconcile instead.
-          </p>
+          publishing?.kind === 'adopted' ? (
+            <p>
+              Adds this reaction role&apos;s emoji to the existing message in Discord channel{' '}
+              {publishing.channelId} right now, then re-checks its reactions so anyone who already
+              reacted gets their role. The message text is not changed.
+            </p>
+          ) : (
+            <p>
+              Posts or edits the panel&apos;s message in Discord channel{' '}
+              {publishing?.channelId ?? ''} right now — members see the result immediately.
+            </p>
+          )
         }
         confirmLabel="Publish to Discord"
         busy={busy}

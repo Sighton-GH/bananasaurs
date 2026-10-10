@@ -85,6 +85,29 @@ describe('task detail page', () => {
     });
   });
 
+  it('Mark done posts { version } to /complete for a working task (ADR 0138)', async () => {
+    const working = { ...BASE_TASK, status: 'in_progress', version: 2 };
+    const mock = renderDetail({ ...DETAIL, task: working }, [
+      { method: 'POST', url: '/api/tasks/task-1/complete', body: { task: working } },
+    ]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark done' }));
+    await vi.waitFor(() => {
+      const posts = (mock.mock.calls as unknown[][]).filter(
+        ([url, init]) =>
+          url === '/api/tasks/task-1/complete' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(posts.length).toBeGreaterThan(0);
+      expect(bodyOf(posts[0]!)).toEqual({ version: 2 });
+    });
+  });
+
+  it('offers Approve, not Mark done, while a completion request is waiting', async () => {
+    renderDetail();
+    await screen.findByRole('button', { name: 'Approve' });
+    expect(screen.queryByRole('button', { name: 'Mark done' })).toBeNull();
+  });
+
   it('detail edit with a thread destination sends that thread id', async () => {
     const mock = renderDetail(
       { ...DETAIL, task: { ...BASE_TASK, status: 'in_progress', version: 2 } },

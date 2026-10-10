@@ -324,6 +324,11 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'That channel is not being archived.',
     hint: 'Turn archiving on for the channel first.',
   },
+  'panel-not-enabled': {
+    title: 'This panel is switched off',
+    explanation: 'Something took this panel out of service, so publishing it is refused.',
+    hint: 'Nothing turns a switched-off panel back on; build a new one in its place.',
+  },
   'message-unusable': {
     title: "That message can't be used",
     explanation: 'The channel or message id did not match a real message.',

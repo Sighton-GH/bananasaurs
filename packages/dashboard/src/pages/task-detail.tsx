@@ -291,6 +291,18 @@ function TaskDetail({
           )}
           {(task.status === 'not_started' || task.status === 'in_progress') && !archived && (
             <>
+              {/* ADR 0138: a manager completes directly; a member's request still goes through Approve. */}
+              <Button
+                busy={actionBusy === 'complete'}
+                onClick={() =>
+                  void act('complete', `/api/tasks/${task.taskId}/complete`, {
+                    version: task.version,
+                  })
+                }
+                className="min-h-10"
+              >
+                Mark done
+              </Button>
               <Button
                 busy={actionBusy === 'progress'}
                 onClick={() =>

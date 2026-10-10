@@ -492,6 +492,8 @@ export interface PublishResult {
   readonly messageId: string | undefined;
   readonly reactionsSeeded: number;
   readonly reactionsFailed: readonly { emojiKey: string; error: string }[];
+  /** The reaction re-check queued after an adopted panel's publish (ADR 0139); null otherwise. */
+  readonly reconcileJobId: number | null;
 }
 
 /** `POST /api/panels/:id/reconcile` and other enqueue answers — mirrors `OpsEnqueued`. */

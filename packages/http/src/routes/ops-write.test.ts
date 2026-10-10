@@ -14,6 +14,7 @@ import {
   loggingRepo,
   modCaseRepo,
   oauthRepo,
+  panelRepo,
   roleRepo,
 } from '@bananasaurs/storage';
 import { CAPABILITIES, OPS_AUDIT_ACTIONS, parseGuildId, type Capability } from '@bananasaurs/core';
@@ -1080,6 +1081,104 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
       .tailAudit(scope, { limit: 10 })
       .filter((row) => row.action === 'panel.created');
     expect(created).toHaveLength(1);
+  });
+
+  describe('POST /api/panels/:id/publish (ADR 0139, parity with `panel sync`)', () => {
+    const ADOPTED_BODY = {
+      ...PANEL_BODY,
+      kind: 'adopted',
+      component: 'reaction',
+      messageId: '555555555555555555',
+      options: [
+        { optionId: 'red', roleId: '333333333333333333', emojiKey: 'u:1f534', position: 0 },
+      ],
+    };
+
+    /** Stubs the two Discord-facing ports and records what the route asked of them. */
+    const stubPublish = (action: 'posted' | 'edited' | 'not-managed') => {
+      const calls = { published: [] as string[], reconciled: [] as string[] };
+      const real = deps.portsFor;
+      (deps as { portsFor: typeof real }).portsFor = (scope: Parameters<typeof real>[0]) => ({
+        ...real(scope),
+        findGuildMessage: () => Promise.resolve('ok' as const),
+        publishPanel: (panelId: string) => {
+          calls.published.push(panelId);
+          return Promise.resolve({
+            action,
+            messageId: '555555555555555555',
+            reactionsSeeded: 1,
+            reactionsFailed: [],
+          });
+        },
+        enqueueReconcile: (panelId: string) => {
+          calls.reconciled.push(panelId);
+          return { enqueued: true, jobId: 42 };
+        },
+      });
+      return calls;
+    };
+
+    const publish = (cookie: string, csrf: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/panels/colour-roles/publish',
+        headers: { cookie, [CSRF]: csrf },
+        payload: {},
+      });
+
+    it('queues a reaction re-check after publishing an adopted panel', async () => {
+      const { cookie, csrf } = await signIn();
+      grant(['panels.manage']);
+      allowlistRoles();
+      const calls = stubPublish('not-managed');
+      expect((await post(cookie, csrf, ADOPTED_BODY)).statusCode).toBe(201);
+
+      const response = await publish(cookie, csrf);
+      expect(response.statusCode, JSON.stringify(response.json())).toBe(200);
+      expect(response.json()).toMatchObject({ action: 'not-managed', reconcileJobId: 42 });
+      expect(calls).toEqual({ published: ['colour-roles'], reconciled: ['colour-roles'] });
+      const audit = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 1 });
+      expect(audit[0]).toMatchObject({ action: 'panel.published', actorType: 'dashboard' });
+      expect(JSON.parse(audit[0]!.after!)).toMatchObject({ reconcileJobId: 42 });
+    });
+
+    it('queues nothing for a managed panel, which has no reactions to re-check', async () => {
+      const { cookie, csrf } = await signIn();
+      grant(['panels.manage']);
+      allowlistRoles();
+      const calls = stubPublish('posted');
+      expect((await post(cookie, csrf, PANEL_BODY)).statusCode).toBe(201);
+
+      const response = await publish(cookie, csrf);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ action: 'posted', reconcileJobId: null });
+      expect(calls.reconciled).toEqual([]);
+    });
+
+    it('refuses a disabled panel without touching Discord', async () => {
+      const { cookie, csrf } = await signIn();
+      grant(['panels.manage']);
+      allowlistRoles();
+      const calls = stubPublish('posted');
+      expect((await post(cookie, csrf, PANEL_BODY)).statusCode).toBe(201);
+      panelRepo.setPanelStatus(
+        t.scopes.forGuild(GUILD),
+        'colour-roles',
+        'disabled_by_doctor',
+        'the panel message was deleted',
+        clock,
+      );
+
+      const response = await publish(cookie, csrf);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        error: 'panel-not-enabled',
+        status: 'disabled_by_doctor',
+        title: 'This panel is switched off',
+        hint: 'Nothing turns a switched-off panel back on; build a new one in its place.',
+      });
+      expect(calls).toEqual({ published: [], reconciled: [] });
+    });
   });
 });
 
