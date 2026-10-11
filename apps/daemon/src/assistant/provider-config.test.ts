@@ -84,6 +84,22 @@ it('stores project and fingerprint, and persists and clears cooldowns (ADR 0143)
   store.clearCooldowns(keyId);
   expect(assistantKeyCooldownsRepo.getCooldown(instance, keyId, 'm', 2000)).toBeUndefined();
 });
+it('reserveTestEntry counts against the given selected key (ADR 0143)', () => {
+  const instance = t.scopes.instance();
+  const store = createProviderConfigStore(instance, 'a'.repeat(32));
+  const first = store.addKey({ provider: 'gemini', label: 'One', apiKey: 'AIza-test-one' }, 10);
+  const second = store.addKey({ provider: 'gemini', label: 'Two', apiKey: 'AIza-test-two' }, 10);
+  const entry = {
+    keyId: first,
+    selectedKeyId: second,
+    model: 'm',
+    providerId: 'gemini' as const,
+    rpmLimit: null,
+    rpdLimit: 1,
+  };
+  expect(store.reserveTestEntry(entry, '123456789012345678')).toEqual({ ok: true });
+  expect(store.reserveTestEntry(entry, '123456789012345678')).toMatchObject({ ok: false });
+});
 it('retains the encrypted key on settings-only updates and disables without exposing it', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
   const keyId = store.addKey({ provider: 'openrouter', label: 'OpenRouter', apiKey: 'secret' }, 10);

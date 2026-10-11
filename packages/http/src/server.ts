@@ -276,6 +276,23 @@ export interface HttpDeps extends AuthDeps {
          * owner-set RPM/RPD limits first (wired by a later task). Absent in
          * older wiring, and then the test calls the provider directly.
          */
+        reserveTestEntry?(
+          entry: {
+            readonly keyId: string;
+            readonly model: string;
+            readonly providerId: string;
+            readonly rpmLimit: number | null;
+            readonly rpdLimit: number | null;
+            readonly selectedKeyId?: string | undefined;
+          },
+          guildId: string,
+        ):
+          | { readonly ok: true }
+          | {
+              readonly ok: false;
+              readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+              readonly availableAt: number;
+            };
         reserveTestCall?(
           position: number,
           guildId: string,
