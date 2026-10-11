@@ -1186,8 +1186,11 @@ const runEntry = async (deps: {
           // Provider-specific parts never cross entries (ADR 0075).
           messages: messages.map((message) => {
             if (message.role !== 'assistant' || message.providerParts === undefined) return message;
-            const { providerParts: _dropped, ...rest } = message;
-            return rest;
+            const clean: { -readonly [K in keyof GenerationMessage]: GenerationMessage[K] } = {
+              ...message,
+            };
+            delete clean.providerParts;
+            return clean;
           }),
           handles: [...handles],
           round: 2,
