@@ -2,7 +2,7 @@ import { searchKeysRepo, type InstanceScope } from '@bananasaurs/storage';
 import type { Logger } from '@bananasaurs/core';
 import type { WebResult } from './tools.js';
 
-export type WebSearchSource = 'brave' | 'tavily';
+export type WebSearchSource = 'brave' | 'tavily' | 'parallel';
 
 /** `keyId: null` is the `.env` Brave seed: never limited, never recorded. */
 export interface WebSearchKey {

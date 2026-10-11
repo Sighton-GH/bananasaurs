@@ -24,7 +24,7 @@ let clock: number;
 
 interface FakeSearchKey {
   keyId: string;
-  source: 'brave' | 'tavily';
+  source: 'brave' | 'tavily' | 'parallel';
   label: string;
   enabled: boolean;
   position: number;
@@ -66,7 +66,7 @@ const fakeStore = (
   over: {
     keys?: FakeSearchKey[];
     enabled?: boolean;
-    source?: 'brave' | 'tavily';
+    source?: 'brave' | 'tavily' | 'parallel';
     usage?: (
       keyId: string,
     ) =>
@@ -97,7 +97,7 @@ const fakeStore = (
     save: () => undefined,
     searchKeys: () => keys.map((k) => ({ ...k })).sort((a, b) => a.position - b.position),
     addSearchKey: (input: {
-      source: 'brave' | 'tavily';
+      source: 'brave' | 'tavily' | 'parallel';
       label: string;
       apiKey: string;
       monthlyLimit?: number | null | undefined;
@@ -532,4 +532,27 @@ describe('DELETE /api/assistant/search-keys/:keyId', () => {
     expect(JSON.parse(row?.before ?? 'null')).toEqual({ source: 'brave', label: 'A' });
     expect(auditText()).not.toContain(SECRET);
   });
+});
+
+it('creates a Parallel key with a 4500 monthly limit without leaking it', async () => {
+  const owner = await signInAs('owner');
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/assistant/search-keys',
+    headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+    payload: { source: 'parallel', label: 'Parallel', apiKey: SECRET, monthlyLimit: 4500 },
+  });
+  expect(response.statusCode).toBe(200);
+  expect(addedInputs[0]).toMatchObject({ source: 'parallel', monthlyLimit: 4500 });
+  expect(JSON.stringify(response.json())).not.toContain(SECRET);
+  const fetched = await app.inject({
+    method: 'GET',
+    url: '/api/assistant/search-keys',
+    headers: { cookie: owner.cookie },
+  });
+  expect(fetched.json<{ keys: FakeSearchKey[] }>().keys[0]).toMatchObject({
+    source: 'parallel',
+    monthlyLimit: 4500,
+  });
+  expect(auditText()).not.toContain(SECRET);
 });

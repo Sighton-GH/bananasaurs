@@ -22,6 +22,7 @@ import { entryUsage, reserveEntryCall, type ReserveOutcome } from './local-limit
 import type { ModelListing, OpenRouterModelCatalogue } from './openrouter-models.js';
 import { braveWebSearch } from './brave-search.js';
 import { tavilyWebSearch } from './tavily-search.js';
+import { parallelWebSearch } from './parallel-search.js';
 import {
   createWebSearchRun,
   type SearchClient,
@@ -75,7 +76,7 @@ export interface ProviderConfigStatus {
   readonly webSearch?: {
     readonly keyConfigured: boolean;
     readonly enabled: boolean;
-    readonly source: 'brave' | 'tavily';
+    readonly source: 'brave' | 'tavily' | 'parallel';
   };
 }
 export interface ProviderConfigStore {
@@ -91,7 +92,7 @@ export interface ProviderConfigStore {
       /** ADR 0068: the backups in order; `[]` clears them, omitted keeps them. */
       fallbackModels?: readonly string[] | undefined;
       /** ADR 0120: omitted keeps the saved source, default `'brave'`. */
-      searchSource?: 'brave' | 'tavily' | undefined;
+      searchSource?: 'brave' | 'tavily' | 'parallel' | undefined;
       searchEnabled?: boolean | undefined;
     },
     now: number,
@@ -181,7 +182,7 @@ export interface ProviderConfigStore {
   /** Seals `apiKey`; returns the new key id. */
   addSearchKey(
     input: {
-      source: 'brave' | 'tavily';
+      source: 'brave' | 'tavily' | 'parallel';
       label: string;
       apiKey: string;
       monthlyLimit?: number | null | undefined;
@@ -210,7 +211,11 @@ export interface ProviderConfigStore {
   /** ADR 0120: the web search run for one request, or undefined while search is off or no key is usable. */
   webSearch(
     guildId: string,
-    clients?: { readonly brave?: SearchClient; readonly tavily?: SearchClient },
+    clients?: {
+      readonly brave?: SearchClient;
+      readonly tavily?: SearchClient;
+      readonly parallel?: SearchClient;
+    },
   ): WebSearchRun | undefined;
 }
 /**
@@ -617,7 +622,9 @@ export const createProviderConfigStore = (
         clients?.[source] ??
         (source === 'brave'
           ? (apiKey: string, q: string) => braveWebSearch({ apiKey }, q)
-          : (apiKey: string, q: string) => tavilyWebSearch({ apiKey }, q));
+          : source === 'tavily'
+            ? (apiKey: string, q: string) => tavilyWebSearch({ apiKey }, q)
+            : (apiKey: string, q: string) => parallelWebSearch({ apiKey }, q));
       return createWebSearchRun({
         instance,
         guildId,

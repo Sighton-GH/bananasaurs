@@ -1226,7 +1226,9 @@ function WebSearchCard({
   const [busy, setBusy] = useState(false);
   const [addLabel, setAddLabel] = useState('');
   const [addKey, setAddKey] = useState('');
-  const [addMonthly, setAddMonthly] = useState('1000');
+  const [addMonthly, setAddMonthly] = useState(
+    status?.webSearch?.source === 'parallel' ? '4500' : '1000',
+  );
   const [addDaily, setAddDaily] = useState('');
   const [addError, setAddError] = useState<string | undefined>(undefined);
   const [adding, setAdding] = useState(false);
@@ -1291,7 +1293,7 @@ function WebSearchCard({
       // The key is write-only: drop it from the page the moment it is stored.
       setAddKey('');
       setAddLabel('');
-      setAddMonthly('1000');
+      setAddMonthly(source === 'parallel' ? '4500' : '1000');
       setAddDaily('');
       toast({ tone: 'ok', title: 'Key added' });
       reloadKeys();
@@ -1300,7 +1302,7 @@ function WebSearchCard({
     }
   };
 
-  const sourceName = source === 'brave' ? 'Brave' : 'Tavily';
+  const sourceName = source === 'brave' ? 'Brave' : source === 'tavily' ? 'Tavily' : 'Parallel';
 
   return (
     <Card title="Web search">
@@ -1322,7 +1324,10 @@ function WebSearchCard({
                     name="search-source"
                     value="brave"
                     checked={source === 'brave'}
-                    onChange={() => setSource('brave')}
+                    onChange={() => {
+                      setSource('brave');
+                      setAddMonthly((v) => (v === '4500' ? '1000' : v));
+                    }}
                     disabled={!isOwner}
                   />
                   Brave Search
@@ -1356,7 +1361,10 @@ function WebSearchCard({
                     name="search-source"
                     value="tavily"
                     checked={source === 'tavily'}
-                    onChange={() => setSource('tavily')}
+                    onChange={() => {
+                      setSource('tavily');
+                      setAddMonthly((v) => (v === '4500' ? '1000' : v));
+                    }}
                     disabled={!isOwner}
                   />
                   Tavily
@@ -1380,6 +1388,34 @@ function WebSearchCard({
                     rel="noreferrer"
                   >
                     Get an API key
+                  </a>
+                </p>
+              </div>
+              <div className="grid gap-1">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="search-source"
+                    value="parallel"
+                    checked={source === 'parallel'}
+                    onChange={() => {
+                      setSource('parallel');
+                      setAddMonthly((v) => (v === '1000' ? '4500' : v));
+                    }}
+                    disabled={!isOwner}
+                  />
+                  Parallel
+                </label>
+                <p className="text-sm text-ink-muted">
+                  Parallel offers 5,000 free searches a month, then $1 per 1,000. Parallel may use
+                  search queries to train its models.{' '}
+                  <a
+                    className="underline"
+                    href="https://parallel.ai/terms"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Read the terms
                   </a>
                 </p>
               </div>

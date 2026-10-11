@@ -353,8 +353,8 @@ export interface AssistantSetupData {
   };
   readonly github: { readonly tokenConfigured: boolean };
 }
-/** ADR 0120: the web search source. Exactly 'brave' or 'tavily'. */
-export type SearchSource = 'brave' | 'tavily';
+/** ADR 0120: the web search source. Exactly 'brave', 'tavily' or 'parallel'. */
+export type SearchSource = 'brave' | 'tavily' | 'parallel';
 export const SEARCH_KEYS_URL = '/api/assistant/search-keys';
 export const searchKeyUrl = (keyId: string) => `${SEARCH_KEYS_URL}/${encodeURIComponent(keyId)}`;
 export const searchKeyMoveUrl = (keyId: string) => `${searchKeyUrl(keyId)}/move`;

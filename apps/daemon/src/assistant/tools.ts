@@ -238,7 +238,7 @@ export interface AssistantToolResult {
   readonly text: string;
   readonly sources: readonly ToolSource[];
   /** ADR 0120: which search source produced this result; 'brave' means the answer must say "Powered by Brave Search". */
-  readonly webSource?: 'brave' | 'tavily';
+  readonly webSource?: 'brave' | 'tavily' | 'parallel';
   /**
    * IDs follow-up rounds may open (ADR 0071): cache tools return the ids
    * they actually showed; every other tool returns none.

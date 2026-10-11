@@ -112,6 +112,7 @@ describe('RETURNED_ID_ARGS', () => {
       channel_history: ['before'],
       edit_reminder: ['reminderId'],
       cancel_reminder: ['reminderId'],
+      task_progress: ['taskId'],
     });
   });
 
@@ -1915,4 +1916,35 @@ describe('runToolLoop run recorder (ADR 0129 §6)', () => {
       costUsd: 0.0012,
     });
   });
+});
+
+it('keeps web_search available in later rounds independently of the search source', () => {
+  expect(laterRoundDeclarations([decl('web_search')]).map((d) => d.name)).toEqual(['web_search']);
+});
+
+it('records Parallel web use in first-seen order without duplicates', async () => {
+  const { provider } = scripted([
+    toolAnswer([
+      { name: 'web_search', args: { query: 'a' } },
+      { name: 'web_search', args: { query: 'b' } },
+      { name: 'web_search', args: { query: 'c' } },
+    ]),
+    textAnswer('Done.'),
+  ]);
+  const sources = ['parallel', 'brave', 'parallel'] as const;
+  let n = 0;
+  const result = await runToolLoop(
+    baseInput([entry({ provider })], {
+      tools: {
+        firstRound: [decl('web_search')],
+        laterRounds: [],
+        run: async (call: ToolCall) => ({
+          ...okResult(call.name, 'r'),
+          webSource: sources[n++ % sources.length]!,
+        }),
+      },
+    }),
+  );
+  expect(result.web).toBe(true);
+  expect(result.webSources).toEqual(['parallel', 'brave']);
 });
