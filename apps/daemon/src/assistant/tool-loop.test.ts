@@ -2308,4 +2308,26 @@ describe('escalateAfterTools (ADR 0144)', () => {
     expect(result.text).toBe('It is noon.');
     expect(only.calls).toHaveLength(2);
   });
+
+  it('carries on with the handing-over entry when every successor fails', async () => {
+    const light = scripted([
+      toolAnswer([{ name: 'set_reminder', args: { text: 'Bring batteries' } }]),
+      textAnswer('Reminder set.'),
+    ]);
+    const standard = scripted([new ProviderError('outage', 'HTTP 503', true)]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name, 'Reminder set.'));
+    const lightEntry = entry({ provider: light.provider, keyId: 'key_l', tier: 'light' });
+    const standardEntry = entry({ provider: standard.provider, keyId: 'key_s', model: 'model-b' });
+    const result = await runToolLoop(
+      baseInput([lightEntry, standardEntry], {
+        tools: allTools(run),
+        escalateAfterTools: (current, remaining) =>
+          current.tier === 'light' ? remaining : undefined,
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Reminder set.');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(light.calls).toHaveLength(2);
+  });
 });

@@ -523,7 +523,9 @@ export const runToolLoop = async (input: {
     if (answered !== undefined && 'handoff' in answered) {
       const next = escalation ?? [];
       resume = answered.handoff;
-      chain = [...chain.slice(0, position + 1), ...next];
+      // The handing-over entry stays last in line: when no successor can
+      // run, it carries on from round 2 itself instead of failing the run.
+      chain = [...chain.slice(0, position + 1), ...next, entry];
       input.onEscalated?.(entry, next);
       continue;
     }

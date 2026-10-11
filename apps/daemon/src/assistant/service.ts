@@ -1532,7 +1532,10 @@ export const createAssistantService = (
           ...loop.sources,
         ],
         web: loop.web,
-        usedFallback: loop.attempts.length > 1,
+        // A deliberate hand-over leaves two ok attempts: only a failed or
+        // skipped attempt before the answer means a fallback was used.
+        usedFallback:
+          loop.attempts.length > 1 && loop.attempts.some((attempt) => attempt.outcome !== 'ok'),
       };
       assistantRepo.recordSkillActivity(scope, {
         id: randomUUID(),
