@@ -69,16 +69,14 @@ describe('ProviderError quota fields (contracts §3)', () => {
   it('preserves daily-free classification while carrying Retry-After', async () => {
     const provider = createOpenRouterProvider({
       apiKey: 'sk-test-key',
-      fetch: vi
-        .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({
-              error: { code: 429, message: 'Rate limit exceeded: free-models-per-day' },
-            }),
-            { status: 429, headers: { 'retry-after': '45' } },
-          ),
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: { code: 429, message: 'Rate limit exceeded: free-models-per-day' },
+          }),
+          { status: 429, headers: { 'retry-after': '45' } },
         ),
+      ),
     });
     const error = await provider
       .generateText({ model: 'some-model:free', messages: [{ role: 'user', text: 'hi' }] })
