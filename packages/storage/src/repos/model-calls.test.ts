@@ -29,6 +29,7 @@ const reserve = (over: {
   key?: string;
   dayStart?: number;
   nextDayStart?: number;
+  bucketKeyIds?: readonly string[];
 }) =>
   reserveModelCall(scope, {
     keyId: over.key ?? keyId,
@@ -39,6 +40,7 @@ const reserve = (over: {
     rpdLimit: over.rpdLimit ?? null,
     dayStart: over.dayStart ?? DAY_START,
     nextDayStart: over.nextDayStart ?? NEXT_DAY_START,
+    ...(over.bucketKeyIds === undefined ? {} : { bucketKeyIds: over.bucketKeyIds }),
   });
 
 const callCount = (): number =>
@@ -119,6 +121,33 @@ describe('reserveModelCall pruning', () => {
       t.raw.prepare('SELECT at FROM assistant_model_calls').all() as { at: number }[]
     ).map((r) => r.at);
     expect(ats).toEqual([172800001]);
+  });
+});
+
+describe('reserveModelCall shared project bucket', () => {
+  it('two keys in one bucket share rpd 2: one call each, then either key is refused', () => {
+    const second = addKey(scope, { provider: 'gemini', label: 'Two', apiKeyEnc: 's2', now: 0 });
+    const bucket = [keyId, second];
+    expect(reserve({ now: 1000, rpdLimit: 2, bucketKeyIds: bucket })).toEqual({ ok: true });
+    expect(reserve({ now: 2000, rpdLimit: 2, key: second, bucketKeyIds: bucket })).toEqual({
+      ok: true,
+    });
+    expect(reserve({ now: 3000, rpdLimit: 2, bucketKeyIds: bucket })).toEqual({
+      ok: false,
+      limit: 'rpd',
+      availableAt: NEXT_DAY_START,
+    });
+    expect(reserve({ now: 3000, rpdLimit: 2, key: second, bucketKeyIds: bucket })).toEqual({
+      ok: false,
+      limit: 'rpd',
+      availableAt: NEXT_DAY_START,
+    });
+  });
+
+  it('a key with no project is unaffected by another key calls', () => {
+    const second = addKey(scope, { provider: 'gemini', label: 'Two', apiKeyEnc: 's2', now: 0 });
+    expect(reserve({ now: 1000, rpdLimit: 1 })).toEqual({ ok: true });
+    expect(reserve({ now: 2000, rpdLimit: 1, key: second })).toEqual({ ok: true });
   });
 });
 

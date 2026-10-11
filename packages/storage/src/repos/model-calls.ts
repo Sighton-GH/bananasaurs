@@ -30,6 +30,12 @@ export interface ReserveModelCallInput {
   readonly rpdLimit: number | null;
   readonly dayStart: number;
   readonly nextDayStart: number;
+  /**
+   * ADR 0143 follow-up: when the selected key draws from a shared project
+   * bucket, the RPM/RPD windows count rows for every key id in the bucket
+   * (same model). The row inserted is still for `keyId`.
+   */
+  readonly bucketKeyIds?: readonly string[] | undefined;
 }
 
 export interface ModelUsageInput {
@@ -52,11 +58,24 @@ const PRUNE_AFTER_MS = 172800000;
 const forKeyModel = (keyId: string, model: string) =>
   and(eq(assistantModelCalls.keyId, keyId), eq(assistantModelCalls.model, model));
 
+const forBucketModel = (keyIds: readonly string[], model: string) =>
+  keyIds.length === 1
+    ? forKeyModel(keyIds[0]!, model)
+    : and(
+        sql`${assistantModelCalls.keyId} IN (${sql.join(
+          keyIds.map((k) => sql`${k}`),
+          sql`, `,
+        )})`,
+        eq(assistantModelCalls.model, model),
+      );
+
 export const reserveModelCall = (
   scope: InstanceScope,
   input: ReserveModelCallInput,
 ): ReserveResult =>
   writeInstance(scope, ({ db }) => {
+    const bucket = input.bucketKeyIds ?? [input.keyId];
+    const window = forBucketModel(bucket.length === 0 ? [input.keyId] : bucket, input.model);
     // 1. Prune rows older than 48 h.
     db.delete(assistantModelCalls)
       .where(sql`${assistantModelCalls.at} < ${input.now - PRUNE_AFTER_MS}`)
@@ -68,7 +87,7 @@ export const reserveModelCall = (
         .from(assistantModelCalls)
         .where(
           and(
-            forKeyModel(input.keyId, input.model),
+            window,
             sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`,
           ),
         )
@@ -89,7 +108,7 @@ export const reserveModelCall = (
         .from(assistantModelCalls)
         .where(
           and(
-            forKeyModel(input.keyId, input.model),
+            window,
             sql`${assistantModelCalls.at} >= ${input.dayStart}`,
           ),
         )

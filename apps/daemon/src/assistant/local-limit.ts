@@ -1,6 +1,6 @@
 import { nextProviderDayStart, providerDayStart } from '@bananasaurs/core';
 import type { AssistantTrace } from '@bananasaurs/core';
-import { modelCallsRepo, type InstanceScope } from '@bananasaurs/storage';
+import { assistantProvidersRepo, modelCallsRepo, type InstanceScope } from '@bananasaurs/storage';
 import { ENV_KEY_ID, type ChainEntry } from './model-chain.js';
 import type { AssistantTraceDetail } from './commands.js';
 
@@ -58,8 +58,23 @@ export const reserveEntryCall = (
   now: number,
 ): ReserveOutcome => {
   if ((entry.selectedKeyId ?? entry.keyId) === ENV_KEY_ID) return { ok: true };
+  const selected = entry.selectedKeyId ?? entry.keyId;
+  // ADR 0143: keys sharing a non-null project label and provider draw from one
+  // bucket — a key with no project is its own bucket (`bucketOf`).
+  const keys = assistantProvidersRepo.listKeys(instance);
+  const selectedKey = keys.find((key) => key.keyId === selected);
+  const bucketKeyIds =
+    selectedKey === undefined || selectedKey.project === null
+      ? undefined
+      : keys
+          .filter(
+            (key) =>
+              assistantProvidersRepo.bucketOf(key) ===
+              assistantProvidersRepo.bucketOf(selectedKey),
+          )
+          .map((key) => key.keyId);
   const r = modelCallsRepo.reserveModelCall(instance, {
-    keyId: entry.selectedKeyId ?? entry.keyId,
+    keyId: selected,
     model: entry.model,
     guildId,
     now,
@@ -67,6 +82,7 @@ export const reserveEntryCall = (
     rpdLimit: entry.rpdLimit,
     dayStart: providerDayStart(entry.providerId, now),
     nextDayStart: nextProviderDayStart(entry.providerId, now),
+    ...(bucketKeyIds === undefined ? {} : { bucketKeyIds }),
   });
   return r.ok
     ? r

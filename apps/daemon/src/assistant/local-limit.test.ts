@@ -120,6 +120,37 @@ describe('reserveEntryCall and entryUsage', () => {
     });
   });
 
+  it('two keys sharing a project bucket share rpd 2 across keys', () => {
+    const first = assistantProvidersRepo.addKey(instance, {
+      provider: 'gemini',
+      label: 'First',
+      apiKeyEnc: 'sealed-first',
+      now: NOW,
+      project: 'site',
+    });
+    const second = assistantProvidersRepo.addKey(instance, {
+      provider: 'gemini',
+      label: 'Second',
+      apiKeyEnc: 'sealed-second',
+      now: NOW,
+      project: 'site',
+    });
+    const firstEntry = {
+      keyId: first,
+      model: MODEL,
+      providerId: 'gemini' as const,
+      rpmLimit: null,
+      rpdLimit: 2,
+    };
+    const secondEntry = { ...firstEntry, keyId: second };
+    expect(reserveEntryCall(instance, firstEntry, GUILD_ID, NOW)).toEqual({ ok: true });
+    expect(reserveEntryCall(instance, secondEntry, GUILD_ID, NOW + 1000)).toEqual({ ok: true });
+    expect(reserveEntryCall(instance, firstEntry, GUILD_ID, NOW + 2000)).toMatchObject({
+      ok: false,
+      code: 'local-rpd-limit',
+    });
+  });
+
   it('entryUsage reports the RPM window and omits availableAt without limits', () => {
     const limited = {
       keyId,
