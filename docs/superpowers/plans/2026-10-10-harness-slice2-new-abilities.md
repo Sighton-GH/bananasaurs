@@ -59,8 +59,8 @@
 | 3 | S2-T6 Ping-cap settings and tuning test | Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`, `packages/dashboard/src/pages/assistant-tuning.test.tsx` | T1 |
 | 4 | S2-T7 Task tools + find_member implementation and service wiring | Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/assistant/capability-fixtures.ts`, `apps/daemon/src/assistant/capability-fixtures.test.ts`, `apps/daemon/src/runtime/guild.ts` | T2, T5 |
 | 4 | S2-T8 Parallel wiring: source union, clients, routes, dashboard | Modify: `apps/daemon/src/assistant/web-search.ts`, `apps/daemon/src/assistant/provider-config.ts`, `apps/daemon/src/assistant/provider-config.test.ts`, `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts`, `packages/http/src/routes/assistant.ts`, `packages/http/src/routes/assistant-search-keys.ts`, `packages/http/src/routes/assistant-search-keys.test.ts`, `packages/dashboard/src/api/assistant.ts`, `packages/dashboard/src/pages/providers.tsx`, `packages/dashboard/src/pages/providers.test.tsx`, `packages/dashboard/src/pages/assistant-skills.tsx`, `packages/dashboard/src/pages/assistant-skills.test.tsx` | T4, T5 |
-| 5 | S2-T9 Reply pings from answer text | Modify: `packages/core/src/jobs/kinds.ts`, `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/commands.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `packages/core/src/discord/port.ts`; Create: `apps/daemon/src/assistant/reply-pings.ts`, `apps/daemon/src/assistant/reply-pings.test.ts` | T2, T6 |
-| 5 | S2-T10 Scheduled-message style | Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/reminder-delivery.ts`, `apps/daemon/src/assistant/reminder-delivery.test.ts` | T5, T7 |
+| 5 | S2-T9 Reply pings from answer text | Modify: `packages/core/src/jobs/kinds.ts`, `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/commands.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `packages/core/src/discord/port.ts`; Create: `apps/daemon/src/assistant/reply-pings.ts`, `apps/daemon/src/assistant/reply-pings.test.ts`, `apps/daemon/src/assistant/reply-ping-policy.ts`, `apps/daemon/src/assistant/reply-ping-policy.test.ts` | T2, T6 |
+| 5 | S2-T10 Scheduled-message style | Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/reminder-delivery.ts`, `apps/daemon/src/assistant/reminder-delivery.test.ts`, `apps/daemon/src/assistant/reminder-summary.ts`, `apps/daemon/src/assistant/reminder-summary.test.ts`, `packages/core/src/assistant/tool-catalogue.ts`, `packages/core/src/assistant/tool-catalogue.test.ts` | T5, T7 |
 | 6 | S2-T11 Gates, STATE.md, PRIVACY.md, spec ledger | Modify: `docs/STATE.md`, `PRIVACY.md`, `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md` | T9, T10 |
 
 ## Tasks
@@ -182,7 +182,7 @@ it('has a non-acting ping skill open to everyone and an acting tasks skill owned
 });
 ```
 
-  (`STARTER_SKILL_IDS` is already imported in that file's scope per `skills.ts:157-159`; if the import is missing, add it — the symbol exists.)
+  (`STARTER_SKILL_IDS` is already imported in that file's lines 2-7 alongside `CLUB_ASSISTANT_SKILLS`.)
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/tool-catalogue.test.ts packages/core/src/assistant/skills.test.ts --maxWorkers=1` · Expected: FAIL (unknown tools/skills)
 - [ ] **Step 3: Implement** — in `tool-catalogue.ts`:
@@ -759,7 +759,7 @@ readonly taskTools?:
   - `guild.ts`: `findMember`'s `toEntry` (lines 892-897) gains `roleNames: [...member.roles.cache.values()].filter((r) => r.id !== guild.id).map((r) => r.name).slice(0, 20)` (`member` is `GuildMember`, `guild` is in scope at line 888).
 - [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS (including the break-it revert)
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write` then `npx eslint` on all seven owned paths · exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/capability-fixtures.ts apps/daemon/src/assistant/capability-fixtures.test.ts apps/daemon/src/runtime/guild.ts` then `npx eslint` on the same paths · exit 0
 - [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/capability-fixtures.ts apps/daemon/src/assistant/capability-fixtures.test.ts apps/daemon/src/runtime/guild.ts && git commit -m "Slice 2 T7: task tools and find_member with team-lead authority; break-it: both guards failed with the access check removed"`
 
 **Done when:** non-lead create refused with no row; same args twice → one task; progress dedupes; capability block groups print the new tools; fixtures green.
@@ -788,7 +788,314 @@ readonly taskTools?:
   - `assistant-skills.tsx`: append `{ id: 'find_member', name: 'Find a member', detail: 'Looks up a member by name; returns display names, never ids.' }` to `TOOLS`; extend the `webDetail` branch with a parallel sentence `Sends a short query to the Parallel search API. Parallel may use queries to train its models.`
 - [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write` then `npx eslint` on all thirteen owned paths · exit 0
-- [ ] **Step 7: Commit** — stage the thirteen owned paths (quote each) `&& git commit -m "Slice 2 T8: Parallel source union, clients, routes and dashboard"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/web-search.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts packages/http/src/routes/assistant.ts packages/http/src/routes/assistant-search-keys.ts packages/http/src/routes/assistant-search-keys.test.ts packages/dashboard/src/api/assistant.ts packages/dashboard/src/pages/providers.tsx packages/dashboard/src/pages/providers.test.tsx packages/dashboard/src/pages/assistant-skills.tsx packages/dashboard/src/pages/assistant-skills.test.tsx` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/web-search.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts packages/http/src/routes/assistant.ts packages/http/src/routes/assistant-search-keys.ts packages/http/src/routes/assistant-search-keys.test.ts packages/dashboard/src/api/assistant.ts packages/dashboard/src/pages/providers.tsx packages/dashboard/src/pages/providers.test.tsx packages/dashboard/src/pages/assistant-skills.tsx packages/dashboard/src/pages/assistant-skills.test.tsx && git commit -m "Slice 2 T8: Parallel source union, clients, routes and dashboard"`
 
 **Done when:** Parallel keys store/list/search end to end on a migrated DB; source switching saves; dashboard shows the radio, the 4,500 default and the training copy; review-focus item 5 (limits skip before HTTP) covered by the existing `createWebSearchRun` reserve tests plus the new client-selection test.
+
+---
+
+### S2-T9: Reply pings from answer text   ·   Wave 5
+**Owns:** Modify: `packages/core/src/jobs/kinds.ts`, `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/commands.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `packages/core/src/discord/port.ts`; Create: `apps/daemon/src/assistant/reply-pings.ts`, `apps/daemon/src/assistant/reply-pings.test.ts`, `apps/daemon/src/assistant/reply-ping-policy.ts`, `apps/daemon/src/assistant/reply-ping-policy.test.ts`
+**Reads (do not edit):** `apps/daemon/src/mcp/targets.ts:237-295,410-433` (`rolePingContextFor`, `checkRolePing`, `CODE_SPAN` parser shape), `packages/core/src/roles/dangerous.ts:87-98` (`rolePingAllowed`), `apps/daemon/src/assistant/reminder-targets.ts:159-264` (member search + MentionEveryone rule), `apps/daemon/src/jobs/assistant.ts:87-90,1388-1440,1069-1091` (`reply()`, `postPart`, invoke mapping), `packages/core/src/discord/port.ts:99-117` (`allowedMentions`), `apps/daemon/src/runtime/guild.ts:912-929` (`resolveReminderTargets` adapter to mirror)
+**Interfaces:** Consumes: `ping` skill + `assistant.pingMaxMembers/Roles` (T2, T6); `sanitizeMentionsForProvider` names (T3) · Produces: `AssistantInvocationResult.pings`; reply-ping flow end to end
+
+- [ ] **Step 1: Write the failing tests**
+  - `reply-pings.test.ts` (pure, invented names):
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { extractPingTokens, matchPingNames, replacePingTokens } from './reply-pings.js';
+
+describe('reply-ping text helpers (ADR 0145)', () => {
+  it('extracts @Name tokens and skips code and mass mentions', () => {
+    expect(extractPingTokens('hi @Sam L and @Car Team A')).toEqual(['Sam L', 'Car Team A']);
+    expect(extractPingTokens('`@Sam L` and ```\n@Sam L\n```')).toEqual([]);
+    expect(extractPingTokens('@everyone and @HERE ping nobody')).toEqual([]);
+  });
+  it('matches exact names only, case-insensitively, deduped', () => {
+    const candidates = [{ id: '1', name: 'Sam L' }, { id: '2', name: 'Car Team A' }];
+    expect(matchPingNames(['sam l', 'Sammy', 'Sam L'], candidates)).toEqual(['1']);
+  });
+  it('replaces only in prose, leaving code spans byte-identical', () => {
+    const out = replacePingTokens('ping @Sam L and `@Sam L`', new Map([['Sam L', '<@1>']]));
+    expect(out).toBe('ping <@1> and `@Sam L`');
+  });
+});
+```
+
+  - `reply-ping-policy.test.ts`: build a fake discord.js `Client` with `guilds.cache` holding roles/members maps (mirror the `makeDeliveryClient`/`FakeDiscord` pattern in `reminder-delivery.test.ts` and the `checkRolePing` tests in `mcp/targets.test.ts:561-586`). Cases, each with `getCaps: () => ({ members: 5, roles: 3 })`:
+    - `@Sam L` mentioned by id pings; `@Stranger` never mentioned or named stays plain with empty ids.
+    - sixth member and fourth role are cut (caps), first five/three kept.
+    - role above the bot / with a dangerous permission / non-mentionable without the asker's Mention Everyone → refused, plain text.
+    - asker without SendMessages in the channel → no pings at all.
+    - `channelId: undefined` (slash path) → no pings (fail closed).
+    - Break-it (do it, watch it fail, then revert): skip the mentioned-or-named filter so any exact name pings; the `@Stranger` test must fail. Record it in the commit message.
+  - `service.test.ts`: `ping` skill denied → answer content keeps `@Sam L` verbatim and result has no `pings`; allowed with a stub `resolveReplyPings` port → `pings` attached and content rewritten.
+  - `commands.test.ts`: the enqueued payload carries `mentionedUserIds`/`mentionedRoleIds` capped at 50 (extend the event fixture at lines 155-159, which already carries both arrays).
+  - `jobs/assistant.test.ts`: a mocked result with `pings: { userIds: ['456789012345678901'], roles: [] }` posts the first part with `allowedMentions` `{ parse: [], users: ['456789012345678901'] }` and later parts with `{ parse: [] }`; a retry after part 1 resumes without re-posting and keeps the same mentions (mirror the parts test at lines 685-691).
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/reply-pings.test.ts apps/daemon/src/assistant/reply-ping-policy.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/commands.test.ts apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (no modules, no payload fields, `{ parse: [] }` everywhere)
+- [ ] **Step 3: Implement**
+  - `reply-pings.ts` (pure, no imports):
+
+```ts
+/** Code spans never ping, the ADR 0128 parser (`apps/daemon/src/mcp/targets.ts:418`). */
+export const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g;
+const TOKEN = /@([A-Za-z0-9][A-Za-z0-9 .'\-]{0,31})/g;
+
+/** `@Name` tokens outside code, without `@everyone`/`@here` (any case). */
+export const extractPingTokens = (text: string): string[] => {
+  const prose = text.replace(CODE_SPAN, ' ');
+  const tokens: string[] = [];
+  for (const match of prose.matchAll(TOKEN)) {
+    const token = (match[1] ?? '').replace(/[ .]+$/, '');
+    if (token === '' || /^(everyone|here)$/i.test(token)) continue;
+    if (!tokens.includes(token)) tokens.push(token);
+  }
+  return tokens;
+};
+
+/** Exact case-insensitive match only: a near-miss must stay plain text. */
+export const matchPingNames = (
+  tokens: readonly string[],
+  candidates: readonly { readonly id: string; readonly name: string }[],
+): string[] => {
+  const ids: string[] = [];
+  for (const token of tokens) {
+    const hit = candidates.find((c) => c.name.toLowerCase() === token.toLowerCase());
+    if (hit !== undefined && !ids.includes(hit.id)) ids.push(hit.id);
+  }
+  return ids;
+};
+
+/** Rewrites `@Name` → id token in prose segments only. */
+export const replacePingTokens = (text: string, replacements: ReadonlyMap<string, string>): string => {
+  let out = '';
+  let at = 0;
+  for (const match of text.matchAll(CODE_SPAN)) {
+    out += replaceInProse(text.slice(at, match.index ?? at), replacements);
+    out += match[0];
+    at = (match.index ?? at) + match[0].length;
+  }
+  return out + replaceInProse(text.slice(at), replacements);
+};
+
+const replaceInProse = (prose: string, replacements: ReadonlyMap<string, string>): string => {
+  let out = prose;
+  // Longest name first so `@Sam L` wins over `@Sam` in the same text.
+  const entries = [...replacements.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [name, token] of entries) {
+    const pattern = new RegExp(`@${escapeRegExp(name)}(?![A-Za-z0-9'\\-])`, 'gi');
+    out = out.replace(pattern, token);
+  }
+  return out;
+};
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+```
+
+  - `reply-ping-policy.ts`:
+
+```ts
+import { PermissionsBitField, type Client } from 'discord.js';
+import { safeDisplayName } from '@bananasaurs/core';
+import type { GuildScope } from '@bananasaurs/storage';
+import { checkRolePing, rolePingContextFor } from '../mcp/targets.js';
+import { extractPingTokens, matchPingNames, replacePingTokens } from './reply-pings.js';
+
+export interface ReplyPingRequest {
+  readonly askerId: string;
+  readonly channelId: string | undefined;
+  readonly text: string;
+  readonly mentionedUserIds: readonly string[];
+  readonly mentionedRoleIds: readonly string[];
+}
+export interface ReplyPingResult {
+  readonly content: string;
+  readonly userIds: readonly string[];
+  readonly roles: readonly string[];
+}
+
+export const resolveReplyPings = async (
+  client: Client,
+  scope: GuildScope,
+  caps: { readonly members: number; readonly roles: number },
+  input: ReplyPingRequest,
+): Promise<ReplyPingResult> => {
+  const plain: ReplyPingResult = { content: input.text, userIds: [], roles: [] };
+  try {
+    if (input.channelId === undefined) return plain;
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return plain;
+    const asker = await guild.members.fetch(input.askerId).catch(() => undefined);
+    if (asker === undefined) return plain;
+    // The ping skill's Send gate: without Send in the answer channel, nothing pings.
+    if (!asker.permissionsIn(input.channelId).has(PermissionsBitField.Flags.SendMessages)) return plain;
+    // Candidates: mentioned ids first (display names, best effort), then
+    // exact-name search for tokens the asker named without mentioning.
+    const users: { id: string; name: string }[] = [];
+    for (const id of input.mentionedUserIds.slice(0, 25)) {
+      const member = guild.members.cache.get(id) ?? (await guild.members.fetch(id).catch(() => undefined));
+      const name = safeDisplayName(member?.displayName);
+      if (name !== undefined && !users.some((u) => u.id === id)) users.push({ id, name });
+    }
+    const roles: { id: string; name: string }[] = [];
+    for (const id of input.mentionedRoleIds.slice(0, 10)) {
+      const name = safeDisplayName(guild.roles.cache.get(id)?.name);
+      if (name !== undefined && !roles.some((r) => r.id === id)) roles.push({ id, name });
+    }
+    const tokens = extractPingTokens(input.text);
+    const known = (token: string, list: readonly { name: string }[]): boolean =>
+      list.some((entry) => entry.name.toLowerCase() === token.toLowerCase());
+    // Named-but-not-mentioned members: one exact display-name search, single hit only
+    // (the reminder-targets.ts:166-191 rule).
+    const extraUsers: { id: string; name: string }[] = [];
+    for (const token of tokens) {
+      if (known(token, users) || known(token, extraUsers)) continue;
+      const hits = await guild.members.search({ query: token, limit: 5 }).catch(() => undefined);
+      if (hits === undefined) continue;
+      const exact = [...hits.values()].filter((m) => m.displayName.toLowerCase() === token.toLowerCase());
+      if (exact.length === 1 && exact[0] !== undefined && ![...users, ...extraUsers].some((u) => u.id === exact[0]!.id))
+        extraUsers.push({ id: exact[0].id, name: exact[0].displayName });
+    }
+    // Named-but-not-mentioned roles: exact cache-name match, unambiguous only.
+    const extraRoles: { id: string; name: string }[] = [];
+    for (const token of tokens) {
+      if (known(token, roles) || known(token, extraRoles)) continue;
+      const hits = [...guild.roles.cache.values()].filter((r) => r.name.toLowerCase() === token.toLowerCase());
+      if (hits.length === 1 && hits[0] !== undefined && ![...roles, ...extraRoles].some((r) => r.id === hits[0]!.id))
+        extraRoles.push({ id: hits[0].id, name: hits[0].name });
+    }
+    const memberIds = matchPingNames(tokens, [...users, ...extraUsers]).slice(0, caps.members);
+    const memberReplacements = new Map(
+      memberIds.map((id) => {
+        const name = [...users, ...extraUsers].find((u) => u.id === id)!.name;
+        return [name, `<@${id}>`] as const;
+      }),
+    );
+    // Roles: ADR 0117 policy per role; a non-mentionable role also needs the
+    // asker's Mention Everyone (the reminder-targets.ts:248-257 rule).
+    const context = rolePingContextFor(client, scope, scope.guildId);
+    const askerMayMass = asker.permissionsIn(input.channelId).has(PermissionsBitField.Flags.MentionEveryone);
+    const roleIds: string[] = [];
+    const roleReplacements = new Map<string, string>();
+    for (const id of matchPingNames(tokens, [...roles, ...extraRoles])) {
+      if (roleIds.length >= caps.roles) break;
+      const role = guild.roles.cache.get(id);
+      if (role === undefined) continue;
+      if (!role.mentionable && !askerMayMass) continue;
+      if (checkRolePing(client, scope, scope.guildId, id, context).ok !== true) continue;
+      roleIds.push(id);
+      roleReplacements.set([...roles, ...extraRoles].find((r) => r.id === id)!.name, `<@&${id}>`);
+    }
+    return {
+      content: replacePingTokens(replacePingTokens(input.text, memberReplacements), roleReplacements),
+      userIds: memberIds,
+      roles: roleIds,
+    };
+  } catch {
+    return plain;
+  }
+};
+```
+
+  - `kinds.ts`: after `authorName` (lines 450-455) add `mentionedUserIds: z.array(z.string().min(1)).max(50).optional(), mentionedRoleIds: z.array(z.string().min(1)).max(50).optional(),` with a comment (asker's mentions bound the reply pings, ADR 0145).
+  - `commands.ts`: `AssistantInvocation` gains both optional fields; `handleMention` payload spreads `...(event.mentionedUserIds.length === 0 ? {} : { mentionedUserIds: event.mentionedUserIds.slice(0, 50) })` and the roles equivalent.
+  - `service.ts`: `AssistantDiscordPorts` gains `resolveReplyPings?: ((input: ReplyPingRequest) => Promise<ReplyPingResult>) | undefined` (import the types from `'./reply-ping-policy.js'`); `AssistantInvocation` (via commands.ts) carries the ids. Replace the plain return at line 1517 (`return { ok: true, content: answerText };`) with: when `skillAllowed('ping')`, the port exists, and the invocation carries mention fields, call it with `{ askerId: input.userId, channelId: input.channelId, text: answerText, mentionedUserIds: input.mentionedUserIds ?? [], mentionedRoleIds: input.mentionedRoleIds ?? [] }`, then return `{ ok: true, content: resolved.content, ...(resolved.userIds.length + resolved.roles.length === 0 ? {} : { pings: { userIds: [...resolved.userIds], roles: [...resolved.roles] } }) }`; otherwise keep line 1517 byte-identical. (The `remember`/`decision`/`review-plan`/`ESCALATE` early returns above it stay untouched.)
+  - `commands.ts` result type: `AssistantInvocationResult` ok variant (lines 109-128) gains `readonly pings?: { readonly userIds: readonly string[]; readonly roles: readonly string[] } | undefined;`.
+  - `guild.ts`: wire `resolveReplyPings: (input) => resolveReplyPings(client, scope, { members: settings?.get('assistant.pingMaxMembers') ?? 5, roles: settings?.get('assistant.pingMaxRoles') ?? 3 }, input)` next to `resolveReminderTargets` (line 912), importing from `'../assistant/reply-ping-policy.js'`. (Confirm `settings.get` typing against guild.ts:994; fall back to spec defaults when unset.)
+  - `jobs/assistant.ts`: invoke call (lines 1069-1091) gains the two spreads; `postPart` gains a `pings` parameter and builds `allowedMentions: { parse: [], ...(users…) , ...(roles…) }`, defaulting to today's `{ parse: [] }` when absent.
+  - `port.ts:103-109`: amend the comment to "Only reminder delivery and assistant reply pings (ADR 0145) may put ids in `allowedMentions`; every other output keeps `{ parse: [] }`."
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS (including the break-it revert)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/commands.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/discord/port.ts apps/daemon/src/assistant/reply-pings.ts apps/daemon/src/assistant/reply-pings.test.ts apps/daemon/src/assistant/reply-ping-policy.ts apps/daemon/src/assistant/reply-ping-policy.test.ts` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/commands.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/discord/port.ts apps/daemon/src/assistant/reply-pings.ts apps/daemon/src/assistant/reply-pings.test.ts apps/daemon/src/assistant/reply-ping-policy.ts apps/daemon/src/assistant/reply-ping-policy.test.ts && git commit -m "Slice 2 T9: reply pings from answer text under code control; break-it: unmentioned name pinged with the filter removed"`
+
+**Done when:** mentioned-or-named exact matches ping within caps and policy; everything else stays plain text; retries never re-post; review-focus items 2–4 green.
+
+---
+
+### S2-T10: Scheduled-message style   ·   Wave 5
+**Owns:** Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/reminder-delivery.ts`, `apps/daemon/src/assistant/reminder-delivery.test.ts`, `apps/daemon/src/assistant/reminder-summary.ts`, `apps/daemon/src/assistant/reminder-summary.test.ts`, `packages/core/src/assistant/tool-catalogue.ts`, `packages/core/src/assistant/tool-catalogue.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/reminder-delivery.ts:110-157` (`renderReminder`), `packages/storage/src/repos/assistant.ts` (`toReminder`/`insertReminder` style round-trip from T5), `packages/core/src/assistant/reminders.ts` (`ReminderStyle`, T5)
+**Interfaces:** Consumes: style round-trip (T5); `set_reminder` case (T7) · Produces: `style` param end to end with distinct rendering
+
+- [ ] **Step 1: Write the failing tests**
+  - `tools.test.ts`: `set_reminder` with `style: 'message'` stores `style: 'message'` (read back via the stub store's `get`); default (absent) stores `'reminder'`; different styles with otherwise identical args produce different ids (key content includes style); `my_reminders` shows a message-style row with `· as message`.
+  - `reminder-delivery.test.ts` (mirror the `renderReminder` cases): a `message`-style reminder renders exactly its text (no `⏰`, no `Set by` line) while keeping the stored pings line and `allowedMentions`; an over-long message truncates text, never pings.
+  - `reminder-summary.test.ts`: the `set` summary for a message-style row reads `✅ Message scheduled:` (reminder rows unchanged).
+  - `tool-catalogue.test.ts`: the `set_reminder` description names the `style` parameter and the `@Name` reply-ping line.
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/reminder-delivery.test.ts apps/daemon/src/assistant/reminder-summary.test.ts packages/core/src/assistant/tool-catalogue.test.ts --maxWorkers=1` · Expected: FAIL (no `style` param, one render path)
+- [ ] **Step 3: Implement**
+  - `tool-catalogue.ts`: append to the `set_reminder` description (verbatim addition): ` style 'message' posts the text as is without the reminder frame; the default 'reminder' keeps it. Reply pings in answers work the same way: write @Name and code pings only people and roles the asker mentioned or named.` Add the `style` parameter `{ type: 'string', description: "Post as a plain scheduled message ('message') or a framed reminder ('reminder').", enum: ['reminder', 'message'] }` (not required).
+  - `tools.ts`: `set_reminder` schema gains `style: z.enum(['reminder', 'message']).optional()`; the built reminder carries `style: args.style ?? 'reminder'`; `keyContent` gains the style; `my_reminders` lines append `· as message` when `r.style === 'message'`; the confirmation `actionSummary` passes `style` into `reminderSummary`.
+  - `reminder-summary.ts`: `ReminderSummaryInput` gains `readonly style?: ReminderStyle | undefined` (import type from core); the `set` head becomes `✅ Message scheduled:` when `style === 'message'`, else today's `✅ Reminder set:`.
+  - `reminder-delivery.ts` `renderReminder` (lines 110-157): when `reminder.style === 'message'`, return `{ content: text-only (neutralised, capped at 2,000 after the pings line), allowedMentions }` with the same pings line and `allowedMentions` as reminders (spec: same ping checks) but no `⏰` prefix, no context line, no `Set by` line.
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/reminder-delivery.ts apps/daemon/src/assistant/reminder-delivery.test.ts apps/daemon/src/assistant/reminder-summary.ts apps/daemon/src/assistant/reminder-summary.test.ts packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/tool-catalogue.test.ts` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/reminder-delivery.ts apps/daemon/src/assistant/reminder-delivery.test.ts apps/daemon/src/assistant/reminder-summary.ts apps/daemon/src/assistant/reminder-summary.test.ts packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/tool-catalogue.test.ts && git commit -m "Slice 2 T10: scheduled-message style on set_reminder and delivery"`
+
+**Done when:** `message` rows post bare text with pings intact; `reminder` rows byte-identical to today; style survives set → list → delivery.
+
+---
+
+### S2-T11: Gates, STATE.md, PRIVACY.md, spec ledger   ·   Wave 6
+**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`, `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`
+**Reads (do not edit):** `docs/STATE.md:1-16` (Slice 1 entry style), `PRIVACY.md:69-74` (AI answers + web-search paragraphs), `PRIVACY.md:107-124` (task tracking)
+**Interfaces:** Consumes: everything above · Produces: merged Slice 2 record
+
+- [ ] **Step 1: Run each gate on its own and read its exit status**
+
+```bash
+npm run typecheck
+```
+
+```bash
+npm run lint
+```
+
+```bash
+npm run test
+```
+
+All three must pass. If prettier fails, run `npx prettier --write` on the changed files only, and commit that separately.
+
+- [ ] **Step 2: STATE.md entry.** At the top of the file, after the first `---` (same style as the Slice 1 entry at lines 7-15), add:
+
+```markdown
+**Assistant new abilities (Slice 2 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `<branch>`, not yet merged (ADRs 0145–0147, migration `parallel_search_source`).**
+
+- **Names and lookup (ADR 0145):** mention ids render as `@Name` through the display-name sanitiser; `find_member` returns up to 5 matches with names and roles, never ids.
+- **Reply pings (ADR 0145, D3):** the model writes `@Name`; code pings only members or roles the asker mentioned or named (at most 5 members, 3 roles; `@everyone`/`@here` never; code spans skipped; ADR 0117 role policy).
+- **Scheduled messages (ADR 0145):** `set_reminder` `style: "message"` posts bare text on the same storage and delivery.
+- **Task tools (ADR 0146, D4a):** `create_task` / `list_tasks` / `task_progress` for team leads and the president (skill scope plus `TaskContextPort.access`); ids deterministic from the invocation key.
+- **Parallel search (ADR 0147, D11):** third web-search source in fast mode behind the configured source; eligibility row discloses training; new keys default to 4,500/month.
+```
+
+  (Replace `<branch>` with the real branch name from `git branch --show-current`.)
+
+- [ ] **Step 3: PRIVACY.md lines.**
+  - Web search paragraph (after the Tavily sentence at line 73): `Parallel works the same way when the owner picks it: 5,000 free searches a month, and Parallel's terms let it use queries to train AI models.`
+  - Assistant conversations section: `An assistant reply pings you only when the person who asked mentioned or named you, at most 5 members and 3 roles per reply; roles still pass the server's ping rules. Text in code blocks never pings.`
+  - Task tracking section: `A team lead or the president can ask the assistant to create a club task, list open ones, or record a progress note. Tasks it creates are stored like any other task, and progress notes like any other update.`
+  - Bump `Last updated` to `2026-10-11`.
+- [ ] **Step 4: Spec ledger.** In the spec: mark Slice 2 `built on <branch> @ <sha>` (from `git rev-parse --short HEAD`); in §5's Slice 2 row, note ADRs 0145–0147 and migration `parallel_search_source`.
+- [ ] **Step 5: Re-read this plan against the rules checklist** — every task has Owns, Interfaces and Steps 1–7 with real code and commands; no two tasks in one wave own the same file (test files count); no TBD/TODO/"similar to"; `grep -c "^### S2-T"` equals the Waves table row count (11).
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/STATE.md PRIVACY.md docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md
+git commit -m "Slice 2 T11: gates green; state, privacy and spec updated"
+```
+
+---
+
+## Slice gate (orchestrator only, after the last wave)
+npm run typecheck        (≈1.7 GB peak — run alone)
+npm run lint
+npx vitest run --maxWorkers=1
+## After merge (owner)
+Deploy order: stop → `db:migrate` (migration `parallel_search_source`: style column, parallel CHECKs, eligibility seed) → build → start.
+On the dashboard: AI setup → Web search — add a Parallel key (monthly 4,500 pre-filled), pick the Parallel source, save; Skills — grant lead roles the `tasks` scope per guild, leave `ping` on everyone; Assistant tuning → Assistant replies — confirm 5 members / 3 roles.
+Then in Discord: as a member, ask `remind @Sam L at 23:00…` (name resolves); ask the bot something ending with `@Sam L` in its answer after mentioning Sam (reply pings once); as a lead, `make a task for …` then `list tasks` then `record progress`; as the owner, schedule a plain message (`style message`) and ask a general question to see Parallel answer.
