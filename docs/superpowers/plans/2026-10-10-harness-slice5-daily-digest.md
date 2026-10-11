@@ -1611,7 +1611,480 @@ exact replacement:
 
 **Done when:** old digest rows go with old conversations; keep-forever keeps both; the audit row counts both.
 
-<!-- PASS5 -->
+### S5-T10: digests in conversation recall   ·   Wave 5
+**Owns:** Modify: `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/service.ts` lines 942–972 (the `searchConversations` port), `apps/daemon/src/assistant/tools.ts` lines 97–110 (the recall port type) and 1402–1425 (the `search_conversations` case)
+**Interfaces:** Consumes: `digestRepo.searchDigests` (S5-T4) · Produces: recall results include up to 2 digest hits shaped like summary hits with `conversationId: "digest:<day>"`
+
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/tools.test.ts` (using that file's existing `ports` fixture builder, per its current imports):
+
+```ts
+it('shows digest hits in text but keeps them out of recalled links', async () => {
+  const digestHit = {
+    conversationId: 'digest:2026-10-09',
+    channelId: '333333333333333333',
+    lastActivityAt: 1_790_000_000_000,
+    topic: 'Daily digest 2026-10-09: the build night',
+    facts: ['Second Friday'],
+  };
+  const result = await runAssistantTool(
+    { name: 'search_conversations', args: { query: 'build night' } },
+    { ...ports, searchConversations: async () => [digestHit] },
+    citations,
+  );
+  expect(result.ok).toBe(true);
+  expect((result as { text: string }).text).toContain('Daily digest 2026-10-09');
+  expect((result as { recalledConversationIds?: readonly string[] }).recalledConversationIds ?? []).toEqual([]);
+});
+```
+
+In `apps/daemon/src/assistant/service.test.ts`, inside the existing `describe` that covers the `searchConversations` port (find it with `rg -n "searchConversations" apps/daemon/src/assistant/service.test.ts`; it uses the `setupB2b`/`serviceWith`/`ask` harness): seed one digest row with `digestRepo.putDigestOnce` for a conversation in a channel the asker can read, invoke with a matching query through the tool loop, and expect the answer text to contain `Daily digest`. If no such `describe` exists, add one following the B2b harness pattern from the Slice 1 plan (capture provider requests via a fake `TextProvider`).
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.test.ts --maxWorkers=1` · Expected: FAIL (no digest line; `digest:` id leaks into `recalledConversationIds` once the service change lands without the tools change — implement the service change first and watch exactly that)
+- [ ] **Step 3: Implement** —
+  1. In `apps/daemon/src/assistant/service.ts`, extend the `searchConversations` port (anchor lines 956–971) so digest hits ride along, newest digest first, at most 2, after the 5 summary hits:
+
+```ts
+          const summaries = conversationRepo
+            .searchSummaries(scope, {
+              query,
+              channelIds: [...searchable],
+              ...(input.conversationId === undefined
+                ? {}
+                : { excludeConversationId: input.conversationId }),
+              limit: 5,
+            })
+            .map((hit) => ({
+              conversationId: hit.conversationId,
+              channelId: hit.channelId,
+              lastActivityAt: hit.lastActivityAt,
+              topic: clean(hit.summary.topic),
+              facts: hit.summary.facts.map((fact) => clean(fact.text)),
+            }));
+          // ADR 0150 decision 4: digests answer "what did we talk about last
+          // Tuesday". Same channel filter as summaries — a digest spanning
+          // channels surfaces only through a channel the asker can read, with
+          // that channel's id. `digest:` ids are display-only: tools.ts keeps
+          // them out of `recalledConversationIds` (no such conversation row).
+          const digests = digestRepo
+            .searchDigests(scope, { query, channelIds: [...searchable], limit: 2 })
+            .map((hit) => ({
+              conversationId: `digest:${hit.day}`,
+              channelId: hit.channelId,
+              lastActivityAt: Date.parse(`${hit.day}T12:00:00Z`),
+              topic: `Daily digest ${hit.day}: ${clean(hit.topics)}`,
+              facts: [],
+            }));
+          return [...summaries, ...digests];
+```
+
+  (Replace the current `return conversationRepo.searchSummaries(...).map(...)` with the two-step version above. Import `digestRepo` from `@bananasaurs/storage` beside `conversationRepo`.)
+  2. In `apps/daemon/src/assistant/tools.ts`, exact anchor (lines 1421–1424):
+
+```ts
+        return {
+          ...evidence(name, lines.join('\n')),
+          recalledConversationIds: shown.map((hit) => hit.conversationId),
+        };
+```
+
+exact replacement:
+
+```ts
+        return {
+          ...evidence(name, lines.join('\n')),
+          recalledConversationIds: shown
+            .filter((hit) => !hit.conversationId.startsWith('digest:'))
+            .map((hit) => hit.conversationId),
+        };
+```
+
+Also extend the port doc comment at lines 97–110 to note digest hits (`conversationId: "digest:<day>"`, display-only, excluded from recalled).
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts` then `npx eslint apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts && git commit -m "Slice 5 T10: daily digests in conversation recall"`
+
+**Done when:** "what did we talk about last Tuesday" can surface a digest; no-access channels stay out (inherited filter); `digest:` ids never reach `recalled` links.
+
+---
+
+### S5-T11: digest dashboard API   ·   Wave 5
+**Owns:** Create: `packages/http/src/routes/assistant-digests.ts` · Test: `packages/http/src/routes/assistant-digests.test.ts` · Modify: `apps/daemon/src/http/wiring.ts` (register beside `registerAssistantConversationRoutes`)
+**Reads (do not edit):** `packages/http/src/routes/assistant-conversations.ts` lines 82–148 (guard + `audit.read` + list shape), `packages/http/src/routes/assistant-conversations.test.ts` lines 1–92 and 221–250 (the `createServer` + `testPortsFor` + sign-in + `grant` harness), `apps/daemon/src/http/wiring.ts` lines 300–320 (route registration site)
+**Interfaces:** Consumes: `digestRepo.listDigests`, `digestRepo.getDigest` (S5-T4) · Produces: `GET /api/assistant/digests`, `GET /api/assistant/digests/:day`
+
+- [ ] **Step 1: Write the failing test** — create `packages/http/src/routes/assistant-digests.test.ts`, copying the harness from `assistant-conversations.test.ts` exactly: same imports (`createServer`, `CSRF_HEADER`, `testInstanceFor`, `testPortsFor`, `hashPassword`, `openMigratedTestDatabase`), same `GUILD`/`OTHER_GUILD`/`ACCOUNT`/`PASSWORD`/`MEMBER`/`CHANNEL` constants, same `cookieFrom`/`signIn`/`grant` helpers, same `beforeEach` (with `registerRoutes: registerAssistantDigests`). Seed with `digestRepo.putDigestOnce`:
+
+```ts
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { parseGuildId, type Capability } from '@bananasaurs/core';
+import {
+  accountRepo,
+  authzRepo,
+  digestRepo,
+  guildRepo,
+} from '@bananasaurs/storage';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
+import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
+import { hashPassword } from '../secrets.js';
+import { testInstanceFor, testPortsFor } from '../test-support.js';
+import { registerAssistantDigests } from './assistant-digests.js';
+
+const GUILD = parseGuildId('111111111111111111');
+const OTHER_GUILD = parseGuildId('222222222222222222');
+const ACCOUNT = 'acct_0123456789abcdef0123456789abcdef';
+const PASSWORD = 'correct horse battery staple';
+const CHANNEL = '333333333333333333';
+
+let t: MigratedTestDatabase;
+let deps: HttpDeps;
+let app: FastifyInstance;
+let clock: number;
+
+const cookieFrom = (header: string | string[] | undefined): string =>
+  (Array.isArray(header) ? (header[0] ?? '') : (header ?? '')).split(';')[0] ?? '';
+const signIn = async (): Promise<{ cookie: string; csrf: string }> => {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/login',
+    payload: { username: 'owner', password: PASSWORD, guildId: GUILD },
+  });
+  return {
+    cookie: cookieFrom(response.headers['set-cookie']),
+    csrf: response.json<{ csrfToken: string }>().csrfToken,
+  };
+};
+const grant = (capability: Capability): void =>
+  authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
+    accountId: ACCOUNT,
+    capability,
+    grantedBy: 'test',
+    now: clock,
+  });
+
+beforeEach(async () => {
+  t = openMigratedTestDatabase();
+  clock = 1_700_000_000_000;
+  deps = {
+    scopes: t.scopes,
+    now: () => clock,
+    guildIds: [GUILD],
+    logger: { info() {}, warn() {}, error() {}, debug() {}, fatal() {}, trace() {} } as never,
+    readonly: false,
+    portsFor: (scope) => testPortsFor(scope, () => clock),
+    instance: testInstanceFor(t.scopes.instance(), () => clock),
+  };
+  guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'guild', now: clock });
+  guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: clock });
+  accountRepo.createAccount(t.scopes.instance(), {
+    accountId: ACCOUNT,
+    username: 'owner',
+    passwordHash: await hashPassword(PASSWORD),
+    isOwner: true,
+    now: clock,
+  });
+  accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), ACCOUNT);
+  app = createServer({ deps, registerRoutes: registerAssistantDigests });
+  digestRepo.putDigestOnce(t.scopes.forGuild(GUILD), {
+    day: '2026-10-09',
+    summary: { daySummary: 'Talked about the build night.', memoryProposals: [] },
+    conversations: [{ conversationId: 'conv-1', channelId: CHANNEL, title: 'Build night' }],
+    now: clock,
+  });
+});
+afterEach(async () => {
+  await app.close();
+  t.close();
+});
+
+describe('assistant digest routes', () => {
+  it('requires audit.read for the list and one digest', async () => {
+    const { cookie } = await signIn();
+    for (const url of ['/api/assistant/digests', '/api/assistant/digests/2026-10-09']) {
+      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(403);
+    }
+  });
+  it('lists newest first and reads one digest', async () => {
+    const { cookie } = await signIn();
+    grant('audit.read');
+    const list = await app.inject({ method: 'GET', url: '/api/assistant/digests', headers: { cookie } });
+    expect(list.statusCode).toBe(200);
+    expect(list.json<{ digests: { day: string }[] }>().digests.map((d) => d.day)).toEqual(['2026-10-09']);
+    const one = await app.inject({ method: 'GET', url: '/api/assistant/digests/2026-10-09', headers: { cookie } });
+    expect(one.statusCode).toBe(200);
+    expect(one.json<{ digest: { daySummary: string } }>().digest.daySummary).toContain('build night');
+  });
+  it('404s a missing day, 400s a bad one, and keeps guilds apart', async () => {
+    const { cookie } = await signIn();
+    grant('audit.read');
+    expect((await app.inject({ method: 'GET', url: '/api/assistant/digests/2026-10-08', headers: { cookie } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/assistant/digests/today', headers: { cookie } })).statusCode).toBe(400);
+  });
+});
+```
+
+(The guild-separation assertion rides the conversations suite's `keeps one guild conversations out of another` pattern: the `OTHER_GUILD` row and second-guild sign-in from that file. If the digest list for the other guild is empty, assert `digests: []` — copy that test's second-sign-in shape.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/http/src/routes/assistant-digests.test.ts --maxWorkers=1` · Expected: FAIL with `Failed to resolve import "./assistant-digests.js"`
+- [ ] **Step 3: Implement** — create `packages/http/src/routes/assistant-digests.ts`, mirroring `assistant-conversations.ts` (guard, `requireCapability(session, 'audit.read', reply)`, `badRequest` on Zod failure):
+
+```ts
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { digestRepo } from '@bananasaurs/storage';
+import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
+import { requireCapability } from './capability.js';
+
+/**
+ * The Daily digest endpoints (ADR 0150 decision 4): the digest list under
+ * Conversations and one digest. Reads go through `audit.read`, like
+ * transcripts — a digest summarises member conversations.
+ */
+
+const dayParamSchema = z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+
+export const registerAssistantDigests = (
+  app: FastifyInstance,
+  guard: RouteGuard,
+  deps: HttpDeps,
+): void => {
+  void deps;
+  app.get('/api/assistant/digests', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'audit.read', reply)) return reply;
+    return reply.status(200).send({ digests: digestRepo.listDigests(session.scope, 100) });
+  });
+
+  app.get<{ Params: { day: string } }>('/api/assistant/digests/:day', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'audit.read', reply)) return reply;
+    const parsed = dayParamSchema.safeParse(request.params);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    const digest = digestRepo.getDigest(session.scope, parsed.data.day);
+    if (digest === undefined) return reply.status(404).send({ error: 'not-found' });
+    return reply.status(200).send({
+      digest: {
+        day: digest.day,
+        daySummary: digest.summary.daySummary,
+        proposals: digest.summary.memoryProposals,
+        conversations: digest.conversations,
+        createdAt: digest.createdAt,
+        updatedAt: digest.updatedAt,
+      },
+    });
+  });
+};
+```
+
+(Check `assistant-conversations.ts` for whether `deps` is used; `void deps` only if unused. Check the `RouteGuard`/`HttpDeps` import paths — same as that file.) Then in `apps/daemon/src/http/wiring.ts`, register beside line 317 (`registerAssistantConversationRoutes(instance, guard, routeDeps);`): add `registerAssistantDigests(instance, guard, routeDeps);` on the next line and extend the import from `@bananasaurs/http` (check the import site at lines 24–30 for the exact import list to extend).
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/http/src/routes/assistant-digests.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/http/src/routes/assistant-digests.ts packages/http/src/routes/assistant-digests.test.ts apps/daemon/src/http/wiring.ts` then `npx eslint packages/http/src/routes/assistant-digests.ts packages/http/src/routes/assistant-digests.test.ts apps/daemon/src/http/wiring.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/http/src/routes/assistant-digests.ts packages/http/src/routes/assistant-digests.test.ts apps/daemon/src/http/wiring.ts && git commit -m "Slice 5 T11: daily digest dashboard API"`
+
+**Done when:** list + detail behind `audit.read`; bad day is 400, missing day is 404; guilds stay apart.
+
+---
+
+### S5-T12: digest dashboard UI (list, controls, mount)   ·   Wave 5
+**Owns:** Create: `packages/dashboard/src/components/assistant-digest-list.tsx`, `packages/dashboard/src/components/assistant-digest-settings.tsx`, `packages/dashboard/src/pages/assistant-memory.test.tsx` · Modify: `packages/dashboard/src/pages/assistant-conversations.tsx`, `packages/dashboard/src/pages/assistant-conversations.test.tsx`, `packages/dashboard/src/pages/assistant-memory.tsx`
+**Reads (do not edit):** `packages/dashboard/src/pages/assistant-conversations.tsx` lines 190–196 (the `RetentionCard` mount), `packages/dashboard/src/pages/assistant-conversations.test.tsx` lines 1–62 (the `stubFetch`/`renderWithSession`/`ROW_NEW` shape), `packages/dashboard/src/api/tuning.ts` lines 11–51 (`TUNING_URL`, `tuningKeyUrl`, `TuningSetting`), `packages/dashboard/src/pages/assistant-memory.tsx` lines 140–181 (the `Member memory privacy` card)
+**Interfaces:** Consumes: `GET /api/assistant/digests`, `GET /api/assistant/digests/:day` (S5-T11); the five `assistant.digest…` keys via the tuning API (S5-T5) · Produces: `AssistantDigestList`, `AssistantDigestSettings` components
+
+- [ ] **Step 1: Write the failing test** — in `packages/dashboard/src/pages/assistant-conversations.test.tsx`, extend the `stubs` helper's fetch list with `{ url: '/api/assistant/digests', body: { digests: [{ day: '2026-10-09', createdAt: 1_790_000_000_000, updatedAt: 1_790_000_000_000, topics: 'Talked about the build night.' }] } }` and append:
+
+```tsx
+it('shows the daily digests list under the conversations', async () => {
+  stubFetch(stubs({ conversations: [ROW_NEW] }));
+  renderWithSession(<AssistantConversationsPage />);
+  expect(await screen.findByRole('heading', { name: 'Daily digests' })).toBeTruthy();
+  expect(await screen.findByText('2026-10-09')).toBeTruthy();
+});
+```
+
+Create `packages/dashboard/src/pages/assistant-memory.test.tsx` (no such file exists; copy the jsdom + `stubFetch`/`renderWithSession` imports from the conversations test):
+
+```tsx
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import { AssistantMemoryPage } from './assistant-memory.js';
+
+const MEMORY = { members: [], serverCard: 'card', memories: [] };
+const tuning = (key: string, value: unknown, defaultValue: unknown) => ({
+  url: `/api/assistant/tuning/${encodeURIComponent(key)}`,
+  body: { setting: { key, value, defaultValue, display: 'count' } },
+});
+
+afterEach(cleanup);
+afterEach(() => vi.unstubAllGlobals());
+
+describe('AssistantMemoryPage digest controls (spec §4.7)', () => {
+  it('renders the digest controls with current values', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: MEMORY },
+      tuning('assistant.digestEnabled', 1, 1),
+      tuning('assistant.digestHour', 4, 4),
+      tuning('assistant.digestInputChars', 40000, 40000),
+      tuning('assistant.digestMaxProposals', 10, 10),
+      tuning('assistant.digestTier', 'light', 'light'),
+    ]);
+    renderWithSession(<AssistantMemoryPage />);
+    expect(await screen.findByRole('heading', { name: 'Daily digest' })).toBeTruthy();
+    expect((await screen.findByLabelText('Digest on or off (1 or 0)') as HTMLInputElement).value).toBe('1');
+  });
+  it('saves the digest hour', async () => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: MEMORY },
+      tuning('assistant.digestEnabled', 1, 1),
+      tuning('assistant.digestHour', 4, 4),
+      tuning('assistant.digestInputChars', 40000, 40000),
+      tuning('assistant.digestMaxProposals', 10, 10),
+      tuning('assistant.digestTier', 'light', 'light'),
+      { method: 'PUT', url: '/api/assistant/tuning/assistant.digestHour', body: { setting: { key: 'assistant.digestHour', value: 5 } } },
+    ]);
+    renderWithSession(<AssistantMemoryPage />);
+    const input = (await screen.findByLabelText('Digest hour (local time)')) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: '5' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save digest settings' }));
+    });
+    const call = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/assistant/tuning/assistant.digestHour' && (c[1] as RequestInit)?.method === 'PUT',
+    );
+    expect(call).toBeTruthy();
+    expect(bodyOf(call!)).toEqual({ value: 5 });
+  });
+});
+```
+
+(Check `packages/dashboard/src/api/tuning.ts` for the exact GET/PUT shapes — `TuningListResponse`/`TuningSetResponse` at lines 47–51 — and the `session.write`/`session.read` call shapes in `assistant-tuning.tsx`; adjust the stub bodies and `bodyOf` expectation to those exact shapes, keeping the two assertions. Check `stubFetch`'s matching (method + url) and `bodyOf` in `test-support.js`.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-conversations.test.tsx packages/dashboard/src/pages/assistant-memory.test.tsx --maxWorkers=1` · Expected: FAIL (no `Daily digests` heading; `assistant-memory.test.tsx` fails to resolve the missing component import)
+- [ ] **Step 3: Implement** —
+  1. Create `packages/dashboard/src/components/assistant-digest-list.tsx` (new file; existing pages only mount it):
+
+```tsx
+import { useCallback, useState } from 'react';
+import { useSession } from '../app/session.js';
+import { useResource } from '../hooks/useResource.js';
+import { Card } from '../ui/Card.js';
+import { DataState } from '../ui/DataState.js';
+import { DataTable } from '../ui/DataTable.js';
+
+interface DigestRow {
+  readonly day: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly topics: string;
+}
+interface DigestDetail {
+  readonly day: string;
+  readonly daySummary: string;
+  readonly proposals: readonly { text: string; why: string }[];
+  readonly conversations: readonly { conversationId: string; title: string }[];
+}
+
+/** The "Daily digests" list under Conversations (ADR 0150 decision 4). */
+export function AssistantDigestList() {
+  const session = useSession();
+  const [open, setOpen] = useState<string | undefined>(undefined);
+  const [detail, setDetail] = useState<DigestDetail | undefined>(undefined);
+  const load = useCallback(
+    () => session.read<{ digests: readonly DigestRow[] }>('/api/assistant/digests'),
+    [session],
+  );
+  const list = useResource('daily digests', load);
+  const show = async (day: string) => {
+    setOpen(day);
+    setDetail(await session.read<{ digest: DigestDetail }>(`/api/assistant/digests/${encodeURIComponent(day)}`).then((r) => r?.digest));
+  };
+  return (
+    <Card title="Daily digests">
+      <p className="mb-2 text-sm text-ink-muted">
+        One summary per day of what members talked about with the assistant. Memory proposals wait for review on the assistant page.
+      </p>
+      <DataState
+        resource={list.resource}
+        isEmpty={(d) => d.digests.length === 0}
+        empty={<p className="text-sm text-ink-muted">No digests yet — the first runs at 4 in the morning after members talk to the bot.</p>}
+      >
+        {(data) => (
+          <DataTable
+            caption="Daily digests"
+            rows={data.digests}
+            rowKey={(r) => r.day}
+            columns={[
+              { key: 'day', header: 'Day', cell: (r) => r.day },
+              { key: 'topics', header: 'Topics', cell: (r) => r.topics },
+              {
+                key: 'open',
+                header: 'Detail',
+                cell: (r) => (
+                  <button type="button" className="text-sm underline" onClick={() => void show(r.day)}>
+                    Open
+                  </button>
+                ),
+              },
+            ]}
+          />
+        )}
+      </DataState>
+      {open !== undefined && detail !== undefined && (
+        <div className="mt-3 rounded border border-line p-3">
+          <h3 className="font-medium">{open}</h3>
+          <p className="whitespace-pre-wrap text-sm">{detail.daySummary}</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+```
+
+(Check `useResource`/`DataState`/`DataTable`/`Card` prop names against `assistant-conversations.tsx` — the column/rowKey/caption/isEmpty/empty shapes above are copied from it. `session.read` returning `undefined` on failure follows `RetentionForm`'s `saved !== undefined` guard style.)
+
+  2. Create `packages/dashboard/src/components/assistant-digest-settings.tsx`: five labelled inputs (on/off, hour, input cap, max proposals, tier) that GET each key from the tuning API on mount and PUT on save, in the style of `RetentionForm` (`useState` drafts, `busy` flag, `toast({ tone: 'ok', title: 'Saved digest settings.' })`, `Field` + `Input` + `Button`). Labels exactly: `Digest on or off (1 or 0)`, `Digest hour (local time)`, `Digest input cap (characters)`, `Digest tier (light or standard)`, `Digest max proposals`. One `Save digest settings` button PUTs all five keys. Read `assistant-tuning.tsx` lines 270–387 for the save/error pattern and `api/tuning.ts` for exact request shapes before writing.
+  3. In `packages/dashboard/src/pages/assistant-conversations.tsx`, mount below the retention card (anchor lines 194–196):
+
+```tsx
+      <div className="mb-4">
+        <RetentionCard />
+      </div>
+```
+
+replacement: the same block plus
+
+```tsx
+      <div className="mb-4">
+        <AssistantDigestList />
+      </div>
+```
+
+with `import { AssistantDigestList } from '../components/assistant-digest-list.js';` beside the other imports.
+  4. In `packages/dashboard/src/pages/assistant-memory.tsx`, mount `<AssistantDigestSettings />` as the first child of the `<div className="space-y-4">` (line 81), with the matching import. (Spec §4.7 puts the digest controls on Assistant → Memory.)
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/dashboard/src/pages/assistant-conversations.test.tsx packages/dashboard/src/pages/assistant-memory.test.tsx --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/dashboard/src/components/assistant-digest-list.tsx packages/dashboard/src/components/assistant-digest-settings.tsx packages/dashboard/src/pages/assistant-memory.test.tsx packages/dashboard/src/pages/assistant-conversations.tsx packages/dashboard/src/pages/assistant-conversations.test.tsx packages/dashboard/src/pages/assistant-memory.tsx` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add packages/dashboard/src/components/assistant-digest-list.tsx packages/dashboard/src/components/assistant-digest-settings.tsx packages/dashboard/src/pages/assistant-memory.test.tsx packages/dashboard/src/pages/assistant-conversations.tsx packages/dashboard/src/pages/assistant-conversations.test.tsx packages/dashboard/src/pages/assistant-memory.tsx && git commit -m "Slice 5 T12: digest list, digest controls and page mounts"`
+
+**Done when:** the digest list renders under Conversations with an Open detail; the five digest controls render on Memory and save through the tuning API.
+
+<!-- PASS6 -->
+
 
 
 
