@@ -529,7 +529,7 @@ const requireSkill = (
 ): AssistantToolResult | undefined => {
   if (ports.skillAllowed(skill)) return undefined;
   ports.recordSkillActivity(skill, 'denied');
-  return refused(name, "You're not allowed to use that here.");
+  return refused(name, "This member isn't allowed to use that. Tell them plainly; don't retry.");
 };
 
 /**
@@ -605,7 +605,10 @@ const outlineForDoc = (
     ports.cacheDocument(docId)?.resourceId ??
     (rows[0] === undefined ? undefined : ports.cacheChunk(rows[0].chunkId)?.resourceId);
   if (outlineResourceId === undefined || enabledById(ports, outlineResourceId) === undefined)
-    return refused(name, 'unknown id');
+    return refused(
+      name,
+      'Unknown id. Use an id from an earlier result in this request, or search again.',
+    );
   if (rows.length === 0) {
     return { ...evidence(name, 'No headings cached.'), handles: [] };
   }
@@ -633,7 +636,11 @@ export const runAssistantTool = async (
    */
   citations?: CitationRegistry,
 ): Promise<AssistantToolResult> => {
-  if (!(call.name in schemas)) return refused(call.name, 'Unknown tool.');
+  if (!(call.name in schemas))
+    return refused(
+      call.name,
+      'No such tool. Use only the tools listed under WHAT YOU CAN DO RIGHT NOW.',
+    );
   const name = call.name as ToolName;
   const parsed = schemas[name].safeParse(call.args ?? {});
   if (!parsed.success) {
@@ -641,7 +648,11 @@ export const runAssistantTool = async (
     // model learns the shape; every other bad argument stays generic.
     if (parsed.error.issues.some((issue) => issue.message === 'Give either resourceId or docId.'))
       return refused(name, 'Give either resourceId or docId.');
-    return refused(name, 'The tool arguments were not valid.');
+    const first = parsed.error.issues[0];
+    const raw =
+      first === undefined ? 'invalid arguments' : `${first.path.join('.')}: ${first.message}`;
+    const firstIssue = raw.slice(0, 200);
+    return refused(name, `The arguments were not valid: ${firstIssue}. Fix it and call again.`);
   }
 
   try {
@@ -692,7 +703,11 @@ export const runAssistantTool = async (
         };
         if (docId !== undefined) return outlineForDoc(name, ports, docId);
         const found = enabledById(ports, resourceId!);
-        if (found === undefined) return refused(name, 'unknown id');
+        if (found === undefined)
+          return refused(
+            name,
+            'Unknown id. Use an id from an earlier result in this request, or search again.',
+          );
         const source = { title: found.title, url: found.url };
         if (!['website', 'document', 'repository', 'note'].includes(found.kind))
           return {
@@ -781,7 +796,11 @@ export const runAssistantTool = async (
         const { query: q } = parsed.data as z.infer<typeof query>;
         const gate = requireSkill(ports, name, 'web-search');
         if (gate !== undefined) return gate;
-        if (ports.webSearch === undefined) return refused(name, 'Web search is off.');
+        if (ports.webSearch === undefined)
+          return refused(
+            name,
+            "Web search is off on this server. Answer from club sources or say you can't look it up.",
+          );
         // The query leaves for the search provider: the same local scan as member input.
         if (
           !scanOutboundRequest({ model: 'web-search', messages: [{ role: 'user', text: q }] }).safe
@@ -796,8 +815,14 @@ export const runAssistantTool = async (
           // Fixed text only: a provider body or driver message must never
           // reach the model (ADR 0120 §6).
           if (err instanceof SearchHttpError)
-            return refused(name, `Web search failed (HTTP ${String(err.status)}).`);
-          return refused(name, 'Web search failed.');
+            return refused(
+              name,
+              `Web search failed (HTTP ${String(err.status)}). Try once more with a simpler query, or answer without it.`,
+            );
+          return refused(
+            name,
+            'Web search failed. Try once more with a simpler query, or answer without it.',
+          );
         }
         const results = outcome.results;
         if (results.length === 0)
@@ -878,7 +903,11 @@ export const runAssistantTool = async (
           let recurrence: ReminderRecurrence | undefined;
           if (args.repeat !== undefined) {
             const built = parseRecurrence(args.repeat, ports.timeZone);
-            if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
+            if (!built.ok)
+              return refused(
+                name,
+                'The repeat pattern was not valid: give kind (daily, weekdays, weekly or monthly), plus days for weekly or dayOfMonth for monthly.',
+              );
             recurrence = built.recurrence;
           }
           if (recurrence?.endAt !== undefined && recurrence.endAt < dueAt)
@@ -982,9 +1011,16 @@ export const runAssistantTool = async (
           const quoteGate = quotePingRefused(ports, name, args.roles);
           if (quoteGate !== undefined) return quoteGate;
           const stored = ports.reminderStore.get(args.reminderId);
-          if (stored === undefined) return refused(name, "I couldn't find that reminder.");
+          if (stored === undefined)
+            return refused(
+              name,
+              'No reminder has that id. Call my_reminders for current ids, then try again.',
+            );
           if (stored.creatorId !== ports.userId && !ports.isOwner)
-            return refused(name, 'You can only change reminders you set.');
+            return refused(
+              name,
+              'That reminder belongs to someone else; only they or the owner can change it. Tell the member.',
+            );
           let dueAt: number | undefined;
           if (args.when !== undefined) {
             if (!ISO_WITH_OFFSET.test(args.when)) return refused(name, OFFSET_REFUSAL);
@@ -995,7 +1031,11 @@ export const runAssistantTool = async (
           if (args.stopRepeating === true) recurrence = null;
           else if (args.repeat !== undefined) {
             const built = parseRecurrence(args.repeat, ports.timeZone);
-            if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
+            if (!built.ok)
+              return refused(
+                name,
+                'The repeat pattern was not valid: give kind (daily, weekdays, weekly or monthly), plus days for weekly or dayOfMonth for monthly.',
+              );
             recurrence = built.recurrence;
           }
           const effectiveDueAt = dueAt ?? stored.dueAt;
@@ -1057,7 +1097,11 @@ export const runAssistantTool = async (
             ...(recurrence === undefined ? {} : { recurrence }),
           };
           const updated = ports.reminderStore.update(args.reminderId, patch);
-          if (updated === 'not-found') return refused(name, "I couldn't find that reminder.");
+          if (updated === 'not-found')
+            return refused(
+              name,
+              'No reminder has that id. Call my_reminders for current ids, then try again.',
+            );
           if (updated === 'not-editable')
             return refused(name, 'That reminder is already being sent or has finished.');
           ports.recordSkillActivity('reminders', 'completed');
@@ -1089,9 +1133,16 @@ export const runAssistantTool = async (
         try {
           const args = parsed.data as { reminderId: string };
           const stored = ports.reminderStore.get(args.reminderId);
-          if (stored === undefined) return refused(name, "I couldn't find that reminder.");
+          if (stored === undefined)
+            return refused(
+              name,
+              'No reminder has that id. Call my_reminders for current ids, then try again.',
+            );
           if (stored.creatorId !== ports.userId && !ports.isOwner)
-            return refused(name, 'You can only change reminders you set.');
+            return refused(
+              name,
+              'That reminder belongs to someone else; only they or the owner can change it. Tell the member.',
+            );
           const cancelled = ports.reminderStore.cancel(args.reminderId);
           if (!cancelled) return refused(name, "That reminder can't be cancelled now.");
           ports.recordSkillActivity('reminders', 'completed');
@@ -1194,7 +1245,11 @@ export const runAssistantTool = async (
         if (sourceIds !== undefined) {
           const known = new Set(enabledIds);
           for (const id of sourceIds) {
-            if (!known.has(id)) return refused(name, 'unknown id');
+            if (!known.has(id))
+              return refused(
+                name,
+                'Unknown id. Use an id from an earlier result in this request, or search again.',
+              );
           }
         }
         const hits = ports.cacheSearch({
@@ -1235,8 +1290,16 @@ export const runAssistantTool = async (
           neighbours?: 0 | 1 | 2;
         };
         const center = ports.cacheChunk(chunkId);
-        if (center === undefined) return refused(name, 'unknown id');
-        if (enabledById(ports, center.resourceId) === undefined) return refused(name, 'unknown id');
+        if (center === undefined)
+          return refused(
+            name,
+            'Unknown id. Use an id from an earlier result in this request, or search again.',
+          );
+        if (enabledById(ports, center.resourceId) === undefined)
+          return refused(
+            name,
+            'Unknown id. Use an id from an earlier result in this request, or search again.',
+          );
         const rows = ports.cacheNeighbours(chunkId, neighbours ?? 1);
         const shown = rows.length > 0 ? rows : [center];
         const found = enabledById(ports, center.resourceId);
@@ -1272,7 +1335,11 @@ export const runAssistantTool = async (
       case 'refresh_source': {
         const { resourceId } = parsed.data as { resourceId: string };
         const found = enabledById(ports, resourceId);
-        if (found === undefined) return refused(name, 'unknown id');
+        if (found === undefined)
+          return refused(
+            name,
+            'Unknown id. Use an id from an earlier result in this request, or search again.',
+          );
         const enqueued = ports.enqueueRefresh(found.id);
         return evidence(
           name,
@@ -1283,7 +1350,10 @@ export const runAssistantTool = async (
       }
       case 'upcoming_events': {
         if (ports.upcomingEvents === undefined)
-          return refused(name, "I couldn't check the schedule right now.");
+          return refused(
+            name,
+            "I couldn't check the schedule right now. Answer without it and say the schedule couldn't be checked.",
+          );
         // The service already filters, sorts and caps; the slice and sort
         // here only bound a hand-built port in tests.
         const items = [...(await ports.upcomingEvents())]
@@ -1301,14 +1371,21 @@ export const runAssistantTool = async (
       }
       case 'channel_history': {
         if (ports.channelHistory === undefined)
-          return refused(name, "I couldn't read the channel history.");
+          return refused(
+            name,
+            "I couldn't read the channel history. Answer from the recent messages you already have.",
+          );
         const { before, limit } = parsed.data as { before?: string; limit?: number };
         const page = await ports.channelHistory({
           ...(before === undefined ? {} : { before }),
           // No limit named means a middle page, not the whole channel.
           limit: limit ?? 20,
         });
-        if (page === undefined) return refused(name, "I couldn't read the channel history.");
+        if (page === undefined)
+          return refused(
+            name,
+            "I couldn't read the channel history. Answer from the recent messages you already have.",
+          );
         const body = evidence(name, page.lines.join('\n'));
         if (page.oldestId === undefined) return { ...body, handles: [] };
         // The cursor is code-issued (the port's own handle), not untrusted

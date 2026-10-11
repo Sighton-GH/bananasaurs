@@ -3127,7 +3127,9 @@ describe('B2b: acting tool ports are wired', () => {
     const toolTexts = (seen[1]?.messages as readonly { role: string; text: string }[])
       .filter((m) => m.role === 'tool')
       .map((m) => m.text);
-    expect(toolTexts[0]).toContain("You're not allowed to use that here.");
+    expect(toolTexts[0]).toContain(
+      "This member isn't allowed to use that. Tell them plainly; don't retry.",
+    );
   });
 
   it('an invocation without an id declares no acting tool', async () => {
@@ -3276,8 +3278,8 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(checked.ok).toBe(true);
     const answers = toolTexts.at(-1) ?? [];
-    expect(answers[0]).toContain("couldn't find");
-    expect(answers[1]).toContain("couldn't find");
+    expect(answers[0]).toContain('No reminder has that id');
+    expect(answers[1]).toContain('No reminder has that id');
     expect(answers[2]).toContain('No upcoming reminders.');
     expect(answers[3]).toContain('No upcoming reminders.');
     // Guild A's row is untouched: still scheduled, still exactly one.

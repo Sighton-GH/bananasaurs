@@ -14,7 +14,7 @@ import {
 import type { ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
 import type { RunRecorder } from './run-recorder.js';
-import { laterRoundDeclarations, runToolLoop, type LoopTools } from './tool-loop.js';
+import { NEXT_STEP, laterRoundDeclarations, runToolLoop, type LoopTools } from './tool-loop.js';
 import type { AssistantToolResult } from './tools.js';
 import { createCitationRegistry } from './citations.js';
 
@@ -215,6 +215,18 @@ describe('later-round policy (ADR 0137)', () => {
       ].map(decl),
     ).map((d) => d.name);
     expect(later).toEqual(['web_search', 'search_sources', 'cancel_reminder', 'read_chunk']);
+  });
+
+  it('every loop refusal reason has a next step the model can act on', () => {
+    for (const reason of [
+      'tools not offered',
+      'tool call budget used',
+      'too many calls in this round',
+      'acting tools run only in the first round',
+      'unknown id',
+      'result budget used',
+    ])
+      expect(NEXT_STEP[reason], reason).toMatch(/\.$/);
   });
 });
 
