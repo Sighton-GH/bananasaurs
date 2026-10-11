@@ -2252,3 +2252,59 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
     );
   });
 });
+
+describe('escalateAfterTools (ADR 0144)', () => {
+  it('hands the same loop to the next entry after round-1 tools, running each tool once', async () => {
+    const light = scripted([
+      toolAnswer([{ name: 'set_reminder', args: { text: 'Bring batteries' } }], {
+        providerParts: ['light-private'],
+      }),
+    ]);
+    const standard = scripted([textAnswer('Done.', 'model-b')]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name, 'Reminder set.'));
+    const lightEntry = entry({ provider: light.provider, keyId: 'key_l', tier: 'light' });
+    const standardEntry = entry({ provider: standard.provider, keyId: 'key_s', model: 'model-b' });
+    const onEscalated = vi.fn();
+    const result = await runToolLoop(
+      baseInput([lightEntry, standardEntry], {
+        tools: allTools(run),
+        limits: { totalCalls: 1 },
+        escalateAfterTools: (current, remaining) =>
+          current.tier === 'light' ? remaining : undefined,
+        onEscalated,
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Done.');
+    // One execution, one provider call per entry, budget carried over.
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(light.calls).toHaveLength(1);
+    expect(standard.calls).toHaveLength(1);
+    expect(result.toolCalls).toHaveLength(1);
+    // The standard entry continues at round 2: later-round declarations, and
+    // the transcript holds the light turn and its tool result without parts.
+    const names = standard.calls[0]!.tools?.map((d) => d.name) ?? [];
+    expect(names).not.toContain('set_reminder');
+    const roles = standard.calls[0]!.messages.map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'tool']);
+    expect(JSON.stringify(standard.calls[0]!.messages)).not.toContain('light-private');
+    expect(onEscalated).toHaveBeenCalledTimes(1);
+    expect(onEscalated.mock.calls[0]![1]).toEqual([standardEntry]);
+  });
+
+  it('lets the entry finish when the plan returns nothing', async () => {
+    const only = scripted([
+      toolAnswer([{ name: 'current_time', args: {} }]),
+      textAnswer('It is noon.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name));
+    const result = await runToolLoop(
+      baseInput([entry({ provider: only.provider })], {
+        tools: allTools(run),
+        escalateAfterTools: () => [],
+      }),
+    );
+    expect(result.text).toBe('It is noon.');
+    expect(only.calls).toHaveLength(2);
+  });
+});

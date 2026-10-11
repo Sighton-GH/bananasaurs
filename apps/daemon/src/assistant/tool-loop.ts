@@ -226,6 +226,18 @@ export const runToolLoop = async (input: {
    * no source is citable and no "Cite as" line is emitted.
    */
   readonly isCitable?: ((source: { title: string; url: string }) => boolean) | undefined;
+  /**
+   * ADR 0144 escalation: a pure plan, asked before each entry runs. When it
+   * returns entries, then after that entry's round-1 tool calls the SAME loop
+   * is handed to them: they continue from round 2 with the same messages,
+   * handles, budgets and summaries, so no acting tool runs twice. Returning
+   * undefined or an empty list keeps the entry going to its own answer.
+   */
+  readonly escalateAfterTools?:
+    | ((entry: ChainEntry, remaining: readonly ChainEntry[]) => readonly ChainEntry[] | undefined)
+    | undefined;
+  /** Called once when a hand-over happens, with the entry and its successors. */
+  readonly onEscalated?: ((entry: ChainEntry, next: readonly ChainEntry[]) => void) | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -328,8 +340,11 @@ export const runToolLoop = async (input: {
     });
   };
 
-  for (let position = 0; position < input.chain.length; position += 1) {
-    const entry = input.chain[position]!;
+  let chain: readonly ChainEntry[] = input.chain;
+  // Set once an entry hands the loop over after its round-1 tools.
+  let resume: Resume | undefined;
+  for (let position = 0; position < chain.length; position += 1) {
+    const entry = chain[position]!;
     const started = input.now();
     const ms = (): number => Math.max(0, input.now() - started);
     // ADR 0129 §5: every skipped entry is a journal line with the run id.
@@ -448,6 +463,10 @@ export const runToolLoop = async (input: {
     }
 
     logInfo('assistant model called');
+    const escalation =
+      resume === undefined
+        ? input.escalateAfterTools?.(entry, chain.slice(position + 1))
+        : undefined;
     const answered = await runEntry({
       entry,
       systemInstruction: input.systemInstruction,
@@ -492,13 +511,22 @@ export const runToolLoop = async (input: {
       guildId: input.guildId,
       runId: input.runId,
       position,
-      of: input.chain.length,
+      of: chain.length,
+      resume,
+      canHandOff: escalation !== undefined && escalation.length > 0,
       recorder,
       now: input.now,
       citations: input.citations,
       isCitable: input.isCitable,
       entryMs: ms,
     });
+    if (answered !== undefined && 'handoff' in answered) {
+      const next = escalation ?? [];
+      resume = answered.handoff;
+      chain = [...chain.slice(0, position + 1), ...next];
+      input.onEscalated?.(entry, next);
+      continue;
+    }
     if (answered !== undefined) {
       if (answered.outcome === 'answered') logInfo('assistant model answered');
       return {
@@ -557,6 +585,17 @@ const declarationsFor = (
   if (!provider.capabilities.has('tools')) return [];
   return round === 1 ? [...tools.firstRound] : [...tools.laterRounds];
 };
+
+/** Round-1 state an escalated entry carries on from (provider parts removed). */
+interface Resume {
+  readonly messages: readonly GenerationMessage[];
+  readonly handles: readonly string[];
+  readonly round: number;
+}
+
+interface EntryHandoff {
+  readonly handoff: Resume;
+}
 
 interface EntrySuccess {
   readonly outcome: 'answered' | 'failed';
@@ -631,17 +670,21 @@ const runEntry = async (deps: {
   /** ADR 0129 §6: this entry's place in the chain, for the ledger's model steps. */
   readonly position: number;
   readonly of: number;
+  readonly resume?: Resume | undefined;
+  readonly canHandOff?: boolean | undefined;
   /** ADR 0129 §6: the run's step log. */
   readonly recorder: RunRecorder;
   readonly citations?: CitationRegistry | undefined;
   readonly isCitable?: ((source: { title: string; url: string }) => boolean) | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
-}): Promise<EntrySuccess | undefined> => {
+}): Promise<EntrySuccess | EntryHandoff | undefined> => {
   const { entry, limits } = deps;
   const provider = entry.provider as TextProvider;
-  const handles = new Set<string>(deps.initialHandles);
-  const messages: GenerationMessage[] = [...deps.history, { role: 'user', text: deps.userText }];
+  const handles = new Set<string>(deps.resume?.handles ?? deps.initialHandles);
+  const messages: GenerationMessage[] = deps.resume
+    ? [...deps.resume.messages]
+    : [...deps.history, { role: 'user', text: deps.userText }];
   // Tools run only when they were offered: a provider without the `tools`
   // capability answers text-only, and any tool calls it returns anyway are
   // refused rather than executed.
@@ -1114,7 +1157,7 @@ const runEntry = async (deps: {
     return toolMessages;
   };
 
-  for (let round = 1; round <= limits.rounds; round += 1) {
+  for (let round = deps.resume?.round ?? 1; round <= limits.rounds; round += 1) {
     const response = await callProvider(round);
     if (response === undefined) return undefined;
     const calls = response.toolCalls ?? [];
@@ -1137,6 +1180,20 @@ const runEntry = async (deps: {
       ...(response.providerParts === undefined ? {} : { providerParts: response.providerParts }),
     });
     messages.push(...(await runRoundCalls(round, calls)));
+    if (round === 1 && deps.canHandOff === true) {
+      return {
+        handoff: {
+          // Provider-specific parts never cross entries (ADR 0075).
+          messages: messages.map((message) => {
+            if (message.role !== 'assistant' || message.providerParts === undefined) return message;
+            const { providerParts: _dropped, ...rest } = message;
+            return rest;
+          }),
+          handles: [...handles],
+          round: 2,
+        },
+      };
+    }
   }
 
   // Rounds exhausted with the model still calling tools: one final call with
