@@ -81,11 +81,11 @@
 | 3 | S4-T6 text files into the turn | Modify: `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts` | T4, T5 |
 | 3 | S4-T7 Gemini sends media | Modify: `packages/core/src/providers/gemini.ts`, `packages/core/src/providers/gemini.test.ts` | T2 |
 | 3 | S4-T8 OpenRouter sends images and PDFs | Modify: `packages/core/src/providers/openai-compatible.ts`, `packages/core/src/providers/openai-compatible.test.ts` | T2 |
-| 4 | S4-T9 media plumbing job to loop | Modify: `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts` | T2, T5, T6 |
-| 4 | S4-T10 capability routing and markers | Create: `apps/daemon/src/assistant/media-routing.ts`, `apps/daemon/src/assistant/media-routing.test.ts`; Modify: `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts` | T2, T9 |
-| 4 | S4-T11 tuning page shows the caps | Modify: `packages/dashboard/src/pages/assistant-tuning.test.tsx` | T3 |
-| 5 | S4-T12 trace attachment summary | Modify: `packages/core/src/assistant/trace.ts`, `packages/core/src/assistant/trace.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts` | T9 |
-| 5 | S4-T13 state and privacy | Modify: `docs/STATE.md`, `PRIVACY.md` | T1–T12 |
+| 4 | S4-T9 media plumbing job to loop | Modify: `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts` | T2, T5, T6 |
+| 4 | S4-T10 tuning page shows the caps | Modify: `packages/dashboard/src/pages/assistant-tuning.test.tsx` | T3 |
+| 5 | S4-T11 capability routing and markers | Create: `apps/daemon/src/assistant/media-routing.ts`, `apps/daemon/src/assistant/media-routing.test.ts`; Modify: `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts` | T2, T9 |
+| 5 | S4-T12 trace attachment summary | Modify: `packages/core/src/assistant/trace.ts`, `packages/core/src/assistant/trace.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts` | T9 |
+| 6 | S4-T13 state and privacy | Modify: `docs/STATE.md`, `PRIVACY.md` | T1–T12 |
 
 ## Tasks
 
@@ -951,3 +951,130 @@ return {
 - [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 4 T8: OpenRouter sends images and PDFs with the native file-parser plugin"`
 
 **Done when:** images go as `image_url` data URLs, PDFs as `file` parts with exactly the native plugin; no PDF means no plugins and unchanged string content for text-only turns; no URL on the wire.
+
+---
+
+### S4-T9: media plumbing from the job to the loop   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/tool-loop.ts` (line 590 builds provider messages from history; it already forwards `GenerationMessage.media` on user turns to S4-T7/T8 — this task does not touch it), `packages/core/src/providers/contracts.ts` (S4-T2)
+**Interfaces:** Consumes: `fetchAttachment`, `AttachmentCaps`, `ATTACHMENT_HOSTS` (S4-T5); `GeneratedMedia`? No — `GenerationMedia` (S4-T2) · Produces: `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }` in `commands.ts` · `AssistantInvocation` gains `readonly media?: readonly GenerationMedia[] | undefined` and `readonly attachmentSummary?: readonly AttachmentSummary[] | undefined` · `fetchAttachment` gains an optional fourth parameter `forceKind?: AttachmentKind` (for embed thumbnails, which have no filename)
+
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/service.test.ts`, inside the B2b-style capture pattern (Slice 1 Task 6 `capture()`):
+
+```ts
+it('forwards invocation media on a trailing user message, bytes never in the trace (ADR 0149)', async () => {
+  const { requests, provider } = capture();
+  await h.serviceWith(provider).invoke(
+    ask({
+      userId: OWNER, callerRoleIds: [], invocationId: 'int-media-1',
+      input: { question: 'what is this chart?' },
+      media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' }],
+      attachmentSummary: [{ name: 'chart.png', kind: 'image', sizeBytes: 3 }],
+    }),
+  );
+  const lastHistory = requests[0]?.messages.at(-1);
+  expect(lastHistory?.role).toBe('user');
+  expect(lastHistory?.text).toBe('[attached files: chart.png]');
+  expect(lastHistory?.media).toHaveLength(1);
+});
+```
+
+If `media`/`attachmentSummary` are not on the invocation input type the harness accepts, read `rg -n "quoteEnvelope|channelContext" apps/daemon/src/assistant/commands.ts` and pass them where the type expects them. In `apps/daemon/src/jobs/assistant.test.ts`, extend the S4-T6 harness:
+
+```ts
+it('fetches images and PDFs up to their caps and passes bytes with a summary (ADR 0149)', async () => {
+  h.fetchMessageContent.mockResolvedValue({
+    authorId: '111', authorName: 'Sam L', content: 'look', attachments: [
+      { attachmentId: '1', fileName: 'chart.png', contentType: 'image/png', sizeBytes: 100, url: 'https://cdn.discordapp.com/attachments/1/2/chart.png' },
+      { attachmentId: '2', fileName: 'report.pdf', contentType: 'application/pdf', sizeBytes: 200, url: 'https://cdn.discordapp.com/attachments/1/2/report.pdf' },
+    ], embeds: [],
+  });
+  h.fetchAttachmentBytes.mockImplementation(async (url: string) => ({
+    ok: true as const,
+    bytes: url.endsWith('.png') ? new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) : new Uint8Array([...Buffer.from('%PDF-1.7', 'utf8')]),
+    mediaType: url.endsWith('.png') ? 'image/png' : 'application/pdf',
+  }));
+  await h.runMentionWithAttachments();
+  expect(h.invokeMedia()?.map((m) => m.name)).toEqual(['chart.png', 'report.pdf']);
+  expect(h.invokeSummary()).toEqual([
+    { name: 'chart.png', kind: 'image', sizeBytes: 8 },
+    { name: 'report.pdf', kind: 'pdf', sizeBytes: 8 },
+  ]);
+});
+```
+
+(`h.invokeMedia`/`h.invokeSummary` capture the `service.invoke` input; add them to the harness in Step 3.) In `attachments.test.ts`:
+
+```ts
+it('forceKind reads an embed thumbnail with no usable filename (ADR 0149)', async () => {
+  const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), mediaType: 'image/png' }));
+  const result = await fetchAttachment({ fetchBytes }, { fileName: 'embed thumbnail', sizeBytes: 8, url: 'https://media.discordapp.net/thumb.png' }, caps(), 'image');
+  expect(result).toMatchObject({ ok: true, kind: 'image' });
+});
+```
+
+(`caps()` returns the D7 defaults object from the S4-T5 tests; factor it into a helper in that file.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.test.ts apps/daemon/src/assistant/attachments.test.ts --maxWorkers=1` · Expected: FAIL (`media` unknown on the input; no trailing media message; no `invokeMedia`; no `forceKind`)
+- [ ] **Step 3: Implement**
+  - `attachments.ts`: `fetchAttachment(deps, source, caps, forceKind?: AttachmentKind)` — when `forceKind` is set, skip `classifyAttachment` and use it for the byte cap, the magic expectation and the result kind. Nothing else changes.
+  - `commands.ts`: import `GenerationMedia` type from `@bananasaurs/core` (next to `GenerationMessage`); add `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }`; add the two optional fields to `AssistantInvocation` with the comment "ADR 0149: fetched attachment bytes for models that read them natively, and the metadata-only summary the trace keeps".
+  - `service.ts`: replace `const historyForLoop: readonly GenerationMessage[] = input.history ?? [];` (near line 1240) with:
+
+```ts
+const mediaForLoop: readonly GenerationMedia[] = input.media ?? [];
+const historyForLoop: readonly GenerationMessage[] =
+  mediaForLoop.length === 0
+    ? (input.history ?? [])
+    : [
+        ...(input.history ?? []),
+        {
+          role: 'user',
+          text: `[attached files: ${mediaForLoop.map((m) => m.name).join(', ')}]`,
+          media: mediaForLoop,
+        },
+      ];
+```
+
+The note text (names only, never bytes) flows into the trace history section like any user text; the bytes ride `media`, which no trace writer reads. The note counts as one user turn in `historyTurns`; that is intended and the test pins it.
+  - `jobs/assistant.ts`: extend the S4-T6 per-message processing to image and PDF kinds: per message, the first `imageMaxCount` image-kind attachments and first `pdfMaxCount` PDF-kind attachments (extras get "(skipped: at most 4 images per message)" / "(skipped: at most 2 PDFs per message)" notes with the live values) go through `fetchAttachment`; embed thumbnails on `media.discordapp.net` go through with `forceKind: 'image'` and fileName `'embed thumbnail'`. Collect `media: GenerationMedia[]` (image/pdf successes) and `attachmentSummary: AttachmentSummary[]` (every fetched file of every kind, using the fetched byte length as `sizeBytes`). Pass both into the existing `deps.service.invoke({…})` call (near line 1067). Refusals become marker-side notes exactly like S4-T6's text refusals.
+- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write <all seven owned paths>` then `npx eslint <all seven owned paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <all seven owned paths> && git commit -m "Slice 4 T9: attachment bytes and summary from the job to the loop"`
+
+**Done when:** images/PDFs/thumbnails fetch under their caps with magic checks; bytes reach the loop only on the trailing user message; the summary carries names/kinds/sizes and no bytes; refusals read as plain notes.
+
+---
+
+### S4-T10: tuning page shows the attachment caps   ·   Wave 4
+**Owns:** Modify: `packages/dashboard/src/pages/assistant-tuning.test.tsx`
+**Reads (do not edit):** `packages/dashboard/src/pages/assistant-tuning.tsx` (generic registry rendering — no change), `packages/dashboard/src/test-support.tsx` (`renderWithSession`, `stubFetch`, `bodyOf`)
+**Interfaces:** Consumes: the seven `assistant.attachments.*` keys (S4-T3) · Produces: none (test only)
+
+- [ ] **Step 1: Write the failing test** — append to the `describe('AssistantTuningPage', …)` block (read from line 115 first for the existing render/save pattern). Add the seven attachment settings to the `SETTINGS` fixture (same shape: key, group `'Assistant attachments'`, label, help, display `'count'`, bounds, value, defaultValue, isDefault), then:
+
+```tsx
+it('renders the attachment caps under Assistant attachments and saves one', async () => {
+  stubFetch(SETTINGS);
+  renderPage();
+  const row = await screen.findByTestId('tuning-row-assistant.attachments.imageMaxCount');
+  expect(within(row).getByText('Images read per message')).toBeTruthy();
+  expect(within(row).getByText(/0 turns image attachments off/)).toBeTruthy();
+  const save = within(row).getByRole('button', { name: /save/i });
+  fireEvent.change(within(row).getByRole('spinbutton'), { target: { value: '2' } });
+  await act(async () => { fireEvent.click(save); });
+  expect(bodyOf()).toMatchObject({ key: 'assistant.attachments.imageMaxCount', value: 2 });
+});
+```
+
+(If the row's input role or save-button name differs, use the names the existing save test in the same file uses.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL (fixture lacks the keys; row missing)
+- [ ] **Step 3: Implement** — test only: extend the `SETTINGS` fixture and add the test above. No page change: the tuning page renders every registry entry generically (§4.7). If the page does not render the new group, that is a page bug — fix it in this task only if the test proves it, keeping the change to mounting (contracts §4).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/dashboard/src/pages/assistant-tuning.test.tsx` then `npx eslint packages/dashboard/src/pages/assistant-tuning.test.tsx` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/dashboard/src/pages/assistant-tuning.test.tsx && git commit -m "Slice 4 T10: tuning page renders and saves the attachment caps"`
+
+**Done when:** every new cap renders with its help text and one saves through the existing endpoint; no dashboard component changes.
