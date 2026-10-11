@@ -1307,8 +1307,22 @@ describe('bulk keys and recommended chain (ADR 0143)', () => {
   it('recommended setup builds the Gemini chain then owner OpenRouter entries', async () => {
     const store = fakeStore({
       keys: [
-        { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
-        { keyId: 'key_b', provider: 'gemini', label: 'B', costClass: 'free', enabled: true },
+        {
+          keyId: 'key_b',
+          provider: 'gemini',
+          label: 'B',
+          costClass: 'free',
+          enabled: true,
+          createdAt: 2_000,
+        },
+        {
+          keyId: 'key_a',
+          provider: 'gemini',
+          label: 'A',
+          costClass: 'free',
+          enabled: true,
+          createdAt: 1_000,
+        },
         { keyId: 'key_o', provider: 'openrouter', label: 'O', costClass: 'free', enabled: true },
       ],
       chain: [
@@ -1471,5 +1485,173 @@ describe('bulk keys and recommended chain (ADR 0143)', () => {
     const audit = auditRows().find((row) => row.action === 'assistant_provider.chain_saved');
     expect(audit?.after).toContain('"pool":"provider"');
     expect(audit?.after).toContain('"tier":"light"');
+  });
+
+  it('never stores pasted key text in a label after a bulk paste', async () => {
+    const store = fakeStore();
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const pasted = ['AIza-secret-alpha', 'AIza-secret-beta', 'AIza-secret-gamma'];
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      headers,
+      payload: { provider: 'gemini', keysText: pasted.join('\n') },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ added: 3, duplicates: 0 });
+    const labels = store
+      .keys()
+      .filter((key) => key.fingerprint !== undefined && key.fingerprint !== null)
+      .map((key) => key.label);
+    expect(labels).toHaveLength(3);
+    for (const label of labels) {
+      for (const text of pasted) expect(label).not.toContain(text);
+      expect(label).not.toContain('AIza');
+    }
+    const listed = await app.inject({ method: 'GET', url: '/api/assistant/providers', headers });
+    expect(listed.statusCode).toBe(200);
+    for (const text of pasted) expect(listed.body).not.toContain(text);
+  });
+
+  describe('model-chain test cooldown only on provider-auth', () => {
+    const failingStore = (error: unknown) => {
+      const base = fakeStore();
+      return {
+        ...base,
+        chain: () =>
+          base.chain().map((entry) =>
+            entry.provider === undefined
+              ? entry
+              : {
+                  ...entry,
+                  provider: {
+                    ...entry.provider,
+                    generateText: async (): Promise<{ text: string; model: string }> => {
+                      throw error;
+                    },
+                  },
+                },
+          ),
+      };
+    };
+    const cases: [string, () => unknown][] = [
+      ['500', () => new ProviderError('outage', 'HTTP 500', true, { status: 500 })],
+      ['429', () => new ProviderError('rate-limit', 'HTTP 429', true, { status: 429 })],
+      [
+        'network failure',
+        () => new ProviderError('outage', 'fetch failed', true, { netCode: 'ECONNRESET' }),
+      ],
+    ];
+    for (const [name, make] of cases) {
+      it(`a ${name} does not create an invalid-key cooldown`, async () => {
+        const store = failingStore(make());
+        await rebuildWithStore(store);
+        const owner = await signInAs('owner');
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/assistant/model-chain/test',
+          headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+          payload: { position: 0 },
+        });
+        expect(res.statusCode).toBe(200);
+        const body = res.json<{ ok: boolean; failure?: { code: string } }>();
+        expect(body.ok).toBe(false);
+        expect(body.failure?.code).not.toBe('provider-auth');
+        expect(store.cooldowns()).toEqual([]);
+      });
+    }
+  });
+
+  describe('recommended chain anchoring and bound', () => {
+    const post = async (store: unknown) => {
+      await rebuildWithStore(store);
+      const owner = await signInAs('owner');
+      return app.inject({
+        method: 'POST',
+        url: '/api/assistant/model-chain/recommended',
+        headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+        payload: {},
+      });
+    };
+    const openrouterKeys = (n: number): FakeKey[] =>
+      Array.from({ length: n }, (_, i) => ({
+        keyId: `key_o${String(i + 1)}`,
+        provider: 'openrouter',
+        label: `O${String(i + 1)}`,
+        costClass: 'free' as const,
+        enabled: true,
+      }));
+    const ownerChain = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        keyId: `key_o${String(i + 1)}`,
+        model: `owner-model-${String(i + 1)}`,
+      }));
+
+    it('anchors the three Gemini entries to the oldest key regardless of list order', async () => {
+      const store = fakeStore({
+        keys: [
+          {
+            keyId: 'key_mid',
+            provider: 'gemini',
+            label: 'M',
+            costClass: 'free',
+            enabled: true,
+            createdAt: 2_000,
+          },
+          {
+            keyId: 'key_old',
+            provider: 'gemini',
+            label: 'Old',
+            costClass: 'free',
+            enabled: true,
+            createdAt: 1_000,
+          },
+          {
+            keyId: 'key_new',
+            provider: 'gemini',
+            label: 'N',
+            costClass: 'free',
+            enabled: true,
+            createdAt: 3_000,
+          },
+        ],
+        chain: [],
+      });
+      const res = await post(store);
+      expect(res.statusCode).toBe(200);
+      const saved = store.savedChain();
+      expect(saved).toHaveLength(3);
+      expect(saved.map((entry) => entry.keyId)).toEqual(['key_old', 'key_old', 'key_old']);
+    });
+
+    it('succeeds with exactly six entries (3 Gemini + 3 existing)', async () => {
+      const store = fakeStore({
+        keys: [
+          { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
+          ...openrouterKeys(3),
+        ],
+        chain: ownerChain(3),
+      });
+      const res = await post(store);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, count: 6 });
+      expect(store.savedChain()).toHaveLength(6);
+    });
+
+    it('refuses seven entries with 400 too-many and saves nothing', async () => {
+      const store = fakeStore({
+        keys: [
+          { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
+          ...openrouterKeys(4),
+        ],
+        chain: ownerChain(4),
+      });
+      const res = await post(store);
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'too-many' });
+      expect(store.savedChain()).toEqual([]);
+    });
   });
 });
