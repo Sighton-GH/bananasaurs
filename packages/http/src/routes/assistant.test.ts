@@ -1816,6 +1816,7 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
       'evidence-rule',
       'server-card',
       'resources',
+      'now',
       'capabilities',
     ]);
     for (const section of parsed.sections) {
@@ -1831,6 +1832,15 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
     ).toBe(true);
     expect(parsed.sections.find((s) => s.name === 'behaviour-prompt')?.text).toBe('Be helpful.');
     expect(JSON.stringify(parsed)).not.toContain('Loves pineapple pizza');
+    // The preview claims the catalogue tools explicitly (web search is off
+    // in this wiring, so web_search stays out) and carries a NOW line.
+    const capabilities = parsed.sections.find((s) => s.name === 'capabilities')?.text ?? '';
+    expect(capabilities).toContain('search_sources');
+    expect(capabilities).not.toContain('web_search');
+    expect(capabilities).not.toContain('No tools this turn');
+    const now = parsed.sections.find((s) => s.name === 'now')?.text ?? '';
+    expect(now.startsWith('NOW\nIt is ')).toBe(true);
+    expect(now).toContain('November 14, 2023');
   });
 });
 

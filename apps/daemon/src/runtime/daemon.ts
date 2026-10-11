@@ -211,7 +211,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     now: Date.now,
     log: logger,
   });
-  void modelCatalogue.refresh();
+  // No eager refresh: peek() refreshes lazily, so installs without an
+  // OpenRouter chain never call openrouter.ai at boot.
   const providerStore =
     providerSecret.source === 'missing'
       ? undefined

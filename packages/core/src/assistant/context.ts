@@ -9,7 +9,6 @@ import {
 } from './prompt-wizard.js';
 import { SAFETY_SUFFIX } from './safety-suffix.js';
 import { buildCapabilityBlock } from './capabilities.js';
-import { TOOL_CATALOGUE } from './tool-catalogue.js';
 import { neutraliseMarkers } from './untrusted.js';
 
 export interface RetrievedEvidence {
@@ -185,8 +184,14 @@ export const compileAssistantContext = (input: {
             .join('\n\n');
         })();
   const behaviourName = input.behaviour.name;
-  const rewriteLegacyWizard = (text: string): string =>
-    text
+  // The old wizard always wrote the ROLE line with a blank bot name, so its
+  // rewrite to Bananasaurs runs only for those stored prompts: a wizard run
+  // that named the bot, or a hand-written prompt, keeps its own name.
+  const legacyBlankBotName =
+    input.behaviour.promptWizard !== undefined &&
+    input.behaviour.promptWizard.botName.trim() === '';
+  const rewriteLegacyWizard = (text: string): string => {
+    const rewritten = text
       .replaceAll(LEGACY_BOUNDARIES_SENTENCE, BOUNDARIES_HELPFUL)
       .replaceAll(BOUNDARIES_ANSWER_BRIEFLY, BOUNDARIES_HELPFUL)
       .split('\n')
@@ -196,17 +201,23 @@ export const compileAssistantContext = (input: {
         if (trimmed === LEGACY_SOURCES_SENTENCE) return SOURCES_ORDER_LINES.join('\n');
         return line;
       })
-      .join('\n')
-      .replace(
-        `You are ${behaviourName}, the assistant in the Discord server of`,
-        'You are Bananasaurs, the assistant in the Discord server of',
-      );
-  const behaviourPrompt = clean(
-    rewriteLegacyWizard(
-      dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
-    ),
+      .join('\n');
+    return legacyBlankBotName
+      ? rewritten.replace(
+          `You are ${behaviourName}, the assistant in the Discord server of`,
+          'You are Bananasaurs, the assistant in the Discord server of',
+        )
+      : rewritten;
+  };
+  // Cap the stored prompt before rewriting: the rewrites only grow it
+  // (BOUNDARIES_HELPFUL is longer than the sentence it replaces), so
+  // capping after the rewrite could cut the rewritten ending. The rewritten
+  // result gets its own, roomier cap.
+  const storedPrompt = clean(
+    dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
     4_000,
   );
+  const behaviourPrompt = clean(rewriteLegacyWizard(storedPrompt), 4_600);
   // ADR 0087: preferred skills first, suffixed as this assistant's focus.
   // An empty preference, or one covering every allowed skill (which includes
   // the seeded "every catalogue skill" case), adds no suffix.
@@ -220,7 +231,9 @@ export const compileAssistantContext = (input: {
     name: entry.skill.name,
     reason: entry.reason,
   }));
-  const offeredTools = input.offeredTools ?? TOOL_CATALOGUE.map((tool) => tool.name);
+  // No tools claimed unless the caller says which are offered: the
+  // preview route and the daemon pass their declarations explicitly.
+  const offeredTools = input.offeredTools ?? [];
   const capabilities = buildCapabilityBlock({
     offeredTools,
     skills: orderedSkills,
@@ -248,7 +261,14 @@ export const compileAssistantContext = (input: {
     },
     { name: 'capabilities', text: capabilities },
   ].filter((section) => section.text !== '');
-  const protectedText = `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${capabilities}`;
+  // The guard watches the capability headers and instruction sentences,
+  // not the item lines: the model must describe what it can do in plain
+  // words, and quoting a group description back must not read as a leak.
+  const guardedCapabilities = capabilities
+    .split('\n')
+    .filter((line) => !line.startsWith('- '))
+    .join('\n');
+  const protectedText = `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${guardedCapabilities}`;
   return {
     systemInstruction: sections.map((section) => section.text).join('\n\n'),
     evidenceEnvelope: blocks.join('\n\n'),

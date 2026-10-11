@@ -233,7 +233,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'set_reminder',
     description:
-      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "2026-10-10T23:00:00-07:00", members: ["Sam L"].',
+      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "<today>T23:00:00<UTC offset>", members: ["Sam L"].',
     parameters: {
       type: 'object',
       properties: {

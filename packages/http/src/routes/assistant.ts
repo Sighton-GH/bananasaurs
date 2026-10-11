@@ -504,6 +504,31 @@ export const registerAssistantRoutes = (
     const id = (request.params as { id: string }).id;
     const behaviour = assistantRepo.listBehaviours(session.scope).find((item) => item.id === id);
     if (behaviour === undefined) return reply.status(404).send({ error: 'not-found' });
+    // The preview claims the catalogue tools explicitly (the compiler no
+    // longer defaults to any): every name, without web_search while web
+    // search is off for the instance. The store's status is the source of
+    // truth; the env-derived fallback covers wiring without a store.
+    const webSearchEnabled =
+      (deps.assistantProviderConfig?.status() ?? deps.assistantAiStatus)?.webSearch?.enabled ===
+      true;
+    // The club's time zone as this route can reach it: the redacted config
+    // carries it in clear (only secrets are redacted). Falls back to the
+    // schema default when the wiring carries no config (isolated tests).
+    // packages/http cannot import the daemon's formatClock (ADR 0014), so the
+    // formatting is repeated here with the same options plus hourCycle h23.
+    const previewTimeZone = (): string => {
+      const raw = deps.instance.redactedConfig()['BANANASAURS_TIME_ZONE'];
+      if (typeof raw === 'string') {
+        try {
+          new Intl.DateTimeFormat('en-CA', { timeZone: raw });
+          return raw;
+        } catch {
+          // Invalid zone: fall through to the default below.
+        }
+      }
+      return 'America/Vancouver';
+    };
+    const timeZone = previewTimeZone();
     const compiled = compileAssistantContext({
       behaviour,
       serverCard: assistantRepo.getServerCard(session.scope),
@@ -514,6 +539,15 @@ export const registerAssistantRoutes = (
       skills: [...CLUB_ASSISTANT_SKILLS],
       preferredSkillIds: behaviour.preferredSkillIds,
       toolsAvailable: true,
+      offeredTools: TOOL_CATALOGUE.map((tool) => tool.name).filter(
+        (name) => name !== 'web_search' || webSearchEnabled,
+      ),
+      nowLine: new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        dateStyle: 'full',
+        timeStyle: 'short',
+        hourCycle: 'h23',
+      }).format(deps.now()),
     });
     const sections = compiled.sections.map((section) => ({
       name: section.name,

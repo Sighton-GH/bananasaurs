@@ -203,6 +203,89 @@ describe('later-round policy (ADR 0137)', () => {
     });
   });
 
+  it('refuses edit_reminder in round 2 with an unknown id and does not run it', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'my_reminders', args: {} }]),
+      toolAnswer([{ name: 'edit_reminder', args: { reminderId: 'rem_invented', text: 'new' } }]),
+      textAnswer('Done.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> =>
+      call.name === 'my_reminders'
+        ? { ...okResult(call.name, 'rem_1 · …'), handles: ['rem_1'] }
+        : okResult(call.name),
+    );
+    const names = ['my_reminders', 'edit_reminder'];
+    const tools: LoopTools = {
+      firstRound: names.map(decl),
+      laterRounds: laterRoundDeclarations(names.map(decl)),
+      run,
+    };
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.toolCalls?.[1]).toMatchObject({
+      round: 2,
+      name: 'edit_reminder',
+      ok: false,
+      refused: 'unknown id',
+    });
+  });
+
+  it('refuses propose_memory in round 2 as a first-round-only acting tool', async () => {
+    const { provider, calls } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'club rules' } }]),
+      toolAnswer([{ name: 'propose_memory', args: { content: 'the club meets Fridays' } }]),
+      textAnswer('Anything else?'),
+    ]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name));
+    const names = ['search_sources', 'propose_memory'];
+    const tools: LoopTools = {
+      firstRound: names.map(decl),
+      laterRounds: laterRoundDeclarations(names.map(decl)),
+      run,
+    };
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.toolCalls?.[1]).toMatchObject({
+      round: 2,
+      name: 'propose_memory',
+      ok: false,
+      refused: 'acting tools run only in the first round',
+    });
+    const toolTexts = (calls[2]?.messages ?? [])
+      .filter((m) => m.role === 'tool')
+      .map((m) => m.text);
+    expect(toolTexts.at(-1)).toContain('Ask the member to confirm');
+  });
+
+  it('refuses propose_decision in round 2 as a first-round-only acting tool', async () => {
+    const { provider, calls } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'club rules' } }]),
+      toolAnswer([
+        { name: 'propose_decision', args: { summary: 'meet Fridays', kind: 'decision' } },
+      ]),
+      textAnswer('Anything else?'),
+    ]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name));
+    const names = ['search_sources', 'propose_decision'];
+    const tools: LoopTools = {
+      firstRound: names.map(decl),
+      laterRounds: laterRoundDeclarations(names.map(decl)),
+      run,
+    };
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.toolCalls?.[1]).toMatchObject({
+      round: 2,
+      name: 'propose_decision',
+      ok: false,
+      refused: 'acting tools run only in the first round',
+    });
+    const toolTexts = (calls[2]?.messages ?? [])
+      .filter((m) => m.role === 'tool')
+      .map((m) => m.text);
+    expect(toolTexts.at(-1)).toContain('Ask the member to confirm');
+  });
+
   it('offers read-only and returned-id tools in later rounds, never first-only writers', () => {
     const later = laterRoundDeclarations(
       [

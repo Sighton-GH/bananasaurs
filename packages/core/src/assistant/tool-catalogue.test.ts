@@ -74,6 +74,8 @@ describe('TOOL_CATALOGUE', () => {
     const reminder = TOOL_CATALOGUE.find((e) => e.name === 'set_reminder')!.description;
     expect(reminder).toContain('Example:');
     expect(reminder).toContain('members: ["Sam L"]');
+    expect(reminder).toContain('when "<today>T23:00:00<UTC offset>"');
+    expect(reminder).not.toContain('2026-10-10');
     expect(reminder).not.toContain('use current_time first');
     const web = TOOL_CATALOGUE.find((e) => e.name === 'web_search')!.description;
     expect(web).toContain('club sources first');

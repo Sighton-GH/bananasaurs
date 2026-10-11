@@ -1075,7 +1075,7 @@ export const createAssistantService = (
         toolsAvailable,
         catalogueLines,
         taskSection,
-        offeredTools: declarations.map((d) => d.name),
+        offeredTools: toolsAvailable ? declarations.map((d) => d.name) : [],
         nowLine: formatClock(currentConfig.BANANASAURS_TIME_ZONE, now()),
         ...(input.askerName === undefined ? {} : { askerName: input.askerName }),
       });
