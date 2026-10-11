@@ -1263,8 +1263,42 @@ export const createAssistantService = (
       // Task 14: the job-built conversation history travels ahead of the
       // current user text. Absent (or empty) means a history-free request.
       const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      const question = stripNewTopic(textOf(input.input));
+      // ADR 0145 item 1: only resolve mentions in this current question and
+      // its invocation lists. Older channel context keeps the flat tokens.
+      const currentUsers = new Set([...question.matchAll(/<@!?(\d{17,20})>/g)].map((m) => m[1]!));
+      const currentRoles = new Set([...question.matchAll(/<@&(\d{17,20})>/g)].map((m) => m[1]!));
+      const userIds = [...new Set(input.mentionedUserIds ?? [])]
+        .filter((id) => currentUsers.has(id))
+        .slice(0, 25);
+      const roleIds = [...new Set(input.mentionedRoleIds ?? [])]
+        .filter((id) => currentRoles.has(id))
+        .slice(0, 25);
+      const users = new Map<string, string>();
+      const roles = new Map<string, string>();
+      if (discord.findMember !== undefined) {
+        for (const id of userIds) {
+          try {
+            const member = (await discord.findMember(id)).find((candidate) => candidate.id === id);
+            if (member !== undefined) users.set(id, member.displayName);
+          } catch {
+            // A failed lookup keeps @user; it must not prevent an answer.
+          }
+        }
+      }
+      if (discord.roleNames !== undefined && roleIds.length > 0) {
+        try {
+          const names = discord.roleNames(roleIds);
+          for (const id of roleIds) {
+            const name = names.get(id);
+            if (name !== undefined) roles.set(id, name);
+          }
+        } catch {
+          // A failed lookup keeps @role, independently of member lookups.
+        }
+      }
       const userText = buildUserMessage({
-        question: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
+        question: sanitizeMentionsForProvider(question, { users, roles }),
         askerName: input.askerName,
         channelContext: input.channelContext,
         evidenceEnvelope: context.evidenceEnvelope,
