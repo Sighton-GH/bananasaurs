@@ -125,6 +125,120 @@ it('rejects a model-progress event carrying text', () => {
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: FAIL with `model-progress` not in the union
+
+### S3-T3: Shared SSE parser   ·   Wave 2
+**Owns:** Create: `packages/core/src/providers/sse.ts`; Test: `packages/core/src/providers/sse.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/openai-compatible.ts` (lines 100–120 `readErrorBody`, `parseToolArguments`), `packages/core/src/providers/gemini.ts` (lines 53–88 `toContents`)
+**Interfaces:** Consumes: none · Produces: `export interface SseEvent { readonly data: string; readonly keepalive: boolean }` and `export async function* parseSseStream(body: ReadableStream<Uint8Array> | AsyncIterable<string>): AsyncGenerator<SseEvent>` — yields `{ data, keepalive: false }` per `data:` line joined across multi-line data, `{ data: '', keepalive: true }` per `:` comment line, stops at `data: [DONE]`, reassembles chunks split mid-line
+
+- [ ] **Step 1: Write the failing test** — create `packages/core/src/providers/sse.test.ts` with the real helper style of `openai-compatible.test.ts` (plain `describe`/`it`, `vi` only where needed):
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { parseSseStream } from './sse.js';
+
+const collect = async (chunks: readonly string[]) => {
+  async function* feed() {
+    for (const c of chunks) yield c;
+  }
+  const out = [];
+  for await (const e of parseSseStream(feed())) out.push(e);
+  return out;
+};
+
+describe('parseSseStream', () => {
+  it('ignores keepalive comments and counts them', async () => {
+    const events = await collect([': OPENROUTER PROCESSING\n', 'data: {"a":1}\n\n']);
+    expect(events).toEqual([
+      { data: '', keepalive: true },
+      { data: '{"a":1}', keepalive: false },
+    ]);
+  });
+
+  it('reassembles a data line split across chunks', async () => {
+    const events = await collect(['data: {"delta', ': {"content": "hi"}}\n\n']);
+    expect(events).toEqual([{ data: '{"delta: {"content": "hi"}}', keepalive: false }]);
+  });
+
+  it('joins multi-line data with newlines', async () => {
+    const events = await collect(['data: line1\ndata: line2\n\n']);
+    expect(events).toEqual([{ data: 'line1\nline2', keepalive: false }]);
+  });
+
+### S3-T4: Timeout and token settings   ·   Wave 2
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`; Test: `packages/core/src/settings/instance-settings.test.ts`
+**Reads (do not edit):** `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md`
+**Interfaces:** Consumes: ADR 0148 numbers · Produces: settings `assistant.providerIdleTimeoutMs` (45,000), `assistant.providerMaxCallMs` (300,000), `assistant.maxOutputTokens` default 4,096
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/settings/instance-settings.test.ts`, after the existing `channel context defaults` test (line 38), add:
+
+```ts
+it('streaming timeouts default to 45 s idle and 300 s ceiling', () => {
+  const values = Object.fromEntries(INSTANCE_SETTINGS.map((s) => [s.key, s.defaultValue]));
+  expect(values['assistant.providerIdleTimeoutMs']).toBe(45_000);
+  expect(values['assistant.providerMaxCallMs']).toBe(300_000);
+});
+
+it('max output tokens defaults to 4096 for reasoning', () => {
+  const values = Object.fromEntries(INSTANCE_SETTINGS.map((s) => [s.key, s.defaultValue]));
+  expect(values['assistant.maxOutputTokens']).toBe(4_096);
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with `providerIdleTimeoutMs` undefined and maxOutputTokens 2048
+- [ ] **Step 3: Implement** — anchor: `packages/core/src/settings/instance-settings.ts` the `providerTimeout` const (lines 63–72) and the `maxOutputTokens` const (lines 107–115, `defaultValue: 2048`). Replacement: append after `providerTimeout` two new consts in the same shape, group `'Assistant retries'`, display `'seconds'`, labels `Provider idle timeout` / `Provider max call time`, help `How long one AI answer may go without any data before it is abandoned. Keepalive messages count as data.` / `The longest one AI answer may take in total, even when data keeps arriving.`, schemas `z.number().int().min(5000).max(120000)` / `z.number().int().min(60000).max(600000)`, defaults `45000` / `300000`, matching bounds; add both to `INSTANCE_SETTINGS` right after `providerTimeout` and to `InstanceSettingValues`; change `maxOutputTokens` defaultValue to `4096` (bounds unchanged).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 3 T4: streaming timeout and token settings"`
+
+### S3-T5: Trace reasoning field   ·   Wave 2
+**Owns:** Modify: `packages/core/src/assistant/trace.ts`; Test: `packages/core/src/assistant/trace.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`GenerateTextResponse.reasoning` from S3-T2)
+**Interfaces:** Consumes: `GenerateTextResponse.reasoning` · Produces: `assistantTraceSchema` gains optional `reasoning: z.array(z.object({ round: z.number().int().min(0), text: z.string().max(8000) })).max(12)`; `capTrace` caps each entry at 8,000 chars
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/trace.test.ts`, add:
+
+```ts
+it('keeps per-round reasoning capped at 8000 chars', () => {
+  const trace = minimalTrace({ reasoning: [{ round: 1, text: 'x'.repeat(9000) }] });
+  const capped = capTrace({ ...trace, answer: 'a'.repeat(199_000) });
+  expect(capped.reasoning?.[0]?.text.length).toBeLessThanOrEqual(8000);
+  expect(capped.reasoning?.[0]?.text.endsWith('… [truncated]')).toBe(true);
+});
+```
+
+using that file's existing `minimalTrace` helper (read the file; it builds a valid `AssistantTrace` with overrides).
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: FAIL with `reasoning` unknown key or `capTrace` not capping it
+- [ ] **Step 3: Implement** — anchor: `packages/core/src/assistant/trace.ts` the `assistantTraceSchema` `toolCalls` array (ends line ~108) and `capTrace` (line 229). Replacement: add after `toolCalls` an optional `reasoning` array field as above; extend `capTrace` so each `reasoning` entry over 8,000 chars is cut with the existing `truncateTo` helper (same `… [truncated]` suffix) and `capTrace` also shrinks `reasoning` entries when the 200 KB budget is exceeded (after tool previews, before giving up).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts` then `npx eslint packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts && git commit -m "Slice 3 T5: trace reasoning field"`
+
+**Done when:** a trace round-trips `reasoning` entries; entries over 8,000 chars are truncated with the standard suffix.
+
+
+**Done when:** the two new keys exist with the ADR defaults and bounds; maxOutputTokens defaults to 4,096; every existing test still passes.
+
+
+  it('stops at [DONE]', async () => {
+    const events = await collect(['data: {"a":1}\n\n', 'data: [DONE]\n\n', 'data: {"a":2}\n\n']);
+    expect(events).toEqual([{ data: '{"a":1}', keepalive: false }]);
+  });
+};
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./sse.js`
+- [ ] **Step 3: Implement** — full `packages/core/src/providers/sse.ts`: buffer text across chunks, split on `\n`, hold a trailing partial line, on blank line flush the pending `data:` lines; a line starting with `:` yields keepalive; `data: [DONE]` ends the stream; strip one leading space after `data:`; join multiple data lines with `\n`. Accept both `ReadableStream<Uint8Array>` (read via `getReader`, decode with `TextDecoder` streaming) and `AsyncIterable<string>`.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` then `npx eslint packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts && git commit -m "Slice 3 T3: shared SSE parser"`
+
+**Done when:** keepalive comments, split chunks, multi-line data and `[DONE]` all parse per the four tests.
+
 - [ ] **Step 3: Implement** — anchor: `packages/core/src/providers/contracts.ts` lines 42–75 (`GenerateTextRequest` with `thinkingBudget`, `GenerateTextResponse` with `text`, `model`, `finishReason`). Replacement adds after the `thinkingBudget` line: `readonly thinkingLevel?: 'low' | 'medium' | 'high';` and after the `tools` line: `readonly onProgress?: (progress: StreamProgress) => void;`, adds the `StreamProgress` interface above `GenerateTextRequest`, and adds `readonly reasoning?: string;` to `GenerateTextResponse` after `text`. Anchor: `packages/core/src/assistant/run-events.ts` the `model-result` object (lines 83–103). Append a new `.strict()` object after the `model-skipped` object (lines 104–113): `{ kind: z.literal('model-progress'), round: int >= 0, answerChars: int >= 0, reasoningChars: int >= 0, keepalives: int >= 0, msSinceLastByte: int >= 0 }`. (after Slice 6: keep the new ProviderError quota fields `quotaScope 'day' | 'minute'`, `retryAfterMs`, `learnedLimit` untouched when adapters are rewritten; keep `ModelCapabilities` names from contracts §3.)
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
