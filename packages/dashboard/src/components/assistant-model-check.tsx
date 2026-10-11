@@ -10,7 +10,16 @@ const REFUSAL: Readonly<Record<string, string>> = {
 };
 
 /** Check one chain entry: three fixed messages, expected versus first action. */
-export function AssistantModelCheck({ position }: { readonly position: number }) {
+export function AssistantModelCheck({
+  position,
+  model,
+  keyLabel,
+}: {
+  readonly position: number;
+  readonly model: string;
+  readonly keyLabel: string;
+}) {
+  const entryName = `Check entry ${String(position + 1)}: ${model} on ${keyLabel}`;
   const session = useSession();
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<ModelCheckResponse | undefined>(undefined);
@@ -35,12 +44,12 @@ export function AssistantModelCheck({ position }: { readonly position: number })
   return (
     <div className="grid gap-1 text-sm">
       <div className="flex flex-wrap items-center gap-3">
-        <Button busy={busy} onClick={() => void run()}>
-          Check this entry
+        <Button busy={busy} aria-label={entryName} onClick={() => void run()}>
+          {entryName}
         </Button>
         <span className="text-xs text-ink-muted">
-          Sends three short test messages and compares the expected versus first action. Nothing is
-          posted.
+          Entry {String(position + 1)} ({model} on {keyLabel}) sends three short test messages and
+          compares the expected versus first action. Nothing is posted.
         </span>
       </div>
       {failure !== undefined && (
@@ -54,7 +63,10 @@ export function AssistantModelCheck({ position }: { readonly position: number })
         </p>
       )}
       {outcome?.ok === true && (
-        <table aria-label={`Check results for entry ${String(position + 1)}`} className="text-left">
+        <table
+          aria-label={`Check results for entry ${String(position + 1)}: ${model} on ${keyLabel}`}
+          className="text-left"
+        >
           <thead>
             <tr className="text-xs text-ink-muted">
               <th className="pr-3">Test</th>
