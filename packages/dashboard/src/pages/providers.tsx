@@ -36,6 +36,12 @@ import {
   type ModelHealthResponse,
 } from '../api/model-health.js';
 import { useSession } from '../app/session.js';
+import { AssistantChainPools } from '../components/assistant-chain-pools.js';
+import { AssistantKeyStatusRows } from '../components/assistant-key-status-rows.js';
+import { AssistantKeysPaste } from '../components/assistant-keys-paste.js';
+import { AssistantModelCheck } from '../components/assistant-model-check.js';
+import { AssistantRecommendedSetup } from '../components/assistant-recommended-setup.js';
+import { AssistantRoutingSettings } from '../components/assistant-routing-settings.js';
 import { useResource } from '../hooks/useResource.js';
 import { relativeTime } from '../lib/relative-time.js';
 import { Badge } from '../ui/Badge.js';
@@ -1960,9 +1966,23 @@ function SetupBody({
       <ChecklistSection setup={setup} assistant={assistant} />
       <div className="mt-4">
         <ModelOrderSection key={chainSignature} setup={setup} onChanged={onChanged} />
+        <AssistantRecommendedSetup onChanged={onChanged} />
+        <AssistantChainPools
+          key={`pools-${chainSignature}`}
+          chain={setup.chain}
+          onChanged={onChanged}
+        />
+        {setup.chain.map((row) => (
+          <AssistantModelCheck key={`${row.keyId} ${row.model}`} position={row.position} />
+        ))}
       </div>
       <div className="mt-4">
         <KeysSection setup={setup} onChanged={onChanged} />
+        <AssistantKeyStatusRows keys={setup.keys} chain={setup.chain} />
+        <AssistantKeysPaste onSaved={onChanged} />
+      </div>
+      <div className="mt-4">
+        <AssistantRoutingSettings />
       </div>
       <div className="mt-4">
         <ProvidersSection
