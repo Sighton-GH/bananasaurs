@@ -83,3 +83,5 @@ export * as taskRepo from './repos/tasks.js';
 export * as taskBindingRepo from './repos/task-binding.js';
 
 export * as taskNudgeRepo from './repos/task-nudges.js';
+
+export * as assistantKeyCooldownsRepo from './repos/assistant-key-cooldowns.js';

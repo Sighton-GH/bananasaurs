@@ -1957,6 +1957,10 @@ export const assistantProviderKeys = sqliteTable(
     enabled: integer('enabled').notNull().default(1),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
+    /** ADR 0143: opaque project label; keys sharing it share a ledger bucket. */
+    project: text('project'),
+    /** SHA-256 hex for dedupe. Null for keys saved before pools. */
+    fingerprint: text('fingerprint'),
   },
   (t) => [
     check(
@@ -1966,6 +1970,7 @@ export const assistantProviderKeys = sqliteTable(
     check('assistant_provider_keys_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
     check('assistant_provider_keys_enabled_bool', boolCheck(t.enabled)),
     check('assistant_provider_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
+    uniqueIndex('assistant_provider_keys_fingerprint').on(t.fingerprint),
   ],
 );
 
@@ -1984,6 +1989,10 @@ export const assistantModelChain = sqliteTable(
     model: text('model').notNull(),
     rpmLimit: integer('rpm_limit'),
     rpdLimit: integer('rpd_limit'),
+    /** 'provider' expands to every enabled key of the anchored provider. */
+    pool: text('pool').notNull().default('key'),
+    /** ADR 0144: which runs try this entry first. */
+    tier: text('tier').notNull().default('standard'),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
@@ -1992,6 +2001,30 @@ export const assistantModelChain = sqliteTable(
     ),
     unique('assistant_model_chain_key_model').on(t.keyId, t.model),
     check('assistant_model_chain_position', sql`${t.position} BETWEEN 0 AND 5`),
+  ],
+);
+
+// ADR 0143: durable per-key per-model cooldowns. Replaces the in-memory
+// `QuotaLedger` on the request path and survives restarts. Instance-level
+// like the keys it points at; removing a key drops its cooldowns.
+export const assistantKeyCooldowns = sqliteTable(
+  'assistant_key_cooldowns',
+  {
+    keyId: text('key_id').notNull(),
+    model: text('model').notNull(),
+    untilAt: integer('until_at').notNull(),
+    reason: text('reason').notNull(),
+    setAt: integer('set_at').notNull(),
+    learnedPerDay: integer('learned_per_day'),
+    learnedPerMinute: integer('learned_per_minute'),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantProviderKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    unique('assistant_key_cooldowns_key_model').on(t.keyId, t.model),
+    check('assistant_key_cooldowns_reason_length', sql`length(${t.reason}) BETWEEN 1 AND 60`),
+    index('assistant_key_cooldowns_key').on(t.keyId, t.model, t.untilAt),
   ],
 );
 
