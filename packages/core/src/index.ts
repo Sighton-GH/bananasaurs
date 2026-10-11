@@ -745,3 +745,4 @@ export {
 } from './roles/dangerous.js';
 export * from './providers/model-capabilities.js';
 export * from './providers/gemini-quota.js';
+export * from './assistant/router.js';

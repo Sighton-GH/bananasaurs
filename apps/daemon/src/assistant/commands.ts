@@ -62,6 +62,13 @@ export interface AssistantInvocation {
   readonly quoteInHistory?: boolean | undefined;
   readonly referencedMessageId?: string | undefined;
   /**
+   * ADR 0144: true when the invoking message carries attachments the model
+   * would have to read, so the complexity router keeps the run on the
+   * standard tier. Absent means none (the mention flow sets it when Slice 6
+   * attachment reading lands).
+   */
+  readonly hasAttachments?: boolean | undefined;
+  /**
    * ADR 0089: the channel-context evidence block the invoke job built from
    * the channel's recent messages (and the thread starter), placed first in
    * the user message by the service. Absent means no channel context — the

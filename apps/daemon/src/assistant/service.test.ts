@@ -11,12 +11,14 @@ import {
 } from '@bananasaurs/core';
 import {
   archiveRepo,
+  assistantKeyCooldownsRepo,
   assistantProvidersRepo,
   assistantRepo,
   computeDocId,
   conversationRepo,
   eligibilityRepo,
   guildRepo,
+  instanceSettingsRepo,
   jobRepo,
   modelCallsRepo,
   resourceCacheRepo,
@@ -591,7 +593,18 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       quotaScope: 'daily-free',
     });
     expect(second.calls()).toBe(0);
-    expect(shared.exhaustedUntil('key_a', NOW)).toBe(resetAt);
+    // ADR 0143: once the service passes the instance scope (S6-T13), the
+    // persistent cooldown table — not the in-memory ledger — is the
+    // authority, so the shared skip above lands there with the provider's
+    // reset carried over. The ledger stays for callers without one.
+    expect(shared.exhaustedUntil('key_a', NOW)).toBe(undefined);
+    const cooldown = assistantKeyCooldownsRepo.getCooldown(
+      t.scopes.instance(),
+      'key_a',
+      'm:free',
+      NOW,
+    );
+    expect(cooldown).toMatchObject({ reason: 'daily-quota', until: resetAt });
   });
 
   it('appends the Brave attribution when web results reached the model', async () => {
@@ -5396,14 +5409,21 @@ describe('assistant service run recorder (ADR 0129 §6)', () => {
       },
     });
     expect(result.ok).toBe(true);
-    expect(events.map((e) => e.kind)).toEqual(['context-built', 'model-call', 'model-result']);
-    const built = events[0]!;
+    // ADR 0144: the routed decision is the run's first event (S6-T13).
+    expect(events.map((e) => e.kind)).toEqual([
+      'routed',
+      'context-built',
+      'model-call',
+      'model-result',
+    ]);
+    expect(events[0]).toMatchObject({ kind: 'routed', tier: 'light', reason: 'short-and-simple' });
+    const built = events[1]!;
     expect(built.kind).toBe('context-built');
     if (built.kind === 'context-built') {
       expect(built.sections.length).toBeGreaterThan(0);
       expect(built.toolsOffered.length).toBeGreaterThan(0);
     }
-    expect(events[2]).toMatchObject({ ok: true });
+    expect(events[3]).toMatchObject({ ok: true });
   });
 
   it('tryIt creates a dashboard-test run that ends finished with the trace id', async () => {
@@ -5426,5 +5446,510 @@ describe('assistant service run recorder (ADR 0129 §6)', () => {
       .listRunEvents(scope, runs[0]!.runId, 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
     expect(finished).toMatchObject({ outcome: 'answered', traceId: result.traceId });
+  });
+});
+
+describe('complexity routing (ADR 0144, spec 6e)', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+  const LIGHT_MODEL = 'gemini-3.5-flash-lite';
+  const STANDARD_MODEL = 'gemini-3.8-flash';
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    preferredSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key Light',
+      apiKeyEnc: 'sealed-key-light',
+      now: NOW,
+      keyId: 'key_light',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key Standard',
+      apiKeyEnc: 'sealed-key-standard',
+      now: NOW,
+      keyId: 'key_standard',
+    });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const chainEntry = (
+    provider: TextProvider | undefined,
+    over: Partial<ChainEntry>,
+  ): ChainEntry => ({
+    providerId: 'gemini',
+    model: STANDARD_MODEL,
+    keyId: 'key_standard',
+    keyLabel: 'Key Standard',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+    pool: 'key',
+    tier: 'standard',
+    selectedKeyId: 'key_standard',
+    ...over,
+  });
+  const lightEntry = (provider: TextProvider): ChainEntry =>
+    chainEntry(provider, {
+      model: LIGHT_MODEL,
+      keyId: 'key_light',
+      keyLabel: 'Key Light',
+      tier: 'light',
+      selectedKeyId: 'key_light',
+    });
+  const standardEntry = (provider: TextProvider): ChainEntry => chainEntry(provider, {});
+
+  /** A provider that makes the scripted tool calls in round 1, then answers. */
+  const fakeProvider = (
+    model: string,
+    calls: string[],
+    toolCalls: readonly string[] = [],
+  ): TextProvider => {
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        calls.push(model);
+        if (round === 1 && toolCalls.length > 0) {
+          return { text: '', model, toolCalls: toolCalls.map((name) => ({ name, args: {} })) };
+        }
+        return { text: 'Here you go.', model };
+      },
+    };
+  };
+
+  let invocationCounter = 0;
+  const runWith = async (
+    text: string,
+    opts: {
+      readonly hasAttachments?: boolean;
+      readonly earlierTurns?: number;
+      readonly spentModels?: readonly string[];
+      readonly toolCalls?: readonly string[];
+      readonly settings?: Readonly<Record<string, unknown>>;
+    },
+  ): Promise<{
+    readonly routed: { readonly tier: string; readonly reason: string };
+    readonly rounds: readonly { readonly tier: string; readonly reason: string }[];
+    readonly firstEntryTier: string | undefined;
+    readonly answeredBy: { readonly model: string; readonly tier: string | undefined };
+  }> => {
+    const instance = t.scopes.instance();
+    for (const [key, value] of Object.entries(opts.settings ?? {})) {
+      instanceSettingsRepo.upsertSetting(instance, {
+        key,
+        valueJson: JSON.stringify(value),
+        updatedAt: NOW,
+        updatedBy: 'fixture',
+      });
+    }
+    for (const model of opts.spentModels ?? []) {
+      assistantKeyCooldownsRepo.setCooldown(instance, {
+        keyId: 'key_light',
+        model,
+        until: NOW + 3_600_000,
+        reason: 'daily-quota',
+        setAt: NOW,
+      });
+    }
+    const calls: string[] = [];
+    const events: RunEvent[] = [];
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      instance,
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [
+        lightEntry(fakeProvider(LIGHT_MODEL, calls, opts.toolCalls ?? [])),
+        standardEntry(fakeProvider(STANDARD_MODEL, calls)),
+      ],
+    );
+    invocationCounter += 1;
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: text },
+      source: 'slash-command',
+      invocationId: `int-route-${invocationCounter}`,
+      ...(opts.hasAttachments === true ? { hasAttachments: true } : {}),
+      ...(opts.earlierTurns === undefined
+        ? {}
+        : {
+            history: Array.from({ length: opts.earlierTurns }, (_, i) => ({
+              role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+              text: `turn ${i}`,
+            })),
+          }),
+      recorder: {
+        runId: `run-route-${invocationCounter}`,
+        event: (e: RunEvent) => {
+          events.push(e);
+        },
+        update: () => undefined,
+      },
+    });
+    const routedEvents = events
+      .filter((e) => e.kind === 'routed')
+      .map((e) => ({ tier: e.tier, reason: e.reason }));
+    const answeredModel = result.ok ? result.detail?.answeredBy?.model : undefined;
+    return {
+      routed: routedEvents[0] ?? { tier: '', reason: '' },
+      rounds: routedEvents,
+      firstEntryTier:
+        calls.length === 0 ? undefined : calls[0] === LIGHT_MODEL ? 'light' : 'standard',
+      answeredBy: {
+        model: answeredModel ?? '',
+        tier:
+          answeredModel === undefined
+            ? undefined
+            : answeredModel === LIGHT_MODEL
+              ? 'light'
+              : 'standard',
+      },
+    };
+  };
+
+  const runWithSummaryTier = async (
+    tier: 'light' | 'standard',
+  ): Promise<{ readonly tierUsed: string }> => {
+    instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
+      key: 'assistant.routerSummaryTier',
+      valueJson: JSON.stringify(tier),
+      updatedAt: NOW,
+      updatedBy: 'fixture',
+    });
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+    );
+    return { tierUsed: service.backgroundTier('summary') };
+  };
+
+  it.each([
+    ['hi', 'light'],
+    ['remind me at 5', 'standard'],
+  ])('routes %s to the %s tier first', async (text, tier) => {
+    const seen = await runWith(text, {});
+    expect(seen.routed).toEqual({
+      tier,
+      reason: tier === 'light' ? 'greeting' : 'full-model-keyword',
+    });
+    expect(seen.firstEntryTier).toBe(tier);
+  });
+
+  it('routes attachments and long threads to standard, greetings stay light', async () => {
+    expect((await runWith('look', { hasAttachments: true })).routed.tier).toBe('standard');
+    expect((await runWith('and then?', { earlierTurns: 5 })).routed).toMatchObject({
+      tier: 'standard',
+      reason: 'long-thread',
+    });
+    expect((await runWith('thanks!', { earlierTurns: 9 })).routed).toMatchObject({
+      tier: 'light',
+      reason: 'greeting',
+    });
+  });
+
+  it('a light run falls back to standard when Flash-Lite is spent', async () => {
+    const seen = await runWith('hi', { spentModels: [LIGHT_MODEL] });
+    expect(seen.routed.tier).toBe('light');
+    expect(seen.answeredBy.model).not.toBe(LIGHT_MODEL);
+    expect(seen.answeredBy.tier).toBe('standard');
+  });
+
+  it('a light tool call escalates to standard on the next round (on by default)', async () => {
+    const seen = await runWith('hi', { toolCalls: ['list_sources'] });
+    expect(seen.rounds[1]).toMatchObject({ tier: 'standard', reason: 'escalated-after-tool' });
+  });
+
+  it('router-off and background tiers are honoured', async () => {
+    expect(
+      (await runWith('hi', { settings: { 'assistant.routerEnabled': 0 } })).routed,
+    ).toMatchObject({
+      tier: 'standard',
+      reason: 'router-off',
+    });
+    expect((await runWithSummaryTier('light')).tierUsed).toBe('light');
+  });
+
+  it('passes the instance scope to the loop: a daily 429 persists a cooldown', async () => {
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        throw new ProviderError('quota', 'HTTP 429', true, { quotaScope: 'day' });
+      },
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [standardEntry(failing)],
+    );
+    await service
+      .invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds: [CLUB_ROLE],
+        behaviour: direct,
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'slash-command',
+        invocationId: 'int-route-cooldown',
+      })
+      .catch(() => undefined);
+    const cooldown = assistantKeyCooldownsRepo.getCooldown(
+      t.scopes.instance(),
+      'key_standard',
+      STANDARD_MODEL,
+      NOW,
+    );
+    expect(cooldown).toMatchObject({ reason: 'daily-quota' });
+    expect(cooldown?.until).toBeGreaterThan(NOW);
+  });
+
+  const reminderTargets = {
+    memberChannels: async () => [],
+    resolveReminderTargets: async () => ({
+      ok: true as const,
+      targets: {
+        channelId: CHANNEL,
+        channelName: 'general',
+        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+        memberNames: [],
+        roleNames: [],
+      },
+    }),
+  };
+  /** A provider whose round 1 sets a reminder, then answers in round 2. */
+  const reminderProvider = (
+    model: string,
+    text: string,
+    seen: string[],
+    acts = true,
+  ): TextProvider => {
+    const usage = 10;
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        seen.push(`${model}:${round}`);
+        if (round === 1 && acts) {
+          return {
+            text: '',
+            model,
+            usage: { promptTokens: usage },
+            toolCalls: [
+              {
+                name: 'set_reminder',
+                args: { text, when: new Date(NOW + 3_600_000).toISOString() },
+              },
+            ],
+          };
+        }
+        return { text: 'Here you go.', model, usage: { promptTokens: usage } };
+      },
+    };
+  };
+  const invokeReminder = async (
+    chain: () => readonly ChainEntry[],
+    id: string,
+    events: RunEvent[],
+    warn: () => void,
+  ) => {
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      { warn, info: () => undefined },
+      reminderTargets,
+      chain,
+      undefined,
+      () => ({ totalCalls: 1 }),
+    );
+    return service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'hi' },
+      source: 'slash-command',
+      invocationId: id,
+      recorder: {
+        runId: `run-${id}`,
+        event: (e: RunEvent) => {
+          events.push(e);
+        },
+        update: () => undefined,
+      },
+    });
+  };
+
+  it('escalation continues the same loop: one reminder, summed usage, may-train warning, two routed events', async () => {
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    const warn = vi.fn();
+    const result = await invokeReminder(
+      () => [
+        { ...lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)), mayTrain: true },
+        standardEntry(reminderProvider(STANDARD_MODEL, 'Bring the batteries', seen, false)),
+      ],
+      'fix-same-loop',
+      events,
+      warn,
+    );
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${STANDARD_MODEL}:1`]);
+    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'tool-call')).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'model-call')).toHaveLength(2);
+    expect(result.ok && result.detail?.usage?.promptTokens).toBe(20);
+    expect(result.ok && result.detail?.toolCalls).toHaveLength(1);
+    expect(result.ok && result.content).toContain('Bring batteries');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(
+      events.filter((e) => e.kind === 'routed').map((e) => ({ tier: e.tier, reason: e.reason })),
+    ).toEqual([
+      { tier: 'light', reason: 'greeting' },
+      { tier: 'standard', reason: 'escalated-after-tool' },
+    ]);
+  });
+
+  it('escalate-on-tool off: the light entry answers itself with one routed event', async () => {
+    instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
+      key: 'assistant.routerEscalateOnTool',
+      valueJson: JSON.stringify(0),
+      updatedAt: NOW,
+      updatedBy: 'fixture',
+    });
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    await invokeReminder(
+      () => [
+        lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+        standardEntry(reminderProvider(STANDARD_MODEL, 'Bring the batteries', seen)),
+      ],
+      'fix-off',
+      events,
+      () => undefined,
+    );
+    expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${LIGHT_MODEL}:2`]);
+    expect(events.filter((e) => e.kind === 'routed')).toHaveLength(1);
+    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
+  });
+
+  it('a standard run that calls a tool never hands over mid-loop', async () => {
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    await invokeReminder(
+      () => [
+        standardEntry(reminderProvider(STANDARD_MODEL, 'Bring batteries', seen)),
+        {
+          ...standardEntry(reminderProvider('gemini-3.8-flash-b', 'Bring more', seen, false)),
+          keyId: 'key_light',
+          keyLabel: 'Key B',
+        },
+      ],
+      'fix-standard-no-handover',
+      events,
+      () => undefined,
+    );
+    expect(seen).toEqual([`${STANDARD_MODEL}:1`, `${STANDARD_MODEL}:2`]);
+    expect(events.filter((e) => e.kind === 'routed')).toHaveLength(1);
+  });
+
+  it('a light run with no tool calls never escalates', async () => {
+    const seen = await runWith('hi', {});
+    expect(seen.rounds).toHaveLength(1);
+    expect(seen.answeredBy.tier).toBe('light');
+  });
+
+  it('invalid router settings and empty chips fall back to the defaults', async () => {
+    expect(
+      (await runWith('remind me', { settings: { 'assistant.routerFullModelKeywords': [] } })).routed
+        .reason,
+    ).toBe('full-model-keyword');
+    expect(
+      (
+        await runWith('hi', {
+          settings: {
+            'assistant.routerGreetingPatterns': [],
+            'assistant.routerEnabled': 2,
+            'assistant.routerMaxChars': -1,
+          },
+        })
+      ).routed.reason,
+    ).toBe('greeting');
+    expect(
+      (
+        await runWith('abcdefghijk', {
+          settings: { 'assistant.routerEnabled': 1, 'assistant.routerMaxChars': 10 },
+        })
+      ).routed.reason,
+    ).toBe('long-message');
   });
 });
