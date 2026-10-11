@@ -31,7 +31,7 @@
 - **`task_progress` is `rounds: 'returned-id'`:** `list_tasks` returns task ids as `handles` (the `edit_reminder`/`cancel_reminder` pattern from ADR 0137), so a progress note acts on a returned id and may run after round 1. `create_task` is `rounds: 'first'`, `writes: true`.
 - **`create_task` destination is the current channel:** the spec names no destination field, so the task posts where it was asked for (`currentChannelId`); absent channel (Try-it) refuses with an actionable message. Assignee names resolve by exact case-insensitive display-name match through the same `findMember` port as `find_member` (reusing `resolveFromMember`'s rule in `service.ts:379-403`); zero or several matches without an exact one refuse.
 - **2a covers the current message; channel context keeps flattening:** `sanitizeMentionsForProvider` gains an optional names map, used at `service.ts:1242` for the current question. `channel-context.ts:42-46` keeps calling it without names (signature stays backward compatible), so older channel lines still show `@user`/`@role` this slice; the speaker label already carries the display name.
-- **Reply-ping matching is exact-match only:** `@Name` tokens (code spans stripped with the ADR 0128 `CODE_SPAN` regex) match a mentioned member/role by exact case-insensitive display-name equality, or a single `findMember` hit otherwise. No fuzzy matching: a near-miss renders as plain text and pings nobody.
+- **Reply-ping matching is exact-match only, and the asker decides who (controller correction):** each `@` in the answer (outside code spans, ADR 0128 `CODE_SPAN`) yields its 1–4 word phrases, longest first; the longest phrase that is exactly (case-insensitively) the name of a member or role the asker **mentioned** pings. A phrase that is not a mentioned name is looked up (one exact display-name or role-name hit only) **only if the asker's own message contains it as whole words**: the answer is model output and never widens who may be pinged (D3, hard rule 1). No fuzzy matching: a near-miss renders as plain text and pings nobody.
 - **Parallel response parsing is tolerant:** the exact upstream shape is unverified from the sandbox, so the Zod schema accepts `title`/`url` plus any of `content`/`excerpts[]`/`snippet`, takes the first 5 results, drops non-http(s) urls, strips tags, and caps each excerpt at 1,000 characters. The request body is exactly the spec's fixed shape (no invented ranking parameter).
 - **Parallel dashboard monthly default is 4,500:** when the Parallel source is selected, the add-key monthly box pre-fills 4,500 (under the 5,000 free allowance); Brave/Tavily keep 1,000.
 - **Parallel warnings are log + dashboard + PRIVACY.md, not doctor:** `doctor.ts` has no search-terms surface (verified: no search/eligibility matches), and contracts give Slice 6 the doctor line. The eligibility row drives the generic Terms card; a warn-level log fires when a Parallel run is built; the web-search card carries Parallel training copy like Tavily's.
@@ -805,17 +805,28 @@ readonly taskTools?:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { extractPingTokens, matchPingNames, replacePingTokens } from './reply-pings.js';
+import { extractPingPhrases, matchPingNames, namedIn, replacePingTokens } from './reply-pings.js';
 
 describe('reply-ping text helpers (ADR 0145)', () => {
-  it('extracts @Name tokens and skips code and mass mentions', () => {
-    expect(extractPingTokens('hi @Sam L and @Car Team A')).toEqual(['Sam L', 'Car Team A']);
-    expect(extractPingTokens('`@Sam L` and ```\n@Sam L\n```')).toEqual([]);
-    expect(extractPingTokens('@everyone and @HERE ping nobody')).toEqual([]);
+  it('gives each @ outside code its 1–4 word phrases, longest first, and skips mass mentions', () => {
+    expect(extractPingPhrases('hi @Sam L and @Car Team A')).toEqual([
+      ['Sam L and', 'Sam L', 'Sam'],
+      ['Car Team A', 'Car Team', 'Car'],
+    ]);
+    expect(extractPingPhrases('`@Sam L` and ```\n@Sam L\n```')).toEqual([]);
+    expect(extractPingPhrases('@everyone and @HERE ping nobody')).toEqual([]);
+    expect(extractPingPhrases('thanks @Sam L.')).toEqual([['Sam L', 'Sam']]);
   });
-  it('matches exact names only, case-insensitively, deduped', () => {
+  it('matches the longest phrase that is exactly a candidate name, case-insensitively, deduped', () => {
     const candidates = [{ id: '1', name: 'Sam L' }, { id: '2', name: 'Car Team A' }];
-    expect(matchPingNames(['sam l', 'Sammy', 'Sam L'], candidates)).toEqual(['1']);
+    expect(
+      matchPingNames([['sam l and', 'sam l', 'sam'], ['Sammy'], ['Sam L']], candidates),
+    ).toEqual(['1']);
+  });
+  it('namedIn finds whole names only', () => {
+    expect(namedIn('please remind Sam L at 5', 'Sam L')).toBe(true);
+    expect(namedIn('please remind Sam Lee at 5', 'Sam L')).toBe(false);
+    expect(namedIn('ask alex p', 'Alex P')).toBe(true);
   });
   it('replaces only in prose, leaving code spans byte-identical', () => {
     const out = replacePingTokens('ping @Sam L and `@Sam L`', new Map([['Sam L', '<@1>']]));
@@ -826,11 +837,17 @@ describe('reply-ping text helpers (ADR 0145)', () => {
 
   - `reply-ping-policy.test.ts`: build a fake discord.js `Client` with `guilds.cache` holding roles/members maps (mirror the `makeDeliveryClient`/`FakeDiscord` pattern in `reminder-delivery.test.ts` and the `checkRolePing` tests in `mcp/targets.test.ts:561-586`). Cases, each with `getCaps: () => ({ members: 5, roles: 3 })`:
     - `@Sam L` mentioned by id pings; `@Stranger` never mentioned or named stays plain with empty ids.
+    - **Answer names someone the asker did not:** the guild holds member "Alex P"; `askerText` is "remind everyone
+      tomorrow" and the answer says "@Alex P will handle it" → plain text, empty ids, and `guild.members.search` is
+      never called (assert the fake's call count is 0).
+    - Asker wrote "ping Alex P about the build" (no mention) and the answer says "@Alex P" → one exact search hit →
+      pings `Alex P`.
     - sixth member and fourth role are cut (caps), first five/three kept.
     - role above the bot / with a dangerous permission / non-mentionable without the asker's Mention Everyone → refused, plain text.
     - asker without SendMessages in the channel → no pings at all.
     - `channelId: undefined` (slash path) → no pings (fail closed).
-    - Break-it (do it, watch it fail, then revert): skip the mentioned-or-named filter so any exact name pings; the `@Stranger` test must fail. Record it in the commit message.
+    - Break-it (do it, watch it fail, then revert): delete the `if (!namedIn(input.askerText, phrase)) continue;`
+      line; the "answer names someone the asker did not" test must fail. Record it in the commit message.
   - `service.test.ts`: `ping` skill denied → answer content keeps `@Sam L` verbatim and result has no `pings`; allowed with a stub `resolveReplyPings` port → `pings` attached and content rewritten.
   - `commands.test.ts`: the enqueued payload carries `mentionedUserIds`/`mentionedRoleIds` capped at 50 (extend the event fixture at lines 155-159, which already carries both arrays).
   - `jobs/assistant.test.ts`: a mocked result with `pings: { userIds: ['456789012345678901'], roles: [] }` posts the first part with `allowedMentions` `{ parse: [], users: ['456789012345678901'] }` and later parts with `{ parse: [] }`; a retry after part 1 resumes without re-posting and keeps the same mentions (mirror the parts test at lines 685-691).
@@ -841,32 +858,49 @@ describe('reply-ping text helpers (ADR 0145)', () => {
 ```ts
 /** Code spans never ping, the ADR 0128 parser (`apps/daemon/src/mcp/targets.ts:418`). */
 export const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g;
-const TOKEN = /@([A-Za-z0-9][A-Za-z0-9 .'\-]{0,31})/g;
+/** `@` then one word and up to three more; `@` and most punctuation end it. */
+const AT = /@([A-Za-z0-9][A-Za-z0-9.'-]*(?: [A-Za-z0-9.'-]+){0,3})/g;
 
-/** `@Name` tokens outside code, without `@everyone`/`@here` (any case). */
-export const extractPingTokens = (text: string): string[] => {
+/**
+ * For each `@` outside code: the 1–4 word phrases after it, longest first
+ * ("@Sam L and" → ["Sam L and", "Sam L", "Sam"]). The caller takes the
+ * longest phrase that is exactly a name, so trailing words never break a
+ * match. `@everyone` / `@here` (any case) are skipped.
+ */
+export const extractPingPhrases = (text: string): string[][] => {
   const prose = text.replace(CODE_SPAN, ' ');
-  const tokens: string[] = [];
-  for (const match of prose.matchAll(TOKEN)) {
-    const token = (match[1] ?? '').replace(/[ .]+$/, '');
-    if (token === '' || /^(everyone|here)$/i.test(token)) continue;
-    if (!tokens.includes(token)) tokens.push(token);
+  const occurrences: string[][] = [];
+  for (const match of prose.matchAll(AT)) {
+    const words = (match[1] ?? '').replace(/\.+$/, '').split(' ').filter((w) => w !== '');
+    const first = words[0];
+    if (first === undefined || /^(everyone|here)$/i.test(first)) continue;
+    const phrases: string[] = [];
+    for (let n = words.length; n >= 1; n -= 1) phrases.push(words.slice(0, n).join(' '));
+    occurrences.push(phrases);
   }
-  return tokens;
+  return occurrences;
 };
 
-/** Exact case-insensitive match only: a near-miss must stay plain text. */
+/** Per occurrence, the longest phrase that is exactly (case-insensitively) a candidate's name; ids deduped. */
 export const matchPingNames = (
-  tokens: readonly string[],
+  occurrences: readonly (readonly string[])[],
   candidates: readonly { readonly id: string; readonly name: string }[],
 ): string[] => {
   const ids: string[] = [];
-  for (const token of tokens) {
-    const hit = candidates.find((c) => c.name.toLowerCase() === token.toLowerCase());
-    if (hit !== undefined && !ids.includes(hit.id)) ids.push(hit.id);
+  for (const phrases of occurrences) {
+    for (const phrase of phrases) {
+      const hit = candidates.find((c) => c.name.toLowerCase() === phrase.toLowerCase());
+      if (hit === undefined) continue;
+      if (!ids.includes(hit.id)) ids.push(hit.id);
+      break;
+    }
   }
   return ids;
 };
+
+/** True when `name` appears in `text` as whole words, case-insensitively. */
+export const namedIn = (text: string, name: string): boolean =>
+  new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(name)}(?![A-Za-z0-9])`, 'i').test(text);
 
 /** Rewrites `@Name` → id token in prose segments only. */
 export const replacePingTokens = (text: string, replacements: ReadonlyMap<string, string>): string => {
@@ -901,12 +935,15 @@ import { PermissionsBitField, type Client } from 'discord.js';
 import { safeDisplayName } from '@bananasaurs/core';
 import type { GuildScope } from '@bananasaurs/storage';
 import { checkRolePing, rolePingContextFor } from '../mcp/targets.js';
-import { extractPingTokens, matchPingNames, replacePingTokens } from './reply-pings.js';
+import { extractPingPhrases, matchPingNames, namedIn, replacePingTokens } from './reply-pings.js';
 
 export interface ReplyPingRequest {
   readonly askerId: string;
   readonly channelId: string | undefined;
+  /** The answer, model output: it only says WHERE a ping goes, never WHO may be pinged. */
   readonly text: string;
+  /** The asker's own message, raw. A name counts as "named" only if it appears here (D3). */
+  readonly askerText: string;
   readonly mentionedUserIds: readonly string[];
   readonly mentionedRoleIds: readonly string[];
 }
@@ -944,29 +981,41 @@ export const resolveReplyPings = async (
       const name = safeDisplayName(guild.roles.cache.get(id)?.name);
       if (name !== undefined && !roles.some((r) => r.id === id)) roles.push({ id, name });
     }
-    const tokens = extractPingTokens(input.text);
-    const known = (token: string, list: readonly { name: string }[]): boolean =>
-      list.some((entry) => entry.name.toLowerCase() === token.toLowerCase());
-    // Named-but-not-mentioned members: one exact display-name search, single hit only
-    // (the reminder-targets.ts:166-191 rule).
+    const occurrences = extractPingPhrases(input.text);
+    const known = (phrase: string, list: readonly { name: string }[]): boolean =>
+      list.some((entry) => entry.name.toLowerCase() === phrase.toLowerCase());
+    // Named-but-not-mentioned (D3): a phrase from the answer is looked up ONLY
+    // when the asker's own message contains it as whole words. Model output
+    // never widens who may be pinged. Members: one exact display-name search,
+    // single hit only (the reminder-targets.ts:166-191 rule). Roles: exact
+    // cache-name match, unambiguous only. At most 5 lookups per reply.
     const extraUsers: { id: string; name: string }[] = [];
-    for (const token of tokens) {
-      if (known(token, users) || known(token, extraUsers)) continue;
-      const hits = await guild.members.search({ query: token, limit: 5 }).catch(() => undefined);
-      if (hits === undefined) continue;
-      const exact = [...hits.values()].filter((m) => m.displayName.toLowerCase() === token.toLowerCase());
-      if (exact.length === 1 && exact[0] !== undefined && ![...users, ...extraUsers].some((u) => u.id === exact[0]!.id))
-        extraUsers.push({ id: exact[0].id, name: exact[0].displayName });
-    }
-    // Named-but-not-mentioned roles: exact cache-name match, unambiguous only.
     const extraRoles: { id: string; name: string }[] = [];
-    for (const token of tokens) {
-      if (known(token, roles) || known(token, extraRoles)) continue;
-      const hits = [...guild.roles.cache.values()].filter((r) => r.name.toLowerCase() === token.toLowerCase());
-      if (hits.length === 1 && hits[0] !== undefined && ![...roles, ...extraRoles].some((r) => r.id === hits[0]!.id))
-        extraRoles.push({ id: hits[0].id, name: hits[0].name });
+    let lookups = 0;
+    for (const phrases of occurrences) {
+      for (const phrase of phrases) {
+        if (known(phrase, [...users, ...extraUsers, ...roles, ...extraRoles])) break;
+        if (!namedIn(input.askerText, phrase)) continue;
+        if (lookups >= 5) break;
+        lookups += 1;
+        const roleHits = [...guild.roles.cache.values()].filter(
+          (r) => r.name.toLowerCase() === phrase.toLowerCase(),
+        );
+        if (roleHits.length === 1 && roleHits[0] !== undefined) {
+          extraRoles.push({ id: roleHits[0].id, name: roleHits[0].name });
+          break;
+        }
+        const hits = await guild.members.search({ query: phrase, limit: 5 }).catch(() => undefined);
+        const exact = [...(hits?.values() ?? [])].filter(
+          (m) => m.displayName.toLowerCase() === phrase.toLowerCase(),
+        );
+        if (exact.length === 1 && exact[0] !== undefined) {
+          extraUsers.push({ id: exact[0].id, name: exact[0].displayName });
+          break;
+        }
+      }
     }
-    const memberIds = matchPingNames(tokens, [...users, ...extraUsers]).slice(0, caps.members);
+    const memberIds = matchPingNames(occurrences, [...users, ...extraUsers]).slice(0, caps.members);
     const memberReplacements = new Map(
       memberIds.map((id) => {
         const name = [...users, ...extraUsers].find((u) => u.id === id)!.name;
@@ -979,7 +1028,7 @@ export const resolveReplyPings = async (
     const askerMayMass = asker.permissionsIn(input.channelId).has(PermissionsBitField.Flags.MentionEveryone);
     const roleIds: string[] = [];
     const roleReplacements = new Map<string, string>();
-    for (const id of matchPingNames(tokens, [...roles, ...extraRoles])) {
+    for (const id of matchPingNames(occurrences, [...roles, ...extraRoles])) {
       if (roleIds.length >= caps.roles) break;
       const role = guild.roles.cache.get(id);
       if (role === undefined) continue;
@@ -1001,7 +1050,7 @@ export const resolveReplyPings = async (
 
   - `kinds.ts`: after `authorName` (lines 450-455) add `mentionedUserIds: z.array(z.string().min(1)).max(50).optional(), mentionedRoleIds: z.array(z.string().min(1)).max(50).optional(),` with a comment (asker's mentions bound the reply pings, ADR 0145).
   - `commands.ts`: `AssistantInvocation` gains both optional fields; `handleMention` payload spreads `...(event.mentionedUserIds.length === 0 ? {} : { mentionedUserIds: event.mentionedUserIds.slice(0, 50) })` and the roles equivalent.
-  - `service.ts`: `AssistantDiscordPorts` gains `resolveReplyPings?: ((input: ReplyPingRequest) => Promise<ReplyPingResult>) | undefined` (import the types from `'./reply-ping-policy.js'`); `AssistantInvocation` (via commands.ts) carries the ids. Replace the plain return at line 1517 (`return { ok: true, content: answerText };`) with: when `skillAllowed('ping')`, the port exists, and the invocation carries mention fields, call it with `{ askerId: input.userId, channelId: input.channelId, text: answerText, mentionedUserIds: input.mentionedUserIds ?? [], mentionedRoleIds: input.mentionedRoleIds ?? [] }`, then return `{ ok: true, content: resolved.content, ...(resolved.userIds.length + resolved.roles.length === 0 ? {} : { pings: { userIds: [...resolved.userIds], roles: [...resolved.roles] } }) }`; otherwise keep line 1517 byte-identical. (The `remember`/`decision`/`review-plan`/`ESCALATE` early returns above it stay untouched.)
+  - `service.ts`: `AssistantDiscordPorts` gains `resolveReplyPings?: ((input: ReplyPingRequest) => Promise<ReplyPingResult>) | undefined` (import the types from `'./reply-ping-policy.js'`); `AssistantInvocation` (via commands.ts) carries the ids. Replace the plain return at line 1517 (`return { ok: true, content: answerText };`) with: when `skillAllowed('ping')`, the port exists, and the invocation carries mention fields, call it with `{ askerId: input.userId, channelId: input.channelId, text: answerText, askerText: stripNewTopic(textOf(input.input)), mentionedUserIds: input.mentionedUserIds ?? [], mentionedRoleIds: input.mentionedRoleIds ?? [] }` (`askerText` is the raw current message, the same expression `buildUserMessage` sanitises at line 1242; never the answer), then return `{ ok: true, content: resolved.content, ...(resolved.userIds.length + resolved.roles.length === 0 ? {} : { pings: { userIds: [...resolved.userIds], roles: [...resolved.roles] } }) }`; otherwise keep line 1517 byte-identical. (The `remember`/`decision`/`review-plan`/`ESCALATE` early returns above it stay untouched.)
   - `commands.ts` result type: `AssistantInvocationResult` ok variant (lines 109-128) gains `readonly pings?: { readonly userIds: readonly string[]; readonly roles: readonly string[] } | undefined;`.
   - `guild.ts`: wire `resolveReplyPings: (input) => resolveReplyPings(client, scope, { members: settings?.get('assistant.pingMaxMembers') ?? 5, roles: settings?.get('assistant.pingMaxRoles') ?? 3 }, input)` next to `resolveReminderTargets` (line 912), importing from `'../assistant/reply-ping-policy.js'`. (Confirm `settings.get` typing against guild.ts:994; fall back to spec defaults when unset.)
   - `jobs/assistant.ts`: invoke call (lines 1069-1091) gains the two spreads; `postPart` gains a `pings` parameter and builds `allowedMentions: { parse: [], ...(users…) , ...(roles…) }`, defaulting to today's `{ parse: [] }` when absent.
