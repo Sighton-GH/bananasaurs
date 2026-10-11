@@ -2295,6 +2295,13 @@ describe('task tools and find_member (ADR 0146, 0145)', () => {
     expect(rows()).toHaveLength(0);
   });
 
+  it('T7b pin: non-lead non-president gets the authority refusal for an unknown team', async () => {
+    const r = await create(withTasks(OTHER, accessFor(OTHER, false)), { team: 'no-such-team' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only a team lead or the president can create tasks');
+    expect(rows()).toHaveLength(0);
+  });
+
   it('T7b pin: president can create in a team they do not lead', async () => {
     const r = await create(withTasks(LEAD, { ...accessFor(LEAD, false), president: true }));
     expect(r.ok).toBe(true);
