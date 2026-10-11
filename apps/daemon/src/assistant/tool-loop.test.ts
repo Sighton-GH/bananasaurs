@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  nextProviderDayStart,
   ProviderError,
   RETURNED_ID_ARGS,
   TOOL_CATALOGUE,
@@ -13,6 +14,11 @@ import {
 } from '@bananasaurs/core';
 import type { ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
+import { assistantKeyCooldownsRepo, assistantProvidersRepo } from '@bananasaurs/storage';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import type { RunRecorder } from './run-recorder.js';
 import { NEXT_STEP, laterRoundDeclarations, runToolLoop, type LoopTools } from './tool-loop.js';
 import type { AssistantToolResult } from './tools.js';
@@ -56,6 +62,9 @@ const entry = (over: Partial<ChainEntry> & { provider: ChainEntry['provider'] })
   mayTrain: false,
   rpmLimit: null,
   rpdLimit: null,
+  pool: 'key',
+  tier: 'standard',
+  selectedKeyId: over.keyId ?? 'key_a',
   ...over,
 });
 
@@ -1914,5 +1923,240 @@ describe('runToolLoop run recorder (ADR 0129 §6)', () => {
       ok: true,
       costUsd: 0.0012,
     });
+  });
+});
+
+describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
+  const MODEL = 'gemini-3.8-flash';
+  const DAILY_429 = new ProviderError('quota', 'daily quota', false, {
+    status: 429,
+    quotaScope: 'day',
+    learnedLimit: { perDay: 20 },
+  });
+  const MINUTE_429 = new ProviderError('rate-limit', 'minute quota', true, {
+    status: 429,
+    quotaScope: 'minute',
+    retryAfterMs: 37_000,
+    learnedLimit: { perMinute: 5 },
+  });
+  const DAILY_FREE_ERROR = new ProviderError('quota', 'daily free cap', false, {
+    quotaScope: 'daily-free',
+    resetAt: NOW + 3_600_000,
+  });
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+  });
+  afterEach(() => t.close());
+
+  const seedKeys = (providerId: 'gemini' | 'openrouter', ids: readonly string[]): void => {
+    for (const keyId of ids) {
+      assistantProvidersRepo.addKey(t.scopes.instance(), {
+        provider: providerId,
+        label: keyId,
+        apiKeyEnc: 'sealed',
+        keyId,
+        now: NOW,
+      });
+    }
+  };
+
+  /** One entry per key; each provider logs its key id and fails when told to. */
+  const poolChain = (
+    ids: readonly string[],
+    model: string,
+    calls: string[],
+    providerId: 'gemini' | 'openrouter' = 'gemini',
+    failing: Map<string, ProviderError> = new Map(),
+  ): ChainEntry[] => {
+    seedKeys(providerId, ids);
+    return ids.map((keyId) =>
+      entry({
+        providerId,
+        model,
+        keyId,
+        selectedKeyId: keyId,
+        pool: 'provider',
+        provider: {
+          id: providerId,
+          capabilities: new Set(),
+          generateText: async () => {
+            calls.push(keyId);
+            const err = failing.get(keyId);
+            if (err !== undefined) throw err;
+            return textAnswer('ok', model);
+          },
+        } as unknown as ChainEntry['provider'],
+      }),
+    );
+  };
+
+  const collecting = () => {
+    const events: RunEvent[] = [];
+    const recorder: RunRecorder = {
+      runId: 'run-1',
+      event: (e: RunEvent) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    };
+    return { recorder, events };
+  };
+
+  const run = async (
+    chain: readonly ChainEntry[],
+    over: { now?: number } = {},
+  ): Promise<{ result: Awaited<ReturnType<typeof runToolLoop>>; events: RunEvent[] }> => {
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput(chain, {
+        instance: t.scopes.instance(),
+        recorder,
+        now: () => over.now ?? NOW,
+      }),
+    );
+    return { result, events };
+  };
+
+  it('two runs after a daily 429 never call that key again before the reset', async () => {
+    const calls: string[] = [];
+    const failing = new Map([['key_a', DAILY_429]]);
+    const chain = poolChain(['key_a', 'key_b'], MODEL, calls, 'gemini', failing);
+    const first = await run(chain);
+    expect(calls.filter((k) => k === 'key_a')).toHaveLength(1);
+    expect(first.result.outcome).toBe('answered');
+    expect(
+      assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_a', MODEL, NOW),
+    ).toMatchObject({
+      reason: 'daily-quota',
+      learnedPerDay: 20,
+    });
+    calls.length = 0;
+    const second = await run(chain);
+    expect(calls).not.toContain('key_a');
+    expect(
+      second.events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a'),
+    ).toMatchObject({ reason: 'daily-quota' });
+    calls.length = 0;
+    const third = await run(chain);
+    expect(calls).not.toContain('key_a');
+    expect(third.result.outcome).toBe('answered');
+  });
+
+  it('a daily cooldown lasts until the next Pacific midnight, not UTC', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a'], MODEL, calls, 'gemini', new Map([['key_a', DAILY_429]]));
+    await run(chain);
+    const row = assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_a', MODEL, NOW);
+    expect(row?.until).toBe(nextProviderDayStart('gemini', NOW));
+  });
+
+  it('a restart keeps the cooldown (cooldown table is the authority)', async () => {
+    const calls: string[] = [];
+    const failing = new Map([['key_a', DAILY_429]]);
+    const chain = poolChain(['key_a', 'key_b'], MODEL, calls, 'gemini', failing);
+    await run(chain);
+    // A restart builds a fresh chain and a fresh in-memory ledger; the table stays.
+    const rebuilt = chain.map((e) => ({ ...e }));
+    calls.length = 0;
+    const { recorder, events } = collecting();
+    await runToolLoop(
+      baseInput(rebuilt, {
+        instance: t.scopes.instance(),
+        recorder,
+        quotaLedger: new QuotaLedger(),
+      }),
+    );
+    expect(calls).not.toContain('key_a');
+    expect(events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a')).toBeDefined();
+  });
+
+  it('a minute cooldown expires on time and the key is tried again', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a'], MODEL, calls, 'gemini', new Map([['key_a', MINUTE_429]]));
+    await run(chain, { now: NOW });
+    calls.length = 0;
+    const during = await run(chain, { now: NOW + 30_000 });
+    expect(calls).toHaveLength(0);
+    expect(
+      during.events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a'),
+    ).toMatchObject({ reason: 'minute-quota' });
+    const after = await run(chain, { now: NOW + 61_000 });
+    expect(after.events.map((e) => e.kind)).toContain('model-call');
+    expect(calls).toEqual(['key_a']);
+  });
+
+  it('a minute cooldown without a provider delay lasts 60 seconds', async () => {
+    const plain = new ProviderError('rate-limit', 'slow down', true, {
+      status: 429,
+      quotaScope: 'minute',
+    });
+    const calls: string[] = [];
+    const chain = poolChain(['key_a'], MODEL, calls, 'gemini', new Map([['key_a', plain]]));
+    await run(chain);
+    expect(
+      assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_a', MODEL, NOW)?.until,
+    ).toBe(NOW + 60_000);
+  });
+
+  it('an invalid key stays cooled until cleared', async () => {
+    const bad = new ProviderError('authentication', 'bad key', false, { status: 401 });
+    const calls: string[] = [];
+    const chain = poolChain(['key_a'], MODEL, calls, 'gemini', new Map([['key_a', bad]]));
+    await run(chain);
+    calls.length = 0;
+    const later = await run(chain, { now: NOW + 30 * 86_400_000 });
+    expect(calls).toHaveLength(0);
+    expect(
+      later.events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a'),
+    ).toMatchObject({ reason: 'invalid-key' });
+  });
+
+  it('a pool with all keys spent emits model-skipped and falls through without retrying', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a', 'key_b'], MODEL, calls);
+    for (const keyId of ['key_a', 'key_b']) {
+      assistantKeyCooldownsRepo.setCooldown(t.scopes.instance(), {
+        keyId,
+        model: MODEL,
+        until: NOW + 3_600_000,
+        reason: 'daily-quota',
+        setAt: NOW,
+      });
+    }
+    const { result, events } = await run(chain);
+    expect(calls).toHaveLength(0);
+    expect(result.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
+    expect(events.filter((e) => e.kind === 'model-skipped')).toHaveLength(2);
+    expect(events.map((e) => e.kind)).not.toContain('retry-scheduled');
+  });
+
+  it('an OpenRouter :free daily cap cools that key until its reset', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(
+      ['key_or'],
+      'some-model:free',
+      calls,
+      'openrouter',
+      new Map([['key_or', DAILY_FREE_ERROR]]),
+    );
+    await run(chain);
+    expect(
+      assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_or', 'some-model:free', NOW)
+        ?.until,
+    ).toBe(NOW + 3_600_000);
+    calls.length = 0;
+    await run(chain, { now: NOW + 60_000 });
+    expect(calls).not.toContain('key_or');
+  });
+
+  it('without an instance scope the loop records no cooldowns', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a'], MODEL, calls, 'gemini', new Map([['key_a', DAILY_429]]));
+    await runToolLoop(baseInput(chain));
+    await runToolLoop(baseInput(chain));
+    expect(calls).toEqual(['key_a', 'key_a']);
+    expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())).toHaveLength(0);
   });
 });
