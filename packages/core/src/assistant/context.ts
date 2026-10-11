@@ -210,12 +210,15 @@ export const compileAssistantContext = (input: {
         )
       : rewritten;
   };
-  const behaviourPrompt = clean(
-    rewriteLegacyWizard(
-      dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
-    ),
+  // Cap the stored prompt before rewriting: the rewrites only grow it
+  // (BOUNDARIES_HELPFUL is longer than the sentence it replaces), so
+  // capping after the rewrite could cut the rewritten ending. The rewritten
+  // result gets its own, roomier cap.
+  const storedPrompt = clean(
+    dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
     4_000,
   );
+  const behaviourPrompt = clean(rewriteLegacyWizard(storedPrompt), 4_600);
   // ADR 0087: preferred skills first, suffixed as this assistant's focus.
   // An empty preference, or one covering every allowed skill (which includes
   // the seeded "every catalogue skill" case), adds no suffix.

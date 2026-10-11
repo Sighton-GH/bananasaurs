@@ -698,6 +698,21 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.systemInstruction).not.toContain(LEGACY_BOUNDARIES_SENTENCE);
   });
 
+  it('keeps the rewritten boundaries sentence intact for a near-cap stored prompt', () => {
+    const stored = `${'x'.repeat(3990 - LEGACY_BOUNDARIES_SENTENCE.length)}${LEGACY_BOUNDARIES_SENTENCE}`;
+    expect(stored.length).toBe(3990);
+    const compiled = compileAssistantContext({
+      behaviour: { ...behaviour, systemPrompt: stored },
+      serverCard: '',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(compiled.sections.find((s) => s.name === 'behaviour-prompt')!.text.endsWith(
+      BOUNDARIES_HELPFUL,
+    )).toBe(true);
+  });
+
   it('keeps prose abilities visible when the behaviour only describes questions (ADR 0136)', () => {
     const reminders = CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!;
     const compiled = compileAssistantContext({
