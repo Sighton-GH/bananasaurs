@@ -533,7 +533,7 @@ const refusedMessage = (call: ToolCall, reason: string): GenerationMessage => ({
   role: 'tool',
   toolName: call.name,
   ...(call.id === undefined ? {} : { toolCallId: call.id }),
-  text: `Refused: ${reason}. ${NEXT_STEP[reason] ?? ''}`.trim(),
+  text: `Refused: ${reason}. ${NEXT_STEP[reason] ?? 'Answer from what you already have.'}`,
 });
 
 /** A tool-result title made safe to print in a "Cite as" line. */
