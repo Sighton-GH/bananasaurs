@@ -83,7 +83,7 @@ describe('TOOL_CATALOGUE', () => {
     expect(reminder).toContain("style 'message' posts the text as is");
     expect(reminder).toContain('write @Name');
     const styleProp = (
-      TOOL_CATALOGUE.find((e) => e.name === 'set_reminder')!.parameters as {
+      TOOL_CATALOGUE.find((e) => e.name === 'set_reminder')!.parameters as unknown as {
         properties: Record<string, { enum?: string[] }>;
       }
     ).properties.style;
