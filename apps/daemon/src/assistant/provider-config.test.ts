@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseConfig } from '@bananasaurs/core';
 import {
+  assistantKeyCooldownsRepo,
   assistantProviderRepo,
   assistantProvidersRepo,
   searchKeysRepo,
@@ -60,6 +61,28 @@ it('encrypts a write-only key and recovers it only into the resolved chain and e
   });
   const wrongKey = createProviderConfigStore(t.scopes.instance(), 'b'.repeat(32));
   expect(wrongKey.effective(base).AI_PROVIDER).toBe('off');
+});
+it('stores project and fingerprint, and persists and clears cooldowns (ADR 0143)', () => {
+  const instance = t.scopes.instance();
+  const store = createProviderConfigStore(instance, 'a'.repeat(32));
+  const keyId = store.addKey(
+    {
+      provider: 'gemini',
+      label: 'Gemini 1',
+      apiKey: 'AIza-test-one',
+      project: 'Car Team A',
+      fingerprint: assistantProvidersRepo.fingerprintOf('AIza-test-one'),
+    },
+    10,
+  );
+  expect(assistantProvidersRepo.listKeys(instance)[0]).toMatchObject({
+    project: 'Car Team A',
+    fingerprint: assistantProvidersRepo.fingerprintOf('AIza-test-one'),
+  });
+  store.setCooldown({ keyId, model: 'm', until: 5000, reason: 'day', setAt: 1000 });
+  expect(assistantKeyCooldownsRepo.getCooldown(instance, keyId, 'm', 2000)).toBeDefined();
+  store.clearCooldowns(keyId);
+  expect(assistantKeyCooldownsRepo.getCooldown(instance, keyId, 'm', 2000)).toBeUndefined();
 });
 it('retains the encrypted key on settings-only updates and disables without exposing it', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));

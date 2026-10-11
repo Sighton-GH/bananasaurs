@@ -7,6 +7,7 @@ import {
 } from '@bananasaurs/core';
 import {
   assistantProviderRepo,
+  assistantKeyCooldownsRepo,
   assistantProvidersRepo,
   eligibilityRepo,
   searchKeysRepo,
@@ -113,9 +114,17 @@ export interface ProviderConfigStore {
       apiKey: string;
       costClass?: ProviderCostClass | undefined;
       enabled?: boolean | undefined;
+      /** ADR 0143: owner-entered opaque quota-bucket label. */
+      project?: string | undefined;
+      /** ADR 0143: SHA-256 hex of the secret, for idempotent bulk paste. */
+      fingerprint?: string | undefined;
     },
     now: number,
   ): string;
+  /** ADR 0143: park a key and model until `until` (invalid keys, daily and minute quota). */
+  setCooldown(input: assistantKeyCooldownsRepo.SetCooldownInput): void;
+  /** ADR 0143: a re-saved or re-tested key clears its cooldowns. */
+  clearCooldowns(keyId: string, model?: string): void;
   /** Write-only; an omitted `apiKey` keeps the saved one. */
   updateKey(
     keyId: string,
@@ -478,7 +487,15 @@ export const createProviderConfigStore = (
         costClass: input.costClass ?? 'unknown',
         enabled: input.enabled ?? true,
         now,
+        ...(input.project === undefined ? {} : { project: input.project }),
+        ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }),
       });
+    },
+    setCooldown(input) {
+      assistantKeyCooldownsRepo.setCooldown(instance, input);
+    },
+    clearCooldowns(keyId, model) {
+      assistantKeyCooldownsRepo.clearCooldowns(instance, keyId, model);
     },
     updateKey(keyId, input, now) {
       assistantProvidersRepo.updateKey(instance, keyId, {
