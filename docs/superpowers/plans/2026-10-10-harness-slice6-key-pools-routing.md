@@ -593,9 +593,13 @@ from Google's documented error shape.
   the fixture `packages/core/src/providers/__fixtures__/gemini-429-quota.json` (Step 3 code below), then:
 
 ```ts
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import fixture from './__fixtures__/gemini-429-quota.json';
 import { parseGeminiQuotaError } from './gemini-quota.js';
+
+const fixture = JSON.parse(
+  readFileSync(new URL('./__fixtures__/gemini-429-quota.json', import.meta.url), 'utf8'),
+) as unknown;
 
 const violation = (quotaId: string, quotaValue: string) => ({
   quotaMetric: 'generativelanguage.googleapis.com/generate_requests',
@@ -733,14 +737,16 @@ const safeQuotaValue = (raw: string | undefined): number | undefined => {
   return value;
 };
 
-/** `37s`, `1.5s`, `200ms`: seconds plus nanos, capped to one hour. */
+/** `37s`, `1.5s`: seconds plus fraction, capped to one hour. */
 const safeRetryDelayMs = (raw: string | undefined): number | undefined => {
   if (raw === undefined) return undefined;
   const match = /^(\d+)(?:\.(\d{1,9}))?s$/.exec(raw);
   if (match === null) return undefined;
-  const seconds = Number(match[1]);
+  const secondsText = match[1];
+  if (secondsText === undefined) return undefined;
+  const seconds = Number(secondsText);
   const nanos = Number((match[2] ?? '0').padEnd(9, '0'));
-  if (!Number.isSafeInteger(seconds)) return undefined;
+  if (!Number.isSafeInteger(seconds) || !Number.isSafeInteger(nanos)) return undefined;
   return Math.min(seconds * 1000 + Math.floor(nanos / 1_000_000), 3_600_000);
 };
 
@@ -806,7 +812,987 @@ stay safe; no test makes a network call.
 
 ---
 
-<!-- PASS3 -->
+### S6-T6: Migration, project keys, pool rows, cooldown store   ·   Wave 2
+**Owns:** Modify: `packages/storage/src/schema.ts`, `packages/storage/src/repos/assistant-providers.ts` ·
+Create: `packages/storage/src/repos/assistant-key-cooldowns.ts`,
+`packages/storage/src/repos/assistant-key-cooldowns.test.ts`,
+`packages/storage/src/repos/assistant-pools.test.ts` + generated `drizzle/` migration. The only task in this
+slice that touches `schema.ts` or `drizzle/`.
+**Reads (do not edit):** `packages/storage/src/repos/assistant-providers.ts:1-72` (imports, `StoredKey`,
+`ChainRow`, `toKey`), `packages/storage/src/repos/model-calls.ts:55-106` (`writeInstance` + `onConflictDoUpdate`
+idiom), `packages/storage/src/schema.ts:1947-1996` (key/chain tables)
+**Interfaces:** Consumes: ADR 0143 (S6-T1) · Produces: `StoredKey.project: string | null`,
+`StoredKey.fingerprint: string | null`, `fingerprintOf(secret: string): string`,
+`bucketOf(key: { keyId, project }): string`, `ChainRow.pool: 'key' | 'provider'`,
+`ChainRow.tier: 'standard' | 'light'`, `setModelChain` accepting `pool?`/`tier?` (defaults `key`/`standard`),
+and `assistant-key-cooldowns.ts` exports `KeyCooldown`, `getCooldown(scope, keyId, model, now)`,
+`setCooldown(scope, input)`, `clearCooldowns(scope, keyId, model?)`, `listCooldowns(scope)` (for S6-T10, S6-T11)
+
+- [ ] **Step 1: Write the failing tests** — create
+  `packages/storage/src/repos/assistant-pools.test.ts`:
+
+```ts
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  addKey,
+  bucketOf,
+  fingerprintOf,
+  getModelChain,
+  listKeys,
+  setModelChain,
+} from './assistant-providers.js';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
+
+const NOW = 1_790_000_000_000;
+let t: MigratedTestDatabase;
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+});
+afterEach(() => t.close());
+
+const seedKey = (over: Record<string, unknown> = {}) =>
+  addKey(t.scopes.instance(), {
+    provider: 'gemini',
+    label: 'Gemini 1',
+    apiKeyEnc: 'sealed-a',
+    costClass: 'free',
+    now: NOW,
+    ...over,
+  });
+
+describe('key pools storage (ADR 0143)', () => {
+  it('hashes the secret to a stable fingerprint without keeping the secret', () => {
+    expect(fingerprintOf('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(fingerprintOf('AIza-test-one')).toHaveLength(64);
+  });
+  it('round-trips project and fingerprint, defaulting both to null', () => {
+    const a = seedKey({ project: 'Car Team A', fingerprint: fingerprintOf('AIza-test-one') });
+    const b = seedKey({ label: 'Gemini 2', apiKeyEnc: 'sealed-b' });
+    expect(listKeys(t.scopes.instance()).find((k) => k.keyId === a)).toMatchObject({
+      project: 'Car Team A',
+      fingerprint: fingerprintOf('AIza-test-one'),
+    });
+    expect(listKeys(t.scopes.instance()).find((k) => k.keyId === b)).toMatchObject({
+      project: null,
+      fingerprint: null,
+    });
+  });
+  it('refuses a duplicate fingerprint and a bad project label', () => {
+    seedKey({ fingerprint: fingerprintOf('AIza-test-one') });
+    expect(() =>
+      seedKey({ label: 'Gemini 2', apiKeyEnc: 'sealed-b', fingerprint: fingerprintOf('AIza-test-one') }),
+    ).toThrow('duplicate key fingerprint');
+    expect(() => seedKey({ project: '' })).toThrow('project label');
+    expect(() => seedKey({ project: 'x'.repeat(81) })).toThrow('project label');
+  });
+  it('defaults old chain rows to one-key standard and round-trips pool rows', () => {
+    const a = seedKey();
+    setModelChain(t.scopes.instance(), [{ keyId: a, model: 'gemini-3.8-flash' }], NOW);
+    expect(getModelChain(t.scopes.instance())).toEqual([
+      {
+        position: 0,
+        keyId: a,
+        provider: 'gemini',
+        model: 'gemini-3.8-flash',
+        rpmLimit: null,
+        rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
+      },
+    ]);
+    setModelChain(
+      t.scopes.instance(),
+      [{ keyId: a, model: 'gemini-3.8-flash', pool: 'provider', tier: 'light' }],
+      NOW,
+    );
+    expect(getModelChain(t.scopes.instance())[0]).toMatchObject({ pool: 'provider', tier: 'light' });
+  });
+  it('buckets shared project labels together and blank labels apart', () => {
+    expect(bucketOf({ keyId: 'key_a', project: 'Car Team A' })).toBe('project:Car Team A');
+    expect(bucketOf({ keyId: 'key_a', project: null })).toBe('key:key_a');
+    expect(bucketOf({ keyId: 'key_b', project: null })).toBe('key:key_b');
+  });
+});
+```
+
+and create `packages/storage/src/repos/assistant-key-cooldowns.test.ts`:
+
+```ts
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { addKey, removeKey } from './assistant-providers.js';
+import {
+  clearCooldowns,
+  getCooldown,
+  listCooldowns,
+  setCooldown,
+} from './assistant-key-cooldowns.js';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
+
+const NOW = 1_790_000_000_000;
+const MODEL = 'gemini-3.8-flash';
+let t: MigratedTestDatabase;
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+});
+afterEach(() => t.close());
+
+describe('assistant key cooldowns (ADR 0143)', () => {
+  it('round-trips a cooldown with its learned limits', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, {
+      provider: 'gemini',
+      label: 'Gemini 1',
+      apiKeyEnc: 'sealed-a',
+      costClass: 'free',
+      now: NOW,
+    });
+    setCooldown(scope, {
+      keyId,
+      model: MODEL,
+      until: NOW + 3_600_000,
+      reason: 'daily-quota',
+      setAt: NOW,
+      learnedPerDay: 20,
+    });
+    expect(getCooldown(scope, keyId, MODEL, NOW)).toMatchObject({
+      keyId,
+      model: MODEL,
+      until: NOW + 3_600_000,
+      reason: 'daily-quota',
+      learnedPerDay: 20,
+    });
+    expect(listCooldowns(scope)).toHaveLength(1);
+  });
+  it('expires when now reaches until and rewrites on a second set', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, {
+      provider: 'gemini',
+      label: 'Gemini 1',
+      apiKeyEnc: 'sealed-a',
+      costClass: 'free',
+      now: NOW,
+    });
+    setCooldown(scope, { keyId, model: MODEL, until: NOW + 60_000, reason: 'minute-quota', setAt: NOW });
+    expect(getCooldown(scope, keyId, MODEL, NOW + 60_000)).toBeUndefined();
+    setCooldown(scope, { keyId, model: MODEL, until: NOW + 120_000, reason: 'minute-quota', setAt: NOW });
+    expect(getCooldown(scope, keyId, MODEL, NOW + 61_000)?.until).toBe(NOW + 120_000);
+  });
+  it('clears by key or by key and model, and cascades on key deletion', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, {
+      provider: 'gemini',
+      label: 'Gemini 1',
+      apiKeyEnc: 'sealed-a',
+      costClass: 'free',
+      now: NOW,
+    });
+    setCooldown(scope, { keyId, model: MODEL, until: NOW + 1_000, reason: 'minute-quota', setAt: NOW });
+    setCooldown(scope, { keyId, model: 'gemini-3.6-flash', until: NOW + 1_000, reason: 'minute-quota', setAt: NOW });
+    clearCooldowns(scope, keyId, MODEL);
+    expect(getCooldown(scope, keyId, MODEL, NOW)).toBeUndefined();
+    expect(getCooldown(scope, keyId, 'gemini-3.6-flash', NOW)).toBeDefined();
+    clearCooldowns(scope, keyId);
+    expect(listCooldowns(scope)).toEqual([]);
+    setCooldown(scope, { keyId, model: MODEL, until: NOW + 1_000, reason: 'minute-quota', setAt: NOW });
+    removeKey(scope, keyId);
+    expect(listCooldowns(scope)).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/storage/src/repos/assistant-pools.test.ts packages/storage/src/repos/assistant-key-cooldowns.test.ts --maxWorkers=1` ·
+  Expected: FAIL (no `project`/`fingerprint`/`pool`/`tier` columns, no cooldown table or module)
+- [ ] **Step 3: Implement** — the only task in this slice that touches `schema.ts` or `drizzle/`.
+  1. In `schema.ts`, extend `assistantProviderKeys` (anchor: lines 1957–1970):
+
+```ts
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    /** ADR 0143: opaque Google-project label; keys sharing it share one ledger bucket. Null is its own bucket. */
+    project: text('project'),
+    /** ADR 0143: SHA-256 hex of the secret for bulk-paste dedupe; never returned. Null for pre-pool rows. */
+    fingerprint: text('fingerprint'),
+  },
+  (t) => [
+    check(
+      'assistant_provider_keys_provider',
+      sql`${t.provider} IN ('gemini','openrouter','nvidia-nim')`,
+    ),
+    check('assistant_provider_keys_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check('assistant_provider_keys_enabled_bool', boolCheck(t.enabled)),
+    check('assistant_provider_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
+    check(
+      'assistant_provider_keys_project_length',
+      sql`${t.project} IS NULL OR length(${t.project}) BETWEEN 1 AND 80`,
+    ),
+    unique('assistant_provider_keys_fingerprint').on(t.fingerprint),
+  ],
+);
+```
+
+  2. Extend `assistantModelChain` (anchor: lines 1985–1995):
+
+```ts
+    position: integer('position').primaryKey(),
+    keyId: text('key_id').notNull(),
+    model: text('model').notNull(),
+    rpmLimit: integer('rpm_limit'),
+    rpdLimit: integer('rpd_limit'),
+    /** ADR 0143: 'key' is today's one-key entry; 'provider' covers every enabled key of the provider. */
+    pool: text('pool').notNull().default('key'),
+    /** ADR 0144: which runs try this entry first. */
+    tier: text('tier').notNull().default('standard'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantProviderKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    unique('assistant_model_chain_key_model').on(t.keyId, t.model),
+    check('assistant_model_chain_position', sql`${t.position} BETWEEN 0 AND 5`),
+    check('assistant_model_chain_pool', sql`${t.pool} IN ('key','provider')`),
+    check('assistant_model_chain_tier', sql`${t.tier} IN ('standard','light')`),
+  ],
+);
+```
+
+  3. Insert the new table between the end of `assistantModelChain` and the `// ADR 0080` comment:
+
+```ts
+// ADR 0143: durable per-key per-model cooldowns. Replaces the in-memory
+// `QuotaLedger` on the request path and survives restarts. Instance-level
+// like the keys it points at; removing a key drops its cooldowns.
+export const assistantKeyCooldowns = sqliteTable(
+  'assistant_key_cooldowns',
+  {
+    keyId: text('key_id').notNull(),
+    model: text('model').notNull(),
+    untilAt: integer('until_at').notNull(),
+    reason: text('reason').notNull(),
+    setAt: integer('set_at').notNull(),
+    learnedPerDay: integer('learned_per_day'),
+    learnedPerMinute: integer('learned_per_minute'),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantProviderKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    unique('assistant_key_cooldowns_key_model').on(t.keyId, t.model),
+    check('assistant_key_cooldowns_reason_length', sql`length(${t.reason}) BETWEEN 1 AND 60`),
+    index('assistant_key_cooldowns_key').on(t.keyId, t.model, t.untilAt),
+  ],
+);
+```
+
+  4. In `assistant-providers.ts`: extend the `node:crypto` import to `import { createHash, randomBytes } from 'node:crypto';`;
+     append:
+
+```ts
+/** ADR 0143: SHA-256 hex of a secret, for bulk-paste dedupe. The secret itself never reaches storage. */
+export const fingerprintOf = (secret: string): string =>
+  createHash('sha256').update(secret, 'utf8').digest('hex');
+
+/** ADR 0143: the ledger bucket a key draws from — shared per project label, private otherwise. */
+export const bucketOf = (key: { readonly keyId: string; readonly project: string | null }): string =>
+  key.project === null ? `key:${key.keyId}` : `project:${key.project}`;
+```
+
+     extend `StoredKey` with `readonly project: string | null;` and `readonly fingerprint: string | null;`,
+     `ChainRow` with `readonly pool: 'key' | 'provider';` and `readonly tier: 'standard' | 'light';`, plus two
+     small validators `asPool` / `asTier` beside `asProviderId`/`asCostClass`. Update `toKey`, the `listKeys`
+     select, `addKey` (accept `project?`/`fingerprint?`, assert project length 1–80, pre-check fingerprint
+     uniqueness and throw `new Error('duplicate key fingerprint')`), `updateKey` (accept `project?`, same
+     assert, and clear the fingerprint when `apiKeyEnc` changes), `getModelChain` (select and return
+     `pool`/`tier`), and `setModelChain` (accept `pool?`/`tier?` defaulting to `'key'`/`'standard'`, assert the
+     values, write them).
+  5. Create `packages/storage/src/repos/assistant-key-cooldowns.ts`:
+
+```ts
+import { and, eq } from 'drizzle-orm';
+import { assistantKeyCooldowns } from '../schema.js';
+import type { InstanceScope } from '../scope.js';
+import { readInstance, writeInstance } from '../write.js';
+
+export interface KeyCooldown {
+  readonly keyId: string;
+  readonly model: string;
+  readonly until: number;
+  readonly reason: string;
+  readonly setAt: number;
+  readonly learnedPerDay?: number;
+  readonly learnedPerMinute?: number;
+}
+
+export interface SetCooldownInput {
+  readonly keyId: string;
+  readonly model: string;
+  readonly until: number;
+  readonly reason: string;
+  readonly setAt: number;
+  readonly learnedPerDay?: number;
+  readonly learnedPerMinute?: number;
+}
+
+const toCooldown = (row: typeof assistantKeyCooldowns.$inferSelect): KeyCooldown => ({
+  keyId: row.keyId,
+  model: row.model,
+  until: row.untilAt,
+  reason: row.reason,
+  setAt: row.setAt,
+  ...(row.learnedPerDay === null ? {} : { learnedPerDay: row.learnedPerDay }),
+  ...(row.learnedPerMinute === null ? {} : { learnedPerMinute: row.learnedPerMinute }),
+});
+
+/** An expired row reads as absent; a missing row is absent. */
+export const getCooldown = (
+  scope: InstanceScope,
+  keyId: string,
+  model: string,
+  now: number,
+): KeyCooldown | undefined =>
+  readInstance(scope, (db) => {
+    const row = db
+      .select()
+      .from(assistantKeyCooldowns)
+      .where(
+        and(eq(assistantKeyCooldowns.keyId, keyId), eq(assistantKeyCooldowns.model, model)),
+      )
+      .get();
+    if (row === undefined || now >= row.untilAt) return undefined;
+    return toCooldown(row);
+  });
+
+/** Upserts the row and prunes this key's expired rows in the same write. */
+export const setCooldown = (scope: InstanceScope, input: SetCooldownInput): void =>
+  writeInstance(scope, ({ db }) => {
+    db.insert(assistantKeyCooldowns)
+      .values({
+        keyId: input.keyId,
+        model: input.model,
+        untilAt: input.until,
+        reason: input.reason,
+        setAt: input.setAt,
+        learnedPerDay: input.learnedPerDay ?? null,
+        learnedPerMinute: input.learnedPerMinute ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [assistantKeyCooldowns.keyId, assistantKeyCooldowns.model],
+        set: {
+          untilAt: input.until,
+          reason: input.reason,
+          setAt: input.setAt,
+          learnedPerDay: input.learnedPerDay ?? null,
+          learnedPerMinute: input.learnedPerMinute ?? null,
+        },
+      })
+      .run();
+  });
+
+export const clearCooldowns = (scope: InstanceScope, keyId: string, model?: string): void =>
+  writeInstance(scope, ({ db }) => {
+    db.delete(assistantKeyCooldowns)
+      .where(
+        and(
+          eq(assistantKeyCooldowns.keyId, keyId),
+          ...(model === undefined ? [] : [eq(assistantKeyCooldowns.model, model)]),
+        ),
+      )
+      .run();
+  });
+
+export const listCooldowns = (scope: InstanceScope): KeyCooldown[] =>
+  readInstance(scope, (db) =>
+    db.select().from(assistantKeyCooldowns).all().map(toCooldown),
+  );
+```
+
+     (Instance-level repos use plain `and(...)` conditions — see `model-calls.ts:52-53` — never `scope.only`,
+     which is the guild-scope idiom.)
+  6. Run `npm run db:generate -- --name key_pools_routing`. Read the generated SQL and confirm it adds the four
+     columns (existing rows default to `key`/`standard`, `project`/`fingerprint` null), creates
+     `assistant_key_cooldowns` with its unique/index/FK, and rebuilds no unrelated table. Never hand-number or
+     hand-edit the migration body — then append the per-cost-class Gemini terms seed (precedent
+     `drizzle/0022_brainy_meteorite.sql:18`):
+
+```sql
+INSERT INTO `provider_eligibility` (`provider`, `trains_on_input`, `evidence_url`, `evidence_clause`, `production_use_allowed`, `reviewed_at`) VALUES ('gemini:free', 'yes', 'https://ai.google.dev/gemini-api/docs/billing', 'Gemini API Additional Terms (effective 2026-03-23): Unpaid Services content may be used to provide, improve and develop Google products and machine learning technologies (owner decision D12, 2026-10-10).', 1, <REVIEWED_AT>);
+INSERT INTO `provider_eligibility` (`provider`, `trains_on_input`, `evidence_url`, `evidence_clause`, `production_use_allowed`, `reviewed_at`) VALUES ('gemini:paid', 'no', 'https://cloud.google.com/terms', 'Paid Services on a project with an active billing account: owner-recorded no-training; re-check the current paid terms before changing this (owner decision D12, 2026-10-10).', 1, <REVIEWED_AT>);
+```
+
+     where `<REVIEWED_AT>` is the literal from `node -e "console.log(Date.UTC(2026,9,11))"`. If drizzle-kit
+     generated more than one file, keep only the `key_pools_routing` one.
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS, including the duplicate-fingerprint
+  refusal and the cascade test
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write packages/storage/src/schema.ts packages/storage/src/repos/assistant-providers.ts packages/storage/src/repos/assistant-key-cooldowns.ts packages/storage/src/repos/assistant-pools.test.ts packages/storage/src/repos/assistant-key-cooldowns.test.ts drizzle/`
+  then `npx eslint` on the same owned `.ts` paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add packages/storage/src/schema.ts packages/storage/src/repos/assistant-providers.ts packages/storage/src/repos/assistant-key-cooldowns.ts packages/storage/src/repos/assistant-pools.test.ts packages/storage/src/repos/assistant-key-cooldowns.test.ts drizzle/ && git commit -m "Slice 6 T6: key pools migration and cooldown store"`
+
+**Done when:** the generated SQL holds the columns, defaults, table and seeds; old rows read back as one-key
+standard; cooldowns round-trip, expire, clear and cascade.
+
+---
+
+### S6-T7: Shared error fields and adapter quota mapping   ·   Wave 2
+**Owns:** Modify: `packages/core/src/providers/errors.ts`, `packages/core/src/providers/gemini.ts`,
+`packages/core/src/providers/openai-compatible.ts`, `packages/core/src/index.ts` (one export line),
+`packages/core/src/providers/gemini.test.ts` (append cases before the outbound-scan test) · Create:
+`packages/core/src/providers/quota-fields.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/openai-compatible.test.ts:300-340` (provider construction
+with fake `fetch` — mirror it), `packages/core/src/providers/openai-compatible.ts:180-193` (`resolveResetAt`
+anchor), `packages/core/src/providers/gemini.test.ts:62-88` (the `it.each` normalisation block and the
+outbound-scan anchor)
+**Interfaces:** Consumes: `parseGeminiQuotaError` (S6-T5) · Produces: widened `ProviderError` with
+`quotaScope?: 'daily-free' | 'day' | 'minute'`, `retryAfterMs?: number`,
+`learnedLimit?: { readonly perDay?: number; readonly perMinute?: number }` (contracts §3, Slice 3 keeps every
+field); Gemini 429 → typed quota error; OpenRouter plain-429 `Retry-After` → `retryAfterMs`; 401/403 stay
+authentication with fixed messages
+
+- [ ] **Step 1: Write the failing tests** — append to `packages/core/src/providers/gemini.test.ts`, inserted
+  before the `it('runs the local outbound scan before fetch', ...)` test (line 78):
+
+```ts
+it('maps a documented daily 429 to quota scope day with learned limits', async () => {
+  const body = JSON.parse(
+    readFileSync(new URL('./__fixtures__/gemini-429-quota.json', import.meta.url), 'utf8'),
+  ) as unknown;
+  const provider = new GeminiProvider({
+    apiKey: 'AIza-test-one',
+    fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify(body), { status: 429 })),
+  });
+  const error = await provider
+    .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+    .catch((value: unknown) => value);
+  expect(error).toBeInstanceOf(ProviderError);
+  expect(error).toMatchObject({
+    kind: 'quota',
+    retryable: false,
+    status: 429,
+    quotaScope: 'day',
+    retryAfterMs: 37_000,
+    learnedLimit: { perDay: 20, perMinute: 5 },
+  });
+  expect((error as Error).message).not.toContain('AIza-test-one');
+});
+
+it('maps a minute-only 429 to minute scope and a bare 429 to plain rate-limit', async () => {
+  const minute = {
+    error: {
+      status: 'RESOURCE_EXHAUSTED',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+          violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', quotaValue: '5' }],
+        },
+      ],
+    },
+  };
+  const minuteProvider = new GeminiProvider({
+    apiKey: 'AIza-test-one',
+    fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify(minute), { status: 429 })),
+  });
+  const minuteError = await minuteProvider
+    .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+    .catch((value: unknown) => value);
+  expect(minuteError).toMatchObject({ kind: 'quota', quotaScope: 'minute', learnedLimit: { perMinute: 5 } });
+
+  const bareProvider = new GeminiProvider({
+    apiKey: 'AIza-test-one',
+    fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('{}', { status: 429 })),
+  });
+  const bareError = await bareProvider
+    .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+    .catch((value: unknown) => value);
+  expect(bareError).toMatchObject({ kind: 'rate-limit', retryable: true });
+  expect((bareError as ProviderError).quotaScope).toBeUndefined();
+});
+
+it.each([[401], [403]] as const)('keeps HTTP %s authentication with no key text', async (status) => {
+  const provider = new GeminiProvider({
+    apiKey: 'AIza-test-one',
+    fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('{}', { status })),
+  });
+  const error = await provider
+    .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+    .catch((value: unknown) => value);
+  expect(error).toMatchObject({ kind: 'authentication', retryable: false });
+  expect((error as Error).message).not.toContain('AIza-test-one');
+});
+```
+
+  (Add `import { readFileSync } from 'node:fs';` to the test file's imports.) And create
+  `packages/core/src/providers/quota-fields.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+import { createOpenRouterProvider } from './openai-compatible.js';
+import { ProviderError } from './errors.js';
+
+describe('ProviderError quota fields (contracts §3)', () => {
+  it('carries the widened scope, retry delay and learned limit', () => {
+    const error = new ProviderError('quota', 'Gemini request failed with HTTP 429', false, {
+      status: 429,
+      quotaScope: 'day',
+      retryAfterMs: 37_000,
+      learnedLimit: { perDay: 20 },
+    });
+    expect(error.quotaScope).toBe('day');
+    expect(error.retryAfterMs).toBe(37_000);
+    expect(error.learnedLimit).toEqual({ perDay: 20 });
+    const legacy = new ProviderError('quota', 'x', false, { quotaScope: 'daily-free', resetAt: 123 });
+    expect(legacy.quotaScope).toBe('daily-free');
+    expect(legacy.resetAt).toBe(123);
+  });
+  it('reads Retry-After on a plain OpenRouter 429', async () => {
+    const provider = createOpenRouterProvider({
+      apiKey: 'sk-test-key',
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: 'busy', type: 'rate_limit_exceeded' } }), {
+          status: 429,
+          headers: { 'retry-after': '45' },
+        }),
+      ),
+    });
+    const error = await provider
+      .generateText({ model: 'some-model', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).retryAfterMs).toBe(45_000);
+  });
+});
+```
+
+  (Mirror the exact `createOpenRouterProvider` options and `generateText` request shape from
+  `openai-compatible.test.ts:300-340`; keep the model id fake and the key fake.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/core/src/providers/gemini.test.ts packages/core/src/providers/quota-fields.test.ts --maxWorkers=1` ·
+  Expected: FAIL (`quotaScope` still only `'daily-free'`, Gemini discards 429 bodies, no `retryAfterMs`)
+- [ ] **Step 3: Implement** —
+  1. In `errors.ts`, widen additively (keep `resetAt` and `'daily-free'` for the OpenRouter path):
+
+```ts
+  /**
+   * Set when `kind` is `'quota'` and the cap is a `:free` model's daily
+   * request allowance rather than an account credit exhaustion (ADR 0077).
+   * A retry never helps this kind of quota error before `resetAt`.
+   * Slice 6 (ADR 0143) adds Gemini scopes: `'day'` cools until the next
+   * Pacific midnight, `'minute'` cools for `retryAfterMs` or 60 s.
+   */
+  public readonly quotaScope?: 'daily-free' | 'day' | 'minute';
+  /** From Retry-After or google.rpc.RetryInfo.retryDelay. */
+  public readonly retryAfterMs?: number;
+  /** quotaValue from a Gemini QuotaFailure violation. */
+  public readonly learnedLimit?: { readonly perDay?: number; readonly perMinute?: number };
+```
+
+  and the matching three optional constructor options plus their three assignment lines, following the existing
+  `resetAt`/`quotaScope` pattern exactly.
+  2. In `gemini.ts`, import `parseGeminiQuotaError` from `./gemini-quota.js` and replace the non-OK block
+     (lines 189–197) with:
+
+```ts
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new ProviderError('authentication', 'Gemini request failed with HTTP 401', false, {
+          status: response.status,
+          host: this.host,
+        });
+      }
+      if (response.status === 429) {
+        let body: unknown;
+        try {
+          const text = await response.text();
+          body = JSON.parse(text.slice(0, 16_384)) as unknown;
+        } catch {
+          body = undefined;
+        }
+        const quota = parseGeminiQuotaError(body);
+        if (quota.scope !== undefined) {
+          return Promise.reject(
+            new ProviderError('quota', 'Gemini request failed with HTTP 429', quota.scope !== 'day', {
+              status: 429,
+              host: this.host,
+              quotaScope: quota.scope,
+              ...(quota.retryAfterMs === undefined ? {} : { retryAfterMs: quota.retryAfterMs }),
+              ...(quota.learnedLimit === undefined ? {} : { learnedLimit: quota.learnedLimit }),
+            }),
+          );
+        }
+        throw new ProviderError('rate-limit', 'Gemini request failed with HTTP 429', true, {
+          status: 429,
+          host: this.host,
+        });
+      }
+      const kind = statusKind(response.status);
+      throw new ProviderError(
+        kind,
+        `Gemini request failed with HTTP ${response.status}`,
+        kind === 'rate-limit' || kind === 'outage',
+        { status: response.status, host: this.host },
+      );
+    }
+```
+
+     (Keep every existing fixed message; the body is parsed bounded and never logged or kept. Note the 401/403
+     messages stay fixed strings with no body or key text.)
+  3. In `openai-compatible.ts`, insert before `const resolveResetAt = (` (line 185):
+
+```ts
+/** HTTP `Retry-After` (delay seconds or HTTP date) in ms, capped to one hour. */
+const parseRetryAfterMs = (raw: string | null): number | undefined => {
+  if (raw === null || raw.trim() === '') return undefined;
+  if (/^\d+$/.test(raw.trim())) return Math.min(Number(raw.trim()) * 1000, 3_600_000);
+  const date = Date.parse(raw);
+  if (Number.isNaN(date)) return undefined;
+  return Math.min(Math.max(date - Date.now(), 0), 3_600_000);
+};
+```
+
+     and in the 429 error construction (the options object holding
+     `...(resetAt === undefined ? {} : { resetAt }),` at line ~374), compute
+     `const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));` beside the existing
+     `resolveResetAt` call and add `...(retryAfterMs === undefined ? {} : { retryAfterMs }),` after the
+     `resetAt` spread. Do not change the `:free` daily classification.
+  4. Append `export * from './providers/gemini-quota.js';` to `packages/core/src/index.ts` in its existing style.
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS; then
+  `npx vitest run packages/core/src/providers/openai-compatible.test.ts packages/core/src/providers/failure.test.ts --maxWorkers=1` ·
+  PASS (no existing 429 behaviour changed)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write packages/core/src/providers/errors.ts packages/core/src/providers/gemini.ts packages/core/src/providers/openai-compatible.ts packages/core/src/index.ts packages/core/src/providers/gemini.test.ts packages/core/src/providers/quota-fields.test.ts`
+  then `npx eslint` on the same owned `.ts` paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add packages/core/src/providers/errors.ts packages/core/src/providers/gemini.ts packages/core/src/providers/openai-compatible.ts packages/core/src/index.ts packages/core/src/providers/gemini.test.ts packages/core/src/providers/quota-fields.test.ts && git commit -m "Slice 6 T7: quota error fields and adapter mapping"`
+
+**Done when:** daily/minute/bare Gemini 429s map to typed fields; `Retry-After` survives on plain OpenRouter
+429s; `:free` daily classification and all existing 429 tests still pass; no error text carries a key.
+
+---
+
+### S6-T8: Daemon capability mapping per provider   ·   Wave 2
+**Owns:** Create: `apps/daemon/src/assistant/model-capabilities.ts`,
+`apps/daemon/src/assistant/model-capabilities.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/openrouter-models.ts:11-23` (`ModelListing`, catalogue
+interface), `packages/core/src/providers/model-capabilities.ts` (S6-T3 output)
+**Interfaces:** Consumes: `geminiCapabilities`, `TEXT_AND_TOOLS_ONLY`, `ModelCapabilities` (S6-T3) · Produces:
+`capabilitiesForEntry(entry: { readonly providerId: ProviderId; readonly model: string }, catalogue:
+OpenRouterModelCatalogue): ModelCapabilities` with the exact contracts §3 signature (for S6-T10)
+
+- [ ] **Step 1: Write the failing test** — create
+  `apps/daemon/src/assistant/model-capabilities.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { TEXT_AND_TOOLS_ONLY } from '@bananasaurs/core';
+import { capabilitiesForEntry } from './model-capabilities.js';
+import type { OpenRouterModelCatalogue } from './openrouter-models.js';
+
+const catalogueWith = (listing: Record<string, unknown>): OpenRouterModelCatalogue => ({
+  peek: (model: string) =>
+    (listing[model] as ReturnType<OpenRouterModelCatalogue['peek']>) ?? {
+      listed: false,
+      image: false,
+      file: false,
+      tools: false,
+      reasoning: false,
+    },
+  refresh: async () => {},
+});
+
+describe('capabilitiesForEntry (ADR 0143, spec 1g)', () => {
+  it('maps Gemini through the shared table', () => {
+    expect(
+      capabilitiesForEntry(
+        { providerId: 'gemini', model: 'gemini-3.8-flash' },
+        catalogueWith({}),
+      ),
+    ).toEqual({ tools: true, image: true, pdf: true, reasoning: true, thinking: 'levels' });
+    expect(
+      capabilitiesForEntry({ providerId: 'gemini', model: 'gemini-9.9-ultra' }, catalogueWith({})),
+    ).toBe(TEXT_AND_TOOLS_ONLY);
+  });
+  it('maps OpenRouter image, file-to-pdf, tools and reasoning flags', () => {
+    const catalogue = catalogueWith({
+      'some/vision-model': { listed: true, image: true, file: true, tools: true, reasoning: true },
+      'some/text-model': { listed: false, image: false, file: false, tools: false, reasoning: false },
+    });
+    expect(
+      capabilitiesForEntry({ providerId: 'openrouter', model: 'some/vision-model' }, catalogue),
+    ).toEqual({ tools: true, image: true, pdf: true, reasoning: true, thinking: 'budget' });
+    expect(
+      capabilitiesForEntry({ providerId: 'openrouter', model: 'some/text-model' }, catalogue),
+    ).toBe(TEXT_AND_TOOLS_ONLY);
+  });
+  it('treats NIM as text plus tools only', () => {
+    expect(
+      capabilitiesForEntry({ providerId: 'nvidia-nim', model: 'any-model' }, catalogueWith({})),
+    ).toBe(TEXT_AND_TOOLS_ONLY);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run apps/daemon/src/assistant/model-capabilities.test.ts --maxWorkers=1` · Expected: FAIL with
+  `Failed to resolve import "./model-capabilities.js"`
+- [ ] **Step 3: Implement** — create `apps/daemon/src/assistant/model-capabilities.ts`:
+
+```ts
+import {
+  geminiCapabilities,
+  TEXT_AND_TOOLS_ONLY,
+  type ModelCapabilities,
+} from '@bananasaurs/core';
+import type { ProviderId } from './model-chain.js';
+import type { OpenRouterModelCatalogue } from './openrouter-models.js';
+
+/**
+ * Per-entry capabilities (spec 1g Gemini half, ADR 0143): gemini reads the
+ * shared table, openrouter reads the catalogued listing (`file` means PDF),
+ * nvidia-nim is text plus tools only. Unlisted models are text plus tools only.
+ */
+export function capabilitiesForEntry(
+  entry: { readonly providerId: ProviderId; readonly model: string },
+  catalogue: OpenRouterModelCatalogue,
+): ModelCapabilities {
+  if (entry.providerId === 'gemini') return geminiCapabilities(entry.model);
+  if (entry.providerId === 'nvidia-nim') return TEXT_AND_TOOLS_ONLY;
+  const listing = catalogue.peek(entry.model);
+  if (listing === undefined || !listing.listed) return TEXT_AND_TOOLS_ONLY;
+  return {
+    tools: listing.tools,
+    image: listing.image,
+    pdf: listing.file,
+    reasoning: listing.reasoning,
+    thinking: listing.reasoning ? 'budget' : 'none',
+  };
+}
+```
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write apps/daemon/src/assistant/model-capabilities.ts apps/daemon/src/assistant/model-capabilities.test.ts`
+  then `npx eslint apps/daemon/src/assistant/model-capabilities.ts apps/daemon/src/assistant/model-capabilities.test.ts` · exit 0
+- [ ] **Step 7: Commit** —
+  `git add apps/daemon/src/assistant/model-capabilities.ts apps/daemon/src/assistant/model-capabilities.test.ts && git commit -m "Slice 6 T8: daemon capability mapping per provider"`
+
+**Done when:** Gemini/OpenRouter/NIM entries map to the specified capabilities; unlisted models fall back to
+text plus tools only.
+
+---
+
+### S6-T9: Router and tier instance settings   ·   Wave 2
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`,
+`packages/core/src/settings/instance-settings.test.ts`
+**Reads (do not edit):** `packages/core/src/settings/instance-settings.ts:118-127` (definition style) and
+`257-297` (registry list + `InstanceSettingValues`)
+**Interfaces:** Consumes: `DEFAULT_ROUTER_RULES` values (S6-T4, defaults only) · Produces: keys
+`assistant.routerEnabled`, `assistant.routerMaxChars`, `assistant.routerFullModelKeywords`,
+`assistant.routerGreetingPatterns`, `assistant.routerLongThreadTurns`, `assistant.routerEscalateOnTool`,
+`assistant.routerSummaryTier`, `assistant.routerDailyDigestTier` (for S6-T13, S6-T16)
+
+- [ ] **Step 1: Write the failing test** — append to `instance-settings.test.ts`:
+
+```ts
+it('registers the eight router and tier settings with spec defaults (ADR 0144, spec §4.7)', () => {
+  expect(INSTANCE_SETTINGS.length).toBeGreaterThanOrEqual(26);
+  const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
+  expect(valueOf('assistant.routerEnabled')).toBe(1);
+  expect(valueOf('assistant.routerMaxChars')).toBe(80);
+  expect(valueOf('assistant.routerFullModelKeywords')).toEqual(DEFAULT_ROUTER_KEYWORDS);
+  expect(valueOf('assistant.routerGreetingPatterns')).toEqual(DEFAULT_ROUTER_GREETINGS);
+  expect(valueOf('assistant.routerLongThreadTurns')).toBe(4);
+  expect(valueOf('assistant.routerEscalateOnTool')).toBe(1);
+  expect(valueOf('assistant.routerSummaryTier')).toBe('light');
+  expect(valueOf('assistant.routerDailyDigestTier')).toBe('light');
+  expect(settingDefinition('assistant.routerEnabled')?.group).toBe('Assistant context');
+  expect(settingDefinition('assistant.routerMaxChars')?.schema.safeParse(81).success).toBe(true);
+  expect(settingDefinition('assistant.routerMaxChars')?.schema.safeParse(9).success).toBe(false);
+  const keywords = settingDefinition('assistant.routerFullModelKeywords');
+  expect(keywords?.schema.safeParse(['remind']).success).toBe(true);
+  expect(keywords?.schema.safeParse([]).success).toBe(false);
+  const tier = settingDefinition('assistant.routerSummaryTier');
+  expect(tier?.schema.safeParse('light').success).toBe(true);
+  expect(tier?.schema.safeParse('standard').success).toBe(true);
+  expect(tier?.schema.safeParse('heavy').success).toBe(false);
+  expect(isInstanceSettingKey('assistant.routerDailyDigestTier')).toBe(true);
+});
+```
+
+  (Import `DEFAULT_ROUTER_KEYWORDS` and `DEFAULT_ROUTER_GREETINGS` from the new module below. The
+  `toBeGreaterThanOrEqual(26)` form — not an exact length — keeps this green when Slice 2's parallel settings
+  land; do not change other slices' assertions.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL
+  (unknown setting keys)
+- [ ] **Step 3: Implement** — in `instance-settings.ts`, after the `channelContextMessages` definition (lines
+  118–127), insert:
+
+```ts
+/** ADR 0144 defaults, mirroring DEFAULT_ROUTER_RULES so registry and router agree. */
+const DEFAULT_ROUTER_KEYWORDS: readonly string[] = [
+  'remind',
+  'schedule',
+  'task',
+  'ping',
+  'search',
+  'look up',
+  'summar',
+  'explain',
+  'why',
+  'how',
+  'write',
+  'story',
+  'code',
+  'plan',
+  'compare',
+  'translate',
+  'fix',
+];
+
+const DEFAULT_ROUTER_GREETINGS: readonly string[] = [
+  'hi',
+  'hello',
+  'hey',
+  'thanks',
+  'thank you',
+  'thx',
+  'good morning',
+  'good night',
+];
+
+const routerEnabled: SettingDefinition<number> = {
+  key: 'assistant.routerEnabled',
+  group: 'Assistant context',
+  label: 'Complexity routing on/off',
+  help: 'When on, short simple messages try the light tier first so greetings never spend the standard daily quota. 1 is on, 0 is off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(1),
+  defaultValue: 1,
+  bounds: { min: 0, max: 1 },
+};
+
+const routerMaxChars: SettingDefinition<number> = {
+  key: 'assistant.routerMaxChars',
+  group: 'Assistant context',
+  label: 'Router: longest light message',
+  help: 'A message longer than this many characters always uses the standard tier.',
+  display: 'count',
+  schema: z.number().int().min(10).max(1000),
+  defaultValue: 80,
+  bounds: { min: 10, max: 1000 },
+};
+
+const routerFullModelKeywords: SettingDefinition<string[]> = {
+  key: 'assistant.routerFullModelKeywords',
+  group: 'Assistant context',
+  label: 'Router: full-model keywords',
+  help: 'A message containing one of these always uses the standard tier. Shown as an editable chip list.',
+  display: 'text',
+  schema: z.array(z.string().min(1).max(40)).min(1).max(40),
+  defaultValue: [...DEFAULT_ROUTER_KEYWORDS],
+  bounds: { maxItems: 40 },
+};
+
+const routerGreetingPatterns: SettingDefinition<string[]> = {
+  key: 'assistant.routerGreetingPatterns',
+  group: 'Assistant context',
+  label: 'Router: greeting patterns',
+  help: 'Messages matching one of these stay on the light tier even in long conversations. Shown as an editable chip list.',
+  display: 'text',
+  schema: z.array(z.string().min(1).max(40)).min(1).max(40),
+  defaultValue: [...DEFAULT_ROUTER_GREETINGS],
+  bounds: { maxItems: 40 },
+};
+
+const routerLongThreadTurns: SettingDefinition<number> = {
+  key: 'assistant.routerLongThreadTurns',
+  group: 'Assistant context',
+  label: 'Router: long-thread turns',
+  help: 'Past this many earlier turns a plain follow-up uses the standard tier; greetings stay light.',
+  display: 'count',
+  schema: z.number().int().min(0).max(50),
+  defaultValue: 4,
+  bounds: { min: 0, max: 50 },
+};
+
+const routerEscalateOnTool: SettingDefinition<number> = {
+  key: 'assistant.routerEscalateOnTool',
+  group: 'Assistant context',
+  label: 'Router: escalate on tool use',
+  help: 'When on, a light run that calls a tool switches to the standard tier for its next round. 1 is on, 0 is off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(1),
+  defaultValue: 1,
+  bounds: { min: 0, max: 1 },
+};
+
+const routerSummaryTier: SettingDefinition<'light' | 'standard'> = {
+  key: 'assistant.routerSummaryTier',
+  group: 'Assistant context',
+  label: 'Tier for conversation summaries',
+  help: 'Rolling summaries run on this tier so they never spend the standard daily quota unless you ask.',
+  display: 'text',
+  schema: z.enum(['light', 'standard']),
+  defaultValue: 'light',
+};
+
+const routerDailyDigestTier: SettingDefinition<'light' | 'standard'> = {
+  key: 'assistant.routerDailyDigestTier',
+  group: 'Assistant context',
+  label: 'Tier for the daily digest',
+  help: 'The daily digest runs on this tier, after the midnight quota reset. Slice 5 consumes this key.',
+  display: 'text',
+  schema: z.enum(['light', 'standard']),
+  defaultValue: 'light',
+};
+```
+
+  Append the eight names to the `INSTANCE_SETTINGS` list (lines 257–276, after `channelContextMessages,`) and
+  the eight value lines to `InstanceSettingValues` (after line 285
+  `readonly 'assistant.channelContextMessages': number;`):
+
+```ts
+  readonly 'assistant.routerEnabled': number;
+  readonly 'assistant.routerMaxChars': number;
+  readonly 'assistant.routerFullModelKeywords': string[];
+  readonly 'assistant.routerGreetingPatterns': string[];
+  readonly 'assistant.routerLongThreadTurns': number;
+  readonly 'assistant.routerEscalateOnTool': number;
+  readonly 'assistant.routerSummaryTier': 'light' | 'standard';
+  readonly 'assistant.routerDailyDigestTier': 'light' | 'standard';
+```
+
+  Export the two default arrays (`export const DEFAULT_ROUTER_KEYWORDS...`) so the test and S6-T13 share them.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts`
+  then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` · exit 0
+- [ ] **Step 7: Commit** —
+  `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 6 T9: router and tier instance settings"`
+
+**Done when:** all eight keys resolve with spec defaults and bounds; the count assertion tolerates Slice 2's
+parallel settings; every new setting has label, help, default and reset semantics through the registry.
+
+---
+
+<!-- PASS4 -->
 
 ## Slice gate (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
