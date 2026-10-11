@@ -1,7 +1,7 @@
 # Slice 4: attachments — implementation plan
 
 > **Instinct plan.** Read with `2026-10-10-harness-00-instinct-handoff.md` and `2026-10-10-harness-00-shared-contracts.md`.
-> **Status:** DRAFT — refreshed by the controller before round 3
+> **Status:** DRAFT — refreshed by the controller before round 3 — controller note: add a task wiring fetchAttachmentBytes and the live caps in apps/daemon/src/runtime/guild.ts at the refresh (the draft leaves production wiring out).
 
 **Goal:** Members can attach text files, images and PDFs to a question and the bot reads what the answering model natively supports, saying plainly what it cannot see.
 **Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §4 (Slice 4: 4a–4d and the caps table)
