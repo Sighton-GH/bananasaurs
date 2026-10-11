@@ -467,5 +467,537 @@ In `packages/core/src/jobs/lanes.ts`, add one line after the `conversationPrune`
 
 **Done when:** payload validates a local day only; the dedupe key names the day; the lane test maps every kind.
 
-<!-- PASS3 -->
+### S5-T4: migration and digest store   ·   Wave 2
+**Owns:** Modify: `packages/storage/src/schema.ts`, `packages/storage/src/index.ts` (append one `digestRepo` export line) · Create: `drizzle/` migration (generated only), `packages/storage/src/repos/digests.ts` · Test: `packages/storage/src/repos/digests.test.ts`
+**Reads (do not edit):** `packages/storage/src/repos/assistant.test.ts` lines 1–56 (the `openMigratedTestDatabase` + `t.scopes.forGuild(G)` + `guildRepo.upsertGuild` fixture shape), `packages/storage/src/repos/conversations.ts` lines 811–848 (`getSummary` lenient-parse pattern) and 962–1021 (`searchSummaries` guild-join pattern)
+**Interfaces:** Consumes: `DigestOutput`, `normalizeProposalText` (S5-T2) · Produces: `assistantDailyDigests` table · `digestRepo.putDigestOnce`, `digestRepo.getDigest`, `digestRepo.listDigests`, `digestRepo.deleteDigestsOlderThan`, `digestRepo.turnsForDay`, `digestRepo.searchDigests` with signatures exactly as in Step 3
+
+- [ ] **Step 1: Write the failing test** — create `packages/storage/src/repos/digests.test.ts`, copying the fixture shape from `assistant.test.ts` lines 50–56 (`openMigratedTestDatabase`, snowflake `G = parseGuildId('111111111111111111')`, `guildRepo.upsertGuild` in `beforeEach`). Invented names only (Sam L, Alex P). Conversations and turns are seeded with `createConversation` / `appendTurn` from `./conversations.js` (imported in `assistant.test.ts` line 47 — read the `NewConversation`/`NewTurn` interfaces at `conversations.ts` lines 26–59 for exact fields):
+
+```ts
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parseGuildId } from '@bananasaurs/core';
+import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
+import { conversationRepo, guildRepo } from '../index.js';
+import { appendTurn, createConversation } from './conversations.js';
+import {
+  deleteDigestsOlderThan,
+  getDigest,
+  listDigests,
+  putDigestOnce,
+  searchDigests,
+  turnsForDay,
+} from './digests.js';
+
+let t: MigratedTestDatabase;
+const G = parseGuildId('111111111111111111');
+const BOT = '999999999999999999';
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+  guildRepo.upsertGuild(t.scopes.forGuild(G), { name: 'guild', now: 1 });
+});
+afterEach(() => t.close());
+
+const SUMMARY = { daySummary: 'Talked about the build night.', memoryProposals: [] };
+const BONDS = [{ conversationId: 'conv-1', channelId: '333333333333333333', title: 'Build night' }];
+
+describe('digest store (ADR 0150 decision 4)', () => {
+  it('writes once per guild and day; a replay is a duplicate', () => {
+    const s = t.scopes.forGuild(G);
+    expect(putDigestOnce(s, { day: '2026-10-09', summary: SUMMARY, conversations: BONDS, now: 100 })).toBe('created');
+    expect(putDigestOnce(s, { day: '2026-10-09', summary: SUMMARY, conversations: BONDS, now: 200 })).toBe('duplicate');
+    expect(getDigest(s, '2026-10-09')).toMatchObject({ day: '2026-10-09' });
+    expect(getDigest(s, '2026-10-08')).toBeUndefined();
+  });
+  it('is guild-scoped: another guild writes the same day', () => {
+    const other = parseGuildId('222222222222222222');
+    guildRepo.upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 1 });
+    const s = t.scopes.forGuild(G);
+    putDigestOnce(s, { day: '2026-10-09', summary: SUMMARY, conversations: BONDS, now: 100 });
+    expect(putDigestOnce(t.scopes.forGuild(other), { day: '2026-10-09', summary: SUMMARY, conversations: BONDS, now: 100 })).toBe('created');
+    expect(listDigests(s, 10).map((d) => d.day)).toEqual(['2026-10-09']);
+  });
+  it('deletes rows older than the retention cutoff day', () => {
+    const s = t.scopes.forGuild(G);
+    putDigestOnce(s, { day: '2026-10-01', summary: SUMMARY, conversations: BONDS, now: 100 });
+    putDigestOnce(s, { day: '2026-10-09', summary: SUMMARY, conversations: BONDS, now: 100 });
+    expect(deleteDigestsOlderThan(s, '2026-10-09')).toBe(1);
+    expect(listDigests(s, 10).map((d) => d.day)).toEqual(['2026-10-09']);
+  });
+  it('reads the day turns grouped by conversation', () => {
+    const s = t.scopes.forGuild(G);
+    createConversation(s, { conversationId: 'conv-1', channelId: '333333333333333333', behaviourId: 'club', startedBy: '100000000000000001', title: 'Build night', source: 'discord', at: 1_790_000_000_000 });
+    appendTurn(s, { conversationId: 'conv-1', turnId: 't1', at: 1_790_000_001_000, role: 'user', authorId: '100000000000000001', authorName: 'Sam L', text: 'When is build night?' });
+    appendTurn(s, { conversationId: 'conv-1', turnId: 't2', at: 1_790_000_002_000, role: 'assistant', authorName: 'Bananasaurs', text: 'Friday.' });
+    const groups = turnsForDay(s, 1_790_000_000_000, 1_790_100_000_000);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.turns.map((x) => x.turnId)).toEqual(['t1', 't2']);
+    expect(turnsForDay(s, 1_790_100_000_000, 1_790_200_000_000)).toEqual([]);
+  });
+  it('searches digests but only through the given channels', () => {
+    const s = t.scopes.forGuild(G);
+    putDigestOnce(s, { day: '2026-10-09', summary: { daySummary: 'Talked about the build night parade.', memoryProposals: [] }, conversations: BONDS, now: 100 });
+    expect(searchDigests(s, { query: 'build night', channelIds: ['333333333333333333'], limit: 5 })).toHaveLength(1);
+    expect(searchDigests(s, { query: 'build night', channelIds: ['444444444444444444'], limit: 5 })).toEqual([]);
+    expect(searchDigests(s, { query: 'xylophone', channelIds: ['333333333333333333'], limit: 5 })).toEqual([]);
+  });
+});
+```
+
+(If `createConversation`/`appendTurn` field names differ, read `conversations.ts` lines 26–59 and adjust only the seed calls, keeping every assertion.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/storage/src/repos/digests.test.ts --maxWorkers=1` · Expected: FAIL with `Failed to resolve import "./digests.js"`
+- [ ] **Step 3: Implement** — the only task in this slice that touches `packages/storage/src/schema.ts` or `drizzle/`.
+  1. In `schema.ts`, widen the runs source CHECK (exact anchor, lines 2453–2456):
+
+```ts
+    check(
+      'assistant_runs_source',
+      sql`${t.source} IN ('mention','slash-command','dashboard-test')`,
+    ),
+```
+
+exact replacement:
+
+```ts
+    check(
+      'assistant_runs_source',
+      sql`${t.source} IN ('mention','slash-command','dashboard-test','daily-digest')`,
+    ),
+```
+
+  2. In `schema.ts`, insert the new table between the end of `assistantRunEvents` (line 2493 `);`) and the `// ADR 0073` comment (line 2495):
+
+```ts
+// ADR 0150: one row per guild per local day holding that day's digest. The
+// summary JSON carries the validated output plus the conversation bonds
+// (id, channel, title) the recall filter needs; `summary_text` is the
+// rendered searchable copy. Rows die with the guild through the FK, and
+// older than the conversation retention through the prune job.
+export const assistantDailyDigests = sqliteTable(
+  'assistant_daily_digests',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    day: text('day').notNull(),
+    summaryJson: text('summary_json').notNull(),
+    summaryText: text('summary_text').notNull(),
+    proposalsJson: text('proposals_json').notNull().default('[]'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.day] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_daily_digests_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_daily_digests_day', sql`length(${t.day}) = 10`),
+    index('assistant_daily_digests_recent').on(t.guildId, t.day),
+  ],
+);
+```
+
+  3. Run `npm run db:generate -- --name daily_digests`, read the generated SQL, and confirm it contains `CREATE TABLE \`assistant_daily_digests\`` and the widened `assistant_runs_source` CHECK (drizzle-kit takes the next free number on this base; do not renumber — the controller renumbers when merging bundles).
+  4. Create `packages/storage/src/repos/digests.ts`:
+
+```ts
+import { and, asc, desc, gte, lt, lte, like, sql } from 'drizzle-orm';
+import { digestOutputSchema, type DigestOutput } from '@bananasaurs/core';
+import { assistantConversationTurns, assistantConversations, assistantDailyDigests } from '../schema.js';
+import type { GuildScope } from '../scope.js';
+import { read, write } from '../write.js';
+import type { ConversationTurn } from './conversations.js';
+
+export interface DigestConversationBond {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly title: string;
+}
+
+export interface StoredDigest {
+  readonly summary: DigestOutput;
+  readonly conversations: readonly DigestConversationBond[];
+}
+
+export interface DailyDigestRow extends StoredDigest {
+  readonly day: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+const renderDigestText = (stored: StoredDigest): string =>
+  [
+    stored.summary.daySummary,
+    ...stored.summary.memoryProposals.map((p) => `${p.text} ${p.why}`),
+    ...stored.conversations.map((c) => c.title),
+  ].join('\n');
+
+/** Once per guild and day (hard rule 6): a replay returns `duplicate`. */
+export const putDigestOnce = (
+  scope: GuildScope,
+  input: { readonly day: string; readonly summary: DigestOutput; readonly conversations: readonly DigestConversationBond[]; readonly now: number },
+): 'created' | 'duplicate' =>
+  write(scope, ({ db }) => {
+    const parsed = digestOutputSchema.parse(input.summary);
+    const stored: StoredDigest = { summary: parsed, conversations: [...input.conversations] };
+    const changed = db
+      .insert(assistantDailyDigests)
+      .values({
+        guildId: scope.guildId,
+        day: input.day,
+        summaryJson: JSON.stringify(stored),
+        summaryText: renderDigestText(stored),
+        proposalsJson: JSON.stringify(parsed.memoryProposals),
+        createdAt: input.now,
+        updatedAt: input.now,
+      })
+      .onConflictDoNothing({ target: [assistantDailyDigests.guildId, assistantDailyDigests.day] })
+      .run().changes;
+    return changed === 0 ? 'duplicate' : 'created';
+  });
+
+const toRow = (row: typeof assistantDailyDigests.$inferSelect): DailyDigestRow | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.summaryJson);
+  } catch {
+    return undefined;
+  }
+  const summary = digestOutputSchema.safeParse(
+    (parsed as { summary?: unknown }).summary ?? parsed,
+  );
+  if (!summary.success) return undefined;
+  const conversations = Array.isArray((parsed as { conversations?: unknown }).conversations)
+    ? ((parsed as { conversations: DigestConversationBond[] }).conversations)
+    : [];
+  return { day: row.day, summary: summary.data, conversations, createdAt: row.createdAt, updatedAt: row.updatedAt };
+};
+
+export const getDigest = (scope: GuildScope, day: string): DailyDigestRow | undefined =>
+  read(scope, (db) => {
+    const row = db
+      .select()
+      .from(assistantDailyDigests)
+      .where(scope.only(assistantDailyDigests, sql`${assistantDailyDigests.day} = ${day}`))
+      .get();
+    return row === undefined ? undefined : toRow(row);
+  });
+
+export interface DigestListEntry {
+  readonly day: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly topics: string;
+}
+
+export const listDigests = (scope: GuildScope, limit: number): DigestListEntry[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantDailyDigests)
+      .where(scope.only(assistantDailyDigests))
+      .orderBy(desc(assistantDailyDigests.day))
+      .limit(Math.min(Math.max(Math.floor(limit), 1), 100))
+      .all()
+      .flatMap((row) => {
+        const parsed = toRow(row);
+        return parsed === undefined ? [] : [{ day: parsed.day, createdAt: parsed.createdAt, updatedAt: parsed.updatedAt, topics: parsed.summary.daySummary.slice(0, 200) }];
+      }),
+  );
+
+/** Deletes rows with `day` strictly before `cutoffDay` (`YYYY-MM-DD` compares). */
+export const deleteDigestsOlderThan = (scope: GuildScope, cutoffDay: string): number =>
+  write(scope, ({ db }) =>
+    db
+      .delete(assistantDailyDigests)
+      .where(scope.only(assistantDailyDigests, lt(assistantDailyDigests.day, cutoffDay)))
+      .run().changes,
+  );
+
+const TURN_PAGE_LIMIT = 2_000;
+
+export interface DigestDayGroup {
+  readonly conversationId: string;
+  readonly channelId: string;
+  readonly title: string;
+  readonly summaryText: string | null;
+  readonly turns: ConversationTurn[];
+}
+
+/** Turns with `at` in `[start, end)`, grouped by conversation, oldest first. */
+export const turnsForDay = (scope: GuildScope, start: number, end: number): DigestDayGroup[] =>
+  read(scope, (db) => {
+    const rows = db
+      .select()
+      .from(assistantConversationTurns)
+      .where(
+        scope.only(
+          assistantConversationTurns,
+          gte(assistantConversationTurns.at, start),
+          lt(assistantConversationTurns.at, end),
+        ),
+      )
+      .orderBy(asc(assistantConversationTurns.conversationId), asc(assistantConversationTurns.at))
+      .limit(TURN_PAGE_LIMIT)
+      .all();
+    const byConv = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = byConv.get(row.conversationId) ?? [];
+      list.push(row);
+      byConv.set(row.conversationId, list);
+    }
+    const groups: DigestDayGroup[] = [];
+    for (const [conversationId, turns] of byConv) {
+      const conv = db
+        .select()
+        .from(assistantConversations)
+        .where(scope.only(assistantConversations, sql`${assistantConversations.conversationId} = ${conversationId}`))
+        .get();
+      if (conv === undefined) continue;
+      groups.push({
+        conversationId,
+        channelId: conv.channelId,
+        title: conv.title,
+        summaryText: conv.summaryText,
+        turns: turns.map((r) => ({
+          turnId: r.turnId,
+          at: r.at,
+          role: r.role as ConversationTurn['role'],
+          ...(r.authorId === null ? {} : { authorId: r.authorId }),
+          authorName: r.authorName,
+          text: r.text,
+          ...(r.traceId === null ? {} : { traceId: r.traceId }),
+        })),
+      });
+    }
+    return groups;
+  });
+
+export interface DigestSearchHit {
+  readonly day: string;
+  readonly topics: string;
+  readonly channelId: string;
+}
+
+/**
+ * Digests whose text matches, kept only when at least one covered
+ * conversation is in `channelIds` (the asker's searchable channels — a
+ * digest spanning channels must not leak a no-access one).
+ */
+export const searchDigests = (
+  scope: GuildScope,
+  input: { readonly query: string; readonly channelIds: readonly string[]; readonly limit?: number | undefined },
+): DigestSearchHit[] =>
+  read(scope, (db) => {
+    const channels = new Set(input.channelIds);
+    if (channels.size === 0) return [];
+    const words = input.query.toLowerCase().split(/\s+/).filter((w) => w.length > 1).slice(0, 6);
+    if (words.length === 0) return [];
+    const limit = input.limit === undefined ? 5 : Math.min(Math.max(Math.floor(input.limit), 1), 10);
+    const rows = db
+      .select()
+      .from(assistantDailyDigests)
+      .where(
+        scope.only(
+          assistantDailyDigests,
+          sql.join(
+            words.map((w) => like(assistantDailyDigests.summaryText, `%${w}%`)),
+            sql` AND `,
+          ),
+        ),
+      )
+      .orderBy(desc(assistantDailyDigests.day))
+      .limit(20)
+      .all();
+    const hits: DigestSearchHit[] = [];
+    for (const row of rows) {
+      const parsed = toRow(row);
+      if (parsed === undefined) continue;
+      const first = parsed.conversations.find((c) => channels.has(c.channelId));
+      if (first === undefined) continue;
+      hits.push({ day: parsed.day, topics: parsed.summary.daySummary.slice(0, 300), channelId: first.channelId });
+      if (hits.length >= limit) break;
+    }
+    return hits;
+  });
+```
+
+(Notes: `scope.only` takes the table plus conditions — verify against `conversations.ts` usage; `sql.join` exists in drizzle-orm. If either differs, use the file's own idiom. The `like` value interpolation builds `%word%` patterns; words come from the query after lowercasing and length filtering, and `%`/`_` in them are matched literally enough for a prefilter — the JS `toRow` parse is the real gate. Keep it.)
+
+  5. Append to `packages/storage/src/index.ts` (same style as the other repo lines): `export * as digestRepo from './repos/digests.js';`
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/storage/src/repos/digests.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/storage/src/schema.ts packages/storage/src/index.ts packages/storage/src/repos/digests.ts packages/storage/src/repos/digests.test.ts drizzle/` then `npx eslint packages/storage/src/schema.ts packages/storage/src/index.ts packages/storage/src/repos/digests.ts packages/storage/src/repos/digests.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/storage/src/schema.ts packages/storage/src/index.ts packages/storage/src/repos/digests.ts packages/storage/src/repos/digests.test.ts drizzle/ && git commit -m "Slice 5 T4: daily_digests migration and digest store"`
+
+**Done when:** generated SQL holds the new table plus the widened runs CHECK; replay returns `duplicate`; cross-guild and cross-channel isolation hold.
+
+---
+
+### S5-T5: digest instance settings   ·   Wave 3
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`
+**Reads (do not edit):** `packages/core/src/settings/instance-settings.ts` lines 118–127 (the `channelContextMessages` definition style) and 257–297 (registry list plus `InstanceSettingValues`)
+**Interfaces:** Consumes: `DIGEST_DEFAULT_INPUT_CHARS`, `DIGEST_DEFAULT_MAX_PROPOSALS`, `DIGEST_DEFAULT_HOUR` (S5-T2, defaults only) · Produces: keys `assistant.digestEnabled`, `assistant.digestHour`, `assistant.digestInputChars`, `assistant.digestMaxProposals`, `assistant.digestTier`
+
+- [ ] **Step 1: Write the failing test** — append to `packages/core/src/settings/instance-settings.test.ts`:
+
+```ts
+it('registers the five digest settings with spec defaults (ADR 0150, spec §4.7)', () => {
+  expect(INSTANCE_SETTINGS).toHaveLength(23);
+  const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
+  expect(valueOf('assistant.digestEnabled')).toBe(1);
+  expect(valueOf('assistant.digestHour')).toBe(4);
+  expect(valueOf('assistant.digestInputChars')).toBe(40_000);
+  expect(valueOf('assistant.digestMaxProposals')).toBe(10);
+  expect(valueOf('assistant.digestTier')).toBe('light');
+  const enabled = settingDefinition('assistant.digestEnabled');
+  expect(enabled?.group).toBe('Assistant context');
+  expect(enabled?.display).toBe('count');
+  expect(enabled?.schema.safeParse(0).success).toBe(true);
+  expect(enabled?.schema.safeParse(1).success).toBe(true);
+  expect(enabled?.schema.safeParse(2).success).toBe(false);
+  const hour = settingDefinition('assistant.digestHour');
+  expect(hour?.schema.safeParse(4).success).toBe(true);
+  expect(hour?.schema.safeParse(24).success).toBe(false);
+  const tier = settingDefinition('assistant.digestTier');
+  expect(tier?.schema.safeParse('light').success).toBe(true);
+  expect(tier?.schema.safeParse('standard').success).toBe(true);
+  expect(tier?.schema.safeParse('heavy').success).toBe(false);
+  expect(isInstanceSettingKey('assistant.digestEnabled')).toBe(true);
+});
+```
+
+Also update the existing `has 18 definitions` test to `toHaveLength(23)` (18 + 5).
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with `expected 18 to have length 23` (and unknown keys)
+- [ ] **Step 3: Implement** — in `packages/core/src/settings/instance-settings.ts`, add five definitions after `channelContextMessages` (same shape), all in group `'Assistant context'` (no new group: the generic tuning page renders them as-is):
+
+```ts
+const digestEnabled: SettingDefinition<number> = {
+  key: 'assistant.digestEnabled',
+  group: 'Assistant context',
+  label: 'Daily digest on or off',
+  help: '1 runs the daily digest every morning at the hour below; 0 turns it off. The digest summarises that day\u2019s conversations and drafts memory proposals for owner review.',
+  display: 'count',
+  schema: z.number().int().min(0).max(1),
+  defaultValue: 1,
+  bounds: { min: 0, max: 1 },
+};
+
+const digestHour: SettingDefinition<number> = {
+  key: 'assistant.digestHour',
+  group: 'Assistant context',
+  label: 'Daily digest hour',
+  help: 'The local hour (0–23) in the club\u2019s time zone when the daily digest may first run. The hourly tick enqueues it the first time it runs at or past this hour.',
+  display: 'count',
+  schema: z.number().int().min(0).max(23),
+  defaultValue: DIGEST_DEFAULT_HOUR,
+  bounds: { min: 0, max: 23 },
+};
+
+const digestInputChars: SettingDefinition<number> = {
+  key: 'assistant.digestInputChars',
+  group: 'Assistant context',
+  label: 'Daily digest input cap',
+  help: 'How many characters of that day\u2019s conversations the digest may send to the AI, newest first. Larger days are split into chunks of this size.',
+  display: 'count',
+  schema: z.number().int().min(4_000).max(200_000),
+  defaultValue: DIGEST_DEFAULT_INPUT_CHARS,
+  bounds: { min: 4_000, max: 200_000 },
+};
+
+const digestMaxProposals: SettingDefinition<number> = {
+  key: 'assistant.digestMaxProposals',
+  group: 'Assistant context',
+  label: 'Daily digest max proposals',
+  help: 'How many memory proposals one digest may file for owner review. Duplicates of existing memory or pending drafts are dropped first.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10),
+  defaultValue: DIGEST_DEFAULT_MAX_PROPOSALS,
+  bounds: { min: 1, max: 10 },
+};
+
+const digestTier: SettingDefinition<string> = {
+  key: 'assistant.digestTier',
+  group: 'Assistant context',
+  label: 'Daily digest model tier',
+  help: 'Which model tier answers the daily digest: light (cheap, the default) or standard. Takes effect with Slice 6\u2019s tiered chain; until then the digest uses the guild\u2019s chain in order.',
+  display: 'text',
+  schema: z.enum(['light', 'standard']),
+  defaultValue: 'light',
+};
+```
+
+Import the three defaults from `./assistant/digest.js` (check how `instance-settings.ts` imports today — it has no imports beyond `zod`; add `import { DIGEST_DEFAULT_HOUR, DIGEST_DEFAULT_INPUT_CHARS, DIGEST_DEFAULT_MAX_PROPOSALS } from '../assistant/digest.js';` adjusting the relative path to the real one). Append the five to `INSTANCE_SETTINGS` after `channelContextMessages`, and extend `InstanceSettingValues` with:
+
+```ts
+  readonly 'assistant.digestEnabled': number;
+  readonly 'assistant.digestHour': number;
+  readonly 'assistant.digestInputChars': number;
+  readonly 'assistant.digestMaxProposals': number;
+  readonly 'assistant.digestTier': string;
+```
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 5 T5: daily digest instance settings"`
+
+**Done when:** 23 definitions, every default parses under its own schema; `digestEnabled` is 0/1 (no new display type).
+
+---
+
+### S5-T6: run ledger source for the digest   ·   Wave 3
+**Owns:** Modify: `packages/core/src/assistant/run-events.ts`, `packages/core/src/assistant/run-events.test.ts`, `packages/storage/src/repos/runs.test.ts`
+**Reads (do not edit):** `packages/core/src/assistant/run-events.test.ts` lines 1–60 (the `everyKind` round-trip list), `packages/storage/src/repos/runs.test.ts` lines 40–140 (the `ensureRun`/`getRun` usage and raw-SQL CHECK probes)
+**Interfaces:** Consumes: ADR 0150 decision 5 · Produces: `RunRow['source']` gains `'daily-digest'` · `queued` event `via` gains `'schedule'`
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/run-events.test.ts` append:
+
+```ts
+it('accepts a scheduled digest run (ADR 0150 decision 5)', () => {
+  expect(runEventSchema.safeParse({ kind: 'queued', via: 'schedule' }).success).toBe(true);
+});
+```
+
+In `packages/storage/src/repos/runs.test.ts` append (using that file's existing database/scope helpers — read its top for names; the shape below mirrors `assistant.test.ts`):
+
+```ts
+it('stores a daily-digest run and still refuses an unknown source', () => {
+  const scope = t.scopes.forGuild(G);
+  ensureRun(scope, {
+    runId: 'digest-2026-10-09',
+    userId: '999999999999999999',
+    behaviourId: 'default',
+    source: 'daily-digest',
+    queuedAt: 1_790_000_000_000,
+  });
+  expect(getRun(scope, 'digest-2026-10-09')?.source).toBe('daily-digest');
+  expect(() =>
+    ensureRun(scope, {
+      runId: 'digest-bogus',
+      userId: '999999999999999999',
+      behaviourId: 'default',
+      source: 'nope',
+      queuedAt: 1_790_000_000_000,
+    }),
+  ).toThrow();
+});
+```
+
+(If `runs.test.ts` names its fixtures differently, keep the two assertions and adapt only the fixture names.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/run-events.test.ts packages/storage/src/repos/runs.test.ts --maxWorkers=1` · Expected: FAIL (`via: 'schedule'` rejected; CHECK rejects `daily-digest` until S5-T4's migration is on this base — if the CHECK failure persists after S5-T4 merged, the migration task is wrong, not this one)
+- [ ] **Step 3: Implement** — in `packages/core/src/assistant/run-events.ts`:
+  1. Exact anchor (line 34): `    .object({ kind: z.literal('queued'), via: z.enum(['mention', 'reply', 'slash', 'dashboard']) })` → exact replacement: `    .object({ kind: z.literal('queued'), via: z.enum(['mention', 'reply', 'slash', 'dashboard', 'schedule']) })`
+  2. Exact anchor (line 175): `  readonly source: 'mention' | 'slash-command' | 'dashboard-test';` → exact replacement: `  readonly source: 'mention' | 'slash-command' | 'dashboard-test' | 'daily-digest';`
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/run-events.test.ts packages/storage/src/repos/runs.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts packages/storage/src/repos/runs.test.ts` then `npx eslint packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts packages/storage/src/repos/runs.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts packages/storage/src/repos/runs.test.ts && git commit -m "Slice 5 T6: daily-digest run source and scheduled queue event"`
+
+**Done when:** `via: 'schedule'` parses; a `daily-digest` run round-trips and an unknown source still throws at the CHECK.
+
+<!-- PASS4 -->
+
 
