@@ -1045,15 +1045,19 @@ export const resolveReplyPings = async (
 **Reads (do not edit):** `docs/STATE.md:1-16` (Slice 1 entry style), `PRIVACY.md:69-74` (AI answers + web-search paragraphs), `PRIVACY.md:107-124` (task tracking)
 **Interfaces:** Consumes: everything above · Produces: merged Slice 2 record
 
-- [ ] **Step 1: Run each gate on its own and read its exit status**
+- [ ] **Step 1: Typecheck on its own and read its exit status**
 
 ```bash
 npm run typecheck
 ```
 
+- [ ] **Step 2: Lint on its own and read its exit status**
+
 ```bash
 npm run lint
 ```
+
+- [ ] **Step 3: Test on its own and read its exit status**
 
 ```bash
 npm run test
@@ -1061,7 +1065,7 @@ npm run test
 
 All three must pass. If prettier fails, run `npx prettier --write` on the changed files only, and commit that separately.
 
-- [ ] **Step 2: STATE.md entry.** At the top of the file, after the first `---` (same style as the Slice 1 entry at lines 7-15), add:
+- [ ] **Step 4: STATE.md entry.** At the top of the file, after the first `---` (same style as the Slice 1 entry at lines 7-15), add:
 
 ```markdown
 **Assistant new abilities (Slice 2 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `<branch>`, not yet merged (ADRs 0145–0147, migration `parallel_search_source`).**
@@ -1075,14 +1079,13 @@ All three must pass. If prettier fails, run `npx prettier --write` on the change
 
   (Replace `<branch>` with the real branch name from `git branch --show-current`.)
 
-- [ ] **Step 3: PRIVACY.md lines.**
+- [ ] **Step 5: PRIVACY.md lines.**
   - Web search paragraph (after the Tavily sentence at line 73): `Parallel works the same way when the owner picks it: 5,000 free searches a month, and Parallel's terms let it use queries to train AI models.`
   - Assistant conversations section: `An assistant reply pings you only when the person who asked mentioned or named you, at most 5 members and 3 roles per reply; roles still pass the server's ping rules. Text in code blocks never pings.`
   - Task tracking section: `A team lead or the president can ask the assistant to create a club task, list open ones, or record a progress note. Tasks it creates are stored like any other task, and progress notes like any other update.`
   - Bump `Last updated` to `2026-10-11`.
-- [ ] **Step 4: Spec ledger.** In the spec: mark Slice 2 `built on <branch> @ <sha>` (from `git rev-parse --short HEAD`); in §5's Slice 2 row, note ADRs 0145–0147 and migration `parallel_search_source`.
-- [ ] **Step 5: Re-read this plan against the rules checklist** — every task has Owns, Interfaces and Steps 1–7 with real code and commands; no two tasks in one wave own the same file (test files count); no TBD/TODO/"similar to"; `grep -c "^### S2-T"` equals the Waves table row count (11).
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Spec ledger and self-check.** In the spec: mark Slice 2 `built on <branch> @ <sha>` (from `git rev-parse --short HEAD`); in §5's Slice 2 row, note ADRs 0145–0147 and migration `parallel_search_source`. Then re-read this plan against the rules checklist: every task has Owns, Interfaces and Steps 1–7 with real code and commands; no two tasks in one wave own the same file (test files count); no TBD/TODO/"similar to"; `grep -c "^### S2-T"` equals the Waves table row count (11).
+- [ ] **Step 7: Commit**
 
 ```bash
 git add docs/STATE.md PRIVACY.md docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md
