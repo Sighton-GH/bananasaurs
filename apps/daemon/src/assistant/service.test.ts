@@ -5813,6 +5813,48 @@ describe('complexity routing (ADR 0144, spec 6e)', () => {
     };
   };
 
+  it('two entries sharing a model and label warn when the second may train', async () => {
+    const instance = t.scopes.instance();
+    const warn = vi.fn();
+    const first = chainEntry(fakeProvider(STANDARD_MODEL, [], []), { mayTrain: false });
+    const second = chainEntry(fakeProvider(STANDARD_MODEL, [], []), {
+      keyId: 'key_light',
+      selectedKeyId: 'key_light',
+      mayTrain: true,
+    });
+    // Same model and key label as the first entry: only the second may train.
+    expect(second.model).toBe(first.model);
+    expect(second.keyLabel).toBe(first.keyLabel);
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      instance,
+      config,
+      () => NOW,
+      {},
+      undefined,
+      { warn, info: vi.fn() },
+      undefined,
+      () => [first, second],
+    );
+    invocationCounter += 1;
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'when is the meeting?' },
+      source: 'slash-command',
+      invocationId: `int-maytrain-second-${invocationCounter}`,
+    });
+    expect(result.ok).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: GUILD, reason: 'provider-may-train' }),
+      'assistant provider may train on server content',
+    );
+  });
+
   const runWithSummaryTier = async (
     tier: 'light' | 'standard',
   ): Promise<{ readonly tierUsed: string }> => {

@@ -1485,15 +1485,17 @@ export const createAssistantService = (
         },
       });
       // The may-train disclosure covers EVERY entry that received content:
-      // match each non-skipped attempt to its chain entry by model and key
+      // match each non-skipped attempt to its chain entries by model and key
       // label (the hand-over means attempts no longer follow one chain order).
+      // Every entry with the same model and label counts: a pool shares one
+      // label across keys, so if any of them may train, warn.
       let warnedMayTrain = false;
       const exposed: (ChainEntry | undefined)[] = [
         ...handedOver,
         ...loop.attempts
           .filter((attempt) => attempt.outcome !== 'skipped')
-          .map((attempt) =>
-            tieredChain.find(
+          .flatMap((attempt) =>
+            tieredChain.filter(
               (candidate) =>
                 candidate.model === attempt.model && candidate.keyLabel === attempt.keyLabel,
             ),
