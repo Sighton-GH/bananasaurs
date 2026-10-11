@@ -4,6 +4,7 @@ import {
   createOpenRouterProvider,
   GeminiProvider,
   providerMayTrain,
+  providerDayStart,
   SafeProvider,
   type Config,
   type ProviderCostClass,
@@ -11,6 +12,8 @@ import {
 } from '@bananasaurs/core';
 import {
   assistantProvidersRepo,
+  assistantKeyCooldownsRepo,
+  modelCallsRepo,
   type eligibilityRepo,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -49,6 +52,12 @@ export interface ChainEntry {
   readonly mayTrain: boolean;
   readonly rpmLimit: number | null;
   readonly rpdLimit: number | null;
+  /** ADR 0143: own key or every enabled key of this provider. */
+  readonly pool: 'key' | 'provider';
+  /** ADR 0144: which runs try this entry first. */
+  readonly tier: 'standard' | 'light';
+  /** The key actually constructed, equal to keyId for a one-key entry. */
+  readonly selectedKeyId: string;
 }
 
 export const ENV_KEY_ID = 'key_env';
@@ -85,6 +94,9 @@ interface Candidate {
   readonly enabled: boolean;
   readonly rpmLimit: number | null;
   readonly rpdLimit: number | null;
+  readonly pool: 'key' | 'provider';
+  readonly tier: 'standard' | 'light';
+  readonly sealedKey?: string;
 }
 
 const envKeyOf = (config: ModelChainConfig, provider: ProviderId): string | undefined =>
@@ -111,8 +123,26 @@ const envCandidates = (config: ModelChainConfig): readonly Candidate[] => {
     enabled: true,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key',
+    tier: 'standard',
   }));
 };
+
+export interface PoolCandidate {
+  readonly keyId: string;
+  readonly remainingDay: number;
+  readonly lastUsed: number;
+}
+
+/** Most remaining daily requests, least recently used, then key id. */
+export function selectPoolKey(candidates: readonly PoolCandidate[]): PoolCandidate | undefined {
+  return [...candidates].sort(
+    (a, b) =>
+      b.remainingDay - a.remainingDay ||
+      a.lastUsed - b.lastUsed ||
+      (a.keyId < b.keyId ? -1 : a.keyId > b.keyId ? 1 : 0),
+  )[0];
+}
 
 /**
  * Resolves the ordered model chain: the stored chain when one is saved, else
@@ -151,49 +181,21 @@ export const resolveModelChain = (deps: {
   const storedCandidates = (): readonly Candidate[] =>
     storedChain.map((row): Candidate => {
       const key = keysById.get(row.keyId);
-      const costClass = key?.costClass ?? 'unknown';
-      const enabled = key?.enabled ?? false;
-      const keyLabel = key?.label ?? row.keyId;
-      // Defensive: unreachable through the repo because `getModelChain` joins keys and key deletion cascades.
-      if (key === undefined)
-        return {
-          provider: row.provider,
-          model: row.model,
-          keyId: row.keyId,
-          keyLabel,
-          apiKey: undefined,
-          keySkip: 'no-key',
-          costClass,
-          enabled,
-          rpmLimit: row.rpmLimit,
-          rpdLimit: row.rpdLimit,
-        };
-      const apiKey = deps.openKey(key.apiKeyEnc);
-      return apiKey === undefined
-        ? {
-            provider: row.provider,
-            model: row.model,
-            keyId: row.keyId,
-            keyLabel,
-            apiKey: undefined,
-            keySkip: 'key-unreadable',
-            costClass,
-            enabled,
-            rpmLimit: row.rpmLimit,
-            rpdLimit: row.rpdLimit,
-          }
-        : {
-            provider: row.provider,
-            model: row.model,
-            keyId: row.keyId,
-            keyLabel,
-            apiKey,
-            keySkip: undefined,
-            costClass,
-            enabled,
-            rpmLimit: row.rpmLimit,
-            rpdLimit: row.rpdLimit,
-          };
+      return {
+        provider: row.provider,
+        model: row.model,
+        keyId: row.keyId,
+        keyLabel: key?.label ?? row.keyId,
+        apiKey: undefined,
+        ...(key === undefined ? {} : { sealedKey: key.apiKeyEnc }),
+        keySkip: key === undefined ? 'no-key' : undefined,
+        costClass: key?.costClass ?? 'unknown',
+        enabled: key?.enabled ?? false,
+        rpmLimit: row.rpmLimit,
+        rpdLimit: row.rpdLimit,
+        pool: row.pool ?? 'key',
+        tier: row.tier ?? 'standard',
+      };
     });
 
   const candidates: readonly Candidate[] =
@@ -202,11 +204,17 @@ export const resolveModelChain = (deps: {
       : envCandidates(deps.config);
 
   // Entries sharing a key share one constructed provider instance.
-  const providerCache = new Map<string, TextProvider>();
+  const providerCache = new Map<string, TextProvider | undefined>();
   const timeoutMs = deps.providerTimeoutMs?.();
-  const providerFor = (candidate: Candidate, apiKey: string): TextProvider => {
-    const existing = providerCache.get(candidate.keyId);
-    if (existing !== undefined) return existing;
+  const providerFor = (candidate: Candidate): TextProvider | undefined => {
+    if (providerCache.has(candidate.keyId)) return providerCache.get(candidate.keyId);
+    // The only stored-secret opening boundary. Nothing opened is carried on a candidate or entry.
+    const apiKey =
+      candidate.sealedKey === undefined ? candidate.apiKey : deps.openKey(candidate.sealedKey);
+    if (apiKey === undefined) {
+      providerCache.set(candidate.keyId, undefined);
+      return undefined;
+    }
     const built =
       timeoutMs === undefined
         ? deps.makeProvider(candidate.provider, apiKey, candidate.costClass)
@@ -215,43 +223,118 @@ export const resolveModelChain = (deps: {
     return built;
   };
 
-  const toEntry = (candidate: Candidate): ChainEntry => {
+  const now = Date.now();
+  const learnedCooldowns = assistantKeyCooldownsRepo.listCooldowns(deps.instance);
+  const toEntry = (anchor: Candidate): ChainEntry => {
+    let candidate = anchor;
+    let selectedProvider: TextProvider | undefined;
+    if (anchor.pool === 'provider') {
+      const enabledKeys = storedKeys.filter(
+        (key) => key.provider === anchor.provider && key.enabled,
+      );
+      const ranked = enabledKeys.flatMap((key): PoolCandidate[] => {
+        if (
+          assistantKeyCooldownsRepo.getCooldown(deps.instance, key.keyId, anchor.model, now) !==
+          undefined
+        )
+          return [];
+        const bucket = assistantProvidersRepo.bucketOf(key);
+        const bucketKeyIds = enabledKeys
+          .filter((k) => assistantProvidersRepo.bucketOf(k) === bucket)
+          .map((k) => k.keyId);
+        const learned = learnedCooldowns.find(
+          (row) => row.keyId === key.keyId && row.model === anchor.model,
+        )?.learnedPerDay;
+        const limit = anchor.rpdLimit ?? learned;
+        const remainingDay =
+          limit === undefined
+            ? Infinity
+            : limit -
+              modelCallsRepo.callsTodayForKeys(deps.instance, {
+                keyIds: bucketKeyIds,
+                model: anchor.model,
+                dayStart: providerDayStart(anchor.provider, now),
+              });
+        return remainingDay > 0
+          ? [
+              {
+                keyId: key.keyId,
+                remainingDay,
+                lastUsed: modelCallsRepo.lastUsedAt(deps.instance, {
+                  keyId: key.keyId,
+                  model: anchor.model,
+                }),
+              },
+            ]
+          : [];
+      });
+      let chosen = selectPoolKey(ranked);
+      while (chosen !== undefined) {
+        const key = keysById.get(chosen.keyId)!;
+        candidate = {
+          ...anchor,
+          keyId: key.keyId,
+          keyLabel: key.label,
+          sealedKey: key.apiKeyEnc,
+          costClass: key.costClass,
+          enabled: true,
+          keySkip: undefined,
+        };
+        selectedProvider = providerFor(candidate);
+        if (selectedProvider !== undefined) break;
+        ranked.splice(
+          ranked.findIndex((k) => k.keyId === chosen?.keyId),
+          1,
+        );
+        chosen = selectPoolKey(ranked);
+      }
+      if (selectedProvider === undefined)
+        candidate = { ...anchor, enabled: false, keySkip: undefined };
+    }
+    if (anchor.pool === 'key' && candidate.keySkip === undefined) {
+      selectedProvider = providerFor(candidate);
+      if (selectedProvider === undefined) candidate = { ...candidate, keySkip: 'key-unreadable' };
+    }
+    const metadata = { pool: anchor.pool, tier: anchor.tier, selectedKeyId: candidate.keyId };
     if (candidate.keySkip !== undefined)
       return {
         providerId: candidate.provider,
         model: candidate.model,
-        keyId: candidate.keyId,
+        keyId: anchor.keyId,
         keyLabel: candidate.keyLabel,
         provider: undefined,
         skip: candidate.keySkip,
         mayTrain: false,
         rpmLimit: candidate.rpmLimit,
         rpdLimit: candidate.rpdLimit,
+        ...metadata,
       };
     if (!candidate.enabled)
       return {
         providerId: candidate.provider,
         model: candidate.model,
-        keyId: candidate.keyId,
+        keyId: anchor.keyId,
         keyLabel: candidate.keyLabel,
         provider: undefined,
         skip: 'disabled',
         mayTrain: false,
         rpmLimit: candidate.rpmLimit,
         rpdLimit: candidate.rpdLimit,
+        ...metadata,
       };
     const row = deps.eligibility(candidate.provider);
     if (row === undefined)
       return {
         providerId: candidate.provider,
         model: candidate.model,
-        keyId: candidate.keyId,
+        keyId: anchor.keyId,
         keyLabel: candidate.keyLabel,
         provider: undefined,
         skip: 'unverified',
         mayTrain: false,
         rpmLimit: candidate.rpmLimit,
         rpdLimit: candidate.rpdLimit,
+        ...metadata,
       };
     try {
       assertProviderEligible(
@@ -267,36 +350,39 @@ export const resolveModelChain = (deps: {
       return {
         providerId: candidate.provider,
         model: candidate.model,
-        keyId: candidate.keyId,
+        keyId: anchor.keyId,
         keyLabel: candidate.keyLabel,
         provider: undefined,
         skip: 'ineligible',
         mayTrain: false,
         rpmLimit: candidate.rpmLimit,
         rpdLimit: candidate.rpdLimit,
+        ...metadata,
       };
     }
+    const provider = selectedProvider ?? providerFor(candidate);
     return {
       providerId: candidate.provider,
       model: candidate.model,
-      keyId: candidate.keyId,
+      keyId: anchor.keyId,
       keyLabel: candidate.keyLabel,
-      provider: providerFor(candidate, candidate.apiKey as string),
-      skip: undefined,
+      provider,
+      skip: provider === undefined ? 'key-unreadable' : undefined,
       mayTrain: providerMayTrain({ trainsOnInput: row.trainsOnInput }),
       rpmLimit: candidate.rpmLimit,
       rpdLimit: candidate.rpdLimit,
+      ...metadata,
     };
   };
 
-  const entries = candidates.map(toEntry);
+  const entries = candidates.slice(0, 6).map(toEntry);
 
   const envHasUsableKey =
     deps.config.AI_PROVIDER !== 'off' &&
     deps.config.AI_MODEL !== undefined &&
     envKeyOf(deps.config, deps.config.AI_PROVIDER) !== undefined;
   if (entries.length > 0 && entries.every((e) => e.skip === 'key-unreadable') && envHasUsableKey) {
-    return [...entries, ...envCandidates(deps.config).map(toEntry)];
+    return [...entries, ...envCandidates(deps.config).map(toEntry)].slice(0, 6);
   }
 
   return entries;

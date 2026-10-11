@@ -1,11 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseConfig, type TextProvider } from '@bananasaurs/core';
-import { assistantProvidersRepo, type InstanceScope } from '@bananasaurs/storage';
+import {
+  nextProviderDayStart,
+  providerDayStart,
+  parseConfig,
+  type TextProvider,
+} from '@bananasaurs/core';
+import {
+  assistantProvidersRepo,
+  assistantKeyCooldownsRepo,
+  modelCallsRepo,
+  type InstanceScope,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { makeProvider, resolveModelChain, type ChainEntry } from './model-chain.js';
+import { makeProvider, resolveModelChain, selectPoolKey, type ChainEntry } from './model-chain.js';
 
 let t: MigratedTestDatabase;
 beforeEach(() => {
@@ -185,6 +195,8 @@ describe('resolveModelChain', () => {
     assistantProvidersRepo.setModelChain(scope, [{ keyId, model: 'm' }], 10);
     const { entries } = resolve(scope, { openKey: () => undefined, eligibility: () => eligible() });
     expect(entries).toMatchObject([{ skip: 'key-unreadable', provider: undefined }]);
+    // Unreadable remains the reason even without a terms row, preserving env fallback.
+    expect(resolve(scope).entries).toMatchObject([{ skip: 'key-unreadable', provider: undefined }]);
   });
 
   it('marks entries without an eligibility row as unverified, and refused terms as ineligible', () => {
@@ -325,6 +337,9 @@ describe('resolveModelChain', () => {
           model: 'stored-model',
           keyId,
           keyLabel: 'Test key',
+          pool: 'key',
+          tier: 'standard',
+          selectedKeyId: keyId,
           provider: undefined,
           skip: 'key-unreadable',
           mayTrain: false,
@@ -412,5 +427,189 @@ describe('resolveModelChain', () => {
         );
       expect(spy).toHaveBeenCalledWith(30000);
     });
+  });
+});
+
+const NOW = Date.parse('2026-10-11T16:00:00Z');
+const MODEL = 'gemini-3.8-flash';
+const bucketOf = assistantProvidersRepo.bucketOf;
+
+const spend = (scope: InstanceScope, keyId: string, count: number, at = NOW - 1000): void => {
+  for (let i = 0; i < count; i++) {
+    modelCallsRepo.reserveModelCall(scope, {
+      keyId,
+      model: MODEL,
+      guildId: '234567890123456789',
+      now: at,
+      rpmLimit: null,
+      rpdLimit: null,
+      dayStart: providerDayStart('gemini', at),
+      nextDayStart: nextProviderDayStart('gemini', at),
+    });
+  }
+};
+
+describe('pool resolution (ADR 0143)', () => {
+  beforeEach(() => vi.spyOn(Date, 'now').mockReturnValue(NOW));
+  afterEach(() => vi.restoreAllMocks());
+  const pool = (scope: InstanceScope) =>
+    resolve(scope, {
+      openKey: (sealed) => (sealed === 'unreadable' ? undefined : 'AIza-test-one'),
+      eligibility: () => eligible(),
+    });
+  const key = (
+    scope: InstanceScope,
+    keyId: string,
+    extra: Partial<Parameters<typeof assistantProvidersRepo.addKey>[1]> = {},
+  ) => addKey(scope, { provider: 'gemini', keyId, ...extra });
+
+  it("pool 'key' behaves exactly as today: one entry, its own key", () => {
+    const scope = t.scopes.instance();
+    key(scope, 'key_a');
+    assistantProvidersRepo.setModelChain(scope, [{ keyId: 'key_a', model: MODEL }], NOW);
+    const chain = pool(scope).entries;
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toMatchObject({ pool: 'key', tier: 'standard', selectedKeyId: 'key_a' });
+  });
+  it("pool 'provider' picks the usable key with the most remaining daily requests", () => {
+    const scope = t.scopes.instance();
+    key(scope, 'key_anchor');
+    key(scope, 'key_b');
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ keyId: 'key_anchor', model: MODEL, pool: 'provider', rpdLimit: 20 }],
+      NOW,
+    );
+    spend(scope, 'key_anchor', 19);
+    spend(scope, 'key_b', 2);
+    expect(pool(scope).entries[0]).toMatchObject({ pool: 'provider', selectedKeyId: 'key_b' });
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key_b',
+      model: MODEL,
+      until: NOW + 3_600_000,
+      reason: 'day',
+      setAt: NOW,
+    });
+    expect(pool(scope).entries[0]).toMatchObject({ pool: 'provider', selectedKeyId: 'key_anchor' });
+  });
+  it('ties break by least-recent use then key id', () => {
+    expect(
+      selectPoolKey([
+        { keyId: 'key_b', remainingDay: 5, lastUsed: 100 },
+        { keyId: 'key_a', remainingDay: 5, lastUsed: 100 },
+        { keyId: 'key_c', remainingDay: 5, lastUsed: 50 },
+      ]),
+    ).toMatchObject({ keyId: 'key_c' });
+    expect(
+      selectPoolKey([
+        { keyId: 'key_b', remainingDay: 5, lastUsed: 100 },
+        { keyId: 'key_a', remainingDay: 5, lastUsed: 100 },
+      ]),
+    ).toMatchObject({ keyId: 'key_a' });
+    expect(selectPoolKey([])).toBeUndefined();
+    const scope = t.scopes.instance();
+    key(scope, 'key_a');
+    key(scope, 'key_b');
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ keyId: 'key_a', model: MODEL, pool: 'provider', rpdLimit: 20 }],
+      NOW,
+    );
+    spend(scope, 'key_a', 1, NOW - 1000);
+    spend(scope, 'key_b', 1, NOW - 2000);
+    expect(pool(scope).entries[0]?.selectedKeyId).toBe('key_b');
+  });
+  it('skips disabled, invalid, unreadable, cooling and fully spent keys, including a disabled anchor', () => {
+    const scope = t.scopes.instance();
+    key(scope, 'key_anchor', { enabled: false });
+    key(scope, 'key_invalid');
+    key(scope, 'key_bad', { apiKeyEnc: 'unreadable' });
+    key(scope, 'key_spent');
+    key(scope, 'key_other');
+    addKey(scope, { provider: 'openrouter', keyId: 'key_foreign' });
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ keyId: 'key_anchor', model: MODEL, pool: 'provider', tier: 'light', rpdLimit: 20 }],
+      NOW,
+    );
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key_invalid',
+      model: MODEL,
+      until: Number.MAX_SAFE_INTEGER,
+      reason: 'invalid',
+      setAt: NOW,
+    });
+    spend(scope, 'key_spent', 20);
+    expect(pool(scope).entries[0]).toMatchObject({
+      selectedKeyId: 'key_other',
+      tier: 'light',
+      skip: undefined,
+    });
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key_other',
+      model: MODEL,
+      until: NOW + 1000,
+      reason: 'minute',
+      setAt: NOW,
+    });
+    const result = pool(scope);
+    expect(result.entries[0]).toMatchObject({
+      pool: 'provider',
+      tier: 'light',
+      provider: undefined,
+      skip: 'disabled',
+    });
+    expect(result.makeProvider).not.toHaveBeenCalled();
+  });
+  it('keys sharing a project label share one daily bucket', () => {
+    expect(bucketOf({ keyId: 'key_a', project: 'Car Team A' })).toBe('project:Car Team A');
+    expect(bucketOf({ keyId: 'key_b', project: 'Car Team A' })).toBe('project:Car Team A');
+    expect(bucketOf({ keyId: 'key_c', project: null })).toBe('key:key_c');
+    const scope = t.scopes.instance();
+    key(scope, 'key_a', { project: 'Car Team A' });
+    key(scope, 'key_b', { project: 'Car Team A' });
+    key(scope, 'key_c', { project: 'Alex P' });
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ keyId: 'key_a', model: MODEL, pool: 'provider', rpdLimit: 20 }],
+      NOW,
+    );
+    spend(scope, 'key_a', 20);
+    spend(scope, 'key_c', 2);
+    expect(pool(scope).entries[0]?.selectedKeyId).toBe('key_c');
+  });
+  it('retains learned daily limits after cooldown expiry and resets at Pacific midnight', () => {
+    const scope = t.scopes.instance();
+    key(scope, 'key_a');
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ keyId: 'key_a', model: MODEL, pool: 'provider' }],
+      NOW,
+    );
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key_a',
+      model: MODEL,
+      until: NOW - 1,
+      reason: 'day',
+      setAt: NOW - 2000,
+      learnedPerDay: 2,
+    });
+    spend(scope, 'key_a', 2);
+    expect(pool(scope).entries[0]?.skip).toBe('disabled');
+    vi.spyOn(Date, 'now').mockReturnValue(nextProviderDayStart('gemini', NOW));
+    expect(pool(scope).entries[0]).toMatchObject({ selectedKeyId: 'key_a', skip: undefined });
+  });
+  it('truncates the env chain defensively to six entries', () => {
+    const result = resolve(t.scopes.instance(), {
+      config: {
+        ...base,
+        AI_PROVIDER: 'gemini',
+        AI_MODEL: 'one',
+        GEMINI_API_KEY: 'AIza-test-one',
+        AI_FALLBACK_MODELS: ['two', 'three', 'four', 'five', 'six', 'seven'],
+      },
+      eligibility: () => eligible(),
+    });
+    expect(result.entries).toHaveLength(6);
   });
 });

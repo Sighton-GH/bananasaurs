@@ -142,6 +142,8 @@ export interface ProviderConfigStore {
       model: string;
       rpmLimit?: number | null;
       rpdLimit?: number | null;
+      pool?: 'key' | 'provider';
+      tier?: 'standard' | 'light';
     }[],
     now: number,
   ): void;
@@ -503,7 +505,11 @@ export const createProviderConfigStore = (
       });
     },
     saveChain(rows, now) {
-      assistantProvidersRepo.setModelChain(instance, rows, now);
+      assistantProvidersRepo.setModelChain(
+        instance,
+        rows.map((row) => ({ ...row, pool: row.pool ?? 'key', tier: row.tier ?? 'standard' })),
+        now,
+      );
     },
     modelUsage(entry) {
       return entryUsage(instance, entry, clock());

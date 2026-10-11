@@ -666,3 +666,38 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
     expect(store.reserveTestCall(9, GUILD_ID)).toEqual({ ok: true });
   });
 });
+
+describe('chain pool and tier settings (ADR 0143)', () => {
+  it('saves pool and tier, defaults old rows, and preserves resolved fields', () => {
+    const scope = t.scopes.instance();
+    const store = createProviderConfigStore(scope, 'a'.repeat(32));
+    const keyId = store.addKey({ provider: 'gemini', label: 'Sam L', apiKey: 'AIza-test-one' }, 10);
+    store.saveChain(
+      [
+        { keyId, model: 'one', pool: 'provider', tier: 'light' },
+        { keyId, model: 'two' },
+      ],
+      10,
+    );
+    expect(assistantProvidersRepo.getModelChain(scope)).toMatchObject([
+      { pool: 'provider', tier: 'light' },
+      { pool: 'key', tier: 'standard' },
+    ]);
+    expect(store.chain()).toMatchObject([
+      { pool: 'provider', tier: 'light', selectedKeyId: keyId },
+      { pool: 'key', tier: 'standard', selectedKeyId: keyId },
+    ]);
+  });
+  it('rejects invalid pool and tier without replacing the saved chain', () => {
+    const scope = t.scopes.instance();
+    const store = createProviderConfigStore(scope, 'a'.repeat(32));
+    const keyId = store.addKey({ provider: 'gemini', label: 'Sam L', apiKey: 'AIza-test-one' }, 10);
+    store.saveChain([{ keyId, model: 'one' }], 10);
+    // Runtime inputs can arrive without TypeScript's literal validation.
+    // @ts-expect-error invalid pool exercises the runtime boundary
+    expect(() => store.saveChain([{ keyId, model: 'two', pool: 'invalid' }], 11)).toThrow('pool');
+    // @ts-expect-error invalid tier exercises the runtime boundary
+    expect(() => store.saveChain([{ keyId, model: 'two', tier: 'invalid' }], 11)).toThrow('tier');
+    expect(assistantProvidersRepo.getModelChain(scope)[0]?.model).toBe('one');
+  });
+});
