@@ -8,6 +8,7 @@ import {
 } from '../assistant/conversation.js';
 import {
   assistantInvokeCursor,
+  assistantInvokePayload,
   pruneJobsDedupeKey,
   pruneJobsPayload,
   sweepDedupeKey,
@@ -150,6 +151,26 @@ describe('assistantInvokeCursor resolution', () => {
       result: { ok: false, content: 'text' },
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe('assistantInvokePayload attachments', () => {
+  const base = {
+    userId: 'u1',
+    callerRoleIds: [],
+    behaviourId: 'b1',
+    command: 'ask' as const,
+    input: { question: 'hi' },
+    source: 'mention' as const,
+    invocationId: 'inv-1',
+  };
+  it('defaults missing hasAttachments to false and accepts true', () => {
+    const missing = assistantInvokePayload.safeParse(base);
+    expect(missing.success).toBe(true);
+    if (missing.success) expect(missing.data.hasAttachments).toBe(false);
+    const present = assistantInvokePayload.safeParse({ ...base, hasAttachments: true });
+    expect(present.success).toBe(true);
+    if (present.success) expect(present.data.hasAttachments).toBe(true);
   });
 });
 

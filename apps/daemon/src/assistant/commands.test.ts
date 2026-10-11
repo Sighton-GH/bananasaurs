@@ -242,6 +242,33 @@ describe('assistant command subscriber', () => {
     expect(payload.mentionedRoleIds).toEqual([club.mentionRoleId]);
   });
 
+  it('marks the payload when the asker message has an attachment', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012350',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> see attached`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [
+        { fileName: 'photo.png', contentType: 'image/png', sizeBytes: 10 },
+      ],
+    });
+    expect(h.queued[0]).toMatchObject({ hasAttachments: true });
+  });
+
   it('carries the thread parent only for a thread mention', async () => {
     const h = harness();
     await h.subscriber.handle({

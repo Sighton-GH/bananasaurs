@@ -1091,6 +1091,7 @@ export const assistantInvokeHandler = (deps: {
             ...(payload.mentionedRoleIds === undefined
               ? {}
               : { mentionedRoleIds: payload.mentionedRoleIds }),
+            ...(payload.hasAttachments === true ? { hasAttachments: true as const } : {}),
             referencedMessageId: payload.referencedMessageId,
             // ADR 0129 §6: the service records its context and model steps.
             recorder,

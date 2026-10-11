@@ -459,6 +459,12 @@ export const assistantInvokePayload = z.object({
    */
   mentionedUserIds: z.array(z.string().min(1)).max(50).optional(),
   mentionedRoleIds: z.array(z.string().min(1)).max(50).optional(),
+  /**
+   * ADR 0144: true when the asker's own message carries at least one
+   * attachment the model would have to read. Optional so old payloads read
+   * as false; the mention flow sets it from the gateway message.
+   */
+  hasAttachments: z.boolean().optional().default(false),
 });
 export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
 

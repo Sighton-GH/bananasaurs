@@ -724,6 +724,20 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(new Set(trace?.discordMessageIds).size).toBe(3);
   });
 
+  it('passes hasAttachments: true to invoke when the payload says so', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    await h.run(mention({ invocationId: 'inv-att', messageId: '810000000000000017' }));
+    expect(h.inputs[0]?.hasAttachments).toBeUndefined();
+    await h.run(
+      mention({
+        invocationId: 'inv-att2',
+        messageId: '810000000000000019',
+        hasAttachments: true,
+      }),
+    );
+    expect(h.inputs[1]).toMatchObject({ hasAttachments: true });
+  });
+
   it('posts reply pings in allowedMentions on part 1 only, and a retry keeps them without re-posting', async () => {
     const user = '456789012345678901';
     let providerCalls = 0;
