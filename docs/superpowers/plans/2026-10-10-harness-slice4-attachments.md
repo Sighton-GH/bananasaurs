@@ -719,3 +719,235 @@ export const fetchAttachment = async (
 - [ ] **Step 7: Commit** — `git add <all four owned paths> && git commit -m "Slice 4 T5: attachment fetch with host, size and magic-byte refusals"`
 
 **Done when:** every refusal (off-host, missing URL, oversize, bad magic, animated GIF) is tested before the fetch it guards; text frames as `[UNTRUSTED ATTACHMENT …]` with redaction; no network in tests (injected `fetchBytes`).
+
+---
+
+### S4-T6: text files into the turn   ·   Wave 3
+**Owns:** Modify: `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/attachments.ts` (S4-T5: `fetchAttachment`, `textEnvelopeFor`, `AttachmentCaps`), `apps/daemon/src/assistant/conversation-context.ts` (S4-T4: `attachmentMarker`, `QuotedMessage` attachments/embeds), `packages/core/src/settings/instance-settings.ts` (S4-T3 cap keys)
+**Interfaces:** Consumes: `fetchAttachment`, `textEnvelopeFor`, `AttachmentCaps`, `attachmentMarker`, the seven `assistant.attachments.*` settings · Produces: job-start re-read of the current and replied-to messages; text blocks appended to the quote envelope and a new `attachmentText` user-message part; per-file `[attached: …]` markers plus refusal notes; embed thumbnails collected as image sources for S4-T9
+
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/jobs/assistant.test.ts`, using its existing harness (`h.fetchMessageContent.mockResolvedValue`, `h.inputs[0]?.quoteEnvelope`; read the quote tests near lines 882–1013 first). Add:
+
+```ts
+it('inlines text attachments from the current and quoted messages with markers (ADR 0149)', async () => {
+  h.fetchMessageContent.mockImplementation(async (channelId: string, messageId: string) => {
+    if (messageId === '840000000000000001')
+      return {
+        authorId: '111111111111111111',
+        authorName: 'Alex P',
+        content: 'the hall opens at seven',
+        attachments: [
+          { attachmentId: '1', fileName: 'message.txt', contentType: 'text/plain', sizeBytes: 12, url: 'https://cdn.discordapp.com/attachments/1/2/message.txt' },
+        ],
+        embeds: [],
+      };
+    return { authorId: '222222222222222222', authorName: 'Sam L', content: 'The one I just pasted:', attachments: [], embeds: [] };
+  });
+  h.fetchAttachmentBytes.mockResolvedValue({ ok: true, bytes: Buffer.from('pasted details'), mediaType: 'text/plain' });
+  await h.runMentionWithAttachments();
+  expect(h.inputs[0]?.quoteEnvelope).toContain('[attached: message.txt, text/plain, 1 KB]');
+  expect(h.inputs[0]?.quoteEnvelope).toContain('[UNTRUSTED ATTACHMENT name="message.txt"]');
+  expect(h.inputs[0]?.quoteEnvelope).toContain('pasted details');
+});
+
+it('re-reads the message at job start so an expired CDN url never persists (ADR 0149)', async () => {
+  await h.runMentionWithAttachments();
+  expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, expect.any(String));
+  expect(h.fetchAttachmentBytes).not.toHaveBeenCalledWith(expect.stringContaining('expired'), expect.anything());
+});
+
+it('caps text files at three per message and 24,000 chars each (ADR 0149)', async () => {
+  h.fetchMessageContent.mockResolvedValue({
+    authorId: '111', authorName: 'Sam L', content: '', attachments: [1, 2, 3, 4].map((n) => ({ attachmentId: `${n}`, fileName: `f${n}.txt`, contentType: 'text/plain', sizeBytes: 10, url: `https://cdn.discordapp.com/attachments/1/${n}/f${n}.txt` })), embeds: [],
+  });
+  h.fetchAttachmentBytes.mockResolvedValue({ ok: true, bytes: Buffer.from('x'.repeat(30_000)), mediaType: 'text/plain' });
+  await h.runMentionWithAttachments();
+  expect(h.inputs[0]?.quoteEnvelope).toContain('cut after 24,000 characters');
+  expect(h.inputs[0]?.quoteEnvelope?.match(/\[UNTRUSTED ATTACHMENT/g)).toHaveLength(3);
+});
+```
+
+The harness needs two additions (write them as part of Step 3, test-first): a `fetchAttachmentBytes` mock dep on the job (`(url: string, maxBytes: number) => …`, defaulting to a failing stub so tests without it fetch nothing) and a `runMentionWithAttachments` helper that enqueues a mention whose `messageId`/`referencedMessageId` resolve through the mocked `fetchMessageContent`. If the harness names differ (`CHANNEL_ID`, input capture `h.inputs`), use the file's names.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (`runMentionWithAttachments`/`fetchAttachmentBytes` missing; no text blocks)
+- [ ] **Step 3: Implement** — in `apps/daemon/src/jobs/assistant.ts`, after the quote fetch resolves `quoted` (lines 789–816) and inside the same `payload.channelId !== undefined && deps.conversations !== undefined` branch:
+  - Add an optional job dep `fetchAttachmentBytes?: ((url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }>) | undefined`. Production (`runtime/guild.ts`, out of scope) wires it to a `ReviewedResourceFetcher.fetchBytes` bound with the live attachment settings; absent means attachments stay markers-only and every file gets the note "attachments could not be read right now".
+  - Add an optional `attachmentCaps?: (() => AttachmentCaps) | undefined` dep reading the seven live settings; absent means the D7 defaults from S4-T3.
+  - Re-read the current message: `await deps.fetchMessageContent(channelId, payload.messageId)` when `payload.messageId !== undefined` (fresh signed URLs — never trust gateway-cached ones; a retry re-reads too). Its text attachments and the quoted message's text attachments each go through `fetchAttachment({ fetchBytes: deps.fetchAttachmentBytes ?? refusingStub }, source, caps)`, at most `textMaxCount` files per message (extras get a "skipped: at most 3 text files per message" note), each cut to `textMaxChars` with a "cut after 24,000 characters" note (use the live cap values in the notes, not literals).
+  - Text results append `textEnvelopeFor(name, cutText)` to the quote envelope (quoted message) or to a new `attachmentText` string passed to `service.invoke` via the existing `channelContext`? No — new optional `AssistantInvocation` field is S4-T9's. Here: append current-message text blocks to `channelContext`? That mislabels them. Instead pass them inside `quoteEnvelope` only for the quoted message, and for the current message append a second `[UNTRUSTED ATTACHMENT …]` block to the channel-context string? Mislabelling again. Correct: this task extends the job's `quoted` object with `attachments`/`embeds` (S4-T4's `QuotedMessage` fields) so markers render, and appends fetched text blocks to `quoteEnvelope` for the quoted message; for the current message, prepend the text blocks to the question? That pollutes the stored question. Decision: current-message text blocks travel in a new local `attachmentText` variable joined into the `service.invoke` call as `channelContext: [existing, attachmentText].filter(Boolean).join('\n\n')` with a `[UNTRUSTED MESSAGE ATTACHMENTS]` wrapper (not channel messages). Name the wrapper exactly `[UNTRUSTED MESSAGE ATTACHMENTS]\n…\n[/UNTRUSTED MESSAGE ATTACHMENTS]`.
+  - Refusals (`too-large`, `bad-magic`, `fetch-failed`, count cap) become one line each next to the marker: `[attached: big.zip, application/zip, 900 KB] (skipped: over the size limit)`. Unsupported kinds (audio/video/exe) keep the marker with `(not read: audio and video are not supported)`.
+  - Embed thumbnails (`thumbnailUrl` on `media.discordapp.net`) are collected as `{ fileName: 'embed thumbnail', url }` image sources and returned alongside (stored in a local, passed to S4-T9's plumbing; for this task, log their count and include their markers).
+  - Nothing attachment-derived enters the job payload, the conversation turns, or the trace beyond what `quoteEnvelope`/`channelContext` already carry (strings the trace already handles).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts` then `npx eslint apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts && git commit -m "Slice 4 T6: text attachments re-read at job start and inlined as evidence"`
+
+**Done when:** the "no pasted text" case now inlines the file; expired URLs are never reused (re-read proved by test); caps enforced per message with notes; no bytes in payload/turns/trace beyond existing string envelopes.
+
+---
+
+### S4-T7: Gemini sends media as inlineData   ·   Wave 3
+**Owns:** Modify: `packages/core/src/providers/gemini.ts`, `packages/core/src/providers/gemini.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (S4-T2 `GenerationMedia`)
+**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage.media` (S4-T2) · Produces: wire format below (no new exports)
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/gemini.test.ts`, using its `ok()` helper and `fetch` mock:
+
+```ts
+it('sends user-turn media as inlineData parts after the text (ADR 0149)', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    ok({
+      candidates: [{ content: { parts: [{ text: 'seen' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 2, totalTokenCount: 5 },
+      modelVersion: 'gemini-test-001',
+    }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [
+      {
+        role: 'user',
+        text: 'what is this?',
+        media: [
+          { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' },
+          { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' },
+        ],
+      },
+    ],
+  });
+  const [, init] = fetch.mock.calls[0] ?? [];
+  expect(JSON.parse(init?.body as string)).toMatchObject({
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: 'what is this?' },
+          { inlineData: { mimeType: 'image/png', data: 'aGk=' } },
+          { inlineData: { mimeType: 'application/pdf', data: 'amVm' } },
+        ],
+      },
+    ],
+  });
+});
+
+it('sends no Discord URL with media (ADR 0149)', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    ok({ candidates: [{ content: { parts: [{ text: 'ok' }] } }], modelVersion: 'm' }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi', media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'a.png' }] }],
+  });
+  const [, init] = fetch.mock.calls[0] ?? [];
+  expect(init?.body as string).not.toContain('discordapp');
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL (media dropped on the wire)
+- [ ] **Step 3: Implement** — in `packages/core/src/providers/gemini.ts` `toContents` (lines 59–88): the user branch (lines 82–85) becomes:
+
+```ts
+contents.push({
+  role: message.role === 'assistant' ? 'model' : 'user',
+  parts: [
+    { text: message.text },
+    ...(message.role === 'user' && message.media !== undefined
+      ? message.media.map((m) => ({ inlineData: { mimeType: m.mediaType, data: m.dataBase64 } }))
+      : []),
+  ],
+});
+```
+
+Assistant turns (plain or `providerParts`) are unchanged — media on an assistant turn is ignored (never produced). No Discord URL ever leaves the process: only base64 `data` is sent. (After Slice 3: this composes with `:streamGenerateContent?alt=sse` and `thinkingLevel`; the parts shape is unchanged by streaming.)
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts && git commit -m "Slice 4 T7: Gemini sends attached images and PDFs as inlineData"`
+
+**Done when:** image and PDF media arrive as `inlineData` parts after the text; no URL on the wire; assistant turns unchanged.
+
+---
+
+### S4-T8: OpenRouter sends images and PDFs, plugin pinned   ·   Wave 3
+**Owns:** Modify: `packages/core/src/providers/openai-compatible.ts`, `packages/core/src/providers/openai-compatible.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (S4-T2 `GenerationMedia`)
+**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage.media` (S4-T2) · Produces: wire format below (no new exports). Every request carrying a PDF asserts exactly `plugins: [{ id: "file-parser", pdf: { engine: "native" } }]` so OpenRouter never substitutes `mistral-ocr` or `cloudflare-ai` (D7b)
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/openai-compatible.test.ts`, using its `response`/`fetch` pattern:
+
+```ts
+it('sends images as data-url parts and PDFs as file parts with the native plugin (ADR 0149)', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'google/gemma-4-31b-it:free',
+    messages: [
+      {
+        role: 'user',
+        text: 'read this',
+        media: [
+          { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' },
+          { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' },
+        ],
+      },
+    ],
+  });
+  const [, init] = fetch.mock.calls[0] ?? [];
+  const body = JSON.parse(init?.body as string);
+  expect(body.messages.at(-1)).toEqual({
+    role: 'user',
+    content: [
+      { type: 'text', text: 'read this' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } },
+      { type: 'file', file: { filename: 'report.pdf', file_data: 'data:application/pdf;base64,amVm' } },
+    ],
+  });
+  expect(body.plugins).toEqual([{ id: 'file-parser', pdf: { engine: 'native' } }]);
+  expect(init?.body as string).not.toContain('discordapp');
+});
+
+it('sends no plugins and plain string content when there is no PDF (ADR 0149)', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'free-model',
+    messages: [{ role: 'user', text: 'hello', media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'a.png' }] }],
+  });
+  const [, init] = fetch.mock.calls[0] ?? [];
+  const body = JSON.parse(init?.body as string);
+  expect(body.plugins).toBeUndefined();
+  expect(body.messages.at(-1)?.content).toContainEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL (media dropped; no plugins)
+- [ ] **Step 3: Implement** — in `packages/core/src/providers/openai-compatible.ts`:
+  - `toWireMessage` (lines 239–268): the final user branch (line 267) becomes media-aware:
+
+```ts
+const media = message.role === 'user' ? (message.media ?? []) : [];
+if (media.length === 0) return { role: message.role, content: message.text };
+return {
+  role: message.role,
+  content: [
+    { type: 'text', text: message.text },
+    ...media.map((m) =>
+      m.kind === 'image'
+        ? { type: 'image_url', image_url: { url: `data:${m.mediaType};base64,${m.dataBase64}` } }
+        : { type: 'file', file: { filename: m.name, file_data: `data:${m.mediaType};base64,${m.dataBase64}` } },
+    ),
+  ],
+};
+```
+
+  - In `generateText`'s body (lines 304–329): compute `const hasPdf = request.messages.some((m) => m.role === 'user' && (m.media ?? []).some((x) => x.kind === 'pdf'));` and add `...(hasPdf ? { plugins: [{ id: 'file-parser', pdf: { engine: 'native' } }] } : {})` to the JSON body. NIM shares the class: the plugin key is added for NIM too when a PDF rides along; NIM models never receive PDFs from routing (S4-T10), and the test pins OpenRouter only.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 4 T8: OpenRouter sends images and PDFs with the native file-parser plugin"`
+
+**Done when:** images go as `image_url` data URLs, PDFs as `file` parts with exactly the native plugin; no PDF means no plugins and unchanged string content for text-only turns; no URL on the wire.
