@@ -42,7 +42,7 @@ export interface ModelChainConfig {
 export interface ChainEntry {
   readonly providerId: ProviderId;
   readonly model: string;
-  /** The key this entry runs on (`key_env` for the `.env` seed, never persisted). */
+  /** The configured key (the anchor key for a `pool: 'provider'` entry; see `selectedKeyId`). `key_env` for the `.env` seed, never persisted. */
   readonly keyId: string;
   readonly keyLabel: string;
   /** Undefined when the entry is skipped; the reason is in `skip`. */
@@ -382,7 +382,7 @@ export const resolveModelChain = (deps: {
     deps.config.AI_MODEL !== undefined &&
     envKeyOf(deps.config, deps.config.AI_PROVIDER) !== undefined;
   if (entries.length > 0 && entries.every((e) => e.skip === 'key-unreadable') && envHasUsableKey) {
-    return [...entries, ...envCandidates(deps.config).map(toEntry)].slice(0, 6);
+    return [...entries, ...envCandidates(deps.config).map(toEntry)];
   }
 
   return entries;

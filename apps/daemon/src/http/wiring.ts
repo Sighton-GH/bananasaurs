@@ -444,6 +444,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
                 mayTrain: row.mayTrain,
                 rpmLimit: row.rpmLimit,
                 rpdLimit: row.rpdLimit,
+                pool: row.pool ?? 'key',
+                tier: row.tier ?? 'standard',
+                selectedKeyId: row.selectedKeyId ?? row.keyId,
               });
               continue;
             }
@@ -457,6 +460,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
               mayTrain: row.mayTrain,
               rpmLimit: row.rpmLimit,
               rpdLimit: row.rpdLimit,
+              pool: row.pool ?? 'key',
+              tier: row.tier ?? 'standard',
+              selectedKeyId: row.selectedKeyId ?? row.keyId,
             });
           }
           const service = createAssistantService(

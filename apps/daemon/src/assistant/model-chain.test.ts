@@ -599,6 +599,25 @@ describe('pool resolution (ADR 0143)', () => {
     vi.spyOn(Date, 'now').mockReturnValue(nextProviderDayStart('gemini', NOW));
     expect(pool(scope).entries[0]).toMatchObject({ selectedKeyId: 'key_a', skip: undefined });
   });
+  it('a row rpdLimit wins over a learned daily limit', () => {
+    const scope = t.scopes.instance();
+    key(scope, 'key_a');
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ keyId: 'key_a', model: MODEL, pool: 'provider', rpdLimit: 5 }],
+      NOW,
+    );
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key_a',
+      model: MODEL,
+      until: NOW - 1,
+      reason: 'day',
+      setAt: NOW - 2000,
+      learnedPerDay: 2,
+    });
+    spend(scope, 'key_a', 3);
+    expect(pool(scope).entries[0]).toMatchObject({ selectedKeyId: 'key_a', skip: undefined });
+  });
   it('truncates the env chain defensively to six entries', () => {
     const result = resolve(t.scopes.instance(), {
       config: {

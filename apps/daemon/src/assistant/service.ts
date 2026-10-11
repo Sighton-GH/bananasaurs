@@ -352,6 +352,9 @@ export const createAssistantService = (
         mayTrain: false,
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
+        selectedKeyId: 'key_test',
       },
     ];
   };

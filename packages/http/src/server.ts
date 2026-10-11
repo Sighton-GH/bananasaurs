@@ -187,6 +187,9 @@ export interface HttpDeps extends AuthDeps {
           readonly mayTrain: boolean;
           readonly rpmLimit: number | null;
           readonly rpdLimit: number | null;
+          readonly pool?: 'key' | 'provider' | undefined;
+          readonly tier?: 'standard' | 'light' | undefined;
+          readonly selectedKeyId?: string | undefined;
         }[];
         saveChain?(
           rows: readonly {
