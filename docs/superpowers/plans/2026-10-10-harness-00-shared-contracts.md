@@ -64,11 +64,11 @@ export interface ModelCapabilities {
   readonly thinking: ThinkingControl;
 }
 /** Known Gemini models: capabilities plus free-tier limits for pre-filling a chain row. */
-export interface GeminiModelInfo extends ModelCapabilities {
+export interface GeminiModelProfile extends ModelCapabilities {
   readonly freeRpm?: number;
   readonly freeRpd?: number;
 }
-export const GEMINI_MODEL_TABLE: Readonly<Record<string, GeminiModelInfo>>;
+export const GEMINI_MODEL_TABLE: Readonly<Record<string, GeminiModelProfile>>;
 /** Unknown Gemini model → text + tools only, thinking 'none'. */
 export function geminiCapabilities(model: string): ModelCapabilities;
 export const TEXT_AND_TOOLS_ONLY: ModelCapabilities;
