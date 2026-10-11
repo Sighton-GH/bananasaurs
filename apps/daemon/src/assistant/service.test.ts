@@ -4,6 +4,7 @@ import {
   parseGuildId,
   ProviderError,
   type ChannelAccess,
+  type GenerateTextRequest,
   type GenerateTextResponse,
   type RunEvent,
   type TextProvider,
@@ -2675,7 +2676,71 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(systems[0]).toContain('Reminders and scheduled posts (');
   });
 
-  it.todo('re-enabled in Task 6 (offeredTools wiring): non-owner prompt omits set_reminder');
+  const capture = () => {
+    const requests: GenerateTextRequest[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        requests.push(req);
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    return { requests, provider };
+  };
+
+  it('names the asker as not allowed reminders and never names set_reminder for them (ADR 0136)', async () => {
+    const { requests, provider } = capture();
+    await h.serviceWith(provider).invoke(
+      ask({
+        input: { question: 'set a reminder for 5pm' },
+        askerName: 'Kacey',
+        invocationId: 'int-cap-1',
+      }),
+    );
+    const system = requests[0]?.systemInstruction ?? '';
+    expect(system).toContain('NOT AVAILABLE TO KACEY RIGHT NOW');
+    expect(system).toContain('- Reminders: owner only');
+    expect(system).not.toContain('set_reminder');
+    expect((requests[0]?.tools ?? []).map((t) => t.name)).not.toContain('set_reminder');
+  });
+
+  it('lists set_reminder for the owner and puts the date in the NOW section', async () => {
+    const { requests, provider } = capture();
+    await h.serviceWith(provider).invoke(
+      ask({
+        userId: OWNER,
+        callerRoleIds: [],
+        input: { question: 'set a reminder for 5pm' },
+        invocationId: 'int-cap-2',
+      }),
+    );
+    const system = requests[0]?.systemInstruction ?? '';
+    expect(system).toMatch(/- Reminders and scheduled posts \([^)]*set_reminder[^)]*\)/);
+    expect(system).toMatch(/\nNOW\nIt is .+\.\n/);
+    expect(system.indexOf('NOW\nIt is')).toBeLessThan(system.indexOf('WHAT YOU CAN DO RIGHT NOW'));
+  });
+
+  it('adds the abilities line when the history holds an earlier bot reply', async () => {
+    const { requests, provider } = capture();
+    await h.serviceWith(provider).invoke(
+      ask({
+        userId: OWNER,
+        callerRoleIds: [],
+        askerName: 'Bryan',
+        invocationId: 'int-cap-3',
+        input: { question: 'set one up' },
+        history: [
+          { role: 'user', text: '[Kacey, 3 min ago] sleep reminder' },
+          { role: 'assistant', text: 'reminders are owner-only' },
+        ],
+      }),
+    );
+    const last = requests[0]?.messages.at(-1)?.text ?? '';
+    expect(last).toContain(
+      'Your abilities for Bryan are exactly what WHAT YOU CAN DO RIGHT NOW lists.',
+    );
+  });
 
   it('a non-owner denied by owner scope gets a plain NOT AVAILABLE line (ADR 0136)', async () => {
     const declared: string[][] = [];
