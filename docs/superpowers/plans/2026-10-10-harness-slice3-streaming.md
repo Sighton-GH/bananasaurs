@@ -51,7 +51,7 @@
 | 2 | S3-T5 Trace reasoning field | Modify: `packages/core/src/assistant/trace.ts`; Test: `packages/core/src/assistant/trace.test.ts` | S3-T2 |
 | 3 | S3-T6 OpenAI-compatible streaming | Modify: `packages/core/src/providers/openai-compatible.ts`; Test: `packages/core/src/providers/openai-compatible.test.ts` | S3-T2, S3-T3 |
 | 3 | S3-T7 Gemini streaming | Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts` | S3-T2, S3-T3 |
-| 4 | S3-T8 Tool loop wiring and finish reasons | Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts` | S3-T2, S3-T6, S3-T7 |
+| 4 | S3-T8 Tool loop wiring and finish reasons | Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/jobs/assistant.ts` | S3-T2, S3-T6, S3-T7 |
 | 4 | S3-T9 Live buffer, route and progress events | Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts` | S3-T2 |
 | 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx` | S3-T4, S3-T9 |
 | 5 | S3-T11 State and privacy paperwork | Modify: `docs/STATE.md`; Modify: `PRIVACY.md` | S3-T1 |
@@ -297,6 +297,111 @@ it('an idle stream throws a retryable timeout', async () => {
   const provider = new GeminiProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
   const err = await provider
     .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+
+### S3-T8: Tool loop wiring and finish reasons   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`StreamProgress`, `onProgress`), `apps/daemon/src/assistant/run-recorder.ts`, `apps/daemon/src/assistant/typing.ts`, `apps/daemon/src/jobs/assistant.ts` (lines 726–734 `startTyping`)
+**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: tool loop passes `onProgress` per round, records throttled `model-progress`, appends `-# (cut short)` on `length`, saves `reasoning` per round for the trace
+
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/tool-loop.test.ts`, using its `scripted` provider helper and `entry()` (top of file, lines 29–60), add:
+
+```ts
+it('appends a cut-short line when finishReason is length with text', async () => {
+  const { provider } = scripted([
+    { text: 'long answer', model: 'model-a', finishReason: 'length' },
+  ]);
+  const loop = await runToolLoop({
+    provider,
+    chain: [entry({ provider })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    toolsOffered: [],
+    runTools: async () => ({ ok: true, name: 'x', text: 'done', sources: [] }),
+    recorder: { runId: 'r1', event: () => undefined, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(loop.text).toContain('long answer');
+  expect(loop.text).toContain('-# (cut short)');
+});
+
+it('emits model-progress at most every 3 s through onProgress', async () => {
+  const seen: Array<{ msSinceLastByte: number }> = [];
+  const streaming = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools'] as const),
+    generateText: async (req: GenerateTextRequest) => {
+      req.onProgress?.({ round: 1, answerChars: 10, reasoningChars: 0, keepalives: 0, msSinceLastByte: 100 });
+      req.onProgress?.({ round: 1, answerChars: 20, reasoningChars: 0, keepalives: 0, msSinceLastByte: 200 });
+      return { text: 'done', model: 'model-a' };
+    },
+  };
+  const events: RunEvent[] = [];
+  await runToolLoop({
+    provider: streaming,
+
+### S3-T9: Live buffer, route and progress events   ·   Wave 4
+**Owns:** Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts`
+**Reads (do not edit):** `packages/core/src/assistant/run-events.ts` (`model-progress`), `packages/core/src/assistant/trace.ts` (`reasoning` from S3-T5)
+**Interfaces:** Consumes: `model-progress` event from S3-T2; trace `reasoning` from S3-T5 · Produces: `LiveBuffer` with `append(runId, answer, reasoning)`, `read(runId)`, `drop(runId)` capped at 8,000 chars per side; `GET /api/assistant/runs/:runId/live` gated by `audit.read`; `model-progress` patch bumps `updatedAt`
+
+- [ ] **Step 1: Write the failing test** — create `apps/daemon/src/assistant/live-buffer.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { createLiveBuffer } from './live-buffer.js';
+
+describe('createLiveBuffer', () => {
+  it('caps each side at 8000 chars and drops on finish', () => {
+    const buf = createLiveBuffer();
+    buf.append('run-1', 'a'.repeat(9000), 't'.repeat(9000));
+    expect(buf.read('run-1')?.answer.length).toBe(8000);
+    expect(buf.read('run-1')?.thinking.length).toBe(8000);
+    buf.drop('run-1');
+    expect(buf.read('run-1')).toBeUndefined();
+  });
+
+  it('accumulates across appends', () => {
+    const buf = createLiveBuffer();
+    buf.append('run-1', 'hel', 'why');
+    buf.append('run-1', 'lo', ' not');
+    expect(buf.read('run-1')).toEqual({ answer: 'hello', thinking: 'why not' });
+  });
+});
+```
+
+and in `packages/http/src/routes/assistant-runs.test.ts` add (following its `requires audit.read` test at line 100, using its app/seed helpers): a run seeded in-guild returns `{ answer, thinking }` from `GET /api/assistant/runs/:runId/live`; without `audit.read` it 403s; a run seeded in another guild 404s.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./live-buffer.js` and 404 on `/live`
+- [ ] **Step 3: Implement** — full `apps/daemon/src/assistant/live-buffer.ts`: a `Map<string, { answer: string; thinking: string }>`; `append` concatenates then slices each side to the last 8,000 chars; `read` returns a copy or undefined; `drop` deletes. Anchor: `packages/http/src/routes/assistant-runs.ts` the `/events` handler (lines 129–160). Add after it `GET /api/assistant/runs/:runId/live` with the same `guard.require` + `requireCapability(session, 'audit.read', reply)` + guild-scoped `getRun` 404, returning `{ answer, thinking }` from the buffer (empty strings when absent). Anchor: `apps/daemon/src/assistant/run-recorder.ts` `patchFor` (lines 18–70). Add `case 'model-progress': return { updatedAt: now };` alongside the metadata-only group. The tool loop calls `buf.append` from its `onProgress`/chunk handler and `buf.drop` when it records `finished`; trace writing stores per-round `reasoning` (S3-T5 field) capped at 8,000.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` then `npx eslint apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts && git commit -m "Slice 3 T9: live buffer and progress events"`
+
+**Done when:** the buffer caps at 8,000 per side and drops at finish; `/live` is gated like traces; `model-progress` bumps `updatedAt` so the 10-minute stalled label stays honest.
+
+    chain: [entry({ provider: streaming })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    toolsOffered: [],
+    runTools: async () => ({ ok: true, name: 'x', text: 'done', sources: [] }),
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(events.filter((e) => e.kind === 'model-progress').length).toBeLessThanOrEqual(1);
+  expect(seen.length).toBeGreaterThanOrEqual(0);
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` line and no `model-progress` event
+- [ ] **Step 3: Implement** — anchor: `callProvider` in `apps/daemon/src/assistant/tool-loop.ts` (around lines 740–810: `thinkingBudget`, `maxOutputTokens`, `model-call`/`model-result` events). Replacement: pass `onProgress` that throttles to one `model-progress` event per 3 s per call (track last emit per round; carry `{ round, answerChars, reasoningChars, keepalives, msSinceLastByte }` straight into the event, which bumps `updatedAt` via the recorder); keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools); in `finishEntry`, when `finishReason` is `length` (or Gemini `MAX_TOKENS`) and guarded text is non-empty, append `\n\n-# (cut short)` after the guard; when `length` with empty text, keep today's empty-answer path; thread `response.reasoning` per round into the trace payload the service writes (S3-T9 reads it there). Keep typing alive: in `apps/daemon/src/jobs/assistant.ts` the `startTyping` call (lines 726–734) is restarted per provider call with `maxMs` set to `assistant.providerMaxCallMs` and stopped only at run end — implement by moving the stop call to the run-end backstop (line 1371) and passing the ceiling as `maxMs`. (after Slice 6: pass entry `capabilities` into the request so adapters can gate reasoning/thinking.)
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` then `npx eslint apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts && git commit -m "Slice 3 T8: tool loop progress and finish reasons"`
+
+**Done when:** `length` with text delivers the answer plus `-# (cut short)`; `model-progress` fires at most every 3 s; `reasoning` travels per round to the trace writer; typing survives a long stream.
+
     .catch((e: unknown) => e);
   expect(err).toBeInstanceOf(ProviderError);
   expect(err).toMatchObject({ kind: 'timeout', retryable: true });
