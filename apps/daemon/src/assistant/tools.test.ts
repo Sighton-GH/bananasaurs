@@ -666,6 +666,56 @@ describe('acting tools (B2a)', () => {
     expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'completed');
   });
 
+  it('stores style message when asked and reminder by default', async () => {
+    const msg = reminderPorts();
+    await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00', style: 'message' },
+      },
+      msg.p,
+    );
+    const [msgRow] = [...msg.rows.values()];
+    expect(msgRow?.style).toBe('message');
+    const def = reminderPorts();
+    await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' },
+      },
+      def.p,
+    );
+    const [defRow] = [...def.rows.values()];
+    expect(defRow?.style).toBe('reminder');
+    expect(defRow?.id).not.toBe(msgRow?.id);
+  });
+
+  it('confirms a message-style set as Message scheduled', async () => {
+    const { p } = reminderPorts();
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00', style: 'message' },
+      },
+      p,
+    );
+    expect(result.text).toContain('✅ Message scheduled: **Bring the charger**');
+  });
+
+  it('my_reminders marks a message-style row with "as message"', async () => {
+    const message = storedReminder({ id: 'rem_m', style: 'message' });
+    const plain = storedReminder({ id: 'rem_p', style: 'reminder' });
+    const result = await runAssistantTool(
+      { name: 'my_reminders', args: {} },
+      ports({
+        reminderStore: { ...ports().reminderStore, listForCreator: () => [message, plain] },
+      }),
+    );
+    const lines = result.text.split('\n');
+    expect(lines.find((l) => l.startsWith('rem_m'))).toContain('· as message');
+    expect(lines.find((l) => l.startsWith('rem_p'))).not.toContain('as message');
+  });
+
   it('keeps a Luhn-valid invocation key readable after evidence redaction', async () => {
     const luhnDigit = (prefix: string): string => {
       for (let digit = 0; digit <= 9; digit += 1) {
