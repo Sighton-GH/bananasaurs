@@ -1,4 +1,4 @@
-import type { ReminderRecurrence } from '@bananasaurs/core';
+import type { ReminderRecurrence, ReminderStyle } from '@bananasaurs/core';
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -47,6 +47,7 @@ export interface ReminderSummaryInput {
   readonly roleNames?: readonly string[] | undefined;
   readonly everyone?: boolean | undefined;
   readonly here?: boolean | undefined;
+  readonly style?: ReminderStyle | undefined;
 }
 
 const formatWhen = (dueAt: number, timeZone: string): string => {
@@ -126,7 +127,7 @@ export const reminderSummary = (
   // leave a trailing `\` that escapes the closing `**` and breaks the bold.
   const head =
     action === 'set'
-      ? `✅ Reminder set: **${summaryField(input.text.slice(0, 200))}**`
+      ? `${input.style === 'message' ? '✅ Message scheduled:' : '✅ Reminder set:'} **${summaryField(input.text.slice(0, 200))}**`
       : `✏️ Reminder updated: **${summaryField(input.text.slice(0, 200))}**`;
   // An edit that left the targets alone omits Where and Pings: the caller
   // passes no channel name then, and raw ids must never print.

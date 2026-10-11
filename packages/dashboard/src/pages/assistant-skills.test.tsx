@@ -281,3 +281,58 @@ describe('AssistantSkillsPage', () => {
     ).toBeTruthy();
   });
 });
+
+it('lists ping and task scopes and the member look-up tool', async () => {
+  renderPage({
+    ...FULL,
+    skills: [
+      ...FULL.skills,
+      {
+        id: 'ping',
+        name: 'Ping members and roles',
+        description: 'Ping only permitted names.',
+        effect: 'send',
+        requiredPermission: 'assistant.ask',
+        requiresConfirmation: false,
+      },
+      {
+        id: 'tasks',
+        name: 'Club tasks',
+        description: 'Manage club tasks.',
+        effect: 'write',
+        requiredPermission: 'assistant.ask',
+        requiresConfirmation: false,
+      },
+    ],
+    skillScopes: {
+      ...FULL.skillScopes,
+      ping: { mode: 'everyone', roleIds: [], isDefault: true },
+      tasks: { mode: 'owner', roleIds: [], isDefault: true },
+    },
+  });
+  const catalogue = (await screen.findByRole('heading', { name: 'Skill catalogue' })).closest(
+    'section',
+  )!;
+  for (const [name, id, scope] of [
+    ['Ping members and roles', 'ping', 'Everyone who can ask'],
+    ['Club tasks', 'tasks', 'Owner only'],
+  ]) {
+    const link = within(catalogue).getByRole('link', { name: name! });
+    expect(link.getAttribute('href')).toBe(`/assistant/skills/${id}`);
+    expect(within(link).getByText(scope!)).toBeTruthy();
+  }
+  expect(screen.getByText('Find a member')).toBeTruthy();
+});
+
+it('describes Parallel queries and its training disclosure in look-up tools', async () => {
+  renderPage({
+    ...FULL,
+    aiStatus: { ...FULL.aiStatus, webSearch: { enabled: true, source: 'parallel' } },
+  });
+  await screen.findByRole('heading', { name: 'Look-up tools' });
+  expect(
+    screen.getByText(
+      'Sends a short query to the Parallel search API. Parallel may use queries to train its models.',
+    ),
+  ).toBeTruthy();
+});

@@ -114,7 +114,7 @@ const providerConfig = z.object({
   enabled: z.boolean(),
   costClass: z.enum(['free', 'paid', 'unknown']).optional(),
   fallbackModels: z.array(z.string().trim().min(1).max(200)).max(2).optional(),
-  searchSource: z.enum(['brave', 'tavily']).optional(),
+  searchSource: z.enum(['brave', 'tavily', 'parallel']).optional(),
   searchEnabled: z.boolean().optional(),
 });
 const memory = z.object({

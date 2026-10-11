@@ -88,6 +88,9 @@ export interface AssistantInvocation {
   readonly channelContextOldestId?: string | undefined;
   /** The asker's display name, for the current-message label. */
   readonly askerName?: string | undefined;
+  /** ADR 0145: the ids the asker's message mentioned; they bound the reply pings. */
+  readonly mentionedUserIds?: readonly string[] | undefined;
+  readonly mentionedRoleIds?: readonly string[] | undefined;
   /**
    * ADR 0093: the conversation this invocation is answering in, so
    * `search_conversations` can exclude it from its own hits. Absent means
@@ -130,6 +133,9 @@ export type AssistantInvocationResult =
        * trace write; the cursor schema carries them so a retry keeps them.
        */
       readonly flags?: readonly string[];
+      /** ADR 0145: members and roles the reply may ping, decided by code. */
+      readonly pings?:
+        { readonly userIds: readonly string[]; readonly roles: readonly string[] } | undefined;
       readonly trace?: InvocationTrace;
       readonly detail?: AssistantTraceDetail | undefined;
     }
@@ -398,6 +404,12 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         ...(event.authorDisplayName === undefined
           ? {}
           : { authorName: event.authorDisplayName.slice(0, 200) }),
+        ...(event.mentionedUserIds.length === 0
+          ? {}
+          : { mentionedUserIds: event.mentionedUserIds.slice(0, 50) }),
+        ...(event.mentionedRoleIds.length === 0
+          ? {}
+          : { mentionedRoleIds: event.mentionedRoleIds.slice(0, 50) }),
       },
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
       orderingKey: assistantOrderingKey({

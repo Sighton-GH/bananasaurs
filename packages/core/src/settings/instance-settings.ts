@@ -13,6 +13,7 @@ export type SettingGroup =
   | 'Assistant retries'
   | 'Assistant tool loop'
   | 'Assistant context'
+  | 'Assistant replies'
   | 'Network'
   | 'Resources'
   | 'MCP connector';
@@ -372,6 +373,28 @@ const mcpCapPinReact: SettingDefinition<number> = {
   bounds: { min: 1, max: 10000 },
 };
 
+const pingMaxMembers: SettingDefinition<number> = {
+  key: 'assistant.pingMaxMembers',
+  group: 'Assistant replies',
+  label: 'Reply pings: max members',
+  help: 'How many members one assistant reply may ping. Only people the asker mentioned or named ever ping.',
+  display: 'count',
+  schema: z.number().int().min(1).max(5),
+  defaultValue: 5,
+  bounds: { min: 1, max: 5 },
+};
+
+const pingMaxRoles: SettingDefinition<number> = {
+  key: 'assistant.pingMaxRoles',
+  group: 'Assistant replies',
+  label: 'Reply pings: max roles',
+  help: 'How many roles one assistant reply may ping. Roles still pass the server ping rules.',
+  display: 'count',
+  schema: z.number().int().min(1).max(3),
+  defaultValue: 3,
+  bounds: { min: 1, max: 3 },
+};
+
 export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   retryDelays,
   providerTimeout,
@@ -399,6 +422,8 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   mcpCapMemberRole,
   mcpCapStructure,
   mcpCapPinReact,
+  pingMaxMembers,
+  pingMaxRoles,
 ];
 
 export interface InstanceSettingValues {
@@ -428,6 +453,8 @@ export interface InstanceSettingValues {
   readonly 'mcp.cap.member_role': number;
   readonly 'mcp.cap.structure': number;
   readonly 'mcp.cap.pin_react': number;
+  readonly 'assistant.pingMaxMembers': number;
+  readonly 'assistant.pingMaxRoles': number;
 }
 
 export type InstanceSettingKey = keyof InstanceSettingValues;

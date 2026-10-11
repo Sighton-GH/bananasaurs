@@ -971,6 +971,70 @@ describe('ProvidersPage terms and web search', () => {
     expect('searchApiKey' in body).toBe(false);
   });
 
+  it('saves Parallel, shows its training disclosure and restores source-specific defaults', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: ownerAssistantWithSearch() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+      { method: 'PUT', url: PROVIDER_URL, body: { ok: true } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    fireEvent.click(within(card).getByRole('radio', { name: 'Parallel' }));
+    expect(within(card).getByLabelText<HTMLInputElement>('Monthly limit').value).toBe('4500');
+    expect(
+      within(card).getByText(/Parallel may use search queries to train its models\./),
+    ).toBeTruthy();
+    expect(
+      within(card)
+        .getAllByRole('link', { name: 'Read the terms' })
+        .some((link) => link.getAttribute('href') === 'https://parallel.ai/terms'),
+    ).toBe(true);
+    fireEvent.click(within(card).getByRole('radio', { name: 'Brave Search' }));
+    expect(within(card).getByLabelText<HTMLInputElement>('Monthly limit').value).toBe('1000');
+    fireEvent.click(within(card).getByRole('radio', { name: 'Parallel' }));
+    fireEvent.click(within(card).getByRole('radio', { name: 'Tavily' }));
+    expect(within(card).getByLabelText<HTMLInputElement>('Monthly limit').value).toBe('1000');
+    fireEvent.change(within(card).getByLabelText('Monthly limit'), { target: { value: '2000' } });
+    fireEvent.click(within(card).getByRole('radio', { name: 'Parallel' }));
+    expect(within(card).getByLabelText<HTMLInputElement>('Monthly limit').value).toBe('2000');
+    fireEvent.click(within(card).getByLabelText('Let the assistant search the web'));
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: 'Save web search' }));
+    });
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === PROVIDER_URL && c[1]?.method === 'PUT',
+    );
+    expect(bodyOf(put!) as Record<string, unknown>).toEqual({
+      provider: 'gemini',
+      enabled: true,
+      searchEnabled: true,
+      searchSource: 'parallel',
+    });
+  });
+
+  it('pre-fills 4500 when the saved source is Parallel', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      {
+        url: '/api/assistant',
+        body: ownerAssistantWithSearch({
+          aiStatus: {
+            provider: 'gemini',
+            enabled: true,
+            webSearch: { enabled: true, source: 'parallel' },
+          },
+        }),
+      },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = await webCard();
+    expect(within(card).getByLabelText<HTMLInputElement>('Monthly limit').value).toBe('4500');
+  });
+
   it('lists only the selected source keys with usage and paused state', async () => {
     const pausedAt = 1_700_000_000_000;
     stubFetch([

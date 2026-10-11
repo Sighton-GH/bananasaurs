@@ -242,7 +242,7 @@ it('saves a reviewed memory proposal atomically', () => {
 });
 
 describe('STARTER_SKILL_IDS', () => {
-  it('is exactly the ten everyday skills', () => {
+  it('is exactly the eleven everyday skills (ten plus ping, per the Slice 2 plan)', () => {
     expect([...STARTER_SKILL_IDS]).toEqual([
       'search-club',
       'open-resource',
@@ -254,6 +254,7 @@ describe('STARTER_SKILL_IDS', () => {
       'draft-announcement',
       'event-checklist',
       'draft-handoff',
+      'ping',
     ]);
   });
   it('excludes confirmation-class and owner-only skills', () => {
@@ -265,7 +266,7 @@ describe('STARTER_SKILL_IDS', () => {
     ]) {
       expect(STARTER_SKILL_IDS).not.toContain(excluded);
     }
-    expect(STARTER_SKILL_IDS).toHaveLength(10);
+    expect(STARTER_SKILL_IDS).toHaveLength(11);
     for (const id of STARTER_SKILL_IDS) {
       const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === id);
       expect(skill?.ownerOnly).not.toBe(true);

@@ -151,6 +151,31 @@ export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
     defaultScope: 'everyone',
     requiresConfirmation: false,
   },
+  {
+    id: 'ping',
+    name: 'Ping members and roles',
+    description:
+      'Ping members or roles the asker named by writing @Name in the answer; code decides who pings.',
+    promptLine:
+      'Ping a member or role the asker named by writing @Name in the answer; only people and roles they mentioned or named ever ping.',
+    effect: 'send',
+    requiredPermission: 'assistant.communications',
+    acts: false,
+    defaultScope: 'everyone',
+    requiresConfirmation: false,
+  },
+  {
+    id: 'tasks',
+    name: 'Club tasks',
+    description: 'Create, list and update club tasks for team leads and the president.',
+    promptLine:
+      'Make, list and update club tasks for team leads and the president; refuse anyone else plainly.',
+    effect: 'schedule',
+    requiredPermission: 'assistant.organise',
+    acts: true,
+    defaultScope: 'owner',
+    requiresConfirmation: false,
+  },
 ] as const;
 
 /** Everyday skills a first-run owner may grant in one step. */

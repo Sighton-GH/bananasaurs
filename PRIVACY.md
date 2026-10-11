@@ -1,6 +1,6 @@
 # Bananasaurs — Privacy Policy
 
-**Last updated:** 2026-10-07
+**Last updated:** 2026-10-11
 **Applies to:** the Bananasaurs bot running in `<SERVER NAME>`
 **Operator:** `<OWNER NAME / CONTACT>`
 
@@ -70,12 +70,24 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 **The AI provider may train on what is sent.** The server owner has chosen a provider whose terms allow it to use the excerpts it receives to train its models. The bot shows a warning on its setup page while that is the case. If you do not want your messages used this way, do not ask Bananasaurs questions that would draw on them, and ask a server admin which channels are stored.
 
-**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the search service the owner chose: the Brave Search API or the Tavily search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use Brave results say "Powered by Brave Search". Tavily's terms let it keep queries and use them to improve its services, including training AI models.
+**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the search service the owner chose: the Brave Search API, the Tavily search API or the Parallel search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use Brave results say "Powered by Brave Search". Tavily's terms let it keep queries and use them to improve its services, including training AI models. Parallel works the same way when the owner picks it: its recorded allowance is 5,000 free searches a month, and its recorded terms let it use queries to train AI models. The dashboard pre-fills a 4,500/month limit for new Parallel keys, and the add-key API applies that limit when none is given; the storage layer's generic default remains 1,000/month. The owner can change or remove a key's limit.
 
 **AI log channel.** If the server owner chooses a log channel, every question asked of Bananasaurs is copied there, together with its answer, the sources used and the outcome. That channel is meant for server staff only. Messages in it are kept by Discord, not by Bananasaurs, until someone deletes them.
 
 ## Assistant conversations and resources
 
+- Any member who can ask the assistant can look up another member's display name,
+  username and up to 10 role names, with up to 5 matches per lookup. The lookup
+  does not return Discord ids. This lookup has no separate skill restriction;
+  the owner may want to restrict it before enabling the assistant more widely.
+- An assistant reply pings you only when the person who asked mentioned or named
+  you, at most 5 members and 3 roles per reply; roles still pass the server's
+  ping rules. Inline code and code blocks never ping. Only the first part of
+  a multi-part reply can ping. The owner can lower these caps or restrict the
+  ping skill, and the asker must have permission to send in that channel.
+- Scheduled messages use the same storage and delivery rules as reminders but
+  omit the reminder heading and "Set by" line. Any configured member or role
+  pings still follow the reminder ping rules.
 - Conversations with the assistant — the questions asked, the answers given,
   who asked, and in which channel — are stored on the club's server. They are
   deleted automatically after the owner's chosen period (2 months, 6 months,
@@ -106,6 +118,17 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 ## Task tracking
 
+- With access to the assistant's club-task skill, a team lead or the president
+  can ask it to create a club task. Members with that skill can list tasks only
+  for their own teams. Only someone assigned to a task and still on its team
+  can record a progress note through the assistant, even if they are a lead
+  or the president. The skill defaults to owner-only; the owner grants other
+  roles access. Tasks it creates are stored like any other task, and progress
+  notes like any other update.
+- Assistant-created tasks post in the channel where they were requested. The
+  bot checks that channel against the same team/category and posting rules
+  used by connected clients. The due date must be in the future and no more
+  than two years away.
 - Tasks the owner creates — title, due date, steps, and who they are
   assigned to — are stored on the club's server, along with the text of
   replies to the bot's task posts that count as progress updates. These

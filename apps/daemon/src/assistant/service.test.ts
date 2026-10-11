@@ -1,3 +1,6 @@
+import { verifyAssistantTaskDestination } from '../runtime/guild.js';
+import { ChannelType, type Client } from 'discord.js';
+import type { DiscordPort } from '@bananasaurs/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseConfig,
@@ -23,6 +26,7 @@ import {
   modelCallsRepo,
   resourceCacheRepo,
   runRepo,
+  taskRepo,
   traceRepo,
 } from '@bananasaurs/storage';
 import {
@@ -685,7 +689,10 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       productionUseAllowed: true,
       now: NOW,
     });
-    const invokeWithSource = async (source: 'brave' | 'tavily', invocationId: string) => {
+    const invokeWithSource = async (
+      source: 'brave' | 'tavily' | 'parallel',
+      invocationId: string,
+    ) => {
       const web = fakeProvider([
         { text: '', model: 'm', toolCalls: [{ name: 'web_search', args: { query: 'lipo' } }] },
         { text: 'Store them half charged.', model: 'm' },
@@ -713,6 +720,12 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const tavilyWarn = await invokeWithSource('tavily', 'int-search-may-train-tavily');
     expect(tavilyWarn).toHaveBeenCalledTimes(1);
     expect(tavilyWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: GUILD, reason: 'search-provider-may-train' }),
+      'web search provider may train on queries',
+    );
+    const parallelWarn = await invokeWithSource('parallel', 'int-search-may-train-parallel');
+    expect(parallelWarn).toHaveBeenCalledTimes(1);
+    expect(parallelWarn).toHaveBeenCalledWith(
       expect.objectContaining({ guildId: GUILD, reason: 'search-provider-may-train' }),
       'web search provider may train on queries',
     );
@@ -2711,6 +2724,105 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(result.ok).toBe(true);
     expect(declared[0]).toContain('set_reminder');
     expect(systems[0]).toContain('Reminders and scheduled posts (');
+  });
+
+  it('declares create_task for the owner and not for a member; find_member and the Club tasks group print (ADR 0145, 0146)', async () => {
+    const declared: string[][] = [];
+    const systems: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
+        systems.push(req.systemInstruction ?? '');
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = h.serviceWith(provider, {
+      memberChannels: async () => [],
+      findMember: async () => [{ id: '678901234567890123', displayName: 'Sam L' }],
+      taskContext: { access: async () => undefined },
+    });
+    const behaviour = {
+      ...h.direct,
+      id: 'tasks-pref',
+      preferredSkillIds: ['search-club', 'reminders', 'tasks'],
+    };
+    const owner = await service.invoke(
+      ask({
+        behaviour,
+        input: { question: 'who is Sam L?' },
+        userId: OWNER,
+        callerRoleIds: [],
+        invocationId: 'int-tasks-owner',
+      }),
+    );
+    const member = await service.invoke(
+      ask({
+        behaviour,
+        input: { question: 'who is Sam L?' },
+        invocationId: 'int-tasks-member',
+      }),
+    );
+    expect(owner.ok).toBe(true);
+    expect(member.ok).toBe(true);
+    expect(declared[0]).toEqual(
+      expect.arrayContaining(['create_task', 'list_tasks', 'task_progress', 'find_member']),
+    );
+    expect(declared[1]).toContain('find_member');
+    expect(declared[1]).not.toContain('create_task');
+    expect(systems[0]).toContain('Club tasks (create_task, list_tasks, task_progress)');
+    expect(systems[0]).toContain('This server');
+    expect(systems[1]).toContain('find_member');
+  });
+
+  it('create_task through chat checks team authority in code even when the skill passes (ADR 0146)', async () => {
+    const scope = h.t.scopes.forGuild(GUILD);
+    const actor = { actorType: 'dashboard', actorId: 'owner', via: 'http' } as const;
+    const teamId = taskRepo.createTeam(
+      scope,
+      { name: 'Car Team A', categoryId: '222222222222222222', kind: 'subteam' },
+      actor,
+      NOW,
+    );
+    const due = new Date(NOW + 86_400_000).toISOString();
+    const call = {
+      name: 'create_task',
+      args: { title: 'Fix the charger', team: teamId, due },
+    };
+    const run = async (leadTeamIds: string[], invocationId: string) => {
+      const provider = h.scripted([
+        { text: '', model: 'model-a', toolCalls: [call] },
+        { text: 'done', model: 'model-a' },
+      ]);
+      const service = h.serviceWith(provider, {
+        memberChannels: async () => [],
+        verifyTaskDestination: async () => true,
+        taskContext: {
+          access: async (actorId: string) => ({
+            actorId,
+            teams: [
+              { teamId, name: 'Car Team A', kind: 'subteam', categoryId: '222222222222222222' },
+            ],
+            president: false,
+            leadTeamIds,
+          }),
+        },
+      });
+      return service.invoke(
+        ask({
+          behaviour: { ...h.direct, id: 'tasks-auth', preferredSkillIds: ['search-club', 'tasks'] },
+          input: { question: 'make a task to fix the charger' },
+          userId: OWNER,
+          callerRoleIds: [],
+          invocationId,
+        }),
+      );
+    };
+    await run([], 'int-task-nonlead');
+    expect(taskRepo.listTasks(scope)).toHaveLength(0);
+    await run([teamId], 'int-task-lead');
+    expect(taskRepo.listTasks(scope)).toHaveLength(1);
   });
 
   const capture = () => {
@@ -6235,5 +6347,354 @@ describe('complexity routing (ADR 0144, spec 6e)', () => {
       expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
       expect(seen).toContain(`${LIGHT_MODEL}:2`);
     });
+  });
+});
+
+describe('T7b live task destination verification', () => {
+  let t: MigratedTestDatabase;
+  const guildId = parseGuildId('234567890123456789');
+  const categoryId = '222222222222222222';
+  const destinationId = '111111111111111111';
+  let teamId: string;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(guildId);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: 1 });
+    teamId = taskRepo.createTeam(
+      scope,
+      {
+        name: 'Car Team A',
+        categoryId,
+        kind: 'subteam',
+        leadRoleId: '333333333333333333',
+        memberRoleId: '444444444444444444',
+        announcementChannelId: '555555555555555555',
+      },
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      1,
+    );
+  });
+  afterEach(() => t.close());
+
+  const check = async (
+    over: {
+      category?: string;
+      writable?: boolean;
+      missingCategory?: boolean;
+      missingRole?: boolean;
+      badAnnouncement?: boolean;
+      throws?: boolean;
+      unknownTeam?: boolean;
+    } = {},
+  ) => {
+    const fetch = vi.fn(async (id: string) => {
+      if (over.throws) throw new Error('unavailable');
+      if (id === categoryId)
+        return over.missingCategory ? null : { type: ChannelType.GuildCategory };
+      return {
+        type: ChannelType.GuildText,
+        parentId: over.badAnnouncement ? 'other-category' : categoryId,
+      };
+    });
+    const client = {
+      guilds: { cache: new Map([[guildId, { channels: { fetch } }]]) },
+    } as unknown as Client;
+    const discord = {
+      fetchRoles: async () =>
+        over.missingRole ? [] : [{ id: '333333333333333333' }, { id: '444444444444444444' }],
+    } as unknown as DiscordPort;
+    const inspect = vi.fn(async () => ({
+      channelId: destinationId,
+      kind: 'channel' as const,
+      parentId: categoryId,
+      categoryId: over.category ?? categoryId,
+    }));
+    const write = vi.fn(async (channelId: string) => ({
+      allowed: channelId !== destinationId || over.writable !== false,
+    }));
+    const allowed = await verifyAssistantTaskDestination(
+      t.scopes.forGuild(guildId),
+      client,
+      discord,
+      inspect,
+      write,
+      over.unknownTeam ? 'missing' : teamId,
+      destinationId,
+    );
+    return { allowed, inspect, write };
+  };
+
+  it('allows the live team category and writable destination', async () => {
+    const r = await check();
+    expect(r.allowed).toBe(true);
+    expect(r.inspect).toHaveBeenCalledWith(destinationId);
+    expect(r.write).toHaveBeenCalledWith('555555555555555555');
+    expect(r.write).toHaveBeenCalledWith(destinationId);
+  });
+  it('refuses a destination outside the team category', async () => {
+    expect((await check({ category: 'other-category' })).allowed).toBe(false);
+  });
+  it('refuses a destination without Write', async () => {
+    expect((await check({ writable: false })).allowed).toBe(false);
+  });
+  it('refuses a deleted team category', async () => {
+    expect((await check({ missingCategory: true })).allowed).toBe(false);
+  });
+  it('refuses a deleted team role', async () => {
+    expect((await check({ missingRole: true })).allowed).toBe(false);
+  });
+  it('refuses a moved announcement channel', async () => {
+    expect((await check({ badAnnouncement: true })).allowed).toBe(false);
+  });
+  it('refuses failed live resolution', async () => {
+    expect((await check({ throws: true })).allowed).toBe(false);
+  });
+  it('refuses an unknown team', async () => {
+    expect((await check({ unknownTeam: true })).allowed).toBe(false);
+  });
+});
+
+describe('Slice 2 T9: reply pings (ADR 0145)', () => {
+  const GUILD = B2B_GUILD;
+  let h: ReturnType<typeof setupB2b>;
+  beforeEach(() => {
+    h = setupB2b(['search-club']);
+  });
+  afterEach(() => h.t.close());
+
+  const answering = (text: string): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async () => ({ text, model: 'model-a' }),
+  });
+  const ask = (over: Record<string, unknown> = {}) => ({
+    guildId: GUILD,
+    channelId: B2B_CHANNEL,
+    userId: B2B_MEMBER,
+    callerRoleIds: [B2B_CLUB_ROLE],
+    behaviour: h.direct,
+    command: 'ask' as const,
+    input: { question: 'who has the build, Sam L?' },
+    source: 'mention' as const,
+    invocationId: 'int-ping-1',
+    mentionedUserIds: ['600000000000000002'],
+    mentionedRoleIds: [] as string[],
+    ...over,
+  });
+
+  it('keeps @Sam L verbatim and attaches no pings when the ping skill is denied', async () => {
+    assistantRepo.setSkillScope(
+      h.t.scopes.forGuild(GUILD),
+      { skillId: 'ping', mode: 'owner', roleIds: [] },
+      B2B_NOW,
+    );
+    const resolveReplyPings = vi.fn();
+    const service = h.serviceWith(answering('Ask @Sam L.'), {
+      memberChannels: async () => [],
+      resolveReplyPings,
+    });
+    const result = await service.invoke(ask());
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.content).toBe('Ask @Sam L.');
+    expect(result).not.toHaveProperty('pings');
+    expect(resolveReplyPings).not.toHaveBeenCalled();
+  });
+
+  it('attaches the pings and rewrites the content when the skill is allowed', async () => {
+    const resolveReplyPings = vi.fn(async () => ({
+      content: 'Ask <@600000000000000002>.',
+      userIds: ['600000000000000002'],
+      roles: [] as string[],
+    }));
+    const service = h.serviceWith(answering('Ask @Sam L.'), {
+      memberChannels: async () => [],
+      resolveReplyPings,
+    });
+    const result = await service.invoke(ask());
+    expect(result.ok && result.content).toBe('Ask <@600000000000000002>.');
+    expect(result.ok && result.pings).toEqual({
+      userIds: ['600000000000000002'],
+      roles: [],
+    });
+    expect(resolveReplyPings).toHaveBeenCalledWith({
+      askerId: B2B_MEMBER,
+      channelId: B2B_CHANNEL,
+      text: 'Ask @Sam L.',
+      askerText: 'who has the build, Sam L?',
+      mentionedUserIds: ['600000000000000002'],
+      mentionedRoleIds: [],
+    });
+  });
+
+  it('leaves the answer untouched when the invocation carries no mention fields', async () => {
+    const resolveReplyPings = vi.fn();
+    const service = h.serviceWith(answering('Ask @Sam L.'), {
+      memberChannels: async () => [],
+      resolveReplyPings,
+    });
+    const result = await service.invoke(
+      ask({ mentionedUserIds: undefined, mentionedRoleIds: undefined }),
+    );
+    expect(result.ok && result.content).toBe('Ask @Sam L.');
+    expect(resolveReplyPings).not.toHaveBeenCalled();
+  });
+});
+
+describe('Slice 2 T12: current-question mention names (ADR 0145 item 1)', () => {
+  const USER = '600000000000000002';
+  const ROLE = '600000000000000003';
+  let h: ReturnType<typeof setupB2b>;
+  beforeEach(() => {
+    h = setupB2b(['search-club']);
+  });
+  afterEach(() => h.t.close());
+
+  const run = async (
+    question: string,
+    discord: Parameters<typeof createAssistantService>[7],
+    mentions: { mentionedUserIds?: string[]; mentionedRoleIds?: string[] } = {},
+  ) => {
+    const generateText = vi.fn(async (_req: GenerateTextRequest) => ({
+      text: 'done',
+      model: 'model-a',
+    }));
+    const service = h.serviceWith(
+      { id: 'fake', capabilities: new Set(['text', 'tools']), generateText },
+      discord,
+    );
+    const result = await service.invoke({
+      guildId: B2B_GUILD,
+      channelId: B2B_CHANNEL,
+      userId: B2B_MEMBER,
+      callerRoleIds: [B2B_CLUB_ROLE],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question },
+      source: 'mention',
+      invocationId: 'int-mention-names',
+      ...mentions,
+    });
+    expect(result.ok).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const request = generateText.mock.calls[0]![0];
+    expect(JSON.stringify(request)).not.toMatch(/\d{17,20}/);
+    return request.messages.map((message) => message.text).join('\n');
+  };
+
+  it('passes current user and role display names to the fake provider', async () => {
+    const findMember = vi.fn(async () => [{ id: USER, displayName: 'Sam L' }]);
+    const roleNames = vi.fn(() => new Map([[ROLE, 'Car Team A']]));
+    const text = await run(
+      `remind <@${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember,
+        roleNames,
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @Sam L and @Car Team A');
+    expect(findMember).toHaveBeenCalledExactlyOnceWith(USER);
+    expect(roleNames).toHaveBeenCalledExactlyOnceWith([ROLE]);
+  });
+
+  it('leaves @user when a member lookup throws, without losing the role name', async () => {
+    const text = await run(
+      `remind <@${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember: async () => {
+          throw new Error('lookup failed');
+        },
+        roleNames: () => new Map([[ROLE, 'Car Team A']]),
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @user and @Car Team A');
+  });
+
+  it('does not look up ids absent from the invocation mention lists', async () => {
+    const findMember = vi.fn(async () => [{ id: USER, displayName: 'Sam L' }]);
+    const roleNames = vi.fn(() => new Map([[ROLE, 'Car Team A']]));
+    expect(
+      await run(`remind <@${USER}> and <@&${ROLE}>`, {
+        memberChannels: async () => [],
+        findMember,
+        roleNames,
+      }),
+    ).toContain('remind @user and @role');
+    expect(findMember).not.toHaveBeenCalled();
+    expect(roleNames).not.toHaveBeenCalled();
+  });
+
+  it('does not look up listed ids absent from the current text', async () => {
+    const findMember = vi.fn(async () => []);
+    const roleNames = vi.fn(() => new Map());
+    expect(
+      await run(
+        'remind the team',
+        { memberChannels: async () => [], findMember, roleNames },
+        { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+      ),
+    ).toContain('remind the team');
+    expect(findMember).not.toHaveBeenCalled();
+    expect(roleNames).not.toHaveBeenCalled();
+  });
+
+  it('falls back for unknown members and roles and mismatched member results', async () => {
+    const text = await run(
+      `remind <@${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember: async () => [{ id: ROLE, displayName: 'Alex P' }],
+        roleNames: () => new Map(),
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @user and @role');
+  });
+
+  it('leaves @role when role lookup throws, without losing the user name', async () => {
+    const text = await run(
+      `remind <@!${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember: async () => [{ id: USER, displayName: 'Sam L' }],
+        roleNames: () => {
+          throw new Error('lookup failed');
+        },
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @Sam L and @role');
+  });
+
+  it('flattens mentions when lookup ports are absent', async () => {
+    expect(
+      await run(
+        `remind <@${USER}> and <@&${ROLE}>`,
+        { memberChannels: async () => [] },
+        { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+      ),
+    ).toContain('remind @user and @role');
+  });
+
+  it('deduplicates lookups and caps each kind at 25 current-message ids', async () => {
+    const users = Array.from({ length: 26 }, (_, i) => String(610000000000000000n + BigInt(i)));
+    const roles = Array.from({ length: 26 }, (_, i) => String(620000000000000000n + BigInt(i)));
+    const findMember = vi.fn(async (id: string) => [{ id, displayName: 'Sam L' }]);
+    const roleNames = vi.fn(
+      (ids: readonly string[]) => new Map(ids.map((id) => [id, 'Car Team A'])),
+    );
+    const text = await run(
+      [...users.map((id) => `<@${id}>`), ...roles.map((id) => `<@&${id}>`)].join(' '),
+      { memberChannels: async () => [], findMember, roleNames },
+      { mentionedUserIds: [users[0]!, ...users], mentionedRoleIds: [roles[0]!, ...roles] },
+    );
+    expect(findMember).toHaveBeenCalledTimes(25);
+    expect(findMember).not.toHaveBeenCalledWith(users[25]);
+    expect(roleNames).toHaveBeenCalledExactlyOnceWith(roles.slice(0, 25));
+    expect(text).toContain('@user');
+    expect(text).toContain('@role');
   });
 });

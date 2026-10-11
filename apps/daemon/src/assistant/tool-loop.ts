@@ -58,7 +58,7 @@ export interface LoopResult {
   readonly sources: readonly ToolSource[];
   readonly web: boolean;
   /** ADR 0120: the search sources used, unique, first-seen order. */
-  readonly webSources: readonly ('brave' | 'tavily')[];
+  readonly webSources: readonly ('brave' | 'tavily' | 'parallel')[];
   /**
    * B2b: the code-written confirmations from ok tool results
    * (`AssistantToolResult.actionSummary`), in call order. The service appends
@@ -246,7 +246,7 @@ export const runToolLoop = async (input: {
   const sources: ToolSource[] = [];
   const actionSummaries: string[] = [];
   let web = false;
-  const webSources: ('brave' | 'tavily')[] = [];
+  const webSources: ('brave' | 'tavily' | 'parallel')[] = [];
   let promptTokens = 0;
   let completionTokens = 0;
   let thinkingTokens = 0;
@@ -486,7 +486,7 @@ export const runToolLoop = async (input: {
       noteError: (err) => {
         lastError = err;
       },
-      recordWeb: (source: 'brave' | 'tavily') => {
+      recordWeb: (source: 'brave' | 'tavily' | 'parallel') => {
         web = true;
         if (!webSources.includes(source)) webSources.push(source);
       },
@@ -659,7 +659,7 @@ const runEntry = async (deps: {
   readonly budgets: { callsUsed: number; resultChars: number };
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
   readonly noteError: (err: ProviderError) => void;
-  readonly recordWeb: (source: 'brave' | 'tavily') => void;
+  readonly recordWeb: (source: 'brave' | 'tavily' | 'parallel') => void;
   /** Task G3: round-1 declaration names actually sent, in first-sent order. */
   readonly recordOffered: (names: readonly string[]) => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;

@@ -44,6 +44,11 @@ const TOOLS = [
     name: 'My reminders',
     detail: "The asking member's own upcoming reminders.",
   },
+  {
+    id: 'find_member',
+    name: 'Find a member',
+    detail: 'Looks up a member by name; returns display names, never ids.',
+  },
 ] as const;
 
 /**
@@ -56,7 +61,9 @@ function ToolsCard({ data }: { readonly data: AssistantData }) {
   const webDetail =
     webSource === 'tavily'
       ? 'Sends a short query to the Tavily search API. Queries that look like they carry personal data are refused.'
-      : 'Sends a short query to the Brave Search API. Queries that look like they carry personal data are refused.';
+      : webSource === 'parallel'
+        ? 'Sends a short query to the Parallel search API. Parallel may use queries to train its models.'
+        : 'Sends a short query to the Brave Search API. Queries that look like they carry personal data are refused.';
   return (
     <Card title="Look-up tools">
       <p className="mb-3 text-sm text-ink-muted">

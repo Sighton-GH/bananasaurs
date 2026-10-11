@@ -12,6 +12,12 @@ export const reminderMentions = z
   })
   .strict();
 export type ReminderMentions = z.infer<typeof reminderMentions>;
+/**
+ * ADR 0145: `'reminder'` posts the framed reminder; `'message'` posts the
+ * text as is. Optional so every existing constructor still compiles;
+ * absent means `'reminder'`.
+ */
+export type ReminderStyle = 'reminder' | 'message';
 export const NO_MENTIONS: ReminderMentions = reminderMentions.parse({});
 export interface Reminder {
   readonly id: string;
@@ -28,6 +34,7 @@ export interface Reminder {
   readonly context?: string;
   readonly deliveredCount: number;
   readonly updatedAt?: number;
+  readonly style?: ReminderStyle | undefined;
 }
 export interface ReminderStore {
   create(reminder: Reminder): Promise<void>;

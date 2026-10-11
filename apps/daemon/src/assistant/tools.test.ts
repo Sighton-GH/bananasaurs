@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clipHeading,
+  parseGuildId,
   redactEvidenceText,
   TOOL_CATALOGUE,
   type ClubResource,
@@ -9,7 +10,13 @@ import {
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 import { createCitationRegistry } from './citations.js';
 import { WebSearchLimitError, SearchHttpError } from './web-search.js';
-import type { assistantRepo } from '@bananasaurs/storage';
+import { guildRepo, taskBindingRepo, taskRepo, type assistantRepo } from '@bananasaurs/storage';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
+import { summaryField } from './reminder-summary.js';
+import type { TaskContextAccess } from './task-context.js';
 
 type StoredReminder = assistantRepo.StoredReminder;
 
@@ -186,7 +193,17 @@ describe('toolDeclarations', () => {
   });
 
   it('never drifts from TOOL_CATALOGUE: every declaration equals its catalogue entry', () => {
-    const declared = toolDeclarations(ports());
+    const declared = toolDeclarations(
+      ports({
+        findMember: async () => [],
+        taskTools: {
+          scope: undefined as never,
+          access: async () => undefined,
+          resolveMember: async () => [],
+          destinationId: undefined,
+        },
+      }),
+    );
     expect(declared).toHaveLength(TOOL_CATALOGUE.length);
     for (const entry of TOOL_CATALOGUE) {
       const declaration = declared.find((d) => d.name === entry.name);
@@ -648,6 +665,56 @@ describe('acting tools (B2a)', () => {
     expect(result.actionSummary).toBe(result.text);
     expect(result.actionSummary).toContain('#general');
     expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'completed');
+  });
+
+  it('stores style message when asked and reminder by default', async () => {
+    const msg = reminderPorts();
+    await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00', style: 'message' },
+      },
+      msg.p,
+    );
+    const [msgRow] = [...msg.rows.values()];
+    expect(msgRow?.style).toBe('message');
+    const def = reminderPorts();
+    await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' },
+      },
+      def.p,
+    );
+    const [defRow] = [...def.rows.values()];
+    expect(defRow?.style).toBe('reminder');
+    expect(defRow?.id).not.toBe(msgRow?.id);
+  });
+
+  it('confirms a message-style set as Message scheduled', async () => {
+    const { p } = reminderPorts();
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00', style: 'message' },
+      },
+      p,
+    );
+    expect(result.text).toContain('✅ Message scheduled: **Bring the charger**');
+  });
+
+  it('my_reminders marks a message-style row with "as message"', async () => {
+    const message = storedReminder({ id: 'rem_m', style: 'message' });
+    const plain = storedReminder({ id: 'rem_p', style: 'reminder' });
+    const result = await runAssistantTool(
+      { name: 'my_reminders', args: {} },
+      ports({
+        reminderStore: { ...ports().reminderStore, listForCreator: () => [message, plain] },
+      }),
+    );
+    const lines = result.text.split('\n');
+    expect(lines.find((l) => l.startsWith('rem_m'))).toContain('· as message');
+    expect(lines.find((l) => l.startsWith('rem_p'))).not.toContain('as message');
   });
 
   it('keeps a Luhn-valid invocation key readable after evidence redaction', async () => {
@@ -2101,5 +2168,455 @@ describe('search_conversations (ADR 0093)', () => {
     expect(result.text).toBe(
       '<#111111111111111111>, 3 days ago: Ada and bot chatter — The hall opens at six',
     );
+  });
+});
+
+describe('task tools and find_member (ADR 0146, 0145)', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const LEAD = '456789012345678901';
+  const OTHER = '567890123456789012';
+  const SAM_ID = '678901234567890123';
+  const CHANNEL = '111111111111111111';
+  const SAM = { id: SAM_ID, displayName: 'Sam L', username: 'saml', roleNames: ['Car Team A'] };
+  const DUE = '2026-10-16T17:00:00-07:00';
+  let t: MigratedTestDatabase;
+  let teamId: string;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    teamId = taskRepo.createTeam(
+      t.scopes.forGuild(GUILD),
+      { name: 'Car Team A', categoryId: '222222222222222222', kind: 'subteam' },
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      NOW,
+    );
+    taskBindingRepo.addMembership(
+      t.scopes.forGuild(GUILD),
+      teamId,
+      SAM_ID,
+      'member',
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const accessFor = (userId: string, lead: boolean): TaskContextAccess => ({
+    actorId: userId,
+    teams: [{ teamId, name: 'Car Team A', kind: 'subteam', categoryId: '222222222222222222' }],
+    president: false,
+    leadTeamIds: lead ? [teamId] : [],
+  });
+  const withTasks = (
+    userId: string,
+    access: TaskContextAccess | undefined,
+    over: Partial<AssistantToolPorts> = {},
+  ) =>
+    ports({
+      userId,
+      findMember: vi.fn(async () => [SAM]),
+      taskTools: {
+        scope: t.scopes.forGuild(GUILD),
+        access: async () => access,
+        resolveMember: async (name: string) => (name.toLowerCase() === 'sam l' ? [SAM] : []),
+        destinationId: CHANNEL,
+        verifyDestination: async () => true,
+      },
+      ...over,
+    });
+  const create = (p: AssistantToolPorts, over: Record<string, unknown> = {}) =>
+    runAssistantTool(
+      {
+        name: 'create_task',
+        args: { title: 'Fix the charger', team: teamId, assignees: ['Sam L'], due: DUE, ...over },
+      },
+      p,
+    );
+  const rows = () => taskRepo.listTasks(t.scopes.forGuild(GUILD), { includeDone: true });
+
+  it('T7b refuses a destination outside the team category or not writable', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const verifyDestination = vi.fn(async () => false);
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, verifyDestination } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe(
+      "Tasks are posted in that team's own channels. Ask again from a channel in the team's category, then try again.",
+    );
+    expect(verifyDestination).toHaveBeenCalledWith(teamId, CHANNEL);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b accepts a destination in the team category that is writable', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const verifyDestination = vi.fn(async () => true);
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, verifyDestination } });
+    expect(r.ok).toBe(true);
+    expect(verifyDestination).toHaveBeenCalledWith(teamId, CHANNEL);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('T7b refuses without the destination verification port', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, verifyDestination: undefined } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("team's own channels");
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b caps due dates at two years', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), { due: '2028-09-23T19:30:01Z' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe('That due date is too far ahead. Use a date within two years.');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b accepts the exact two-year due boundary', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), { due: '2028-09-23T19:30:00Z' });
+    expect(r.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('T7b pin: a lead of team B cannot create in team A', async () => {
+    const r = await create(withTasks(LEAD, { ...accessFor(LEAD, true), leadTeamIds: ['team-b'] }));
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only a team lead or the president');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: mismatched access actor cannot create', async () => {
+    const r = await create(withTasks(OTHER, accessFor(LEAD, true)));
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: neither lead nor president cannot create', async () => {
+    const r = await create(withTasks(OTHER, accessFor(OTHER, false)));
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: non-lead non-president gets the authority refusal for an unknown team', async () => {
+    const r = await create(withTasks(OTHER, accessFor(OTHER, false)), { team: 'no-such-team' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only a team lead or the president can create tasks');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: president can create in a team they do not lead', async () => {
+    const r = await create(withTasks(LEAD, { ...accessFor(LEAD, false), president: true }));
+    expect(r.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('T7b pin: past due date refuses without writing', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), { due: '2026-09-22T19:30:00Z' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('must be in the future');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: absent destination refuses without writing', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, destinationId: undefined } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe(
+      'Tasks are posted in the channel they are asked for in. Ask again from a channel.',
+    );
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: list_tasks refuses an unknown team', async () => {
+    const r = await runAssistantTool(
+      { name: 'list_tasks', args: { team: 'unknown-team' } },
+      withTasks(LEAD, accessFor(LEAD, true)),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("I can't use that team");
+    expect(r.handles ?? []).toEqual([]);
+  });
+
+  it('T7b pin: task_progress refuses an archived task', async () => {
+    await create(withTasks(LEAD, accessFor(LEAD, true)));
+    const task = rows()[0]!;
+    const scope = t.scopes.forGuild(GUILD);
+    taskRepo.archiveTask(
+      scope,
+      task.taskId,
+      task.version,
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      NOW,
+    );
+    const r = await runAssistantTool(
+      { name: 'task_progress', args: { taskId: task.taskId, note: 'Wired.' } },
+      withTasks(SAM_ID, accessFor(SAM_ID, false)),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only someone assigned to that task');
+    expect(taskRepo.listReports(scope, task.taskId)).toHaveLength(0);
+  });
+
+  it('T7b pin: task_progress refuses a mismatched actor', async () => {
+    await create(withTasks(LEAD, accessFor(LEAD, true)));
+    const task = rows()[0]!;
+    const r = await runAssistantTool(
+      { name: 'task_progress', args: { taskId: task.taskId, note: 'Wired.' } },
+      withTasks(SAM_ID, accessFor(OTHER, false)),
+    );
+    expect(r.ok).toBe(false);
+    expect(taskRepo.listReports(t.scopes.forGuild(GUILD), task.taskId)).toHaveLength(0);
+  });
+
+  it('T7b pin: two exact display-name matches refuse', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create({
+      ...p,
+      taskTools: { ...p.taskTools!, resolveMember: async () => [SAM, { ...SAM, id: OTHER }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: a near-miss assignee name refuses', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create(
+      { ...p, taskTools: { ...p.taskTools!, resolveMember: async () => [SAM] } },
+      { assignees: ['Sam'] },
+    );
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: duplicate assignee names collapse to one', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), {
+      assignees: ['Sam L', 'sam l'],
+    });
+    expect(r.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+    expect(r.actionSummary?.match(/Sam L/g)).toHaveLength(1);
+    expect(taskRepo.listTaskAssignees(t.scopes.forGuild(GUILD), rows()[0]!.taskId)).toEqual([
+      SAM_ID,
+    ]);
+  });
+
+  it('T7b pin: find_member caps roles at ten', async () => {
+    const roleNames = Array.from({ length: 12 }, (_, i) => `Role-${i + 1}`);
+    const r = await runAssistantTool(
+      { name: 'find_member', args: { name: 'Sam L' } },
+      ports({ findMember: async () => [{ ...SAM, roleNames }] }),
+    );
+    expect(r.text).toContain('Role-10');
+    expect(r.text).not.toContain('Role-11');
+    expect(r.text).not.toContain('Role-12');
+  });
+
+  it('T7b pin: task action summary neutralises markdown and mentions', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), {
+      title: '**Fix** <@123> @everyone `charger`',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.actionSummary).toContain('Fix');
+    expect(r.actionSummary).toContain(summaryField('**Fix** <@123> @everyone `charger`'));
+  });
+
+  it('declares find_member only with its port, and task tools only with taskTools and the skill', () => {
+    const names = (p: AssistantToolPorts) => toolDeclarations(p).map((d) => d.name);
+    const taskNames = ['create_task', 'list_tasks', 'task_progress'];
+    expect(names(ports())).not.toContain('find_member');
+    for (const n of taskNames) expect(names(ports())).not.toContain(n);
+    expect(names(withTasks(LEAD, accessFor(LEAD, true)))).toEqual(
+      expect.arrayContaining(['find_member', ...taskNames]),
+    );
+    const noSkill = withTasks(LEAD, accessFor(LEAD, true), {
+      skillAllowed: (id: string) => id !== 'tasks',
+    });
+    expect(names(noSkill)).toContain('find_member');
+    for (const n of taskNames) expect(names(noSkill)).not.toContain(n);
+    const noTools = ports({ findMember: async () => [SAM] });
+    for (const n of taskNames) expect(names(noTools)).not.toContain(n);
+  });
+
+  it('every new tool description passes the catalogue shape', () => {
+    for (const n of ['find_member', 'create_task', 'list_tasks', 'task_progress']) {
+      const d = TOOL_CATALOGUE.find((e) => e.name === n)!.description;
+      expect(d.length).toBeGreaterThanOrEqual(120);
+      expect(d).toMatch(/Use (it |this )?(when|whenever|after|first|only)/i);
+    }
+  });
+
+  it('find_member returns up to 5 name, username, roles lines and never an id', async () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({
+      id: `70000000000000000${i}`,
+      displayName: `Sam ${i}`,
+      username: `sam${i}`,
+      roleNames: ['Car Team A'],
+    }));
+    const r = await runAssistantTool(
+      { name: 'find_member', args: { name: 'Sam' } },
+      ports({ findMember: async () => [SAM, ...many] }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('Sam L');
+    expect(r.text).toContain('saml');
+    expect(r.text).toContain('Car Team A');
+    expect(r.text).not.toContain(SAM_ID);
+    expect(r.text).not.toMatch(/\d{17,}/);
+    expect(r.text.split('\n')).toHaveLength(5);
+    expect(r.handles ?? []).toEqual([]);
+    const none = await runAssistantTool({ name: 'find_member', args: { name: 'Sam' } }, ports());
+    expect(none.ok).toBe(false);
+    expect(none.text).toContain("can't look up members");
+  });
+
+  it('refuses create_task from a non-lead and writes no row', async () => {
+    const r = await create(withTasks(OTHER, accessFor(OTHER, false)));
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only a team lead or the president');
+    expect(rows()).toHaveLength(0);
+    const noAccess = await create(withTasks(OTHER, undefined));
+    expect(noAccess.text).toContain('Only a team lead or the president');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('refuses create_task when the skill is not allowed', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true), { skillAllowed: () => false }));
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('a lead creates a task once: same args twice give one task id', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const a = await create(p);
+    const b = await create(p);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+    const row = rows()[0]!;
+    expect(row).toMatchObject({
+      teamId,
+      title: 'Fix the charger',
+      destinationId: CHANNEL,
+      assignmentKind: 'individual',
+      createdBy: LEAD,
+    });
+    expect(taskRepo.isTaskAssignee(t.scopes.forGuild(GUILD), row.taskId, SAM_ID)).toBe(true);
+    expect(a.actionSummary).toContain('Fix the charger');
+    expect(a.actionSummary).not.toContain(SAM_ID);
+  });
+
+  it('create_task refuses an unknown team, unknown assignee, bad due date and missing channel', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const team = await create(p, { team: 'nope' });
+    expect(team.text).toContain("I can't use that team. Ask a team lead for the team name");
+    const who = await create(p, { assignees: ['Nobody Here'] });
+    expect(who.ok).toBe(false);
+    const due = await create(p, { due: '2026-10-16 17:00' });
+    expect(due.text).toContain('UTC offset');
+    const tryIt = await create(
+      withTasks(LEAD, accessFor(LEAD, true), {
+        taskTools: {
+          scope: t.scopes.forGuild(GUILD),
+          access: async () => accessFor(LEAD, true),
+          resolveMember: async () => [SAM],
+          destinationId: undefined,
+        },
+      }),
+    );
+    expect(tryIt.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('create_task refuses an assignee who is not on the team and writes no row', async () => {
+    const ALEX = { id: '789012345678901234', displayName: 'Alex P', username: 'alexp' };
+    const p = withTasks(LEAD, accessFor(LEAD, true), {
+      taskTools: {
+        scope: t.scopes.forGuild(GUILD),
+        access: async () => accessFor(LEAD, true),
+        resolveMember: async (name: string) =>
+          name.toLowerCase() === 'alex p' ? [ALEX] : name.toLowerCase() === 'sam l' ? [SAM] : [],
+        destinationId: CHANNEL,
+        verifyDestination: async () => true,
+      },
+    });
+    const r = await create(p, { assignees: ['Sam L', 'Alex P'] });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe(
+      'Those people are not on that team. Ask a team lead to add them first, then try again. Not on the team: Alex P.',
+    );
+    expect(rows()).toHaveLength(0);
+    const ok = await create(p, { assignees: ['Sam L'] });
+    expect(ok.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('a plain team member can still list tasks', async () => {
+    const p = withTasks(OTHER, accessFor(OTHER, false));
+    const list = await runAssistantTool({ name: 'list_tasks', args: {} }, p);
+    expect(list.ok).toBe(true);
+  });
+
+  it('list_tasks shows the asker teams only and returns ids as handles', async () => {
+    const lead = withTasks(LEAD, accessFor(LEAD, true));
+    await create(lead);
+    const taskId = rows()[0]!.taskId;
+    const other = taskRepo.createTeam(
+      t.scopes.forGuild(GUILD),
+      { name: 'Hidden Team', categoryId: '333333333333333333', kind: 'subteam' },
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      NOW,
+    );
+    taskRepo.createTask(
+      t.scopes.forGuild(GUILD),
+      {
+        teamId: other,
+        title: 'Secret job',
+        assignmentKind: 'team',
+        dueAt: NOW + 1000,
+        timezone: 'America/Vancouver',
+        destinationId: CHANNEL,
+        createdBy: 'owner',
+      },
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      NOW,
+    );
+    const r = await runAssistantTool({ name: 'list_tasks', args: {} }, lead);
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('Fix the charger');
+    expect(r.text).not.toContain('Secret job');
+    expect(r.handles).toEqual([taskId]);
+    const nobody = await runAssistantTool(
+      { name: 'list_tasks', args: {} },
+      withTasks(OTHER, { ...accessFor(OTHER, false), teams: [] }),
+    );
+    expect(nobody.ok).toBe(false);
+    expect(nobody.handles ?? []).toEqual([]);
+  });
+
+  it('task_progress: a non-assignee is refused, the assignee records once and a retry dedupes', async () => {
+    await create(withTasks(LEAD, accessFor(LEAD, true)));
+    const taskId = rows()[0]!.taskId;
+    const scope = t.scopes.forGuild(GUILD);
+    const call = (p: AssistantToolPorts) =>
+      runAssistantTool({ name: 'task_progress', args: { taskId, note: 'Wired the board.' } }, p);
+    const denied = await call(withTasks(OTHER, accessFor(OTHER, false)));
+    expect(denied.ok).toBe(false);
+    expect(denied.text).toContain('Only someone assigned to that task');
+    expect(taskRepo.listReports(scope, taskId)).toHaveLength(0);
+    const assignee = withTasks(SAM_ID, accessFor(SAM_ID, false), { invocationKey: 'msgA' });
+    const first = await call(assignee);
+    const retry = await call(assignee);
+    expect(first.ok).toBe(true);
+    expect(retry.ok).toBe(true);
+    expect(taskRepo.listReports(scope, taskId)).toHaveLength(1);
+  });
+
+  it('task_progress refuses a historical assignee who lost team access', async () => {
+    await create(withTasks(LEAD, accessFor(LEAD, true)));
+    const taskId = rows()[0]!.taskId;
+    const r = await runAssistantTool(
+      { name: 'task_progress', args: { taskId, note: 'Still here.' } },
+      withTasks(SAM_ID, { ...accessFor(SAM_ID, false), teams: [] }),
+    );
+    expect(r.ok).toBe(false);
+    expect(taskRepo.listReports(t.scopes.forGuild(GUILD), taskId)).toHaveLength(0);
   });
 });

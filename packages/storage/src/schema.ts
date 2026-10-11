@@ -1929,7 +1929,10 @@ export const assistantProviderConfig = sqliteTable(
   (t) => [
     check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
     check('assistant_provider_config_search_enabled_bool', boolCheck(t.searchEnabled)),
-    check('assistant_provider_config_search_source', sql`${t.searchSource} IN ('brave','tavily')`),
+    check(
+      'assistant_provider_config_search_source',
+      sql`${t.searchSource} IN ('brave','tavily','parallel')`,
+    ),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
@@ -2085,7 +2088,7 @@ export const assistantSearchKeys = sqliteTable(
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
-    check('assistant_search_keys_source', sql`${t.source} IN ('brave','tavily')`),
+    check('assistant_search_keys_source', sql`${t.source} IN ('brave','tavily','parallel')`),
     check('assistant_search_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
     check('assistant_search_keys_enabled_bool', boolCheck(t.enabled)),
     check(
@@ -2305,6 +2308,12 @@ export const assistantReminders = sqliteTable(
     // ADR 0119: scheduled MCP sends are reminder rows with `origin='mcp'`.
     // Pre-0095 rows read back as `assistant` through the column default.
     origin: text('origin').notNull().default('assistant'),
+    // ADR 0145: 'reminder' posts the framed reminder; 'message' posts the
+    // text as is. Pre-migration rows read back as 'reminder' through the
+    // column default. No CHECK: the code assertion in `repos/assistant.ts`
+    // (mirroring `assertNoMassPing`) owns the values, so the generated
+    // migration stays a plain ADD COLUMN.
+    style: text('style').notNull().default('reminder'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.reminderId] }),

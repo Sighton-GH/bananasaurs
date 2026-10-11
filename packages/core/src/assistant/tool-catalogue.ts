@@ -63,7 +63,7 @@ export interface ToolCatalogueEntry {
 }
 
 export type ToolGroupId =
-  'reminders' | 'club-knowledge' | 'channel' | 'web' | 'server' | 'time' | 'proposals';
+  'reminders' | 'club-knowledge' | 'channel' | 'web' | 'server' | 'time' | 'proposals' | 'tasks';
 
 export const TOOL_GROUPS: readonly {
   readonly id: ToolGroupId;
@@ -93,13 +93,23 @@ export const TOOL_GROUPS: readonly {
     description:
       'current events, facts, how-tos and anything general you are not sure of; check club sources first for club questions',
   },
-  { id: 'server', label: 'This server', description: "the server's channels and upcoming events" },
+  {
+    id: 'server',
+    label: 'This server',
+    description: "the server's channels, members and upcoming events",
+  },
   { id: 'time', label: 'Time', description: "today's date and time in the club's time zone" },
   {
     id: 'proposals',
     label: 'Proposals for owner review',
     description:
       'propose something for the club to remember, or draft a decision record; an owner reviews it',
+  },
+  {
+    id: 'tasks',
+    label: 'Club tasks',
+    description:
+      'create tasks in existing teams, list the open ones and record progress notes; team leads and the president only',
   },
 ];
 
@@ -233,7 +243,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'set_reminder',
     description:
-      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "<today>T23:00:00<UTC offset>", members: ["Sam L"].',
+      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "<today>T23:00:00<UTC offset>", members: ["Sam L"]. style \'message\' posts the text as is without the reminder frame; the default \'reminder\' keeps it. Reply pings in answers work the same way: write @Name and code pings only people and roles the asker mentioned or named.',
     parameters: {
       type: 'object',
       properties: {
@@ -267,6 +277,12 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
           description: 'Role names or ids; "everyone" or "here" for those pings (at most 10).',
           items: { type: 'string' },
           maxItems: 10,
+        },
+        style: {
+          type: 'string',
+          description:
+            "Post as a plain scheduled message ('message') or a framed reminder ('reminder').",
+          enum: ['reminder', 'message'],
         },
         repeat: {
           type: 'object',
@@ -615,6 +631,108 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     skills: ['search-club'],
     group: 'channel',
   },
+  {
+    name: 'find_member',
+    description:
+      "Look up a club member by name, username or mention, returning up to 5 matches with display name, username and role names. Use it when a member names someone you need to tell apart, or before claiming anything about who someone is. It never returns ids; later tools take names and code resolves them. Example: 'remind Sam at 23:00' becomes find_member with name 'Sam', then set_reminder with members: [\"Sam L\"].",
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'The name, username or mention to look up.',
+          minLength: 1,
+          maxLength: 100,
+        },
+      },
+      required: ['name'],
+    },
+    rounds: 'all',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club'],
+    group: 'server',
+  },
+  {
+    name: 'create_task',
+    description:
+      "Create a club task inside an existing team, assigned to members by display name with a due date. Use it when a team lead or the president asks for something to be made, tracked and nudged. Only team leads and the president can use it; anyone else is refused. Example: 'task the site team to fix the charger by Friday' becomes title 'Fix the charger', team '<teamId>', assignees: [\"Sam L\"], due '2026-10-16T17:00:00-07:00'.",
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'The task title.', minLength: 1, maxLength: 180 },
+        details: {
+          type: 'string',
+          description: 'What needs doing, in a few sentences.',
+          maxLength: 5000,
+        },
+        team: {
+          type: 'string',
+          description: 'The team id from list_tasks or the task context.',
+          minLength: 1,
+          maxLength: 128,
+        },
+        assignees: {
+          type: 'array',
+          description: 'Display names to assign (at most 25).',
+          items: { type: 'string' },
+          maxItems: 25,
+        },
+        due: { type: 'string', description: 'Due date, ISO 8601 with its UTC offset.' },
+      },
+      required: ['title', 'team', 'due'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['tasks'],
+    actsForSkill: 'tasks',
+    group: 'tasks',
+    requiresSkill: 'tasks',
+    writes: true,
+  },
+  {
+    name: 'list_tasks',
+    description:
+      "The asking member's teams and their open tasks, with ids for task_progress. Use it when a member asks what tasks exist, what is due, or before recording progress on one. Only team members, team leads and the president see anything; anyone else is refused.",
+    parameters: {
+      type: 'object',
+      properties: {
+        team: { type: 'string', description: 'Only this team id.', minLength: 1, maxLength: 128 },
+        includeDone: { type: 'boolean', description: 'Also list finished tasks.' },
+      },
+      required: [],
+    },
+    rounds: 'all',
+    outputLimit: RESULT_LIMIT,
+    skills: ['tasks'],
+    actsForSkill: 'tasks',
+    group: 'tasks',
+    requiresSkill: 'tasks',
+  },
+  {
+    name: 'task_progress',
+    description:
+      'Record a short progress note on one open task by its id from list_tasks. Use it when a member says what got done, what is blocked, or gives an update on their task. Only someone assigned to the task can use it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: {
+          type: 'string',
+          description: 'The task id from list_tasks.',
+          minLength: 1,
+          maxLength: 128,
+        },
+        note: { type: 'string', description: 'The progress note.', minLength: 1, maxLength: 5000 },
+      },
+      required: ['taskId', 'note'],
+    },
+    rounds: 'returned-id',
+    outputLimit: RESULT_LIMIT,
+    skills: ['tasks'],
+    actsForSkill: 'tasks',
+    group: 'tasks',
+    requiresSkill: 'tasks',
+    writes: true,
+  },
 ] as const;
 
 const ID_ARG_NAMES: Readonly<Record<string, readonly string[]>> = {
@@ -623,6 +741,7 @@ const ID_ARG_NAMES: Readonly<Record<string, readonly string[]>> = {
   channel_history: ['before'],
   edit_reminder: ['reminderId'],
   cancel_reminder: ['reminderId'],
+  task_progress: ['taskId'],
 };
 export const RETURNED_ID_ARGS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
   TOOL_CATALOGUE.filter((e) => e.rounds === 'returned-id').map((e) => [

@@ -724,6 +724,111 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(new Set(trace?.discordMessageIds).size).toBe(3);
   });
 
+  it('posts reply pings in allowedMentions on part 1 only, and a retry keeps them without re-posting', async () => {
+    const user = '456789012345678901';
+    let providerCalls = 0;
+    const h = harness(() => {
+      providerCalls += 1;
+      return {
+        ok: true,
+        content: `<@${user}> ${'x'.repeat(4_500)}`,
+        pings: { userIds: [user], roles: [] },
+      };
+    });
+    const successful: OutgoingMessage[] = [];
+    let sends = 0;
+    h.send.mockImplementation(async (channelId: string, message: OutgoingMessage) => {
+      sends += 1;
+      if (sends === 2) throw new Error('discord 500');
+      successful.push(message);
+      return { channelId, messageId: `8290000000000002${String(sends).padStart(2, '0')}` };
+    });
+    const payload = mention({
+      invocationId: 'inv-ping',
+      messageId: '810000000000000014',
+      mentionedUserIds: [user],
+    });
+    const attempt1 = await h.run(payload);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(h.inputs[0]).toMatchObject({ mentionedUserIds: [user] });
+    const attempt2 = await h.run(payload, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(providerCalls).toBe(1);
+    expect(successful).toHaveLength(3);
+    expect(successful[0]?.allowedMentions).toEqual({ parse: [], users: [user] });
+    expect(successful[1]?.allowedMentions).toEqual({ parse: [] });
+    expect(successful[2]?.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it('pins user and role pings to part 1: later parts carry neither (T3)', async () => {
+    const user = '456789012345678901';
+    const role = '567890123456789012';
+    const h = harness(() => ({
+      ok: true,
+      content: `<@${user}> <@&${role}> ${'y'.repeat(4_500)}`,
+      pings: { userIds: [user], roles: [role] },
+    }));
+    await h.run(
+      mention({
+        invocationId: 'inv-ping-parts',
+        messageId: '810000000000000015',
+        mentionedUserIds: [user],
+        mentionedRoleIds: [role],
+      }),
+    );
+    expect(h.sent).toHaveLength(3);
+    expect(h.sent[0]?.message.allowedMentions).toEqual({
+      parse: [],
+      users: [user],
+      roles: [role],
+    });
+    for (const part of h.sent.slice(1)) {
+      expect(part.message.allowedMentions).toEqual({ parse: [] });
+      expect(part.message.allowedMentions).not.toHaveProperty('users');
+      expect(part.message.allowedMentions).not.toHaveProperty('roles');
+    }
+  });
+
+  it('puts a resolved role id in allowedMentions.roles on the answer (T4)', async () => {
+    const role = '567890123456789012';
+    const h = harness(() => ({
+      ok: true,
+      content: `Tell <@&${role}> now`,
+      pings: { userIds: [], roles: [role] },
+    }));
+    await h.run(
+      mention({
+        invocationId: 'inv-ping-role',
+        messageId: '810000000000000016',
+        mentionedRoleIds: [role],
+      }),
+    );
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.message.allowedMentions).toEqual({ parse: [], roles: [role] });
+  });
+
+  it('round-trips reply pings through the assistantInvokeCursor schema (T5)', () => {
+    const withPings = assistantInvokeCursor.parse({
+      stage: 'invoke-done',
+      result: {
+        ok: true,
+        content: 'answer',
+        pings: { userIds: ['456789012345678901'], roles: ['567890123456789012'] },
+      },
+    });
+    if (withPings.result.ok) {
+      expect(withPings.result.pings).toEqual({
+        userIds: ['456789012345678901'],
+        roles: ['567890123456789012'],
+      });
+    }
+    const without = assistantInvokeCursor.parse({
+      stage: 'invoke-done',
+      result: { ok: true, content: 'answer' },
+    });
+    expect(without.result.ok).toBe(true);
+  });
+
   it('a follow-up carries the first question and answer as history', async () => {
     const h = harness((input) => ({
       ok: true,

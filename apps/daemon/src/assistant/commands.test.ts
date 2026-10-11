@@ -214,6 +214,34 @@ describe('assistant command subscriber', () => {
     });
   });
 
+  it('carries the asker’s mentions into the payload, capped at 50', async () => {
+    const h = harness();
+    const users = Array.from({ length: 60 }, (_, i) => `7${String(i).padStart(17, '0')}`);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012349',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> ping them`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: users,
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    const payload = h.queued[0] as { mentionedUserIds?: string[]; mentionedRoleIds?: string[] };
+    expect(payload.mentionedUserIds).toEqual(users.slice(0, 50));
+    expect(payload.mentionedRoleIds).toEqual([club.mentionRoleId]);
+  });
+
   it('carries the thread parent only for a thread mention', async () => {
     const h = harness();
     await h.subscriber.handle({

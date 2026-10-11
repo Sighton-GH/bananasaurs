@@ -77,6 +77,7 @@ import { sanitizeMentionsForProvider } from './mentions.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
 import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
+import type { ReplyPingRequest, ReplyPingResult } from './reply-ping-policy.js';
 import { skillAccess } from './skill-access.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 
@@ -205,6 +206,8 @@ export interface FoundMember {
   readonly displayName: string;
   readonly globalName?: string | undefined;
   readonly username?: string | undefined;
+  /** Role names for `find_member` (never the `@everyone` role); absent when unknown. */
+  readonly roleNames?: readonly string[] | undefined;
 }
 
 /** What the tools need from live Discord (ADR 0067). */
@@ -234,6 +237,8 @@ export interface AssistantDiscordPorts {
   readonly findMember?: ((nameOrId: string) => Promise<readonly FoundMember[]>) | undefined;
   /** Task context for the assistant's task answers; absent, task questions refuse. */
   readonly taskContext?: TaskContextPort | undefined;
+  readonly verifyTaskDestination?:
+    ((teamId: string, channelId: string) => Promise<boolean>) | undefined;
   /**
    * B2b: resolves a reminder's channel and mentions against live Discord
    * permissions. Optional so existing callers keep compiling — production
@@ -242,6 +247,11 @@ export interface AssistantDiscordPorts {
    */
   readonly resolveReminderTargets?:
     ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
+  /**
+   * ADR 0145: turns `@Name` in the answer into real pings under code control.
+   * Optional; absent, answers never ping.
+   */
+  readonly resolveReplyPings?: ((input: ReplyPingRequest) => Promise<ReplyPingResult>) | undefined;
   /**
    * ADR 0092 decision 1: guild scheduled events behind `upcoming_events`.
    * Optional so existing callers keep compiling — production always
@@ -991,6 +1001,21 @@ export const createAssistantService = (
          * Every string is redacted like other evidence, then neutralised
          * (hard rule 3).
          */
+        findMember:
+          discord.findMember === undefined
+            ? undefined
+            : async (nameOrId: string) => (await discord.findMember!(nameOrId)).slice(0, 5),
+        taskTools:
+          discord.taskContext === undefined
+            ? undefined
+            : {
+                scope,
+                access: () => discord.taskContext!.access(input.userId),
+                resolveMember: async (name: string) =>
+                  discord.findMember === undefined ? [] : await discord.findMember(name),
+                destinationId: input.channelId,
+                verifyDestination: discord.verifyTaskDestination,
+              },
         searchConversations: async (query: string) => {
           const visible = new Set(
             (await discord.memberChannels(input.userId)).map((channel) => channel.id),
@@ -1290,8 +1315,42 @@ export const createAssistantService = (
       // Task 14: the job-built conversation history travels ahead of the
       // current user text. Absent (or empty) means a history-free request.
       const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      const question = stripNewTopic(textOf(input.input));
+      // ADR 0145 item 1: only resolve mentions in this current question and
+      // its invocation lists. Older channel context keeps the flat tokens.
+      const currentUsers = new Set([...question.matchAll(/<@!?(\d{17,20})>/g)].map((m) => m[1]!));
+      const currentRoles = new Set([...question.matchAll(/<@&(\d{17,20})>/g)].map((m) => m[1]!));
+      const userIds = [...new Set(input.mentionedUserIds ?? [])]
+        .filter((id) => currentUsers.has(id))
+        .slice(0, 25);
+      const roleIds = [...new Set(input.mentionedRoleIds ?? [])]
+        .filter((id) => currentRoles.has(id))
+        .slice(0, 25);
+      const users = new Map<string, string>();
+      const roles = new Map<string, string>();
+      if (discord.findMember !== undefined) {
+        for (const id of userIds) {
+          try {
+            const member = (await discord.findMember(id)).find((candidate) => candidate.id === id);
+            if (member !== undefined) users.set(id, member.displayName);
+          } catch {
+            // A failed lookup keeps @user; it must not prevent an answer.
+          }
+        }
+      }
+      if (discord.roleNames !== undefined && roleIds.length > 0) {
+        try {
+          const names = discord.roleNames(roleIds);
+          for (const id of roleIds) {
+            const name = names.get(id);
+            if (name !== undefined) roles.set(id, name);
+          }
+        } catch {
+          // A failed lookup keeps @role, independently of member lookups.
+        }
+      }
       const userText = buildUserMessage({
-        question: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
+        question: sanitizeMentionsForProvider(question, { users, roles }),
         askerName: input.askerName,
         channelContext: input.channelContext,
         evidenceEnvelope: context.evidenceEnvelope,
@@ -1456,10 +1515,10 @@ export const createAssistantService = (
       }
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
-      // ADR 0120: Tavily's terms allow training on queries, so an answer that
-      // used Tavily results warns once per request, next to the AI-provider
-      // warning above.
-      if (loop.webSources.includes('tavily')) {
+      // ADR 0120 and 0147: Tavily's and Parallel's terms allow training on
+      // queries, so an answer that used either warns once per request, next
+      // to the AI-provider warning above.
+      if (loop.webSources.includes('tavily') || loop.webSources.includes('parallel')) {
         logger.warn(
           safeLogFields({
             component: 'assistant',
@@ -1625,6 +1684,28 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             reviewerRoleIds: input.behaviour.reviewerRoleIds,
             ticketId,
           },
+        };
+      }
+      if (
+        skillAllowed('ping') &&
+        discord.resolveReplyPings !== undefined &&
+        (input.mentionedUserIds !== undefined || input.mentionedRoleIds !== undefined)
+      ) {
+        const resolved = await discord.resolveReplyPings({
+          askerId: input.userId,
+          channelId: input.channelId,
+          text: answerText,
+          // The asker's raw current message, never the answer (D3).
+          askerText: stripNewTopic(textOf(input.input)),
+          mentionedUserIds: input.mentionedUserIds ?? [],
+          mentionedRoleIds: input.mentionedRoleIds ?? [],
+        });
+        return {
+          ok: true,
+          content: resolved.content,
+          ...(resolved.userIds.length + resolved.roles.length === 0
+            ? {}
+            : { pings: { userIds: [...resolved.userIds], roles: [...resolved.roles] } }),
         };
       }
       return { ok: true, content: answerText };

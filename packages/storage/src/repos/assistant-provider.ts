@@ -13,8 +13,8 @@ export interface AssistantProviderConfigRow {
   /** ADR 0066: the sealed Brave Search API key. */
   readonly searchApiKeyEnc?: string;
   readonly searchEnabled?: boolean;
-  /** ADR 0120: which search backend answers; anything unrecognised reads as `'brave'`. */
-  readonly searchSource?: 'brave' | 'tavily';
+  /** ADR 0120 / 0147: Brave, Tavily or Parallel answers; anything unrecognised reads as `'brave'`. */
+  readonly searchSource?: 'brave' | 'tavily' | 'parallel';
   readonly updatedAt: number;
 }
 /** Own prior write, still validated: a malformed list reads as no backups. */
@@ -42,7 +42,12 @@ export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefine
           ...fallbackModelsOf(row.fallbackModelsJson),
           ...(row.searchApiKeyEnc === null ? {} : { searchApiKeyEnc: row.searchApiKeyEnc }),
           searchEnabled: row.searchEnabled === 1,
-          searchSource: row.searchSource === 'tavily' ? 'tavily' : 'brave',
+          searchSource:
+            row.searchSource === 'tavily'
+              ? 'tavily'
+              : row.searchSource === 'parallel'
+                ? 'parallel'
+                : 'brave',
           updatedAt: row.updatedAt,
         };
   });

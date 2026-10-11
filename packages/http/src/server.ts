@@ -71,7 +71,7 @@ export interface AssistantProviderStatus {
   readonly webSearch?: {
     readonly keyConfigured: boolean;
     readonly enabled: boolean;
-    readonly source: 'brave' | 'tavily';
+    readonly source: 'brave' | 'tavily' | 'parallel';
   };
 }
 
@@ -129,7 +129,7 @@ export interface HttpDeps extends AuthDeps {
             enabled: boolean;
             costClass?: 'free' | 'paid' | 'unknown' | undefined;
             fallbackModels?: readonly string[] | undefined;
-            searchSource?: 'brave' | 'tavily' | undefined;
+            searchSource?: 'brave' | 'tavily' | 'parallel' | undefined;
             searchEnabled?: boolean | undefined;
           },
           now: number,
@@ -235,7 +235,7 @@ export interface HttpDeps extends AuthDeps {
          */
         searchKeys?(): readonly {
           readonly keyId: string;
-          readonly source: 'brave' | 'tavily';
+          readonly source: 'brave' | 'tavily' | 'parallel';
           readonly label: string;
           readonly enabled: boolean;
           readonly position: number;
@@ -244,7 +244,7 @@ export interface HttpDeps extends AuthDeps {
         }[];
         addSearchKey?(
           input: {
-            source: 'brave' | 'tavily';
+            source: 'brave' | 'tavily' | 'parallel';
             label: string;
             apiKey: string;
             monthlyLimit?: number | null | undefined;

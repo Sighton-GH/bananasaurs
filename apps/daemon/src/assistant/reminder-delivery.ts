@@ -130,6 +130,14 @@ export const renderReminder = (
       ? undefined
       : neutraliseMassMentions(collapsedContext);
   const contextLine = safeContext === undefined ? undefined : `-# ${safeContext}`;
+  if (reminder.style === 'message') {
+    const fixed = pingsLine === '' ? 0 : pingsLine.length + 1;
+    const body = safeText.slice(0, Math.max(0, 2_000 - fixed));
+    return {
+      content: pingsLine === '' ? body : `${pingsLine}\n${body}`,
+      allowedMentions: reminderAllowedMentions(reminder),
+    };
+  }
   const setByLine = `-# Set by <@${reminder.creatorId}>`;
   // Everything except the reminder text itself. The 2,000-character cap
   // truncates the text, never the pings.
@@ -148,13 +156,17 @@ export const renderReminder = (
   ];
   return {
     content: lines.join('\n'),
-    allowedMentions: {
-      parse: reminder.mentions.everyone || reminder.mentions.here ? ['everyone'] : [],
-      ...(reminder.mentions.roleIds.length > 0 ? { roles: [...reminder.mentions.roleIds] } : {}),
-      ...(reminder.mentions.userIds.length > 0 ? { users: [...reminder.mentions.userIds] } : {}),
-    },
+    allowedMentions: reminderAllowedMentions(reminder),
   };
 };
+
+const reminderAllowedMentions = (
+  reminder: DeliverableReminder,
+): NonNullable<OutgoingMessage['allowedMentions']> => ({
+  parse: reminder.mentions.everyone || reminder.mentions.here ? ['everyone'] : [],
+  ...(reminder.mentions.roleIds.length > 0 ? { roles: [...reminder.mentions.roleIds] } : {}),
+  ...(reminder.mentions.userIds.length > 0 ? { users: [...reminder.mentions.userIds] } : {}),
+});
 
 /**
  * The production Write gate for assistant reminders (composed in
