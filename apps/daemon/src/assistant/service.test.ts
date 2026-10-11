@@ -5952,4 +5952,131 @@ describe('complexity routing (ADR 0144, spec 6e)', () => {
       ).routed.reason,
     ).toBe('long-message');
   });
+
+  describe('escalation when no standard entry can run', () => {
+    const seenOf = (
+      model: string,
+      seen: string[],
+      mode: 'tool-then-answer' | 'throw' | 'tool-twice',
+      text = 'x',
+    ): TextProvider => {
+      let round = 0;
+      return {
+        id: 'fake',
+        capabilities: new Set(['text', 'tools']),
+        generateText: async () => {
+          round += 1;
+          seen.push(`${model}:${round}`);
+          if (mode === 'throw') throw new ProviderError('rate-limit', 'HTTP 429', true);
+          if (mode === 'tool-twice' || round === 1) {
+            if (mode === 'tool-twice' || round === 1) {
+              return {
+                text: '',
+                model,
+                usage: { promptTokens: 10 },
+                toolCalls: [
+                  {
+                    name: 'set_reminder',
+                    args: {
+                      text: `${text}${round}`,
+                      when: new Date(NOW + 3_600_000).toISOString(),
+                    },
+                  },
+                ],
+              };
+            }
+          }
+          return { text: 'Here you go.', model, usage: { promptTokens: 10 } };
+        },
+      };
+    };
+    const go = async (
+      chain: () => readonly ChainEntry[],
+      id: string,
+      events: RunEvent[],
+      warn = vi.fn(),
+    ) => {
+      const service = createAssistantService(
+        t.scopes.forGuild(GUILD),
+        t.scopes.instance(),
+        config,
+        () => NOW,
+        {},
+        undefined,
+        { warn, info: () => undefined },
+        reminderTargets,
+        chain,
+        undefined,
+        () => ({ totalCalls: 1 }),
+      );
+      try {
+        return await service.invoke({
+          guildId: GUILD,
+          channelId: CHANNEL,
+          userId: OWNER,
+          callerRoleIds: [],
+          behaviour: direct,
+          command: 'ask',
+          input: { question: 'hi' },
+          source: 'slash-command',
+          invocationId: id,
+          recorder: {
+            runId: `run-${id}`,
+            event: (e: RunEvent) => {
+              events.push(e);
+            },
+            update: () => undefined,
+          },
+        });
+      } catch (err) {
+        return err as Error;
+      }
+    };
+    const answerer = (model: string, seen: string[]): TextProvider => ({
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        seen.push(`${model}:a`);
+        return { text: 'Here you go.', model, usage: { promptTokens: 10 } };
+      },
+    });
+
+    it('escalation with a cooled-down standard entry lets the light entry finish its own run', async () => {
+      assistantKeyCooldownsRepo.setCooldown(t.scopes.instance(), {
+        keyId: 'key_standard',
+        model: STANDARD_MODEL,
+        until: NOW + 3_600_000,
+        reason: 'daily-quota',
+        setAt: NOW,
+      });
+      const events: RunEvent[] = [];
+      const seen: string[] = [];
+      const r = await go(
+        () => [
+          lightEntry(seenOf(LIGHT_MODEL, seen, 'tool-then-answer', 'a')),
+          standardEntry(answerer(STANDARD_MODEL, seen)),
+        ],
+        'r2',
+        events,
+      );
+      expect('ok' in r && r.ok).toBe(true);
+      expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
+      expect(seen).toContain(`${LIGHT_MODEL}:2`);
+    });
+    it('escalation with a keyless standard entry lets the light entry finish its own run', async () => {
+      const events: RunEvent[] = [];
+      const seen: string[] = [];
+      const r = await go(
+        () => [
+          lightEntry(seenOf(LIGHT_MODEL, seen, 'tool-then-answer', 'a')),
+          { ...standardEntry(answerer(STANDARD_MODEL, seen)), provider: undefined, skip: 'no-key' },
+        ],
+        'r3',
+        events,
+      );
+      expect('ok' in r && r.ok).toBe(true);
+      expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
+      expect(seen).toContain(`${LIGHT_MODEL}:2`);
+    });
+  });
 });
