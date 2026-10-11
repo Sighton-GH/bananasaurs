@@ -1181,6 +1181,14 @@ const runEntry = async (deps: {
     });
     messages.push(...(await runRoundCalls(round, calls)));
     if (round === 1 && deps.canHandOff === true) {
+      // The handing-over entry's call worked: it stays in the attempts list.
+      deps.attempts.push({
+        provider: entry.providerId,
+        model: entry.model,
+        keyLabel: entry.keyLabel,
+        outcome: 'ok',
+        ms: deps.entryMs(),
+      });
       return {
         handoff: {
           // Provider-specific parts never cross entries (ADR 0075).

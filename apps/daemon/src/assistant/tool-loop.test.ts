@@ -2288,6 +2288,7 @@ describe('escalateAfterTools (ADR 0144)', () => {
     const roles = standard.calls[0]!.messages.map((m) => m.role);
     expect(roles).toEqual(['user', 'assistant', 'tool']);
     expect(JSON.stringify(standard.calls[0]!.messages)).not.toContain('light-private');
+    expect(result.attempts.map((attempt) => attempt.outcome)).toEqual(['ok', 'ok']);
     expect(onEscalated).toHaveBeenCalledTimes(1);
     expect(onEscalated.mock.calls[0]![1]).toEqual([standardEntry]);
   });
