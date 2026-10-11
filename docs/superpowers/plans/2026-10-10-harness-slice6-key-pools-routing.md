@@ -2072,6 +2072,231 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
 the break-it test proves the skip is load-bearing; `routed` validates with tier + reason.
 
 ---
+
+### S6-T12: Bulk key paste and recommended chain routes   ·   Wave 3
+**Owns:** Modify: `packages/http/src/routes/assistant-providers.ts`,
+`packages/http/src/routes/assistant-providers.test.ts`
+**Reads (do not edit):** `packages/storage/src/repos/assistant-providers.ts` (S6-T6 output: `fingerprintOf`,
+`addKey` duplicate refusal), `packages/core/src/providers/model-capabilities.ts` (S6-T3 output:
+`GEMINI_MODEL_TABLE`)
+**Interfaces:** Consumes: `fingerprintOf`, `bucketOf` (S6-T6), `GEMINI_MODEL_TABLE` free limits (S6-T3) ·
+Produces: `POST /api/assistant/keys/bulk`, `POST /api/assistant/model-chain/recommended` (for S6-T16);
+re-test clears `invalid-key` cooldowns (for S6-T11)
+
+- [ ] **Step 1: Write the failing test** — append to `packages/http/src/routes/assistant-providers.test.ts`
+  (mirror the file's existing owner-guard + `assistantProviderConfig` stub harness):
+
+```ts
+describe('bulk keys and recommended chain (ADR 0143)', () => {
+  it('pastes many keys at once, deduping by fingerprint without ever returning key text', async () => {
+    const store = stubStore({ keys: [{ keyId: 'key_a', fingerprint: fingerprintOf('AIza-test-one') }] });
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      payload: {
+        provider: 'gemini',
+        project: 'Car Team A',
+        keysText: 'AIza-test-one\nAIza-test-two\nAIza-test-two',
+      },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ added: 1, duplicates: 2 });
+    expect(JSON.stringify(first.json())).not.toContain('AIza-');
+    const audit = auditRows().filter((r) => r.action === 'assistant_provider.keys_pasted');
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit[0])).not.toContain('AIza-');
+  });
+  it('refuses an empty paste and a bad project label', async () => {
+    for (const payload of [
+      { provider: 'gemini', keysText: '   \n ' },
+      { provider: 'gemini', project: 'x'.repeat(81), keysText: 'AIza-test-two' },
+    ]) {
+      const res = await app.inject({ method: 'POST', url: '/api/assistant/keys/bulk', payload });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+  it('recommended setup builds the Gemini chain then owner OpenRouter entries', async () => {
+    const store = stubStore({
+      keys: [
+        { keyId: 'key_a', provider: 'gemini' },
+        { keyId: 'key_b', provider: 'gemini' },
+        { keyId: 'key_o', provider: 'openrouter' },
+      ],
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/assistant/model-chain/recommended', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, count: 4 });
+    const saved = store.savedChain();
+    expect(saved.map((e) => e.model)).toEqual([
+      'gemini-3.8-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
+      'owner-model',
+    ]);
+    expect(saved.slice(0, 3).every((e) => e.pool === 'provider')).toBe(true);
+    expect(saved[0]).toMatchObject({ rpdLimit: 20, rpmLimit: 5 });
+    expect(saved[3]).toMatchObject({ pool: 'key' });
+  });
+  it('recommended setup refuses when no Gemini key exists', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/assistant/model-chain/recommended', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'no-gemini-key' });
+  });
+  it('re-test clears an invalid-key cooldown on success', async () => {
+    const store = stubStore({ cooldowns: [{ keyId: 'key_a', reason: 'invalid-key' }] });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      payload: { position: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(store.cooldowns()).toEqual([]);
+  });
+});
+```
+
+  (`stubStore`, `auditRows` extend the file's existing harness; keys use fake `AIza-test-*` values only.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/http/src/routes/assistant-providers.test.ts --maxWorkers=1` · Expected: FAIL
+  (unknown routes `/bulk`, `/recommended`)
+- [ ] **Step 3: Implement** — in `assistant-providers.ts`:
+  1. Add the bulk schema beside `keyBody` (anchor: lines 17–24):
+
+```ts
+const bulkBody = z
+  .object({
+    provider: z.enum(PROVIDERS),
+    project: z.string().min(1).max(80).optional(),
+    costClass: z.enum(['free', 'paid', 'unknown']).optional(),
+    keysText: z.string().min(1).max(20_000),
+  })
+  .strict();
+```
+
+  2. Register `POST /api/assistant/keys/bulk` after the single-key POST (anchor: lines 187–188): split
+  `keysText` on newlines, trim, drop empties; for each line compute `fingerprintOf(line)`; skip lines whose
+  fingerprint matches an existing key or an earlier line in the same paste (count as `duplicates`); else
+  `configured.addKey({ provider, label: derivedLabel, apiKey: line, project, costClass }, deps.now())`
+  where `derivedLabel` is `${provider} ${count}` (never the key text). Respond `{ added, duplicates }`.
+  Audit once as `assistant_provider.keys_pasted` with `{ provider, project, added, duplicates }` — no key
+  text, sealed or plain, in the response, audit row, log or error.
+  3. Register `POST /api/assistant/model-chain/recommended` after the chain PUT (anchor: lines 305–306):
+  refuse `{ error: 'no-gemini-key' }` (400) when no enabled Gemini key exists; else `saveChain` with three
+  Gemini pool entries over the provider's oldest key id (the FK anchor; runtime expansion uses the provider
+  per S6-T10) with limits from `GEMINI_MODEL_TABLE` (5/20, 5/20, 15/500), then re-append the owner's
+  existing OpenRouter entries unchanged (pool `key`); audit as `assistant_provider.chain_saved` with the
+  entry list. Refuse when the result would exceed six entries (`too-many`).
+  4. Extend `chainBody` entries with `pool: z.enum(['key', 'provider']).optional()` and
+  `tier: z.enum(['standard', 'light']).optional()`; pass them through `saveChain` and the audit payload.
+  5. In the model-chain test route (anchor: lines 357–362), on success call
+  `clearCooldowns(instance, entry.selectedKeyId ?? entry.keyId, entry.model)` so a fixed key is usable
+  again; on 401/403 set the `invalid-key` cooldown (S6-T11). Key edit (`PATCH` with `apiKey`) also clears
+  that key's cooldowns.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write packages/http/src/routes/assistant-providers.ts packages/http/src/routes/assistant-providers.test.ts`
+  then `npx eslint` on both paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add packages/http/src/routes/assistant-providers.ts packages/http/src/routes/assistant-providers.test.ts && git commit -m "Slice 6 T12: bulk keys and recommended chain routes"`
+
+**Done when:** bulk paste is idempotent by fingerprint with no key text anywhere; recommended setup builds the
+3-entry Gemini pool chain plus owner entries or refuses cleanly; re-test/edit clears invalid cooldowns.
+
+---
+
+### S6-T13: Service routing, tier ordering and escalation   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`,
+`packages/core/src/index.ts` (one export line)
+**Reads (do not edit):** `packages/core/src/assistant/router.ts` (S6-T4 output), `apps/daemon/src/assistant/model-chain.ts`
+(S6-T10 output: `tier`, `orderChainByTier` location), `packages/core/src/settings/instance-settings.ts` (S6-T9 output)
+**Interfaces:** Consumes: `routeRun`, `orderChainByTier`, `ChainTier` (S6-T4), router settings keys (S6-T9),
+`ChainEntry.tier/pool` (S6-T10), `routed` event + cooldown loop (S6-T11) · Produces: routed run behaviour
+audited by the `routed` event (for S6-T15, S6-T16)
+
+- [ ] **Step 1: Write the failing test** — append to `apps/daemon/src/assistant/service.test.ts` (use the
+  file's existing service harness with stub chain + settings):
+
+```ts
+describe('complexity routing (ADR 0144, spec 6e)', () => {
+  it.each([
+    ['hi', 'light'],
+    ['remind me at 5', 'standard'],
+  ])('routes %s to the %s tier first', async (text, tier) => {
+    const seen = await runWith(text, {});
+    expect(seen.routed).toEqual({ tier, reason: tier === 'light' ? 'greeting' : 'full-model-keyword' });
+    expect(seen.firstEntryTier).toBe(tier);
+  });
+  it('routes attachments and long threads to standard, greetings stay light', async () => {
+    expect((await runWith('look', { hasAttachments: true })).routed.tier).toBe('standard');
+    expect((await runWith('and then?', { earlierTurns: 5 })).routed).toMatchObject({
+      tier: 'standard',
+      reason: 'long-thread',
+    });
+    expect((await runWith('thanks!', { earlierTurns: 9 })).routed).toMatchObject({
+      tier: 'light',
+      reason: 'greeting',
+    });
+  });
+  it('a light run falls back to standard when Flash-Lite is spent', async () => {
+    const seen = await runWith('hi', { spentModels: ['gemini-3.5-flash-lite'] });
+    expect(seen.routed.tier).toBe('light');
+    expect(seen.answeredBy.model).not.toBe('gemini-3.5-flash-lite');
+    expect(seen.answeredBy.tier).toBe('standard');
+  });
+  it('a light tool call escalates to standard on the next round (on by default)', async () => {
+    const seen = await runWith('hi', { toolCalls: ['list_sources'] });
+    expect(seen.rounds[1].tier).toBe('standard');
+    expect(seen.rounds[1].reason).toBe('escalated-after-tool');
+  });
+  it('router-off and background tiers are honoured', async () => {
+    expect((await runWith('hi', { settings: { 'assistant.routerEnabled': 0 } })).routed).toMatchObject({
+      tier: 'standard',
+      reason: 'router-off',
+    });
+    expect((await runWithSummaryTier('light')).tierUsed).toBe('light');
+  });
+});
+```
+
+  (`runWith`/`runWithSummaryTier` wrap the existing harness: stub settings from S6-T9 defaults, a two-tier
+  chain, fake providers that record tiers tried. Reasons use the fixed vocabulary from Plan decisions.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run apps/daemon/src/assistant/service.test.ts --maxWorkers=1` · Expected: FAIL (no `routed`
+  event, no tier ordering)
+- [ ] **Step 3: Implement** — in `service.ts`:
+  1. Append `export * from './assistant/router.js';` to `packages/core/src/index.ts` in its existing style
+  (the S6-T4 export deferred here so wave-1 file lists stay disjoint).
+  2. Build `RouterRules` from instance settings at run start (anchor: the service's settings read near line
+  371, beside `quotaLedger`): `enabled` from `assistant.routerEnabled`, `maxChars` from
+  `assistant.routerMaxChars`, keywords/greetings from the two chip-list settings (fall back to
+  `DEFAULT_ROUTER_KEYWORDS`/`DEFAULT_ROUTER_GREETINGS` when empty), `longThreadTurns`, `escalateOnTool`.
+  Background jobs use `assistant.routerSummaryTier` / `assistant.routerDailyDigestTier` as a forced tier
+  (no `routeRun` call; `routed` reason is `background-tier`).
+  3. Call `routeRun({ text, hasAttachments, hasQuoteOrReply, earlierTurns }, rules)`, record
+  `{ kind: 'routed', tier, reason }` as the run's first event, and order the resolved chain with
+  `orderChainByTier(chain, tier)` before the loop (import from `@bananasaurs/core`). A light run tries light
+  entries first then standard; standard tries standard then light (S6-T4).
+  4. Escalation: when the run is light, `escalateOnTool` is on, and round 1 invokes any tool, re-order the
+  remaining entries to standard-first for round 2 and record a second `routed` event with reason
+  `escalated-after-tool`. Mentions are stripped before routing; routing never spends a provider request.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts packages/core/src/index.ts`
+  then `npx eslint` on the same three paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts packages/core/src/index.ts && git commit -m "Slice 6 T13: service routing and escalation"`
+
+**Done when:** every 6e routing case passes through the service; light falls back to standard when spent; tool
+calls escalate; router-off and background tiers are honoured; `routed` audits each decision.
+
+---
+
  (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
 npm run lint
