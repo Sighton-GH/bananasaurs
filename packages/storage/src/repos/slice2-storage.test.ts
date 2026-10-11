@@ -51,6 +51,24 @@ describe('Slice 2 storage (ADR 0145, 0147)', () => {
     });
     expect(listSearchKeys(scope).find((k) => k.keyId === keyId)?.source).toBe('parallel');
   });
+  it('refuses an unknown reminder style', () => {
+    const scope = t.scopes.forGuild(G);
+    expect(() =>
+      insertReminder(scope, reminder({ id: 'c', style: 'banner' as unknown as 'reminder' })),
+    ).toThrow(/unexpected reminder style/);
+  });
+  it('accepts parallel in the provider config CHECK and rejects an unknown source', () => {
+    t.raw
+      .prepare("INSERT INTO assistant_provider_config (config_id, updated_at) VALUES ('active', 1)")
+      .run();
+    t.raw.prepare("UPDATE assistant_provider_config SET search_source = 'parallel'").run();
+    expect(t.raw.prepare('SELECT search_source AS s FROM assistant_provider_config').get()).toEqual(
+      { s: 'parallel' },
+    );
+    expect(() =>
+      t.raw.prepare("UPDATE assistant_provider_config SET search_source = 'bad'").run(),
+    ).toThrow();
+  });
   it('seeds the parallel provider-eligibility row as may-train', () => {
     expect(findEligibility(t.scopes.instance(), 'parallel')).toMatchObject({
       trainsOnInput: 'yes',
