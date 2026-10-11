@@ -43,6 +43,7 @@ export {
 } from './routes/assistant-tuning.js';
 export { registerAssistantTraceRoutes } from './routes/assistant-traces.js';
 export { registerAssistantModelHealthRoutes } from './routes/assistant-model-health.js';
+export { registerAssistantModelCheckRoutes } from './routes/assistant-model-check.js';
 export { registerAssistantRunRoutes } from './routes/assistant-runs.js';
 export { registerAssistantResourceCacheRoutes } from './routes/assistant-resources-cache.js';
 export { registerAssistantConversationRoutes } from './routes/assistant-conversations.js';

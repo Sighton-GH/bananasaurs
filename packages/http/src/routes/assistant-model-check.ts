@@ -89,10 +89,17 @@ export const registerAssistantModelCheckRoutes = (
       });
     if (configured.reserveTestEntry === undefined) return budgetRefusal();
     try {
-      const reservations = CHECK_FIXTURES.map(() =>
-        configured.reserveTestEntry?.(entry, session.guildId),
-      );
-      if (reservations.some((reserved) => reserved?.ok !== true)) {
+      const reservations: unknown[] = [];
+      for (const fixture of CHECK_FIXTURES) {
+        void fixture;
+        // Promise.resolve keeps a rejecting reserver inside this try.
+        reservations.push(
+          await Promise.resolve(configured.reserveTestEntry?.(entry, session.guildId)),
+        );
+      }
+      if (
+        reservations.some((reserved) => (reserved as { ok?: unknown } | undefined)?.ok !== true)
+      ) {
         // No release API exists; any successful reservations remain spent.
         return budgetRefusal();
       }
