@@ -69,6 +69,7 @@ import { sanitizeMentionsForProvider } from './mentions.js';
 import { labelUserTurn } from './conversation-context.js';
 import { applyCitations, createCitationRegistry } from './citations.js';
 import type { ReminderTargetRequest, ReminderTargetResult } from './reminder-targets.js';
+import type { ReplyPingRequest, ReplyPingResult } from './reply-ping-policy.js';
 import { skillAccess } from './skill-access.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 
@@ -236,6 +237,11 @@ export interface AssistantDiscordPorts {
    */
   readonly resolveReminderTargets?:
     ((request: ReminderTargetRequest) => Promise<ReminderTargetResult>) | undefined;
+  /**
+   * ADR 0145: turns `@Name` in the answer into real pings under code control.
+   * Optional; absent, answers never ping.
+   */
+  readonly resolveReplyPings?: ((input: ReplyPingRequest) => Promise<ReplyPingResult>) | undefined;
   /**
    * ADR 0092 decision 1: guild scheduled events behind `upcoming_events`.
    * Optional so existing callers keep compiling — production always
@@ -1528,6 +1534,28 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             reviewerRoleIds: input.behaviour.reviewerRoleIds,
             ticketId,
           },
+        };
+      }
+      if (
+        skillAllowed('ping') &&
+        discord.resolveReplyPings !== undefined &&
+        (input.mentionedUserIds !== undefined || input.mentionedRoleIds !== undefined)
+      ) {
+        const resolved = await discord.resolveReplyPings({
+          askerId: input.userId,
+          channelId: input.channelId,
+          text: answerText,
+          // The asker's raw current message, never the answer (D3).
+          askerText: stripNewTopic(textOf(input.input)),
+          mentionedUserIds: input.mentionedUserIds ?? [],
+          mentionedRoleIds: input.mentionedRoleIds ?? [],
+        });
+        return {
+          ok: true,
+          content: resolved.content,
+          ...(resolved.userIds.length + resolved.roles.length === 0
+            ? {}
+            : { pings: { userIds: [...resolved.userIds], roles: [...resolved.roles] } }),
         };
       }
       return { ok: true, content: answerText };

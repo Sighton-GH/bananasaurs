@@ -1085,6 +1085,12 @@ export const assistantInvokeHandler = (deps: {
             // never returns the conversation to itself.
             ...(conversationId === undefined ? {} : { conversationId }),
             askerName: payload.authorName,
+            ...(payload.mentionedUserIds === undefined
+              ? {}
+              : { mentionedUserIds: payload.mentionedUserIds }),
+            ...(payload.mentionedRoleIds === undefined
+              ? {}
+              : { mentionedRoleIds: payload.mentionedRoleIds }),
             referencedMessageId: payload.referencedMessageId,
             // ADR 0129 §6: the service records its context and model steps.
             recorder,
@@ -1389,11 +1395,18 @@ export const assistantInvokeHandler = (deps: {
       index: number,
       text: string,
       slashToken: string | undefined,
+      pings?: { readonly userIds: readonly string[]; readonly roles: readonly string[] },
     ): Promise<string | undefined> => {
+      // ADR 0145: only the first part carries the ids; later parts stay `{ parse: [] }`.
+      const allowedMentions: NonNullable<OutgoingMessage['allowedMentions']> = {
+        parse: [],
+        ...(pings === undefined || pings.userIds.length === 0 ? {} : { users: pings.userIds }),
+        ...(pings === undefined || pings.roles.length === 0 ? {} : { roles: pings.roles }),
+      };
       const message = (replyTo?: string): OutgoingMessage =>
         replyTo === undefined
-          ? { content: text, allowedMentions: { parse: [] } }
-          : { content: text, allowedMentions: { parse: [] }, replyTo };
+          ? { content: text, allowedMentions }
+          : { content: text, allowedMentions, replyTo };
       if (payload.interaction !== undefined) {
         if (index === 0) {
           // A stranded slash cursor whose token is gone skips the answer
@@ -1469,7 +1482,12 @@ export const assistantInvokeHandler = (deps: {
             return;
           }
 
-          const posted = await postPart(index, parts[index]!, slashToken);
+          const posted = await postPart(
+            index,
+            parts[index]!,
+            slashToken,
+            index === 0 && result.ok ? result.pings : undefined,
+          );
           if (posted !== undefined) postedMessageIds.push(posted);
           partsPosted = index + 1;
           saveStaged('invoke-done', result);

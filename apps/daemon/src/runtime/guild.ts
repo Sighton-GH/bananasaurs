@@ -105,6 +105,7 @@ import {
 } from '../assistant/reminder-delivery.js';
 import { channelAccessFor } from '../channels/access.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
+import { resolveReplyPings } from '../assistant/reply-ping-policy.js';
 import { createRunRecorder } from '../assistant/run-recorder.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { assistantSummariseHandler, type SummariseModelPort } from '../jobs/assistant-summarise.js';
@@ -910,6 +911,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           () => [],
         );
       },
+      // ADR 0145: reply pings are decided by code, within the owner's caps.
+      resolveReplyPings: (input) =>
+        resolveReplyPings(
+          client,
+          scope,
+          {
+            members: settings?.get('assistant.pingMaxMembers') ?? 5,
+            roles: settings?.get('assistant.pingMaxRoles') ?? 3,
+          },
+          input,
+        ),
       // B2b: the acting reminder tools resolve their channel and mentions
       // against the live guild, mirroring the `memberChannels` adapter above:
       // an uncached guild fails closed inside `resolveReminderTargets`.

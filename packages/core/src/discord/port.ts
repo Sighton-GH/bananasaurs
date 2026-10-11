@@ -105,8 +105,9 @@ export interface OutgoingMessage {
    * every mention in the content — so most outputs set `{ parse: [] }`
    * (ruling M5-D2). Not defaulted here: changing what panel
    * posts and log messages do is a behaviour change, and two guilds are
-   * being observed. Only reminder delivery may put `'everyone'` in `parse`
-   * or set `users`; every other output keeps `{ parse: [] }`.
+   * being observed. Only reminder delivery may put `'everyone'` in `parse`.
+   * Only reminder delivery and assistant reply pings (ADR 0145) may put ids
+   * in `allowedMentions`; every other output keeps `{ parse: [] }`.
    */
   allowedMentions?:
     | {
