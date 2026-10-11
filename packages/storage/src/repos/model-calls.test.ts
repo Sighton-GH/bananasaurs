@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import type { InstanceScope } from '../scope.js';
 import { addKey, removeKey } from './assistant-providers.js';
-import { modelUsage, reserveModelCall } from './model-calls.js';
+import { callsTodayForKeys, lastUsedAt, modelUsage, reserveModelCall } from './model-calls.js';
 
 const GUILD_ID = '123456789012345678';
 const MODEL = 'gemini-2.5-flash';
@@ -156,5 +156,32 @@ describe('removeKey cascade', () => {
     expect(callCount()).toBe(1);
     removeKey(scope, keyId);
     expect(callCount()).toBe(0);
+  });
+});
+
+describe('pool selection reads (ADR 0143)', () => {
+  it('lastUsedAt is the newest call for the key and model, 0 when never used', () => {
+    expect(lastUsedAt(scope, { keyId, model: MODEL })).toBe(0);
+    reserve({ now: 100 });
+    reserve({ now: 500 });
+    reserve({ now: 300, model: 'other-model' });
+    expect(lastUsedAt(scope, { keyId, model: MODEL })).toBe(500);
+    expect(lastUsedAt(scope, { keyId, model: 'other-model' })).toBe(300);
+  });
+  it('callsTodayForKeys counts one bucket across keys, only the model and today', () => {
+    const second = addKey(scope, { provider: 'gemini', label: 'Two', apiKeyEnc: 's2', now: 0 });
+    const third = addKey(scope, { provider: 'gemini', label: 'Three', apiKeyEnc: 's3', now: 0 });
+    reserve({ now: 1000 });
+    reserve({ now: 2000, key: second });
+    reserve({ now: 3000, key: third });
+    reserve({ now: 4000, key: second, model: 'other-model' });
+    reserve({ now: 5, key: second, dayStart: 0 });
+    expect(callsTodayForKeys(scope, { keyIds: [keyId, second], model: MODEL, dayStart: 10 })).toBe(
+      2,
+    );
+    expect(callsTodayForKeys(scope, { keyIds: [keyId, second], model: MODEL, dayStart: 0 })).toBe(
+      3,
+    );
+    expect(callsTodayForKeys(scope, { keyIds: [], model: MODEL, dayStart: 0 })).toBe(0);
   });
 });

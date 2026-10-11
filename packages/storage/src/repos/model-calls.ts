@@ -141,3 +141,46 @@ export const modelUsage = (scope: InstanceScope, input: ModelUsageInput): ModelU
           }),
     };
   });
+
+/**
+ * ADR 0143: pool selection reads. `lastUsedAt` is the newest call for one key
+ * and model (0 when never used); `callsTodayForKeys` counts today's calls for
+ * a model across every key in one quota bucket (keys sharing a project label).
+ * Read-only; the per-key reserve above is unchanged.
+ */
+export const lastUsedAt = (
+  scope: InstanceScope,
+  input: { readonly keyId: string; readonly model: string },
+): number =>
+  readInstance(scope, (db) => {
+    const row = db
+      .select({ at: sql<number | null>`max(${assistantModelCalls.at})` })
+      .from(assistantModelCalls)
+      .where(forKeyModel(input.keyId, input.model))
+      .get();
+    return Number(row?.at ?? 0);
+  });
+
+export const callsTodayForKeys = (
+  scope: InstanceScope,
+  input: { readonly keyIds: readonly string[]; readonly model: string; readonly dayStart: number },
+): number =>
+  input.keyIds.length === 0
+    ? 0
+    : readInstance(scope, (db) => {
+        const row = db
+          .select({ n: sql<number>`count(*)` })
+          .from(assistantModelCalls)
+          .where(
+            and(
+              sql`${assistantModelCalls.keyId} IN (${sql.join(
+                input.keyIds.map((k) => sql`${k}`),
+                sql`, `,
+              )})`,
+              eq(assistantModelCalls.model, input.model),
+              sql`${assistantModelCalls.at} >= ${input.dayStart}`,
+            ),
+          )
+          .get();
+        return Number(row?.n ?? 0);
+      });
