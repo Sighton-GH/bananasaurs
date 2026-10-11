@@ -103,6 +103,28 @@ const SETTINGS = [
     defaultValue: [],
     isDefault: true,
   },
+  {
+    key: 'assistant.pingMaxMembers',
+    group: 'Assistant replies',
+    label: 'Reply pings: max members',
+    help: 'How many members one assistant reply may ping. Only people the asker mentioned or named ever ping.',
+    display: 'count',
+    bounds: { min: 1, max: 5 },
+    value: 5,
+    defaultValue: 5,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.pingMaxRoles',
+    group: 'Assistant replies',
+    label: 'Reply pings: max roles',
+    help: 'How many roles one assistant reply may ping. Roles still pass the server ping rules.',
+    display: 'count',
+    bounds: { min: 1, max: 3 },
+    value: 3,
+    defaultValue: 3,
+    isDefault: true,
+  },
 ];
 
 const rowOf = (key: string) => screen.getByTestId(`tuning-row-${key}`);
@@ -120,6 +142,7 @@ describe('AssistantTuningPage', () => {
       'Assistant retries',
       'Assistant tool loop',
       'Assistant context',
+      'Assistant replies',
       'Network',
       'Resources',
     ]) {
@@ -128,6 +151,27 @@ describe('AssistantTuningPage', () => {
     for (const setting of SETTINGS) {
       expect(screen.getByLabelText(setting.label)).toBeTruthy();
     }
+  });
+
+  it('saves a ping cap as a plain count', async () => {
+    const updated = { ...SETTINGS.find((s) => s.key === 'assistant.pingMaxMembers')!, value: 4 };
+    const mock = stubFetch([
+      { url: TUNING_URL, body: { settings: SETTINGS } },
+      { method: 'PUT', url: tuningKeyUrl('assistant.pingMaxMembers'), body: { setting: updated } },
+    ]);
+    renderPage();
+    const input = await screen.findByLabelText('Reply pings: max members');
+    expect(input).toHaveProperty('value', '5');
+    fireEvent.change(input, { target: { value: '4' } });
+    await act(async () => {
+      fireEvent.click(
+        within(rowOf('assistant.pingMaxMembers')).getByRole('button', { name: 'Save' }),
+      );
+    });
+    const put = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
+    expect(put?.[1]).toMatchObject({ method: 'PUT' });
+    expect(bodyOf(put!)).toEqual({ value: 4 });
+    expect(await screen.findByText('Saved')).toBeTruthy();
   });
 
   it('saving the provider timeout converts seconds to milliseconds', async () => {

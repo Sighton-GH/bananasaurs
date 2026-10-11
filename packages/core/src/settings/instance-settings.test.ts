@@ -2,11 +2,36 @@ import { describe, expect, it } from 'vitest';
 import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 18 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(18);
+  it('has 20 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(20);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
+  });
+
+  it('registers the Slice 2 reply-ping caps with their bounds (ADR 0145)', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(20);
+    const members = settingDefinition('assistant.pingMaxMembers');
+    expect(members).toMatchObject({
+      group: 'Assistant replies',
+      label: 'Reply pings: max members',
+      defaultValue: 5,
+      bounds: { min: 1, max: 5 },
+    });
+    expect(members?.schema.safeParse(5).success).toBe(true);
+    expect(members?.schema.safeParse(0).success).toBe(false);
+    expect(members?.schema.safeParse(6).success).toBe(false);
+    const roles = settingDefinition('assistant.pingMaxRoles');
+    expect(roles).toMatchObject({
+      group: 'Assistant replies',
+      label: 'Reply pings: max roles',
+      defaultValue: 3,
+      bounds: { min: 1, max: 3 },
+    });
+    expect(roles?.schema.safeParse(3).success).toBe(true);
+    expect(roles?.schema.safeParse(4).success).toBe(false);
+    expect(isInstanceSettingKey('assistant.pingMaxMembers')).toBe(true);
+    expect(isInstanceSettingKey('assistant.pingMaxRoles')).toBe(true);
   });
 
   it('retry delays accept an empty list and refuse bad shapes', () => {
