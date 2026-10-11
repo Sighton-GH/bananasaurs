@@ -724,6 +724,42 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(new Set(trace?.discordMessageIds).size).toBe(3);
   });
 
+  it('posts reply pings in allowedMentions on part 1 only, and a retry keeps them without re-posting', async () => {
+    const user = '456789012345678901';
+    let providerCalls = 0;
+    const h = harness(() => {
+      providerCalls += 1;
+      return {
+        ok: true,
+        content: `<@${user}> ${'x'.repeat(4_500)}`,
+        pings: { userIds: [user], roles: [] },
+      };
+    });
+    const successful: OutgoingMessage[] = [];
+    let sends = 0;
+    h.send.mockImplementation(async (channelId: string, message: OutgoingMessage) => {
+      sends += 1;
+      if (sends === 2) throw new Error('discord 500');
+      successful.push(message);
+      return { channelId, messageId: `8290000000000002${String(sends).padStart(2, '0')}` };
+    });
+    const payload = mention({
+      invocationId: 'inv-ping',
+      messageId: '810000000000000014',
+      mentionedUserIds: [user],
+    });
+    const attempt1 = await h.run(payload);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(h.inputs[0]).toMatchObject({ mentionedUserIds: [user] });
+    const attempt2 = await h.run(payload, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(providerCalls).toBe(1);
+    expect(successful).toHaveLength(3);
+    expect(successful[0]?.allowedMentions).toEqual({ parse: [], users: [user] });
+    expect(successful[1]?.allowedMentions).toEqual({ parse: [] });
+    expect(successful[2]?.allowedMentions).toEqual({ parse: [] });
+  });
+
   it('a follow-up carries the first question and answer as history', async () => {
     const h = harness((input) => ({
       ok: true,

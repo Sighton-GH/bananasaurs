@@ -453,6 +453,12 @@ export const assistantInvokePayload = z.object({
    * may omit it — always best-effort, never fetched.
    */
   authorName: z.string().min(1).max(200).optional(),
+  /**
+   * The ids the asker's own message mentioned. They bound who a reply may
+   * ping (ADR 0145): the answer is model output and never widens the set.
+   */
+  mentionedUserIds: z.array(z.string().min(1)).max(50).optional(),
+  mentionedRoleIds: z.array(z.string().min(1)).max(50).optional(),
 });
 export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
 
@@ -542,6 +548,13 @@ export const assistantInvokeCursor = z.object({
        * invoke still writes them into the trace.
        */
       flags: z.array(z.string().min(1)).optional(),
+      /**
+       * ADR 0145: the reply pings the service resolved. Carried so a retry
+       * that skips the invoke posts the same `allowedMentions`.
+       */
+      pings: z
+        .object({ userIds: z.array(z.string().min(1)), roles: z.array(z.string().min(1)) })
+        .optional(),
       trace: invocationTrace.optional(),
       detail: assistantInvokeDetail.optional(),
     }),

@@ -5644,3 +5644,89 @@ describe('T7b live task destination verification', () => {
     expect((await check({ unknownTeam: true })).allowed).toBe(false);
   });
 });
+
+describe('Slice 2 T9: reply pings (ADR 0145)', () => {
+  const GUILD = B2B_GUILD;
+  let h: ReturnType<typeof setupB2b>;
+  beforeEach(() => {
+    h = setupB2b(['search-club']);
+  });
+  afterEach(() => h.t.close());
+
+  const answering = (text: string): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async () => ({ text, model: 'model-a' }),
+  });
+  const ask = (over: Record<string, unknown> = {}) => ({
+    guildId: GUILD,
+    channelId: B2B_CHANNEL,
+    userId: B2B_MEMBER,
+    callerRoleIds: [B2B_CLUB_ROLE],
+    behaviour: h.direct,
+    command: 'ask' as const,
+    input: { question: 'who has the build, Sam L?' },
+    source: 'mention' as const,
+    invocationId: 'int-ping-1',
+    mentionedUserIds: ['600000000000000002'],
+    mentionedRoleIds: [] as string[],
+    ...over,
+  });
+
+  it('keeps @Sam L verbatim and attaches no pings when the ping skill is denied', async () => {
+    assistantRepo.setSkillScope(
+      h.t.scopes.forGuild(GUILD),
+      { skillId: 'ping', mode: 'owner', roleIds: [] },
+      B2B_NOW,
+    );
+    const resolveReplyPings = vi.fn();
+    const service = h.serviceWith(answering('Ask @Sam L.'), {
+      memberChannels: async () => [],
+      resolveReplyPings,
+    });
+    const result = await service.invoke(ask());
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.content).toBe('Ask @Sam L.');
+    expect(result).not.toHaveProperty('pings');
+    expect(resolveReplyPings).not.toHaveBeenCalled();
+  });
+
+  it('attaches the pings and rewrites the content when the skill is allowed', async () => {
+    const resolveReplyPings = vi.fn(async () => ({
+      content: 'Ask <@600000000000000002>.',
+      userIds: ['600000000000000002'],
+      roles: [] as string[],
+    }));
+    const service = h.serviceWith(answering('Ask @Sam L.'), {
+      memberChannels: async () => [],
+      resolveReplyPings,
+    });
+    const result = await service.invoke(ask());
+    expect(result.ok && result.content).toBe('Ask <@600000000000000002>.');
+    expect(result.ok && result.pings).toEqual({
+      userIds: ['600000000000000002'],
+      roles: [],
+    });
+    expect(resolveReplyPings).toHaveBeenCalledWith({
+      askerId: B2B_MEMBER,
+      channelId: B2B_CHANNEL,
+      text: 'Ask @Sam L.',
+      askerText: 'who has the build, Sam L?',
+      mentionedUserIds: ['600000000000000002'],
+      mentionedRoleIds: [],
+    });
+  });
+
+  it('leaves the answer untouched when the invocation carries no mention fields', async () => {
+    const resolveReplyPings = vi.fn();
+    const service = h.serviceWith(answering('Ask @Sam L.'), {
+      memberChannels: async () => [],
+      resolveReplyPings,
+    });
+    const result = await service.invoke(
+      ask({ mentionedUserIds: undefined, mentionedRoleIds: undefined }),
+    );
+    expect(result.ok && result.content).toBe('Ask @Sam L.');
+    expect(resolveReplyPings).not.toHaveBeenCalled();
+  });
+});
