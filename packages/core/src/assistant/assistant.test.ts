@@ -6,6 +6,7 @@ import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
   createReminder,
+  DEFAULT_WIZARD_ANSWERS,
   deliverDueReminders,
   enabledResourcesForGuild,
   LEGACY_BOUNDARIES_SENTENCE,
@@ -553,7 +554,12 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       BOUNDARIES_ANSWER_BRIEFLY,
     ].join('\n');
     const compiled = compileAssistantContext({
-      behaviour: { ...behaviour, name: 'Default assistant', systemPrompt: stored },
+      behaviour: {
+        ...behaviour,
+        name: 'Default assistant',
+        systemPrompt: stored,
+        promptWizard: { ...DEFAULT_WIZARD_ANSWERS.club, botName: '' },
+      },
       serverCard: '',
       resources: [],
       skills: [],
@@ -567,6 +573,39 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(text).toContain(BOUNDARIES_HELPFUL);
     expect(text).not.toContain("say it's outside what you help with");
     for (const line of SOURCES_ORDER_LINES) expect(text).toContain(line);
+  });
+  it('keeps an owner-chosen bot name when the wizard answers name it', () => {
+    const stored = [
+      'ROLE',
+      'You are Racerbot, the assistant in the Discord server of Racer Club, a club. You help members.',
+    ].join('\n');
+    const compiled = compileAssistantContext({
+      behaviour: {
+        ...behaviour,
+        name: 'Racerbot',
+        systemPrompt: stored,
+        promptWizard: { ...DEFAULT_WIZARD_ANSWERS.club, botName: 'Racerbot' },
+      },
+      serverCard: '',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    const text = compiled.sections.find((s) => s.name === 'behaviour-prompt')!.text;
+    expect(text).toContain('You are Racerbot, the assistant');
+    expect(text).not.toContain('You are Bananasaurs, the assistant in the Discord server of');
+  });
+  it('leaves a hand-written ROLE line without wizard answers untouched', () => {
+    const prompt =
+      'You are Racerbot, the assistant in the Discord server of Racer Club. Be brief.';
+    const compiled = compileAssistantContext({
+      behaviour: { ...behaviour, name: 'Racerbot', systemPrompt: prompt },
+      serverCard: '',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(compiled.sections.find((s) => s.name === 'behaviour-prompt')!.text).toBe(prompt);
   });
   it('leaves a hand-written prompt that uses none of the old lines untouched', () => {
     const compiled = compileAssistantContext({

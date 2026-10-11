@@ -185,8 +185,14 @@ export const compileAssistantContext = (input: {
             .join('\n\n');
         })();
   const behaviourName = input.behaviour.name;
-  const rewriteLegacyWizard = (text: string): string =>
-    text
+  // The old wizard always wrote the ROLE line with a blank bot name, so its
+  // rewrite to Bananasaurs runs only for those stored prompts: a wizard run
+  // that named the bot, or a hand-written prompt, keeps its own name.
+  const legacyBlankBotName =
+    input.behaviour.promptWizard !== undefined &&
+    input.behaviour.promptWizard.botName.trim() === '';
+  const rewriteLegacyWizard = (text: string): string => {
+    const rewritten = text
       .replaceAll(LEGACY_BOUNDARIES_SENTENCE, BOUNDARIES_HELPFUL)
       .replaceAll(BOUNDARIES_ANSWER_BRIEFLY, BOUNDARIES_HELPFUL)
       .split('\n')
@@ -196,11 +202,14 @@ export const compileAssistantContext = (input: {
         if (trimmed === LEGACY_SOURCES_SENTENCE) return SOURCES_ORDER_LINES.join('\n');
         return line;
       })
-      .join('\n')
-      .replace(
-        `You are ${behaviourName}, the assistant in the Discord server of`,
-        'You are Bananasaurs, the assistant in the Discord server of',
-      );
+      .join('\n');
+    return legacyBlankBotName
+      ? rewritten.replace(
+          `You are ${behaviourName}, the assistant in the Discord server of`,
+          'You are Bananasaurs, the assistant in the Discord server of',
+        )
+      : rewritten;
+  };
   const behaviourPrompt = clean(
     rewriteLegacyWizard(
       dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
