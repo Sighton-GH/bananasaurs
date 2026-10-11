@@ -53,8 +53,15 @@ export const CAPABILITY_FIXTURES: readonly CapabilityFixture[] = [
   {
     message: 'can you create tasks?',
     asker: 'owner',
-    mustOffer: [],
+    mustOffer: ['create_task', 'list_tasks'],
     mustNotOffer: [],
     blockContains: ['complete, current list'],
+  },
+  {
+    message: 'who is Sam L',
+    asker: 'member',
+    mustOffer: ['find_member'],
+    mustNotOffer: [],
+    blockContains: ['This server ('],
   },
 ];
