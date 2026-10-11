@@ -1,6 +1,7 @@
 import {
   classifyProviderFailure,
   guardAnswer,
+  nextProviderDayStart,
   ProviderError,
   safeLogFields,
   sanitizeProviderMessage,
@@ -16,6 +17,7 @@ import {
   TOOL_CATALOGUE,
   TRUNCATION_SUFFIX,
 } from '@bananasaurs/core';
+import { assistantKeyCooldownsRepo, type InstanceScope } from '@bananasaurs/storage';
 import type { CitationRegistry } from './citations.js';
 import type { ChainEntry } from './model-chain.js';
 import { NOOP_RUN_RECORDER, type RunRecorder } from './run-recorder.js';
@@ -138,6 +140,11 @@ const nextUtcMidnight = (nowMs: number): number => {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
 };
 
+const cooldownSkipReason = (stored: string): string =>
+  stored === 'daily-quota' || stored === 'minute-quota' || stored === 'invalid-key'
+    ? stored
+    : 'cooldown';
+
 const isDailyCap = (err: unknown): err is ProviderError =>
   err instanceof ProviderError && err.kind === 'quota' && err.quotaScope === 'daily-free';
 
@@ -199,6 +206,13 @@ export const runToolLoop = async (input: {
   readonly tools?: LoopTools | undefined;
   readonly limits?: Partial<LoopLimits> | undefined;
   readonly quotaLedger?: QuotaLedger | undefined;
+  /**
+   * ADR 0143: when present, the persistent cooldown table decides which
+   * key and model pairs are skipped and records new cooldowns. When absent,
+   * no cooldown is read or written and the legacy in-memory ledger path runs
+   * unchanged (service wiring lands in S6-T13).
+   */
+  readonly instance?: InstanceScope | undefined;
   readonly reserveCall?: ReserveCall | undefined;
   readonly logger?: Pick<Logger, 'warn' | 'info'> | undefined;
   readonly guildId?: string | undefined;
@@ -361,7 +375,44 @@ export const runToolLoop = async (input: {
       logSkipped(entry.skip);
       continue;
     }
-    const isFree = entry.model.endsWith(':free');
+    const cooldownKeyId = entry.selectedKeyId ?? entry.keyId;
+    const cooldown =
+      input.instance === undefined
+        ? undefined
+        : assistantKeyCooldownsRepo.getCooldown(
+            input.instance,
+            cooldownKeyId,
+            entry.model,
+            input.now(),
+          );
+    if (cooldown !== undefined) {
+      const reason = cooldownSkipReason(cooldown.reason);
+      if (reason === 'daily-quota') {
+        sawDailyCap = true;
+        dailyResets.push(cooldown.until);
+      }
+      attempts.push({
+        provider: entry.providerId,
+        model: entry.model,
+        keyLabel: entry.keyLabel,
+        outcome: 'skipped',
+        reason,
+        ms: ms(),
+      });
+      recorder.event({
+        kind: 'model-skipped',
+        provider: entry.providerId,
+        model: entry.model,
+        keyId: cooldownKeyId,
+        reason,
+        availableAt: cooldown.until,
+      });
+      logSkipped(reason);
+      continue;
+    }
+    // Legacy in-memory path: only without a cooldown table (ADR 0143 moves
+    // the authority to the table once the service passes `instance`).
+    const isFree = input.instance === undefined && entry.model.endsWith(':free');
     const ledgerUntil = isFree
       ? (input.quotaLedger?.exhaustedUntil(entry.keyId, input.now()) ?? undefined)
       : undefined;
@@ -431,9 +482,11 @@ export const runToolLoop = async (input: {
       onDailyCap: (resetAt) => {
         sawDailyCap = true;
         dailyResets.push(resetAt);
+        if (input.instance !== undefined) return;
         cappedKeys.set(entry.keyId, resetAt);
         input.quotaLedger?.markExhausted(entry.keyId, resetAt ?? nextUtcMidnight(input.now()));
       },
+      instance: input.instance,
       reserveCall: input.reserveCall,
       logger: input.logger,
       guildId: input.guildId,
@@ -569,6 +622,7 @@ const runEntry = async (deps: {
   /** Task G3: round-1 declaration names actually sent, in first-sent order. */
   readonly recordOffered: (names: readonly string[]) => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
+  readonly instance?: InstanceScope | undefined;
   readonly reserveCall?: ReserveCall | undefined;
   readonly logger?: Pick<Logger, 'warn' | 'info'> | undefined;
   readonly guildId?: string | undefined;
@@ -647,6 +701,51 @@ const runEntry = async (deps: {
               : { reasoningTokens: err.emptyAnswer.reasoningTokens }),
           }
         : {};
+    /** ADR 0143: one cooldown row per failed key and model; fixed reasons only. */
+    const persistCooldown = (error: unknown): void => {
+      if (deps.instance === undefined || !(error instanceof ProviderError)) return;
+      const now = deps.now();
+      const base = {
+        keyId: entry.selectedKeyId ?? entry.keyId,
+        model: entry.model,
+        setAt: now,
+        ...(error.learnedLimit?.perDay === undefined
+          ? {}
+          : { learnedPerDay: error.learnedLimit.perDay }),
+        ...(error.learnedLimit?.perMinute === undefined
+          ? {}
+          : { learnedPerMinute: error.learnedLimit.perMinute }),
+      };
+      if (error.kind === 'quota' && error.quotaScope === 'day') {
+        assistantKeyCooldownsRepo.setCooldown(deps.instance, {
+          ...base,
+          until: nextProviderDayStart(entry.providerId, now),
+          reason: 'daily-quota',
+        });
+      } else if (error.kind === 'quota' && error.quotaScope === 'daily-free') {
+        assistantKeyCooldownsRepo.setCooldown(deps.instance, {
+          ...base,
+          until: error.resetAt ?? nextProviderDayStart(entry.providerId, now),
+          reason: 'daily-quota',
+        });
+      } else if (
+        (error.kind === 'quota' || error.kind === 'rate-limit') &&
+        (error.quotaScope === 'minute' ||
+          (error.kind === 'rate-limit' && error.retryAfterMs !== undefined))
+      ) {
+        assistantKeyCooldownsRepo.setCooldown(deps.instance, {
+          ...base,
+          until: now + (error.retryAfterMs ?? 60_000),
+          reason: 'minute-quota',
+        });
+      } else if (error.kind === 'authentication') {
+        assistantKeyCooldownsRepo.setCooldown(deps.instance, {
+          ...base,
+          until: Number.MAX_SAFE_INTEGER,
+          reason: 'invalid-key',
+        });
+      }
+    };
     const logFailure = (): void => {
       if (deps.logger === undefined) return;
       deps.logger.warn(
@@ -671,6 +770,7 @@ const runEntry = async (deps: {
         'provider attempt failed',
       );
     };
+    persistCooldown(err);
     if (isDailyCap(err)) {
       deps.onDailyCap(err.resetAt);
       pushFailedAttempt(
