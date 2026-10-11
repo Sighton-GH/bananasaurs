@@ -1,16 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildCapabilityBlock,
-  CLUB_ASSISTANT_SKILLS,
-  type AssistantSkill,
-} from '@bananasaurs/core';
+import { buildCapabilityBlock } from '@bananasaurs/core';
 import { CAPABILITY_FIXTURES } from './capability-fixtures.js';
 import { skillAccess } from './skill-access.js';
 import { toolDeclarations, type AssistantToolPorts } from './tools.js';
-
-const skillById = new Map<string, AssistantSkill>(
-  CLUB_ASSISTANT_SKILLS.map((skill) => [skill.id, skill]),
-);
 
 const fixturePorts = (skillAllowed: (skillId: string) => boolean): AssistantToolPorts => {
   const ports: AssistantToolPorts = {
@@ -82,7 +74,6 @@ describe('capability fixtures from the live transcripts', () => {
           reason: entry.reason,
         })),
       });
-      expect(skillById.size).toBeGreaterThan(0);
       for (const name of fixture.mustOffer) expect(declared).toContain(name);
       for (const name of fixture.mustNotOffer) expect(declared).not.toContain(name);
       for (const phrase of fixture.blockContains) expect(block).toContain(phrase);
