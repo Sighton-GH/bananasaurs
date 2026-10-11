@@ -2681,7 +2681,10 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     const provider: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text', 'tools']),
-      generateText: async (req) => { requests.push(req); return { text: 'done', model: 'model-a' }; },
+      generateText: async (req) => {
+        requests.push(req);
+        return { text: 'done', model: 'model-a' };
+      },
     };
     return { requests, provider };
   };
@@ -2689,7 +2692,11 @@ describe('B2b: per-skill scopes gate chat skills', () => {
   it('names the asker as not allowed reminders and never names set_reminder for them (ADR 0136)', async () => {
     const { requests, provider } = capture();
     await h.serviceWith(provider).invoke(
-      ask({ input: { question: 'set a reminder for 5pm' }, askerName: 'Kacey', invocationId: 'int-cap-1' }),
+      ask({
+        input: { question: 'set a reminder for 5pm' },
+        askerName: 'Kacey',
+        invocationId: 'int-cap-1',
+      }),
     );
     const system = requests[0]?.systemInstruction ?? '';
     expect(system).toContain('NOT AVAILABLE TO KACEY RIGHT NOW');
@@ -2701,7 +2708,12 @@ describe('B2b: per-skill scopes gate chat skills', () => {
   it('lists set_reminder for the owner and puts the date in the NOW section', async () => {
     const { requests, provider } = capture();
     await h.serviceWith(provider).invoke(
-      ask({ userId: OWNER, callerRoleIds: [], input: { question: 'set a reminder for 5pm' }, invocationId: 'int-cap-2' }),
+      ask({
+        userId: OWNER,
+        callerRoleIds: [],
+        input: { question: 'set a reminder for 5pm' },
+        invocationId: 'int-cap-2',
+      }),
     );
     const system = requests[0]?.systemInstruction ?? '';
     expect(system).toMatch(/- Reminders and scheduled posts \([^)]*set_reminder[^)]*\)/);
@@ -2713,7 +2725,10 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     const { requests, provider } = capture();
     await h.serviceWith(provider).invoke(
       ask({
-        userId: OWNER, callerRoleIds: [], askerName: 'Bryan', invocationId: 'int-cap-3',
+        userId: OWNER,
+        callerRoleIds: [],
+        askerName: 'Bryan',
+        invocationId: 'int-cap-3',
         input: { question: 'set one up' },
         history: [
           { role: 'user', text: '[Kacey, 3 min ago] sleep reminder' },
@@ -2722,7 +2737,9 @@ describe('B2b: per-skill scopes gate chat skills', () => {
       }),
     );
     const last = requests[0]?.messages.at(-1)?.text ?? '';
-    expect(last).toContain('Your abilities for Bryan are exactly what WHAT YOU CAN DO RIGHT NOW lists.');
+    expect(last).toContain(
+      'Your abilities for Bryan are exactly what WHAT YOU CAN DO RIGHT NOW lists.',
+    );
   });
 
   it('a non-owner denied by owner scope gets a plain NOT AVAILABLE line (ADR 0136)', async () => {

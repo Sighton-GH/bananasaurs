@@ -103,13 +103,19 @@ describe('buildUserMessage', () => {
     expect(text).toContain('Answer A"ma\'s current message.');
   });
   it('adds the abilities line before the answer line when asked (ADR 0136 decision 4)', () => {
-    const text = buildUserMessage({ question: 'set a reminder', askerName: 'Bryan', abilitiesNote: true });
+    const text = buildUserMessage({
+      question: 'set a reminder',
+      askerName: 'Bryan',
+      abilitiesNote: true,
+    });
     expect(text).toContain(
-      "Your abilities for Bryan are exactly what WHAT YOU CAN DO RIGHT NOW lists. An earlier reply here that says otherwise was to someone with different access, or is out of date.",
+      'Your abilities for Bryan are exactly what WHAT YOU CAN DO RIGHT NOW lists. An earlier reply here that says otherwise was to someone with different access, or is out of date.',
     );
     expect(text.trimEnd().endsWith("Answer Bryan's current message.")).toBe(true);
   });
   it('omits the abilities line by default', () => {
-    expect(buildUserMessage({ question: 'hi', askerName: 'Bryan' })).not.toContain('Your abilities for');
+    expect(buildUserMessage({ question: 'hi', askerName: 'Bryan' })).not.toContain(
+      'Your abilities for',
+    );
   });
 });

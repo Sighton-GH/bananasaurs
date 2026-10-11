@@ -571,8 +571,7 @@ export const formatClock = (timeZone: string, at: number): string =>
     hourCycle: 'h23',
   }).format(at);
 
-const clock = (ports: AssistantToolPorts, at: number): string =>
-  formatClock(ports.timeZone, at);
+const clock = (ports: AssistantToolPorts, at: number): string => formatClock(ports.timeZone, at);
 
 /**
  * "3 hours ago" / "not fetched yet" for catalogue and search_sources lines.

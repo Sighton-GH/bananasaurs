@@ -24,7 +24,9 @@ export const buildUserMessage = (input: UserMessageInput): string => {
     parts.push(input.quoteEnvelope);
   parts.push(currentBlock);
   if (input.abilitiesNote === true)
-    parts.push(`Your abilities for ${name} are exactly what WHAT YOU CAN DO RIGHT NOW lists. An earlier reply here that says otherwise was to someone with different access, or is out of date.`);
+    parts.push(
+      `Your abilities for ${name} are exactly what WHAT YOU CAN DO RIGHT NOW lists. An earlier reply here that says otherwise was to someone with different access, or is out of date.`,
+    );
   parts.push(answerLine);
   return parts.join('\n\n');
 };
