@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { parseGuildId, ProviderError } from '@bananasaurs/core';
 import {
   accountRepo,
+  assistantProvidersRepo,
   authzRepo,
   effectRepo,
   eligibilityRepo,
@@ -34,6 +35,9 @@ interface FakeKey {
   label: string;
   costClass: 'free' | 'paid' | 'unknown';
   enabled: boolean;
+  project?: string | null;
+  fingerprint?: string | null;
+  createdAt?: number;
 }
 
 const cookieFrom = (header: string | string[] | undefined): string =>
@@ -65,7 +69,15 @@ const auditText = (): string =>
 const fakeStore = (
   over: {
     keys?: FakeKey[];
-    chain?: { keyId: string; model: string; rpmLimit?: number | null; rpdLimit?: number | null }[];
+    chain?: {
+      keyId: string;
+      model: string;
+      rpmLimit?: number | null;
+      rpdLimit?: number | null;
+      pool?: 'key' | 'provider';
+      tier?: 'standard' | 'light';
+    }[];
+    cooldowns?: { keyId: string; model?: string; reason: string }[];
     eligibility?: Record<string, { trainsOnInput: string; productionUseAllowed: boolean }>;
     webSearch?: { keyConfigured: boolean; enabled: boolean; source: 'brave' | 'tavily' };
     githubConfigured?: boolean;
@@ -103,7 +115,13 @@ const fakeStore = (
     model: string;
     rpmLimit?: number | null;
     rpdLimit?: number | null;
+    pool?: 'key' | 'provider';
+    tier?: 'standard' | 'light';
   }[] = over.chain ?? [{ keyId: 'key_a', model: 'gemini-2.5-flash' }];
+  let savedChainRows: typeof chain = [];
+  let cooldowns: { keyId: string; model: string; reason: string }[] = (over.cooldowns ?? []).map(
+    (row) => ({ keyId: row.keyId, model: row.model ?? 'gemini-2.5-flash', reason: row.reason }),
+  );
   let next = 1;
   const eligibility = over.eligibility ?? {
     gemini: { trainsOnInput: 'no', productionUseAllowed: true },
@@ -124,7 +142,14 @@ const fakeStore = (
     }),
     save: () => undefined,
     keys: () => keys.map((k) => ({ ...k })),
-    addKey: (input: { provider: string; label: string; costClass?: string }) => {
+    addKey: (input: {
+      provider: string;
+      label: string;
+      apiKey?: string;
+      project?: string;
+      costClass?: string;
+      fingerprint?: string;
+    }) => {
       const keyId = `key_new_${String(next++)}`;
       keys.push({
         keyId,
@@ -132,6 +157,8 @@ const fakeStore = (
         label: input.label,
         costClass: (input.costClass ?? 'unknown') as FakeKey['costClass'],
         enabled: true,
+        ...(input.project === undefined ? {} : { project: input.project }),
+        ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }),
       });
       return keyId;
     },
@@ -221,9 +248,31 @@ const fakeStore = (
         model: string;
         rpmLimit?: number | null;
         rpdLimit?: number | null;
+        pool?: 'key' | 'provider';
+        tier?: 'standard' | 'light';
       }[],
     ) => {
+      savedChainRows = rows.map((r) => ({ ...r }));
       chain = rows.map((r) => ({ ...r }));
+    },
+    savedChain: () => savedChainRows.map((r) => ({ ...r })),
+    cooldowns: () => cooldowns.map((row) => ({ ...row })),
+    setCooldown: (input: {
+      keyId: string;
+      model: string;
+      until: number;
+      reason: string;
+      setAt: number;
+    }) => {
+      cooldowns = [
+        ...cooldowns.filter((row) => !(row.keyId === input.keyId && row.model === input.model)),
+        { keyId: input.keyId, model: input.model, reason: input.reason },
+      ];
+    },
+    clearCooldowns: (keyId: string, model?: string) => {
+      cooldowns = cooldowns.filter(
+        (row) => row.keyId !== keyId || (model !== undefined && row.model !== model),
+      );
     },
     ...(over.modelUsage === undefined ? {} : { modelUsage: over.modelUsage }),
     ...(over.modelListing === undefined ? {} : { modelListing: over.modelListing }),
@@ -1144,6 +1193,465 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       file: false,
       tools: false,
       reasoning: false,
+    });
+  });
+});
+
+describe('bulk keys and recommended chain (ADR 0143)', () => {
+  const rebuildWithStore = async (store: unknown): Promise<void> => {
+    deps = {
+      ...deps,
+      assistantProviderConfig: store as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+  };
+
+  it('refuses a non-owner on both routes without touching the store', async () => {
+    const base = fakeStore();
+    let addKeyCalls = 0;
+    let saveChainCalls = 0;
+    const store = {
+      ...base,
+      addKey: (input: Parameters<typeof base.addKey>[0]) => {
+        addKeyCalls += 1;
+        return base.addKey(input);
+      },
+      saveChain: (rows: Parameters<typeof base.saveChain>[0]) => {
+        saveChainCalls += 1;
+        base.saveChain(rows);
+      },
+    };
+    await rebuildWithStore(store);
+    const operator = await signInAs('operator');
+    for (const url of ['/api/assistant/keys/bulk', '/api/assistant/model-chain/recommended']) {
+      const response = await app.inject({
+        method: 'POST',
+        url,
+        headers: { cookie: operator.cookie, [CSRF_HEADER]: operator.csrf },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error: 'owner-only' });
+    }
+    expect(addKeyCalls).toBe(0);
+    expect(saveChainCalls).toBe(0);
+  });
+
+  it('pastes many keys at once, deduping by fingerprint without ever returning key text', async () => {
+    const store = fakeStore({
+      keys: [
+        {
+          keyId: 'key_a',
+          provider: 'gemini',
+          label: 'Main key',
+          costClass: 'free',
+          enabled: true,
+          fingerprint: assistantProvidersRepo.fingerprintOf('AIza-test-one'),
+        },
+      ],
+    });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      headers,
+      payload: {
+        provider: 'gemini',
+        project: 'Car Team A',
+        keysText: 'AIza-test-one\nAIza-test-two\nAIza-test-two',
+      },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ added: 1, duplicates: 2 });
+    expect(JSON.stringify(first.json())).not.toContain('AIza-');
+    const addedKey = store
+      .keys()
+      .find((key) => key.fingerprint === assistantProvidersRepo.fingerprintOf('AIza-test-two'));
+    expect(addedKey).toMatchObject({ provider: 'gemini', project: 'Car Team A' });
+    const audit = auditRows().filter((row) => row.action === 'assistant_provider.keys_pasted');
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit[0])).not.toContain('AIza-');
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      headers,
+      payload: {
+        provider: 'gemini',
+        project: 'Car Team A',
+        keysText: 'AIza-test-one\nAIza-test-two\nAIza-test-two',
+      },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ added: 0, duplicates: 3 });
+  });
+
+  it('refuses an empty paste and a bad project label', async () => {
+    const owner = await signInAs('owner');
+    for (const payload of [
+      { provider: 'gemini', keysText: '   \n ' },
+      { provider: 'gemini', project: 'x'.repeat(81), keysText: 'AIza-test-two' },
+    ]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/assistant/keys/bulk',
+        headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('recommended setup builds the Gemini chain then owner OpenRouter entries', async () => {
+    const store = fakeStore({
+      keys: [
+        {
+          keyId: 'key_b',
+          provider: 'gemini',
+          label: 'B',
+          costClass: 'free',
+          enabled: true,
+          createdAt: 2_000,
+        },
+        {
+          keyId: 'key_a',
+          provider: 'gemini',
+          label: 'A',
+          costClass: 'free',
+          enabled: true,
+          createdAt: 1_000,
+        },
+        { keyId: 'key_o', provider: 'openrouter', label: 'O', costClass: 'free', enabled: true },
+      ],
+      chain: [
+        { keyId: 'key_a', model: 'gemini-2.5-flash' },
+        { keyId: 'key_o', model: 'owner-model' },
+      ],
+    });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/recommended',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, count: 4 });
+    const saved = store.savedChain();
+    expect(saved.map((entry) => entry.model)).toEqual([
+      'gemini-3.8-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
+      'owner-model',
+    ]);
+    expect(saved.slice(0, 3).every((entry) => entry.pool === 'provider')).toBe(true);
+    expect(saved[0]).toMatchObject({ keyId: 'key_a', rpmLimit: 5, rpdLimit: 20 });
+    expect(saved[2]).toMatchObject({ rpmLimit: 15, rpdLimit: 500 });
+    expect(saved[3]).toMatchObject({ keyId: 'key_o', pool: 'key' });
+    const audit = auditRows().find((row) => row.action === 'assistant_provider.chain_saved');
+    expect(audit).toBeTruthy();
+  });
+
+  it('recommended setup refuses when no Gemini key exists', async () => {
+    const store = fakeStore({
+      keys: [
+        { keyId: 'key_o', provider: 'openrouter', label: 'O', costClass: 'free', enabled: true },
+      ],
+      chain: [],
+    });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/recommended',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'no-gemini-key' });
+  });
+
+  it('recommended setup refuses when the result would exceed six entries', async () => {
+    const store = fakeStore({
+      keys: [
+        { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
+        { keyId: 'key_o1', provider: 'openrouter', label: 'O1', costClass: 'free', enabled: true },
+        { keyId: 'key_o2', provider: 'openrouter', label: 'O2', costClass: 'free', enabled: true },
+        { keyId: 'key_o3', provider: 'openrouter', label: 'O3', costClass: 'free', enabled: true },
+        { keyId: 'key_o4', provider: 'openrouter', label: 'O4', costClass: 'free', enabled: true },
+      ],
+      chain: [
+        { keyId: 'key_o1', model: 'owner-model-1' },
+        { keyId: 'key_o2', model: 'owner-model-2' },
+        { keyId: 'key_o3', model: 'owner-model-3' },
+        { keyId: 'key_o4', model: 'owner-model-4' },
+      ],
+    });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/recommended',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'too-many' });
+  });
+
+  it('re-test clears an invalid-key cooldown on success', async () => {
+    const store = fakeStore({ cooldowns: [{ keyId: 'key_a', reason: 'invalid-key' }] });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true });
+    expect(store.cooldowns()).toEqual([]);
+  });
+
+  it('re-test records an invalid-key cooldown when the provider rejects the key', async () => {
+    const base = fakeStore();
+    const store = {
+      ...base,
+      chain: () =>
+        base.chain().map((entry) =>
+          entry.provider === undefined
+            ? entry
+            : {
+                ...entry,
+                provider: {
+                  ...entry.provider,
+                  generateText: async (): Promise<{ text: string; model: string }> => {
+                    throw new ProviderError('authentication', 'HTTP 401', false, {
+                      status: 401,
+                    });
+                  },
+                },
+              },
+        ),
+    };
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: false, failure: { code: 'provider-auth' } });
+    expect(store.cooldowns()).toEqual([
+      { keyId: 'key_a', model: 'gemini-2.5-flash', reason: 'invalid-key' },
+    ]);
+  });
+
+  it('PATCH with a new apiKey clears the cooldowns on that key', async () => {
+    const store = fakeStore({ cooldowns: [{ keyId: 'key_a', reason: 'invalid-key' }] });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/assistant/keys/key_a',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { apiKey: 'AIza-test-three' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(res.json())).not.toContain('AIza-test-three');
+    expect(store.cooldowns()).toEqual([]);
+  });
+
+  it('PUT passes pool and tier through saveChain and the audit', async () => {
+    const store = fakeStore();
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/model-chain',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: {
+        entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash', pool: 'provider', tier: 'light' }],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(store.savedChain()[0]).toMatchObject({ pool: 'provider', tier: 'light' });
+    const audit = auditRows().find((row) => row.action === 'assistant_provider.chain_saved');
+    expect(audit?.after).toContain('"pool":"provider"');
+    expect(audit?.after).toContain('"tier":"light"');
+  });
+
+  it('never stores pasted key text in a label after a bulk paste', async () => {
+    const store = fakeStore();
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const pasted = ['AIza-secret-alpha', 'AIza-secret-beta', 'AIza-secret-gamma'];
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      headers,
+      payload: { provider: 'gemini', keysText: pasted.join('\n') },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ added: 3, duplicates: 0 });
+    const labels = store
+      .keys()
+      .filter((key) => key.fingerprint !== undefined && key.fingerprint !== null)
+      .map((key) => key.label);
+    expect(labels).toHaveLength(3);
+    for (const label of labels) {
+      for (const text of pasted) expect(label).not.toContain(text);
+      expect(label).not.toContain('AIza');
+    }
+    const listed = await app.inject({ method: 'GET', url: '/api/assistant/providers', headers });
+    expect(listed.statusCode).toBe(200);
+    for (const text of pasted) expect(listed.body).not.toContain(text);
+  });
+
+  describe('model-chain test cooldown only on provider-auth', () => {
+    const failingStore = (error: unknown) => {
+      const base = fakeStore();
+      return {
+        ...base,
+        chain: () =>
+          base.chain().map((entry) =>
+            entry.provider === undefined
+              ? entry
+              : {
+                  ...entry,
+                  provider: {
+                    ...entry.provider,
+                    generateText: async (): Promise<{ text: string; model: string }> => {
+                      throw error;
+                    },
+                  },
+                },
+          ),
+      };
+    };
+    const cases: [string, () => unknown][] = [
+      ['500', () => new ProviderError('outage', 'HTTP 500', true, { status: 500 })],
+      ['429', () => new ProviderError('rate-limit', 'HTTP 429', true, { status: 429 })],
+      [
+        'network failure',
+        () => new ProviderError('outage', 'fetch failed', true, { netCode: 'ECONNRESET' }),
+      ],
+    ];
+    for (const [name, make] of cases) {
+      it(`a ${name} does not create an invalid-key cooldown`, async () => {
+        const store = failingStore(make());
+        await rebuildWithStore(store);
+        const owner = await signInAs('owner');
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/assistant/model-chain/test',
+          headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+          payload: { position: 0 },
+        });
+        expect(res.statusCode).toBe(200);
+        const body = res.json<{ ok: boolean; failure?: { code: string } }>();
+        expect(body.ok).toBe(false);
+        expect(body.failure?.code).not.toBe('provider-auth');
+        expect(store.cooldowns()).toEqual([]);
+      });
+    }
+  });
+
+  describe('recommended chain anchoring and bound', () => {
+    const post = async (store: unknown) => {
+      await rebuildWithStore(store);
+      const owner = await signInAs('owner');
+      return app.inject({
+        method: 'POST',
+        url: '/api/assistant/model-chain/recommended',
+        headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+        payload: {},
+      });
+    };
+    const openrouterKeys = (n: number): FakeKey[] =>
+      Array.from({ length: n }, (_, i) => ({
+        keyId: `key_o${String(i + 1)}`,
+        provider: 'openrouter',
+        label: `O${String(i + 1)}`,
+        costClass: 'free' as const,
+        enabled: true,
+      }));
+    const ownerChain = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        keyId: `key_o${String(i + 1)}`,
+        model: `owner-model-${String(i + 1)}`,
+      }));
+
+    it('anchors the three Gemini entries to the oldest key regardless of list order', async () => {
+      const store = fakeStore({
+        keys: [
+          {
+            keyId: 'key_mid',
+            provider: 'gemini',
+            label: 'M',
+            costClass: 'free',
+            enabled: true,
+            createdAt: 2_000,
+          },
+          {
+            keyId: 'key_old',
+            provider: 'gemini',
+            label: 'Old',
+            costClass: 'free',
+            enabled: true,
+            createdAt: 1_000,
+          },
+          {
+            keyId: 'key_new',
+            provider: 'gemini',
+            label: 'N',
+            costClass: 'free',
+            enabled: true,
+            createdAt: 3_000,
+          },
+        ],
+        chain: [],
+      });
+      const res = await post(store);
+      expect(res.statusCode).toBe(200);
+      const saved = store.savedChain();
+      expect(saved).toHaveLength(3);
+      expect(saved.map((entry) => entry.keyId)).toEqual(['key_old', 'key_old', 'key_old']);
+    });
+
+    it('succeeds with exactly six entries (3 Gemini + 3 existing)', async () => {
+      const store = fakeStore({
+        keys: [
+          { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
+          ...openrouterKeys(3),
+        ],
+        chain: ownerChain(3),
+      });
+      const res = await post(store);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, count: 6 });
+      expect(store.savedChain()).toHaveLength(6);
+    });
+
+    it('refuses seven entries with 400 too-many and saves nothing', async () => {
+      const store = fakeStore({
+        keys: [
+          { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
+          ...openrouterKeys(4),
+        ],
+        chain: ownerChain(4),
+      });
+      const res = await post(store);
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'too-many' });
+      expect(store.savedChain()).toEqual([]);
     });
   });
 });
