@@ -8,14 +8,21 @@ import {
   JOB_KINDS,
   nextOccurrence,
   neutraliseMarkers,
+  orderChainByTier,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
   resourceRefreshDedupeKey,
+  routeRun,
   SafeProvider,
   safeLogFields,
+  settingDefinition,
   stripNewTopic,
   type AssistantTrace,
+  type ChainTier,
+  type InstanceSettingKey,
+  type InstanceSettingValues,
+  type RouterRules,
   type ChannelAccess,
   type CompiledAssistantContext,
   type Config,
@@ -31,6 +38,7 @@ import {
   assistantRepo,
   conversationRepo,
   eligibilityRepo,
+  instanceSettingsRepo,
   jobRepo,
   resourceCacheRepo,
   runRepo,
@@ -324,6 +332,7 @@ export const createAssistantService = (
   webSearch: (guildId: string) => WebSearchRun | undefined = () => undefined,
 ): AssistantCommandService & {
   tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
+  backgroundTier(job: 'summary' | 'daily-digest'): ChainTier;
 } => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
@@ -372,6 +381,46 @@ export const createAssistantService = (
    * independent.
    */
   const ledger = quotaLedger;
+  /**
+   * ADR 0144: one owner-edited instance setting, parsed against the
+   * registry's schema. An absent row or a value that fails the schema
+   * falls back to the registry default — so an empty chip list (the
+   * registry requires at least one entry) falls back to the shipped
+   * keywords or greeting patterns.
+   */
+  const readInstanceSetting = <K extends InstanceSettingKey>(
+    stored: ReadonlyMap<string, string>,
+    key: K,
+  ): InstanceSettingValues[K] => {
+    const definition = settingDefinition(key);
+    const raw = stored.get(key);
+    if (definition !== undefined && raw !== undefined) {
+      try {
+        const parsed = definition.schema.safeParse(JSON.parse(raw));
+        if (parsed.success) return parsed.data as InstanceSettingValues[K];
+      } catch {
+        // A row that is not valid JSON falls back to the default too.
+      }
+    }
+    return definition?.defaultValue as InstanceSettingValues[K];
+  };
+  const storedSettings = (): ReadonlyMap<string, string> =>
+    new Map(instanceSettingsRepo.listSettings(instance).map((row) => [row.key, row.valueJson]));
+  /**
+   * ADR 0144: the router's rules, read fresh at each run start so a
+   * dashboard change is live on the next request.
+   */
+  const readRouterRules = (): RouterRules => {
+    const stored = storedSettings();
+    return {
+      enabled: readInstanceSetting(stored, 'assistant.routerEnabled') === 1,
+      maxChars: readInstanceSetting(stored, 'assistant.routerMaxChars'),
+      fullModelKeywords: readInstanceSetting(stored, 'assistant.routerFullModelKeywords'),
+      greetingPatterns: readInstanceSetting(stored, 'assistant.routerGreetingPatterns'),
+      longThreadTurns: readInstanceSetting(stored, 'assistant.routerLongThreadTurns'),
+      escalateOnTool: readInstanceSetting(stored, 'assistant.routerEscalateOnTool') === 1,
+    };
+  };
   /**
    * ADR 0090 D3: `from` (a member mention, id or name — model output, so
    * untrusted) resolves to exactly one member id in code. An exact
@@ -1259,6 +1308,30 @@ export const createAssistantService = (
       // prompt's shape (names, counts and token estimates) but never its
       // text.
       const recorder = input.recorder ?? NOOP_RUN_RECORDER;
+      // ADR 0144: the run's first step is the routing decision. The router
+      // is deterministic and spends no provider request; mentions are
+      // stripped before it classifies, exactly as they are for the prompt.
+      const routerRules = readRouterRules();
+      const routed = routeRun(
+        {
+          text: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
+          hasAttachments: input.hasAttachments === true,
+          hasQuoteOrReply:
+            (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '') ||
+            input.quoteInHistory === true,
+          earlierTurns: historyForLoop.length,
+        },
+        routerRules,
+      );
+      recorder.event({ kind: 'routed', tier: routed.tier, reason: routed.reason });
+      // A light run tries light entries first, then standard in order; a
+      // standard run tries standard in order, then light as the last resort.
+      // `tier` defaults to standard (spec 6e) for chains built before Slice 6.
+      const tieredChain: readonly ChainEntry[] = chainEntries.map((entry) => ({
+        ...entry,
+        tier: entry.tier ?? 'standard',
+      }));
+      let loopChain: readonly ChainEntry[] = orderChainByTier(tieredChain, routed.tier);
       recorder.event({
         kind: 'context-built',
         sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope)
@@ -1277,8 +1350,7 @@ export const createAssistantService = (
       // known resources are citable, so an untrusted title never prints raw.
       const isKnownResource = (source: { title: string; url: string }): boolean =>
         knownResource.has(`${source.title}${source.url}`);
-      const loop = await runToolLoop({
-        chain: chainEntries,
+      const loopArgs: Omit<Parameters<typeof runToolLoop>[0], 'chain' | 'instance'> = {
         systemInstruction:
           context.systemInstruction +
           (isIt
@@ -1326,14 +1398,38 @@ export const createAssistantService = (
         now,
         citations,
         isCitable: isKnownResource,
-      });
+      };
+      // ADR 0143: with the instance scope passed, the persistent cooldown
+      // table decides which key and model pairs are skipped and records new
+      // cooldowns; the legacy in-memory ledger path stays for callers
+      // without one.
+      let loop = await runToolLoop({ chain: loopChain, instance, ...loopArgs });
+      // ADR 0144: a light run that called a tool was not simple — with
+      // escalate-on-tool on, the rest of the run re-runs standard-first and
+      // the switch is audited. The loop owns the rounds inside one entry, so
+      // the service re-runs the run on the re-ordered chain rather than
+      // swapping entries mid-loop.
+      const answeredEntry = loopChain.find(
+        (entry) => entry.model === loop.answeredBy?.model && entry.keyId === loop.answeredBy?.keyId,
+      );
+      if (
+        routed.tier === 'light' &&
+        routerRules.escalateOnTool &&
+        loop.outcome === 'answered' &&
+        loop.toolCalls.length > 0 &&
+        answeredEntry?.tier === 'light'
+      ) {
+        recorder.event({ kind: 'routed', tier: 'standard', reason: 'escalated-after-tool' });
+        loopChain = orderChainByTier(tieredChain, 'standard');
+        loop = await runToolLoop({ chain: loopChain, instance, ...loopArgs });
+      }
       // The loop records exactly one attempt per entry, in chain order, so
       // each attempt lines up with the entry that produced it.
       let warnedMayTrain = false;
       loop.attempts.forEach((attempt, index) => {
         if (
           attempt.outcome !== 'skipped' &&
-          chainEntries[index]?.mayTrain === true &&
+          loopChain[index]?.mayTrain === true &&
           !warnedMayTrain
         ) {
           warnedMayTrain = true;
@@ -1522,6 +1618,18 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
   };
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
+    /**
+     * ADR 0144: background jobs never run the router — their tier is the
+     * owner-set forced tier for the job (`routed` reason
+     * `background-tier`). The summary and daily-digest wiring reads it here
+     * so the setting stays the single source of truth.
+     */
+    backgroundTier(job: 'summary' | 'daily-digest'): ChainTier {
+      const stored = storedSettings();
+      return job === 'summary'
+        ? readInstanceSetting(stored, 'assistant.routerSummaryTier')
+        : readInstanceSetting(stored, 'assistant.routerDailyDigestTier');
+    },
     async invoke(input: AssistantInvocation) {
       const started = now();
       const sink: {
