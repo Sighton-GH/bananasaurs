@@ -333,6 +333,25 @@ A test asserts that no refusal is a bare "not allowed".
 
 ### Slice 2: New abilities
 
+**Built on `instinct/s2-t11` @ `d534c43e` (implementation base), not yet merged.** ADRs 0145–0147;
+migration `drizzle/0107_parallel_search_source.sql`. Slice gate: run by the Slice 2 lead, see
+`slice-2-REPORT.md`. This docs-only record is based on code inspection, not a fresh full gate run.
+
+**Build differences and checks:**
+- The names-map sanitiser exists. current-question names are wired by S2-T12
+  (planned, not in `d534c43e`); the lead verifies at integration.
+- Member lookup exposes display name, username and up to 10 role names per match to any member who can
+  ask the assistant, without a separate skill gate. The owner may want to restrict this disclosure.
+- The tasks skill defaults to owner, not leads. Creation additionally requires team-lead or president
+  authority; listing uses the asker's teams; progress is assignee-only with current team membership.
+  Creation checks the current destination like MCP and caps the future due date at two years.
+- Only the first part of a multi-part reply carries ping permissions.
+- The add-key POST route applies Parallel's 4,500 monthly default when omitted, and the dashboard
+  pre-fills it. Storage still defaults to 1,000; explicit limits or no limit are preserved.
+- Migration 0107 rebuilds two tables (`assistant_provider_config`, `assistant_search_keys`), adds
+  reminder style and seeds Parallel's training eligibility row. Live migration and upstream Parallel
+  response behaviour have not been verified in this docs-only task.
+
 **2a. Mentions become names, not `@user`.**
 - `sanitizeMentionsForProvider` gets the event's `mentionedUserIds` and role ids. It renders `@Sam L` and
   `@Car Team A` using guild display names, through the existing display-name sanitiser.
@@ -735,7 +754,7 @@ Where a value is a list (keywords, greeting patterns), the control is an editabl
 | Slice | Depends on | ADR (next free: 0136) | Migration | Size |
 |---|---|---|---|---|
 | 1 Capability truth + web-search skill | — | 0136 capability block, prompt order, web-search skill; amend 0085 (tool names), 0087 (NOT AVAILABLE wording); 0137 later-round tools (D2, amends 0071 and the hard rule 3 text in CLAUDE.md) | none (history marker reads the trace) | M |
-| 2 New abilities | 1 | 0138 reply pings (members + roles) + mention names; 0139 assistant task tools; 0140 Parallel search source (rule 5 + rule 8) | one (`search_source` CHECK); numbers follow job-lanes 0105–0106 | M–L |
+| 2 New abilities | 1 | 0145 member names, lookup, reply pings and scheduled style; 0146 assistant task tools; 0147 Parallel search source (rule 5 + rule 8) | `drizzle/0107_parallel_search_source.sql`: rebuilds provider config and search-key tables, widens source CHECKs, adds reminder style, seeds Parallel eligibility | M–L |
 | 3 Streaming (incl. Gemini) | — (job-lanes merged) | 0141 streaming, idle timeout, finish reasons, live buffer; amends 0129 §6 if D5(b) | none | M |
 | 4 Attachments | 1 (4a), 1g + 6 (4c, 4d) | 0142 attachment fetch destination, images and PDFs to providers (native only); PRIVACY.md | none | M–L |
 | 5 Daily digest | 1 | 0143 daily digest and automatic memory proposals | one (`assistant_daily_digests`, run `source` CHECK) | M |

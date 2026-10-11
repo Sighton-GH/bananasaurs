@@ -1,6 +1,18 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-10 (assistant capability truth, ADRs 0136–0137).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-11 (assistant new abilities, ADRs 0145–0147).
+
+---
+
+**Assistant new abilities (Slice 2 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) - built on `instinct/s2-t11`, not yet merged (ADRs 0145–0147, migration `drizzle/0107_parallel_search_source.sql`).**
+
+- **Names and lookup (ADR 0145):** the display-name sanitiser accepts a names map. Current-question names are wired by S2-T12 (planned, not in `d534c43e`); the lead verifies at integration. `find_member` is read-only, available to any member who can ask the assistant, and returns up to 5 matches with display name, username and up to 10 role names, never ids. The owner may want to restrict this lookup disclosure.
+- **Reply pings (ADR 0145, D3):** the model writes `@Name`; code pings only exact matches for members or roles the asker mentioned or named. Limits are at most 5 members and 3 roles, configurable downward. `@everyone`/`@here` never ping; inline and fenced code are skipped; roles pass ADR 0117 and non-mentionable roles need the asker's Mention Everyone permission. The ping skill and the asker's Send permission must pass. Only part 1 of a multi-part reply carries ping permissions; later parts do not ping. Delivery resumes from the durable posted-parts cursor on retry.
+- **Scheduled messages (ADR 0145):** `set_reminder` `style: "message"` posts text without the reminder frame, using the same storage, delivery, ping checks, edit and cancel paths. Configured pings may precede the text; mass mentions are neutralised and text is capped to fit Discord. Style is fixed at creation.
+- **Task tools (ADR 0146, D4a):** the tasks skill defaults to owner; the owner must grant other roles access. `TaskContextPort.access` also checks authority: `create_task` needs the team's lead or the president; `list_tasks` shows only the asker's teams; `task_progress` requires the asker to be assigned to the task and still on its team. Creation checks the current destination channel against the MCP-equivalent team/channel and Write rules and requires a future due date within two years. Task and progress-note keys are deterministic from the invocation key and content.
+- **Parallel search (ADR 0147, D11):** third web-search source, REST fast mode behind the configured source, with sealed keys and reserve-before-send limits. The eligibility row discloses training. The POST search-keys route applies 4,500/month when a new Parallel key omits its limit, and the dashboard pre-fills 4,500; storage's generic default stays 1,000/month. Explicit limits, including no limit, are preserved.
+- **Migration:** `drizzle/0107_parallel_search_source.sql` rebuilds `assistant_provider_config` and `assistant_search_keys` to widen the source checks, adds reminder style and seeds Parallel eligibility. Its live application has not been verified here.
+- **Slice gate:** run by the Slice 2 lead, see `slice-2-REPORT.md`. This docs-only task did not run typecheck, lint or the full test suite.
 
 ---
 
