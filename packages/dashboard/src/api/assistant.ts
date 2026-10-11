@@ -295,6 +295,38 @@ export interface ChainTestResponse {
   readonly failure?: ChainTestFailure;
 }
 export const GITHUB_TOKEN_URL = '/api/assistant/github-token';
+/** Slice 6 (ADR 0143/0144): bulk key paste, recommended Gemini chain, safe model check. */
+export const BULK_KEYS_URL = '/api/assistant/keys/bulk';
+export const RECOMMENDED_CHAIN_URL = '/api/assistant/model-chain/recommended';
+export const MODEL_CHECK_URL = '/api/assistant/model-check';
+export type ChainPool = 'key' | 'provider';
+export type ChainTierName = 'standard' | 'light';
+export interface BulkKeysResponse {
+  readonly added: number;
+  readonly duplicates: number;
+}
+export type CheckFirstAction = 'answer-without-tools' | 'call-tool';
+export interface ModelCheckResult {
+  readonly id: string;
+  readonly expectedFirstAction: CheckFirstAction;
+  readonly firstAction: CheckFirstAction | 'error';
+  readonly matches: boolean;
+  readonly error?: string;
+}
+export interface ModelCheckResponse {
+  readonly ok: boolean;
+  readonly error?: string;
+  readonly skip?: string;
+  readonly results?: readonly ModelCheckResult[];
+  readonly budget?: { readonly reserved: number; readonly spent: number };
+  readonly ledgerSource?: string;
+}
+/** Per-key health fields the Slice 6 status rows read; absent on older servers. */
+export interface KeyCooling {
+  readonly keyId: string;
+  readonly model?: string;
+  readonly coolingUntil?: number;
+}
 export type SetupEligibility = 'eligible' | 'may-train' | 'ineligible' | 'unverified';
 export type ChainStatus =
   | 'ready'
@@ -318,6 +350,7 @@ export interface SetupKeyRow {
   readonly enabled: boolean;
   readonly readable: boolean;
   readonly allowanceResetsAt?: number;
+  readonly project?: string | null;
 }
 export interface SetupChainRow {
   readonly position: number;
@@ -329,6 +362,8 @@ export interface SetupChainRow {
   readonly allowanceResetsAt?: number;
   readonly rpmLimit: number | null;
   readonly rpdLimit: number | null;
+  readonly pool?: ChainPool;
+  readonly tier?: ChainTierName;
   readonly usage?: {
     readonly lastMinute: number;
     readonly today: number;
