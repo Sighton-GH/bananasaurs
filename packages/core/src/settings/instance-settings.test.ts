@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
+import {
+  DEFAULT_ROUTER_KEYWORDS,
+  DEFAULT_ROUTER_GREETINGS,
+  INSTANCE_SETTINGS,
+  isInstanceSettingKey,
+  settingDefinition,
+} from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 18 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(18);
+  it('has at least 26 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS.length).toBeGreaterThanOrEqual(26);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
@@ -89,6 +95,79 @@ describe('instance settings registry', () => {
       expect(def?.schema.safeParse(2.5).success, key).toBe(false);
       expect(def?.help).toContain('per rolling hour per guild');
       expect(def?.help).toContain('never trip the breaker');
+    }
+  });
+
+  it('registers the eight router and tier settings with spec defaults (ADR 0144, spec §4.7)', () => {
+    expect(INSTANCE_SETTINGS.length).toBeGreaterThanOrEqual(26);
+    const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
+    expect(valueOf('assistant.routerEnabled')).toBe(1);
+    expect(valueOf('assistant.routerMaxChars')).toBe(80);
+    expect(valueOf('assistant.routerFullModelKeywords')).toEqual(DEFAULT_ROUTER_KEYWORDS);
+    expect(valueOf('assistant.routerGreetingPatterns')).toEqual(DEFAULT_ROUTER_GREETINGS);
+    expect(valueOf('assistant.routerLongThreadTurns')).toBe(4);
+    expect(valueOf('assistant.routerEscalateOnTool')).toBe(1);
+    expect(valueOf('assistant.routerSummaryTier')).toBe('light');
+    expect(valueOf('assistant.routerDailyDigestTier')).toBe('light');
+    expect(settingDefinition('assistant.routerEnabled')?.group).toBe('Assistant context');
+    expect(settingDefinition('assistant.routerMaxChars')?.schema.safeParse(81).success).toBe(true);
+    expect(settingDefinition('assistant.routerMaxChars')?.schema.safeParse(9).success).toBe(false);
+    const keywords = settingDefinition('assistant.routerFullModelKeywords');
+    expect(keywords?.schema.safeParse(['remind']).success).toBe(true);
+    expect(keywords?.schema.safeParse([]).success).toBe(false);
+    const tier = settingDefinition('assistant.routerSummaryTier');
+    expect(tier?.schema.safeParse('light').success).toBe(true);
+    expect(tier?.schema.safeParse('standard').success).toBe(true);
+    expect(tier?.schema.safeParse('heavy').success).toBe(false);
+    expect(isInstanceSettingKey('assistant.routerDailyDigestTier')).toBe(true);
+  });
+
+  it('validates router settings bounds and provides owner-facing registry metadata', () => {
+    const counts = [
+      ['assistant.routerEnabled', 0, 1],
+      ['assistant.routerMaxChars', 10, 1000],
+      ['assistant.routerLongThreadTurns', 0, 50],
+      ['assistant.routerEscalateOnTool', 0, 1],
+    ] as const;
+    for (const [key, min, max] of counts) {
+      const def = settingDefinition(key);
+      expect(def?.bounds, key).toEqual({ min, max });
+      expect(def?.schema.safeParse(min).success, key).toBe(true);
+      expect(def?.schema.safeParse(max).success, key).toBe(true);
+      for (const value of [min - 1, max + 1, min + 0.5, '1']) {
+        expect(def?.schema.safeParse(value).success, key).toBe(false);
+      }
+    }
+    for (const key of ['assistant.routerFullModelKeywords', 'assistant.routerGreetingPatterns']) {
+      const def = settingDefinition(key);
+      expect(def?.display, key).toBe('text');
+      expect(def?.bounds, key).toEqual({ maxItems: 40 });
+      expect(def?.schema.safeParse(['a'.repeat(40)]).success, key).toBe(true);
+      expect(def?.schema.safeParse(Array.from({ length: 40 }, () => 'hi')).success, key).toBe(true);
+      for (const value of [
+        [],
+        [''],
+        ['a'.repeat(41)],
+        Array.from({ length: 41 }, () => 'hi'),
+        'hi',
+      ]) {
+        expect(def?.schema.safeParse(value).success, key).toBe(false);
+      }
+    }
+    for (const key of ['assistant.routerSummaryTier', 'assistant.routerDailyDigestTier']) {
+      const def = settingDefinition(key);
+      expect(def?.display, key).toBe('text');
+      expect(def?.schema.safeParse('light').success, key).toBe(true);
+      expect(def?.schema.safeParse('standard').success, key).toBe(true);
+      expect(def?.schema.safeParse('heavy').success, key).toBe(false);
+    }
+    for (const def of INSTANCE_SETTINGS.filter((entry) =>
+      entry.key.startsWith('assistant.router'),
+    )) {
+      expect(def.group, def.key).toBe('Assistant context');
+      expect(def.label.length, def.key).toBeGreaterThan(0);
+      expect(def.help.length, def.key).toBeGreaterThan(0);
+      expect(isInstanceSettingKey(def.key), def.key).toBe(true);
     }
   });
 });

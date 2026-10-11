@@ -126,6 +126,124 @@ const channelContextMessages: SettingDefinition<number> = {
   bounds: { min: 0, max: 50 },
 };
 
+/** ADR 0144 defaults, mirroring DEFAULT_ROUTER_RULES so registry and router agree. */
+export const DEFAULT_ROUTER_KEYWORDS: readonly string[] = [
+  'remind',
+  'schedule',
+  'task',
+  'ping',
+  'search',
+  'look up',
+  'summar',
+  'explain',
+  'why',
+  'how',
+  'write',
+  'story',
+  'code',
+  'plan',
+  'compare',
+  'translate',
+  'fix',
+];
+
+export const DEFAULT_ROUTER_GREETINGS: readonly string[] = [
+  'hi',
+  'hello',
+  'hey',
+  'thanks',
+  'thank you',
+  'thx',
+  'good morning',
+  'good night',
+];
+
+const routerEnabled: SettingDefinition<number> = {
+  key: 'assistant.routerEnabled',
+  group: 'Assistant context',
+  label: 'Complexity routing on/off',
+  help: 'When on, short simple messages try the light tier first so greetings never spend the standard daily quota. 1 is on, 0 is off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(1),
+  defaultValue: 1,
+  bounds: { min: 0, max: 1 },
+};
+
+const routerMaxChars: SettingDefinition<number> = {
+  key: 'assistant.routerMaxChars',
+  group: 'Assistant context',
+  label: 'Router: longest light message',
+  help: 'A message longer than this many characters always uses the standard tier.',
+  display: 'count',
+  schema: z.number().int().min(10).max(1000),
+  defaultValue: 80,
+  bounds: { min: 10, max: 1000 },
+};
+
+const routerFullModelKeywords: SettingDefinition<string[]> = {
+  key: 'assistant.routerFullModelKeywords',
+  group: 'Assistant context',
+  label: 'Router: full-model keywords',
+  help: 'A message containing one of these always uses the standard tier. Shown as an editable chip list.',
+  display: 'text',
+  schema: z.array(z.string().min(1).max(40)).min(1).max(40),
+  defaultValue: [...DEFAULT_ROUTER_KEYWORDS],
+  bounds: { maxItems: 40 },
+};
+
+const routerGreetingPatterns: SettingDefinition<string[]> = {
+  key: 'assistant.routerGreetingPatterns',
+  group: 'Assistant context',
+  label: 'Router: greeting patterns',
+  help: 'Messages matching one of these stay on the light tier even in long conversations. Shown as an editable chip list.',
+  display: 'text',
+  schema: z.array(z.string().min(1).max(40)).min(1).max(40),
+  defaultValue: [...DEFAULT_ROUTER_GREETINGS],
+  bounds: { maxItems: 40 },
+};
+
+const routerLongThreadTurns: SettingDefinition<number> = {
+  key: 'assistant.routerLongThreadTurns',
+  group: 'Assistant context',
+  label: 'Router: long-thread turns',
+  help: 'Past this many earlier turns a plain follow-up uses the standard tier; greetings stay light.',
+  display: 'count',
+  schema: z.number().int().min(0).max(50),
+  defaultValue: 4,
+  bounds: { min: 0, max: 50 },
+};
+
+const routerEscalateOnTool: SettingDefinition<number> = {
+  key: 'assistant.routerEscalateOnTool',
+  group: 'Assistant context',
+  label: 'Router: escalate on tool use',
+  help: 'When on, a light run that calls a tool switches to the standard tier for its next round. 1 is on, 0 is off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(1),
+  defaultValue: 1,
+  bounds: { min: 0, max: 1 },
+};
+
+const routerSummaryTier: SettingDefinition<'light' | 'standard'> = {
+  key: 'assistant.routerSummaryTier',
+  group: 'Assistant context',
+  label: 'Tier for conversation summaries',
+  help: 'Rolling summaries run on this tier so they never spend the standard daily quota unless you ask.',
+  display: 'text',
+  schema: z.enum(['light', 'standard']),
+  defaultValue: 'light',
+};
+
+const routerDailyDigestTier: SettingDefinition<'light' | 'standard'> = {
+  key: 'assistant.routerDailyDigestTier',
+  group: 'Assistant context',
+  label: 'Tier for the daily digest',
+  help: 'The daily digest runs on this tier, after the midnight quota reset. Slice 5 consumes this key.',
+  display: 'text',
+  schema: z.enum(['light', 'standard']),
+  defaultValue: 'light',
+};
+
 const connectFallback: SettingDefinition<number> = {
   key: 'network.connectFallbackMs',
   group: 'Network',
@@ -262,6 +380,14 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   maxToolCalls,
   maxOutputTokens,
   channelContextMessages,
+  routerEnabled,
+  routerMaxChars,
+  routerFullModelKeywords,
+  routerGreetingPatterns,
+  routerLongThreadTurns,
+  routerEscalateOnTool,
+  routerSummaryTier,
+  routerDailyDigestTier,
   connectFallback,
   fetchTimeout,
   refreshInterval,
@@ -283,6 +409,14 @@ export interface InstanceSettingValues {
   readonly 'assistant.maxToolCalls': number;
   readonly 'assistant.maxOutputTokens': number;
   readonly 'assistant.channelContextMessages': number;
+  readonly 'assistant.routerEnabled': number;
+  readonly 'assistant.routerMaxChars': number;
+  readonly 'assistant.routerFullModelKeywords': string[];
+  readonly 'assistant.routerGreetingPatterns': string[];
+  readonly 'assistant.routerLongThreadTurns': number;
+  readonly 'assistant.routerEscalateOnTool': number;
+  readonly 'assistant.routerSummaryTier': 'light' | 'standard';
+  readonly 'assistant.routerDailyDigestTier': 'light' | 'standard';
   readonly 'network.connectFallbackMs': number;
   readonly 'resources.fetchTimeoutMs': number;
   readonly 'resources.refreshIntervalMin': number;
