@@ -907,6 +907,65 @@ export const approveTask = (
     return true;
   });
 
+/** ADR 0138: a dashboard manager marks a working task done without a member's
+ * completion request. Archives in the same write, as approval does. An awaiting
+ * task is left to `approveTask`, so a pending request is answered, not bypassed. */
+export const completeTask = (
+  scope: GuildScope,
+  taskId: string,
+  expectedVersion: number,
+  actor: TaskActor,
+  now: number,
+): boolean =>
+  write(scope, ({ db }) => {
+    const before = db
+      .select({ status: clubTasks.status })
+      .from(clubTasks)
+      .where(
+        scope.only(
+          clubTasks,
+          eq(clubTasks.taskId, taskId),
+          eq(clubTasks.version, expectedVersion),
+          isNull(clubTasks.archivedAt),
+          sql`${clubTasks.status} IN ('not_started','in_progress')`,
+        ),
+      )
+      .get();
+    if (!before) return false;
+    const changed =
+      db
+        .update(clubTasks)
+        .set({
+          status: 'done',
+          archivedAt: now,
+          updatedAt: now,
+          version: sql`${clubTasks.version} + 1`,
+        })
+        .where(
+          scope.only(
+            clubTasks,
+            eq(clubTasks.taskId, taskId),
+            eq(clubTasks.version, expectedVersion),
+            isNull(clubTasks.archivedAt),
+            sql`${clubTasks.status} IN ('not_started','in_progress')`,
+          ),
+        )
+        .run().changes === 1;
+    if (!changed) return false;
+    audit(
+      db,
+      scope,
+      actor,
+      now,
+      'task.completed',
+      'club_task',
+      taskId,
+      { status: before.status, version: expectedVersion },
+      { status: 'done', version: expectedVersion + 1, archivedAt: now },
+    );
+    return true;
+  });
+
 /** Send an awaiting task back to progress. Only an awaiting task can be sent back. */
 export const rejectTask = (
   scope: GuildScope,

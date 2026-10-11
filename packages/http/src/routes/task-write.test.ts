@@ -782,6 +782,52 @@ describe('task loop closure writes', () => {
     expect(taskRepo.getTask(scope, taskId)?.status).toBe('done');
   });
 
+  it('completes a working task to done and archives it, auditing once (ADR 0138)', async () => {
+    const headers = await loginHeaders('owner');
+    const scope = db.scopes.forGuild(GUILD);
+    const teamId = taskRepo.createTeam(scope, teamPayload(), ACTOR, NOW);
+    const taskId = taskRepo.createTask(
+      scope,
+      { ...taskPayload(teamId), teamId, createdBy: OWNER },
+      ACTOR,
+      NOW,
+    );
+    const before = effectRepo.tailAudit(scope, { limit: 10_000 }).length;
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/complete`,
+      headers,
+      payload: { version: 1 },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ task: { status: 'done' } });
+    expect(taskRepo.getTask(scope, taskId)?.archivedAt).not.toBeNull();
+    const audit = effectRepo.tailAudit(scope, { limit: 10_000 });
+    expect(audit.length).toBe(before + 1);
+    expect(audit[0]).toMatchObject({ actorType: 'dashboard', action: 'task.completed' });
+  });
+
+  it('leaves an awaiting task to approval rather than completing it', async () => {
+    const headers = await loginHeaders('owner');
+    const scope = db.scopes.forGuild(GUILD);
+    const teamId = taskRepo.createTeam(scope, teamPayload(), ACTOR, NOW);
+    const taskId = taskRepo.createTask(
+      scope,
+      { ...taskPayload(teamId), teamId, createdBy: OWNER },
+      ACTOR,
+      NOW,
+    );
+    expect(taskRepo.requestCompletion(scope, taskId, 1, ACTOR, NOW)).toBe(true);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/complete`,
+      headers,
+      payload: { version: 2 },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(taskRepo.getTask(scope, taskId)?.status).toBe('awaiting_approval');
+  });
+
   it('rejects an awaiting task back to progress', async () => {
     const headers = await loginHeaders('owner');
     const scope = db.scopes.forGuild(GUILD);
@@ -902,7 +948,7 @@ describe('task loop closure writes', () => {
     expect(response.json()).toMatchObject({ error: 'task-not-found' });
   });
 
-  it('refuses stale versions on approve, reject, archive, status and child complete', async () => {
+  it('refuses stale versions on approve, reject, complete, archive, status and child complete', async () => {
     const headers = await loginHeaders('owner');
     const scope = db.scopes.forGuild(GUILD);
     const teamId = taskRepo.createTeam(scope, teamPayload(), ACTOR, NOW);
@@ -922,6 +968,7 @@ describe('task loop closure writes', () => {
     for (const call of [
       { method: 'POST', url: `/api/tasks/${taskId}/approve`, payload: { version: 1 } },
       { method: 'POST', url: `/api/tasks/${taskId}/reject`, payload: { version: 1 } },
+      { method: 'POST', url: `/api/tasks/${taskId}/complete`, payload: { version: 1 } },
       { method: 'POST', url: `/api/tasks/${taskId}/archive`, payload: { version: 1 } },
       {
         method: 'POST',
@@ -977,6 +1024,7 @@ describe('task loop closure writes', () => {
       { method: 'PUT', url: `/api/tasks/${taskId}`, payload: editPayload(2) },
       { method: 'POST', url: `/api/tasks/${taskId}/approve`, payload: { version: 2 } },
       { method: 'POST', url: `/api/tasks/${taskId}/reject`, payload: { version: 2 } },
+      { method: 'POST', url: `/api/tasks/${taskId}/complete`, payload: { version: 2 } },
       {
         method: 'POST',
         url: `/api/tasks/${taskId}/status`,

@@ -200,10 +200,12 @@ describe('PanelsPage', () => {
     ).toBe(true);
   });
 
-  it('reconcile only enqueues a job', async () => {
+  const ADOPTED = { ...DETAIL, kind: 'adopted', component: 'reaction' };
+
+  it('re-check reactions only enqueues a job, and only for a reaction role', async () => {
     const mock = stubFetch([
       { url: '/api/panels', body: PANELS },
-      { url: '/api/panels/p1', body: DETAIL },
+      { url: '/api/panels/p1', body: ADOPTED },
       {
         method: 'POST',
         url: '/api/panels/p1/reconcile',
@@ -214,11 +216,55 @@ describe('PanelsPage', () => {
     await screen.findByText('p1');
     fireEvent.click(screen.getByRole('button', { name: 'Manage' }));
     await screen.findByText('Team A');
+    expect(screen.queryByRole('button', { name: 'Enqueue reconcile' })).toBeNull();
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Enqueue reconcile' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Re-check reactions' }));
     });
     const post = mock.mock.calls.find((c) => (c[0] as string) === '/api/panels/p1/reconcile')!;
     expect(bodyOf(post)).toEqual({});
+  });
+
+  it('offers no reaction re-check on a button or dropdown panel', async () => {
+    stubFetch([
+      { url: '/api/panels', body: PANELS },
+      { url: '/api/panels/p1', body: { ...DETAIL, kind: 'managed' } },
+    ]);
+    renderWithSession(<PanelsPage />);
+    await screen.findByText('p1');
+    fireEvent.click(screen.getByRole('button', { name: 'Manage' }));
+    await screen.findByText('Team A');
+    expect(screen.getByRole('button', { name: 'Publish to Discord' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Re-check reactions' })).toBeNull();
+  });
+
+  it('publishing a reaction role reports success, not a refusal', async () => {
+    stubFetch([
+      { url: '/api/panels', body: PANELS },
+      { url: '/api/panels/p1', body: ADOPTED },
+      {
+        method: 'POST',
+        url: '/api/panels/p1/publish',
+        body: {
+          action: 'not-managed',
+          messageId: 'm',
+          reactionsSeeded: 1,
+          reactionsFailed: [],
+          reconcileJobId: 9,
+        },
+      },
+    ]);
+    renderWithSession(<PanelsPage />);
+    await screen.findByText('p1');
+    fireEvent.click(screen.getByRole('button', { name: 'Manage' }));
+    await screen.findByText('Team A');
+    fireEvent.click(screen.getByRole('button', { name: 'Publish to Discord' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('existing message');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Publish to Discord' }));
+    });
+    expect(await screen.findByText('Reaction role is live')).toBeTruthy();
+    expect(screen.queryByText(/refused/)).toBeNull();
   });
 });
 

@@ -10,6 +10,7 @@ import {
   approveTask,
   archiveTask,
   changeChild,
+  completeTask,
   createTask,
   createTeam,
   deleteReport,
@@ -874,6 +875,36 @@ describe('approval transition', () => {
     expect(approveTask(a, id, 2, ACTOR, 5)).toBe(false);
     expect(tailAudit(a).filter((row) => row.action === 'task.approved')).toHaveLength(1);
     expect(tailAudit(b).filter((row) => row.action === 'task.approved')).toHaveLength(0);
+  });
+});
+
+describe('direct completion (ADR 0138)', () => {
+  it('completes a working task at the expected version, once and within the guild', () => {
+    const teamId = seedTeam();
+    const id = seedTask(teamId, { title: 'Measure body' }, a, 2);
+    expect(completeTask(b, id, 1, ACTOR, 3)).toBe(false);
+    expect(completeTask(a, id, 2, ACTOR, 3)).toBe(false);
+    expect(completeTask(a, id, 1, ACTOR, 3)).toBe(true);
+    expect(getTask(a, id)).toMatchObject({ status: 'done', version: 2, archivedAt: 3 });
+    expect(completeTask(a, id, 1, ACTOR, 4)).toBe(false);
+    expect(completeTask(a, id, 2, ACTOR, 4)).toBe(false);
+    const rows = tailAudit(a).filter((row) => row.action === 'task.completed');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorType: 'dashboard', actorId: 'owner' });
+    expect(tailAudit(b).filter((row) => row.action === 'task.completed')).toHaveLength(0);
+  });
+
+  it('completes from in progress, but leaves an awaiting task to approval', () => {
+    const teamId = seedTeam();
+    const working = seedTask(teamId, {}, a, 2);
+    expect(setStatus(a, working, 1, 'in_progress', ACTOR, 3)).toBe(true);
+    expect(completeTask(a, working, 2, ACTOR, 4)).toBe(true);
+    expect(getTask(a, working)).toMatchObject({ status: 'done' });
+
+    const awaiting = seedTask(teamId, {}, a, 5);
+    expect(requestCompletion(a, awaiting, 1, MEMBER_ACTOR, 6)).toBe(true);
+    expect(completeTask(a, awaiting, 2, ACTOR, 7)).toBe(false);
+    expect(getTask(a, awaiting)).toMatchObject({ status: 'awaiting_approval', archivedAt: null });
   });
 });
 
