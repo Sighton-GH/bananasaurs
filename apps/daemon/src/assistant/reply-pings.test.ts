@@ -20,6 +20,14 @@ describe('reply-ping text helpers (ADR 0145)', () => {
       matchPingNames([['sam l and', 'sam l', 'sam'], ['Sammy'], ['Sam L']], candidates),
     ).toEqual(['1']);
   });
+  it('matches nothing when two candidates share the name (ambiguous, ping neither)', () => {
+    const candidates = [
+      { id: '1', name: 'Sam L' },
+      { id: '2', name: 'Sam L' },
+      { id: '3', name: 'Alex P' },
+    ];
+    expect(matchPingNames([['sam l'], ['Alex P']], candidates)).toEqual(['3']);
+  });
   it('namedIn finds whole names only', () => {
     expect(namedIn('please remind Sam L at 5', 'Sam L')).toBe(true);
     expect(namedIn('please remind Sam Lee at 5', 'Sam L')).toBe(false);

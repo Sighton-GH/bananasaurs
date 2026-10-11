@@ -26,15 +26,26 @@ export const extractPingPhrases = (text: string): string[][] => {
   return occurrences;
 };
 
-/** Per occurrence, the longest phrase that is exactly (case-insensitively) a candidate's name; ids deduped. */
+/**
+ * Per occurrence, the longest phrase that is exactly (case-insensitively) a
+ * candidate's name; ids deduped. A name two candidates share matches nothing:
+ * pinging the first would ping the wrong person half the time.
+ */
 export const matchPingNames = (
   occurrences: readonly (readonly string[])[],
   candidates: readonly { readonly id: string; readonly name: string }[],
 ): string[] => {
+  const counts = new Map<string, number>();
+  for (const c of candidates) {
+    const key = c.name.toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
   const ids: string[] = [];
   for (const phrases of occurrences) {
     for (const phrase of phrases) {
-      const hit = candidates.find((c) => c.name.toLowerCase() === phrase.toLowerCase());
+      const key = phrase.toLowerCase();
+      if (counts.get(key) !== 1) continue;
+      const hit = candidates.find((c) => c.name.toLowerCase() === key);
       if (hit === undefined) continue;
       if (!ids.includes(hit.id)) ids.push(hit.id);
       break;

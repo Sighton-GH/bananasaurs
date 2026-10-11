@@ -79,14 +79,13 @@ const build = (fixture: Fixture = {}): { client: Client; searches: () => number 
         const hit = byId.get(id);
         return hit === undefined ? Promise.reject(new Error('unknown')) : Promise.resolve(hit);
       },
-      search: ({ query }: { query: string }) => {
+      search: ({ query, limit }: { query: string; limit?: number }) => {
         searches += 1;
+        const hits = members.filter((m) =>
+          m.displayName.toLowerCase().includes(query.toLowerCase()),
+        );
         return Promise.resolve(
-          new Map(
-            members
-              .filter((m) => m.displayName.toLowerCase().includes(query.toLowerCase()))
-              .map((m) => [m.id, withPerms(m)]),
-          ),
+          new Map(hits.slice(0, limit ?? 25).map((m) => [m.id, withPerms(m)])),
         );
       },
     },
@@ -238,5 +237,72 @@ describe('resolveReplyPings', () => {
     const { client } = build({ members: [sam] });
     const out = await run(client, { text: '@everyone @here', askerText: 'everyone here' });
     expect(out).toEqual({ content: '@everyone @here', userIds: [], roles: [] });
+  });
+
+  it('pings neither member when two mentioned members share a display name (B1)', async () => {
+    const { client } = build({
+      members: [sam, { id: '600000000000000004', displayName: 'Sam L' }],
+    });
+    const out = await run(client, {
+      text: 'Ask @Sam L about it.',
+      askerText: 'who owns this',
+      mentionedUserIds: [SAM, '600000000000000004'],
+    });
+    expect(out).toEqual({ content: 'Ask @Sam L about it.', userIds: [], roles: [] });
+  });
+
+  it('pings neither role when two mentioned roles share a name (B1)', async () => {
+    const twins: FakeRole[] = [
+      { id: '800000000000000010', name: 'Car Team A', position: 1, mentionable: true },
+      { id: '800000000000000011', name: 'Car Team A', position: 1, mentionable: true },
+    ];
+    const { client } = build({ roles: twins });
+    const out = await run(client, {
+      text: 'Tell @Car Team A',
+      askerText: 'tell them',
+      mentionedRoleIds: twins.map((r) => r.id),
+    });
+    expect(out).toEqual({ content: 'Tell @Car Team A', userIds: [], roles: [] });
+  });
+
+  it('pings a uniquely named member when 5 other members prefix-match first (B2, page of 25)', async () => {
+    const crowd: FakeMember[] = ['Pa', 'Pb', 'Pc', 'Pd', 'Pe'].map((suffix, i) => ({
+      id: `60000000000000010${i}`,
+      displayName: `Alex ${suffix}`,
+    }));
+    const exactAlex = { id: '600000000000000109', displayName: 'Alex P' };
+    const { client } = build({ members: [...crowd, exactAlex] });
+    const out = await run(client, {
+      text: '@Alex P has the build.',
+      askerText: 'ping Alex P about the build',
+    });
+    expect(out.userIds).toEqual([exactAlex.id]);
+    expect(out.content).toBe(`<@${exactAlex.id}> has the build.`);
+  });
+
+  it('refuses when two search hits share the exact name (T1 pin: exact.length === 1)', async () => {
+    const twins: FakeMember[] = [
+      { id: '600000000000000110', displayName: 'Alex P' },
+      { id: '600000000000000111', displayName: 'Alex P' },
+    ];
+    const { client } = build({ members: twins });
+    const out = await run(client, {
+      text: '@Alex P has the build.',
+      askerText: 'ping Alex P about the build',
+    });
+    expect(out).toEqual({ content: '@Alex P has the build.', userIds: [], roles: [] });
+  });
+
+  it('refuses when two cached roles share the name the asker named (T2 pin: roleHits.length === 1)', async () => {
+    const twins: FakeRole[] = [
+      { id: '800000000000000012', name: 'Car Team A', position: 1, mentionable: true },
+      { id: '800000000000000013', name: 'Car Team A', position: 1, mentionable: true },
+    ];
+    const { client } = build({ roles: twins });
+    const out = await run(client, {
+      text: 'Tell @Car Team A',
+      askerText: 'ping Car Team A about the build',
+    });
+    expect(out).toEqual({ content: 'Tell @Car Team A', userIds: [], roles: [] });
   });
 });
