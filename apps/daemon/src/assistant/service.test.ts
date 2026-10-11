@@ -2721,6 +2721,32 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(system.indexOf('NOW\nIt is')).toBeLessThan(system.indexOf('WHAT YOU CAN DO RIGHT NOW'));
   });
 
+  it('claims no tools when the provider cannot take tool calls', async () => {
+    const requests: GenerateTextRequest[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        requests.push(req);
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    await h.serviceWith(provider).invoke(
+      ask({
+        userId: OWNER,
+        callerRoleIds: [],
+        input: { question: 'set a reminder for 5pm' },
+        invocationId: 'int-cap-no-tools',
+      }),
+    );
+    const system = requests[0]?.systemInstruction ?? '';
+    expect(system).toContain(
+      'No tools this turn. Answer from what you know; do not claim an action.',
+    );
+    expect(system).not.toContain('set_reminder');
+    expect(requests[0]?.tools ?? []).toEqual([]);
+  });
+
   it('adds the abilities line when the history holds an earlier bot reply', async () => {
     const { requests, provider } = capture();
     await h.serviceWith(provider).invoke(
