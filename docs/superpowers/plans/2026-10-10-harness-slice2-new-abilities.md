@@ -1,0 +1,1104 @@
+# Slice 2: New abilities — implementation plan
+
+> **Instinct plan.** Read with `2026-10-10-harness-00-instinct-handoff.md` and `2026-10-10-harness-00-shared-contracts.md`.
+> **Status:** READY (round 1)
+
+**Goal:** The assistant resolves member names, looks members up, pings members and roles in replies under code control, posts scheduled messages as plain messages, manages club tasks for leads, and searches the web through Parallel as a third source.
+**Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §4 Slice 2 (2a–2g), decisions D1, D3, D4(a), D11, §4.7
+**ADRs:** 0145, 0146, 0147   **Migration:** parallel_search_source
+**Base:** main @ 0371edc3
+
+## Global Constraints
+
+- `CLAUDE.md` hard rules 1–9 apply. In particular: AI is never in the enforcement path; every query, key and job carries a guild id; model output passes Zod; every Discord side effect has a durable idempotency key; no secrets in code, logs or fixtures; no new outbound destination unless the slice's ADR records the owner's instruction.
+- No new dependency.
+- Fixtures use invented names (Sam L, Alex P, Car Team A). Never a real member's name or id.
+- Canadian English, plain words in prompts and dashboard copy. No tool names shown to members.
+- Write the failing test first for anything touching permissions, pings, idempotency, retention or guild scope, and watch it fail before writing the code.
+- Slice-specific constraints (exact values from the spec):
+  - Reply pings: at most 5 members and 3 roles per reply; `@everyone` and `@here` never ping; inline code and fenced code spans are skipped (same `CODE_SPAN` parser as ADR 0128); a refused mention renders as plain text and pings nobody. Roles pass the ADR 0117 policy (`rolePingAllowed` in `packages/core/src/roles/dangerous.ts:87-98` via `checkRolePing` in `apps/daemon/src/mcp/targets.ts:260-295`); a non-mentionable role also needs the asker's Mention Everyone permission in the channel, as reminders do. Gated by the new `ping` skill (default everyone) and the asker's Send permission in the channel.
+  - `find_member` returns up to 5 matches as `{ name, username, roles }`, never ids; read-only, any round.
+  - `set_reminder` gains `style: "reminder" | "message"` (default `"reminder"`); `message` posts the text as is, without the "⏰" and "Set by" frame; same storage, delivery, ping checks, edit and cancel as reminders.
+  - Task tools: `create_task` (title, details, team, assignees by name, due date; id deterministic from the invocation key, as MCP derives from `requestId`), `list_tasks` (read-only, the asker's teams), `task_progress` (a progress note on a task the asker is assigned to, reusing `recordReport`). Authority comes from `TaskContextPort.access(actorId)` (team lead or president), never `canManageTasks`.
+  - Parallel: REST `POST https://api.parallel.ai/v1/search` with header `x-api-key` (never MCP); fixed body `{ objective, search_queries: [query], mode: "fast" }`, first 5 results; 5,000 free requests a month, then fast is $1 per 1,000; default monthly limit for a new Parallel key is 4,500; training disclosure per hard rule 5 (`trainsOnInput: "yes"`, Parallel customer terms §4(b)); `api.parallel.ai` is the new outbound destination, instructed by the owner 2026-10-10 (D11).
+  - Files in contracts §4 are edited additively only: append to the end of lists, objects and unions; never reorder, reformat or rename; keep each edit small. Dashboard UI goes in new component files where a new surface is needed; existing pages change only to mount a component, except the small additive radio/row edits this plan names. Slice 6 runs in parallel: never touch `assistant_model_chain.pool`/`.tier`, key `project`/`fingerprint`, `assistant_key_cooldowns`, router files, or Slice 6 settings.
+  - The migration is generated with `npm run db:generate -- --name parallel_search_source` after editing `packages/storage/src/schema.ts`. Never hand-number it. Only S2-T5 touches `schema.ts` or `drizzle/`.
+
+## Plan decisions
+
+- **How the capability block picks new tools up (no prompt-code change needed):** `buildCapabilityBlock` (`packages/core/src/assistant/capabilities.ts`) groups `TOOL_CATALOGUE` entries by `TOOL_GROUPS` using `offeredTools`, which `service.ts:1064-1081` sets to `declarations.map((d) => d.name)` from `toolDeclarations` (`apps/daemon/src/assistant/tools.ts:370-383`). `toolDeclarations` derives from the catalogue plus `skillAllowed(entry.requiresSkill/actsForSkill)` plus port presence. So a new tool appears in the capability block, in its group, once its catalogue entry (with `group`, `rounds`, `writes`, `requiresSkill` and a ≥120-character `Use when` description) exists, its skill gate passes, and its port is present. S2-T2 wires this; S2-T7 proves it with a test that `find_member`/`create_task`/`list_tasks`/`task_progress` render under their groups.
+- **`tasks` skill default is `owner`, not leads:** `AssistantSkill.defaultScope` is `'everyone' | 'owner'` only (`packages/core/src/assistant/types.ts:47`), and `skills.test.ts:21` pins `acts → owner`. Team leads and the president get access two ways: the owner grants lead roles per guild on the Skills page (the D1 pattern), and every task-tool call additionally passes the code authority check `TaskContextPort.access(actorId)` (lead of the team, or president). A caller with skill scope but no team authority gets an actionable refusal, never a tool result.
+- **`task_progress` is `rounds: 'returned-id'`:** `list_tasks` returns task ids as `handles` (the `edit_reminder`/`cancel_reminder` pattern from ADR 0137), so a progress note acts on a returned id and may run after round 1. `create_task` is `rounds: 'first'`, `writes: true`.
+- **`create_task` destination is the current channel:** the spec names no destination field, so the task posts where it was asked for (`currentChannelId`); absent channel (Try-it) refuses with an actionable message. Assignee names resolve by exact case-insensitive display-name match through the same `findMember` port as `find_member` (reusing `resolveFromMember`'s rule in `service.ts:379-403`); zero or several matches without an exact one refuse.
+- **2a covers the current message; channel context keeps flattening:** `sanitizeMentionsForProvider` gains an optional names map, used at `service.ts:1242` for the current question. `channel-context.ts:42-46` keeps calling it without names (signature stays backward compatible), so older channel lines still show `@user`/`@role` this slice; the speaker label already carries the display name.
+- **Reply-ping matching is exact-match only:** `@Name` tokens (code spans stripped with the ADR 0128 `CODE_SPAN` regex) match a mentioned member/role by exact case-insensitive display-name equality, or a single `findMember` hit otherwise. No fuzzy matching: a near-miss renders as plain text and pings nobody.
+- **Parallel response parsing is tolerant:** the exact upstream shape is unverified from the sandbox, so the Zod schema accepts `title`/`url` plus any of `content`/`excerpts[]`/`snippet`, takes the first 5 results, drops non-http(s) urls, strips tags, and caps each excerpt at 1,000 characters. The request body is exactly the spec's fixed shape (no invented ranking parameter).
+- **Parallel dashboard monthly default is 4,500:** when the Parallel source is selected, the add-key monthly box pre-fills 4,500 (under the 5,000 free allowance); Brave/Tavily keep 1,000.
+- **Parallel warnings are log + dashboard + PRIVACY.md, not doctor:** `doctor.ts` has no search-terms surface (verified: no search/eligibility matches), and contracts give Slice 6 the doctor line. The eligibility row drives the generic Terms card; a warn-level log fires when a Parallel run is built; the web-search card carries Parallel training copy like Tavily's.
+- **Parallel eligibility row is seeded in the migration:** following the `drizzle/0022_brainy_meteorite.sql` precedent and ruling M4-D16 (eligibility claims change by migration), S2-T5 appends one `INSERT INTO provider_eligibility` for `parallel` (`trains_on_input 'yes'`, clause `Parallel customer terms §4(b)…`, `production_use_allowed` 1 — allowed by owner decision D11 with disclosure, the D12 pattern). The Terms page stays editable so the owner can correct the evidence URL.
+- **`style` is immutable after creation:** `edit_reminder` does not change it (spec names no edit path); `my_reminders` shows it so both kinds are distinguishable.
+- **No Parallel attribution line:** only Brave results carry a `-# Powered by` line (ADR 0120 §7); Parallel answers get the once-per-request may-train log warn, mirroring the Tavily block at `service.ts:1349-1361`.
+
+## Review Focus
+
+1. **A non-lead member asks to create a task.** Expect `create_task` refused with what to do next ("Only a team lead or the president can create tasks…"), and no task row. Pinned in S2-T7, with a break-it step (drop the `access` check, watch the refusal test fail, restore).
+2. **The model writes `@Sam L` for someone the asker never mentioned or named.** Expect plain text, no `<@id>`, nothing in `allowedMentions.users`. Pinned in S2-T9, with a break-it step (skip the mentioned-or-named filter, watch the no-ping test fail, restore).
+3. **A role above the bot or with a dangerous permission is named in the answer.** Expect `checkRolePing` to refuse (`role-above-bot` / `role-dangerous`), plain text, no ping. Pinned in S2-T9.
+4. **A retry re-posts the assistant reply.** Expect the staged cursor (`partsPosted`/`postedMessageIds` in `jobs/assistant.ts`) to resume without re-posting, with identical `allowedMentions`. Pinned in S2-T9.
+5. **A Parallel key at its monthly limit, then a Brave key.** Expect the Parallel reservation to skip before any HTTP call and the search to succeed on the next source's keys only if the configured source is Parallel with its own keys — keys never cross sources. Pinned in S2-T8.
+
+## Waves
+
+| Wave | Task | Owns (create/modify) | Depends on |
+|---|---|---|---|
+| 1 | S2-T1 ADRs 0145–0147 | Create: `docs/decisions/0145-*.md`, `0146-*.md`, `0147-*.md` | — |
+| 2 | S2-T2 Catalogue groups, four tools, ping/tasks skills | Modify: `packages/core/src/assistant/tool-catalogue.ts`, `packages/core/src/assistant/skills.ts`, `packages/core/src/assistant/tool-catalogue.test.ts`, `packages/core/src/assistant/skills.test.ts` | T1 |
+| 2 | S2-T3 Mention names in the provider text | Modify: `apps/daemon/src/assistant/mentions.ts`; Create: `apps/daemon/src/assistant/mentions.test.ts` | T1 |
+| 2 | S2-T4 Parallel REST connector | Create: `apps/daemon/src/assistant/parallel-search.ts`, `apps/daemon/src/assistant/parallel-search.test.ts` | T1 |
+| 3 | S2-T5 Storage: style column, source CHECKs, migration, eligibility seed | Modify: `packages/storage/src/schema.ts`, `packages/storage/src/repos/assistant.ts`, `packages/storage/src/repos/search-keys.ts`, `packages/core/src/assistant/reminders.ts`; Create: `drizzle/0*_parallel_search_source.sql`, `packages/storage/src/repos/slice2-storage.test.ts` | T1 |
+| 3 | S2-T6 Ping-cap settings and tuning test | Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`, `packages/dashboard/src/pages/assistant-tuning.test.tsx` | T1 |
+| 4 | S2-T7 Task tools + find_member implementation and service wiring | Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/assistant/capability-fixtures.ts`, `apps/daemon/src/assistant/capability-fixtures.test.ts`, `apps/daemon/src/runtime/guild.ts` | T2, T5 |
+| 4 | S2-T8 Parallel wiring: source union, clients, routes, dashboard | Modify: `apps/daemon/src/assistant/web-search.ts`, `apps/daemon/src/assistant/provider-config.ts`, `apps/daemon/src/assistant/provider-config.test.ts`, `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts`, `packages/http/src/routes/assistant.ts`, `packages/http/src/routes/assistant-search-keys.ts`, `packages/http/src/routes/assistant-search-keys.test.ts`, `packages/dashboard/src/api/assistant.ts`, `packages/dashboard/src/pages/providers.tsx`, `packages/dashboard/src/pages/providers.test.tsx`, `packages/dashboard/src/pages/assistant-skills.tsx`, `packages/dashboard/src/pages/assistant-skills.test.tsx` | T4, T5 |
+| 5 | S2-T9 Reply pings from answer text | Modify: `packages/core/src/jobs/kinds.ts`, `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/commands.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `packages/core/src/discord/port.ts`; Create: `apps/daemon/src/assistant/reply-pings.ts`, `apps/daemon/src/assistant/reply-pings.test.ts`, `apps/daemon/src/assistant/reply-ping-policy.ts`, `apps/daemon/src/assistant/reply-ping-policy.test.ts` | T2, T6 |
+| 5 | S2-T10 Scheduled-message style | Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/reminder-delivery.ts`, `apps/daemon/src/assistant/reminder-delivery.test.ts`, `apps/daemon/src/assistant/reminder-summary.ts`, `apps/daemon/src/assistant/reminder-summary.test.ts`, `packages/core/src/assistant/tool-catalogue.ts`, `packages/core/src/assistant/tool-catalogue.test.ts` | T5, T7 |
+| 6 | S2-T11 Gates, STATE.md, PRIVACY.md, spec ledger | Modify: `docs/STATE.md`, `PRIVACY.md`, `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md` | T9, T10 |
+
+## Tasks
+
+### S2-T1: ADRs 0145, 0146 and 0147   ·   Wave 1
+**Owns:** Create: `docs/decisions/0145-member-names-find-member-reply-pings-scheduled-style.md`, `docs/decisions/0146-assistant-task-tools.md`, `docs/decisions/0147-parallel-web-search-source.md`
+**Reads (do not edit):** `docs/decisions/0137-read-only-tools-in-later-rounds.md` (style model), `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md` §4 Slice 2
+**Interfaces:** Consumes: none · Produces: ADR numbers 0145/0146/0147 and the decisions S2-T2–S2-T11 cite
+
+- [ ] **Step 1: Write ADR 0145**
+
+```markdown
+# 0145. Member names, find_member, reply pings, scheduled-message style
+
+Date: 2026-10-11
+
+Status: accepted (owner decisions D1, D3, 2026-10-10).
+
+## Context
+`<@id>` reached the provider as the literal `@user` (`apps/daemon/src/assistant/mentions.ts:7-11`), so "remind @Sam" arrived as "remind @user". The assistant had no member lookup, its reply could never ping (`allowedMentions` fixed to `{ parse: [] }`), and a scheduled post always carried the reminder frame.
+
+## Decision
+1. `sanitizeMentionsForProvider` renders `@Sam L` / `@Car Team A` from guild display names through `safeDisplayName`; unknown ids keep `@user` / `@role`; snowflakes never leave the process.
+2. New read-only tool `find_member` (any round): up to 5 matches as `{ name, username, roles }`, never ids.
+3. Reply pings (D3): the model writes `@Name` in its answer; deterministic code replaces tokens matching a member or role the asker mentioned or named with `<@id>` / `<@&id>` in `allowedMentions.users` / `.roles`. At most 5 members and 3 roles (settings `assistant.pingMaxMembers`, `assistant.pingMaxRoles`); roles pass the ADR 0117 policy, non-mentionable roles also need the asker's Mention Everyone; `@everyone`/`@here` never ping; code spans skipped with the ADR 0128 `CODE_SPAN` parser; refused mentions stay plain text. Gated by the `ping` skill (default everyone) and the asker's Send permission. Idempotent through the reply's existing durable key.
+4. `set_reminder` gains `style: "reminder" | "message"` (default `"reminder"`); `message` posts the text as is, without the "⏰" and "Set by" frame, on the same storage, delivery, ping checks, edit and cancel. This amends the "only reminder delivery may set users" comment in `packages/core/src/discord/port.ts:103-109`.
+
+## Consequences
+- No new outbound destination. Skill defaults: `ping` everyone; reminders unchanged (D1, owner grants per guild).
+```
+
+- [ ] **Step 2: Write ADR 0146**
+
+```markdown
+# 0146. Assistant task tools for team leads and the president
+
+Date: 2026-10-11
+
+Status: accepted (owner decision D4a, 2026-10-10).
+
+## Context
+"Can you create tasks?" was refused: no task tool existed. UHill has no teams, so team-scoped creation is the whole surface for now.
+
+## Decision
+1. New acting skill `tasks` (default owner; the owner grants lead roles per guild). Tools: `create_task` (first round, writes), `list_tasks` (any round, read-only, task ids as handles), `task_progress` (returned-id round, writes).
+2. Authority is `TaskContextPort.access(actorId)` — team lead of the task's team, or the president — never `canManageTasks`, which keys on a dashboard account. Skill scope and team authority must both pass.
+3. `create_task` takes title, details, team, assignees by display name (exact match only) and an ISO due date, posting in the current channel. Its id is deterministic from the invocation key plus a content hash (the `contentKey` pattern in `apps/daemon/src/assistant/tools.ts:427-428`), the same duplicate rule MCP's `requestId` gives `create_club_task`. `task_progress` reuses `recordReport` with a deterministic report id.
+4. The reply's confirmation line is built by code, as for reminders.
+
+## Consequences
+- No new scheduler, no new table. A non-lead gets an actionable refusal; nothing is written.
+```
+
+- [ ] **Step 3: Write ADR 0147**
+
+```markdown
+# 0147. Parallel as a third web-search source
+
+Date: 2026-10-11
+
+Status: accepted (owner request and decision D11, 2026-10-10: fast mode, training disclosure accepted).
+
+## Context
+Web search runs Brave or Tavily through one `WebSearchRun` shape (ADR 0120). The owner asked for Parallel as one more source beside them.
+
+## Decision
+1. REST, not MCP: `POST https://api.parallel.ai/v1/search` with header `x-api-key`; fixed body `{ objective, search_queries: [query], mode: "fast" }`, first 5 results mapped to `WebResult` with each excerpt capped at 1,000 characters. The `objective` is the model's query through the same local query scan; no member text is added.
+2. Fits ADR 0120 unchanged in shape: `search_source` gains `parallel`; keys live in `assistant_search_keys` with the same sealed storage, ordering, limits and reserve-before-send. Default monthly limit for a new Parallel key is 4,500 (under the 5,000 free allowance; fast is $1 per 1,000 after that).
+3. Hard rule 5: provider-eligibility row `parallel` with `trainsOnInput: "yes"` (customer terms §4(b): Parallel may use queries to train), cited clause and review date; warnings in the log and dashboard, plus a PRIVACY.md line. Queries are model search terms (member names already forbidden), not member messages.
+4. Hard rule 8: `api.parallel.ai` is a new outbound destination on the owner's 2026-10-10 instruction, recorded here.
+
+## Consequences
+- One migration widening the `search_source` CHECKs. Doctor has no search-terms surface, so it is unchanged; Slice 6 owns the doctor line.
+```
+
+- [ ] **Step 4: Verify numbers and titles** — `ls docs/decisions/0145-* docs/decisions/0146-* docs/decisions/0147-*` shows three files; `rg -n "0145|0146|0147" docs/superpowers/plans/2026-10-10-harness-00-shared-contracts.md` matches this plan's ADR table. Expected: all present, no other slice renumbered.
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0 (docs only; proves nothing else broke)
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/decisions/0145-member-names-find-member-reply-pings-scheduled-style.md docs/decisions/0146-assistant-task-tools.md docs/decisions/0147-parallel-web-search-source.md` then `npx eslint docs/decisions/0145-member-names-find-member-reply-pings-scheduled-style.md docs/decisions/0146-assistant-task-tools.md docs/decisions/0147-parallel-web-search-source.md` · exit 0
+- [ ] **Step 7: Commit** — `git add docs/decisions/0145-member-names-find-member-reply-pings-scheduled-style.md docs/decisions/0146-assistant-task-tools.md docs/decisions/0147-parallel-web-search-source.md && git commit -m "Slice 2 T1: ADRs 0145 member names and pings, 0146 task tools, 0147 Parallel source"`
+
+**Done when:** three ADR files exist with Context/Decision/Consequences; contracts ADR table matches; gates pass.
+
+---
+
+### S2-T2: Catalogue groups, four new tools, ping and tasks skills   ·   Wave 2
+**Owns:** Modify: `packages/core/src/assistant/tool-catalogue.ts`, `packages/core/src/assistant/skills.ts`, `packages/core/src/assistant/tool-catalogue.test.ts`, `packages/core/src/assistant/skills.test.ts`
+**Reads (do not edit):** `packages/core/src/assistant/capabilities.ts` (`buildCapabilityBlock` grouping), `apps/daemon/src/assistant/tools.ts:370-383` (`toolDeclarations` derivation)
+**Interfaces:** Consumes: none · Produces: `ToolGroupId` gains `'tasks'`; `TOOL_GROUPS` gains the tasks row; `TOOL_CATALOGUE` gains `find_member | create_task | list_tasks | task_progress`; `RETURNED_ID_ARGS` gains `task_progress: ['taskId']`; `CLUB_ASSISTANT_SKILLS` gains `ping` and `tasks` (exact shapes below, for S2-T7's gates)
+
+- [ ] **Step 1: Write the failing tests** — in `tool-catalogue.test.ts`, extend the four pinned tests:
+  - names list: append `'find_member', 'create_task', 'list_tasks', 'task_progress'` after `'channel_history'`;
+  - rounds test: add `'find_member', 'list_tasks'` to the `'all'` list, `'task_progress'` to `'returned-id'`, `'create_task'` to `'first'`;
+  - writers test: expect `['cancel_reminder', 'create_task', 'edit_reminder', 'propose_decision', 'propose_memory', 'set_reminder', 'task_progress']`;
+  - returned-id map test: add `task_progress: ['taskId']`;
+  - add:
+
+```ts
+it('gates the new tools behind fitting groups and skills (ADR 0145, 0146)', () => {
+  const byName = new Map(TOOL_CATALOGUE.map((e) => [e.name, e]));
+  expect(byName.get('find_member')).toMatchObject({ group: 'server', rounds: 'all' });
+  expect(byName.get('find_member')?.requiresSkill).toBeUndefined();
+  expect(byName.get('create_task')).toMatchObject({ group: 'tasks', rounds: 'first', writes: true, requiresSkill: 'tasks', actsForSkill: 'tasks' });
+  expect(byName.get('list_tasks')).toMatchObject({ group: 'tasks', rounds: 'all', requiresSkill: 'tasks', actsForSkill: 'tasks' });
+  expect(byName.get('task_progress')).toMatchObject({ group: 'tasks', rounds: 'returned-id', writes: true, requiresSkill: 'tasks', actsForSkill: 'tasks' });
+  expect(TOOL_GROUPS.find((g) => g.id === 'tasks')?.label).toBe('Club tasks');
+});
+```
+
+  In `skills.test.ts` add:
+
+```ts
+it('has a non-acting ping skill open to everyone and an acting tasks skill owned by default (ADR 0145, 0146)', () => {
+  const ping = CLUB_ASSISTANT_SKILLS.find((x) => x.id === 'ping');
+  expect(ping).toMatchObject({ acts: false, defaultScope: 'everyone', effect: 'send', name: 'Ping members and roles' });
+  const tasks = CLUB_ASSISTANT_SKILLS.find((x) => x.id === 'tasks');
+  expect(tasks).toMatchObject({ acts: true, defaultScope: 'owner', effect: 'schedule', name: 'Club tasks' });
+  expect(STARTER_SKILL_IDS).toContain('ping');
+  expect(STARTER_SKILL_IDS).not.toContain('tasks');
+});
+```
+
+  (`STARTER_SKILL_IDS` is already imported in that file's lines 2-7 alongside `CLUB_ASSISTANT_SKILLS`.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/tool-catalogue.test.ts packages/core/src/assistant/skills.test.ts --maxWorkers=1` · Expected: FAIL (unknown tools/skills)
+- [ ] **Step 3: Implement** — in `tool-catalogue.ts`:
+  - `ToolGroupId` union gains `| 'tasks'`; append `{ id: 'tasks', label: 'Club tasks', description: 'create tasks in existing teams, list the open ones and record progress notes; team leads and the president only' }` to the end of `TOOL_GROUPS`; extend the `server` row description to `"the server's channels, members and upcoming events"`.
+  - Append four entries to the end of `TOOL_CATALOGUE` (descriptions verbatim; each is ≥120 characters and contains "Use" + a when-clause, satisfying the 1b shape test):
+
+```ts
+{
+  name: 'find_member',
+  description:
+    "Look up a club member by name, username or mention, returning up to 5 matches with display name, username and role names. Use it when a member names someone you need to tell apart, or before claiming anything about who someone is. It never returns ids; later tools take names and code resolves them. Example: 'remind Sam at 23:00' becomes find_member with name 'Sam', then set_reminder with members: [\"Sam L\"].",
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'The name, username or mention to look up.', minLength: 1, maxLength: 100 },
+    },
+    required: ['name'],
+  },
+  rounds: 'all',
+  outputLimit: RESULT_LIMIT,
+  skills: ['search-club'],
+  group: 'server',
+},
+{
+  name: 'create_task',
+  description:
+    "Create a club task inside an existing team, assigned to members by display name with a due date. Use it when a team lead or the president asks for something to be made, tracked and nudged. Only team leads and the president can use it; anyone else is refused. Example: 'task the site team to fix the charger by Friday' becomes title 'Fix the charger', team '<teamId>', assignees: [\"Sam L\"], due '2026-10-17T17:00:00-07:00'.",
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'The task title.', minLength: 1, maxLength: 180 },
+      details: { type: 'string', description: 'What needs doing, in a few sentences.', maxLength: 5000 },
+      team: { type: 'string', description: 'The team id from list_tasks or the task context.', minLength: 1, maxLength: 128 },
+      assignees: { type: 'array', description: 'Display names to assign (at most 25).', items: { type: 'string' }, maxItems: 25 },
+      due: { type: 'string', description: 'Due date, ISO 8601 with its UTC offset.' },
+    },
+    required: ['title', 'team', 'due'],
+  },
+  rounds: 'first',
+  outputLimit: RESULT_LIMIT,
+  skills: ['tasks'],
+  actsForSkill: 'tasks',
+  group: 'tasks',
+  requiresSkill: 'tasks',
+  writes: true,
+},
+{
+  name: 'list_tasks',
+  description:
+    "The asking member's teams and their open tasks, with ids for task_progress. Use it when a member asks what tasks exist, what is due, or before recording progress on one. Only team members, team leads and the president see anything; anyone else is refused.",
+  parameters: {
+    type: 'object',
+    properties: {
+      team: { type: 'string', description: 'Only this team id.', minLength: 1, maxLength: 128 },
+      includeDone: { type: 'boolean', description: 'Also list finished tasks.' },
+    },
+    required: [],
+  },
+  rounds: 'all',
+  outputLimit: RESULT_LIMIT,
+  skills: ['tasks'],
+  actsForSkill: 'tasks',
+  group: 'tasks',
+  requiresSkill: 'tasks',
+},
+{
+  name: 'task_progress',
+  description:
+    'Record a short progress note on one open task by its id from list_tasks. Use it when a member says what got done, what is blocked, or gives an update on their task. Only someone assigned to the task, its team lead or the president can use it.',
+  parameters: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'The task id from list_tasks.', minLength: 1, maxLength: 128 },
+      note: { type: 'string', description: 'The progress note.', minLength: 1, maxLength: 5000 },
+    },
+    required: ['taskId', 'note'],
+  },
+  rounds: 'returned-id',
+  outputLimit: RESULT_LIMIT,
+  skills: ['tasks'],
+  actsForSkill: 'tasks',
+  group: 'tasks',
+  requiresSkill: 'tasks',
+  writes: true,
+},
+```
+
+  - `ID_ARG_NAMES` gains `task_progress: ['taskId']`.
+  - In `skills.ts`, append after `draft-handoff`:
+
+```ts
+{
+  id: 'ping',
+  name: 'Ping members and roles',
+  description: 'Ping members or roles the asker named by writing @Name in the answer; code decides who pings.',
+  promptLine: 'Ping a member or role the asker named by writing @Name in the answer; only people and roles they mentioned or named ever ping.',
+  effect: 'send',
+  requiredPermission: 'assistant.communications',
+  acts: false,
+  defaultScope: 'everyone',
+  requiresConfirmation: false,
+},
+{
+  id: 'tasks',
+  name: 'Club tasks',
+  description: 'Create, list and update club tasks for team leads and the president.',
+  promptLine: 'Make, list and update club tasks for team leads and the president; refuse anyone else plainly.',
+  effect: 'schedule',
+  requiredPermission: 'assistant.organise',
+  acts: true,
+  defaultScope: 'owner',
+  requiresConfirmation: false,
+},
+```
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/skills.ts packages/core/src/assistant/tool-catalogue.test.ts packages/core/src/assistant/skills.test.ts` then `npx eslint packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/skills.ts packages/core/src/assistant/tool-catalogue.test.ts packages/core/src/assistant/skills.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/skills.ts packages/core/src/assistant/tool-catalogue.test.ts packages/core/src/assistant/skills.test.ts && git commit -m "Slice 2 T2: tasks group, find_member and task tools, ping and tasks skills"`
+
+**Done when:** catalogue names/rounds/writers/returned-id tests pass with the four new tools; every new description passes the ≥120/`Use when` shape test; `ping` in starter ids, `tasks` owner-default.
+
+---
+
+### S2-T3: Mention names in the provider text   ·   Wave 2
+**Owns:** Modify: `apps/daemon/src/assistant/mentions.ts`; Create: `apps/daemon/src/assistant/mentions.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/service.ts:1242` (call site), `apps/daemon/src/assistant/channel-context.ts:42-46` (second call site), `packages/core/src/assistant/untrusted.ts:24-32` (`safeDisplayName`)
+**Interfaces:** Consumes: none · Produces: `export const sanitizeMentionsForProvider = (text: string, names?: MentionNames) => string` with `export interface MentionNames { readonly users?: ReadonlyMap<string, string> | undefined; readonly roles?: ReadonlyMap<string, string> | undefined }` (for S2-T9's candidate wiring; callers without names keep today's output byte-for-byte)
+
+- [ ] **Step 1: Write the failing test** — `apps/daemon/src/assistant/mentions.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { sanitizeMentionsForProvider } from './mentions.js';
+
+const U_SAM = '456789012345678901';
+const U_UNKNOWN = '567890123456789012';
+const R_CAR = '678901234567890123';
+const R_UNKNOWN = '789012345678901234';
+const names = {
+  users: new Map([[U_SAM, 'Sam L']]),
+  roles: new Map([[R_CAR, 'Car Team A']]),
+};
+
+describe('sanitizeMentionsForProvider (ADR 0145)', () => {
+  it('renders known members and roles by display name', () => {
+    expect(sanitizeMentionsForProvider(`remind <@${U_SAM}> and <@&${R_CAR}>`, names)).toBe(
+      'remind @Sam L and @Car Team A',
+    );
+  });
+  it('keeps @user and @role for unknown ids', () => {
+    expect(sanitizeMentionsForProvider(`hi <@${U_UNKNOWN}> <@&${R_UNKNOWN}>`, names)).toBe(
+      'hi @user @role',
+    );
+  });
+  it('without names keeps today’s flattening byte-for-byte', () => {
+    expect(sanitizeMentionsForProvider(`remind <@!${U_SAM}> in <#111111111111111111>`)).toBe(
+      'remind @user in #channel',
+    );
+  });
+  it('cleans member-controlled names through the display-name sanitiser', () => {
+    const evil = { users: new Map([[U_SAM, '  Sam\nL]  ']]), roles: new Map() };
+    expect(sanitizeMentionsForProvider(`<@${U_SAM}>`, evil)).toBe('@Sam L');
+  });
+  it('leaves bare numbers alone for the outbound scan', () => {
+    expect(sanitizeMentionsForProvider('call 456789012345678901 now', names)).toBe(
+      'call 456789012345678901 now',
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/mentions.test.ts --maxWorkers=1` · Expected: FAIL (module has no second parameter; unknown ids already `@user`/`@role` but known ids do not render)
+- [ ] **Step 3: Implement** — replace `apps/daemon/src/assistant/mentions.ts` content (keeping the header comment, extended with one line: "With a names map, known users and roles render as `@Name` through `safeDisplayName`; unknown ids keep the old tokens."):
+
+```ts
+import { safeDisplayName } from '@bananasaurs/core';
+
+export interface MentionNames {
+  readonly users?: ReadonlyMap<string, string> | undefined;
+  readonly roles?: ReadonlyMap<string, string> | undefined;
+}
+
+const namedOr = (raw: string | undefined, fallback: string): string =>
+  `@${safeDisplayName(raw) ?? fallback}`;
+
+export const sanitizeMentionsForProvider = (text: string, names?: MentionNames): string =>
+  text
+    .replace(/<@&(\d{17,20})>/g, (_match, id: string) => namedOr(names?.roles?.get(id), 'role'))
+    .replace(/<@!?(\d{17,20})>/g, (_match, id: string) => namedOr(names?.users?.get(id), 'user'))
+    .replace(/<#\d{17,20}>/g, '#channel');
+```
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/mentions.test.ts apps/daemon/src/assistant/channel-context.test.ts apps/daemon/src/assistant/service.test.ts --maxWorkers=1` · Expected: PASS (both existing call sites pass no names, so their output is unchanged)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/mentions.ts apps/daemon/src/assistant/mentions.test.ts` then `npx eslint apps/daemon/src/assistant/mentions.ts apps/daemon/src/assistant/mentions.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/mentions.ts apps/daemon/src/assistant/mentions.test.ts && git commit -m "Slice 2 T3: mention ids render as display names with a names map"`
+
+**Done when:** known ids render `@Sam L` / `@Car Team A`; unknown ids keep old tokens; bare numbers untouched; existing service/channel-context tests green.
+
+---
+
+### S2-T4: Parallel REST connector   ·   Wave 2
+**Owns:** Create: `apps/daemon/src/assistant/parallel-search.ts`, `apps/daemon/src/assistant/parallel-search.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/tavily-search.ts:27-73` (request/response/error shape to mirror), `apps/daemon/src/assistant/tools.ts:62-66` (`WebResult`), `apps/daemon/src/assistant/web-search.ts:22-28` (`SearchHttpError`)
+**Interfaces:** Consumes: none · Produces: `export const parallelWebSearch = (options: { readonly apiKey: string; readonly fetch?: typeof globalThis.fetch; readonly timeoutMs?: number }, query: string) => Promise<readonly WebResult[]>` (for S2-T8's client selection)
+
+- [ ] **Step 1: Write the failing test** — `apps/daemon/src/assistant/parallel-search.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+import { SearchHttpError } from './web-search.js';
+import { parallelWebSearch } from './parallel-search.js';
+
+const fetchOk = (body: unknown) =>
+  vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+
+describe('parallelWebSearch (ADR 0147)', () => {
+  it('posts the fixed fast-mode body with the x-api-key header and maps excerpts', async () => {
+    const fetchImpl = fetchOk({
+      results: [
+        { title: 'TRIUMF <b>tours</b>', url: 'https://triumf.example/visit', excerpts: ['Grade 9 <i>welcome</i>', 'second line'] },
+        { title: 'Other', url: 'https://other.example/', content: 'plain content here' },
+        { title: 'Nope', url: 'ftp://nope.example/' },
+      ],
+    });
+    const results = await parallelWebSearch({ apiKey: 'p-key', fetch: fetchImpl }, 'TRIUMF tour grade 9');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.parallel.ai/v1/search');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['x-api-key']).toBe('p-key');
+    expect(JSON.parse(init.body as string)).toEqual({
+      objective: 'TRIUMF tour grade 9',
+      search_queries: ['TRIUMF tour grade 9'],
+      mode: 'fast',
+    });
+    expect(results).toEqual([
+      { title: 'TRIUMF tours', url: 'https://triumf.example/visit', description: 'Grade 9 welcome second line' },
+      { title: 'Other', url: 'https://other.example/', description: 'plain content here' },
+    ]);
+  });
+  it('caps each excerpt at 1,000 characters and keeps the first 5 results', async () => {
+    const fetchImpl = fetchOk({
+      results: [0, 1, 2, 3, 4, 5, 6].map((i) => ({ title: `t${i}`, url: `https://e.example/${i}`, content: 'x'.repeat(2000) })),
+    });
+    const results = await parallelWebSearch({ apiKey: 'p-key', fetch: fetchImpl }, 'q');
+    expect(results).toHaveLength(5);
+    for (const r of results) expect(r.description.length).toBeLessThanOrEqual(1000);
+  });
+  it('throws SearchHttpError on a refused status and a fixed error on a bad body', async () => {
+    const refused = vi.fn(async () => new Response('no', { status: 429 }));
+    await expect(parallelWebSearch({ apiKey: 'k', fetch: refused }, 'q')).rejects.toMatchObject({ name: 'SearchHttpError', status: 429 });
+    const bad = fetchOk({ nope: true });
+    await expect(parallelWebSearch({ apiKey: 'k', fetch: bad }, 'q')).rejects.toThrow(
+      'Parallel returned an invalid response',
+    );
+  });
+  it('never logs or returns the key', async () => {
+    const fetchImpl = fetchOk({ results: [] });
+    await parallelWebSearch({ apiKey: 'super-secret-parallel-key', fetch: fetchImpl }, 'q');
+    expect(JSON.stringify(fetchImpl.mock.calls)).not.toContain('super-secret-parallel-key');
+  });
+});
+```
+
+  (The last assertion holds because the key travels only in the header object; if the implementation ever interpolates it into the url or body, this fails.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/parallel-search.test.ts --maxWorkers=1` · Expected: FAIL (module missing)
+- [ ] **Step 3: Implement** — `apps/daemon/src/assistant/parallel-search.ts`, mirroring `tavily-search.ts`:
+
+```ts
+import { z } from 'zod';
+import type { WebResult } from './tools.js';
+import { SearchHttpError } from './web-search.js';
+
+/**
+ * The Parallel Search API (ADR 0147). The third outbound web-search
+ * destination. Results are held only for the request that asked; nothing
+ * here stores them. The key is only ever in the `x-api-key` header.
+ */
+const ENDPOINT = 'https://api.parallel.ai/v1/search';
+
+/** Same strip as `brave-search.ts`: the model only needs the text. */
+const stripTags = (text: string): string => text.replace(/<[^>]*>/g, '');
+
+const parallelResponse = z.object({
+  results: z
+    .array(
+      z.object({
+        title: z.string().optional(),
+        url: z.string().optional(),
+        content: z.string().optional(),
+        snippet: z.string().optional(),
+        excerpts: z.array(z.string()).optional(),
+      }),
+    )
+    .default([]),
+});
+
+export const parallelWebSearch = async (
+  options: {
+    readonly apiKey: string;
+    readonly fetch?: typeof globalThis.fetch;
+    readonly timeoutMs?: number;
+  },
+  query: string,
+): Promise<readonly WebResult[]> => {
+  const response = await (options.fetch ?? globalThis.fetch)(ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'x-api-key': options.apiKey,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({ objective: query, search_queries: [query], mode: 'fast' }),
+    signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
+  });
+  if (!response.ok) throw new SearchHttpError(response.status);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error('Parallel returned an invalid response');
+  }
+  const parsed = parallelResponse.safeParse(body);
+  if (!parsed.success) throw new Error('Parallel returned an invalid response');
+  return parsed.data.results.slice(0, 5).flatMap((result) =>
+    result.url === undefined || !/^https?:\/\//.test(result.url)
+      ? []
+      : [
+          {
+            title: stripTags(result.title ?? result.url),
+            url: result.url,
+            description: stripTags(
+              result.content ?? result.excerpts?.join(' ') ?? result.snippet ?? '',
+            ).slice(0, 1000),
+          },
+        ],
+  );
+};
+```
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/parallel-search.ts apps/daemon/src/assistant/parallel-search.test.ts` then `npx eslint apps/daemon/src/assistant/parallel-search.ts apps/daemon/src/assistant/parallel-search.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/parallel-search.ts apps/daemon/src/assistant/parallel-search.test.ts && git commit -m "Slice 2 T4: Parallel REST search connector (fast mode)"`
+
+**Done when:** fixed body + header asserted; 5-result cap and 1,000-char excerpts asserted; refused statuses throw `SearchHttpError` so `createWebSearchRun` falls through to the next key.
+
+---
+
+### S2-T5: Storage — style column, parallel CHECKs, migration, eligibility seed   ·   Wave 3
+**Owns:** Modify: `packages/storage/src/schema.ts`, `packages/storage/src/repos/assistant.ts`, `packages/storage/src/repos/search-keys.ts`, `packages/core/src/assistant/reminders.ts`; Create: `drizzle/0*_parallel_search_source.sql` (generated name), `packages/storage/src/repos/slice2-storage.test.ts`
+**Reads (do not edit):** `packages/storage/src/schema.ts:1923-1932` (provider-config searchSource CHECK), `packages/storage/src/schema.ts:2038-2067` (search-keys CHECK), `packages/storage/src/schema.ts:2247-2275` (`assistantReminders` columns), `packages/storage/src/repos/assistant.ts:344-441` (`StoredReminder`, `toReminder`, `insertReminder`, `assertNoMassPing`), `drizzle/0022_brainy_meteorite.sql` (eligibility seed precedent)
+**Interfaces:** Consumes: ADRs 0145/0147 (T1) · Produces: `assistant_reminders.style` round-trip (`'reminder' | 'message'`, default `'reminder'`); `SearchSource` and `WebSearchSource` accept `'parallel'` at the storage layer; migration `parallel_search_source` with the eligibility seed (for S2-T8's migrated-DB tests)
+
+- [ ] **Step 1: Write the failing test** — `packages/storage/src/repos/slice2-storage.test.ts`:
+
+```ts
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { assistantRepo, searchKeysRepo } from '@bananasaurs/storage';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
+
+const GUILD = '234567890123456789';
+const NOW = 1_800_000_000_000;
+
+let t: MigratedTestDatabase;
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+});
+afterEach(() => t.close());
+
+const reminder = (over: Record<string, unknown> = {}) => ({
+  id: 'rem_style_1',
+  creatorId: '456789012345678901',
+  destinationId: '111111111111111111',
+  text: 'Evening post',
+  dueAt: NOW + 3_600_000,
+  createdAt: NOW,
+  status: 'scheduled' as const,
+  dedupeKey: 'style:1',
+  mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+  deliveredCount: 0,
+  ...over,
+});
+
+describe('Slice 2 storage (ADR 0145, 0147)', () => {
+  it('round-trips a message-style reminder and defaults old rows to reminder', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    expect(assistantRepo.insertReminder(scope, reminder({ id: 'a', style: 'message' }))).toBe('created');
+    expect(assistantRepo.insertReminder(scope, reminder({ id: 'b', dedupeKey: 'style:2' }))).toBe('created');
+    expect(assistantRepo.getReminder(scope, 'a')?.style).toBe('message');
+    expect(assistantRepo.getReminder(scope, 'b')?.style).toBe('reminder');
+  });
+  it('stores a parallel search key and lists it under its source', () => {
+    const scope = t.scopes.instance();
+    const keyId = searchKeysRepo.addSearchKey(scope, {
+      source: 'parallel',
+      label: 'Parallel key',
+      apiKeyEnc: 'sealed-parallel',
+      monthlyLimit: 4500,
+      dailyLimit: null,
+      now: NOW,
+    });
+    expect(searchKeysRepo.listSearchKeys(scope).find((k) => k.keyId === keyId)?.source).toBe('parallel');
+  });
+  it('seeds the parallel provider-eligibility row as may-train', async () => {
+    const { findEligibility } = await import('@bananasaurs/storage');
+    expect(findEligibility(t.scopes.instance(), 'parallel')).toMatchObject({ trainsOnInput: 'yes' });
+  });
+});
+```
+
+  (Check the exact export surface first with `grep -n "assistantRepo\|searchKeysRepo\|findEligibility" packages/storage/src/index.ts`: `assistantRepo` is imported as a value in `apps/daemon/src/assistant/reminder-delivery.ts:15`, `searchKeysRepo` in `web-search.test.ts:2`, and `findEligibility` lives in `packages/storage/src/repos/provider-eligibility.ts:82-94`. If `findEligibility` is not re-exported at the package root, import it from `@bananasaurs/storage` only when the grep says so; otherwise import the repos module path the root re-exports, and use a top-level static import rather than `await import` when the file is ESM — match the import style of `packages/storage/src/repos/provider-eligibility.test.ts`. Replace `assistantRepo.getReminder` with the real getter name from `repos/assistant.ts:652-656` if it differs.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/storage/src/repos/slice2-storage.test.ts --maxWorkers=1` · Expected: FAIL (no `style` column; `parallel` violates the CHECKs; no eligibility row)
+- [ ] **Step 3: Implement**
+  - `packages/core/src/assistant/reminders.ts`: append `export type ReminderStyle = 'reminder' | 'message';` and add `readonly style?: ReminderStyle | undefined;` to the `Reminder` interface (optional so every existing constructor still compiles; absent means `'reminder'`).
+  - `packages/storage/src/schema.ts`:
+    - In `assistantReminders`, after `origin: text('origin').notNull().default('assistant'),` (line 2274) add:
+```ts
+    // ADR 0145: 'reminder' posts the framed reminder; 'message' posts the
+    // text as is. Pre-migration rows read back as 'reminder' through the
+    // column default. No CHECK: the code assertion in `repos/assistant.ts`
+    // (mirroring `assertNoMassPing`) owns the values, so the generated
+    // migration stays a plain ADD COLUMN.
+    style: text('style').notNull().default('reminder'),
+```
+    - `assistant_provider_config_search_source` (line 1932): `IN ('brave','tavily')` → `IN ('brave','tavily','parallel')`.
+    - `assistant_search_keys_source` (line 2055): same widening.
+  - `packages/storage/src/repos/assistant.ts`: add `assertReminderStyle` next to `assertNoMassPing` (lines 384-387), call it in `insertReminder`; `toReminder` (lines 360-382) gains `style: r.style === 'message' ? 'message' : 'reminder'`; `insertReminder` values gain `style: r.style ?? 'reminder'`.
+  - `packages/storage/src/repos/search-keys.ts:41-45`: `asSearchSource` accepts `'parallel'`.
+  - Generate: `npm run db:generate -- --name parallel_search_source`. Read the generated SQL and confirm it adds the `style` column and both widened CHECKs. Then append the eligibility seed (precedent `drizzle/0022_brainy_meteorite.sql:18`):
+```sql
+INSERT INTO `provider_eligibility` (`provider`, `trains_on_input`, `evidence_url`, `evidence_clause`, `production_use_allowed`, `reviewed_at`) VALUES ('parallel', 'yes', 'https://parallel.ai/terms', 'Customer terms section 4(b): Parallel may use Customer IP, including search queries, to train and improve its models (owner decision D11, 2026-10-10).', 1, <REVIEWED_AT>);
+```
+    where `<REVIEWED_AT>` is the literal from `node -e "console.log(Date.UTC(2026,9,11))"`. If drizzle-kit generated more than one file, keep only the `parallel_search_source` one and delete the rest.
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS. Then `npx vitest run packages/storage/src/db.test.ts packages/storage/src/schema-invariants.test.ts --maxWorkers=1` · PASS (CHECK widening breaks nothing).
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/storage/src/schema.ts packages/storage/src/repos/assistant.ts packages/storage/src/repos/search-keys.ts packages/core/src/assistant/reminders.ts packages/storage/src/repos/slice2-storage.test.ts` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add packages/storage/src/schema.ts packages/storage/src/repos/assistant.ts packages/storage/src/repos/search-keys.ts packages/core/src/assistant/reminders.ts packages/storage/src/repos/slice2-storage.test.ts drizzle/ && git commit -m "Slice 2 T5: reminder style column, parallel source CHECKs, migration, eligibility seed"`
+
+**Done when:** style round-trips with default `'reminder'`; `parallel` keys store and list; eligibility row reads `yes`; generated SQL read and confirmed in the task report.
+
+---
+
+### S2-T6: Ping-cap settings and tuning test   ·   Wave 3
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`, `packages/dashboard/src/pages/assistant-tuning.test.tsx`
+**Reads (do not edit):** `packages/dashboard/src/pages/assistant-tuning.tsx:21-60` (`toDraft`/`parseDraft` handle `count` generically — no page change needed), `apps/daemon/src/runtime/guild.ts:994` (`settings.get('assistant.channelContextMessages')` read pattern for S2-T9)
+**Interfaces:** Consumes: ADR 0145 caps (T1) · Produces: `assistant.pingMaxMembers` (default 5, 1–5), `assistant.pingMaxRoles` (default 3, 1–3) in the registry and on the tuning page (for S2-T9's `pingCaps` closure)
+
+- [ ] **Step 1: Write the failing tests** — in `instance-settings.test.ts` add:
+
+```ts
+it('registers the Slice 2 reply-ping caps with their bounds (ADR 0145)', () => {
+  expect(INSTANCE_SETTINGS).toHaveLength(20);
+  const members = settingDefinition('assistant.pingMaxMembers');
+  expect(members).toMatchObject({ group: 'Assistant replies', label: 'Reply pings: max members', defaultValue: 5, bounds: { min: 1, max: 5 } });
+  expect(members?.schema.safeParse(5).success).toBe(true);
+  expect(members?.schema.safeParse(0).success).toBe(false);
+  expect(members?.schema.safeParse(6).success).toBe(false);
+  const roles = settingDefinition('assistant.pingMaxRoles');
+  expect(roles).toMatchObject({ group: 'Assistant replies', label: 'Reply pings: max roles', defaultValue: 3, bounds: { min: 1, max: 3 } });
+  expect(roles?.schema.safeParse(3).success).toBe(true);
+  expect(roles?.schema.safeParse(4).success).toBe(false);
+  expect(isInstanceSettingKey('assistant.pingMaxMembers')).toBe(true);
+  expect(isInstanceSettingKey('assistant.pingMaxRoles')).toBe(true);
+});
+```
+
+  In `assistant-tuning.test.tsx`, append two entries to the local `SETTINGS` fixture (same shape as the `assistant.maxToolRounds` entry at lines 32-41):
+
+```ts
+{
+  key: 'assistant.pingMaxMembers',
+  group: 'Assistant replies',
+  label: 'Reply pings: max members',
+  help: 'How many members one assistant reply may ping. Only people the asker mentioned or named ever ping.',
+  display: 'count',
+  bounds: { min: 1, max: 5 },
+  value: 5,
+  defaultValue: 5,
+  isDefault: true,
+},
+{
+  key: 'assistant.pingMaxRoles',
+  group: 'Assistant replies',
+  label: 'Reply pings: max roles',
+  help: 'How many roles one assistant reply may ping. Roles still pass the server ping rules.',
+  display: 'count',
+  bounds: { min: 1, max: 3 },
+  value: 3,
+  defaultValue: 3,
+  isDefault: true,
+},
+```
+
+  extend the headings test's group list (lines 119-125) with `'Assistant replies'`, and add:
+
+```ts
+it('saves a ping cap as a plain count', async () => {
+  const updated = { ...SETTINGS.find((s) => s.key === 'assistant.pingMaxMembers')!, value: 4 };
+  const mock = stubFetch([
+    { url: TUNING_URL, body: { settings: SETTINGS } },
+    { method: 'PUT', url: tuningKeyUrl('assistant.pingMaxMembers'), body: { setting: updated } },
+  ]);
+  renderPage();
+  const input = await screen.findByLabelText('Reply pings: max members');
+  expect(input).toHaveProperty('value', '5');
+  fireEvent.change(input, { target: { value: '4' } });
+  await act(async () => {
+    fireEvent.click(within(rowOf('assistant.pingMaxMembers')).getByRole('button', { name: 'Save' }));
+  });
+  const put = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
+  expect(put?.[1]).toMatchObject({ method: 'PUT' });
+  expect(bodyOf(put!)).toEqual({ value: 4 });
+  expect(await screen.findByText('Saved')).toBeTruthy();
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL (18 definitions, no such rows)
+- [ ] **Step 3: Implement** — in `instance-settings.ts`: append `'Assistant replies'` to the `SettingGroup` union (lines 12-18); add the two `SettingDefinition<number>` consts (key/label/help/display `count`/schema int with bounds/defaultValue/bounds, exactly as the test expects); append both to `INSTANCE_SETTINGS` (lines 257-276); add both keys to `InstanceSettingValues` (lines 278-297). No dashboard page change: the tuning page renders every registry row generically.
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx && git commit -m "Slice 2 T6: reply-ping cap settings with tuning rows"`
+
+**Done when:** registry holds 20 definitions; tuning page shows the `Assistant replies` group and both rows render and save.
+
+---
+
+### S2-T7: Task tools and find_member implementation with service wiring   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/assistant/capability-fixtures.ts`, `apps/daemon/src/assistant/capability-fixtures.test.ts`, `apps/daemon/src/runtime/guild.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/task-context.ts:5-20` (`TaskContextAccess`, `TaskContextPort`), `apps/daemon/src/task-access.ts:26-79` (`taskMemberAccess`, `leadOf`, president rule), `packages/mcp/src/tools/task-admin.ts:95-104,127-131` (`create_club_task` / `record_task_progress` shapes), `packages/storage/src/repos/tasks.ts:19-23,61-74,210-232,260-356,568-612,1254` (`TaskActor`, `NewTask`, `listTasks`, `createTask` explicit id, `recordReport`, `isTaskAssignee`), `apps/daemon/src/assistant/reminder-summary.ts:101-108` (`summaryField`), `apps/daemon/src/assistant/service.ts:379-403` (`resolveFromMember` exact-match rule)
+**Interfaces:** Consumes: catalogue entries + `tasks` skill (T2); `ReminderStyle` (T5) · Produces: `AssistantToolPorts.findMember/taskTools`; `FoundMember.roleNames?`; task-tool behaviour and the Parallel may-train warn in `service.ts` (used by S2-T8's end-to-end search test)
+
+- [ ] **Step 1: Write the failing tests** — in `tools.test.ts`, add a `describe('task tools and find_member (ADR 0146, 0145)')` block reusing the file's `ports()` helper (lines 46-120) with `skillAllowed: () => true`, stub `findMember`/`taskTools` ports, and a stub task scope from `openMigratedTestDatabase` (pattern from `web-search.test.ts:14-22`). Cases:
+  - `toolDeclarations` includes `find_member` when `findMember` is present and drops it when absent; includes the three task tools only when `taskTools` is present and the `tasks` skill is allowed.
+  - `find_member` returns up to 5 `{ name, username, roles }` lines with no ids: assert the text contains `Sam L` and never contains the stub id.
+  - non-lead `create_task` is refused: `expect(r.text).toContain('Only a team lead or the president')`; no row in `taskRepo.listTasks`.
+  - lead `create_task` with the same args twice returns the same task id (idempotency, `listTasks` length 1).
+  - `task_progress` by a non-assignee is refused; by the assignee records once and dedupes the retry.
+  - every new tool description passes the catalogue shape (import `TOOL_CATALOGUE` and assert length ≥ 120 and `/Use (it |this )?(when|whenever|after|first|only)/i`, proving the capability block can print them).
+  - In `service.test.ts`, inside the B2b block (per the Slice 1 plan's Task 6 harness `setupB2b`/`ask`): an owner invocation declares `create_task` and a member invocation does not; the compiled system lists `Club tasks (create_task, list_tasks, task_progress)` and `find_member` under `This server`.
+  - In `capability-fixtures.ts`: change the owner `'can you create tasks?'` fixture to `mustOffer: ['create_task', 'list_tasks']`, and add `{ message: 'who is Sam L', asker: 'member', mustOffer: ['find_member'], mustNotOffer: [], blockContains: ['This server ('] }`; extend the fixture test's ports with stub `findMember`/`taskTools` so declarations include them.
+  - Break-it (do it, watch it fail, then revert): temporarily make `create_task` skip the `TaskContextPort.access` authority check; the non-lead refusal test and the service member test must both fail. Record both failures in the commit message.
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/capability-fixtures.test.ts --maxWorkers=1` · Expected: FAIL (unknown tools, no ports)
+- [ ] **Step 3: Implement**
+  - `tools.ts`:
+    - Add `export interface MemberLookupHit { readonly id: string; readonly displayName: string; readonly username?: string | undefined; readonly roleNames?: readonly string[] | undefined }` and extend `AssistantToolPorts` (lines 124-209) with `readonly findMember?: ((nameOrId: string) => Promise<readonly MemberLookupHit[]>) | undefined;` and:
+```ts
+readonly taskTools?:
+  | {
+      readonly scope: GuildScope;
+      readonly access: () => Promise<TaskContextAccess | undefined>;
+      readonly resolveMember: (name: string) => Promise<readonly MemberLookupHit[]>;
+      /** Current channel; absent (Try-it) means create_task refuses. */
+      readonly destinationId: string | undefined;
+    }
+  | undefined;
+```
+    (import `type { GuildScope } from '@bananasaurs/storage'` and `type { TaskContextAccess } from './task-context.js'`; import `taskRepo` value from `'@bananasaurs/storage'`; import `summaryField` from `'./reminder-summary.js'`.)
+    - `schemas` (lines 275-357) gains `find_member`, `create_task`, `list_tasks`, `task_progress` exactly matching the S2-T2 catalogue parameters (title 1–180, details ≤5000, team, assignees ≤25, due; team/includeDone; taskId + note 1–5000).
+    - `toolDeclarations` (lines 370-383) gains `(entry.name !== 'find_member' || ports.findMember !== undefined) && (['create_task', 'list_tasks', 'task_progress'].includes(entry.name) ? ports.taskTools !== undefined : true) &&`.
+    - `AssistantToolResult.webSource` (lines 240-241): `'brave' | 'tavily'` → `'brave' | 'tavily' | 'parallel'`.
+    - Cases: `find_member` (port absent → `refused(name, "I can't look up members right now.")`; else first 5 hits as `Name (username …; roles: …)`, no ids, `handles: []`); `create_task` (skill gate via `requireSkill(ports, name, 'tasks')`, then access → team membership → exact-name assignees → ISO due → destination → `taskRepo.createTask(scope, {... assignmentKind: assignees.length > 0 ? 'individual' : 'team', ...}, { actorType: 'member', actorId: ports.userId, via: 'gateway' }, ports.now(), contentKey('task', ports.invocationKey, keyContent))`, code-built `actionSummary` with `summaryField`); `list_tasks` (access with ≥1 team → `taskRepo.listTasks` filtered to the actor's team ids, `handles` = task ids); `task_progress` (access + `isTaskAssignee` or lead/president → `taskRepo.recordReport` with `contentKey('taskreport', ports.invocationKey, { taskId, note })`; `'duplicate'` returns the already-recorded evidence).
+    - Refusal strings stay actionable (Slice 1 Task 9 rule): unknown team → `'I can't use that team. Ask a team lead for the team name, then try again.'`; non-authority → `'Only a team lead or the president can create tasks. Tell the member.'`; non-assignee progress → `'Only someone assigned to that task, its team lead or the president can record progress. Tell the member.'`.
+  - `service.ts`: `FoundMember` (lines 195-200) gains `readonly roleNames?: readonly string[] | undefined`; wire `findMember` and `taskTools` into `toolPorts` next to the `searchConversations` closure, from `discord.findMember` and `discord.taskContext` (`access: () => discord.taskContext!.access(input.userId)`, `resolveMember` mapping through `discord.findMember`, `destinationId: input.channelId`).
+  - `service.ts` Tavily warn block (lines 1348-1361): after the `loop.webSources.includes('tavily')` warn, add the identical warn for `'parallel'` with reason `'search-provider-may-train'` and message `'web search provider may train on queries'`.
+  - `guild.ts`: `findMember`'s `toEntry` (lines 892-897) gains `roleNames: [...member.roles.cache.values()].filter((r) => r.id !== guild.id).map((r) => r.name).slice(0, 20)` (`member` is `GuildMember`, `guild` is in scope at line 888).
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS (including the break-it revert)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/capability-fixtures.ts apps/daemon/src/assistant/capability-fixtures.test.ts apps/daemon/src/runtime/guild.ts` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/capability-fixtures.ts apps/daemon/src/assistant/capability-fixtures.test.ts apps/daemon/src/runtime/guild.ts && git commit -m "Slice 2 T7: task tools and find_member with team-lead authority; break-it: both guards failed with the access check removed"`
+
+**Done when:** non-lead create refused with no row; same args twice → one task; progress dedupes; capability block groups print the new tools; fixtures green.
+
+---
+
+### S2-T8: Parallel wiring — source union, clients, routes, dashboard   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/assistant/web-search.ts`, `apps/daemon/src/assistant/provider-config.ts`, `apps/daemon/src/assistant/provider-config.test.ts`, `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts`, `packages/http/src/routes/assistant.ts`, `packages/http/src/routes/assistant-search-keys.ts`, `packages/http/src/routes/assistant-search-keys.test.ts`, `packages/dashboard/src/api/assistant.ts`, `packages/dashboard/src/pages/providers.tsx`, `packages/dashboard/src/pages/providers.test.tsx`, `packages/dashboard/src/pages/assistant-skills.tsx`, `packages/dashboard/src/pages/assistant-skills.test.tsx`
+**Reads (do not edit):** `apps/daemon/src/assistant/parallel-search.ts` (T4), `apps/daemon/src/assistant/provider-config.ts:594-630` (`webSearch()` key loop and client fallback), `packages/dashboard/src/pages/providers.tsx:1245-1400` (web-search card, `setSource`/`setAddMonthly`), `packages/dashboard/src/pages/providers.test.tsx:882-940` (Tavily save test to mirror)
+**Interfaces:** Consumes: `parallelWebSearch` (T4); storage `parallel` source (T5) · Produces: end-to-end Parallel search behind the configured source with sealed keys, limits and training copy
+
+- [ ] **Step 1: Write the failing tests**
+  - `provider-config.test.ts` (mirror the Brave-key tests at lines 344-361): a `parallel` key is listed under its source, ignored when the configured source is Brave, and `webSearch(guildId, { parallel: async () => [...] })` calls the injected parallel client and returns `{ results, source: 'parallel' }`.
+  - `tool-loop.test.ts`: `laterRoundDeclarations` still offers `web_search` regardless of source (source-independent), and a `recordWeb('parallel')` unit asserting `webSources` collects it (mirror the `['brave', 'tavily', 'brave']` test at line 741).
+  - `assistant-search-keys.test.ts`: POST with `source: 'parallel'` creates a key; monthly limit 4500 accepted.
+  - `providers.test.tsx` (mirror the Tavily save test at lines 911-935): choosing the Parallel radio and saving sends `searchSource: 'parallel'`; with Parallel selected the monthly box pre-fills `4500`; the card shows the training sentence `Parallel may use search queries to train its models.`
+  - `assistant-skills.test.tsx`: the Skills page lists `Ping members and roles` and `Club tasks` with a scope control each (copy the `Search the web` row assertions at lines 142-160), and the tools card lists `Find a member`.
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/assistant/tool-loop.test.ts packages/http/src/routes/assistant-search-keys.test.ts packages/dashboard/src/pages/providers.test.tsx packages/dashboard/src/pages/assistant-skills.test.tsx --maxWorkers=1` · Expected: FAIL (unions reject `'parallel'`, no radio, no rows)
+- [ ] **Step 3: Implement** (every union edit is additive — append `'parallel'`, never reorder):
+  - `web-search.ts:5`: `export type WebSearchSource = 'brave' | 'tavily' | 'parallel';`
+  - `provider-config.ts`: `ProviderSearchKey.source` (line 52), `webSearch.source` (line 78), `save` input `searchSource` (line 94, comment default stays `'brave'`), `clients` type (line 213) gains `readonly parallel?: SearchClient`; import `parallelWebSearch` next to `tavilyWebSearch`; extend the client fallback (lines 616-620) with `: (apiKey: string, q: string) => parallelWebSearch({ apiKey }, q)`.
+  - `tool-loop.ts:419,568`: `recordWeb: (source: 'brave' | 'tavily')` → `(source: 'brave' | 'tavily' | 'parallel')` in both spots.
+  - `packages/http/src/routes/assistant.ts:117`: `z.enum(['brave', 'tavily'])` → `z.enum(['brave', 'tavily', 'parallel'])`; `assistant-search-keys.ts` `searchKeyBody.source` likewise.
+  - `packages/dashboard/src/api/assistant.ts:356-357`: `SearchSource` gains `'parallel'` (comment: "Exactly 'brave', 'tavily' or 'parallel'.").
+  - `providers.tsx`: `sourceName` (line 1303) gains the Parallel branch; add a third radio after the Tavily block copying its shape with training copy `Parallel offers 5,000 free searches a month, then $1 per 1,000. Parallel may use search queries to train its models.` plus a `Read the terms` link to `https://parallel.ai/terms` (no key link — the owner pastes the key below like other sources); the parallel radio's `onChange` runs `setSource('parallel')` plus `setAddMonthly((v) => (v === '1000' ? '4500' : v))`, and the Brave/Tavily radios restore `'1000'` symmetrically.
+  - `assistant-skills.tsx`: append `{ id: 'find_member', name: 'Find a member', detail: 'Looks up a member by name; returns display names, never ids.' }` to `TOOLS`; extend the `webDetail` branch with a parallel sentence `Sends a short query to the Parallel search API. Parallel may use queries to train its models.`
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/web-search.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts packages/http/src/routes/assistant.ts packages/http/src/routes/assistant-search-keys.ts packages/http/src/routes/assistant-search-keys.test.ts packages/dashboard/src/api/assistant.ts packages/dashboard/src/pages/providers.tsx packages/dashboard/src/pages/providers.test.tsx packages/dashboard/src/pages/assistant-skills.tsx packages/dashboard/src/pages/assistant-skills.test.tsx` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/web-search.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts packages/http/src/routes/assistant.ts packages/http/src/routes/assistant-search-keys.ts packages/http/src/routes/assistant-search-keys.test.ts packages/dashboard/src/api/assistant.ts packages/dashboard/src/pages/providers.tsx packages/dashboard/src/pages/providers.test.tsx packages/dashboard/src/pages/assistant-skills.tsx packages/dashboard/src/pages/assistant-skills.test.tsx && git commit -m "Slice 2 T8: Parallel source union, clients, routes and dashboard"`
+
+**Done when:** Parallel keys store/list/search end to end on a migrated DB; source switching saves; dashboard shows the radio, the 4,500 default and the training copy; review-focus item 5 (limits skip before HTTP) covered by the existing `createWebSearchRun` reserve tests plus the new client-selection test.
+
+---
+
+### S2-T9: Reply pings from answer text   ·   Wave 5
+**Owns:** Modify: `packages/core/src/jobs/kinds.ts`, `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/commands.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `packages/core/src/discord/port.ts`; Create: `apps/daemon/src/assistant/reply-pings.ts`, `apps/daemon/src/assistant/reply-pings.test.ts`, `apps/daemon/src/assistant/reply-ping-policy.ts`, `apps/daemon/src/assistant/reply-ping-policy.test.ts`
+**Reads (do not edit):** `apps/daemon/src/mcp/targets.ts:237-295,410-433` (`rolePingContextFor`, `checkRolePing`, `CODE_SPAN` parser shape), `packages/core/src/roles/dangerous.ts:87-98` (`rolePingAllowed`), `apps/daemon/src/assistant/reminder-targets.ts:159-264` (member search + MentionEveryone rule), `apps/daemon/src/jobs/assistant.ts:87-90,1388-1440,1069-1091` (`reply()`, `postPart`, invoke mapping), `packages/core/src/discord/port.ts:99-117` (`allowedMentions`), `apps/daemon/src/runtime/guild.ts:912-929` (`resolveReminderTargets` adapter to mirror)
+**Interfaces:** Consumes: `ping` skill + `assistant.pingMaxMembers/Roles` (T2, T6); `sanitizeMentionsForProvider` names (T3) · Produces: `AssistantInvocationResult.pings`; reply-ping flow end to end
+
+- [ ] **Step 1: Write the failing tests**
+  - `reply-pings.test.ts` (pure, invented names):
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { extractPingTokens, matchPingNames, replacePingTokens } from './reply-pings.js';
+
+describe('reply-ping text helpers (ADR 0145)', () => {
+  it('extracts @Name tokens and skips code and mass mentions', () => {
+    expect(extractPingTokens('hi @Sam L and @Car Team A')).toEqual(['Sam L', 'Car Team A']);
+    expect(extractPingTokens('`@Sam L` and ```\n@Sam L\n```')).toEqual([]);
+    expect(extractPingTokens('@everyone and @HERE ping nobody')).toEqual([]);
+  });
+  it('matches exact names only, case-insensitively, deduped', () => {
+    const candidates = [{ id: '1', name: 'Sam L' }, { id: '2', name: 'Car Team A' }];
+    expect(matchPingNames(['sam l', 'Sammy', 'Sam L'], candidates)).toEqual(['1']);
+  });
+  it('replaces only in prose, leaving code spans byte-identical', () => {
+    const out = replacePingTokens('ping @Sam L and `@Sam L`', new Map([['Sam L', '<@1>']]));
+    expect(out).toBe('ping <@1> and `@Sam L`');
+  });
+});
+```
+
+  - `reply-ping-policy.test.ts`: build a fake discord.js `Client` with `guilds.cache` holding roles/members maps (mirror the `makeDeliveryClient`/`FakeDiscord` pattern in `reminder-delivery.test.ts` and the `checkRolePing` tests in `mcp/targets.test.ts:561-586`). Cases, each with `getCaps: () => ({ members: 5, roles: 3 })`:
+    - `@Sam L` mentioned by id pings; `@Stranger` never mentioned or named stays plain with empty ids.
+    - sixth member and fourth role are cut (caps), first five/three kept.
+    - role above the bot / with a dangerous permission / non-mentionable without the asker's Mention Everyone → refused, plain text.
+    - asker without SendMessages in the channel → no pings at all.
+    - `channelId: undefined` (slash path) → no pings (fail closed).
+    - Break-it (do it, watch it fail, then revert): skip the mentioned-or-named filter so any exact name pings; the `@Stranger` test must fail. Record it in the commit message.
+  - `service.test.ts`: `ping` skill denied → answer content keeps `@Sam L` verbatim and result has no `pings`; allowed with a stub `resolveReplyPings` port → `pings` attached and content rewritten.
+  - `commands.test.ts`: the enqueued payload carries `mentionedUserIds`/`mentionedRoleIds` capped at 50 (extend the event fixture at lines 155-159, which already carries both arrays).
+  - `jobs/assistant.test.ts`: a mocked result with `pings: { userIds: ['456789012345678901'], roles: [] }` posts the first part with `allowedMentions` `{ parse: [], users: ['456789012345678901'] }` and later parts with `{ parse: [] }`; a retry after part 1 resumes without re-posting and keeps the same mentions (mirror the parts test at lines 685-691).
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/reply-pings.test.ts apps/daemon/src/assistant/reply-ping-policy.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/commands.test.ts apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (no modules, no payload fields, `{ parse: [] }` everywhere)
+- [ ] **Step 3: Implement**
+  - `reply-pings.ts` (pure, no imports):
+
+```ts
+/** Code spans never ping, the ADR 0128 parser (`apps/daemon/src/mcp/targets.ts:418`). */
+export const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g;
+const TOKEN = /@([A-Za-z0-9][A-Za-z0-9 .'\-]{0,31})/g;
+
+/** `@Name` tokens outside code, without `@everyone`/`@here` (any case). */
+export const extractPingTokens = (text: string): string[] => {
+  const prose = text.replace(CODE_SPAN, ' ');
+  const tokens: string[] = [];
+  for (const match of prose.matchAll(TOKEN)) {
+    const token = (match[1] ?? '').replace(/[ .]+$/, '');
+    if (token === '' || /^(everyone|here)$/i.test(token)) continue;
+    if (!tokens.includes(token)) tokens.push(token);
+  }
+  return tokens;
+};
+
+/** Exact case-insensitive match only: a near-miss must stay plain text. */
+export const matchPingNames = (
+  tokens: readonly string[],
+  candidates: readonly { readonly id: string; readonly name: string }[],
+): string[] => {
+  const ids: string[] = [];
+  for (const token of tokens) {
+    const hit = candidates.find((c) => c.name.toLowerCase() === token.toLowerCase());
+    if (hit !== undefined && !ids.includes(hit.id)) ids.push(hit.id);
+  }
+  return ids;
+};
+
+/** Rewrites `@Name` → id token in prose segments only. */
+export const replacePingTokens = (text: string, replacements: ReadonlyMap<string, string>): string => {
+  let out = '';
+  let at = 0;
+  for (const match of text.matchAll(CODE_SPAN)) {
+    out += replaceInProse(text.slice(at, match.index ?? at), replacements);
+    out += match[0];
+    at = (match.index ?? at) + match[0].length;
+  }
+  return out + replaceInProse(text.slice(at), replacements);
+};
+
+const replaceInProse = (prose: string, replacements: ReadonlyMap<string, string>): string => {
+  let out = prose;
+  // Longest name first so `@Sam L` wins over `@Sam` in the same text.
+  const entries = [...replacements.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [name, token] of entries) {
+    const pattern = new RegExp(`@${escapeRegExp(name)}(?![A-Za-z0-9'\\-])`, 'gi');
+    out = out.replace(pattern, token);
+  }
+  return out;
+};
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+```
+
+  - `reply-ping-policy.ts`:
+
+```ts
+import { PermissionsBitField, type Client } from 'discord.js';
+import { safeDisplayName } from '@bananasaurs/core';
+import type { GuildScope } from '@bananasaurs/storage';
+import { checkRolePing, rolePingContextFor } from '../mcp/targets.js';
+import { extractPingTokens, matchPingNames, replacePingTokens } from './reply-pings.js';
+
+export interface ReplyPingRequest {
+  readonly askerId: string;
+  readonly channelId: string | undefined;
+  readonly text: string;
+  readonly mentionedUserIds: readonly string[];
+  readonly mentionedRoleIds: readonly string[];
+}
+export interface ReplyPingResult {
+  readonly content: string;
+  readonly userIds: readonly string[];
+  readonly roles: readonly string[];
+}
+
+export const resolveReplyPings = async (
+  client: Client,
+  scope: GuildScope,
+  caps: { readonly members: number; readonly roles: number },
+  input: ReplyPingRequest,
+): Promise<ReplyPingResult> => {
+  const plain: ReplyPingResult = { content: input.text, userIds: [], roles: [] };
+  try {
+    if (input.channelId === undefined) return plain;
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return plain;
+    const asker = await guild.members.fetch(input.askerId).catch(() => undefined);
+    if (asker === undefined) return plain;
+    // The ping skill's Send gate: without Send in the answer channel, nothing pings.
+    if (!asker.permissionsIn(input.channelId).has(PermissionsBitField.Flags.SendMessages)) return plain;
+    // Candidates: mentioned ids first (display names, best effort), then
+    // exact-name search for tokens the asker named without mentioning.
+    const users: { id: string; name: string }[] = [];
+    for (const id of input.mentionedUserIds.slice(0, 25)) {
+      const member = guild.members.cache.get(id) ?? (await guild.members.fetch(id).catch(() => undefined));
+      const name = safeDisplayName(member?.displayName);
+      if (name !== undefined && !users.some((u) => u.id === id)) users.push({ id, name });
+    }
+    const roles: { id: string; name: string }[] = [];
+    for (const id of input.mentionedRoleIds.slice(0, 10)) {
+      const name = safeDisplayName(guild.roles.cache.get(id)?.name);
+      if (name !== undefined && !roles.some((r) => r.id === id)) roles.push({ id, name });
+    }
+    const tokens = extractPingTokens(input.text);
+    const known = (token: string, list: readonly { name: string }[]): boolean =>
+      list.some((entry) => entry.name.toLowerCase() === token.toLowerCase());
+    // Named-but-not-mentioned members: one exact display-name search, single hit only
+    // (the reminder-targets.ts:166-191 rule).
+    const extraUsers: { id: string; name: string }[] = [];
+    for (const token of tokens) {
+      if (known(token, users) || known(token, extraUsers)) continue;
+      const hits = await guild.members.search({ query: token, limit: 5 }).catch(() => undefined);
+      if (hits === undefined) continue;
+      const exact = [...hits.values()].filter((m) => m.displayName.toLowerCase() === token.toLowerCase());
+      if (exact.length === 1 && exact[0] !== undefined && ![...users, ...extraUsers].some((u) => u.id === exact[0]!.id))
+        extraUsers.push({ id: exact[0].id, name: exact[0].displayName });
+    }
+    // Named-but-not-mentioned roles: exact cache-name match, unambiguous only.
+    const extraRoles: { id: string; name: string }[] = [];
+    for (const token of tokens) {
+      if (known(token, roles) || known(token, extraRoles)) continue;
+      const hits = [...guild.roles.cache.values()].filter((r) => r.name.toLowerCase() === token.toLowerCase());
+      if (hits.length === 1 && hits[0] !== undefined && ![...roles, ...extraRoles].some((r) => r.id === hits[0]!.id))
+        extraRoles.push({ id: hits[0].id, name: hits[0].name });
+    }
+    const memberIds = matchPingNames(tokens, [...users, ...extraUsers]).slice(0, caps.members);
+    const memberReplacements = new Map(
+      memberIds.map((id) => {
+        const name = [...users, ...extraUsers].find((u) => u.id === id)!.name;
+        return [name, `<@${id}>`] as const;
+      }),
+    );
+    // Roles: ADR 0117 policy per role; a non-mentionable role also needs the
+    // asker's Mention Everyone (the reminder-targets.ts:248-257 rule).
+    const context = rolePingContextFor(client, scope, scope.guildId);
+    const askerMayMass = asker.permissionsIn(input.channelId).has(PermissionsBitField.Flags.MentionEveryone);
+    const roleIds: string[] = [];
+    const roleReplacements = new Map<string, string>();
+    for (const id of matchPingNames(tokens, [...roles, ...extraRoles])) {
+      if (roleIds.length >= caps.roles) break;
+      const role = guild.roles.cache.get(id);
+      if (role === undefined) continue;
+      if (!role.mentionable && !askerMayMass) continue;
+      if (checkRolePing(client, scope, scope.guildId, id, context).ok !== true) continue;
+      roleIds.push(id);
+      roleReplacements.set([...roles, ...extraRoles].find((r) => r.id === id)!.name, `<@&${id}>`);
+    }
+    return {
+      content: replacePingTokens(replacePingTokens(input.text, memberReplacements), roleReplacements),
+      userIds: memberIds,
+      roles: roleIds,
+    };
+  } catch {
+    return plain;
+  }
+};
+```
+
+  - `kinds.ts`: after `authorName` (lines 450-455) add `mentionedUserIds: z.array(z.string().min(1)).max(50).optional(), mentionedRoleIds: z.array(z.string().min(1)).max(50).optional(),` with a comment (asker's mentions bound the reply pings, ADR 0145).
+  - `commands.ts`: `AssistantInvocation` gains both optional fields; `handleMention` payload spreads `...(event.mentionedUserIds.length === 0 ? {} : { mentionedUserIds: event.mentionedUserIds.slice(0, 50) })` and the roles equivalent.
+  - `service.ts`: `AssistantDiscordPorts` gains `resolveReplyPings?: ((input: ReplyPingRequest) => Promise<ReplyPingResult>) | undefined` (import the types from `'./reply-ping-policy.js'`); `AssistantInvocation` (via commands.ts) carries the ids. Replace the plain return at line 1517 (`return { ok: true, content: answerText };`) with: when `skillAllowed('ping')`, the port exists, and the invocation carries mention fields, call it with `{ askerId: input.userId, channelId: input.channelId, text: answerText, mentionedUserIds: input.mentionedUserIds ?? [], mentionedRoleIds: input.mentionedRoleIds ?? [] }`, then return `{ ok: true, content: resolved.content, ...(resolved.userIds.length + resolved.roles.length === 0 ? {} : { pings: { userIds: [...resolved.userIds], roles: [...resolved.roles] } }) }`; otherwise keep line 1517 byte-identical. (The `remember`/`decision`/`review-plan`/`ESCALATE` early returns above it stay untouched.)
+  - `commands.ts` result type: `AssistantInvocationResult` ok variant (lines 109-128) gains `readonly pings?: { readonly userIds: readonly string[]; readonly roles: readonly string[] } | undefined;`.
+  - `guild.ts`: wire `resolveReplyPings: (input) => resolveReplyPings(client, scope, { members: settings?.get('assistant.pingMaxMembers') ?? 5, roles: settings?.get('assistant.pingMaxRoles') ?? 3 }, input)` next to `resolveReminderTargets` (line 912), importing from `'../assistant/reply-ping-policy.js'`. (Confirm `settings.get` typing against guild.ts:994; fall back to spec defaults when unset.)
+  - `jobs/assistant.ts`: invoke call (lines 1069-1091) gains the two spreads; `postPart` gains a `pings` parameter and builds `allowedMentions: { parse: [], ...(users…) , ...(roles…) }`, defaulting to today's `{ parse: [] }` when absent.
+  - `port.ts:103-109`: amend the comment to "Only reminder delivery and assistant reply pings (ADR 0145) may put ids in `allowedMentions`; every other output keeps `{ parse: [] }`."
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS (including the break-it revert)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/commands.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/discord/port.ts apps/daemon/src/assistant/reply-pings.ts apps/daemon/src/assistant/reply-pings.test.ts apps/daemon/src/assistant/reply-ping-policy.ts apps/daemon/src/assistant/reply-ping-policy.test.ts` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/commands.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/discord/port.ts apps/daemon/src/assistant/reply-pings.ts apps/daemon/src/assistant/reply-pings.test.ts apps/daemon/src/assistant/reply-ping-policy.ts apps/daemon/src/assistant/reply-ping-policy.test.ts && git commit -m "Slice 2 T9: reply pings from answer text under code control; break-it: unmentioned name pinged with the filter removed"`
+
+**Done when:** mentioned-or-named exact matches ping within caps and policy; everything else stays plain text; retries never re-post; review-focus items 2–4 green.
+
+---
+
+### S2-T10: Scheduled-message style   ·   Wave 5
+**Owns:** Modify: `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts`, `apps/daemon/src/assistant/reminder-delivery.ts`, `apps/daemon/src/assistant/reminder-delivery.test.ts`, `apps/daemon/src/assistant/reminder-summary.ts`, `apps/daemon/src/assistant/reminder-summary.test.ts`, `packages/core/src/assistant/tool-catalogue.ts`, `packages/core/src/assistant/tool-catalogue.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/reminder-delivery.ts:110-157` (`renderReminder`), `packages/storage/src/repos/assistant.ts` (`toReminder`/`insertReminder` style round-trip from T5), `packages/core/src/assistant/reminders.ts` (`ReminderStyle`, T5)
+**Interfaces:** Consumes: style round-trip (T5); `set_reminder` case (T7) · Produces: `style` param end to end with distinct rendering
+
+- [ ] **Step 1: Write the failing tests**
+  - `tools.test.ts`: `set_reminder` with `style: 'message'` stores `style: 'message'` (read back via the stub store's `get`); default (absent) stores `'reminder'`; different styles with otherwise identical args produce different ids (key content includes style); `my_reminders` shows a message-style row with `· as message`.
+  - `reminder-delivery.test.ts` (mirror the `renderReminder` cases): a `message`-style reminder renders exactly its text (no `⏰`, no `Set by` line) while keeping the stored pings line and `allowedMentions`; an over-long message truncates text, never pings.
+  - `reminder-summary.test.ts`: the `set` summary for a message-style row reads `✅ Message scheduled:` (reminder rows unchanged).
+  - `tool-catalogue.test.ts`: the `set_reminder` description names the `style` parameter and the `@Name` reply-ping line.
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/reminder-delivery.test.ts apps/daemon/src/assistant/reminder-summary.test.ts packages/core/src/assistant/tool-catalogue.test.ts --maxWorkers=1` · Expected: FAIL (no `style` param, one render path)
+- [ ] **Step 3: Implement**
+  - `tool-catalogue.ts`: append to the `set_reminder` description (verbatim addition): ` style 'message' posts the text as is without the reminder frame; the default 'reminder' keeps it. Reply pings in answers work the same way: write @Name and code pings only people and roles the asker mentioned or named.` Add the `style` parameter `{ type: 'string', description: "Post as a plain scheduled message ('message') or a framed reminder ('reminder').", enum: ['reminder', 'message'] }` (not required).
+  - `tools.ts`: `set_reminder` schema gains `style: z.enum(['reminder', 'message']).optional()`; the built reminder carries `style: args.style ?? 'reminder'`; `keyContent` gains the style; `my_reminders` lines append `· as message` when `r.style === 'message'`; the confirmation `actionSummary` passes `style` into `reminderSummary`.
+  - `reminder-summary.ts`: `ReminderSummaryInput` gains `readonly style?: ReminderStyle | undefined` (import type from core); the `set` head becomes `✅ Message scheduled:` when `style === 'message'`, else today's `✅ Reminder set:`.
+  - `reminder-delivery.ts` `renderReminder` (lines 110-157): when `reminder.style === 'message'`, return `{ content: text-only (neutralised, capped at 2,000 after the pings line), allowedMentions }` with the same pings line and `allowedMentions` as reminders (spec: same ping checks) but no `⏰` prefix, no context line, no `Set by` line.
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/reminder-delivery.ts apps/daemon/src/assistant/reminder-delivery.test.ts apps/daemon/src/assistant/reminder-summary.ts apps/daemon/src/assistant/reminder-summary.test.ts packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/tool-catalogue.test.ts` then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tools.ts apps/daemon/src/assistant/tools.test.ts apps/daemon/src/assistant/reminder-delivery.ts apps/daemon/src/assistant/reminder-delivery.test.ts apps/daemon/src/assistant/reminder-summary.ts apps/daemon/src/assistant/reminder-summary.test.ts packages/core/src/assistant/tool-catalogue.ts packages/core/src/assistant/tool-catalogue.test.ts && git commit -m "Slice 2 T10: scheduled-message style on set_reminder and delivery"`
+
+**Done when:** `message` rows post bare text with pings intact; `reminder` rows byte-identical to today; style survives set → list → delivery.
+
+---
+
+### S2-T11: Gates, STATE.md, PRIVACY.md, spec ledger   ·   Wave 6
+**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`, `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`
+**Reads (do not edit):** `docs/STATE.md:1-16` (Slice 1 entry style), `PRIVACY.md:69-74` (AI answers + web-search paragraphs), `PRIVACY.md:107-124` (task tracking)
+**Interfaces:** Consumes: everything above · Produces: merged Slice 2 record
+
+- [ ] **Step 1: Typecheck on its own and read its exit status**
+
+```bash
+npm run typecheck
+```
+
+- [ ] **Step 2: Lint on its own and read its exit status**
+
+```bash
+npm run lint
+```
+
+- [ ] **Step 3: Test on its own and read its exit status**
+
+```bash
+npm run test
+```
+
+All three must pass. If prettier fails, run `npx prettier --write` on the changed files only, and commit that separately.
+
+- [ ] **Step 4: STATE.md entry.** At the top of the file, after the first `---` (same style as the Slice 1 entry at lines 7-15), add:
+
+```markdown
+**Assistant new abilities (Slice 2 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `<branch>`, not yet merged (ADRs 0145–0147, migration `parallel_search_source`).**
+
+- **Names and lookup (ADR 0145):** mention ids render as `@Name` through the display-name sanitiser; `find_member` returns up to 5 matches with names and roles, never ids.
+- **Reply pings (ADR 0145, D3):** the model writes `@Name`; code pings only members or roles the asker mentioned or named (at most 5 members, 3 roles; `@everyone`/`@here` never; code spans skipped; ADR 0117 role policy).
+- **Scheduled messages (ADR 0145):** `set_reminder` `style: "message"` posts bare text on the same storage and delivery.
+- **Task tools (ADR 0146, D4a):** `create_task` / `list_tasks` / `task_progress` for team leads and the president (skill scope plus `TaskContextPort.access`); ids deterministic from the invocation key.
+- **Parallel search (ADR 0147, D11):** third web-search source in fast mode behind the configured source; eligibility row discloses training; new keys default to 4,500/month.
+```
+
+  (Replace `<branch>` with the real branch name from `git branch --show-current`.)
+
+- [ ] **Step 5: PRIVACY.md lines.**
+  - Web search paragraph (after the Tavily sentence at line 73): `Parallel works the same way when the owner picks it: 5,000 free searches a month, and Parallel's terms let it use queries to train AI models.`
+  - Assistant conversations section: `An assistant reply pings you only when the person who asked mentioned or named you, at most 5 members and 3 roles per reply; roles still pass the server's ping rules. Text in code blocks never pings.`
+  - Task tracking section: `A team lead or the president can ask the assistant to create a club task, list open ones, or record a progress note. Tasks it creates are stored like any other task, and progress notes like any other update.`
+  - Bump `Last updated` to `2026-10-11`.
+- [ ] **Step 6: Spec ledger and self-check.** In the spec: mark Slice 2 `built on <branch> @ <sha>` (from `git rev-parse --short HEAD`); in §5's Slice 2 row, note ADRs 0145–0147 and migration `parallel_search_source`. Then re-read this plan against the rules checklist: every task has Owns, Interfaces and Steps 1–7 with real code and commands; no two tasks in one wave own the same file (test files count); no TBD/TODO/"similar to"; `grep -c "^### S2-T"` equals the Waves table row count (11).
+- [ ] **Step 7: Commit**
+
+```bash
+git add docs/STATE.md PRIVACY.md docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md
+git commit -m "Slice 2 T11: gates green; state, privacy and spec updated"
+```
+
+---
+
+## Slice gate (orchestrator only, after the last wave)
+npm run typecheck        (≈1.7 GB peak — run alone)
+npm run lint
+npx vitest run --maxWorkers=1
+## After merge (owner)
+Deploy order: stop → `db:migrate` (migration `parallel_search_source`: style column, parallel CHECKs, eligibility seed) → build → start.
+On the dashboard: AI setup → Web search — add a Parallel key (monthly 4,500 pre-filled), pick the Parallel source, save; Skills — grant lead roles the `tasks` scope per guild, leave `ping` on everyone; Assistant tuning → Assistant replies — confirm 5 members / 3 roles.
+Then in Discord: as a member, ask `remind @Sam L at 23:00…` (name resolves); ask the bot something ending with `@Sam L` in its answer after mentioning Sam (reply pings once); as a lead, `make a task for …` then `list tasks` then `record progress`; as the owner, schedule a plain message (`style message`) and ask a general question to see Parallel answer.
