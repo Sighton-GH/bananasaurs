@@ -201,14 +201,14 @@ it('max output tokens defaults to 4096 for reasoning', () => {
 
 ```ts
 it('keeps per-round reasoning capped at 8000 chars', () => {
-  const trace = minimalTrace({ reasoning: [{ round: 1, text: 'x'.repeat(9000) }] });
+  const trace = fixtureTrace({ reasoning: [{ round: 1, text: 'x'.repeat(9000) }] });
   const capped = capTrace({ ...trace, answer: 'a'.repeat(199_000) });
   expect(capped.reasoning?.[0]?.text.length).toBeLessThanOrEqual(8000);
   expect(capped.reasoning?.[0]?.text.endsWith('… [truncated]')).toBe(true);
 });
 ```
 
-using that file's existing `minimalTrace` helper (read the file; it builds a valid `AssistantTrace` with overrides).
+using that file's existing exported `fixtureTrace` helper (top of file; builds a valid `AssistantTrace` with overrides).
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: FAIL with `reasoning` unknown key or `capTrace` not capping it
 - [ ] **Step 3: Implement** — anchor: `packages/core/src/assistant/trace.ts` the `assistantTraceSchema` `toolCalls` array (ends line ~108) and `capTrace` (line 229). Replacement: add after `toolCalls` an optional `reasoning` array field with the shape in Interfaces; extend `capTrace` so each `reasoning` entry over 8,000 chars is cut with the existing `truncateTo` helper (same `… [truncated]` suffix) and `capTrace` also shrinks `reasoning` entries when the 200 KB budget is exceeded (after tool previews, before giving up).
@@ -388,7 +388,8 @@ and in `packages/http/src/routes/assistant-runs.test.ts` add (following its `req
 // @vitest-environment jsdom
 import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderWithSession } from '../test-support.js';
+import { renderWithSession, stubFetch } from '../test-support.js';
+import { runLiveUrl } from '../api/runs.js';
 import { LiveText } from './assistant-live-buffer.js';
 
 afterEach(cleanup);
@@ -396,13 +397,13 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('LiveText', () => {
   it('polls the live route and shows answer plus collapsed thinking', async () => {
-    const { stub } = stubFetch([
-      { answer: 'hello Sam L', thinking: 'why this answer' },
+    const mock = stubFetch([
+      { url: runLiveUrl('run-1'), body: { answer: 'hello Sam L', thinking: 'why this answer' } },
     ]);
     renderWithSession(<LiveText runId="run-1" />);
     expect(await screen.findByText(/hello Sam L/)).toBeDefined();
     expect(await screen.findByText(/why this answer/)).toBeDefined();
-    expect(stub).toHaveBeenCalled();
+    expect(mock).toHaveBeenCalled();
   });
 });
 ```
