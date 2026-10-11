@@ -2297,6 +2297,251 @@ calls escalate; router-off and background tiers are honoured; `routed` audits ea
 
 ---
 
+### S6-T14: Check-models route with stubbed tools and budget   ·   Wave 4
+**Owns:** Create: `packages/http/src/routes/assistant-model-check.ts`,
+`packages/http/src/routes/assistant-model-check.test.ts` · Modify: `packages/http/src/server.ts` (register
+call only)
+**Reads (do not edit):** `packages/http/src/routes/assistant-providers.ts:308-384` (model-chain test route
+style, `reserveTestCall`, `TERMS_REFUSAL`), `packages/http/src/server.ts:121-160` (`assistantProviderConfig`
+type and route registration style)
+**Interfaces:** Consumes: resolved chain entries + `selectedKeyId` (S6-T10), `reserveTestCall` (S6-T12) ·
+Produces: `POST /api/assistant/model-check` (for S6-T16); writes only `dashboard-test` ledger source
+
+- [ ] **Step 1: Write the failing test** — create
+  `packages/http/src/routes/assistant-model-check.test.ts` (mirror the `assistant-providers.test.ts`
+  owner-guard + stub harness):
+
+```ts
+import { describe, expect, it } from 'vitest';
+
+describe('check models (ADR 0143)', () => {
+  it('shows expected versus first action per fixture with stubbed tools', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-check',
+      payload: { position: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    expect(body.results).toHaveLength(3);
+    expect(body.results[0]).toMatchObject({
+      id: 'greeting-light',
+      expectedFirstAction: 'answer-without-tools',
+    });
+    expect(typeof body.results[0].firstAction).toBe('string');
+    expect(body.budget).toMatchObject({ reserved: 3, spent: 3 });
+    expect(body.ledgerSource).toBe('dashboard-test');
+  });
+  it('refuses before any call when the budget does not cover every fixture', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-check',
+      payload: { position: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: false, error: 'budget-exhausted' });
+    expect(spentCalls()).toBe(0);
+  });
+  it('stubs every tool, posts nothing, and mutates no member data', async () => {
+    await app.inject({ method: 'POST', url: '/api/assistant/model-check', payload: { position: 0 } });
+    expect(postedMessages()).toEqual([]);
+    expect(memberWrites()).toEqual([]);
+    expect(toolStubsUsed().length).toBeGreaterThan(0);
+  });
+  it('terms-unverified entries refuse without calling', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-check',
+      payload: { position: 4 },
+    });
+    expect(res.json()).toMatchObject({ ok: false });
+    expect(spentCalls()).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/http/src/routes/assistant-model-check.test.ts --maxWorkers=1` · Expected: FAIL
+  with `Failed to resolve import "./assistant-model-check.js"`
+- [ ] **Step 3: Implement** — create `packages/http/src/routes/assistant-model-check.ts`:
+
+```ts
+import type { FastifyInstance, FastifyReply } from 'fastify';
+import { z } from 'zod';
+import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
+import type { SessionContext } from '../auth.js';
+import { dashboardAuditBase } from './audit-base.js';
+import { isInstanceOwner } from './assistant.js';
+
+const checkBody = z.object({ position: z.number().int().min(0) }).strict();
+
+/** Fixture id, member-safe message, and the expected first action of the checked entry. */
+export const CHECK_FIXTURES = [
+  { id: 'greeting-light', message: 'hi', expectedFirstAction: 'answer-without-tools' },
+  { id: 'reminder-standard', message: 'remind me at 5', expectedFirstAction: 'call-tool' },
+  { id: 'attachment-standard', message: 'look at this', expectedFirstAction: 'call-tool' },
+] as const;
+
+const fakeTools = [
+  { name: 'list_sources', run: async () => ({ stubbed: true }) },
+  { name: 'read_chunk', run: async () => ({ stubbed: true }) },
+] as const;
+
+export const registerAssistantModelCheckRoutes = (
+  app: FastifyInstance,
+  guard: RouteGuard,
+  deps: HttpDeps,
+): void => {
+  app.post('/api/assistant/model-check', async (request, reply) => {
+    const session = guard.require(request, reply) as SessionContext | undefined;
+    if (session === undefined) return reply;
+    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    const parsed = checkBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    const configured = deps.assistantProviderConfig;
+    const entries = configured?.chain?.() ?? [];
+    const entry = entries[parsed.data.position];
+    if (entry === undefined) return reply.status(404).send({ error: 'not-found' });
+    if (entry.provider === undefined || entry.skip !== undefined) {
+      return reply.status(200).send({ ok: false, error: 'entry-unusable', skip: entry.skip ?? 'skipped' });
+    }
+    // Budget equals fixture count: reserve every call before the first one.
+    const budget = CHECK_FIXTURES.length;
+    const reservations = CHECK_FIXTURES.map(() =>
+      configured?.reserveTestCall?.(parsed.data.position, session.guildId),
+    );
+    if (reservations.some((r) => r !== undefined && !r.ok)) {
+      return reply.status(200).send({ ok: false, error: 'budget-exhausted', budget: { reserved: 0, spent: 0 } });
+    }
+    const results = [];
+    for (const fixture of CHECK_FIXTURES) {
+      void fixture;
+      void fakeTools;
+      // The real call runs with stubbed tools and ledger source 'dashboard-test';
+      // the first action (answer vs tool call) is recorded per fixture below.
+      results.push({ id: 'pending', expectedFirstAction: 'pending', firstAction: 'pending' });
+    }
+    void results;
+    return reply.status(200).send({ ok: true, results: [], budget: { reserved: budget, spent: 0 }, ledgerSource: 'dashboard-test' });
+  });
+};
+```
+
+  (The loop body above is the shape; the subagent fills it: one `generateText` per fixture with the stubbed
+  tool list, `firstAction` = `'call-tool'` when the response carries tool calls else `'answer-without-tools'`,
+  ledger writes use source `dashboard-test` only, no Discord post, no member-data mutation. Audit once as
+  `assistant_provider.model_checked` with `{ position, fixtureCount }`, never message text beyond fixture ids.)
+  Then in `packages/http/src/server.ts`, add one register call beside the existing
+  `registerAssistantProviderRoutes` call — no other change.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write packages/http/src/routes/assistant-model-check.ts packages/http/src/routes/assistant-model-check.test.ts packages/http/src/server.ts`
+  then `npx eslint` on the same three paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add packages/http/src/routes/assistant-model-check.ts packages/http/src/routes/assistant-model-check.test.ts packages/http/src/server.ts && git commit -m "Slice 6 T14: check-models route"`
+
+**Done when:** check runs every fixture against one entry with stubbed tools; budget is reserved before the
+first call and refusal spends nothing; ledger source is `dashboard-test`; nothing posts or mutates member data.
+
+---
+
+### S6-T15: Doctor, health and run-event text   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/runtime/doctor.ts`, `apps/daemon/src/runtime/doctor.test.ts`,
+`packages/http/src/routes/assistant-model-health.ts`,
+`packages/http/src/routes/assistant-model-health.test.ts`, `packages/dashboard/src/api/runs.ts` · Create:
+`packages/dashboard/src/api/runs.test.ts`
+**Reads (do not edit):** `apps/daemon/src/runtime/doctor.ts:520-587` (provider/eligibility check style),
+`packages/http/src/routes/assistant-model-health.ts:1-80` (full file: enrichment + `config.read` gating),
+`packages/dashboard/src/api/runs.ts:60-112` (`model-skipped` text + `unknownEvent` default)
+**Interfaces:** Consumes: `routed` event (S6-T11), cooldown reasons + routing tiers (S6-T11, S6-T13) ·
+Produces: dashboard-visible cooldown/may-train banners and `routed` text (for S6-T16)
+
+- [ ] **Step 1: Write the failing tests** — append to `apps/daemon/src/runtime/doctor.test.ts`:
+
+```ts
+it('warns on may-train Gemini keys and fully cooling pools (ADR 0143)', async () => {
+  const report = await doctorWith({
+    keys: [{ keyId: 'key_a', provider: 'gemini', costClass: 'free' }],
+    cooldowns: [{ keyId: 'key_a', model: 'gemini-3.8-flash', reason: 'daily-quota' }],
+  });
+  expect(report.warnings.join('\n')).toContain('may train');
+  expect(report.warnings.join('\n')).toContain('cooling');
+});
+```
+
+  append to `packages/http/src/routes/assistant-model-health.test.ts`:
+
+```ts
+it('marks in-chain pairs and withholds providerMessage without config.read', async () => {
+  const viewer = await getAs('/api/assistant/model-health?window=24h', { capabilities: ['audit.read'] });
+  expect(viewer.statusCode).toBe(200);
+  expect(viewer.json().models[0]).toMatchObject({ inChain: true });
+  expect(viewer.json().models[0].lastError?.providerMessage).toBeUndefined();
+});
+```
+
+  and create `packages/dashboard/src/api/runs.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { runEventText } from './runs.js';
+
+describe('run event text (Slice 6)', () => {
+  it('renders routed and cooldown-skipped reasons in plain words', () => {
+    expect(runEventText({ kind: 'routed', tier: 'light', reason: 'greeting' })).toContain('Light');
+    expect(
+      runEventText({ kind: 'model-skipped', provider: 'gemini', model: 'gemini-3.8-flash', keyId: 'key_a', reason: 'daily-quota' }),
+    ).toContain('daily limit');
+  });
+});
+```
+
+  (Use each file's existing harness names; `runEventText` is the existing formatter in `runs.ts` that already
+  handles `model-skipped`.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run apps/daemon/src/runtime/doctor.test.ts packages/http/src/routes/assistant-model-health.test.ts packages/dashboard/src/api/runs.test.ts --maxWorkers=1` ·
+  Expected: FAIL (no warnings; no `inChain`; no `routed` text)
+- [ ] **Step 3: Implement** —
+  1. In `doctor.ts` (anchor: the provider section near lines 520–587), add two advisory checks: (a) any
+  Gemini free key reports `may train on submitted input — recorded terms, still usable` as a warning naming
+  the key label (never the secret); (b) any chain entry whose pool keys all cool (via `getCooldown`) reports
+  `pool cooling until <Pacific midnight>` as a warning. Both are warnings, never failures; plain Canadian
+  English.
+  2. In `assistant-model-health.ts`, the `inChain` enrichment already exists — extend each model with
+  `coolingUntil` (max `until` across that key/model's cooldown rows, omitted when none) and keep the
+  `config.read` gating for `providerMessage`. No new query param.
+  3. In `packages/dashboard/src/api/runs.ts`, add a `routed` case beside `model-skipped` (anchor: lines
+  76–80):
+
+```ts
+case 'routed':
+  return event.tier === 'light'
+    ? `Tried the light model first (${event.reason})`
+    : `Tried the standard model first (${event.reason})`;
+```
+
+  and extend the `model-skipped` text: reason `daily-quota` → `daily limit`, `minute-quota` →
+  `minute limit`, `invalid-key` → `key needs attention`. No tool names shown.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write apps/daemon/src/runtime/doctor.ts apps/daemon/src/runtime/doctor.test.ts packages/http/src/routes/assistant-model-health.ts packages/http/src/routes/assistant-model-health.test.ts packages/dashboard/src/api/runs.ts packages/dashboard/src/api/runs.test.ts`
+  then `npx eslint` on the same six paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add apps/daemon/src/runtime/doctor.ts apps/daemon/src/runtime/doctor.test.ts packages/http/src/routes/assistant-model-health.ts packages/http/src/routes/assistant-model-health.test.ts packages/dashboard/src/api/runs.ts packages/dashboard/src/api/runs.test.ts && git commit -m "Slice 6 T15: doctor health and run-event text"`
+
+**Done when:** doctor warns on may-train keys and cooling pools; health marks in-chain pairs with cooling times
+and still withholds provider text; history renders `routed` and cooldown skips in plain words.
+
+---
+
+
  (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
 npm run lint
