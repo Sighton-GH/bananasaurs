@@ -223,6 +223,119 @@ using that file's existing `minimalTrace` helper (read the file; it builds a val
 **Done when:** the two new keys exist with the ADR defaults and bounds; maxOutputTokens defaults to 4,096; every existing test still passes.
 
 
+### S3-T6: OpenAI-compatible streaming   ·   Wave 3
+**Owns:** Modify: `packages/core/src/providers/openai-compatible.ts`; Test: `packages/core/src/providers/openai-compatible.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts` (`StreamProgress`, `onProgress`), `packages/core/src/providers/errors.ts`
+**Interfaces:** Consumes: `parseSseStream` from S3-T3; `StreamProgress` from S3-T2 · Produces: `OpenAiCompatibleProvider.generateText` streams with `stream: true`, `stream_options: { include_usage: true }`, `reasoning: { exclude: false }`, idle/ceiling timers and `reasoning` in the response
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/openai-compatible.test.ts`, using its `vi.fn` fetch style, add:
+
+```ts
+it('streams deltas, ignores keepalives, and joins fragmented tool args', async () => {
+  const body =
+    ': OPENROUTER PROCESSING\n\n' +
+    'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n' +
+    'data: {"choices":[{"delta":{"content":"lo","reasoning":"why","tool_calls":[{"index":0,"id":"c1","function":{"name":"search_sources","arguments":"{\\"q"}}]}}]}\n\n' +
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"ue\\":1}"}}]}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n' +
+    'data: [DONE]\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+  const seen: Array<{ answerChars: number; keepalives: number }> = [];
+  const res = await provider.generateText({
+    model: 'm',
+    messages: [{ role: 'user', text: 'hi Sam L' }],
+    onProgress: (p) => { seen.push({ answerChars: p.answerChars, keepalives: p.keepalives }); },
+  });
+  expect(res.text).toBe('hello');
+  expect(res.reasoning).toBe('why');
+  expect(res.toolCalls).toEqual([{ id: 'c1', name: 'search_sources', args: { que: 1 } }]);
+  expect(seen.some((s) => s.keepalives >= 1)).toBe(true);
+  expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+    stream: true,
+    stream_options: { include_usage: true },
+    reasoning: { exclude: false },
+  });
+
+### S3-T7: Gemini streaming   ·   Wave 3
+**Owns:** Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts`, `packages/core/src/providers/errors.ts`
+**Interfaces:** Consumes: `parseSseStream` from S3-T3; `StreamProgress` from S3-T2 · Produces: `GeminiProvider.generateText` streams `:streamGenerateContent?alt=sse` with `thinkingLevel` and `includeThoughts`, returning `reasoning` and raw `providerParts`
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/gemini.test.ts`, using its `ok()` and `vi.fn` fetch style, add:
+
+```ts
+it('streams text, thought and functionCall parts with thinkingLevel', async () => {
+  const body =
+    'data: {"candidates":[{"content":{"parts":[{"text":"hel"}]}}]}\n\n' +
+    'data: {"candidates":[{"content":{"parts":[{"text":"背景","thought":true}]}}]}\n\n' +
+    'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"search_sources","args":{"que":1}}}],"finishReason":"STOP"}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5,"thoughtsTokenCount":4}}\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  const res = await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi Sam L' }],
+    tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+  });
+  expect(res.text).toBe('hel');
+  expect(res.reasoning).toBe('背景');
+  expect(res.toolCalls).toEqual([{ name: 'search_sources', args: { que: 1 } }]);
+  expect(res.providerParts).toBeDefined();
+  const [url, init] = fetch.mock.calls[0] ?? [];
+  expect(String(url)).toContain(':streamGenerateContent?alt=sse');
+  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'low' });
+});
+
+it('an idle stream throws a retryable timeout', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+    () => new Promise(() => {}),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
+  const err = await provider
+    .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ProviderError);
+  expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL with `:generateContent` URL and no `thinkingLevel`
+- [ ] **Step 3: Implement** — anchor: `GeminiProvider.generateText` URL `:generateContent`, `generationConfig` with `thinkingBudget`, and the single-JSON parse (lines ~137–297). Replacement: call `:streamGenerateContent?alt=sse`; send `generationConfig.thinkingConfig: { thinkingLevel }` where level is explicit `request.thinkingLevel` else tools offered → `'low'` else `'medium'` (never `minimal`); always send `includeThoughts: true` (after Slice 6: gate on entry `capabilities.thinking !== 'none'` and reasoning on `capabilities.reasoning`); stream through `parseSseStream`, assembling non-thought text, `thought: true` text as reasoning, and `functionCall` parts; echo the raw parts back as `providerParts`; keep the empty-answer, `MAX_TOKENS` and `SAFETY` mappings, usage mapping incl. `thoughtsTokenCount → thinkingTokens`, and every ProviderError field (after Slice 6: plus `quotaScope`, `retryAfterMs`, `learnedLimit`); enforce first-byte/idle/ceiling timers the same way as S3-T6.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts && git commit -m "Slice 3 T7: Gemini streaming"`
+
+**Done when:** the SSE endpoint assembles text, thought and function calls; `thinkingLevel` is `low` with tools and `medium` without; thought signatures survive via raw `providerParts`; idle streams time out retryably.
+
+});
+
+it('turns mid-stream finish_reason error into a retryable ProviderError', async () => {
+  const body = 'data: {"choices":[{"delta":{"content":"part"},"finish_reason":"error","error":{"message":"upstream broke"}}]}\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+  const err = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] }).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ProviderError);
+  expect(err).toMatchObject({ kind: 'outage', retryable: true });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL with `stream: true` missing from the request body and no `reasoning` on the response
+- [ ] **Step 3: Implement** — anchor: `OpenAiCompatibleProvider.generateText` body build and `response.json()` success path (lines ~300–474). Replacement: send `stream: true`, `stream_options: { include_usage: true }`, `reasoning: { exclude: false }` (after Slice 6: only when the entry capabilities allow reasoning); read `response.body` through `parseSseStream`; accumulate `delta.content`, `delta.reasoning`, per-index `tool_calls[].function.arguments`; count keepalives; fire `onProgress` at most every 3 s with `{ round: 0, answerChars, reasoningChars, keepalives, msSinceLastByte }`; enforce first-byte (existing `timeoutMs`), idle (45 s default, re-armed per event) and ceiling timers via abort; map `finish_reason: "error"` or `choices[].error` to retryable `ProviderError('outage', …)` keeping partial text out of the message; keep every existing error mapping and ProviderError field, including (after Slice 6: `quotaScope 'day' | 'minute'`, `retryAfterMs`, `learnedLimit`). Return `reasoning` alongside `text`, `toolCalls`, `usage`, `finishReason`, `upstream`.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 3 T6: OpenAI-compatible streaming"`
+
+**Done when:** streamed deltas assemble text, reasoning and whole tool args; keepalives are ignored but counted; mid-stream `error` is retryable and never delivered; request carries `stream: true` and usage options.
+
+
   it('stops at [DONE]', async () => {
     const events = await collect(['data: {"a":1}\n\n', 'data: [DONE]\n\n', 'data: {"a":2}\n\n']);
     expect(events).toEqual([{ data: '{"a":1}', keepalive: false }]);
