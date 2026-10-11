@@ -23,9 +23,11 @@ let clock: number;
 
 interface Call {
   readonly toolNames: readonly string[];
+  readonly reservationsBeforeCall: number;
 }
 let providerCalls: Call[];
 let reservations: number;
+let reservationAttempts: number;
 let reserveLimit: number;
 let toolsOffered: string[];
 
@@ -83,7 +85,10 @@ const entryOf = (over: Record<string, unknown> = {}): Record<string, unknown> =>
       messages: readonly { text: string }[];
       tools?: readonly { name: string }[];
     }) => {
-      providerCalls.push({ toolNames: (request.tools ?? []).map((tool) => tool.name) });
+      providerCalls.push({
+        toolNames: (request.tools ?? []).map((tool) => tool.name),
+        reservationsBeforeCall: reservations,
+      });
       toolsOffered = (request.tools ?? []).map((tool) => tool.name);
       const asksForTool = request.messages[0]?.text !== 'hi';
       return {
@@ -105,6 +110,7 @@ const fakeStore = () => ({
     entryOf({ provider: undefined, providerId: 'mystery', skip: 'unverified' }),
   ],
   reserveTestCall: () => {
+    reservationAttempts += 1;
     if (reservations >= reserveLimit) {
       return { ok: false as const, code: 'local-rpd-limit' as const, availableAt: clock + 1 };
     }
@@ -118,6 +124,7 @@ beforeEach(async () => {
   clock = 1_700_000_000_000;
   providerCalls = [];
   reservations = 0;
+  reservationAttempts = 0;
   reserveLimit = 100;
   toolsOffered = [];
   deps = {
@@ -180,7 +187,7 @@ describe('check models (ADR 0143)', () => {
       firstAction: 'answer-without-tools',
     });
     expect(body.results[1]).toMatchObject({ id: 'reminder-standard', firstAction: 'call-tool' });
-    expect(body.budget).toMatchObject({ reserved: 3, spent: 3 });
+    expect(body.budget).toEqual({ reserved: 3, spent: 3 });
     expect(body.ledgerSource).toBe('dashboard-test');
     expect(auditActions()).toContain('assistant_provider.model_checked');
   });
@@ -188,17 +195,30 @@ describe('check models (ADR 0143)', () => {
   it('reserves the whole budget before the first call', async () => {
     reserveLimit = 3;
     await post('owner', { position: 0 });
+    expect(reservationAttempts).toBe(3);
     expect(reservations).toBe(3);
     expect(providerCalls).toHaveLength(3);
+    expect(providerCalls.map((call) => call.reservationsBeforeCall)).toEqual([3, 3, 3]);
   });
 
-  it('refuses before any call when the budget does not cover every fixture', async () => {
-    reserveLimit = 2;
-    const res = await post('owner', { position: 0 });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ ok: false, error: 'budget-exhausted' });
-    expect(providerCalls).toHaveLength(0);
-  });
+  it.each([0, 1, 2])(
+    'refuses before any call when only %i fixtures can be reserved',
+    async (limit) => {
+      reserveLimit = limit;
+      const res = await post('owner', { position: 0 });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        ok: false,
+        error: 'budget-exhausted',
+        budget: { reserved: 0, spent: 0 },
+      });
+      expect(reservationAttempts).toBe(3);
+      // There is no release API: successful preflight reservations stay spent.
+      expect(reservations).toBe(limit);
+      expect(providerCalls).toHaveLength(0);
+      expect(auditActions()).toEqual([]);
+    },
+  );
 
   it('only offers declaration-only stub tools and never touches member data', async () => {
     await post('owner', { position: 0 });

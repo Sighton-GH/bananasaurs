@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
 import { eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
@@ -80,19 +79,16 @@ export const registerAssistantModelCheckRoutes = (
 
     // Budget equals the fixture count and is reserved before the first call.
     const budget = CHECK_FIXTURES.length;
-    if (configured.reserveTestCall !== undefined) {
-      for (let i = 0; i < budget; i += 1) {
-        const reserved = configured.reserveTestCall(parsed.data.position, session.guildId);
-        if (!reserved.ok) {
-          const text = PROVIDER_FAILURE_TEXT[reserved.code];
-          return reply.status(200).send({
-            ok: false,
-            error: 'budget-exhausted',
-            budget: { reserved: i, spent: 0 },
-            failure: { code: reserved.code, title: text.title, explanation: text.explanation },
-          });
-        }
-      }
+    const reservations = CHECK_FIXTURES.map(() =>
+      configured.reserveTestCall?.(parsed.data.position, session.guildId),
+    );
+    if (reservations.some((reserved) => reserved !== undefined && !reserved.ok)) {
+      // No release API exists; any successful reservations remain spent.
+      return reply.status(200).send({
+        ok: false,
+        error: 'budget-exhausted',
+        budget: { reserved: 0, spent: 0 },
+      });
     }
 
     const provider = entry.provider as unknown as CheckProvider;
