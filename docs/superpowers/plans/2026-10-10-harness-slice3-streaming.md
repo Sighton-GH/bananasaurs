@@ -53,7 +53,7 @@
 | 3 | S3-T7 Gemini streaming | Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts` | S3-T2, S3-T3 |
 | 4 | S3-T8 Tool loop wiring and finish reasons | Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/jobs/assistant.ts` | S3-T2, S3-T6, S3-T7 |
 | 4 | S3-T9 Live buffer, route and progress events | Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts` | S3-T2 |
-| 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx` | S3-T4, S3-T9 |
+| 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx` | S3-T4, S3-T9 |
 | 5 | S3-T11 State and privacy paperwork | Modify: `docs/STATE.md`; Modify: `PRIVACY.md` | S3-T1 |
 
 ### S3-T1: ADR 0148   ·   Wave 1
@@ -376,6 +376,82 @@ and in `packages/http/src/routes/assistant-runs.test.ts` add (following its `req
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` then `npx eslint apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` · exit 0
+
+### S3-T10: Dashboard live text and progress   ·   Wave 5
+**Owns:** Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx`
+**Reads (do not edit):** `packages/dashboard/src/pages/assistant-live.tsx` (`StepLog`, `InProgressPanel`, 2 s `useLiveResource`), `packages/dashboard/src/hooks/useLiveResource.tsx`
+**Interfaces:** Consumes: `GET /api/assistant/runs/:runId/live` from S3-T9; settings keys from S3-T4 · Produces: `describeRunEvent` renders `model-progress`; `LiveText` component polling `/live` every 2 s; tuning rows for the two timeouts
+
+- [ ] **Step 1: Write the failing test** — create `packages/dashboard/src/pages/assistant-live-buffer.test.tsx` (`// @vitest-environment jsdom`, following `assistant-live.test.tsx` imports of `renderWithSession`, `stubFetch`):
+
+```tsx
+// @vitest-environment jsdom
+import { cleanup, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { renderWithSession } from '../test-support.js';
+import { LiveText } from './assistant-live-buffer.js';
+
+afterEach(cleanup);
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+describe('LiveText', () => {
+  it('polls the live route and shows answer plus collapsed thinking', async () => {
+    const { stub } = stubFetch([
+      { answer: 'hello Sam L', thinking: 'why this answer' },
+    ]);
+    renderWithSession(<LiveText runId="run-1" />);
+    expect(await screen.findByText(/hello Sam L/)).toBeDefined();
+    expect(await screen.findByText(/why this answer/)).toBeDefined();
+    expect(stub).toHaveBeenCalled();
+  });
+});
+```
+
+and in `packages/dashboard/src/pages/assistant-tuning.test.tsx` extend the `renders the five group headings` test style: the idle-timeout and max-call rows render with defaults 45 s and 300 s, and saving the idle timeout converts seconds to milliseconds.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL with cannot find module `./assistant-live-buffer.js` and missing timeout rows
+- [ ] **Step 3: Implement** — anchor: `packages/dashboard/src/api/runs.ts` `describeRunEvent` (line 36) and `runEventsUrl`. Add `export const runLiveUrl = (runId: string): string => …/live` plus a `LiveTextResponse { answer: string; thinking: string }` interface; add the `model-progress` case: `` `Receiving… ${num(answerChars)} chars of answer` `` plus `` `, ${num(reasoningChars)} chars of thinking` `` when non-zero. New `assistant-live-buffer.tsx`: a `LiveText({ runId })` component using the same `useLiveResource` 2 s fast / 15 s slow cadence as `StepLog`, rendering the answer text and the thinking collapsed in a `<details>` element labelled `Thinking`. Anchor: `packages/dashboard/src/pages/assistant-tuning.tsx` rows (the provider-timeout row tested at line 133). Add two rows bound to `assistant.providerIdleTimeoutMs` and `assistant.providerMaxCallMs` with seconds display, same save path as the existing timeout row. Mount `LiveText` inside the StepLog card in `assistant-live.tsx` — mount-only change (contracts §4 dashboard rule).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx packages/dashboard/src/pages/assistant-live.tsx` then `npx eslint packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx packages/dashboard/src/pages/assistant-live.tsx` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx packages/dashboard/src/pages/assistant-live.tsx && git commit -m "Slice 3 T10: dashboard live text and progress"`
+
+**Done when:** `model-progress` renders the `Receiving…` line; live text polls every 2 s with thinking collapsed; both timeout settings render and save.
+
+
+### S3-T11: State and privacy paperwork   ·   Wave 5
+**Owns:** Modify: `docs/STATE.md`; Modify: `PRIVACY.md`
+**Reads (do not edit):** `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md`
+**Interfaces:** Consumes: ADR 0148 numbers · Produces: `docs/STATE.md` entry after the first `---` in Slice 1 style; PRIVACY.md thinking line
+
+- [ ] **Step 1: Write the failing test** — no code test; the check is `grep -c "streaming" docs/STATE.md` returns 0 before the edit.
+- [ ] **Step 2: Run it and watch it fail** — `grep -c "streaming" docs/STATE.md` · Expected: FAIL with count 0
+- [ ] **Step 3: Implement** — anchor: `docs/STATE.md` top of file, after the first `---`, same bullet style as the Slice 1 entry (line 7). Insert:
+
+```md
+**Assistant streaming (Slice 3, ADR 0148, no migration).**
+
+- **Streaming:** OpenRouter/NIM send `stream: true` with usage; Gemini uses `:streamGenerateContent?alt=sse`. SSE comments ignored, tool args joined per index, thought parts kept apart, raw parts echoed for signatures.
+- **Timeouts:** idle 45 s (`assistant.providerIdleTimeoutMs`) re-armed per byte, ceiling 300 s (`assistant.providerMaxCallMs`), first byte 60 s (`assistant.providerTimeoutMs`). `assistant.maxOutputTokens` default 4,096.
+- **Finish reasons:** mid-stream `error` is retryable and never delivered; `length` with text adds `-# (cut short)`; `length` empty keeps the empty-answer path.
+- **Live dashboard:** per-run buffer (8,000 chars answer plus 8,000 thinking, dropped at finish), `GET /api/assistant/runs/:runId/live`, `model-progress` steps at most every 3 s, thinking saved per round under trace `reasoning`.
+```
+
+Anchor: `PRIVACY.md` the step-log bullet (the `- The bot also keeps a step log…` line). Append after it: `- The model's thinking text is shown live on the dashboard while it answers and is saved with the trace, capped at 8,000 characters per run. It can echo member messages. It is shown only to accounts that can read traces and is deleted with the conversation.`
+- [ ] **Step 4: Run it and watch it pass** — `grep -c "streaming" docs/STATE.md` · Expected: PASS with count ≥ 1
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md` then `npx eslint docs/STATE.md PRIVACY.md` · exit 0
+- [ ] **Step 7: Commit** — `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 3 T11: state and privacy paperwork"`
+
+**Done when:** STATE.md carries the Slice 3 entry in Slice 1 style; PRIVACY.md carries the thinking line.
+
+## Slice gate (orchestrator only, after the last wave)
+npm run typecheck        (≈1.7 GB peak — run alone)
+npm run lint
+npx vitest run --maxWorkers=1
+## After merge (owner)
+Deploy order: stop → build → start (no migration). On the dashboard Tuning page, check the idle timeout (45 s), max call time (300 s) and max answer length (4,096 tokens); leave the rest as is. In Discord, ask a long question and watch the run's Step log show `Receiving…` lines, then open the trace and check the saved thinking under `reasoning`.
+
 - [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts && git commit -m "Slice 3 T9: live buffer and progress events"`
 
 **Done when:** the buffer caps at 8,000 per side and drops at finish; `/live` is gated like traces; `model-progress` bumps `updatedAt` so the 10-minute stalled label stays honest.
