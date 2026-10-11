@@ -24,6 +24,7 @@ import {
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
 import {
   assistantRepo,
+  assistantKeyCooldownsRepo,
   automodRuleRepo,
   eligibilityRepo,
   guildRepo,
@@ -49,7 +50,7 @@ import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
 import { reserveEntryCall } from '../assistant/local-limit.js';
 import { taskNudgeRepo } from '@bananasaurs/storage';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
-import { buildDoctorReport, formatDoctorReport } from './doctor.js';
+import { buildDoctorReport, formatDoctorReport, type DoctorProviderAdvisories } from './doctor.js';
 import { seedChannelScopes } from '../channels/read-seed.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { ensureOwnerGuildAccess } from './owner-guild-access.js';
@@ -645,7 +646,30 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // `doctor` on every start, not only when asked. Its findings — a missing
     // partial, an ungranted intent, a bot below the roles it manages — all look
     // identical from the outside: nothing happens and nothing says why.
-    reportHealth(client, config, logger);
+    reportHealth(
+      client,
+      config,
+      logger,
+      providerStore === undefined
+        ? undefined
+        : {
+            keys: providerStore.keys().map((k) => ({
+              keyId: k.keyId,
+              provider: k.provider,
+              label: k.label,
+              costClass: k.costClass,
+              enabled: k.enabled,
+            })),
+            chain: providerStore.chain().map((e) => ({
+              keyId: e.keyId,
+              providerId: e.providerId,
+              model: e.model,
+              pool: e.pool,
+            })),
+            getCooldown: (keyId, model, now) =>
+              assistantKeyCooldownsRepo.getCooldown(scopes.instance(), keyId, model, now),
+          },
+    );
     connectionEvent(false);
   });
   client.on(Events.ShardResume, () => {
@@ -1019,9 +1043,23 @@ function seedAutomodDefaults(
  * delivered without a `permissions` field makes it throw. A diagnostic that can
  * take the process down on startup is worse than no diagnostic at all.
  */
-function reportHealth(client: Client, config: Config, logger: Logger): void {
+function reportHealth(
+  client: Client,
+  config: Config,
+  logger: Logger,
+  providerAdvisories?: DoctorProviderAdvisories,
+): void {
   try {
-    const report = buildDoctorReport(client, config);
+    const report = buildDoctorReport(
+      client,
+      config,
+      Date.now(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      providerAdvisories,
+    );
     logger[report.ok ? 'info' : 'warn'](
       { doctor: formatDoctorReport(report) },
       report.ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND',
