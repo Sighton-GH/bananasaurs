@@ -1966,7 +1966,7 @@ function SetupBody({
   readonly onChanged: () => void;
 }) {
   const chainSignature = JSON.stringify(
-    setup.chain.map((c) => [c.keyId, c.model, c.rpmLimit, c.rpdLimit]),
+    setup.chain.map((c) => [c.keyId, c.model, c.rpmLimit, c.rpdLimit, c.pool, c.tier]),
   );
   return (
     <>
@@ -1980,7 +1980,12 @@ function SetupBody({
           onChanged={onChanged}
         />
         {setup.chain.map((row) => (
-          <AssistantModelCheck key={`${row.keyId} ${row.model}`} position={row.position} />
+          <AssistantModelCheck
+            key={`${row.keyId} ${row.model}`}
+            position={row.position}
+            model={row.model}
+            keyLabel={row.keyLabel}
+          />
         ))}
       </div>
       <div className="mt-4">

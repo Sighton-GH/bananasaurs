@@ -151,6 +151,50 @@ function ChipList({
   );
 }
 
+/** Keeps what is typed as a draft; saves on blur or Enter, and puts the saved value back if it is out of range. */
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly min: number;
+  readonly max: number;
+  readonly onCommit: (n: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  const commit = (): void => {
+    const n = Number(draft);
+    if (draft.trim() === '' || !Number.isInteger(n) || n < min || n > max) {
+      setDraft(String(value));
+      return;
+    }
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <Field label={label}>
+      <Input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            commit();
+          }
+        }}
+      />
+    </Field>
+  );
+}
+
 /** Owner controls for complexity routing (ADR 0144): every router setting, plus a local try-box. */
 export function AssistantRoutingSettings() {
   const session = useSession();
@@ -209,19 +253,13 @@ export function AssistantRoutingSettings() {
     min: number,
     max: number,
   ) => (
-    <Field label={label}>
-      <Input
-        type="number"
-        min={min}
-        max={max}
-        value={values[field]}
-        onChange={(event) => {
-          const n = Number(event.target.value);
-          if (!Number.isInteger(n) || n < min || n > max) return;
-          void save(key, n, () => setValues((v) => ({ ...v, [field]: n })));
-        }}
-      />
-    </Field>
+    <NumberField
+      label={label}
+      value={values[field]}
+      min={min}
+      max={max}
+      onCommit={(n) => void save(key, n, () => setValues((v) => ({ ...v, [field]: n })))}
+    />
   );
 
   const tierField = (label: string, key: string, field: 'summaryTier' | 'digestTier') => (

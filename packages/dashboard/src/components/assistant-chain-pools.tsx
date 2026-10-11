@@ -22,11 +22,21 @@ export function AssistantChainPools({
   readonly onChanged: () => void;
 }) {
   const session = useSession();
-  const [drafts, setDrafts] = useState<readonly Draft[]>(() =>
-    chain.map((row) => ({ pool: row.pool ?? 'key', tier: row.tier ?? 'standard' })),
-  );
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const fromChain = (): readonly Draft[] =>
+    chain.map((row) => ({ pool: row.pool ?? 'key', tier: row.tier ?? 'standard' }));
+  const signature = JSON.stringify(
+    chain.map((row) => [row.keyId, row.model, row.pool ?? 'key', row.tier ?? 'standard']),
+  );
+  const [drafts, setDrafts] = useState<readonly Draft[]>(fromChain);
+  // The chain prop is the server's state: when it changes, drop drafts built from the old one.
+  const [seen, setSeen] = useState(signature);
+  if (seen !== signature) {
+    setSeen(signature);
+    setDrafts(fromChain());
+    setSaved(false);
+  }
   const patch = (index: number, change: Partial<Draft>): void => {
     setSaved(false);
     setDrafts((current) => current.map((d, i) => (i === index ? { ...d, ...change } : d)));
