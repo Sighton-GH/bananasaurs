@@ -2159,4 +2159,96 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
     expect(calls).toEqual(['key_a', 'key_a']);
     expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())).toHaveLength(0);
   });
+
+  it('exact provider delay and minute learned limit', async () => {
+    const calls: string[] = [];
+    const failing = new Map([['key_a', MINUTE_429]]);
+    const chain = poolChain(['key_a'], MODEL, calls, 'gemini', failing);
+    await run(chain);
+    expect(
+      assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_a', MODEL, NOW),
+    ).toMatchObject({ until: NOW + 37_000, learnedPerMinute: 5 });
+    failing.clear();
+    calls.length = 0;
+    await run(chain, { now: NOW + 37_000 });
+    expect(calls).toEqual(['key_a']);
+  });
+  it('daily reset at non-midnight uses absolute Pacific midnight', async () => {
+    const chain = poolChain(['key_a'], MODEL, [], 'gemini', new Map([['key_a', DAILY_429]]));
+    await run(chain, { now: Date.parse('2026-10-11T19:23:45Z') });
+    expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())[0]?.until).toBe(
+      Date.parse('2026-10-12T07:00:00Z'),
+    );
+  });
+  it('selected key differs from anchor and model isolation', async () => {
+    const calls: string[] = [];
+    const failing = new Map([['key_b', DAILY_429]]);
+    const chain = poolChain(['key_a', 'key_b'], MODEL, calls, 'gemini', failing);
+    const chosen = { ...chain[1]!, keyId: 'key_a' };
+    await run([chosen]);
+    expect(
+      assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_b', MODEL, NOW),
+    ).toBeDefined();
+    expect(
+      assistantKeyCooldownsRepo.getCooldown(t.scopes.instance(), 'key_a', MODEL, NOW),
+    ).toBeUndefined();
+    failing.clear();
+    calls.length = 0;
+    const blocked = await run([chosen]);
+    expect(calls).toEqual([]);
+    expect(blocked.events[0]).toMatchObject({
+      kind: 'model-skipped',
+      keyId: 'key_b',
+      reason: 'daily-quota',
+      availableAt: nextProviderDayStart('gemini', NOW),
+    });
+    await run([chain[0]!]);
+    await run([{ ...chosen, model: 'other-model' }]);
+    expect(calls).toEqual(['key_a', 'key_b']);
+  });
+  it('unrelated ProviderErrors never invalidate keys', async () => {
+    const failures = [
+      'quota',
+      'timeout',
+      'outage',
+      'invalid-request',
+      'invalid-response',
+      'safety-refusal',
+      'capability-mismatch',
+      'rate-limit',
+    ] as const;
+    const chain = poolChain(['key_a'], MODEL, [], 'gemini');
+    for (const kind of failures) {
+      const { provider } = scripted([new ProviderError(kind, 'fake', false)]);
+      await run([{ ...chain[0]!, provider }]);
+      expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())).toEqual([]);
+    }
+  });
+  it('rate-limit with delay and no scope persists minute cooldown', async () => {
+    const chain = poolChain(
+      ['key_a'],
+      MODEL,
+      [],
+      'gemini',
+      new Map([['key_a', new ProviderError('rate-limit', 'fake', true, { retryAfterMs: 37_000 })]]),
+    );
+    await run(chain);
+    expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())[0]).toMatchObject({
+      reason: 'minute-quota',
+      until: NOW + 37_000,
+    });
+  });
+  it('daily-free with no reset uses OpenRouter UTC day', async () => {
+    const chain = poolChain(
+      ['key_a'],
+      'some-model:free',
+      [],
+      'openrouter',
+      new Map([['key_a', new ProviderError('quota', 'fake', false, { quotaScope: 'daily-free' })]]),
+    );
+    await run(chain, { now: Date.parse('2026-10-11T19:23:45Z') });
+    expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())[0]?.until).toBe(
+      Date.parse('2026-10-12T00:00:00Z'),
+    );
+  });
 });

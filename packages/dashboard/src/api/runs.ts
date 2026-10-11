@@ -102,6 +102,9 @@ export const describeRunEvent: (event: RunEvent) => string = (event) => {
       if (event.totalTokens !== undefined) text += `, ${num(event.totalTokens)} tokens`;
       return text;
     }
+    case 'routed':
+      // Minimal placeholder; S6-T15 replaces it with the plain-words text.
+      return `Routed to the ${event.tier} tier (${event.reason})`;
     default: {
       // A new event kind fails typecheck here; at runtime (a daemon newer
       // than this page) the row still renders instead of crashing.
