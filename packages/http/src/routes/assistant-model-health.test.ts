@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
-import { accountRepo, authzRepo, guildRepo, runRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  authzRepo,
+  guildRepo,
+  runRepo,
+  assistantProvidersRepo,
+  assistantKeyCooldownsRepo,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -236,5 +243,106 @@ describe('assistant model health route', () => {
     expect(week.statusCode).toBe(200);
     expect(week.json<{ window: string; models: unknown[] }>().window).toBe('7d');
     expect(week.json<{ models: unknown[] }>().models).toHaveLength(1);
+  });
+});
+
+describe('Slice 6 cooldown enrichment', () => {
+  it('marks an enabled non-anchor pool key in chain but not a disabled key', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    const configured = deps.assistantProviderConfig;
+    if (configured === undefined) throw new Error('missing test provider config');
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        ...configured,
+        chain: () =>
+          (configured.chain?.() ?? []).map((entry) => ({ ...entry, pool: 'provider' as const })),
+        keys: () => [
+          ...(configured.keys?.() ?? []),
+          {
+            keyId: 'key-2',
+            provider: 'openrouter',
+            label: 'Second',
+            costClass: 'free' as const,
+            enabled: true,
+          },
+          {
+            keyId: 'key-3',
+            provider: 'openrouter',
+            label: 'Disabled',
+            costClass: 'free' as const,
+            enabled: false,
+          },
+        ],
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantModelHealthRoutes });
+    seedResult('run-pool', clock - 1000, { keyId: 'key-2' });
+    seedResult('run-disabled', clock - 1000, { keyId: 'key-3' });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/model-health',
+      headers: { cookie },
+    });
+    const models = response.json<{ models: { keyId: string; inChain?: boolean }[] }>().models;
+    expect(models.find((m) => m.keyId === 'key-2')?.inChain).toBe(true);
+    expect(models.find((m) => m.keyId === 'key-3')?.inChain).toBe(false);
+  });
+
+  it('marks in-chain pairs, returns only active matching cooldowns and withholds provider text', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    const scope = t.scopes.instance();
+    assistantProvidersRepo.addKey(scope, {
+      keyId: 'key-1',
+      provider: 'openrouter',
+      label: 'Primary',
+      apiKeyEnc: 'sealed-test',
+      now: clock,
+    });
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key-1',
+      model: 'model-a',
+      until: clock + 60000,
+      setAt: clock,
+      reason: 'minute-quota',
+    });
+    assistantKeyCooldownsRepo.setCooldown(scope, {
+      keyId: 'key-1',
+      model: 'other-model',
+      until: clock + 120000,
+      setAt: clock,
+      reason: 'minute-quota',
+    });
+    seedResult('run-cool', clock - 1000, { providerMessage: 'short reason' });
+    seedResult('run-other', clock - 1000, { model: 'model-b' });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/model-health?window=24h',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const models = response.json<{
+      models: { model: string; coolingUntil?: number; lastError?: { providerMessage?: string } }[];
+    }>().models;
+    expect(models.find((m) => m.model === 'model-a')).toMatchObject({
+      inChain: true,
+      coolingUntil: clock + 60000,
+    });
+    expect(models.find((m) => m.model === 'model-a')?.lastError?.providerMessage).toBeUndefined();
+    expect(models.find((m) => m.model === 'model-b')).not.toHaveProperty('coolingUntil');
+    clock += 60000;
+    const expired = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/model-health',
+      headers: { cookie },
+    });
+    expect(
+      expired
+        .json<{ models: unknown[] }>()
+        .models.every((m) => !Object.hasOwn(m as object, 'coolingUntil')),
+    ).toBe(true);
   });
 });
