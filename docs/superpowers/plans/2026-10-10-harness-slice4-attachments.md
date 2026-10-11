@@ -215,7 +215,7 @@ and inside `GenerationMessage`, after the `providerParts` field (lines 34–39),
 ### S4-T3: attachment caps in the settings registry   ·   Wave 1
 **Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`
 **Reads (do not edit):** `packages/dashboard/src/pages/assistant-tuning.tsx` (renders every registry entry generically, so no page change is needed)
-**Interfaces:** Consumes: none · Produces: ten keys `assistant.attachments.textMaxBytes`, `assistant.attachments.textMaxChars`, `assistant.attachments.textMaxCount`, `assistant.attachments.imageMaxBytes`, `assistant.attachments.imageMaxCount`, `assistant.attachments.pdfMaxBytes`, `assistant.attachments.pdfMaxCount` (all `count`, a count of 0 disables that kind) plus `assistant.attachments.textEnabled`? No — counts only; seven keys total: textMaxBytes (default 262144), textMaxChars (default 24000), textMaxCount (default 3, min 0, max 10), imageMaxBytes (default 5242880), imageMaxCount (default 4, min 0, max 10), pdfMaxBytes (default 10485760), pdfMaxCount (default 2, min 0, max 10); group `Assistant attachments` (new additive `SettingGroup` value)
+**Interfaces:** Consumes: none · Produces: seven keys `assistant.attachments.textMaxBytes` (default 262144), `assistant.attachments.textMaxChars` (default 24000), `assistant.attachments.textMaxCount` (default 3, min 0, max 10), `assistant.attachments.imageMaxBytes` (default 5242880), `assistant.attachments.imageMaxCount` (default 4, min 0, max 10), `assistant.attachments.pdfMaxBytes` (default 10485760), `assistant.attachments.pdfMaxCount` (default 2, min 0, max 10); group `Assistant attachments` (new additive `SettingGroup` value); a count of 0 disables that kind
 
 - [ ] **Step 1: Write the failing test** — append to `packages/core/src/settings/instance-settings.test.ts`:
 
@@ -341,3 +341,381 @@ const attachmentPdfMaxCount: SettingDefinition<number> = {
 - [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 4 T3: attachment caps in the settings registry"`
 
 **Done when:** registry holds 25 definitions; every default parses under its own schema; help texts are Canadian English with no tool names.
+
+---
+
+### S4-T4: markers everywhere, no network   ·   Wave 2
+**Owns:** Modify: `packages/core/src/discord/port.ts`, `packages/discord/src/rest/port.ts`, `packages/discord/src/rest/port.test.ts`, `apps/daemon/src/assistant/conversation-context.ts`, `apps/daemon/src/assistant/conversation-context.test.ts`, `apps/daemon/src/assistant/channel-context.ts`, `apps/daemon/src/assistant/channel-context.test.ts`, `apps/daemon/src/assistant/user-message.ts`, `apps/daemon/src/assistant/user-message.test.ts`
+**Reads (do not edit):** `apps/daemon/src/jobs/assistant.ts` (the `quoted` shape S4-T6 threads through; this task does not touch it), `packages/discord/src/events.test.ts` (the event already carries attachments metadata — no change needed)
+**Interfaces:** Consumes: none · Produces: `export interface FetchedAttachment { readonly attachmentId: string; readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number; readonly url?: string | undefined }` and `export interface FetchedEmbed { readonly title?: string | undefined; readonly description?: string | undefined; readonly providerName?: string | undefined; readonly thumbnailUrl?: string | undefined }` in `packages/core/src/discord/port.ts` · `fetchMessageContent` returns them; `RecentMessage` gains `readonly attachments?: readonly FetchedAttachment[] | undefined` · `export const attachmentMarker = (file: { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }): string` in `conversation-context.ts` (S4-T6 reuses it)
+
+- [ ] **Step 1: Write the failing test** — full test code below, using the real helpers of each file (`messageCreatePacket`/`harness` in `events.test.ts` style for port tests; `message()`/`input()` in `channel-context.test.ts`; `quoteEnvelopeFor` directly; `buildUserMessage` directly).
+
+In `packages/discord/src/rest/port.test.ts`, extend the `fetchMessageContent` test (the "fetches one message's author, content and embeds" test near line 725; read it first) with a body attachment carrying a URL and an embed with a provider:
+
+```ts
+it('keeps attachment urls and embed text on a fetched message (ADR 0149)', async () => {
+  const { port } = harness([
+    {
+      status: 200,
+      body: {
+        id: MESSAGE,
+        channel_id: CHANNEL,
+        author: { id: USER, username: 'sam' },
+        content: 'notes attached',
+        attachments: [
+          {
+            id: '1',
+            filename: 'notes.txt',
+            content_type: 'text/plain',
+            size: 12_288,
+            url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+            proxy_url: 'https://media.discordapp.net/attachments/1/2/notes.txt',
+          },
+          { id: '2', filename: 'no-url.bin', size: 4 },
+        ],
+        embeds: [
+          {
+            title: 'Top Gear loser dance',
+            description: 'a clip',
+            provider: { name: 'Tenor' },
+            thumbnail: { url: 'https://media.discordapp.net/thumb.gif' },
+          },
+        ],
+      },
+    },
+  ]);
+  const fetched = await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE);
+  expect(fetched?.attachments).toEqual([
+    {
+      attachmentId: '1',
+      fileName: 'notes.txt',
+      contentType: 'text/plain',
+      sizeBytes: 12_288,
+      url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+    },
+    { attachmentId: '2', fileName: 'no-url.bin', sizeBytes: 4, url: undefined },
+  ]);
+  expect(fetched?.embeds).toEqual([
+    {
+      title: 'Top Gear loser dance',
+      description: 'a clip',
+      providerName: 'Tenor',
+      thumbnailUrl: 'https://media.discordapp.net/thumb.gif',
+    },
+  ]);
+});
+```
+
+(`harness`, `MESSAGE`, `CHANNEL`, `GUILD`, `USER` are the existing names in that file; if any differs, use the file's name.)
+
+In `apps/daemon/src/assistant/conversation-context.test.ts`:
+
+```ts
+it('renders attachment and embed markers inside the quote envelope (ADR 0149)', () => {
+  expect(
+    quoteEnvelopeFor({
+      authorName: 'Sam L',
+      content: 'see attached',
+      attachments: [{ fileName: 'notes.txt', contentType: 'text/plain', sizeBytes: 12_288 }],
+      embeds: [{ providerName: 'Tenor', title: 'Top Gear loser dance' }],
+    }),
+  ).toBe(
+    '[UNTRUSTED QUOTED MESSAGE author="Sam L"]\nsee attached\n[attached: notes.txt, text/plain, 12 KB]\n[embed: Tenor: Top Gear loser dance]\n[/UNTRUSTED QUOTED MESSAGE]',
+  );
+});
+```
+
+In `apps/daemon/src/assistant/channel-context.test.ts` (using its `message()` helper):
+
+```ts
+it('renders attachment markers even when there is text (ADR 0149)', () => {
+  const { block } = buildChannelContext(
+    input({
+      messages: [
+        message({
+          messageId: '9',
+          authorName: 'Sam L',
+          content: 'The one I just pasted:',
+          attachments: [{ attachmentId: '1', fileName: 'message.txt', contentType: 'text/plain', sizeBytes: 1024 }],
+        }),
+      ],
+    }),
+  );
+  expect(block).toContain('[Sam L, 3 min ago] The one I just pasted: [attached: message.txt, text/plain, 1 KB]');
+});
+```
+
+In `apps/daemon/src/assistant/user-message.test.ts`:
+
+```ts
+it('tells the model attachments read only through contents below (ADR 0149)', () => {
+  expect(buildUserMessage({ question: 'hi', askerName: 'Sam L' })).toContain(
+    'You can read an attachment only if its contents appear below.',
+  );
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/discord/src/rest/port.test.ts apps/daemon/src/assistant/conversation-context.test.ts apps/daemon/src/assistant/channel-context.test.ts apps/daemon/src/assistant/user-message.test.ts --maxWorkers=1` · Expected: FAIL (`attachments`/`embeds` undefined on the fetch result; `quoteEnvelopeFor` ignores the new fields; no marker line; prompt line absent)
+- [ ] **Step 3: Implement**
+  - `packages/core/src/discord/port.ts`: add the `FetchedAttachment` and `FetchedEmbed` interfaces above `DiscordPort`; change the `fetchMessageContent` return to `Promise<{ authorId: Snowflake; authorName: string; content: string; attachments: readonly FetchedAttachment[]; embeds: readonly FetchedEmbed[] } | undefined>`; add `readonly attachments?: readonly FetchedAttachment[] | undefined` to `RecentMessage` with the comment "Attachment metadata for marker lines (ADR 0149); absent means unknown, not none".
+  - `packages/discord/src/rest/port.ts` `fetchMessageContent` (lines 361–380): map `message.attachments ?? []` to `{ attachmentId: a.id, fileName: a.filename, contentType: a.content_type ?? undefined, sizeBytes: a.size, url: a.url ?? a.proxy_url ?? undefined }` omitting `contentType`/`url` keys when undefined (the codebase style is `...(x === undefined ? {} : { x })`), and `message.embeds ?? []` to `{ title, description, providerName: provider?.name, thumbnailUrl: thumbnail?.url ?? thumbnail?.proxy_url }` omitting undefined keys. Same mapping for `fetchChannelMessages` (line 446 area): add `attachments:` to the mapped message alongside `hasAttachments`.
+  - `apps/daemon/src/assistant/conversation-context.ts`: add `export const attachmentMarker = (file: { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }): string => \`[attached: ${neutraliseMarkers(file.fileName)}, ${file.contentType ?? 'unknown type'}, ${Math.max(1, Math.round(file.sizeBytes / 1024))} KB]\`;` extend `QuotedMessage` with `readonly attachments?: readonly { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }[] | undefined` and `readonly embeds?: readonly { readonly title?: string | undefined; readonly description?: string | undefined; readonly providerName?: string | undefined }[] | undefined`; extend `quoteEnvelopeFor` to append marker lines then embed lines before the close tag. Embed line: `` `[embed: ${[e.providerName, e.title].filter(Boolean).join(': ')}${e.description === undefined ? '' : ` — ${e.description}`}]` `` skipping embeds with no title and no providerName. Neutralise every interpolated field.
+  - `apps/daemon/src/assistant/channel-context.ts`: import `attachmentMarker`; in both `formatChannelLines` and `buildChannelContext`, replace `const text = message.content.trim() === '' ? '[attachment]' : cleanText(...)` with markers appended: `const markers = (message.attachments ?? []).map(attachmentMarker).join(' '); const body = message.content.trim() === '' ? (markers === '' ? '[attachment]' : markers) : cleanText(message.content) + (markers === '' ? '' : ` ${markers}`);` Apply the same in the starter block only if the starter type carries attachments — it does not, so leave the starter untouched.
+  - `apps/daemon/src/assistant/user-message.ts`: after `parts.push(currentBlock)` insert `parts.push('You can read an attachment only if its contents appear below.');`
+  - Search `rg -n "RecentMessage" packages apps --include="*.ts"` for other constructors; optional field keeps them compiling — verify with typecheck, and update any `toEqual` on `fetchChannelMessages` output (only `port.test.ts`, owned here).
+- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write <all eight owned paths>` then `npx eslint <all eight owned paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <all eight owned paths> && git commit -m "Slice 4 T4: attachment and embed markers in quote, channel lines and prompt"`
+
+**Done when:** a `[attached: …]` line renders with text present (the "no pasted text" case); embeds render as `[embed: Tenor: …]`; the prompt line is always present; no bytes travel anywhere yet.
+
+---
+
+### S4-T5: attachment bytes through the existing security primitives   ·   Wave 2
+**Owns:** Modify: `apps/daemon/src/assistant/resource-fetcher.ts`, `apps/daemon/src/assistant/resource-fetcher.test.ts`; Create: `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/outbound-safety.ts` (`redactEvidenceText`, used for text envelopes)
+**Interfaces:** Consumes: `resolvePublicAddress`, `pinnedHttpsRequest`, `isPublicAddress`, `DEFAULT_RESOURCE_FETCH_LIMITS`, `ResourceFetchFailure` from `resource-fetcher.ts` (same task extends it); `redactEvidenceText` from `@bananasaurs/core` · Produces: `export const ATTACHMENT_HOSTS = ['cdn.discordapp.com', 'media.discordapp.net'] as const` · `export interface AttachmentSource { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number; readonly url?: string | undefined }` · `export type AttachmentKind = 'text' | 'image' | 'pdf' | 'unsupported'` · `export const classifyAttachment = (source: AttachmentSource): AttachmentKind` (pre-fetch, from content type and extension) · `export const sniffMediaKind = (bytes: Uint8Array): 'image' | 'pdf' | 'text' | 'animated-gif' | 'unknown'` (magic bytes) · `export const textEnvelopeFor = (name: string, text: string): string` (redacted, neutralised, framed) · `export const fetchAttachment = (deps: { fetchBytes: (url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }> }, source: AttachmentSource, caps: AttachmentCaps): Promise<AttachmentFetchResult>` enforcing declared-size caps before any fetch
+
+- [ ] **Step 1: Write the failing test** — create `packages/…` no; create `apps/daemon/src/assistant/attachments.test.ts` with the full code below, plus append the `fetchBytes` tests to `resource-fetcher.test.ts` (reusing its `body`, `response`, `publicDns` helpers):
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+import {
+  ATTACHMENT_HOSTS,
+  classifyAttachment,
+  fetchAttachment,
+  sniffMediaKind,
+  textEnvelopeFor,
+} from './attachments.js';
+
+const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+const webp = new Uint8Array([...Buffer.from('RIFF....WEBP', 'utf8')]);
+const gifStatic = new Uint8Array([...Buffer.from('GIF89a', 'utf8'), 1, 2, 3]);
+const gifAnimated = new Uint8Array([...Buffer.from('GIF89aNETSCAPE2.0', 'utf8')]);
+const pdf = new Uint8Array([...Buffer.from('%PDF-1.7', 'utf8')]);
+
+describe('attachment classification and sniffing (ADR 0149)', () => {
+  it('classifies by content type first, then extension', () => {
+    expect(classifyAttachment({ fileName: 'a.txt', contentType: 'text/plain', sizeBytes: 1 }).valueOf()).toBe('text');
+    expect(classifyAttachment({ fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 })).toBe('image');
+    expect(classifyAttachment({ fileName: 'a.pdf', contentType: 'application/pdf', sizeBytes: 1 })).toBe('pdf');
+    expect(classifyAttachment({ fileName: 'main.ts', contentType: 'application/octet-stream', sizeBytes: 1 })).toBe('text');
+    expect(classifyAttachment({ fileName: 'run.exe', contentType: 'application/octet-stream', sizeBytes: 1 })).toBe('unsupported');
+    expect(classifyAttachment({ fileName: 'clip.mp4', contentType: 'video/mp4', sizeBytes: 1 })).toBe('unsupported');
+  });
+
+  it('sniffs magic bytes and spots animated GIFs', () => {
+    expect(sniffMediaKind(png)).toBe('image');
+    expect(sniffMediaKind(jpeg)).toBe('image');
+    expect(sniffMediaKind(webp)).toBe('image');
+    expect(sniffMediaKind(gifStatic)).toBe('image');
+    expect(sniffMediaKind(gifAnimated)).toBe('animated-gif');
+    expect(sniffMediaKind(pdf)).toBe('pdf');
+    expect(sniffMediaKind(new Uint8Array([0x7f, 0x45, 0x4c, 0x46]))).toBe('unknown');
+  });
+
+  it('refuses oversize on the declared size before fetching', async () => {
+    const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes: new Uint8Array(), mediaType: 'image/png' }));
+    const result = await fetchAttachment(
+      { fetchBytes },
+      { fileName: 'big.png', contentType: 'image/png', sizeBytes: 6_000_000 },
+      { textMaxBytes: 262_144, textMaxChars: 24_000, textMaxCount: 3, imageMaxBytes: 5_242_880, imageMaxCount: 4, pdfMaxBytes: 10_485_760, pdfMaxCount: 2 },
+    );
+    expect(result).toMatchObject({ ok: false, code: 'too-large' });
+    expect(fetchBytes).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing url and an off-allowlist url without fetching', async () => {
+    const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes: new Uint8Array(), mediaType: 'text/plain' }));
+    const caps = { textMaxBytes: 262_144, textMaxChars: 24_000, textMaxCount: 3, imageMaxBytes: 5_242_880, imageMaxCount: 4, pdfMaxBytes: 10_485_760, pdfMaxCount: 2 };
+    expect(await fetchAttachment({ fetchBytes }, { fileName: 'a.txt', sizeBytes: 10 }, caps)).toMatchObject({ ok: false, code: 'missing-url' });
+    expect(
+      await fetchAttachment({ fetchBytes }, { fileName: 'a.txt', sizeBytes: 10, url: 'https://evil.example/a.txt' }, caps),
+    ).toMatchObject({ ok: false, code: 'bad-host' });
+    expect(fetchBytes).not.toHaveBeenCalled();
+  });
+
+  it('refuses a wrong magic number after fetching', async () => {
+    const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes: new Uint8Array([0x7f, 0x45, 0x4c, 0x46]), mediaType: 'image/png' }));
+    const result = await fetchAttachment(
+      { fetchBytes },
+      { fileName: 'fake.png', contentType: 'image/png', sizeBytes: 4, url: 'https://cdn.discordapp.com/attachments/1/2/fake.png' },
+      { textMaxBytes: 262_144, textMaxChars: 24_000, textMaxCount: 3, imageMaxBytes: 5_242_880, imageMaxCount: 4, pdfMaxBytes: 10_485_760, pdfMaxCount: 2 },
+    );
+    expect(result).toMatchObject({ ok: false, code: 'bad-magic' });
+  });
+
+  it('frames text as untrusted evidence', () => {
+    expect(textEnvelopeFor('message.txt', 'hello sam@example.com')).toContain('[UNTRUSTED ATTACHMENT name="message.txt"]');
+    expect(textEnvelopeFor('message.txt', 'hello sam@example.com')).toContain('[redacted by the evidence safety filter]');
+    expect(textEnvelopeFor('message.txt', 'hi')).toContain('[/UNTRUSTED ATTACHMENT]');
+  });
+
+  it('pins the CDN allowlist', () => {
+    expect([...ATTACHMENT_HOSTS]).toEqual(['cdn.discordapp.com', 'media.discordapp.net']);
+  });
+});
+```
+
+In `resource-fetcher.test.ts`, append (reusing `body`, `response`, `publicDns`):
+
+```ts
+it('fetchBytes returns raw bytes for an allowlisted host and refuses anything else', async () => {
+  const fetcher = new ReviewedResourceFetcher({ resolve: publicDns });
+  const okBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const request: PinnedRequest = async () => ({ status: 200, headers: { 'content-type': 'image/png' }, body: (async function* () { yield okBytes; })() });
+  const fetcherWith = new ReviewedResourceFetcher({ resolve: publicDns, request });
+  const good = await fetcherWith.fetchBytes('https://cdn.discordapp.com/attachments/1/2/a.png', {
+    allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
+    maxBytes: 5_242_880,
+  });
+  expect(good).toMatchObject({ ok: true, mediaType: 'image/png' });
+  if (good.ok) expect([...good.bytes]).toEqual([...okBytes]);
+  const bad = await fetcher.fetchBytes('https://evil.example/a.png', {
+    allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
+    maxBytes: 5_242_880,
+  });
+  expect(bad).toMatchObject({ ok: false, code: 'redirect', host: 'evil.example' });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/attachments.test.ts apps/daemon/src/assistant/resource-fetcher.test.ts --maxWorkers=1` · Expected: FAIL (modules `attachments.ts` and `fetchBytes` missing)
+- [ ] **Step 3: Implement**
+  - `resource-fetcher.ts`: add after the class (or as a method; a method keeps the resolve/request/limits wiring):
+
+```ts
+export interface ByteFetchOptions {
+  readonly allowedHosts: readonly string[];
+  readonly maxBytes: number;
+  /** Absent means any content type is accepted. */
+  readonly allowedTypes?: readonly string[] | undefined;
+}
+export interface ByteFetchSuccess {
+  readonly ok: true;
+  readonly bytes: Uint8Array;
+  readonly mediaType: string;
+  readonly url: string;
+}
+export type ByteFetchResult = ByteFetchSuccess | ResourceFetchFailure;
+```
+
+Method `async fetchBytes(rawUrl: string, options: ByteFetchOptions): Promise<ByteFetchResult>` mirroring `#fetchFrom` exactly (validate URL, allowlist check with `fail('redirect', …)`, resolve, public-address check, pinned request per address, redirect follow up to `maxRedirects` with per-hop allowlist re-check, 304/3xx/4xx-5xx/challenge handling, `allowedTypes` check when set, declared-length pre-check, streamed cap) except it returns `bytes: Buffer.concat(chunks)` and `mediaType`, with no cache and no text decoding. Copy the structure, do not refactor `#fetchFrom`.
+  - `apps/daemon/src/assistant/attachments.ts`: full new module:
+
+```ts
+import { redactEvidenceText, neutraliseMarkers } from '@bananasaurs/core';
+
+export const ATTACHMENT_HOSTS = ['cdn.discordapp.com', 'media.discordapp.net'] as const;
+
+export interface AttachmentSource {
+  readonly fileName: string;
+  readonly contentType?: string | undefined;
+  readonly sizeBytes: number;
+  readonly url?: string | undefined;
+}
+
+export type AttachmentKind = 'text' | 'image' | 'pdf' | 'unsupported';
+
+export interface AttachmentCaps {
+  readonly textMaxBytes: number;
+  readonly textMaxChars: number;
+  readonly textMaxCount: number;
+  readonly imageMaxBytes: number;
+  readonly imageMaxCount: number;
+  readonly pdfMaxBytes: number;
+  readonly pdfMaxCount: number;
+}
+
+const TEXT_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.json', '.js', '.ts', '.tsx', '.py', '.rb', '.go', '.rs',
+  '.java', '.c', '.h', '.cpp', '.css', '.html', '.xml', '.yml', '.yaml', '.toml', '.ini',
+  '.cfg', '.log', '.csv', '.sh',
+]);
+
+/** Pre-fetch guess from the declared type, falling back to the file extension (ADR 0149). */
+export const classifyAttachment = (source: AttachmentSource): AttachmentKind => {
+  const type = (source.contentType ?? '').split(';', 1)[0]!.trim().toLowerCase();
+  if (type.startsWith('text/') || type === 'application/json') return 'text';
+  if (type.startsWith('image/')) return 'image';
+  if (type === 'application/pdf') return 'pdf';
+  const dot = source.fileName.lastIndexOf('.');
+  const ext = dot === -1 ? '' : source.fileName.slice(dot).toLowerCase();
+  if (TEXT_EXTENSIONS.has(ext)) return 'text';
+  if (ext === '.pdf') return 'pdf';
+  if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp' || ext === '.gif') return 'image';
+  return 'unsupported';
+};
+
+const startsWith = (bytes: Uint8Array, prefix: readonly number[]): boolean =>
+  prefix.every((b, i) => bytes[i] === b);
+
+/** Magic-byte check on fetched bytes (ADR 0149). `animated-gif` (NETSCAPE2.0) is refused, not sent. */
+export const sniffMediaKind = (bytes: Uint8Array): 'image' | 'pdf' | 'text' | 'animated-gif' | 'unknown' => {
+  if (startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return 'pdf';
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image';
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return 'image';
+  if (
+    startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return 'image';
+  if (startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) || startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])) {
+    const head = Buffer.from(bytes.slice(0, 300)).toString('latin1');
+    return head.includes('NETSCAPE2.0') ? 'animated-gif' : 'image';
+  }
+  return 'unknown';
+};
+
+export const textEnvelopeFor = (name: string, text: string): string => {
+  const clean = neutraliseMarkers(redactEvidenceText(text).text);
+  return `[UNTRUSTED ATTACHMENT name=${JSON.stringify(neutraliseMarkers(name))}]\n${clean}\n[/UNTRUSTED ATTACHMENT]`;
+};
+
+export type AttachmentFetchResult =
+  | { readonly ok: true; readonly kind: 'text'; readonly name: string; readonly text: string }
+  | { readonly ok: true; readonly kind: 'image' | 'pdf'; readonly name: string; readonly mediaType: string; readonly dataBase64: string; readonly sizeBytes: number }
+  | { readonly ok: false; readonly code: 'missing-url' | 'bad-host' | 'too-large' | 'bad-magic' | 'fetch-failed' | 'animated' | 'unsupported'; readonly note: string };
+
+/** One attachment end to end: declared-size cap first, host check, fetch, magic check (ADR 0149, refusal-first). */
+export const fetchAttachment = async (
+  deps: {
+    readonly fetchBytes: (url: string, maxBytes: number) => Promise<{ readonly ok: true; readonly bytes: Uint8Array; readonly mediaType: string } | { readonly ok: false; readonly code: string }>;
+  },
+  source: AttachmentSource,
+  caps: AttachmentCaps,
+): Promise<AttachmentFetchResult> => {
+  const kind = classifyAttachment(source);
+  if (kind === 'unsupported') return { ok: false, code: 'unsupported', note: `${source.fileName} is not a text file, image or PDF.` };
+  const maxBytes = kind === 'text' ? caps.textMaxBytes : kind === 'image' ? caps.imageMaxBytes : caps.pdfMaxBytes;
+  if (source.sizeBytes > maxBytes) return { ok: false, code: 'too-large', note: `${source.fileName} is over the size limit.` };
+  if (source.url === undefined || source.url === '') return { ok: false, code: 'missing-url', note: `${source.fileName} has no download link.` };
+  let host: string;
+  try {
+    host = new URL(source.url).hostname.toLowerCase();
+  } catch {
+    return { ok: false, code: 'bad-host', note: `${source.fileName} has no valid download link.` };
+  }
+  if (!ATTACHMENT_HOSTS.some((h) => host === h)) return { ok: false, code: 'bad-host', note: `${source.fileName} is not on the attachment host.` };
+  const fetched = await deps.fetchBytes(source.url, maxBytes);
+  if (!fetched.ok) return { ok: false, code: 'fetch-failed', note: `${source.fileName} could not be downloaded.` };
+  if (kind === 'image' || kind === 'pdf') {
+    const sniffed = sniffMediaKind(fetched.bytes);
+    if (sniffed === 'animated-gif') return { ok: false, code: 'animated', note: `${source.fileName} is an animated image.` };
+    if ((kind === 'image' && sniffed !== 'image') || (kind === 'pdf' && sniffed !== 'pdf'))
+      return { ok: false, code: 'bad-magic', note: `${source.fileName} is not the file type it claims to be.` };
+    return { ok: true, kind, name: source.fileName, mediaType: fetched.mediaType, dataBase64: Buffer.from(fetched.bytes).toString('base64'), sizeBytes: fetched.bytes.byteLength };
+  }
+  const text = Buffer.from(fetched.bytes).toString('utf8').replaceAll(' ', '');
+  return { ok: true, kind: 'text', name: source.fileName, text };
+};
+```
+
+  Note: the `'\u0000'` strip is written as `replaceAll(' ', '')` above — write it as `replaceAll('\u0000', '')` with a real escape in the file.
+- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write <all four owned paths>` then `npx eslint <all four owned paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <all four owned paths> && git commit -m "Slice 4 T5: attachment fetch with host, size and magic-byte refusals"`
+
+**Done when:** every refusal (off-host, missing URL, oversize, bad magic, animated GIF) is tested before the fetch it guards; text frames as `[UNTRUSTED ATTACHMENT …]` with redaction; no network in tests (injected `fetchBytes`).
