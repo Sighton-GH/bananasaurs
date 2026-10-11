@@ -5,7 +5,13 @@ import path from 'node:path';
 import { Client, GatewayIntentBits, Partials, Status, type Guild } from 'discord.js';
 import { parseConfig, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { openTestDatabase, performBackup } from '@bananasaurs/storage';
+import {
+  openTestDatabase,
+  performBackup,
+  assistantProvidersRepo,
+  assistantKeyCooldownsRepo,
+} from '@bananasaurs/storage';
+import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   buildDoctorReport,
   formatDoctorReport,
@@ -678,5 +684,90 @@ describe('model health (ADR 0129 §8)', () => {
     expect(report.modelHealth).toBeUndefined();
     expect(report.ok).toBe(true);
     expect(formatDoctorReport(report)).not.toContain('AI model');
+  });
+});
+
+describe('provider advisories (ADR 0143)', () => {
+  const now = Date.parse('2026-10-11T16:00:00Z');
+  const midnight = Date.parse('2026-10-12T07:00:00Z');
+  const model = 'gemini-3.8-flash';
+  const doctorWith = (
+    options: {
+      secondUsable?: boolean;
+      expired?: boolean;
+      paid?: boolean;
+      empty?: boolean;
+      singleKey?: boolean;
+      disabledSecond?: boolean;
+      minute?: boolean;
+    } = {},
+  ) => {
+    const t = openMigratedTestDatabase();
+    try {
+      const scope = t.scopes.instance();
+      const keyId = assistantProvidersRepo.addKey(scope, {
+        provider: 'gemini',
+        label: 'Gemini A',
+        apiKeyEnc: 'sealed-test-a',
+        costClass: options.paid ? 'paid' : 'free',
+        now,
+      });
+      assistantKeyCooldownsRepo.setCooldown(scope, {
+        keyId,
+        model,
+        until: options.expired ? now : options.minute ? now + 60000 : midnight,
+        reason: options.minute ? 'minute-quota' : 'daily-quota',
+        setAt: now - 1000,
+      });
+      if (options.secondUsable || options.disabledSecond)
+        assistantProvidersRepo.addKey(scope, {
+          provider: 'gemini',
+          label: 'Gemini B',
+          apiKeyEnc: 'sealed-test-b',
+          costClass: 'paid',
+          enabled: !options.disabledSecond,
+          now,
+        });
+      addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+      return buildDoctorReport(client, config(), now, undefined, undefined, undefined, undefined, {
+        keys: options.empty ? [] : assistantProvidersRepo.listKeys(scope),
+        chain: [
+          { keyId, providerId: 'gemini', model, pool: options.singleKey ? 'key' : 'provider' },
+        ],
+        getCooldown: (key, modelName, at) =>
+          assistantKeyCooldownsRepo.getCooldown(scope, key, modelName, at),
+      });
+    } finally {
+      t.close();
+    }
+  };
+
+  it('warns on may-train Gemini keys and fully cooling pools without failing', () => {
+    const report = doctorWith();
+    expect(report.warnings.join('\n')).toContain('Gemini A may train on submitted input');
+    expect(report.warnings.join('\n')).toContain('pool cooling until');
+    expect(report.warnings.join('\n')).toContain('2026-10-12, 00:00:00 Pacific');
+    expect(report.ok).toBe(true);
+    expect(formatDoctorReport(report)).toContain('recorded terms, still usable');
+    expect(formatDoctorReport(report)).not.toContain('sealed-test');
+  });
+
+  it('does not call a partly usable or empty pool cooling', () => {
+    expect(doctorWith({ secondUsable: true }).warnings.join('\n')).not.toContain('pool cooling');
+    expect(doctorWith({ empty: true }).warnings).toEqual([]);
+  });
+
+  it('assesses one-key entries independently and ignores disabled pool keys', () => {
+    expect(doctorWith({ singleKey: true, secondUsable: true }).warnings.join('\n')).toContain(
+      'pool cooling',
+    );
+    expect(doctorWith({ disabledSecond: true }).warnings.join('\n')).toContain('pool cooling');
+    expect(doctorWith({ minute: true }).warnings.join('\n')).toContain(
+      '2026-10-11, 09:01:00 Pacific',
+    );
+  });
+
+  it('does not warn about training on paid keys or expired cooldowns', () => {
+    expect(doctorWith({ paid: true, expired: true }).warnings).toEqual([]);
   });
 });
