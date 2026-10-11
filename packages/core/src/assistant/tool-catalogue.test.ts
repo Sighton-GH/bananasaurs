@@ -23,6 +23,10 @@ describe('TOOL_CATALOGUE', () => {
       'upcoming_events',
       'search_conversations',
       'channel_history',
+      'find_member',
+      'create_task',
+      'list_tasks',
+      'task_progress',
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const tool of TOOL_CATALOGUE) {
@@ -39,7 +43,8 @@ describe('TOOL_CATALOGUE', () => {
         tool.name === 'open_resource' ||
         tool.name === 'channel_history' ||
         tool.name === 'edit_reminder' ||
-        tool.name === 'cancel_reminder'
+        tool.name === 'cancel_reminder' ||
+        tool.name === 'task_progress'
       )
         expect(tool.rounds).toBe('returned-id');
       else expect(['first', 'all']).toContain(tool.rounds);
@@ -294,6 +299,8 @@ describe('catalogue groups and round policy (ADR 0136, 0137)', () => {
       'my_reminders',
       'upcoming_events',
       'refresh_source',
+      'find_member',
+      'list_tasks',
     ])
       expect(byName.get(name)?.rounds).toBe('all');
     for (const name of [
@@ -302,9 +309,10 @@ describe('catalogue groups and round policy (ADR 0136, 0137)', () => {
       'channel_history',
       'edit_reminder',
       'cancel_reminder',
+      'task_progress',
     ])
       expect(byName.get(name)?.rounds).toBe('returned-id');
-    for (const name of ['set_reminder', 'propose_memory', 'propose_decision'])
+    for (const name of ['set_reminder', 'propose_memory', 'propose_decision', 'create_task'])
       expect(byName.get(name)?.rounds).toBe('first');
   });
 
@@ -314,10 +322,12 @@ describe('catalogue groups and round policy (ADR 0136, 0137)', () => {
       .sort();
     expect(writers).toEqual([
       'cancel_reminder',
+      'create_task',
       'edit_reminder',
       'propose_decision',
       'propose_memory',
       'set_reminder',
+      'task_progress',
     ]);
     for (const entry of TOOL_CATALOGUE)
       if (entry.writes === true) expect(entry.rounds, entry.name).not.toBe('all');
@@ -330,11 +340,51 @@ describe('catalogue groups and round policy (ADR 0136, 0137)', () => {
       cancel_reminder: ['reminderId'],
       read_chunk: ['chunkId'],
       channel_history: ['before'],
+      task_progress: ['taskId'],
     });
     expect(Object.values(RETURNED_ID_ARGS).every((a) => a.length > 0)).toBe(true);
   });
 
   it('gates web_search behind the web-search skill', () => {
     expect(TOOL_CATALOGUE.find((e) => e.name === 'web_search')?.requiresSkill).toBe('web-search');
+  });
+  it('gates the new tools behind fitting groups and skills (ADR 0145, 0146)', () => {
+    const byName = new Map(TOOL_CATALOGUE.map((e) => [e.name, e]));
+    expect(byName.get('find_member')).toMatchObject({ group: 'server', rounds: 'all' });
+    expect(byName.get('find_member')?.requiresSkill).toBeUndefined();
+    expect(byName.get('create_task')).toMatchObject({
+      group: 'tasks',
+      rounds: 'first',
+      writes: true,
+      requiresSkill: 'tasks',
+      actsForSkill: 'tasks',
+    });
+    expect(byName.get('list_tasks')).toMatchObject({
+      group: 'tasks',
+      rounds: 'all',
+      requiresSkill: 'tasks',
+      actsForSkill: 'tasks',
+    });
+    expect(byName.get('task_progress')).toMatchObject({
+      group: 'tasks',
+      rounds: 'returned-id',
+      writes: true,
+      requiresSkill: 'tasks',
+      actsForSkill: 'tasks',
+    });
+    expect(TOOL_GROUPS.find((g) => g.id === 'tasks')?.label).toBe('Club tasks');
+  });
+
+  it('uses the Friday date in the create_task example', () => {
+    const description = TOOL_CATALOGUE.find((e) => e.name === 'create_task')?.description;
+    expect(description).toContain('by Friday');
+    expect(description).toContain('2026-10-16T17:00:00-07:00');
+    expect(description).not.toContain('2026-10-17');
+  });
+
+  it('describes task progress as assignee-only (spec 2e)', () => {
+    const description = TOOL_CATALOGUE.find((e) => e.name === 'task_progress')?.description;
+    expect(description).toContain('Only someone assigned to the task can use it.');
+    expect(description).not.toContain('its team lead or the president');
   });
 });

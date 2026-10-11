@@ -70,4 +70,22 @@ describe('assistant skill scopes', () => {
     expect(skillScopeAllows({ mode: 'roles', roleIds: [] }, member)).toBe(false);
     expect(skillScopeAllows({ mode: 'roles', roleIds: [] }, owner)).toBe(true);
   });
+  it('has a non-acting ping skill open to everyone and an acting tasks skill owned by default (ADR 0145, 0146)', () => {
+    const ping = CLUB_ASSISTANT_SKILLS.find((x) => x.id === 'ping');
+    expect(ping).toMatchObject({
+      acts: false,
+      defaultScope: 'everyone',
+      effect: 'send',
+      name: 'Ping members and roles',
+    });
+    const tasks = CLUB_ASSISTANT_SKILLS.find((x) => x.id === 'tasks');
+    expect(tasks).toMatchObject({
+      acts: true,
+      defaultScope: 'owner',
+      effect: 'schedule',
+      name: 'Club tasks',
+    });
+    expect(STARTER_SKILL_IDS).toContain('ping');
+    expect(STARTER_SKILL_IDS).not.toContain('tasks');
+  });
 });
