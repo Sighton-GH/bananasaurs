@@ -55,9 +55,11 @@ export const resolveReplyPings = async (
       list.some((entry) => entry.name.toLowerCase() === phrase.toLowerCase());
     // Named-but-not-mentioned (D3): a phrase from the answer is looked up ONLY
     // when the asker's own message contains it as whole words. Model output
-    // never widens who may be pinged. Members: one exact display-name search,
-    // single hit only (the reminder-targets.ts:166-191 rule). Roles: exact
-    // cache-name match, unambiguous only. At most 5 lookups per reply.
+    // never widens who may be pinged. Members: one exact display-name search
+    // over a page of 25 (a page of 5 can hide a second same-name member behind
+    // prefix matches), single exact hit only (the reminder-targets.ts:166-191
+    // rule). Roles: exact cache-name match, unambiguous only. At most 5
+    // lookups per reply.
     const extraUsers: { id: string; name: string }[] = [];
     const extraRoles: { id: string; name: string }[] = [];
     let lookups = 0;
@@ -74,7 +76,9 @@ export const resolveReplyPings = async (
           extraRoles.push({ id: roleHits[0].id, name: roleHits[0].name });
           break;
         }
-        const hits = await guild.members.search({ query: phrase, limit: 5 }).catch(() => undefined);
+        const hits = await guild.members
+          .search({ query: phrase, limit: 25 })
+          .catch(() => undefined);
         const exact = [...(hits?.values() ?? [])].filter(
           (m) => m.displayName.toLowerCase() === phrase.toLowerCase(),
         );
