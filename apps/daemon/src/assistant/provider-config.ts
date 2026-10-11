@@ -7,6 +7,7 @@ import {
 } from '@bananasaurs/core';
 import {
   assistantProviderRepo,
+  assistantKeyCooldownsRepo,
   assistantProvidersRepo,
   eligibilityRepo,
   searchKeysRepo,
@@ -113,9 +114,17 @@ export interface ProviderConfigStore {
       apiKey: string;
       costClass?: ProviderCostClass | undefined;
       enabled?: boolean | undefined;
+      /** ADR 0143: owner-entered opaque quota-bucket label. */
+      project?: string | undefined;
+      /** ADR 0143: SHA-256 hex of the secret, for idempotent bulk paste. */
+      fingerprint?: string | undefined;
     },
     now: number,
   ): string;
+  /** ADR 0143: park a key and model until `until` (invalid keys, daily and minute quota). */
+  setCooldown(input: assistantKeyCooldownsRepo.SetCooldownInput): void;
+  /** ADR 0143: a re-saved or re-tested key clears its cooldowns. */
+  clearCooldowns(keyId: string, model?: string): void;
   /** Write-only; an omitted `apiKey` keeps the saved one. */
   updateKey(
     keyId: string,
@@ -142,6 +151,8 @@ export interface ProviderConfigStore {
       model: string;
       rpmLimit?: number | null;
       rpdLimit?: number | null;
+      pool?: 'key' | 'provider';
+      tier?: 'standard' | 'light';
     }[],
     now: number,
   ): void;
@@ -164,6 +175,16 @@ export interface ProviderConfigStore {
    * positions reserve nothing.
    */
   reserveTestCall(position: number, guildId: string): ReserveOutcome;
+  /**
+   * ADR 0143: reserve one call against an already-resolved entry, so a pool
+   * entry's selected key cannot change between reservation and call.
+   */
+  reserveTestEntry(
+    entry: Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'> & {
+      readonly selectedKeyId?: string | undefined;
+    },
+    guildId: string,
+  ): ReserveOutcome;
   saveGithubToken(token: string | null): void;
   /** Whether the stored key opens under this daemon's secret; false when unknown. */
   isKeyReadable(keyId: string): boolean;
@@ -476,7 +497,15 @@ export const createProviderConfigStore = (
         costClass: input.costClass ?? 'unknown',
         enabled: input.enabled ?? true,
         now,
+        ...(input.project === undefined ? {} : { project: input.project }),
+        ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }),
       });
+    },
+    setCooldown(input) {
+      assistantKeyCooldownsRepo.setCooldown(instance, input);
+    },
+    clearCooldowns(keyId, model) {
+      assistantKeyCooldownsRepo.clearCooldowns(instance, keyId, model);
     },
     updateKey(keyId, input, now) {
       assistantProvidersRepo.updateKey(instance, keyId, {
@@ -503,7 +532,11 @@ export const createProviderConfigStore = (
       });
     },
     saveChain(rows, now) {
-      assistantProvidersRepo.setModelChain(instance, rows, now);
+      assistantProvidersRepo.setModelChain(
+        instance,
+        rows.map((row) => ({ ...row, pool: row.pool ?? 'key', tier: row.tier ?? 'standard' })),
+        now,
+      );
     },
     modelUsage(entry) {
       return entryUsage(instance, entry, clock());
@@ -515,6 +548,9 @@ export const createProviderConfigStore = (
     reserveTestCall(position, guildId) {
       const entry = this.chain()[position];
       if (entry === undefined) return { ok: true };
+      return reserveEntryCall(instance, entry, guildId, clock());
+    },
+    reserveTestEntry(entry, guildId) {
       return reserveEntryCall(instance, entry, guildId, clock());
     },
     saveGithubToken(token) {

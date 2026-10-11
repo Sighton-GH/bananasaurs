@@ -113,6 +113,13 @@ export const runEventSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('routed'),
+      tier: z.enum(['standard', 'light']),
+      reason: z.string().max(60),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('tool-call'),
       round: z.number().int().nonnegative(),
       tool: z.string().max(60),

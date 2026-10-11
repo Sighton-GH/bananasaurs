@@ -1,0 +1,344 @@
+import { useCallback, useEffect, useState } from 'react';
+import { ApiError } from '../api.js';
+import { TUNING_URL, tuningKeyUrl, type TuningListResponse } from '../api/tuning.js';
+import { useSession } from '../app/session.js';
+import { Button } from '../ui/Button.js';
+import { Card } from '../ui/Card.js';
+import { Checkbox, Field, Input } from '../ui/Field.js';
+
+const K = {
+  enabled: 'assistant.routerEnabled',
+  maxChars: 'assistant.routerMaxChars',
+  keywords: 'assistant.routerFullModelKeywords',
+  greetings: 'assistant.routerGreetingPatterns',
+  longThread: 'assistant.routerLongThreadTurns',
+  escalate: 'assistant.routerEscalateOnTool',
+  summaryTier: 'assistant.routerSummaryTier',
+  digestTier: 'assistant.routerDailyDigestTier',
+} as const;
+
+type Tier = 'light' | 'standard';
+
+interface Values {
+  enabled: boolean;
+  maxChars: number;
+  keywords: readonly string[];
+  greetings: readonly string[];
+  longThread: number;
+  escalate: boolean;
+  summaryTier: Tier;
+  digestTier: Tier;
+}
+
+/** Same defaults as the server registry; used until the saved values arrive. */
+const DEFAULTS: Values = {
+  enabled: true,
+  maxChars: 80,
+  keywords: [
+    'remind',
+    'schedule',
+    'task',
+    'ping',
+    'search',
+    'look up',
+    'summar',
+    'explain',
+    'why',
+    'how',
+    'write',
+    'story',
+    'code',
+    'plan',
+    'compare',
+    'translate',
+    'fix',
+  ],
+  greetings: ['hi', 'hello', 'hey', 'thanks', 'thank you', 'thx', 'good morning', 'good night'],
+  longThread: 4,
+  escalate: true,
+  summaryTier: 'light',
+  digestTier: 'light',
+};
+
+/**
+ * Local mirror of the daemon's deterministic router so the try-box needs no
+ * request (and spends no AI call). Same order of checks and the same reasons.
+ */
+export const tryRoute = (
+  text: string,
+  v: Values,
+  earlierTurns = 0,
+): { tier: Tier; reason: string } => {
+  if (!v.enabled) return { tier: 'standard', reason: 'router-off' };
+  const clean = text
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?…\s]+$/g, '');
+  const emoji = /^\p{Extended_Pictographic}[\p{Extended_Pictographic}\s]*$/u.test(text.trim());
+  if (emoji || v.greetings.some((g) => clean === g.toLowerCase())) {
+    return { tier: 'light', reason: 'greeting' };
+  }
+  if (text.length > v.maxChars) return { tier: 'standard', reason: 'long-message' };
+  const lowered = text.toLowerCase();
+  if (v.keywords.some((k) => lowered.includes(k.toLowerCase()))) {
+    return { tier: 'standard', reason: 'full-model-keyword' };
+  }
+  if (earlierTurns > v.longThread) return { tier: 'standard', reason: 'long-thread' };
+  return { tier: 'light', reason: 'short-and-simple' };
+};
+
+const asTier = (x: unknown, fallback: Tier): Tier =>
+  x === 'light' || x === 'standard' ? x : fallback;
+const asList = (x: unknown, fallback: readonly string[]): readonly string[] =>
+  Array.isArray(x) && x.every((i) => typeof i === 'string') ? x : fallback;
+const asNum = (x: unknown, fallback: number): number => (typeof x === 'number' ? x : fallback);
+
+function ChipList({
+  label,
+  noun,
+  items,
+  onChange,
+}: {
+  readonly label: string;
+  readonly noun: string;
+  readonly items: readonly string[];
+  readonly onChange: (next: readonly string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const add = (): void => {
+    const value = draft.trim();
+    if (value === '' || items.includes(value)) return;
+    setDraft('');
+    onChange([...items, value]);
+  };
+  return (
+    <div className="grid gap-1">
+      <span className="text-ink-muted">{label}</span>
+      <ul aria-label={label} className="flex flex-wrap gap-1">
+        {items.map((item) => (
+          <li
+            key={item}
+            className="inline-flex items-center gap-1 rounded-sm border border-line px-1.5 py-0.5"
+          >
+            <span>{item}</span>
+            <button
+              type="button"
+              aria-label={`Remove ${noun} ${item}`}
+              disabled={items.length <= 1}
+              onClick={() => onChange(items.filter((i) => i !== item))}
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="flex gap-2">
+        <Input
+          aria-label={`Add ${noun}`}
+          maxLength={40}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              add();
+            }
+          }}
+        />
+        <Button onClick={add}>Add {noun.split(' ').pop()}</Button>
+      </div>
+    </div>
+  );
+}
+
+/** Keeps what is typed as a draft; saves on blur or Enter, and puts the saved value back if it is out of range. */
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly min: number;
+  readonly max: number;
+  readonly onCommit: (n: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  const commit = (): void => {
+    const n = Number(draft);
+    if (draft.trim() === '' || !Number.isInteger(n) || n < min || n > max) {
+      setDraft(String(value));
+      return;
+    }
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <Field label={label}>
+      <Input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            commit();
+          }
+        }}
+      />
+    </Field>
+  );
+}
+
+/** Owner controls for complexity routing (ADR 0144): every router setting, plus a local try-box. */
+export function AssistantRoutingSettings() {
+  const session = useSession();
+  const [values, setValues] = useState<Values>(DEFAULTS);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [sample, setSample] = useState('');
+  const [routed, setRouted] = useState<{ tier: Tier; reason: string } | undefined>(undefined);
+
+  useEffect(() => {
+    let live = true;
+    session
+      .read<TuningListResponse>(TUNING_URL)
+      .then((data) => {
+        if (!live) return;
+        const get = (key: string): unknown => data.settings.find((s) => s.key === key)?.value;
+        setValues({
+          enabled: asNum(get(K.enabled), 1) === 1,
+          maxChars: asNum(get(K.maxChars), DEFAULTS.maxChars),
+          keywords: asList(get(K.keywords), DEFAULTS.keywords),
+          greetings: asList(get(K.greetings), DEFAULTS.greetings),
+          longThread: asNum(get(K.longThread), DEFAULTS.longThread),
+          escalate: asNum(get(K.escalate), 1) === 1,
+          summaryTier: asTier(get(K.summaryTier), 'light'),
+          digestTier: asTier(get(K.digestTier), 'light'),
+        });
+      })
+      .catch(() => {
+        // Keep the defaults; saving still works once the server answers.
+      });
+    return () => {
+      live = false;
+    };
+  }, [session]);
+
+  const save = useCallback(
+    async (key: string, value: unknown, apply: () => void): Promise<void> => {
+      setError(undefined);
+      try {
+        const result = await session.writeOrThrow(tuningKeyUrl(key), { value }, 'PUT');
+        if (result !== undefined) apply();
+      } catch (err) {
+        setError(
+          err instanceof ApiError && err.status === 400
+            ? 'That value is not allowed. Check the limits and try again.'
+            : 'The setting could not be saved. Try again.',
+        );
+      }
+    },
+    [session],
+  );
+
+  const numberField = (
+    label: string,
+    key: string,
+    field: 'maxChars' | 'longThread',
+    min: number,
+    max: number,
+  ) => (
+    <NumberField
+      label={label}
+      value={values[field]}
+      min={min}
+      max={max}
+      onCommit={(n) => void save(key, n, () => setValues((v) => ({ ...v, [field]: n })))}
+    />
+  );
+
+  const tierField = (label: string, key: string, field: 'summaryTier' | 'digestTier') => (
+    <label className="grid gap-0.5 text-ink-muted">
+      {label}
+      <select
+        className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+        value={values[field]}
+        onChange={(event) => {
+          const tier = asTier(event.target.value, 'light');
+          void save(key, tier, () => setValues((v) => ({ ...v, [field]: tier })));
+        }}
+      >
+        <option value="light">Light</option>
+        <option value="standard">Standard</option>
+      </select>
+    </label>
+  );
+
+  return (
+    <Card title="Routing">
+      <div className="grid gap-3 text-sm">
+        <p className="text-xs text-ink-muted">
+          Short, simple messages try the light models first so greetings do not use the standard
+          daily allowance.
+        </p>
+        <Checkbox
+          label="Route by message size and type"
+          checked={values.enabled}
+          onChange={(event) => {
+            const on = event.target.checked;
+            void save(K.enabled, on ? 1 : 0, () => setValues((v) => ({ ...v, enabled: on })));
+          }}
+        />
+        {numberField('Longest light message (characters)', K.maxChars, 'maxChars', 10, 1000)}
+        {numberField('Long-thread turns', K.longThread, 'longThread', 0, 50)}
+        <Checkbox
+          label="Switch to standard after a light run uses a tool"
+          checked={values.escalate}
+          onChange={(event) => {
+            const on = event.target.checked;
+            void save(K.escalate, on ? 1 : 0, () => setValues((v) => ({ ...v, escalate: on })));
+          }}
+        />
+        {tierField('Tier for conversation summaries', K.summaryTier, 'summaryTier')}
+        {tierField('Tier for the daily digest', K.digestTier, 'digestTier')}
+        <ChipList
+          label="Full-model keywords"
+          noun="full-model keyword"
+          items={values.keywords}
+          onChange={(next) =>
+            void save(K.keywords, next, () => setValues((v) => ({ ...v, keywords: next })))
+          }
+        />
+        <ChipList
+          label="Greeting patterns"
+          noun="greeting pattern"
+          items={values.greetings}
+          onChange={(next) =>
+            void save(K.greetings, next, () => setValues((v) => ({ ...v, greetings: next })))
+          }
+        />
+        <div className="grid gap-1">
+          <Field label="Message to try">
+            <Input value={sample} onChange={(event) => setSample(event.target.value)} />
+          </Field>
+          <div className="flex items-center gap-3">
+            <Button onClick={() => setRouted(tryRoute(sample, values))}>Try the router</Button>
+            {routed !== undefined && (
+              <span role="status">{`${routed.tier === 'light' ? 'Light' : 'Standard'} tier · ${routed.reason}`}</span>
+            )}
+          </div>
+        </div>
+        {error !== undefined && (
+          <p role="alert" className="text-danger">
+            {error}
+          </p>
+        )}
+      </div>
+    </Card>
+  );
+}

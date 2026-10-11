@@ -25,6 +25,29 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'Nothing was changed. The daemon log has the detail under this request id.',
     hint: 'Search the journal for the request id shown below.',
   },
+  'budget-exhausted': {
+    title: 'The check ran out of its request budget',
+    explanation:
+      'Check models reserves a small number of model calls first. Nothing was sent because that many calls are not free right now.',
+    hint: 'Wait for the minute or day limit on that entry to reset, then try again.',
+  },
+  'empty-paste': {
+    title: 'Nothing to add',
+    explanation: 'The pasted text had no key lines. Nothing was saved.',
+    hint: 'Paste one key per line, then try again.',
+  },
+  'no-gemini-key': {
+    title: 'No Gemini key to build from',
+    explanation:
+      'The recommended Gemini setup needs at least one enabled Gemini key. The model order was not changed.',
+    hint: 'Add a Gemini key on the Providers page first.',
+  },
+  'entry-unusable': {
+    title: 'That entry cannot run right now',
+    explanation:
+      'The model check skipped this entry (for example no key, a cooldown or a local limit). Nothing was sent.',
+    hint: 'Fix the entry shown in the skip reason on the Providers page, then check again.',
+  },
   'bad-request': {
     title: 'The request was not valid',
     explanation: 'One or more fields were missing or had the wrong format.',

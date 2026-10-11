@@ -183,6 +183,8 @@ describe('assistant provider keys', () => {
         enabled: true,
         createdAt: 10,
         updatedAt: 10,
+        project: null,
+        fingerprint: null,
       },
     ]);
   });
@@ -269,6 +271,8 @@ describe('assistant provider keys', () => {
         model: 'or-model',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
     ]);
   });
@@ -301,6 +305,8 @@ describe('model chain', () => {
         model: 'or-second',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
       {
         position: 1,
@@ -309,6 +315,8 @@ describe('model chain', () => {
         model: 'gemini-first',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
     ]);
     // Setting again replaces, not appends.
@@ -321,6 +329,8 @@ describe('model chain', () => {
         model: 'gemini-only',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
     ]);
   });
@@ -345,6 +355,8 @@ describe('model chain', () => {
         model: 'gemini-2.5-flash',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
       {
         position: 1,
@@ -353,6 +365,8 @@ describe('model chain', () => {
         model: 'gemini-2.5-flash',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
     ]);
   });
@@ -406,6 +420,8 @@ describe('model chain rpm/rpd limits', () => {
         model: 'm',
         rpmLimit: 15,
         rpdLimit: 1000,
+        pool: 'key',
+        tier: 'standard',
       },
     ]);
   });
@@ -415,7 +431,16 @@ describe('model chain rpm/rpd limits', () => {
     const keyId = addKey(scope, { provider: 'gemini', label: 'Gemini', apiKeyEnc: 'g', now: 10 });
     setModelChain(scope, [{ keyId, model: 'm' }], 11);
     expect(getModelChain(scope)).toEqual([
-      { position: 0, keyId, provider: 'gemini', model: 'm', rpmLimit: null, rpdLimit: null },
+      {
+        position: 0,
+        keyId,
+        provider: 'gemini',
+        model: 'm',
+        rpmLimit: null,
+        rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
+      },
     ]);
   });
 });
@@ -468,6 +493,8 @@ describe('migration 0047 adds chain limits and the resource error_code', () => {
         model: 'gemini-2.5-flash',
         rpmLimit: null,
         rpdLimit: null,
+        pool: 'key',
+        tier: 'standard',
       },
     ]);
     expect(raw.prepare('SELECT error_code FROM resource_documents').get()).toEqual({

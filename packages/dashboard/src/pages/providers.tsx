@@ -36,6 +36,12 @@ import {
   type ModelHealthResponse,
 } from '../api/model-health.js';
 import { useSession } from '../app/session.js';
+import { AssistantChainPools } from '../components/assistant-chain-pools.js';
+import { AssistantKeyStatusRows } from '../components/assistant-key-status-rows.js';
+import { AssistantKeysPaste } from '../components/assistant-keys-paste.js';
+import { AssistantModelCheck } from '../components/assistant-model-check.js';
+import { AssistantRecommendedSetup } from '../components/assistant-recommended-setup.js';
+import { AssistantRoutingSettings } from '../components/assistant-routing-settings.js';
 import { useResource } from '../hooks/useResource.js';
 import { relativeTime } from '../lib/relative-time.js';
 import { Badge } from '../ui/Badge.js';
@@ -128,6 +134,9 @@ interface ChainDraft {
   readonly model: string;
   readonly rpmLimit: string;
   readonly rpdLimit: string;
+  /** Carried through so saving the order never resets the pool or tier. */
+  readonly pool?: 'key' | 'provider';
+  readonly tier?: 'light' | 'standard';
 }
 
 /** A limit input is blank (no limit) or a whole number of 1 or more. */
@@ -165,6 +174,8 @@ function ModelOrderSection({
       model: entry.model,
       rpmLimit: entry.rpmLimit?.toString() ?? '',
       rpdLimit: entry.rpdLimit?.toString() ?? '',
+      ...(entry.pool === undefined ? {} : { pool: entry.pool }),
+      ...(entry.tier === undefined ? {} : { tier: entry.tier }),
     })),
   );
   const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
@@ -237,6 +248,8 @@ function ModelOrderSection({
             model: row.model.trim(),
             rpmLimit: row.rpmLimit === '' ? null : Number(row.rpmLimit),
             rpdLimit: row.rpdLimit === '' ? null : Number(row.rpdLimit),
+            ...(row.pool === undefined ? {} : { pool: row.pool }),
+            ...(row.tier === undefined ? {} : { tier: row.tier }),
           })),
         },
         'PUT',
@@ -1953,16 +1966,35 @@ function SetupBody({
   readonly onChanged: () => void;
 }) {
   const chainSignature = JSON.stringify(
-    setup.chain.map((c) => [c.keyId, c.model, c.rpmLimit, c.rpdLimit]),
+    setup.chain.map((c) => [c.keyId, c.model, c.rpmLimit, c.rpdLimit, c.pool, c.tier]),
   );
   return (
     <>
       <ChecklistSection setup={setup} assistant={assistant} />
       <div className="mt-4">
         <ModelOrderSection key={chainSignature} setup={setup} onChanged={onChanged} />
+        <AssistantRecommendedSetup onChanged={onChanged} />
+        <AssistantChainPools
+          key={`pools-${chainSignature}`}
+          chain={setup.chain}
+          onChanged={onChanged}
+        />
+        {setup.chain.map((row) => (
+          <AssistantModelCheck
+            key={`${row.keyId} ${row.model}`}
+            position={row.position}
+            model={row.model}
+            keyLabel={row.keyLabel}
+          />
+        ))}
       </div>
       <div className="mt-4">
         <KeysSection setup={setup} onChanged={onChanged} />
+        <AssistantKeyStatusRows keys={setup.keys} chain={setup.chain} />
+        <AssistantKeysPaste onSaved={onChanged} />
+      </div>
+      <div className="mt-4">
+        <AssistantRoutingSettings />
       </div>
       <div className="mt-4">
         <ProvidersSection

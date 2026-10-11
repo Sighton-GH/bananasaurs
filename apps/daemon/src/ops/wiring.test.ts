@@ -1447,6 +1447,15 @@ describe('doctor dashboard access end to end (S13-D5)', () => {
   });
 });
 
+// Migration 0107 seeds the Gemini free tier as trains-on-input 'yes' (owner decision D12),
+// so every eligibility listing carries this standing warning.
+const GEMINI_FREE_WARNING = {
+  provider: 'gemini:free',
+  reason: 'not-no',
+  trainsOnInput: 'yes',
+  reviewedAt: 1791676800000,
+} as const;
+
 describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
   // Instance-level like `mcpClients`: the eligibility row is a fact about the
   // daemon, not a guild — so this goes through `opsInstanceFor` against the
@@ -1578,10 +1587,11 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
         trainsOnInput: 'no',
         reviewedAt: NOW - 91 * DAY_MS,
       },
+      GEMINI_FREE_WARNING,
     ]);
 
     setReviewedAt(SEEDED, NOW - 89 * DAY_MS);
-    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([GEMINI_FREE_WARNING]);
   });
 
   it("warns 'not-no' for 'unknown' and for 'yes' — 'unknown' is visibly treated as 'yes'", () => {
@@ -1593,6 +1603,7 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
         trainsOnInput: 'unknown',
         reviewedAt: 1789344000000,
       },
+      GEMINI_FREE_WARNING,
     ]);
 
     setTrainsOnInput(SEEDED, 'yes');
@@ -1603,10 +1614,11 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
         trainsOnInput: 'yes',
         reviewedAt: 1789344000000,
       },
+      GEMINI_FREE_WARNING,
     ]);
 
     setTrainsOnInput(SEEDED, 'no');
-    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([GEMINI_FREE_WARNING]);
   });
 
   it("warns 'not-production' for a row with production_use_allowed = 0", () => {
@@ -1618,10 +1630,11 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
         trainsOnInput: 'no',
         reviewedAt: 1789344000000,
       },
+      GEMINI_FREE_WARNING,
     ]);
 
     setProductionUseAllowed(SEEDED, 1);
-    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([GEMINI_FREE_WARNING]);
   });
 
   it("reports 'not-no' for a row that is both not-'no' and not-production", () => {
@@ -1634,6 +1647,7 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
         trainsOnInput: 'yes',
         reviewedAt: 1789344000000,
       },
+      GEMINI_FREE_WARNING,
     ]);
   });
 });
@@ -1666,7 +1680,7 @@ describe('providerReview (ruling M4-D20)', () => {
       reviewedAt: NOW,
       previouslyReviewedAt: 1789344000000,
     });
-    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([GEMINI_FREE_WARNING]);
   });
 
   it("answers 'no-such-provider' for an unknown provider", () => {

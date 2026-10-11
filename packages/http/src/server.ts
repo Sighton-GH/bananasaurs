@@ -187,6 +187,9 @@ export interface HttpDeps extends AuthDeps {
           readonly mayTrain: boolean;
           readonly rpmLimit: number | null;
           readonly rpdLimit: number | null;
+          readonly pool?: 'key' | 'provider' | undefined;
+          readonly tier?: 'standard' | 'light' | undefined;
+          readonly selectedKeyId?: string | undefined;
         }[];
         saveChain?(
           rows: readonly {
@@ -268,6 +271,27 @@ export interface HttpDeps extends AuthDeps {
         ):
           | { readonly last24h: number; readonly last31d: number; readonly availableAt?: number }
           | undefined;
+        /**
+         * ADR 0143: reserve one call against an already-resolved entry so a
+         * pool entry's selected key cannot change between reserve and call.
+         */
+        reserveTestEntry?(
+          entry: {
+            readonly keyId: string;
+            readonly model: string;
+            readonly providerId: string;
+            readonly rpmLimit: number | null;
+            readonly rpdLimit: number | null;
+            readonly selectedKeyId?: string | undefined;
+          },
+          guildId: string,
+        ):
+          | { readonly ok: true }
+          | {
+              readonly ok: false;
+              readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+              readonly availableAt: number;
+            };
         /**
          * Task 10: the chain test reserves its call against the entry's
          * owner-set RPM/RPD limits first (wired by a later task). Absent in

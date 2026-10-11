@@ -26,6 +26,7 @@ import {
   registerAssistantResourceCacheRoutes,
   registerAssistantTraceRoutes,
   registerAssistantModelHealthRoutes,
+  registerAssistantModelCheckRoutes,
   registerAssistantRunRoutes,
   registerAssistantConversationRoutes,
   registerAutomodRoutes,
@@ -313,6 +314,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
       registerAssistantTraceRoutes(instance, guard, routeDeps);
       registerAssistantModelHealthRoutes(instance, guard, routeDeps);
+      registerAssistantModelCheckRoutes(instance, guard, routeDeps);
       registerAssistantRunRoutes(instance, guard, routeDeps);
       registerAssistantConversationRoutes(instance, guard, routeDeps);
       registerOpsReadRoutes(instance, guard, routeDeps);
@@ -444,6 +446,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
                 mayTrain: row.mayTrain,
                 rpmLimit: row.rpmLimit,
                 rpdLimit: row.rpdLimit,
+                pool: row.pool ?? 'key',
+                tier: row.tier ?? 'standard',
+                selectedKeyId: row.selectedKeyId ?? row.keyId,
               });
               continue;
             }
@@ -457,6 +462,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
               mayTrain: row.mayTrain,
               rpmLimit: row.rpmLimit,
               rpdLimit: row.rpdLimit,
+              pool: row.pool ?? 'key',
+              tier: row.tier ?? 'standard',
+              selectedKeyId: row.selectedKeyId ?? row.keyId,
             });
           }
           const service = createAssistantService(

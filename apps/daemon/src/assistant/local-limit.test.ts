@@ -58,6 +58,30 @@ describe('reserveEntryCall and entryUsage', () => {
 
   afterEach(() => t.close());
 
+  it('a pool entry reserves and reports against its selected key, not the anchor (ADR 0143)', () => {
+    const other = assistantProvidersRepo.addKey(instance, {
+      provider: 'gemini',
+      label: 'Other',
+      apiKeyEnc: 'sealed2',
+      now: NOW,
+    });
+    const entry = {
+      keyId,
+      selectedKeyId: other,
+      model: MODEL,
+      providerId: 'gemini' as const,
+      rpmLimit: null,
+      rpdLimit: 1,
+    };
+    expect(reserveEntryCall(instance, entry, GUILD_ID, NOW)).toEqual({ ok: true });
+    expect(reserveEntryCall(instance, entry, GUILD_ID, NOW + 1000)).toMatchObject({ ok: false });
+    const day = { now: NOW + 1000, dayStart: providerDayStart('gemini', NOW) };
+    expect(modelCallsRepo.modelUsage(instance, { keyId: other, model: MODEL, ...day }).today).toBe(
+      1,
+    );
+    expect(modelCallsRepo.modelUsage(instance, { keyId, model: MODEL, ...day }).today).toBe(0);
+  });
+
   it('the .env seed is never limited and never recorded', () => {
     const envEntry = {
       keyId: ENV_KEY_ID,

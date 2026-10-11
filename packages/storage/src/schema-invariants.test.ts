@@ -70,6 +70,8 @@ const INSTANCE_LEVEL = new Set<string>([
   // shared key; guild_id records which guild spent the call.
   'assistant_search_keys',
   'assistant_search_calls',
+  // ADR 0143: a cooldown belongs to a shared provider key and model, not a guild.
+  'assistant_key_cooldowns',
 ]);
 
 /**
@@ -1176,12 +1178,12 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
     expect(columns(table).map((c) => c.name)).not.toContain('guild_id');
   });
 
-  it('INSTANCE_LEVEL contains exactly the fourteen expected names', () => {
-    // The tripwire. A fifteenth table cannot join the exemption without this
+  it('INSTANCE_LEVEL contains exactly the fifteen expected names', () => {
+    // The tripwire. A sixteenth table cannot join the exemption without this
     // failing and a human reading ADR 0045 — or ADR 0044 §7 for
     // provider_eligibility, ADR 0075 for the provider chain tables, ADR 0080
     // for instance_settings, ADR 0081 for assistant_model_calls, or ADR 0120
-    // for the search key tables.
+    // for the search key tables, or ADR 0143 for assistant_key_cooldowns.
     expect([...INSTANCE_LEVEL].sort()).toEqual(
       [
         'assistant_provider_config',
@@ -1190,6 +1192,7 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
         'assistant_model_calls',
         'assistant_search_keys',
         'assistant_search_calls',
+        'assistant_key_cooldowns',
         'instance_settings',
         'bootstrap_tokens',
         'dashboard_accounts',

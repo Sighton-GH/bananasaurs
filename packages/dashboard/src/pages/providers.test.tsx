@@ -495,6 +495,40 @@ describe('ProvidersPage model order', () => {
     });
   });
 
+  it('keeps each row pool and tier when the order is saved', async () => {
+    const body = twoRows();
+    const chain = (body as { chain: Record<string, unknown>[] }).chain;
+    chain[0] = { ...chain[0], pool: 'provider', tier: 'light' };
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 2 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT',
+    );
+    expect(bodyOf(put!)).toEqual({
+      entries: [
+        {
+          keyId: 'key_a',
+          model: 'gemini-2.5-flash',
+          rpmLimit: null,
+          rpdLimit: null,
+          pool: 'provider',
+          tier: 'light',
+        },
+        { keyId: 'key_b', model: 'some-open-model', rpmLimit: null, rpdLimit: null },
+      ],
+    });
+  });
+
   it('allows the same model on two keys', async () => {
     const mock = stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: twoRows() },
@@ -1480,5 +1514,17 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
     expect(
       mock.mock.calls.filter((c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT'),
     ).toHaveLength(0);
+  });
+  it('mounts the Slice 6 components: paste box and Try the router', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { url: SEARCH_KEYS_URL, body: searchKeysBody() },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    expect(screen.getByLabelText(/paste keys/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /try the router/i })).toBeTruthy();
   });
 });

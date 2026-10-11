@@ -73,8 +73,17 @@ export const describeRunEvent: (event: RunEvent) => string = (event) => {
       }
       return text;
     }
-    case 'model-skipped':
-      return `Skipped ${event.model}: ${event.reason}`;
+    case 'model-skipped': {
+      const reason =
+        event.reason === 'daily-quota'
+          ? 'daily limit'
+          : event.reason === 'minute-quota'
+            ? 'minute limit'
+            : event.reason === 'invalid-key'
+              ? 'key needs attention'
+              : event.reason;
+      return `Skipped ${event.model}: ${reason}`;
+    }
     case 'tool-call':
       return `Calling tool ${event.tool}`;
     case 'tool-result':
@@ -102,6 +111,10 @@ export const describeRunEvent: (event: RunEvent) => string = (event) => {
       if (event.totalTokens !== undefined) text += `, ${num(event.totalTokens)} tokens`;
       return text;
     }
+    case 'routed':
+      return event.tier === 'light'
+        ? `Tried the light model first (${event.reason})`
+        : `Tried the standard model first (${event.reason})`;
     default: {
       // A new event kind fails typecheck here; at runtime (a daemon newer
       // than this page) the row still renders instead of crashing.

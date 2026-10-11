@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { GeminiProvider, listGeminiModels } from './gemini.js';
 import { ProviderError } from './errors.js';
@@ -74,6 +75,89 @@ describe('GeminiProvider', () => {
     expect(error).toBeInstanceOf(ProviderError);
     expect(error).toMatchObject({ kind, retryable });
   });
+
+  it('maps a documented daily 429 to quota scope day with learned limits', async () => {
+    const body = JSON.parse(
+      readFileSync(new URL('./__fixtures__/gemini-429-quota.json', import.meta.url), 'utf8'),
+    ) as unknown;
+    const provider = new GeminiProvider({
+      apiKey: 'AIza-test-one',
+      fetch: vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(body), { status: 429 })),
+    });
+    const error = await provider
+      .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({
+      kind: 'quota',
+      retryable: false,
+      status: 429,
+      quotaScope: 'day',
+      retryAfterMs: 37_000,
+      learnedLimit: { perDay: 20, perMinute: 5 },
+    });
+    expect((error as Error).message).not.toContain('AIza-test-one');
+  });
+
+  it('maps a minute-only 429 to minute scope and a bare 429 to plain rate-limit', async () => {
+    const minute = {
+      error: {
+        status: 'RESOURCE_EXHAUSTED',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            violations: [
+              { quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', quotaValue: '5' },
+            ],
+          },
+        ],
+      },
+    };
+    const minuteProvider = new GeminiProvider({
+      apiKey: 'AIza-test-one',
+      fetch: vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(minute), { status: 429 })),
+    });
+    const minuteError = await minuteProvider
+      .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((value: unknown) => value);
+    expect(minuteError).toMatchObject({
+      kind: 'quota',
+      quotaScope: 'minute',
+      learnedLimit: { perMinute: 5 },
+    });
+
+    const bareProvider = new GeminiProvider({
+      apiKey: 'AIza-test-one',
+      fetch: vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response('{}', { status: 429 })),
+    });
+    const bareError = await bareProvider
+      .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((value: unknown) => value);
+    expect(bareError).toMatchObject({ kind: 'rate-limit', retryable: true });
+    expect((bareError as ProviderError).quotaScope).toBeUndefined();
+  });
+
+  it.each([[401], [403]] as const)(
+    'keeps HTTP %s authentication with no key text',
+    async (status) => {
+      const provider = new GeminiProvider({
+        apiKey: 'AIza-test-one',
+        fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('{}', { status })),
+      });
+      const error = await provider
+        .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+        .catch((value: unknown) => value);
+      expect(error).toMatchObject({ kind: 'authentication', retryable: false });
+      expect((error as Error).message).toBe(`Gemini request failed with HTTP ${status}`);
+      expect((error as Error).message).not.toContain('AIza-test-one');
+    },
+  );
 
   it('runs the local outbound scan before fetch', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();

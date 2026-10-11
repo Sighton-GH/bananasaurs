@@ -45,7 +45,10 @@ export type ReserveOutcome =
   | { readonly ok: true }
   | { readonly ok: false; readonly code: LocalLimitCode; readonly availableAt: number };
 
-type EntryLimits = Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'>;
+type EntryLimits = Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'> & {
+  /** ADR 0143: the pool key actually used; the ledger counts against it, not the anchor. */
+  readonly selectedKeyId?: string | undefined;
+};
 
 /** One provider call against an entry's RPM/RPD limits (ADR 0081). The `.env` seed is never limited or recorded. */
 export const reserveEntryCall = (
@@ -54,9 +57,9 @@ export const reserveEntryCall = (
   guildId: string,
   now: number,
 ): ReserveOutcome => {
-  if (entry.keyId === ENV_KEY_ID) return { ok: true };
+  if ((entry.selectedKeyId ?? entry.keyId) === ENV_KEY_ID) return { ok: true };
   const r = modelCallsRepo.reserveModelCall(instance, {
-    keyId: entry.keyId,
+    keyId: entry.selectedKeyId ?? entry.keyId,
     model: entry.model,
     guildId,
     now,
@@ -82,9 +85,9 @@ export const entryUsage = (
 ):
   | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
   | undefined => {
-  if (entry.keyId === ENV_KEY_ID) return undefined;
+  if ((entry.selectedKeyId ?? entry.keyId) === ENV_KEY_ID) return undefined;
   const usage = modelCallsRepo.modelUsage(instance, {
-    keyId: entry.keyId,
+    keyId: entry.selectedKeyId ?? entry.keyId,
     model: entry.model,
     now,
     dayStart: providerDayStart(entry.providerId, now),

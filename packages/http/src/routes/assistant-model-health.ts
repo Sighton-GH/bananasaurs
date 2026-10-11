@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { modelHealth } from '@bananasaurs/core';
-import { runRepo } from '@bananasaurs/storage';
+import { runRepo, assistantKeyCooldownsRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
 import { canReadConfig, requireCapability } from './capability.js';
@@ -37,26 +37,45 @@ export const registerAssistantModelHealthRoutes = (
     const parsed = modelHealthQuerySchema.safeParse(request.query);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const window = parsed.data.window ?? '24h';
-    const models = modelHealth(
-      runRepo.modelResultsSince(session.scope, deps.now() - WINDOW_MS[window]),
-    );
+    const now = deps.now();
+    const models = modelHealth(runRepo.modelResultsSince(session.scope, now - WINDOW_MS[window]));
     const configured = deps.assistantProviderConfig;
     const chain = configured?.chain?.();
     const keys = configured?.keys?.();
     const chainPairs =
       chain === undefined
         ? undefined
-        : new Set(chain.map((entry) => `${entry.keyId}\0${entry.model}`));
+        : new Set(
+            chain.flatMap((entry) =>
+              entry.pool === 'provider' && keys !== undefined
+                ? keys
+                    .filter((key) => key.enabled && key.provider === entry.providerId)
+                    .map((key) => `${key.keyId}\0${entry.model}`)
+                : [`${entry.keyId}\0${entry.model}`],
+            ),
+          );
     const keyLabels =
       keys === undefined ? undefined : new Map(keys.map((key) => [key.keyId, key.label]));
-    const enriched =
-      chainPairs === undefined || keyLabels === undefined
-        ? models
-        : models.map((m) => ({
-            ...m,
-            inChain: chainPairs.has(`${m.keyId}\0${m.model}`),
-            ...(keyLabels.get(m.keyId) === undefined ? {} : { keyLabel: keyLabels.get(m.keyId) }),
-          }));
+    const cooldowns = new Map<string, number>();
+    for (const cooldown of assistantKeyCooldownsRepo.listCooldowns(deps.scopes.instance())) {
+      if (cooldown.until <= now) continue;
+      const pair = `${cooldown.keyId}\0${cooldown.model}`;
+      cooldowns.set(pair, Math.max(cooldowns.get(pair) ?? 0, cooldown.until));
+    }
+    const enriched = models.map((m) => {
+      const pair = `${m.keyId}\0${m.model}`;
+      const coolingUntil = cooldowns.get(pair);
+      return {
+        ...m,
+        ...(chainPairs === undefined || keyLabels === undefined
+          ? {}
+          : {
+              inChain: chainPairs.has(pair),
+              ...(keyLabels.get(m.keyId) === undefined ? {} : { keyLabel: keyLabels.get(m.keyId) }),
+            }),
+        ...(coolingUntil === undefined ? {} : { coolingUntil }),
+      };
+    });
     // ADR 0129 §3: the provider's short error message is
     // configuration-shaped text — withheld without config.read.
     const showText = canReadConfig(session);

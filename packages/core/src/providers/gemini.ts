@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseGeminiQuotaError } from './gemini-quota.js';
 import type {
   GenerateTextRequest,
   GenerateTextResponse,
@@ -187,6 +188,42 @@ export class GeminiProvider implements TextProvider {
     }
 
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new ProviderError(
+          'authentication',
+          `Gemini request failed with HTTP ${response.status}`,
+          false,
+          { status: response.status, host: this.host },
+        );
+      }
+      if (response.status === 429) {
+        let body: unknown;
+        try {
+          const text = await response.text();
+          body = JSON.parse(text.slice(0, 16_384)) as unknown;
+        } catch {
+          body = undefined;
+        }
+        const quota = parseGeminiQuotaError(body);
+        if (quota.scope !== undefined) {
+          throw new ProviderError(
+            'quota',
+            'Gemini request failed with HTTP 429',
+            quota.scope !== 'day',
+            {
+              status: 429,
+              host: this.host,
+              quotaScope: quota.scope,
+              ...(quota.retryAfterMs === undefined ? {} : { retryAfterMs: quota.retryAfterMs }),
+              ...(quota.learnedLimit === undefined ? {} : { learnedLimit: quota.learnedLimit }),
+            },
+          );
+        }
+        throw new ProviderError('rate-limit', 'Gemini request failed with HTTP 429', true, {
+          status: 429,
+          host: this.host,
+        });
+      }
       const kind = statusKind(response.status);
       throw new ProviderError(
         kind,

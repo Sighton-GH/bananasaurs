@@ -265,9 +265,70 @@ export interface DoctorTaskPostsOff {
   readonly guildsWithOpenTasks: number;
 }
 
+/** ADR 0143: caller-supplied, secret-free diagnostics; no database is opened here. */
+export interface DoctorProviderAdvisories {
+  readonly keys: readonly {
+    readonly keyId: string;
+    readonly provider: string;
+    readonly label: string;
+    readonly costClass: 'free' | 'paid' | 'unknown';
+    readonly enabled: boolean;
+  }[];
+  readonly chain: readonly {
+    readonly keyId: string;
+    readonly providerId: string;
+    readonly model: string;
+    readonly pool?: 'key' | 'provider';
+  }[];
+  readonly getCooldown: (
+    keyId: string,
+    model: string,
+    now: number,
+  ) => { readonly until: number } | undefined;
+}
+
+const providerWarnings = (input: DoctorProviderAdvisories | undefined, now: number): string[] => {
+  if (input === undefined) return [];
+  const warnings = input.keys
+    .filter((key) => key.provider === 'gemini' && key.costClass === 'free')
+    .map(
+      (key) => `AI key ${key.label} may train on submitted input - recorded terms, still usable`,
+    );
+  for (const entry of input.chain) {
+    const keys = input.keys.filter(
+      (key) =>
+        key.enabled &&
+        (entry.pool === 'provider' ? key.provider === entry.providerId : key.keyId === entry.keyId),
+    );
+    const cooldowns = keys.map((key) => input.getCooldown(key.keyId, entry.model, now));
+    if (
+      keys.length === 0 ||
+      !cooldowns.every((cooldown) => cooldown !== undefined && cooldown.until > now)
+    )
+      continue;
+    // A pool becomes usable as soon as its first key recovers. Daily Gemini
+    // cooldowns all point to Pacific midnight; minute cooldowns can recover sooner.
+    const until = Math.min(...cooldowns.map((cooldown) => cooldown?.until ?? Infinity));
+    const pacific = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).format(until);
+    warnings.push(`AI model ${entry.model} pool cooling until ${pacific} Pacific`);
+  }
+  return warnings;
+};
+
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
   readonly ok: boolean;
+  /** Advisory only: training terms and cooling pools never vote on ok. */
+  readonly warnings: readonly string[];
   /**
    * The dashboard-access finding (S13-D5), when the caller assessed it.
    *
@@ -328,6 +389,8 @@ export function buildDoctorReport(
    * see `modelHealth` above for what omission means.
    */
   modelHealth?: DoctorModelHealth,
+  /** ADR 0143: omitted when the caller has no provider diagnostics. */
+  providerAdvisories?: DoctorProviderAdvisories,
 ): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
@@ -391,6 +454,7 @@ export function buildDoctorReport(
 
   return {
     ok,
+    warnings: providerWarnings(providerAdvisories, nowMs),
     partials: { configured, missing },
     intents: { privileged, sessionEstablished },
     guilds,
@@ -553,6 +617,8 @@ export function formatDoctorReport(report: DoctorReport): string {
       }
     }
   }
+
+  for (const warning of report.warnings) lines.push(`  WARNING: ${warning}`);
 
   // ADR 0070. Never the key itself — only where it resolved from, and a count.
   // The mode is checked at resolution, not re-stat'ed here: `file` means the

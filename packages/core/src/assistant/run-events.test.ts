@@ -74,3 +74,18 @@ describe('runEventSchema (ADR 0129 §6)', () => {
     ).toBe(false);
   });
 });
+
+describe('routed event (ADR 0144)', () => {
+  it('accepts the routed event with tier and fixed reason vocabulary', () => {
+    expect(
+      runEventSchema.safeParse({ kind: 'routed', tier: 'light', reason: 'greeting' }).success,
+    ).toBe(true);
+    expect(
+      runEventSchema.safeParse({ kind: 'routed', tier: 'standard', reason: 'long-message' })
+        .success,
+    ).toBe(true);
+    expect(
+      runEventSchema.safeParse({ kind: 'routed', tier: 'heavy', reason: 'greeting' }).success,
+    ).toBe(false);
+  });
+});

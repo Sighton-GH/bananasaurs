@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { asc, eq } from 'drizzle-orm';
 import { assistantModelChain, assistantProviderConfig, assistantProviderKeys } from '../schema.js';
 import type { InstanceScope } from '../scope.js';
@@ -28,6 +28,8 @@ export interface StoredKey {
   readonly enabled: boolean;
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly project: string | null;
+  readonly fingerprint: string | null;
 }
 
 export interface ChainRow {
@@ -37,6 +39,8 @@ export interface ChainRow {
   readonly model: string;
   readonly rpmLimit: number | null;
   readonly rpdLimit: number | null;
+  readonly pool: 'key' | 'provider';
+  readonly tier: 'standard' | 'light';
 }
 
 const asProviderId = (value: string): ProviderId => {
@@ -51,6 +55,23 @@ const asCostClass = (value: string): ProviderCostClass => {
   return value;
 };
 
+const asPool = (value: string): ChainRow['pool'] => {
+  if (value !== 'key' && value !== 'provider')
+    throw new Error(`unexpected pool ${JSON.stringify(value)}`);
+  return value;
+};
+
+const asTier = (value: string): ChainRow['tier'] => {
+  if (value !== 'standard' && value !== 'light')
+    throw new Error(`unexpected tier ${JSON.stringify(value)}`);
+  return value;
+};
+
+const assertProject = (project: string | null | undefined): void => {
+  if (project !== undefined && project !== null && (project.length < 1 || project.length > 80))
+    throw new Error('project label must be between 1 and 80 characters');
+};
+
 const toKey = (row: {
   keyId: string;
   provider: string;
@@ -60,6 +81,8 @@ const toKey = (row: {
   enabled: number;
   createdAt: number;
   updatedAt: number;
+  project: string | null;
+  fingerprint: string | null;
 }): StoredKey => ({
   keyId: row.keyId,
   provider: asProviderId(row.provider),
@@ -69,6 +92,8 @@ const toKey = (row: {
   enabled: row.enabled === 1,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
+  project: row.project,
+  fingerprint: row.fingerprint,
 });
 
 export const listKeys = (scope: InstanceScope): StoredKey[] =>
@@ -83,6 +108,8 @@ export const listKeys = (scope: InstanceScope): StoredKey[] =>
         enabled: assistantProviderKeys.enabled,
         createdAt: assistantProviderKeys.createdAt,
         updatedAt: assistantProviderKeys.updatedAt,
+        project: assistantProviderKeys.project,
+        fingerprint: assistantProviderKeys.fingerprint,
       })
       .from(assistantProviderKeys)
       .orderBy(asc(assistantProviderKeys.keyId))
@@ -110,10 +137,21 @@ export const addKey = (
     enabled?: boolean;
     now: number;
     keyId?: string;
+    project?: string | null;
+    fingerprint?: string | null;
   },
 ): string => {
+  assertProject(input.project);
   const keyId = input.keyId ?? newKeyId();
   writeInstance(scope, ({ db }) => {
+    if (input.fingerprint !== undefined && input.fingerprint !== null) {
+      const existing = db
+        .select({ keyId: assistantProviderKeys.keyId })
+        .from(assistantProviderKeys)
+        .where(eq(assistantProviderKeys.fingerprint, input.fingerprint))
+        .get();
+      if (existing !== undefined) throw new Error('duplicate key fingerprint');
+    }
     db.insert(assistantProviderKeys)
       .values({
         keyId,
@@ -124,6 +162,8 @@ export const addKey = (
         enabled: (input.enabled ?? true) ? 1 : 0,
         createdAt: input.now,
         updatedAt: input.now,
+        project: input.project ?? null,
+        fingerprint: input.fingerprint ?? null,
       })
       .run();
   });
@@ -135,6 +175,7 @@ export const updateKey = (
   keyId: string,
   input: {
     label?: string;
+    project?: string | null;
     apiKeyEnc?: string;
     costClass?: ProviderCostClass;
     enabled?: boolean;
@@ -142,10 +183,12 @@ export const updateKey = (
   },
 ): void =>
   writeInstance(scope, ({ db }) => {
+    assertProject(input.project);
     db.update(assistantProviderKeys)
       .set({
         ...(input.label === undefined ? {} : { label: input.label }),
-        ...(input.apiKeyEnc === undefined ? {} : { apiKeyEnc: input.apiKeyEnc }),
+        ...(input.apiKeyEnc === undefined ? {} : { apiKeyEnc: input.apiKeyEnc, fingerprint: null }),
+        ...(input.project === undefined ? {} : { project: input.project }),
         ...(input.costClass === undefined ? {} : { costClass: input.costClass }),
         ...(input.enabled === undefined ? {} : { enabled: input.enabled ? 1 : 0 }),
         updatedAt: input.now,
@@ -169,6 +212,8 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
         model: assistantModelChain.model,
         rpmLimit: assistantModelChain.rpmLimit,
         rpdLimit: assistantModelChain.rpdLimit,
+        pool: assistantModelChain.pool,
+        tier: assistantModelChain.tier,
         provider: assistantProviderKeys.provider,
       })
       .from(assistantModelChain)
@@ -182,6 +227,8 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
         model: row.model,
         rpmLimit: row.rpmLimit,
         rpdLimit: row.rpdLimit,
+        pool: asPool(row.pool),
+        tier: asTier(row.tier),
       })),
   );
 
@@ -198,12 +245,16 @@ export const setModelChain = (
     model: string;
     rpmLimit?: number | null;
     rpdLimit?: number | null;
+    pool?: ChainRow['pool'];
+    tier?: ChainRow['tier'];
   }[],
   now: number,
 ): void => {
   if (rows.length > 6) throw new Error('the model chain holds at most six entries');
   const seen = new Set<string>();
   for (const row of rows) {
+    asPool(row.pool ?? 'key');
+    asTier(row.tier ?? 'standard');
     const pairKey = `${row.keyId}\u0000${row.model}`;
     if (seen.has(pairKey))
       throw new Error(
@@ -223,6 +274,8 @@ export const setModelChain = (
           model: row.model,
           rpmLimit: row.rpmLimit ?? null,
           rpdLimit: row.rpdLimit ?? null,
+          pool: row.pool ?? 'key',
+          tier: row.tier ?? 'standard',
           updatedAt: now,
         })
         .run();
@@ -251,3 +304,13 @@ export const setGithubTokenEnc = (scope: InstanceScope, value: string | null): v
       })
       .run();
   });
+
+/** ADR 0143: SHA-256 hex of a secret, for bulk-paste dedupe. The secret itself never reaches storage. */
+export const fingerprintOf = (secret: string): string =>
+  createHash('sha256').update(secret, 'utf8').digest('hex');
+
+/** ADR 0143: the ledger bucket a key draws from — shared per project label, private otherwise. */
+export const bucketOf = (key: {
+  readonly keyId: string;
+  readonly project: string | null;
+}): string => (key.project === null ? `key:${key.keyId}` : `project:${key.project}`);
