@@ -229,7 +229,9 @@ export const compileAssistantContext = (input: {
     name: entry.skill.name,
     reason: entry.reason,
   }));
-  const offeredTools = input.offeredTools ?? TOOL_CATALOGUE.map((tool) => tool.name);
+  // No tools claimed unless the caller says which are offered: the
+  // preview route and the daemon pass their declarations explicitly.
+  const offeredTools = input.offeredTools ?? [];
   const capabilities = buildCapabilityBlock({
     offeredTools,
     skills: orderedSkills,
@@ -257,7 +259,14 @@ export const compileAssistantContext = (input: {
     },
     { name: 'capabilities', text: capabilities },
   ].filter((section) => section.text !== '');
-  const protectedText = `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${capabilities}`;
+  // The guard watches the capability headers and instruction sentences,
+  // not the item lines: the model must describe what it can do in plain
+  // words, and quoting a group description back must not read as a leak.
+  const guardedCapabilities = capabilities
+    .split('\n')
+    .filter((line) => !line.startsWith('- '))
+    .join('\n');
+  const protectedText = `${behaviourPrompt}\n\n${SAFETY_SUFFIX}\n\n${guardedCapabilities}`;
   return {
     systemInstruction: sections.map((section) => section.text).join('\n\n'),
     evidenceEnvelope: blocks.join('\n\n'),

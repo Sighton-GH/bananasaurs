@@ -11,12 +11,14 @@ import {
   enabledResourcesForGuild,
   LEGACY_BOUNDARIES_SENTENCE,
   LEGACY_TOOL_SENTENCE,
+  guardAnswer,
   OUTPUT_RULES,
   resolveAssistantBehaviour,
   SAFETY_SUFFIX,
   skillInstructionLine,
   SOURCES_ORDER_LINES,
   TOOL_CATALOGUE,
+  TOOL_GROUPS,
   validateResourceUrl,
 } from './index.js';
 import { redactEvidenceText, scanOutboundRequest } from '../providers/outbound-safety.js';
@@ -480,6 +482,48 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.protectedText).toContain('WHAT YOU CAN DO RIGHT NOW');
   });
 
+  it('lets the model describe its abilities in plain words without tripping the leak guard', () => {
+    const reminders = TOOL_GROUPS.find((group) => group.id === 'reminders')!;
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+      offeredTools: ['my_reminders', 'set_reminder'],
+    });
+    const result = guardAnswer({
+      text: `Yes! I can ${reminders.description}.`,
+      protectedText: compiled.protectedText,
+      modelIds: [],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('still blocks a reply that copies the capability block instructions', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+      offeredTools: ['my_reminders', 'set_reminder'],
+    });
+    const capabilities =
+      compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
+    const paragraph = capabilities
+      .split('\n')
+      .find((line) => line.startsWith('When a member asks'))!;
+    expect(paragraph.length).toBeGreaterThan(80);
+    expect(
+      guardAnswer({
+        text: `Sure — ${paragraph}`,
+        protectedText: compiled.protectedText,
+        modelIds: [],
+      }),
+    ).toEqual({ ok: false, reason: 'prompt-leak', removed: [] });
+  });
+
   it('names tools only in the capabilities section (ADR 0136)', () => {
     const compiled = compileAssistantContext({
       behaviour,
@@ -510,11 +554,28 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       skills: [],
       evidence: [],
       toolsAvailable: true,
+      offeredTools: ['search_sources'],
     });
     expect(compiled.systemInstruction).toContain('search_sources');
     expect(compiled.systemInstruction).toContain(
       'OTHER CLUB RESOURCES (you can open them when useful)',
     );
+  });
+
+  it('claims no tools when the caller passes no offeredTools', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    const capabilities =
+      compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
+    expect(capabilities).toContain(
+      'No tools this turn. Answer from what you know; do not claim an action.',
+    );
+    expect(capabilities).not.toContain('search_sources');
   });
 
   it('strips the legacy tool sentence from the behaviour prompt and protectedText (ADR 0136)', () => {
@@ -649,6 +710,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       resources: [],
       skills: [reminders],
       evidence: [],
+      offeredTools: ['my_reminders', 'set_reminder'],
     });
     expect(compiled.systemInstruction).toContain('WHAT YOU CAN DO RIGHT NOW');
     expect(compiled.systemInstruction).toContain('Reminders and scheduled posts (');
@@ -717,7 +779,13 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     expect(cardAt).toBeGreaterThan(suffixAt + SAFETY_SUFFIX.length);
     const capabilities =
       compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
-    expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${capabilities}`);
+    // protectedText carries the capability headers and instructions, not
+    // the `- ` item lines, so plain-words ability talk is not a leak.
+    const guarded = capabilities
+      .split('\n')
+      .filter((line) => !line.startsWith('- '))
+      .join('\n');
+    expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${guarded}`);
     expect(compiled.sections.map((section) => section.name)).toEqual([
       'surface',
       'behaviour-prompt',
@@ -788,6 +856,7 @@ describe('compileAssistantContext preferred skills and unavailable skills (ADR 0
       ...base,
       behaviour: { ...behaviour, preferredSkillIds: ['reminders'] },
       skills: [search, reminders],
+      offeredTools: ['my_reminders', 'set_reminder'],
     });
     const block = compiled.sections.find((section) => section.name === 'capabilities')?.text ?? '';
     expect(block).toContain('WHAT YOU CAN DO RIGHT NOW');
