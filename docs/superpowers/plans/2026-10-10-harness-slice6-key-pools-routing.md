@@ -2541,6 +2541,163 @@ and still withholds provider text; history renders `routed` and cooldown skips i
 
 ---
 
+### S6-T16: Dashboard pools, routing, check UI   ·   Wave 5
+**Owns:** Create: `packages/dashboard/src/components/assistant-keys-paste.tsx`,
+`packages/dashboard/src/components/assistant-key-status-rows.tsx`,
+`packages/dashboard/src/components/assistant-chain-pools.tsx`,
+`packages/dashboard/src/components/assistant-recommended-setup.tsx`,
+`packages/dashboard/src/components/assistant-routing-settings.tsx`,
+`packages/dashboard/src/components/assistant-model-check.tsx`,
+`packages/dashboard/src/components/assistant-slice6.test.tsx`,
+`packages/dashboard/src/api/assistant-slice6.test.ts` · Modify: `packages/dashboard/src/pages/providers.tsx`
+(mount only), `packages/dashboard/src/pages/providers.test.tsx`, `packages/dashboard/src/api/assistant.ts`
+(additive types)
+**Reads (do not edit):** `packages/dashboard/src/pages/providers.tsx:1-60` (import + `ui/` component style),
+`packages/dashboard/src/api/assistant.ts:300-360` (`SetupKeyRow`/`SetupChainRow` shapes),
+`packages/dashboard/src/test-support.tsx` (`renderWithSession`, `stubFetch`)
+**Interfaces:** Consumes: bulk/recommended/check endpoints (S6-T12, S6-T14), router settings keys (S6-T9),
+`routed`/cooldown text (S6-T15) · Produces: dashboard UI (no further consumers)
+
+- [ ] **Step 1: Write the failing tests** — create
+  `packages/dashboard/src/components/assistant-slice6.test.tsx` (use `renderWithSession` + `stubFetch` from
+  `test-support.tsx`; `Card`/`Button`/`Field` from `ui/`):
+
+```tsx
+import { describe, expect, it } from 'vitest';
+import { screen } from '@testing-library/react';
+import { renderWithSession } from '../test-support.js';
+import { AssistantKeysPaste } from './assistant-keys-paste.js';
+import { AssistantRoutingSettings } from './assistant-routing-settings.js';
+import { AssistantModelCheck } from './assistant-model-check.js';
+
+describe('Slice 6 dashboard (ADR 0143/0144)', () => {
+  it('paste box saves many keys and reports added versus duplicates', async () => {
+    const { user } = renderWithSession(<AssistantKeysPaste />);
+    await user.type(screen.getByLabelText(/paste/i), 'AIza-test-one\nAIza-test-two');
+    await user.click(screen.getByRole('button', { name: /save keys/i }));
+    expect(await screen.findByText(/1 added, 1 already saved/i)).toBeDefined();
+  });
+  it('routing settings render chip lists and Try the router', async () => {
+    renderWithSession(<AssistantRoutingSettings />);
+    expect(screen.getByText(/full-model keywords/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: /try the router/i })).toBeDefined();
+  });
+  it('check-models shows the expected-versus-first-action scorecard', async () => {
+    renderWithSession(<AssistantModelCheck position={0} />);
+    await screen.findByRole('button', { name: /check this entry/i });
+    expect(screen.getByText(/expected/i)).toBeDefined();
+  });
+});
+```
+
+  and create `packages/dashboard/src/api/assistant-slice6.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { BULK_KEYS_URL, MODEL_CHECK_URL, RECOMMENDED_CHAIN_URL } from './assistant.js';
+
+describe('Slice 6 API urls', () => {
+  it('pins the three new endpoints', () => {
+    expect(BULK_KEYS_URL).toBe('/api/assistant/keys/bulk');
+    expect(RECOMMENDED_CHAIN_URL).toBe('/api/assistant/model-chain/recommended');
+    expect(MODEL_CHECK_URL).toBe('/api/assistant/model-check');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/dashboard/src/components/assistant-slice6.test.tsx packages/dashboard/src/api/assistant-slice6.test.ts --maxWorkers=1` ·
+  Expected: FAIL with `Failed to resolve import`
+- [ ] **Step 3: Implement** — one new component file each (all under
+  `packages/dashboard/src/components/`, using existing `ui/` primitives; Canadian English, plain words, no
+  tool names shown to members):
+  1. `assistant-keys-paste.tsx`: a labelled textarea plus provider/project pickers; posts `BULK_KEYS_URL`;
+  shows `{ added } added, { duplicates } already saved`; never echoes key text.
+  2. `assistant-key-status-rows.tsx`: per-key remaining-today budget, cooling-until time, and the may-train
+  note for free Gemini keys.
+  3. `assistant-chain-pools.tsx`: pool (`one key` / `whole provider`) and tier (`standard` / `light`)
+  columns in the chain editor; saves via the extended chain body (S6-T12).
+  4. `assistant-recommended-setup.tsx`: "Use the recommended Gemini setup" button posting
+  `RECOMMENDED_CHAIN_URL`; shows `no-gemini-key` as `Add a Gemini key first`.
+  5. `assistant-routing-settings.tsx`: on/off, longest-light-message, long-thread turns, escalate toggle,
+  background-job tiers, plus editable chip lists for keywords/greetings (string arrays with display `text`,
+  per Plan decisions — never comma-separated text) and a "Try the router" box that routes locally and shows
+  tier + reason.
+  6. `assistant-model-check.tsx`: per-entry "Check this entry" posting `MODEL_CHECK_URL`; scorecard of
+  fixture id → expected vs first action; budget refusal shown as `Out of test budget — try again after the
+  reset`.
+  7. In `packages/dashboard/src/api/assistant.ts`, add the three URL constants plus additive `pool?`/`tier?`
+  on `SetupChainRow`, `project?` on `SetupKeyRow`, and `coolingUntil?` on the health model — no existing type
+  changes.
+  8. In `packages/dashboard/src/pages/providers.tsx`, mount the six components in the existing sections
+  (imports + one JSX tag each; no other change). Extend `providers.test.tsx` with one test that the mounted
+  components render (paste box label + Try-the-router button present).
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS; then
+  `npx vitest run packages/dashboard/src/pages/providers.test.tsx --maxWorkers=1` · PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write packages/dashboard/src/components/assistant-*.tsx packages/dashboard/src/components/assistant-slice6.test.tsx packages/dashboard/src/api/assistant-slice6.test.ts packages/dashboard/src/api/assistant.ts packages/dashboard/src/pages/providers.tsx packages/dashboard/src/pages/providers.test.tsx`
+  then `npx eslint` on the same paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add packages/dashboard/src/components/assistant-keys-paste.tsx packages/dashboard/src/components/assistant-key-status-rows.tsx packages/dashboard/src/components/assistant-chain-pools.tsx packages/dashboard/src/components/assistant-recommended-setup.tsx packages/dashboard/src/components/assistant-routing-settings.tsx packages/dashboard/src/components/assistant-model-check.tsx packages/dashboard/src/components/assistant-slice6.test.tsx packages/dashboard/src/api/assistant-slice6.test.ts packages/dashboard/src/api/assistant.ts packages/dashboard/src/pages/providers.tsx packages/dashboard/src/pages/providers.test.tsx && git commit -m "Slice 6 T16: dashboard pools routing check UI"`
+
+**Done when:** paste, status rows, pool/tier columns, recommended button, routing chips + try-box, and the
+check scorecard all render and save through the new endpoints; every new setting has a control (§4.7).
+
+---
+
+### S6-T17: STATE.md and PRIVACY.md   ·   Wave 5
+**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`
+**Reads (do not edit):** `docs/STATE.md:1-20` (living-document header + Slice 1 entry style),
+`PRIVACY.md` (row style; Slice 2/M1 rows landed the retention row in the migration commit)
+**Interfaces:** Consumes: ADR 0143/0144 numbers (S6-T1, S6-T2), routing behaviour (S6-T13), doctor/health
+surface (S6-T15) · Produces: none (last task)
+
+- [ ] **Step 1: Write the failing test** — not applicable (documents). Verify placement first:
+  `sed -n '1,10p' docs/STATE.md` must show the living-document header and the first `---`; `grep -n "cooldown"
+  PRIVACY.md` must print nothing (the new rows are absent).
+- [ ] **Step 2: Run it and watch it fail** — not applicable (documents).
+- [ ] **Step 3: Implement** —
+  1. In `docs/STATE.md`, insert after the first `---` (same bullet style as the Slice 1 entry):
+
+```markdown
+**Slice 6 — provider key pools, cooldowns, Gemini chain and routing (ADRs 0143–0144, migration
+`key_pools_routing`).**
+
+- **Key pools:** a chain entry uses one key or every enabled key of its provider; the pick is deterministic
+  (most daily requests left, then least-recent use, then key id). Keys sharing a project label share one daily
+  ledger bucket. Bulk paste dedupes by SHA-256 fingerprint without exposing secrets.
+- **Cooldowns:** a daily Gemini 429 cools until the next Pacific midnight, a minute 429 for the retry delay or
+  60 s, an invalid key until edit or re-test; rows survive restarts and fully spent pools fall through quietly.
+- **Chain:** `gemini-3.8-flash` (5 RPM / 20 RPD) → `gemini-3.6-flash` (5 / 20) → `gemini-3.5-flash-lite`
+  (15 / 500), each over the whole Gemini pool, then the owner's OpenRouter entries.
+- **Routing:** short simple messages try the light tier first; attachments, quotes, long threads and full-model
+  keywords use standard; a light tool call escalates next round. Every decision is a `routed` run event.
+- **Check models:** capability fixtures run against one entry with stubbed tools on a reserved budget, recorded
+  as `dashboard-test`. **Gemini may-train line (D12):** free keys may train on submitted input, paid keys are
+  recorded no-training; both stay usable with warnings in logs, dashboard and doctor.
+```
+
+  2. In `PRIVACY.md`, add rows in the existing table style: key fingerprints (SHA-256 of the secret, used
+  only for paste dedupe, never reversible to the key); project labels (owner-entered opaque labels grouping
+  quota buckets); per-key per-model cooldown rows (key id, model, reset time, learned limits — no message
+  text); `dashboard-test` ledger source for Check models (fixture ids only, no member content). No new
+  retention beyond existing run/trace windows.
+
+- [ ] **Step 4: Run it and watch it pass** — not applicable (documents).
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0 (docs only; proves nothing else broke)
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md`
+  then `npx eslint docs/STATE.md PRIVACY.md` · exit 0
+- [ ] **Step 7: Commit** —
+  `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 6 T17: STATE and PRIVACY entries"`
+
+**Done when:** STATE.md names pools, cooldowns, chain, routing, check and the D12 may-train line; PRIVACY.md
+covers fingerprints, labels, cooldowns and the `dashboard-test` source.
+
+---
+
+
 
  (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
