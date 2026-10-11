@@ -378,12 +378,18 @@ const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder =
     ...(r.nextAttemptAt === null ? {} : { nextAttemptAt: r.nextAttemptAt }),
     ...(r.claimedAt === null ? {} : { claimedAt: r.claimedAt }),
     origin: r.origin as ReminderOrigin,
+    style: r.style === 'message' ? 'message' : 'reminder',
   };
 };
 /** `origin='mcp'` rows can never ping everyone or here (ADR 0119). */
 const assertNoMassPing = (origin: ReminderOrigin, mentions: ReminderMentions): void => {
   if (origin === 'mcp' && (mentions.everyone || mentions.here))
     throw new Error('mcp reminders cannot ping everyone or here');
+};
+/** ADR 0145: a reminder's style is only ever 'reminder' or 'message'. */
+const assertReminderStyle = (style: Reminder['style']): void => {
+  if (style !== undefined && style !== 'reminder' && style !== 'message')
+    throw new Error(`unexpected reminder style ${JSON.stringify(style)}`);
 };
 export const listReminders = (
   scope: GuildScope,
@@ -414,6 +420,7 @@ export const insertReminder = (
 ): InsertReminderResult =>
   write(scope, ({ db }) => {
     assertNoMassPing(origin, r.mentions);
+    assertReminderStyle(r.style);
     const inserted = db
       .insert(assistantReminders)
       .values({
@@ -432,6 +439,7 @@ export const insertReminder = (
         deliveredCount: r.deliveredCount,
         updatedAt: r.updatedAt ?? null,
         origin,
+        style: r.style ?? 'reminder',
       })
       // Exactly the dedupe constraint, named - any other constraint failure
       // still throws out of `write()`.

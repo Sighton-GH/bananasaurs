@@ -16,7 +16,7 @@ import { readInstance, writeInstance } from '../write.js';
  * slot; a failed call still counts, as it does at the provider.
  */
 
-export type SearchSource = 'brave' | 'tavily';
+export type SearchSource = 'brave' | 'tavily' | 'parallel';
 
 export interface StoredSearchKey {
   readonly keyId: string;
@@ -39,7 +39,7 @@ export const MONTH_WINDOW_MS = 31 * DAY_MS;
 const PRUNE_AFTER_MS = 32 * DAY_MS;
 
 const asSearchSource = (value: string): SearchSource => {
-  if (value !== 'brave' && value !== 'tavily')
+  if (value !== 'brave' && value !== 'tavily' && value !== 'parallel')
     throw new Error(`unexpected search source ${JSON.stringify(value)}`);
   return value;
 };
