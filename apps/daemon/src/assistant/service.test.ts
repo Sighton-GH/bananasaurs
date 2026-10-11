@@ -1,3 +1,6 @@
+import { verifyAssistantTaskDestination } from '../runtime/guild.js';
+import { ChannelType, type Client } from 'discord.js';
+import type { DiscordPort } from '@bananasaurs/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseConfig,
@@ -2757,6 +2760,7 @@ describe('B2b: per-skill scopes gate chat skills', () => {
       ]);
       const service = h.serviceWith(provider, {
         memberChannels: async () => [],
+        verifyTaskDestination: async () => true,
         taskContext: {
           access: async (actorId: string) => ({
             actorId,
@@ -5534,5 +5538,109 @@ describe('assistant service run recorder (ADR 0129 §6)', () => {
       .listRunEvents(scope, runs[0]!.runId, 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
     expect(finished).toMatchObject({ outcome: 'answered', traceId: result.traceId });
+  });
+});
+
+describe('T7b live task destination verification', () => {
+  let t: MigratedTestDatabase;
+  const guildId = parseGuildId('234567890123456789');
+  const categoryId = '222222222222222222';
+  const destinationId = '111111111111111111';
+  let teamId: string;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(guildId);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: 1 });
+    teamId = taskRepo.createTeam(
+      scope,
+      {
+        name: 'Car Team A',
+        categoryId,
+        kind: 'subteam',
+        leadRoleId: '333333333333333333',
+        memberRoleId: '444444444444444444',
+        announcementChannelId: '555555555555555555',
+      },
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      1,
+    );
+  });
+  afterEach(() => t.close());
+
+  const check = async (
+    over: {
+      category?: string;
+      writable?: boolean;
+      missingCategory?: boolean;
+      missingRole?: boolean;
+      badAnnouncement?: boolean;
+      throws?: boolean;
+      unknownTeam?: boolean;
+    } = {},
+  ) => {
+    const fetch = vi.fn(async (id: string) => {
+      if (over.throws) throw new Error('unavailable');
+      if (id === categoryId)
+        return over.missingCategory ? null : { type: ChannelType.GuildCategory };
+      return {
+        type: ChannelType.GuildText,
+        parentId: over.badAnnouncement ? 'other-category' : categoryId,
+      };
+    });
+    const client = {
+      guilds: { cache: new Map([[guildId, { channels: { fetch } }]]) },
+    } as unknown as Client;
+    const discord = {
+      fetchRoles: async () =>
+        over.missingRole ? [] : [{ id: '333333333333333333' }, { id: '444444444444444444' }],
+    } as unknown as DiscordPort;
+    const inspect = vi.fn(async () => ({
+      channelId: destinationId,
+      kind: 'channel' as const,
+      parentId: categoryId,
+      categoryId: over.category ?? categoryId,
+    }));
+    const write = vi.fn(async (channelId: string) => ({
+      allowed: channelId !== destinationId || over.writable !== false,
+    }));
+    const allowed = await verifyAssistantTaskDestination(
+      t.scopes.forGuild(guildId),
+      client,
+      discord,
+      inspect,
+      write,
+      over.unknownTeam ? 'missing' : teamId,
+      destinationId,
+    );
+    return { allowed, inspect, write };
+  };
+
+  it('allows the live team category and writable destination', async () => {
+    const r = await check();
+    expect(r.allowed).toBe(true);
+    expect(r.inspect).toHaveBeenCalledWith(destinationId);
+    expect(r.write).toHaveBeenCalledWith('555555555555555555');
+    expect(r.write).toHaveBeenCalledWith(destinationId);
+  });
+  it('refuses a destination outside the team category', async () => {
+    expect((await check({ category: 'other-category' })).allowed).toBe(false);
+  });
+  it('refuses a destination without Write', async () => {
+    expect((await check({ writable: false })).allowed).toBe(false);
+  });
+  it('refuses a deleted team category', async () => {
+    expect((await check({ missingCategory: true })).allowed).toBe(false);
+  });
+  it('refuses a deleted team role', async () => {
+    expect((await check({ missingRole: true })).allowed).toBe(false);
+  });
+  it('refuses a moved announcement channel', async () => {
+    expect((await check({ badAnnouncement: true })).allowed).toBe(false);
+  });
+  it('refuses failed live resolution', async () => {
+    expect((await check({ throws: true })).allowed).toBe(false);
+  });
+  it('refuses an unknown team', async () => {
+    expect((await check({ unknownTeam: true })).allowed).toBe(false);
   });
 });

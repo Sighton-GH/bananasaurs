@@ -15,6 +15,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
+import { summaryField } from './reminder-summary.js';
 import type { TaskContextAccess } from './task-context.js';
 
 type StoredReminder = assistantRepo.StoredReminder;
@@ -2169,6 +2170,7 @@ describe('task tools and find_member (ADR 0146, 0145)', () => {
         access: async () => access,
         resolveMember: async (name: string) => (name.toLowerCase() === 'sam l' ? [SAM] : []),
         destinationId: CHANNEL,
+        verifyDestination: async () => true,
       },
       ...over,
     });
@@ -2181,6 +2183,183 @@ describe('task tools and find_member (ADR 0146, 0145)', () => {
       p,
     );
   const rows = () => taskRepo.listTasks(t.scopes.forGuild(GUILD), { includeDone: true });
+
+  it('T7b refuses a destination outside the team category or not writable', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const verifyDestination = vi.fn(async () => false);
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, verifyDestination } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe(
+      "Tasks are posted in that team's own channels. Ask again from a channel in the team's category, then try again.",
+    );
+    expect(verifyDestination).toHaveBeenCalledWith(teamId, CHANNEL);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b accepts a destination in the team category that is writable', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const verifyDestination = vi.fn(async () => true);
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, verifyDestination } });
+    expect(r.ok).toBe(true);
+    expect(verifyDestination).toHaveBeenCalledWith(teamId, CHANNEL);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('T7b refuses without the destination verification port', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, verifyDestination: undefined } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("team's own channels");
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b caps due dates at two years', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), { due: '2028-09-23T19:30:01Z' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe('That due date is too far ahead. Use a date within two years.');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b accepts the exact two-year due boundary', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), { due: '2028-09-23T19:30:00Z' });
+    expect(r.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('T7b pin: a lead of team B cannot create in team A', async () => {
+    const r = await create(withTasks(LEAD, { ...accessFor(LEAD, true), leadTeamIds: ['team-b'] }));
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only a team lead or the president');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: mismatched access actor cannot create', async () => {
+    const r = await create(withTasks(OTHER, accessFor(LEAD, true)));
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: neither lead nor president cannot create', async () => {
+    const r = await create(withTasks(OTHER, accessFor(OTHER, false)));
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: president can create in a team they do not lead', async () => {
+    const r = await create(withTasks(LEAD, { ...accessFor(LEAD, false), president: true }));
+    expect(r.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('T7b pin: past due date refuses without writing', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), { due: '2026-09-22T19:30:00Z' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('must be in the future');
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: absent destination refuses without writing', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create({ ...p, taskTools: { ...p.taskTools!, destinationId: undefined } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe(
+      'Tasks are posted in the channel they are asked for in. Ask again from a channel.',
+    );
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: list_tasks refuses an unknown team', async () => {
+    const r = await runAssistantTool(
+      { name: 'list_tasks', args: { team: 'unknown-team' } },
+      withTasks(LEAD, accessFor(LEAD, true)),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("I can't use that team");
+    expect(r.handles ?? []).toEqual([]);
+  });
+
+  it('T7b pin: task_progress refuses an archived task', async () => {
+    await create(withTasks(LEAD, accessFor(LEAD, true)));
+    const task = rows()[0]!;
+    const scope = t.scopes.forGuild(GUILD);
+    taskRepo.archiveTask(
+      scope,
+      task.taskId,
+      task.version,
+      { actorType: 'dashboard', actorId: 'owner', via: 'http' },
+      NOW,
+    );
+    const r = await runAssistantTool(
+      { name: 'task_progress', args: { taskId: task.taskId, note: 'Wired.' } },
+      withTasks(SAM_ID, accessFor(SAM_ID, false)),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('Only someone assigned to that task');
+    expect(taskRepo.listReports(scope, task.taskId)).toHaveLength(0);
+  });
+
+  it('T7b pin: task_progress refuses a mismatched actor', async () => {
+    await create(withTasks(LEAD, accessFor(LEAD, true)));
+    const task = rows()[0]!;
+    const r = await runAssistantTool(
+      { name: 'task_progress', args: { taskId: task.taskId, note: 'Wired.' } },
+      withTasks(SAM_ID, accessFor(OTHER, false)),
+    );
+    expect(r.ok).toBe(false);
+    expect(taskRepo.listReports(t.scopes.forGuild(GUILD), task.taskId)).toHaveLength(0);
+  });
+
+  it('T7b pin: two exact display-name matches refuse', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create({
+      ...p,
+      taskTools: { ...p.taskTools!, resolveMember: async () => [SAM, { ...SAM, id: OTHER }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: a near-miss assignee name refuses', async () => {
+    const p = withTasks(LEAD, accessFor(LEAD, true));
+    const r = await create(
+      { ...p, taskTools: { ...p.taskTools!, resolveMember: async () => [SAM] } },
+      { assignees: ['Sam'] },
+    );
+    expect(r.ok).toBe(false);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('T7b pin: duplicate assignee names collapse to one', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), {
+      assignees: ['Sam L', 'sam l'],
+    });
+    expect(r.ok).toBe(true);
+    expect(rows()).toHaveLength(1);
+    expect(r.actionSummary?.match(/Sam L/g)).toHaveLength(1);
+    expect(taskRepo.listTaskAssignees(t.scopes.forGuild(GUILD), rows()[0]!.taskId)).toEqual([
+      SAM_ID,
+    ]);
+  });
+
+  it('T7b pin: find_member caps roles at ten', async () => {
+    const roleNames = Array.from({ length: 12 }, (_, i) => `Role-${i + 1}`);
+    const r = await runAssistantTool(
+      { name: 'find_member', args: { name: 'Sam L' } },
+      ports({ findMember: async () => [{ ...SAM, roleNames }] }),
+    );
+    expect(r.text).toContain('Role-10');
+    expect(r.text).not.toContain('Role-11');
+    expect(r.text).not.toContain('Role-12');
+  });
+
+  it('T7b pin: task action summary neutralises markdown and mentions', async () => {
+    const r = await create(withTasks(LEAD, accessFor(LEAD, true)), {
+      title: '**Fix** <@123> @everyone `charger`',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.actionSummary).toContain('Fix');
+    expect(r.actionSummary).toContain(summaryField('**Fix** <@123> @everyone `charger`'));
+  });
 
   it('declares find_member only with its port, and task tools only with taskTools and the skill', () => {
     const names = (p: AssistantToolPorts) => toolDeclarations(p).map((d) => d.name);
@@ -2298,6 +2477,7 @@ describe('task tools and find_member (ADR 0146, 0145)', () => {
         resolveMember: async (name: string) =>
           name.toLowerCase() === 'alex p' ? [ALEX] : name.toLowerCase() === 'sam l' ? [SAM] : [],
         destinationId: CHANNEL,
+        verifyDestination: async () => true,
       },
     });
     const r = await create(p, { assignees: ['Sam L', 'Alex P'] });

@@ -46,6 +46,7 @@ import {
   type ModerationRefusalReason,
   type NativeAutomodSubscriberDeps,
   type OpsPublishResult,
+  type OpsPorts,
   type PanelDefinition,
   ProviderError,
   type PurgePorts,
@@ -103,6 +104,7 @@ import {
   createReminderDelivery,
   reminderStoreFor,
 } from '../assistant/reminder-delivery.js';
+import { opsPortsFor } from '../ops/wiring.js';
 import { channelAccessFor } from '../channels/access.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { createRunRecorder } from '../assistant/run-recorder.js';
@@ -249,6 +251,45 @@ export interface GuildRuntime {
  * has no ordering requirement — it exists to tie one pass's effects together.
  */
 const newPassId = (): string => `pass-${randomUUID()}`;
+
+/** Same live team and destination requirements as the MCP task-admin port. */
+export const verifyAssistantTaskDestination = async (
+  scope: GuildScope,
+  client: Client,
+  discord: DiscordPort,
+  inspectTaskChannel: (channelId: string) => ReturnType<OpsPorts['inspectTaskChannel']>,
+  checkWrite: (channelId: string) => Promise<{ readonly allowed: boolean }>,
+  teamId: string,
+  destinationId: string,
+): Promise<boolean> => {
+  const team = taskRepo.listTeams(scope).find((t) => t.teamId === teamId);
+  const guild = client.guilds.cache.get(scope.guildId);
+  if (!team || !guild) return false;
+  try {
+    const category = await guild.channels.fetch(team.categoryId, { force: true });
+    if (category?.type !== ChannelType.GuildCategory) return false;
+    const roles = await discord.fetchRoles(scope.guildId);
+    if (team.leadRoleId && !roles.some((r) => r.id === team.leadRoleId)) return false;
+    if (team.memberRoleId && !roles.some((r) => r.id === team.memberRoleId)) return false;
+    if (team.announcementChannelId) {
+      const announcement = await guild.channels.fetch(team.announcementChannelId, {
+        force: true,
+      });
+      if (
+        !announcement ||
+        announcement.parentId !== team.categoryId ||
+        (announcement.type !== ChannelType.GuildText &&
+          announcement.type !== ChannelType.GuildAnnouncement) ||
+        !(await checkWrite(team.announcementChannelId)).allowed
+      )
+        return false;
+    }
+    const channel = await inspectTaskChannel(destinationId);
+    return channel?.categoryId === team.categoryId && (await checkWrite(destinationId)).allowed;
+  } catch {
+    return false;
+  }
+};
 
 export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const { scope, instance, config, discord, client, logger, now } = deps;
@@ -809,6 +850,25 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     deps.assistantConfig ?? (() => config),
     logger,
     {
+      verifyTaskDestination: (teamId, destinationId) => {
+        const taskPorts = opsPortsFor(
+          scope,
+          instance,
+          ops,
+          now,
+          client,
+          config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
+        );
+        return verifyAssistantTaskDestination(
+          scope,
+          client,
+          discord,
+          (channelId) => taskPorts.inspectTaskChannel(channelId),
+          (channelId) => channelAccess.check('write', channelId),
+          teamId,
+          destinationId,
+        );
+      },
       taskContext: {
         access: async (actorId) => {
           try {

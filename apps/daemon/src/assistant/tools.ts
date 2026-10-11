@@ -230,6 +230,9 @@ export interface AssistantToolPorts {
         readonly resolveMember: (name: string) => Promise<readonly MemberLookupHit[]>;
         /** Current channel; absent (Try-it) means create_task refuses. */
         readonly destinationId: string | undefined;
+        /** Live team/category and Write check; absent fails closed. */
+        readonly verifyDestination?:
+          ((teamId: string, channelId: string) => Promise<boolean>) | undefined;
       }
     | undefined;
 }
@@ -1496,10 +1499,22 @@ export const runAssistantTool = async (
         const dueAt = Date.parse(args.due);
         if (!Number.isFinite(dueAt) || dueAt <= ports.now())
           return refused(name, 'The due date must be in the future. Fix it and call again.');
+        const latestDue = new Date(ports.now());
+        latestDue.setUTCFullYear(latestDue.getUTCFullYear() + 2);
+        if (dueAt > latestDue.getTime())
+          return refused(name, 'That due date is too far ahead. Use a date within two years.');
         if (tools.destinationId === undefined)
           return refused(
             name,
             'Tasks are posted in the channel they are asked for in. Ask again from a channel.',
+          );
+        if (
+          tools.verifyDestination === undefined ||
+          !(await tools.verifyDestination(team.teamId, tools.destinationId))
+        )
+          return refused(
+            name,
+            "Tasks are posted in that team's own channels. Ask again from a channel in the team's category, then try again.",
           );
         const assignees: { id: string; name: string }[] = [];
         for (const wanted of args.assignees ?? []) {
