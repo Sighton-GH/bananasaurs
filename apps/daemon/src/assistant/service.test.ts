@@ -3213,8 +3213,8 @@ describe('B2b: acting tool ports are wired', () => {
     });
     expect(checked.ok).toBe(true);
     const answers = toolTexts.at(-1) ?? [];
-    expect(answers[0]).toContain("couldn't find");
-    expect(answers[1]).toContain("couldn't find");
+    expect(answers[0]).toContain('No reminder has that id');
+    expect(answers[1]).toContain('No reminder has that id');
     expect(answers[2]).toContain('No upcoming reminders.');
     expect(answers[3]).toContain('No upcoming reminders.');
     // Guild A's row is untouched: still scheduled, still exactly one.

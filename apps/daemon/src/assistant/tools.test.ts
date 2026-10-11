@@ -1140,7 +1140,9 @@ describe('acting tools (B2a)', () => {
       ports(),
       citations,
     );
-    expect(r.text).toBe('No reminder has that id. Call my_reminders for current ids, then try again.');
+    expect(r.text).toBe(
+      'No reminder has that id. Call my_reminders for current ids, then try again.',
+    );
   });
 
   it('says which argument was invalid', async () => {

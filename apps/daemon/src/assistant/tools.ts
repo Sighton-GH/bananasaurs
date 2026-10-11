@@ -603,7 +603,10 @@ const outlineForDoc = (
     ports.cacheDocument(docId)?.resourceId ??
     (rows[0] === undefined ? undefined : ports.cacheChunk(rows[0].chunkId)?.resourceId);
   if (outlineResourceId === undefined || enabledById(ports, outlineResourceId) === undefined)
-    return refused(name, 'Unknown id. Use an id from an earlier result in this request, or search again.');
+    return refused(
+      name,
+      'Unknown id. Use an id from an earlier result in this request, or search again.',
+    );
   if (rows.length === 0) {
     return { ...evidence(name, 'No headings cached.'), handles: [] };
   }
@@ -632,7 +635,10 @@ export const runAssistantTool = async (
   citations?: CitationRegistry,
 ): Promise<AssistantToolResult> => {
   if (!(call.name in schemas))
-    return refused(call.name, 'No such tool. Use only the tools listed under WHAT YOU CAN DO RIGHT NOW.');
+    return refused(
+      call.name,
+      'No such tool. Use only the tools listed under WHAT YOU CAN DO RIGHT NOW.',
+    );
   const name = call.name as ToolName;
   const parsed = schemas[name].safeParse(call.args ?? {});
   if (!parsed.success) {

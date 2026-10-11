@@ -522,7 +522,8 @@ interface EntrySuccess {
 export const NEXT_STEP: Readonly<Record<string, string>> = {
   'tools not offered': 'Answer from what you already have.',
   'tool call budget used': 'Answer now from the results you have.',
-  'too many calls in this round': 'Call at most six tools in one turn; answer or call the rest next turn.',
+  'too many calls in this round':
+    'Call at most six tools in one turn; answer or call the rest next turn.',
   'acting tools run only in the first round':
     'Ask the member to confirm in one short sentence; it will run when they reply.',
   'unknown id': 'Use an id an earlier result in this request returned, or search again.',
