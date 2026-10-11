@@ -175,6 +175,16 @@ export interface ProviderConfigStore {
    * positions reserve nothing.
    */
   reserveTestCall(position: number, guildId: string): ReserveOutcome;
+  /**
+   * ADR 0143: reserve one call against an already-resolved entry, so a pool
+   * entry's selected key cannot change between reservation and call.
+   */
+  reserveTestEntry(
+    entry: Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'> & {
+      readonly selectedKeyId?: string | undefined;
+    },
+    guildId: string,
+  ): ReserveOutcome;
   saveGithubToken(token: string | null): void;
   /** Whether the stored key opens under this daemon's secret; false when unknown. */
   isKeyReadable(keyId: string): boolean;
@@ -538,6 +548,9 @@ export const createProviderConfigStore = (
     reserveTestCall(position, guildId) {
       const entry = this.chain()[position];
       if (entry === undefined) return { ok: true };
+      return reserveEntryCall(instance, entry, guildId, clock());
+    },
+    reserveTestEntry(entry, guildId) {
       return reserveEntryCall(instance, entry, guildId, clock());
     },
     saveGithubToken(token) {
