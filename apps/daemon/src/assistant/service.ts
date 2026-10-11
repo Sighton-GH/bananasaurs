@@ -228,6 +228,8 @@ export interface AssistantDiscordPorts {
   readonly findMember?: ((nameOrId: string) => Promise<readonly FoundMember[]>) | undefined;
   /** Task context for the assistant's task answers; absent, task questions refuse. */
   readonly taskContext?: TaskContextPort | undefined;
+  readonly verifyTaskDestination?:
+    ((teamId: string, channelId: string) => Promise<boolean>) | undefined;
   /**
    * B2b: resolves a reminder's channel and mentions against live Discord
    * permissions. Optional so existing callers keep compiling — production
@@ -954,6 +956,7 @@ export const createAssistantService = (
                 resolveMember: async (name: string) =>
                   discord.findMember === undefined ? [] : await discord.findMember(name),
                 destinationId: input.channelId,
+                verifyDestination: discord.verifyTaskDestination,
               },
         searchConversations: async (query: string) => {
           const visible = new Set(
