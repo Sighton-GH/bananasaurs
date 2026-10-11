@@ -65,7 +65,9 @@ export const registerAssistantModelCheckRoutes = (
     }
     const parsed = checkBody.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
-    const entry = configured.chain()[parsed.data.position];
+    const resolved = configured.chain()[parsed.data.position];
+    // Pin the selected key, model and provider before reservations can change pool usage.
+    const entry = resolved === undefined ? undefined : { ...resolved };
     if (entry === undefined) return reply.status(404).send({ error: 'not-found' });
     const refuse = () => reply.status(200).send({ ok: false, error: TERMS_REFUSAL });
     if (entry.skip === 'ineligible' || entry.skip === 'unverified') return refuse();
@@ -79,16 +81,24 @@ export const registerAssistantModelCheckRoutes = (
 
     // Budget equals the fixture count and is reserved before the first call.
     const budget = CHECK_FIXTURES.length;
-    const reservations = CHECK_FIXTURES.map(() =>
-      configured.reserveTestCall?.(parsed.data.position, session.guildId),
-    );
-    if (reservations.some((reserved) => reserved !== undefined && !reserved.ok)) {
-      // No release API exists; any successful reservations remain spent.
-      return reply.status(200).send({
+    const budgetRefusal = () =>
+      reply.status(200).send({
         ok: false,
         error: 'budget-exhausted',
         budget: { reserved: 0, spent: 0 },
       });
+    if (configured.reserveTestEntry === undefined) return budgetRefusal();
+    try {
+      const reservations = CHECK_FIXTURES.map(() =>
+        configured.reserveTestEntry?.(entry, session.guildId),
+      );
+      if (reservations.some((reserved) => reserved?.ok !== true)) {
+        // No release API exists; any successful reservations remain spent.
+        return budgetRefusal();
+      }
+    } catch {
+      // Reserver errors may include secrets. Never forward or log their text.
+      return budgetRefusal();
     }
 
     const provider = entry.provider as unknown as CheckProvider;
