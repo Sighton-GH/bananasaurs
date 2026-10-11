@@ -657,8 +657,7 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(text).not.toContain('You are Bananasaurs, the assistant in the Discord server of');
   });
   it('leaves a hand-written ROLE line without wizard answers untouched', () => {
-    const prompt =
-      'You are Racerbot, the assistant in the Discord server of Racer Club. Be brief.';
+    const prompt = 'You are Racerbot, the assistant in the Discord server of Racer Club. Be brief.';
     const compiled = compileAssistantContext({
       behaviour: { ...behaviour, name: 'Racerbot', systemPrompt: prompt },
       serverCard: '',
@@ -708,9 +707,11 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       skills: [],
       evidence: [],
     });
-    expect(compiled.sections.find((s) => s.name === 'behaviour-prompt')!.text.endsWith(
-      BOUNDARIES_HELPFUL,
-    )).toBe(true);
+    expect(
+      compiled.sections
+        .find((s) => s.name === 'behaviour-prompt')!
+        .text.endsWith(BOUNDARIES_HELPFUL),
+    ).toBe(true);
   });
 
   it('keeps prose abilities visible when the behaviour only describes questions (ADR 0136)', () => {

@@ -9,7 +9,6 @@ import {
 } from './prompt-wizard.js';
 import { SAFETY_SUFFIX } from './safety-suffix.js';
 import { buildCapabilityBlock } from './capabilities.js';
-import { TOOL_CATALOGUE } from './tool-catalogue.js';
 import { neutraliseMarkers } from './untrusted.js';
 
 export interface RetrievedEvidence {
