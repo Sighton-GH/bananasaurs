@@ -1,6 +1,17 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-10 (assistant capability truth, ADRs 0136–0137).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-11 (provider key pools and routing, ADRs 0143–0144; assistant capability truth, ADRs 0136–0137).
+
+---
+
+**Slice 6 — provider key pools, cooldowns, Gemini chain and routing (ADRs 0143–0144, migration `key_pools_routing`).**
+
+- **Key pools:** a chain entry uses one key or every enabled key of its provider; the pick is deterministic (most daily requests left, then least-recent use, then key id). Keys sharing a project label share one daily ledger bucket, enforced per key at reserve time. Bulk paste dedupes by SHA-256 fingerprint without exposing secrets.
+- **Cooldowns:** a daily Gemini 429 cools until the next Pacific midnight, a minute 429 for the retry delay or 60 s, an invalid key until edit or re-test; rows survive restarts and fully spent pools fall through quietly.
+- **Chain:** `gemini-3.8-flash` (5 RPM / 20 RPD) → `gemini-3.6-flash` (5 / 20) → `gemini-3.5-flash-lite` (15 / 500), each over the whole Gemini pool, then the owner's OpenRouter entries.
+- **Routing:** short simple messages try the light tier first; attachments, quotes, long threads and full-model keywords use standard. It is one tool-loop run: a light entry's round-1 tool calls hand the same loop to standard entries from round 2 (`escalateAfterTools`, setting `routerEscalateOnTool`), so no acting tool runs twice. Every decision is a `routed` run event; a second `routed` event with reason `escalated-after-tool` marks the hand-over. The router sees only fixed reasons, never message text.
+- **Check models:** capability fixtures run against one entry with stubbed tools on a reserved budget, recorded as `dashboard-test`. **Gemini may-train line (D12):** free keys may train on submitted input, paid keys are recorded no-training; both stay usable with warnings in logs, dashboard and doctor.
+- **Known gaps:** the background-tier consumer (summaries, daily digest) is not wired in this slice; the `hasAttachments` router input has no producer yet, so attachments do not route to standard today; the Gemini free/paid eligibility seed rows (D12) are not confirmed by the owner.
 
 ---
 

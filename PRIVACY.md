@@ -169,6 +169,10 @@ Nothing a member says can cause the bot to post one of these.
 | Attachments on archived messages | File name, type and size only; no file contents are downloaded |
 | The record of each message the bot posted on the owner's behalf | Kept indefinitely. It holds the channel, the time, which credential sent it, and a fingerprint of the text — **not the message itself**. It is what stops a retry posting the same message twice, and what lets the owner list what was posted; the message you can read is the one in the channel |
 | The record that Claude — the AI tool the owner uses to read the server — is set not to train on your messages | Kept for as long as the tool is in use. The owner re-checks that account setting by hand, and the bot warns when the check is more than 90 days old, when the record says the tool does train on input, or when it says the tool is not approved for this use |
+| Key fingerprints for AI provider keys | Kept with the key row until the key is deleted. A SHA-256 hash of the key, used only to skip duplicates when keys are pasted in bulk. It is never shown and cannot be turned back into the key |
+| Project labels on AI provider keys | Kept with the key until the owner edits or deletes it. An owner-typed label that groups keys into one daily quota bucket. It is not read by anything else |
+| Per-key, per-model cooldown rows | Kept until the cooldown ends or the key is deleted. Key id, model, reset time and learned limits only. No message text |
+| The `dashboard-test` record from Check models | Same window as other AI request records. Test case ids only; no member content. No new retention beyond the existing run and trace windows |
 
 Current settings are shown by `/privacy`. If they change, this policy is updated and the change is announced in the server.
 
