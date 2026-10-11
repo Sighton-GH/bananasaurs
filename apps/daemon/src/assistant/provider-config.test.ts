@@ -666,3 +666,76 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
     expect(store.reserveTestCall(9, GUILD_ID)).toEqual({ ok: true });
   });
 });
+
+describe('Parallel source wiring', () => {
+  it('seals and lists Parallel keys without making them available to Brave', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.addSearchKey(
+      {
+        source: 'parallel',
+        label: 'Parallel spare',
+        apiKey: 'invented-parallel-key',
+        monthlyLimit: 4500,
+      },
+      10,
+    );
+    expect(store.searchKeys()[0]).toMatchObject({ source: 'parallel', monthlyLimit: 4500 });
+    expect(JSON.stringify(store.searchKeys())).not.toContain('invented-parallel-key');
+    expect(searchKeysRepo.listSearchKeys(t.scopes.instance())[0]?.apiKeyEnc).not.toContain(
+      'invented-parallel-key',
+    );
+    store.save({ provider: 'off', enabled: false, searchEnabled: true, searchSource: 'brave' }, 11);
+    expect(store.webSearch(GUILD)).toBeUndefined();
+  });
+
+  it('uses only the injected Parallel client with the configured source', async () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'off', enabled: false, searchEnabled: true, searchSource: 'parallel' },
+      10,
+    );
+    store.addSearchKey(
+      {
+        source: 'parallel',
+        label: 'Parallel',
+        apiKey: 'invented-parallel-key',
+        monthlyLimit: 4500,
+      },
+      11,
+    );
+    store.addSearchKey({ source: 'brave', label: 'Brave', apiKey: 'invented-brave-key' }, 12);
+    const results = [{ title: 'Guide', url: 'https://guide.example/', description: 'A guide.' }];
+    const clients = {
+      parallel: vi.fn(async () => results),
+      brave: vi.fn(async () => []),
+      tavily: vi.fn(async () => []),
+    };
+    const run = store.webSearch(GUILD, clients);
+    expect(run).toBeDefined();
+    await expect(run!('battery guide')).resolves.toEqual({ results, source: 'parallel' });
+    expect(clients.parallel).toHaveBeenCalledWith('invented-parallel-key', 'battery guide');
+    expect(clients.brave).not.toHaveBeenCalled();
+    expect(clients.tavily).not.toHaveBeenCalled();
+    expect(store.status().webSearch).toMatchObject({ source: 'parallel', keyConfigured: true });
+  });
+
+  it('skips a limited Parallel key before HTTP and never borrows a Brave key', async () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'off', enabled: false, searchEnabled: true, searchSource: 'parallel' },
+      10,
+    );
+    store.addSearchKey(
+      { source: 'parallel', label: 'Limited', apiKey: 'invented-parallel-key', monthlyLimit: 1 },
+      11,
+    );
+    store.addSearchKey({ source: 'brave', label: 'Brave', apiKey: 'invented-brave-key' }, 12);
+    const clients = { parallel: vi.fn(async () => []), brave: vi.fn(async () => []) };
+    await store.webSearch(GUILD, clients)!('battery guide');
+    await expect(store.webSearch(GUILD, clients)!('battery guide')).rejects.toThrow(
+      'every web search key is at its limit',
+    );
+    expect(clients.parallel).toHaveBeenCalledTimes(1);
+    expect(clients.brave).not.toHaveBeenCalled();
+  });
+});

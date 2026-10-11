@@ -65,3 +65,15 @@ it('defaults the search source to brave when omitted', () => {
   put(scope, { provider: 'off', enabled: false, costClass: 'unknown', updatedAt: 1 });
   expect(get(scope)?.searchSource).toBe('brave');
 });
+
+it('round-trips the Parallel search source on a migrated database', () => {
+  const scope = t.scopes.instance();
+  put(scope, {
+    provider: 'off',
+    enabled: false,
+    costClass: 'unknown',
+    searchSource: 'parallel',
+    updatedAt: 1,
+  });
+  expect(get(scope)?.searchSource).toBe('parallel');
+});

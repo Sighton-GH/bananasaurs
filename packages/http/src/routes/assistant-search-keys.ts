@@ -10,7 +10,7 @@ const limit = z.number().int().min(1).max(1_000_000).nullable();
 
 const searchKeyBody = z
   .object({
-    source: z.enum(['brave', 'tavily']),
+    source: z.enum(['brave', 'tavily', 'parallel']),
     label: z.string().trim().min(1).max(60),
     apiKey: z.string().min(1).max(1000),
     monthlyLimit: limit.optional(),
