@@ -143,7 +143,9 @@ Facts checked on 2026-10-10, against `main` at `950f78fe`:
     - Mappers from every refusal union to a code: `moderationRefusalCode(reason)` and
       `panelRefusalCode(refusal)`, plus the confirm-resolution codes.
     - A completeness test fails when a union member has no entry.
-    - Moderator and owner cards add `-# Ref <first 8 of the interaction id>`. Members never see one.
+    - Moderator and owner error cards add `-# Ref <last 8 digits of the interaction id>`. The last digits,
+      because a snowflake starts with its timestamp and its first digits repeat for hours. The log line
+      carries the full id. Members never see a Ref.
     - HTTP and the dashboard adopt the catalogue in P3/P5. This ADR is Discord-only.
 
 ## Consequences
