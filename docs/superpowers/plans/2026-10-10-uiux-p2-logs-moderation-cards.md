@@ -2799,8 +2799,9 @@ Run `npx vitest run packages/core/src/panels`. Expect FAIL.
 
 `publish.ts`: add `toMessage(card: CardMessage): OutgoingMessage` to `PublishDeps`. Both the post and the
 edit send `deps.toMessage(renderPanelCard(panel))`. Republishing a panel posted before P2 edits it into a
-card. P0 spike question 3 confirmed that an edit can add the V2 flag. If the P0 notes say it cannot, stop
-and record it: the plan would need "delete and repost" instead, which is the owner's decision.
+card. ADR 0140's verified facts say an edit can add the V2 flag (with `content`, `embeds`, `poll` and
+`stickers` set to null), and P1's `editMessage` already does it. The owner's card-gallery smoke run is
+the live check; nothing here needs Discord.
 
 `interactions.ts`:
 - Replace `REFUSAL_TEXT` and `describeResult` with `panelResultCard`, following the table in Step 2.
