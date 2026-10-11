@@ -13,8 +13,8 @@ const TERMS_REFUSAL =
 
 type FirstAction = 'answer-without-tools' | 'call-tool';
 
-/** Fixture id, member-safe message, and the expected first action of the checked entry. */
-export const CHECK_FIXTURES: readonly {
+/** Probe id, member-safe message, and the expected first action of the checked entry. */
+export const CHECK_PROBES: readonly {
   readonly id: string;
   readonly message: string;
   readonly expectedFirstAction: FirstAction;
@@ -79,8 +79,8 @@ export const registerAssistantModelCheckRoutes = (
     const terms = eligibilityRepo.findEligibility(deps.scopes.instance(), entry.providerId);
     if (terms === undefined || !terms.productionUseAllowed) return refuse();
 
-    // Budget equals the fixture count and is reserved before the first call.
-    const budget = CHECK_FIXTURES.length;
+    // Budget equals the probe count and is reserved before the first call.
+    const budget = CHECK_PROBES.length;
     const budgetRefusal = () =>
       reply.status(200).send({
         ok: false,
@@ -90,8 +90,8 @@ export const registerAssistantModelCheckRoutes = (
     if (configured.reserveTestEntry === undefined) return budgetRefusal();
     try {
       const reservations: unknown[] = [];
-      for (const fixture of CHECK_FIXTURES) {
-        void fixture;
+      for (const probe of CHECK_PROBES) {
+        void probe;
         // Promise.resolve keeps a rejecting reserver inside this try.
         reservations.push(
           await Promise.resolve(configured.reserveTestEntry?.(entry, session.guildId)),
@@ -117,26 +117,26 @@ export const registerAssistantModelCheckRoutes = (
       error?: string;
     }[] = [];
     let spent = 0;
-    for (const fixture of CHECK_FIXTURES) {
+    for (const probe of CHECK_PROBES) {
       spent += 1;
       try {
         const out = await provider.generateText({
           model: entry.model,
-          messages: [{ role: 'user', text: fixture.message }],
+          messages: [{ role: 'user', text: probe.message }],
           tools: STUB_TOOLS,
         });
         const firstAction: FirstAction =
           (out.toolCalls?.length ?? 0) > 0 ? 'call-tool' : 'answer-without-tools';
         results.push({
-          id: fixture.id,
-          expectedFirstAction: fixture.expectedFirstAction,
+          id: probe.id,
+          expectedFirstAction: probe.expectedFirstAction,
           firstAction,
-          matches: firstAction === fixture.expectedFirstAction,
+          matches: firstAction === probe.expectedFirstAction,
         });
       } catch {
         results.push({
-          id: fixture.id,
-          expectedFirstAction: fixture.expectedFirstAction,
+          id: probe.id,
+          expectedFirstAction: probe.expectedFirstAction,
           firstAction: 'error',
           matches: false,
           error: 'The model did not answer this check.',
@@ -150,7 +150,7 @@ export const registerAssistantModelCheckRoutes = (
       subjectType: 'assistant_provider',
       subjectId: 'active',
       before: undefined,
-      after: { position: parsed.data.position, fixtureCount: budget },
+      after: { position: parsed.data.position, probeCount: budget },
     });
     return reply.status(200).send({
       ok: true,
