@@ -1792,9 +1792,287 @@ parallel settings; every new setting has label, help, default and reset semantic
 
 ---
 
-<!-- PASS4 -->
+### S6-T10: Pool resolution and key selection   ·   Wave 3
+**Owns:** Modify: `apps/daemon/src/assistant/model-chain.ts`,
+`apps/daemon/src/assistant/provider-config.ts`, `apps/daemon/src/assistant/model-chain.test.ts`,
+`apps/daemon/src/assistant/provider-config.test.ts`
+**Reads (do not edit):** `packages/storage/src/repos/assistant-providers.ts` (S6-T6 output: `bucketOf`,
+`StoredKey.project`, `ChainRow.pool/tier`), `apps/daemon/src/assistant/model-capabilities.ts` (S6-T8 output:
+`capabilitiesForEntry`)
+**Interfaces:** Consumes: `bucketOf`, `getCooldown`/`setCooldown` signatures (S6-T6), `ProviderError`
+`quotaScope`/`retryAfterMs`/`learnedLimit` (S6-T7), `capabilitiesForEntry` (S6-T8) · Produces:
+`nextProviderDayStart(provider: string, now: number): number`,
+`selectPoolKey(candidates: readonly PoolCandidate[]): PoolCandidate | undefined`,
+`ChainEntry.pool: 'key' | 'provider'`, `ChainEntry.tier: 'standard' | 'light'`,
+`ChainEntry.selectedKeyId: string` (for S6-T11, S6-T13, S6-T14)
 
-## Slice gate (orchestrator only, after the last wave)
+- [ ] **Step 1: Write the failing test** — append to `apps/daemon/src/assistant/model-chain.test.ts`:
+
+```ts
+describe('pool resolution (ADR 0143)', () => {
+  it("pool 'key' behaves exactly as today: one entry, its own key", () => {
+    const chain = resolveModelChain(testDeps([{ keyId: 'key_a', model: 'gemini-3.8-flash' }]));
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toMatchObject({ pool: 'key', tier: 'standard', selectedKeyId: 'key_a' });
+  });
+  it("pool 'provider' picks the usable key with the most remaining daily requests", () => {
+    const chain = resolveModelChain(
+      testDeps([{ keyId: 'key_anchor', model: 'gemini-3.8-flash', pool: 'provider' }], {
+        keys: [
+          { keyId: 'key_anchor', provider: 'gemini', spentToday: 19, rpdLimit: 20 },
+          { keyId: 'key_b', provider: 'gemini', spentToday: 2, rpdLimit: 20 },
+        ],
+        cooldowns: [{ keyId: 'key_b', model: 'gemini-3.8-flash', until: NOW + 3_600_000 }],
+      }),
+    );
+    // key_b cools, so the spent-most anchor still wins over a cooling key.
+    expect(chain[0]).toMatchObject({ pool: 'provider', selectedKeyId: 'key_anchor' });
+  });
+  it('skips cooling and invalid keys, ties break by least-recent use then key id', () => {
+    expect(
+      selectPoolKey([
+        { keyId: 'key_b', remainingDay: 5, lastUsed: 100 },
+        { keyId: 'key_a', remainingDay: 5, lastUsed: 100 },
+        { keyId: 'key_c', remainingDay: 5, lastUsed: 50 },
+      ]),
+    ).toMatchObject({ keyId: 'key_c' });
+    expect(
+      selectPoolKey([
+        { keyId: 'key_b', remainingDay: 5, lastUsed: 100 },
+        { keyId: 'key_a', remainingDay: 5, lastUsed: 100 },
+      ]),
+    ).toMatchObject({ keyId: 'key_a' });
+    expect(selectPoolKey([])).toBeUndefined();
+  });
+  it('keys sharing a project label share one daily bucket', () => {
+    expect(bucketOf({ keyId: 'key_a', project: 'Car Team A' })).toBe('project:Car Team A');
+    expect(bucketOf({ keyId: 'key_b', project: 'Car Team A' })).toBe('project:Car Team A');
+    expect(bucketOf({ keyId: 'key_c', project: null })).toBe('key:key_c');
+  });
+  it('nextProviderDayStart is the next Pacific midnight', () => {
+    // 2026-10-11 12:00 UTC = 05:00 PDT → next midnight PDT = 2026-10-12 07:00 UTC.
+    expect(nextProviderDayStart('gemini', Date.UTC(2026, 9, 11, 12))).toBe(Date.UTC(2026, 9, 12, 7));
+  });
+});
+```
+
+  (`testDeps` is the existing helper in `model-chain.test.ts` that builds `{ instance, config, openKey,
+  eligibility, makeProvider }`; extend it with optional `{ keys, cooldowns }` lists using the existing
+  `assistantProvidersRepo` stub style. `NOW` is the file's existing fixed clock. Import `selectPoolKey`,
+  `nextProviderDayStart`, `bucketOf` at the top.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run apps/daemon/src/assistant/model-chain.test.ts --maxWorkers=1` · Expected: FAIL with
+  `Failed to resolve import` or `selectPoolKey is not a function`
+- [ ] **Step 3: Implement** —
+  1. In `model-chain.ts`, extend `ChainEntry` (anchor: lines 39–52) with three fields after `rpdLimit`:
+
+```ts
+  readonly rpmLimit: number | null;
+  readonly rpdLimit: number | null;
+  /** ADR 0143: 'key' runs this entry's own key; 'provider' runs the selected pool key. */
+  readonly pool: 'key' | 'provider';
+  /** ADR 0144: which runs try this entry first. */
+  readonly tier: 'standard' | 'light';
+  /** ADR 0143: the key actually constructed for this entry (== keyId when pool is 'key'). */
+  readonly selectedKeyId: string;
+```
+
+  Every `return {` in `toEntry` and the two early-skip returns must set
+  `pool: 'key', tier: 'standard', selectedKeyId: candidate.keyId` to keep old rows compiling; the stored-chain
+  path below overwrites them from the row.
+  2. Above `resolveModelChain`, add:
+
+```ts
+export interface PoolCandidate {
+  readonly keyId: string;
+  /** Requests left today (rpdLimit minus ledger today, or learned limit minus today). */
+  readonly remainingDay: number;
+  /** Last use epoch ms, 0 when never used. */
+  readonly lastUsed: number;
+}
+
+/** Deterministic pool pick: most remaining daily, then least-recent use, then key id. */
+export function selectPoolKey(candidates: readonly PoolCandidate[]): PoolCandidate | undefined {
+  return [...candidates].sort(
+    (a, b) => b.remainingDay - a.remainingDay || a.lastUsed - b.lastUsed || (a.keyId < b.keyId ? -1 : a.keyId > b.keyId ? 1 : 0),
+  )[0];
+}
+
+/** Next Pacific midnight after `now` (PDT = UTC-7 in October; PST = UTC-8 otherwise). */
+export function nextProviderDayStart(_provider: string, now: number): number {
+  const date = new Date(now);
+  const month = date.getUTCMonth();
+  // Rough DST: PDT (UTC-7) Mar–Nov, PST (UTC-8) otherwise. Good enough for a quota reset.
+  const offsetHours = month >= 2 && month <= 10 ? 7 : 8;
+  const pacificMidnightUtc = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) + offsetHours * 3_600_000;
+  return pacificMidnightUtc <= now ? pacificMidnightUtc + 86_400_000 : pacificMidnightUtc;
+}
+```
+
+  3. In `storedCandidates`, carry `pool`/`tier` from the row
+  (`pool: row.pool ?? 'key', tier: row.tier ?? 'standard'`) through `Candidate`, and in `toEntry` expand a
+  `pool: 'provider'` row: gather every enabled, readable key of the row's provider, drop keys with an
+  unexpired `getCooldown(instance, keyId, row.model, Date.now())`, compute `remainingDay` from
+  `rpdLimit`/learned limit minus ledger today (missing limit means Infinity), pick via `selectPoolKey`,
+  and build the provider from the selected key. When no pool key is usable, return the entry with
+  `provider: undefined, skip: 'disabled'` so the loop records `model-skipped` and falls through (S6-T11).
+  A pool never opens or logs a secret outside `providerFor`. The chain stays at most six entries (the HTTP
+  route enforces it; `resolveModelChain` truncates defensively with `.slice(0, 6)`).
+  4. In `provider-config.ts`, thread `pool`/`tier` through `saveChain` (accept `pool?`/`tier?`, default
+  `'key'`/`'standard`, assert values) and `chain()` (return the resolved entries unchanged). No other
+  behaviour changes.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS; then
+  `npx vitest run apps/daemon/src/assistant/provider-config.test.ts --maxWorkers=1` · PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write apps/daemon/src/assistant/model-chain.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/model-chain.test.ts apps/daemon/src/assistant/provider-config.test.ts`
+  then `npx eslint` on the same four paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add apps/daemon/src/assistant/model-chain.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/model-chain.test.ts apps/daemon/src/assistant/provider-config.test.ts && git commit -m "Slice 6 T10: pool resolution and key selection"`
+
+**Done when:** one-key pools behave as today; provider pools select deterministically and skip cooling keys;
+shared project labels share a bucket; Pacific-midnight reset is pinned; chain stays ≤ 6.
+
+---
+
+### S6-T11: Loop cooldowns, restart-safe skip and routed event   ·   Wave 3
+**Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts`,
+`packages/core/src/assistant/run-events.ts`, `packages/core/src/assistant/run-events.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/quota-ledger.ts` (constructor kept; loop no longer consults
+it), `packages/storage/src/repos/assistant-key-cooldowns.ts` (S6-T6 output)
+**Interfaces:** Consumes: `ChainEntry.pool/selectedKeyId` + `nextProviderDayStart` (S6-T10), `ProviderError`
+quota fields (S6-T7), `getCooldown`/`setCooldown` (S6-T6) · Produces: `routed` run event
+`{ kind: 'routed', tier: 'standard' | 'light', reason: string }` (for S6-T13); loop records `model-skipped`
+with cooldown reasons and persists `day`/`minute`/`invalid` cooldowns (for S6-T13, S6-T15)
+
+- [ ] **Step 1: Write the failing tests** — append to `packages/core/src/assistant/run-events.test.ts`:
+
+```ts
+it('accepts the routed event with tier and fixed reason vocabulary', () => {
+  expect(
+    runEventSchema.safeParse({ kind: 'routed', tier: 'light', reason: 'greeting' }).success,
+  ).toBe(true);
+  expect(
+    runEventSchema.safeParse({ kind: 'routed', tier: 'standard', reason: 'long-message' }).success,
+  ).toBe(true);
+  expect(runEventSchema.safeParse({ kind: 'routed', tier: 'heavy', reason: 'greeting' }).success).toBe(
+    false,
+  );
+});
+```
+
+  and append to `apps/daemon/src/assistant/tool-loop.test.ts` (mirror the existing `runToolLoop` harness with
+  its `recorder` and fake providers; `NOW` is the file's existing clock):
+
+```ts
+describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
+  it('two runs after a daily 429 never call that key again before the reset', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a', 'key_b'], 'gemini-3.8-flash', calls);
+    const first = await runToolLoop(testInput(chain, { failKey: 'key_a', failBody: DAILY_429 }));
+    expect(calls.filter((k) => k === 'key_a')).toHaveLength(1);
+    expect(first.attempts.some((a) => a.outcome === 'answered')).toBe(true);
+    calls.length = 0;
+    const second = await runToolLoop(testInput(chain));
+    expect(calls).not.toContain('key_a');
+    expect(second.events.map((e) => e.kind)).toContain('model-skipped');
+    expect(
+      second.events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a'),
+    ).toMatchObject({ reason: 'daily-quota' });
+  });
+  it('a restart keeps the cooldown (cooldown table is the authority)', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a', 'key_b'], 'gemini-3.8-flash', calls);
+    await runToolLoop(testInput(chain, { failKey: 'key_a', failBody: DAILY_429 }));
+    const afterRestart = await runToolLoop(testInput(freshChain(chain), { freshLedger: true }));
+    expect(calls.filter((k) => k === 'key_a')).toHaveLength(1);
+    expect(afterRestart.events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a')).toBeDefined();
+  });
+  it('a minute cooldown expires on time and the key is tried again', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a'], 'gemini-3.8-flash', calls);
+    await runToolLoop(testInput(chain, { failKey: 'key_a', failBody: MINUTE_429, now: NOW }));
+    const during = await runToolLoop(testInput(chain, { now: NOW + 30_000 }));
+    expect(during.events.find((e) => e.kind === 'model-skipped' && e.keyId === 'key_a')).toMatchObject({
+      reason: 'minute-quota',
+    });
+    const after = await runToolLoop(testInput(chain, { now: NOW + 61_000 }));
+    expect(after.events.map((e) => e.kind)).toContain('model-call');
+  });
+  it('a pool with all keys spent emits model-skipped and falls through without retrying', async () => {
+    const result = await runToolLoop(testInput(spentPoolChain(), { now: NOW }));
+    expect(result.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
+    expect(result.events.map((e) => e.kind)).not.toContain('retry-scheduled');
+  });
+  it('break-it: removing the pre-call skip calls the cooling key again', async () => {
+    const calls: string[] = [];
+    const chain = poolChain(['key_a', 'key_b'], 'gemini-3.8-flash', calls);
+    await runToolLoop(testInput(chain, { failKey: 'key_a', failBody: DAILY_429 }));
+    calls.length = 0;
+    await runToolLoop(testInput(chain, { skipCooldownCheck: true }));
+    expect(calls).toContain('key_a');
+  });
+});
+```
+
+  (`DAILY_429`/`MINUTE_429` are the S6-T5 fixture shape inline: `QuotaFailure` with
+  `GenerateRequestsPerDayPerProjectPerModel-FreeTier` value `20` / `…PerMinute…` value `5` plus
+  `RetryInfo` `37s`. `testInput`/`poolChain`/`freshChain`/`spentPoolChain` are local helpers built on the
+  file's existing harness. For the break-it case the helper passes `skipCooldownCheck: true`, which the
+  implementation must honour as "do not consult the cooldown table" — the test fails while the guard is
+  present and passes only when the guard is removed, then the guard is restored.)
+
+- [ ] **Step 2: Run it and watch it fail** —
+  `npx vitest run packages/core/src/assistant/run-events.test.ts apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` ·
+  Expected: FAIL (`routed` unknown; no cooldown persistence)
+- [ ] **Step 3: Implement** —
+  1. In `run-events.ts`, insert before the `tool-call` entry (anchor: lines 114–120):
+
+```ts
+  z
+    .object({
+      kind: z.literal('routed'),
+      tier: z.enum(['standard', 'light']),
+      reason: z.string().max(60),
+    })
+    .strict(),
+```
+
+  2. In `tool-loop.ts`:
+     - Keep the `QuotaLedger` import and constructor working (existing call sites in `service.ts` compile),
+       but delete the two request-path consultations: the `ledgerUntil` block (anchor: lines 364–382,
+       `input.quotaLedger?.exhaustedUntil`) and the `cappedKeys`/`onDailyCap → markExhausted` path (anchor:
+       lines 383–397 and `onDailyCap` at 430–435). Replace them with the cooldown table: before each entry,
+       call `getCooldown(instance, entry.selectedKeyId ?? entry.keyId, entry.model, input.now())`; when
+       defined, record `model-skipped` with reason `daily-quota` / `minute-quota` / `invalid-key` (from the
+       row's `reason`), push a skipped attempt, and `continue` — never call the provider.
+     - In the provider-error catch (anchor: `pushFailedAttempt` near line 700), when the error is a
+       `ProviderError` with `kind: 'quota'` and `quotaScope: 'day'`, call `setCooldown` with
+       `until: nextProviderDayStart('gemini', input.now())`, `reason: 'daily-quota'`, learned limits from
+       `error.learnedLimit`; when `quotaScope: 'minute'`, `until: input.now() + (error.retryAfterMs ?? 60_000)`,
+       `reason: 'minute-quota'`; when `kind: 'authentication'`, `until: Number.MAX_SAFE_INTEGER`,
+       `reason: 'invalid-key'` (cleared only by edit or re-test in S6-T12). Fully spent pools fall through
+       to the next entry and never schedule a retry (`retry-scheduled` is not emitted on this path).
+     - Support the test-only `skipCooldownCheck` input flag (default false) that bypasses the pre-call
+       `getCooldown` consult, for the break-it test only.
+  3. No secret, key text or response body is logged or recorded; reasons stay fixed strings.
+
+- [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS (then re-add the guard after the
+  break-it check and re-run · PASS)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** —
+  `npx prettier --write apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts`
+  then `npx eslint` on the same four paths · exit 0
+- [ ] **Step 7: Commit** —
+  `git add apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts && git commit -m "Slice 6 T11: loop cooldowns and routed event"`
+
+**Done when:** the 6c cases pass (never-called-again, restart-safe, minute expiry, spent-pool fall-through);
+the break-it test proves the skip is load-bearing; `routed` validates with tier + reason.
+
+---
+ (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
 npm run lint
 npx vitest run --maxWorkers=1
