@@ -1457,6 +1457,13 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const SEEDED = 'anthropic-consumer-mcp';
 
+  // Migration 0107 seeds a 'parallel' row that trains on input (owner decision
+  // D11); these tests are about the anthropic row, so clear it here. The
+  // parallel warning has its own test below.
+  beforeEach(() => {
+    t.raw.prepare(`DELETE FROM provider_eligibility WHERE provider = 'parallel'`).run();
+  });
+
   const instanceOps = () =>
     opsInstanceFor({
       config: { BANANASAURS_READONLY: false, BANANASAURS_ENV: 'test' } as unknown as Config,
@@ -1569,6 +1576,20 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
     });
   });
 
+  it("warns 'not-no' for the seeded parallel row, which may train on search queries (D11)", () => {
+    t.raw
+      .prepare(
+        `INSERT INTO provider_eligibility (provider, trains_on_input, evidence_url, evidence_clause, production_use_allowed, reviewed_at) VALUES ('parallel', 'yes', 'https://parallel.ai/terms', 'test', 1, ?)`,
+      )
+      .run(NOW);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toContainEqual({
+      provider: 'parallel',
+      reason: 'not-no',
+      trainsOnInput: 'yes',
+      reviewedAt: NOW,
+    });
+  });
+
   it("warns 'stale' for a row reviewed 91 days before now, and nothing for 89 days", () => {
     setReviewedAt(SEEDED, NOW - 91 * DAY_MS);
     expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
@@ -1640,6 +1661,13 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
 
 describe('providerReview (ruling M4-D20)', () => {
   const SEEDED = 'anthropic-consumer-mcp';
+
+  // Migration 0107 seeds a 'parallel' row that trains on input (owner decision
+  // D11); these tests are about the anthropic row, so clear it here. The
+  // parallel warning has its own test below.
+  beforeEach(() => {
+    t.raw.prepare(`DELETE FROM provider_eligibility WHERE provider = 'parallel'`).run();
+  });
 
   const instanceOps = () =>
     opsInstanceFor({
