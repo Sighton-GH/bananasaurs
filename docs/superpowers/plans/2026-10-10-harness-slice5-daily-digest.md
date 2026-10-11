@@ -998,6 +998,620 @@ it('stores a daily-digest run and still refuses an unknown source', () => {
 
 **Done when:** `via: 'schedule'` parses; a `daily-digest` run round-trips and an unknown source still throws at the CHECK.
 
-<!-- PASS4 -->
+### S5-T7: digest handler and guild wiring (replay first)   ·   Wave 4
+**Owns:** Create: `apps/daemon/src/jobs/assistant-digest.ts` · Test: `apps/daemon/src/jobs/assistant-digest.test.ts` · Modify: `apps/daemon/src/runtime/guild.ts` (add the handler to the `handlers` array after `assistantSummariseHandler`, plus the `digestModel` closure beside `summariseModel`)
+**Reads (do not edit):** `apps/daemon/src/jobs/assistant-summarise.ts` (the `SummariseModelPort` shape, the skip-without-throwing posture, the `SUMMARY_SYSTEM_INSTRUCTION` style), `apps/daemon/src/runtime/guild.ts` lines 1185–1225 (the `summariseModel` closure and the `handlers: [` opening), `packages/storage/src/repos/assistant.ts` lines 1030–1047 (`listDecisions` shape) and 1194–1235 (`listMemories` shape)
+**Interfaces:** Consumes: every S5-T2 export; `assistantDailyDigestPayload`, `JOB_KINDS.assistantDailyDigest` (S5-T3); `digestRepo.*` (S5-T4); the five `assistant.digest…` settings (S5-T5); `ensureRun`/`updateRun`/`appendRunEvent` from `runRepo`, `insertDecisionDraftOnce`/`listDecisions`/`listMemories` from `assistantRepo` · Produces: `export interface DigestModelPort` · `export const assistantDailyDigestHandler = (scope: GuildScope, deps: DigestDeps): JobHandler<AssistantDailyDigestPayload>`
+
+- [ ] **Step 1: Write the failing test** — create `apps/daemon/src/jobs/assistant-digest.test.ts`. Storage fixtures copy `assistant.test.ts` lines 50–56 (`openMigratedTestDatabase`, `t.scopes.forGuild(G)`, `guildRepo.upsertGuild`). The handler is built directly with stub deps (no guild runtime needed). Invented names only. A stub logger is `{ info(): void {}, warn(): void {}, error(): void {} }` — check the `Logger` type import from `@bananasaurs/core` and trim to the methods the handler calls:
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
+import { parseGuildId } from '@bananasaurs/core';
+import { openMigratedTestDatabase, type MigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import { assistantRepo, conversationRepo, digestRepo, guildRepo, runRepo } from '@bananasaurs/storage';
+import { appendTurn, createConversation } from '@bananasaurs/storage/repos/conversations';
+```
+
+(Check how daemon tests import storage test-support: `assistant.test.ts` in daemon uses its own harness — read the top of `apps/daemon/src/jobs/assistant.test.ts` lines 1–60 for the established storage-fixture imports on the daemon side and use those exact paths instead if they differ.)
+
+```ts
+let t: MigratedTestDatabase;
+const G = parseGuildId('111111111111111111');
+const BOT = '999999999999999999';
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+  guildRepo.upsertGuild(t.scopes.forGuild(G), { name: 'guild', now: 1 });
+});
+afterEach(() => t.close());
+
+const deps = (over: Record<string, unknown> = {}) => ({
+  now: () => 1_790_000_000_000,
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  timeZone: () => 'America/Vancouver',
+  botUserId: BOT,
+  digestModel: async () => ({ ok: true as const, text: '{"daySummary": "Talked about the build night.", "memoryProposals": []}' }),
+  digestEnabled: () => true,
+  digestInputChars: () => 40_000,
+  digestMaxProposals: () => 10,
+  ...over,
+});
+
+const seedDay = () => {
+  const s = t.scopes.forGuild(G);
+  createConversation(s, { conversationId: 'conv-1', channelId: '333333333333333333', behaviourId: 'club', startedBy: '100000000000000001', title: 'Build night', source: 'discord', at: Date.parse('2026-10-09T19:00:00Z') });
+  appendTurn(s, { conversationId: 'conv-1', turnId: 't1', at: Date.parse('2026-10-09T19:01:00Z'), role: 'user', authorId: '100000000000000001', authorName: 'Sam L', text: 'When is build night?' });
+  appendTurn(s, { conversationId: 'conv-1', turnId: 't2', at: Date.parse('2026-10-09T19:02:00Z'), role: 'assistant', authorName: 'Bananasaurs', text: 'Second Friday.' });
+};
+
+describe('assistantDailyDigestHandler (ADR 0150)', () => {
+  it('replay first: a second run for the same day writes nothing new', async () => {
+    seedDay();
+    const s = t.scopes.forGuild(G);
+    const handler = assistantDailyDigestHandler(s, deps());
+    await handler.run({ day: '2026-10-09' });
+    await handler.run({ day: '2026-10-09' });
+    expect(digestRepo.listDigests(s, 10)).toHaveLength(1);
+    expect(runRepo.listRuns(s, { limit: 10 }).filter((r) => r.runId === 'digest-2026-10-09')).toHaveLength(1);
+  });
+  it('writes an empty digest with no model call when the day has no turns', async () => {
+    const model = vi.fn(async () => ({ ok: true as const, text: '{}' }));
+    const s = t.scopes.forGuild(G);
+    await assistantDailyDigestHandler(s, deps({ digestModel: model }))({ day: '2026-10-09' });
+    expect(model).not.toHaveBeenCalled();
+    expect(digestRepo.getDigest(s, '2026-10-09')?.summary.daySummary).toContain('No assistant conversations');
+  });
+  it('files proposals as drafts and drops duplicates of memory and pending drafts', async () => {
+    seedDay();
+    const s = t.scopes.forGuild(G);
+    assistantRepo.putMemory(s, { id: 'kept', section: 'Club', content: 'Build night is the second Friday' }, 50);
+    assistantRepo.insertDecisionDraftOnce(s, { id: 'digest:2026-10-09:0', kind: 'memory', summary: 'Existing draft', requesterId: BOT, provenance: 'daily-digest', at: 60 });
+    const text = JSON.stringify({
+      daySummary: 'Build night plans.',
+      memoryProposals: [
+        { text: 'Build night is the second Friday!', why: 'Members keep asking.', sourceConversationIds: ['conv-1'] },
+        { text: 'The laser cutter needs a new lens.', why: 'Alex P reported it.', sourceConversationIds: ['conv-1'] },
+      ],
+    });
+    await assistantDailyDigestHandler(s, deps({ digestModel: async () => ({ ok: true as const, text }) })).run({ day: '2026-10-09' });
+    const drafts = assistantRepo.listDecisions(s).filter((d) => d.kind === 'memory' && d.provenance === 'daily-digest');
+    expect(drafts.map((d) => d.status)).toEqual(['draft']);
+    expect(drafts.some((d) => d.summary.includes('laser cutter'))).toBe(true);
+    expect(drafts.some((d) => d.summary.includes('second Friday'))).toBe(false);
+    expect(assistantRepo.listMemories(s)).toHaveLength(1);
+  });
+  it('an invalid model reply stores nothing, fails the run, and does not throw', async () => {
+    seedDay();
+    const s = t.scopes.forGuild(G);
+    const handler = assistantDailyDigestHandler(s, deps({ digestModel: async () => ({ ok: true as const, text: 'not json' }) }));
+    await expect(handler.run({ day: '2026-10-09' })).resolves.toBeUndefined();
+    expect(digestRepo.getDigest(s, '2026-10-09')).toBeUndefined();
+    expect(assistantRepo.listDecisions(s)).toEqual([]);
+    expect(runRepo.getRun(s, 'digest-2026-10-09')?.state).toBe('failed');
+  });
+  it('does nothing when the digest is off', async () => {
+    seedDay();
+    const model = vi.fn(async () => ({ ok: true as const, text: '{}' }));
+    const s = t.scopes.forGuild(G);
+    await assistantDailyDigestHandler(s, deps({ digestEnabled: () => false, digestModel: model })).run({ day: '2026-10-09' });
+    expect(model).not.toHaveBeenCalled();
+    expect(digestRepo.getDigest(s, '2026-10-09')).toBeUndefined();
+  });
+});
+```
+
+Break-it (do it, watch it fail, then revert): temporarily remove the `getDigest` early-return in the handler and watch the replay test fail with two proposal sets; restore and record it in the commit message.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/assistant-digest.test.ts --maxWorkers=1` · Expected: FAIL with `Failed to resolve import "./assistant-digest.js"`
+- [ ] **Step 3: Implement** — create `apps/daemon/src/jobs/assistant-digest.ts` with the full code:
+
+```ts
+import {
+  assistantDailyDigestPayload,
+  buildDigestInput,
+  DIGEST_SYSTEM_INSTRUCTION,
+  digestOutputSchema,
+  JOB_KINDS,
+  localDayBounds,
+  MAX_DIGEST_SUMMARY_WORDS,
+  neutraliseMarkers,
+  normalizeProposalText,
+  redactEvidenceText,
+  safeDisplayName,
+  safeLogFields,
+  splitDigestInput,
+  truncateWords,
+  type AssistantDailyDigestPayload,
+  type DigestOutput,
+  type JobHandler,
+  type Logger,
+} from '@bananasaurs/core';
+import { assistantRepo, digestRepo, runRepo, type GuildScope } from '@bananasaurs/storage';
+
+/**
+ * The model call the digest runs (ADR 0150 decision 2). `{ ok: false }` is a
+ * completed failure, never a retry: the failure is recorded on the run and
+ * the next local day enqueues fresh.
+ */
+export type DigestModelPort = (req: {
+  readonly systemInstruction: string;
+  readonly text: string;
+}) => Promise<
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
+>;
+
+export interface DigestDeps {
+  readonly now: () => number;
+  readonly logger: Logger;
+  readonly timeZone: () => string;
+  readonly botUserId: string;
+  readonly digestModel: DigestModelPort;
+  readonly digestEnabled: () => boolean;
+  readonly digestInputChars: () => number;
+  readonly digestMaxProposals: () => number;
+}
+
+const EMPTY_SUMMARY = 'No assistant conversations that day.';
+
+const speakerOf = (authorName: string, role: string): string => {
+  const cleaned = safeDisplayName(authorName);
+  const name = cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
+  return role === 'assistant' ? 'bot' : name;
+};
+
+/**
+ * One daily digest (ADR 0150).
+ *
+ * Idempotent two ways: the timer's `oncePerBucket` bucket key refuses a
+ * second enqueue even after this job finished, and this handler returns
+ * early when the digest row already exists — so a replayed or retried run
+ * can never file proposals twice.
+ */
+export const assistantDailyDigestHandler = (
+  scope: GuildScope,
+  deps: DigestDeps,
+): JobHandler<AssistantDailyDigestPayload> => ({
+  kind: JOB_KINDS.assistantDailyDigest,
+  payload: assistantDailyDigestPayload,
+  async run(payload) {
+    const now = deps.now();
+    if (!deps.digestEnabled()) {
+      deps.logger.info(
+        safeLogFields({ component: 'assistant-digest', guildId: scope.guildId, day: payload.day }),
+        'daily digest is off; skipping',
+      );
+      return;
+    }
+    const runId = `digest-${payload.day}`;
+    const tz = deps.timeZone();
+    runRepo.ensureRun(scope, {
+      runId,
+      userId: deps.botUserId,
+      behaviourId: 'default',
+      source: 'daily-digest',
+      queuedAt: now,
+    });
+    const startedAt = deps.now();
+    await runRepo.appendRunEvent(scope, runId, startedAt, { kind: 'queued', via: 'schedule' });
+    await runRepo.appendRunEvent(scope, runId, startedAt, { kind: 'started', attempt: 1, queueWaitMs: 0 });
+    const fail = async (code: string): Promise<void> => {
+      runRepo.updateRun(scope, runId, { state: 'failed', stage: 'done', finishedAt: deps.now(), errorCode: code, updatedAt: deps.now() });
+      await runRepo.appendRunEvent(scope, runId, deps.now(), { kind: 'finished', outcome: 'failed', durationMs: Math.max(0, deps.now() - startedAt), code });
+    };
+    if (digestRepo.getDigest(scope, payload.day) !== undefined) {
+      runRepo.updateRun(scope, runId, { state: 'answered', stage: 'done', finishedAt: deps.now(), updatedAt: deps.now() });
+      await runRepo.appendRunEvent(scope, runId, deps.now(), { kind: 'finished', outcome: 'answered', durationMs: Math.max(0, deps.now() - startedAt) });
+      return;
+    }
+    const { start, end } = localDayBounds(payload.day, tz);
+    const groups = digestRepo.turnsForDay(scope, start, end);
+    if (groups.length === 0) {
+      digestRepo.putDigestOnce(scope, {
+        day: payload.day,
+        summary: { daySummary: EMPTY_SUMMARY, memoryProposals: [] },
+        conversations: [],
+        now: deps.now(),
+      });
+      runRepo.updateRun(scope, runId, { state: 'answered', stage: 'done', finishedAt: deps.now(), updatedAt: deps.now() });
+      await runRepo.appendRunEvent(scope, runId, deps.now(), { kind: 'finished', outcome: 'answered', durationMs: Math.max(0, deps.now() - startedAt) });
+      return;
+    }
+    const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+    const input = buildDigestInput(
+      groups.map((g) => ({
+        conversationId: g.conversationId,
+        title: g.title,
+        summaryText: g.summaryText,
+        lines: g.turns.map((t) => `[${speakerOf(t.authorName, t.role)}, ${t.role === 'assistant' ? 'bot' : 'member'}] ${clean(t.text)}`),
+      })),
+      deps.digestInputChars(),
+    );
+    const outputs: DigestOutput[] = [];
+    for (const chunk of splitDigestInput(input, deps.digestInputChars())) {
+      const result = await deps.digestModel({ systemInstruction: DIGEST_SYSTEM_INSTRUCTION, text: chunk });
+      if (!result.ok) {
+        deps.logger.info(
+          safeLogFields({ component: 'assistant-digest', guildId: scope.guildId, day: payload.day, reason: result.reason }),
+          'daily digest model call failed; writing nothing',
+        );
+        await fail('digest-model-unavailable');
+        return;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(result.text);
+      } catch {
+        parsed = undefined;
+      }
+      const valid = parsed === undefined ? undefined : digestOutputSchema.safeParse(cleanDigestJson(parsed));
+      if (valid === undefined || !valid.success) {
+        deps.logger.info(
+          safeLogFields({ component: 'assistant-digest', guildId: scope.guildId, day: payload.day, reason: 'invalid-json' }),
+          'daily digest model reply failed to parse; writing nothing',
+        );
+        await fail('digest-invalid-json');
+        return;
+      }
+      outputs.push(valid.data);
+    }
+    const merged: DigestOutput = {
+      daySummary: truncateWords(outputs.map((o) => o.daySummary).join('\n\n'), MAX_DIGEST_SUMMARY_WORDS),
+      memoryProposals: outputs.flatMap((o) => o.memoryProposals),
+    };
+    const seen = new Set(
+      assistantRepo.listMemories(scope).map((m) => normalizeProposalText(`${m.section} ${m.content}`)),
+    );
+    for (const d of assistantRepo.listDecisions(scope)) {
+      if (d.kind === 'memory' && (d.status === 'draft' || d.status === 'reviewed')) seen.add(normalizeProposalText(d.summary));
+    }
+    const kept = merged.memoryProposals.filter((p) => {
+      const key = normalizeProposalText(p.text);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, deps.digestMaxProposals());
+    digestRepo.putDigestOnce(scope, {
+      day: payload.day,
+      summary: { daySummary: merged.daySummary, memoryProposals: kept },
+      conversations: groups.map((g) => ({ conversationId: g.conversationId, channelId: g.channelId, title: g.title })),
+      now: deps.now(),
+    });
+    kept.forEach((p, index) => {
+      assistantRepo.insertDecisionDraftOnce(scope, {
+        id: `digest:${payload.day}:${index}`,
+        kind: 'memory',
+        summary: `${p.text}\nWhy: ${p.why}`,
+        requesterId: deps.botUserId,
+        provenance: 'daily-digest',
+        at: deps.now(),
+      });
+    });
+    runRepo.updateRun(scope, runId, { state: 'answered', stage: 'done', finishedAt: deps.now(), updatedAt: deps.now() });
+    await runRepo.appendRunEvent(scope, runId, deps.now(), { kind: 'finished', outcome: 'answered', durationMs: Math.max(0, deps.now() - startedAt) });
+  },
+});
+
+/** Clean model JSON the way evidence is cleaned everywhere (hard rule 3). */
+const cleanDigestJson = (parsed: unknown): unknown => {
+  if (typeof parsed !== 'object' || parsed === null) return parsed;
+  const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+  const o = parsed as { daySummary?: unknown; memoryProposals?: unknown };
+  return {
+    ...(typeof o.daySummary === 'string' ? { daySummary: clean(o.daySummary) } : {}),
+    ...(Array.isArray(o.memoryProposals)
+      ? {
+          memoryProposals: o.memoryProposals.map((p) => {
+            const q = p as { text?: unknown; why?: unknown; sourceConversationIds?: unknown };
+            return {
+              ...(typeof q.text === 'string' ? { text: clean(q.text) } : { text: q.text }),
+              ...(typeof q.why === 'string' ? { why: clean(q.why) } : { why: q.why }),
+              sourceConversationIds: q.sourceConversationIds,
+            };
+          }),
+        }
+      : {}),
+  };
+};
+```
+
+(Check the real export names before committing: `runRepo.ensureRun/updateRun/appendRunEvent/getRun/listRuns` from `packages/storage/src/repos/runs.ts`; `assistantRepo.listMemories/listDecisions/putMemory/insertDecisionDraftOnce` from `repos/assistant.ts`; `runRepo.listRuns` signature `(scope, { active?, before?, limit })`. `appendRunEvent` is sync (returns `seq`) in `runs.ts` — drop the `await` on it if so, keeping the calls. `Logger`/`safeLogFields`/`safeDisplayName`/`neutraliseMarkers`/`redactEvidenceText` are all `@bananasaurs/core` exports, mirroring `assistant-summarise.ts` lines 1–14. `NewAssistantDecision.provenance`/`requesterId` per `assistant.ts` lines 1077–1084; `requesterId` carries the snowflake CHECK, hence the bot id.)
+
+Then in `apps/daemon/src/runtime/guild.ts`: beside the `summariseModel` closure (lines 1185–1217), add a `digestModel` closure that picks the first usable chain entry in digest order and reserves it:
+
+```ts
+  const digestModel: DigestModelPort = async ({ systemInstruction, text }) => {
+    // (after Slice 6: `orderChainForDigest(entries, tier)` with tier from
+    // `assistant.digestTier`, and record the `routed` run event Slice 6 adds.)
+    const entry = orderChainForDigest((deps.assistantChain ?? (() => []))()).find(
+      (candidate) => candidate.provider !== undefined && candidate.skip === undefined,
+    );
+    if (entry === undefined || entry.provider === undefined) {
+      return { ok: false, reason: 'entry-unavailable' };
+    }
+    const reserved = reserveEntryCall(instance, entry, guildId, now());
+    if (!reserved.ok) return { ok: false, reason: 'rate-limited' };
+    try {
+      const response = await entry.provider.generateText({
+        model: entry.model,
+        systemInstruction,
+        messages: [{ role: 'user', text }],
+        maxOutputTokens: 2_000,
+        temperature: 0,
+      });
+      return { ok: true, text: response.text };
+    } catch (err) {
+      return { ok: false, reason: err instanceof ProviderError ? err.kind : 'error' };
+    }
+  };
+```
+
+(Mirror the `summariseModel` closure's exact names: `deps.assistantChain`, `reserveEntryCall(instance, entry, guildId, now())`, `ProviderError`. Import `orderChainForDigest` and the `DigestModelPort` type plus `assistantDailyDigestHandler`.) Add `assistantDailyDigestHandler(scope, { now, logger, timeZone: () => config.BANANASAURS_TIME_ZONE, botUserId, digestModel, digestEnabled: () => settings === undefined ? true : settings.get('assistant.digestEnabled') === 1, digestInputChars: () => settings === undefined ? DIGEST_DEFAULT_INPUT_CHARS : settings.get('assistant.digestInputChars'), digestMaxProposals: () => settings === undefined ? DIGEST_DEFAULT_MAX_PROPOSALS : settings.get('assistant.digestMaxProposals') })` to the `handlers` array directly after `assistantSummariseHandler(...)` (line 1222). Check how `settings` and `botUserId` are named in that scope (`settings === undefined` guards and `botUserId` at line 1137/1241; `config.BANANASAURS_TIME_ZONE` per line 1238).
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/jobs/assistant-digest.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/jobs/assistant-digest.ts apps/daemon/src/jobs/assistant-digest.test.ts apps/daemon/src/runtime/guild.ts` then `npx eslint apps/daemon/src/jobs/assistant-digest.ts apps/daemon/src/jobs/assistant-digest.test.ts apps/daemon/src/runtime/guild.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/jobs/assistant-digest.ts apps/daemon/src/jobs/assistant-digest.test.ts apps/daemon/src/runtime/guild.ts && git commit -m "Slice 5 T7: daily digest handler and guild wiring (replay-safe, drafts only)"`
+
+**Done when:** replay writes one row and one run; empty day skips the model; duplicates drop against memory and drafts and drafts stay `draft`; bad JSON fails the run without throwing; break-it confirmed the guard matters.
+
+---
+
+### S5-T8: digest timer and daemon wiring (restart first)   ·   Wave 4
+**Owns:** Create: `apps/daemon/src/runtime/digest-timer.ts` · Test: `apps/daemon/src/runtime/digest-timer.test.ts` · Modify: `apps/daemon/src/runtime/daemon.ts` (create/start/stop beside the conversation-prune timer)
+**Reads (do not edit):** `apps/daemon/src/runtime/conversation-prune-timer.ts` (the full 121-line shape to mirror: `DAILY_JOB_TICK_MS`, `runOnce`/`start`/`stop`, the hourly-tick comment), `apps/daemon/src/runtime/conversation-prune-timer.test.ts` (its enqueue-stub shape — copy it)
+**Interfaces:** Consumes: `localDay`, `localHour` (S5-T2); `JOB_KINDS.assistantDailyDigest`, `assistantDailyDigestDedupeKey` (S5-T3); `assistant.digestEnabled`, `assistant.digestHour` (S5-T5) · Produces: `export function createDailyDigestTimer(deps: DailyDigestTimerDeps): DailyDigestTimer`
+
+- [ ] **Step 1: Write the failing test** — create `apps/daemon/src/runtime/digest-timer.test.ts`, mirroring the prune timer's test (same stub-enqueue shape; `enqueue` returns `{ enqueued: boolean }` and the stub records keys):
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+import { JOB_KINDS } from '@bananasaurs/core';
+import { createDailyDigestTimer } from './digest-timer.js';
+
+const scopeFor = (guildId: string) => ({ guildId }) as never;
+const stubLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
+
+// 2026-10-09T11:00:00Z is 04:00 in America/Vancouver.
+const PAST_FOUR = Date.parse('2026-10-09T11:00:00Z');
+const BEFORE_FOUR = Date.parse('2026-10-09T10:00:00Z');
+
+const setup = (nowMs: number, enabled = true) => {
+  const keys: string[] = [];
+  const enqueue = vi.fn((_scope: unknown, input: { dedupeKey: string }) => {
+    if (keys.includes(input.dedupeKey)) return { enqueued: false };
+    keys.push(input.dedupeKey);
+    return { enqueued: true };
+  });
+  const timer = createDailyDigestTimer({
+    guilds: () => [{ scope: scopeFor('111111111111111111') }],
+    enqueue: enqueue as never,
+    hasConversations: () => true,
+    timeZone: () => 'America/Vancouver',
+    digestEnabled: () => enabled,
+    digestHour: () => 4,
+    now: () => nowMs,
+    logger: stubLogger,
+  });
+  return { timer, enqueue, keys };
+};
+
+describe('createDailyDigestTimer (ADR 0150 decision 1, restart first)', () => {
+  it('enqueues one digest per guild per local day, and a replay enqueues nothing', () => {
+    const { timer, enqueue } = setup(PAST_FOUR);
+    timer.runOnce();
+    timer.runOnce();
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(enqueue.mock.calls.filter((c) => (c[1] as { dedupeKey: string }).dedupeKey === 'assistant_daily_digest:2026-10-09')).toHaveLength(1);
+  });
+  it('a restart after the job finished still enqueues nothing (the storage oncePerBucket guarantee)', () => {
+    const first = setup(PAST_FOUR);
+    first.timer.runOnce();
+    // A restart rebuilds the timer with the same bucket key live in the table:
+    // the second timer's enqueue collapses like `jobRepo.enqueue` with
+    // `oncePerBucket` does (covered in `packages/storage/src/repos/jobs.test.ts`).
+    const second = setup(PAST_FOUR);
+    (second.enqueue as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({ enqueued: false }));
+    second.timer.runOnce();
+    expect(second.enqueue.mock.results[0]).toMatchObject({ value: { enqueued: false } });
+  });
+  it('stays quiet before the local hour and when off', () => {
+    const early = setup(BEFORE_FOUR);
+    early.timer.runOnce();
+    expect(early.enqueue).not.toHaveBeenCalled();
+    const off = setup(PAST_FOUR, false);
+    off.timer.runOnce();
+    expect(off.enqueue).not.toHaveBeenCalled();
+  });
+  it('uses the local day and the digest kind', () => {
+    const { enqueue } = setup(PAST_FOUR);
+    expect(enqueue).not.toHaveBeenCalled();
+    const { timer, keys } = setup(PAST_FOUR);
+    timer.runOnce();
+    expect(keys).toEqual(['assistant_daily_digest:2026-10-09']);
+    expect(enqueue.mock.calls[0]?.[1]).toMatchObject({ kind: JOB_KINDS.assistantDailyDigest });
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/runtime/digest-timer.test.ts --maxWorkers=1` · Expected: FAIL with `Failed to resolve import "./digest-timer.js"`
+- [ ] **Step 3: Implement** — create `apps/daemon/src/runtime/digest-timer.ts`, mirroring `conversation-prune-timer.ts` exactly (doc comment, `DAILY_JOB_TICK_MS = 60 * 60 * 1000`, `runOnce`/`start`/`stop` with `timer.unref()`):
+
+```ts
+import {
+  assistantDailyDigestDedupeKey,
+  JOB_KINDS,
+  localDay,
+  localHour,
+  safeLogFields,
+  type Logger,
+} from '@bananasaurs/core';
+import { conversationRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage';
+
+/**
+ * The daily digest timer (ADR 0150 decision 1).
+ *
+ * The job table has no scheduler, so this is the producer: at startup and
+ * every hour it enqueues one `assistant_daily_digest` job per guild that has
+ * conversations, once the local hour (default 04:00 in
+ * `BANANASAURS_TIME_ZONE`) is reached. The dedupe key is the local day, so a
+ * second `runOnce` on the same day — or a restart — enqueues nothing: the
+ * `(guild_id, dedupe_key)` partial unique index refuses it per guild while
+ * the job is still pending (ADR 0016), and `oncePerBucket` (ADR 0127) keeps
+ * it refused after the job has finished.
+ *
+ * The tick is hourly rather than daily on purpose: a 24 h `setInterval`
+ * re-arms from when it actually fired, so ticks drift later, and a tick that
+ * drifts past the local 04:00 would leave a day with no run at all. The day
+ * key plus `oncePerBucket` makes extra ticks harmless.
+ *
+ * Mirrors `conversation-prune-timer.ts` in its start/stop contract (run once
+ * at start, then `setInterval(...).unref()`; `stop` clears) and nothing else.
+ */
+
+export const DAILY_JOB_TICK_MS = 60 * 60 * 1000;
+
+export interface DailyDigestTimer {
+  /** Enqueues one digest job per guild for the current local day, now. */
+  runOnce(): void;
+  /** Runs once now, then schedules the recurring interval. */
+  start(): void;
+  stop(): void;
+}
+
+export interface DailyDigestTimerDeps {
+  readonly guilds: () => readonly { scope: GuildScope }[];
+  readonly enqueue: (
+    scope: GuildScope,
+    input: jobRepo.EnqueueInput,
+  ) => { readonly enqueued: boolean };
+  readonly hasConversations?: (scope: GuildScope) => boolean;
+  readonly timeZone: () => string;
+  readonly digestEnabled: () => boolean;
+  readonly digestHour: () => number;
+  readonly now: () => number;
+  readonly logger: Logger;
+}
+
+export function createDailyDigestTimer(deps: DailyDigestTimerDeps): DailyDigestTimer {
+  let timer: NodeJS.Timeout | undefined;
+  const hasConversations =
+    deps.hasConversations ?? ((scope) => conversationRepo.hasConversations(scope));
+
+  const runOnce = (): void => {
+    if (!deps.digestEnabled()) return;
+    const now = deps.now();
+    const tz = deps.timeZone();
+    if (localHour(tz, now) < deps.digestHour()) return;
+    const day = localDay(tz, now);
+    let enqueued = 0;
+    for (const { scope } of deps.guilds()) {
+      if (!hasConversations(scope)) continue;
+      if (
+        deps.enqueue(scope, {
+          kind: JOB_KINDS.assistantDailyDigest,
+          payload: JSON.stringify({ day }),
+          dedupeKey: assistantDailyDigestDedupeKey(day),
+          oncePerBucket: true,
+          now,
+        }).enqueued
+      ) {
+        enqueued += 1;
+      }
+    }
+    if (enqueued > 0) {
+      deps.logger.info(
+        safeLogFields({ component: 'assistant-digest', jobKind: JOB_KINDS.assistantDailyDigest, day }),
+        'assistant-digest: enqueued for the local day',
+      );
+    }
+  };
+
+  return {
+    runOnce,
+    start() {
+      runOnce();
+      timer = setInterval(runOnce, DAILY_JOB_TICK_MS);
+      timer.unref();
+    },
+    stop() {
+      if (timer !== undefined) clearInterval(timer);
+      timer = undefined;
+    },
+  };
+}
+```
+
+Then in `apps/daemon/src/runtime/daemon.ts`: beside the conversation-prune timer (lines 387–395, started line 794, stopped line 807), create/start/stop a `dailyDigestTimer` with `timeZone: () => config.BANANASAURS_TIME_ZONE`, `digestEnabled: () => instanceSettings.get('assistant.digestEnabled') === 1`, `digestHour: () => instanceSettings.get('assistant.digestHour')` (live reads, so dashboard edits apply without a restart — same posture as the resource-refresh interval at lines 366–374).
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/runtime/digest-timer.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/runtime/digest-timer.ts apps/daemon/src/runtime/digest-timer.test.ts apps/daemon/src/runtime/daemon.ts` then `npx eslint apps/daemon/src/runtime/digest-timer.ts apps/daemon/src/runtime/digest-timer.test.ts apps/daemon/src/runtime/daemon.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/runtime/digest-timer.ts apps/daemon/src/runtime/digest-timer.test.ts apps/daemon/src/runtime/daemon.ts && git commit -m "Slice 5 T8: daily digest timer and daemon wiring"`
+
+**Done when:** replay and restart enqueue nothing; before-hour and off stay quiet; the key names the local day.
+
+---
+
+### S5-T9: digest retention in the prune job   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/jobs/conversation-prune.ts`, `apps/daemon/src/jobs/conversation-prune.test.ts`
+**Reads (do not edit):** `apps/daemon/src/jobs/conversation-prune.test.ts` (its handler-call shape and audit assertions — copy them)
+**Interfaces:** Consumes: `digestRepo.deleteDigestsOlderThan` (S5-T4) · Produces: prune deletes digest rows older than the retention window
+
+- [ ] **Step 1: Write the failing test** — append to `apps/daemon/src/jobs/conversation-prune.test.ts` (using that file's existing handler-invocation and scope helpers):
+
+```ts
+it('prunes digest rows older than the retention window with the conversations', () => {
+  const s = t.scopes.forGuild(G);
+  assistantRepo.setConversationRetention(s, 61, 100);
+  digestRepo.putDigestOnce(s, { day: '2026-01-01', summary: { daySummary: 'Old.', memoryProposals: [] }, conversations: [], now: 100 });
+  digestRepo.putDigestOnce(s, { day: '2026-10-09', summary: { daySummary: 'New.', memoryProposals: [] }, conversations: [], now: 1_790_000_000_000 });
+  conversationPruneHandler(s, { now: () => 1_790_000_000_000, logger: stubLogger }).run({ day: '2026-10-09' });
+  expect(digestRepo.listDigests(s, 10).map((d) => d.day)).toEqual(['2026-10-09']);
+});
+```
+
+(Use the file's real fixture names for `t`, `G`, `stubLogger`; keep the two digest days and the final assertion. `setConversationRetention` signature per `assistant.ts`: `(scope, days, now)`.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/conversation-prune.test.ts --maxWorkers=1` · Expected: FAIL (`digestRepo` has no export / rows not pruned)
+- [ ] **Step 3: Implement** — in `apps/daemon/src/jobs/conversation-prune.ts`:
+  1. Add `digestRepo` to the storage import (line 9–16 anchor): `import { assistantRepo, conversationRepo, digestRepo, effectRepo, runRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';`
+  2. Exact anchor (lines 46–49):
+
+```ts
+    const { conversations, ids } = conversationRepo.pruneOlderThan(scope, now - days * 86_400_000);
+    traceRepo.deleteTracesForConversations(scope, ids);
+    runRepo.deleteRunsForConversations(scope, ids);
+    if (conversations === 0) return;
+```
+
+exact replacement:
+
+```ts
+    const { conversations, ids } = conversationRepo.pruneOlderThan(scope, now - days * 86_400_000);
+    traceRepo.deleteTracesForConversations(scope, ids);
+    runRepo.deleteRunsForConversations(scope, ids);
+    // ADR 0150 decision 4: digest rows follow the same window, keyed by day.
+    // The cutoff is a UTC day; a digest written near a zone edge can outlive
+    // the conversations by under a day. Keep-forever (`null`) returns above
+    // and keeps digests too.
+    const digests = digestRepo.deleteDigestsOlderThan(
+      scope,
+      new Date(now - days * 86_400_000).toISOString().slice(0, 10),
+    );
+    if (conversations === 0 && digests === 0) return;
+```
+
+  3. Extend the audit row (line 57 anchor `after: { count: conversations },`) to `after: { count: conversations, digests },`.
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/jobs/conversation-prune.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/jobs/conversation-prune.ts apps/daemon/src/jobs/conversation-prune.test.ts` then `npx eslint apps/daemon/src/jobs/conversation-prune.ts apps/daemon/src/jobs/conversation-prune.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/jobs/conversation-prune.ts apps/daemon/src/jobs/conversation-prune.test.ts && git commit -m "Slice 5 T9: digest rows follow conversation retention"`
+
+**Done when:** old digest rows go with old conversations; keep-forever keeps both; the audit row counts both.
+
+<!-- PASS5 -->
+
 
 
