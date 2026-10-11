@@ -49,7 +49,7 @@ export type ProviderCostClass = 'free' | 'paid' | 'unknown';
  */
 export interface ProviderSearchKey {
   readonly keyId: string;
-  readonly source: 'brave' | 'tavily';
+  readonly source: 'brave' | 'tavily' | 'parallel';
   readonly label: string;
   readonly enabled: boolean;
   readonly position: number;

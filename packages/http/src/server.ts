@@ -232,7 +232,7 @@ export interface HttpDeps extends AuthDeps {
          */
         searchKeys?(): readonly {
           readonly keyId: string;
-          readonly source: 'brave' | 'tavily';
+          readonly source: 'brave' | 'tavily' | 'parallel';
           readonly label: string;
           readonly enabled: boolean;
           readonly position: number;
