@@ -5730,3 +5730,162 @@ describe('Slice 2 T9: reply pings (ADR 0145)', () => {
     expect(resolveReplyPings).not.toHaveBeenCalled();
   });
 });
+
+describe('Slice 2 T12: current-question mention names (ADR 0145 item 1)', () => {
+  const USER = '600000000000000002';
+  const ROLE = '600000000000000003';
+  let h: ReturnType<typeof setupB2b>;
+  beforeEach(() => {
+    h = setupB2b(['search-club']);
+  });
+  afterEach(() => h.t.close());
+
+  const run = async (
+    question: string,
+    discord: Parameters<typeof createAssistantService>[7],
+    mentions: { mentionedUserIds?: string[]; mentionedRoleIds?: string[] } = {},
+  ) => {
+    const generateText = vi.fn(async (_req: GenerateTextRequest) => ({
+      text: 'done',
+      model: 'model-a',
+    }));
+    const service = h.serviceWith(
+      { id: 'fake', capabilities: new Set(['text', 'tools']), generateText },
+      discord,
+    );
+    const result = await service.invoke({
+      guildId: B2B_GUILD,
+      channelId: B2B_CHANNEL,
+      userId: B2B_MEMBER,
+      callerRoleIds: [B2B_CLUB_ROLE],
+      behaviour: h.direct,
+      command: 'ask',
+      input: { question },
+      source: 'mention',
+      invocationId: 'int-mention-names',
+      ...mentions,
+    });
+    expect(result.ok).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const request = generateText.mock.calls[0]![0];
+    expect(JSON.stringify(request)).not.toMatch(/\d{17,20}/);
+    return request.messages.map((message) => message.text).join('\n');
+  };
+
+  it('passes current user and role display names to the fake provider', async () => {
+    const findMember = vi.fn(async () => [{ id: USER, displayName: 'Sam L' }]);
+    const roleNames = vi.fn(() => new Map([[ROLE, 'Car Team A']]));
+    const text = await run(
+      `remind <@${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember,
+        roleNames,
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @Sam L and @Car Team A');
+    expect(findMember).toHaveBeenCalledExactlyOnceWith(USER);
+    expect(roleNames).toHaveBeenCalledExactlyOnceWith([ROLE]);
+  });
+
+  it('leaves @user when a member lookup throws, without losing the role name', async () => {
+    const text = await run(
+      `remind <@${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember: async () => {
+          throw new Error('lookup failed');
+        },
+        roleNames: () => new Map([[ROLE, 'Car Team A']]),
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @user and @Car Team A');
+  });
+
+  it('does not look up ids absent from the invocation mention lists', async () => {
+    const findMember = vi.fn(async () => [{ id: USER, displayName: 'Sam L' }]);
+    const roleNames = vi.fn(() => new Map([[ROLE, 'Car Team A']]));
+    expect(
+      await run(`remind <@${USER}> and <@&${ROLE}>`, {
+        memberChannels: async () => [],
+        findMember,
+        roleNames,
+      }),
+    ).toContain('remind @user and @role');
+    expect(findMember).not.toHaveBeenCalled();
+    expect(roleNames).not.toHaveBeenCalled();
+  });
+
+  it('does not look up listed ids absent from the current text', async () => {
+    const findMember = vi.fn(async () => []);
+    const roleNames = vi.fn(() => new Map());
+    expect(
+      await run(
+        'remind the team',
+        { memberChannels: async () => [], findMember, roleNames },
+        { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+      ),
+    ).toContain('remind the team');
+    expect(findMember).not.toHaveBeenCalled();
+    expect(roleNames).not.toHaveBeenCalled();
+  });
+
+  it('falls back for unknown members and roles and mismatched member results', async () => {
+    const text = await run(
+      `remind <@${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember: async () => [{ id: ROLE, displayName: 'Alex P' }],
+        roleNames: () => new Map(),
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @user and @role');
+  });
+
+  it('leaves @role when role lookup throws, without losing the user name', async () => {
+    const text = await run(
+      `remind <@!${USER}> and <@&${ROLE}>`,
+      {
+        memberChannels: async () => [],
+        findMember: async () => [{ id: USER, displayName: 'Sam L' }],
+        roleNames: () => {
+          throw new Error('lookup failed');
+        },
+      },
+      { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+    );
+    expect(text).toContain('remind @Sam L and @role');
+  });
+
+  it('flattens mentions when lookup ports are absent', async () => {
+    expect(
+      await run(
+        `remind <@${USER}> and <@&${ROLE}>`,
+        { memberChannels: async () => [] },
+        { mentionedUserIds: [USER], mentionedRoleIds: [ROLE] },
+      ),
+    ).toContain('remind @user and @role');
+  });
+
+  it('deduplicates lookups and caps each kind at 25 current-message ids', async () => {
+    const users = Array.from({ length: 26 }, (_, i) => String(610000000000000000n + BigInt(i)));
+    const roles = Array.from({ length: 26 }, (_, i) => String(620000000000000000n + BigInt(i)));
+    const findMember = vi.fn(async (id: string) => [{ id, displayName: 'Sam L' }]);
+    const roleNames = vi.fn(
+      (ids: readonly string[]) => new Map(ids.map((id) => [id, 'Car Team A'])),
+    );
+    const text = await run(
+      [...users.map((id) => `<@${id}>`), ...roles.map((id) => `<@&${id}>`)].join(' '),
+      { memberChannels: async () => [], findMember, roleNames },
+      { mentionedUserIds: [users[0]!, ...users], mentionedRoleIds: [roles[0]!, ...roles] },
+    );
+    expect(findMember).toHaveBeenCalledTimes(25);
+    expect(findMember).not.toHaveBeenCalledWith(users[25]);
+    expect(roleNames).toHaveBeenCalledExactlyOnceWith(roles.slice(0, 25));
+    expect(text).toContain('@user');
+    expect(text).toContain('@role');
+  });
+});
