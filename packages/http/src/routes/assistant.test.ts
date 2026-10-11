@@ -581,7 +581,7 @@ describe('assistant skill-grant starter', () => {
     const first = await postStarter(cookie, csrf, { roleIds: [ROLE_A, ROLE_B] });
     expect(first.statusCode).toBe(200);
     expect(first.json()).toEqual({ skillIds: [...STARTER_SKILL_IDS] });
-    expect(STARTER_SKILL_IDS).toHaveLength(9);
+    expect(STARTER_SKILL_IDS).toHaveLength(10);
     const scope = t.scopes.forGuild(GUILD);
     const grants = assistantRepo.listSkillGrants(scope);
     for (const skillId of STARTER_SKILL_IDS) {
