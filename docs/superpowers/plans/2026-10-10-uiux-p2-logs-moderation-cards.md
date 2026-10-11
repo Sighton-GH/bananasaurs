@@ -221,8 +221,17 @@ In `card.ts`:
 - Add `pingEveryone?: boolean` to the options.
 - Set `parse: options.pingEveryone === true ? (['everyone'] as const) : ([] as const)`.
 
-`toOutgoingMessage` (P1 Task 2) copies `allowedMentions` as it is. Check that it does, and widen its
-parameter type if `tsc` asks.
+`toOutgoingMessage` (P1 Task 2) writes `parse: []` as a literal, so on its own it would silently drop
+`pingEveryone`. Change that line to `parse: [...message.allowedMentions.parse]`, and add this test to
+`card.test.ts`:
+
+```ts
+it('toOutgoingMessage keeps an everyone ping the card asked for', () => {
+  const out = toOutgoingMessage(card({ tone: 'neutral', children: [text('x')], pingEveryone: true }));
+  expect(out.allowedMentions?.parse).toEqual(['everyone']);
+  expect(toOutgoingMessage(card({ tone: 'neutral', children: [text('x')] })).allowedMentions?.parse).toEqual([]);
+});
+```
 
 - [ ] **Step 3: Catalogue entries**
 
@@ -2776,7 +2785,7 @@ Run `npx vitest run packages/core/src/panels`. Expect FAIL.
        tone: 'accent',
        art: ['bannerPanel'],
        children: [
-         gallery([artItem('bannerPanel')]),
+         gallery([{ media: { url: artUrl('bannerPanel') }, description: ART.bannerPanel.alt }]),
          text(panel.content ?? '**Pick your roles**'),
          text(subtext(PANEL_HINT(panel))),
          separator(),
@@ -2785,8 +2794,7 @@ Run `npx vitest run packages/core/src/panels`. Expect FAIL.
      });
    ```
 
-   `artItem` is the P1 helper that builds a gallery item from an art key, with its `attachment://` URL
-   and alt text. Use P1's real name for it; P1 Task 7's digest card uses it.
+   `artUrl` and `ART` come from P1's `ui/discord/art.ts`. The digest card builds its banner the same way.
 3. Delete `renderPanelMessage` and the old raw constants.
 
 `publish.ts`: add `toMessage(card: CardMessage): OutgoingMessage` to `PublishDeps`. Both the post and the
