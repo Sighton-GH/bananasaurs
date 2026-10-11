@@ -744,3 +744,4 @@ export {
   type RolePingRefusal,
 } from './roles/dangerous.js';
 export * from './providers/model-capabilities.js';
+export * from './providers/gemini-quota.js';
