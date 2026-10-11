@@ -197,6 +197,8 @@ const fakeStore = (
             mayTrain: false,
             rpmLimit: row.rpmLimit ?? null,
             rpdLimit: row.rpdLimit ?? null,
+            pool: row.pool ?? ('key' as const),
+            tier: row.tier ?? ('standard' as const),
           };
         }
         const elig = eligibility[key.provider];
@@ -211,6 +213,8 @@ const fakeStore = (
             mayTrain: false,
             rpmLimit: row.rpmLimit ?? null,
             rpdLimit: row.rpdLimit ?? null,
+            pool: row.pool ?? ('key' as const),
+            tier: row.tier ?? ('standard' as const),
           };
         }
         if (!elig.productionUseAllowed) {
@@ -224,6 +228,8 @@ const fakeStore = (
             mayTrain: false,
             rpmLimit: row.rpmLimit ?? null,
             rpdLimit: row.rpdLimit ?? null,
+            pool: row.pool ?? ('key' as const),
+            tier: row.tier ?? ('standard' as const),
           };
         }
         return {
@@ -240,6 +246,8 @@ const fakeStore = (
           mayTrain: elig.trainsOnInput !== 'no',
           rpmLimit: row.rpmLimit ?? null,
           rpdLimit: row.rpdLimit ?? null,
+          pool: row.pool ?? ('key' as const),
+          tier: row.tier ?? ('standard' as const),
         };
       }),
     saveChain: (
@@ -1353,6 +1361,32 @@ describe('bulk keys and recommended chain (ADR 0143)', () => {
     expect(saved[3]).toMatchObject({ keyId: 'key_o', pool: 'key' });
     const audit = auditRows().find((row) => row.action === 'assistant_provider.chain_saved');
     expect(audit).toBeTruthy();
+  });
+
+  it('recommended setup keeps an owner-set light tier on a recommended model', async () => {
+    const store = fakeStore({
+      keys: [
+        { keyId: 'key_a', provider: 'gemini', label: 'A', costClass: 'free', enabled: true },
+        { keyId: 'key_o', provider: 'openrouter', label: 'O', costClass: 'free', enabled: true },
+      ],
+      chain: [
+        { keyId: 'key_a', model: 'gemini-3.5-flash-lite', tier: 'light' },
+        { keyId: 'key_o', model: 'owner-model' },
+      ],
+    });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/recommended',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const saved = store.savedChain();
+    expect(saved.find((entry) => entry.model === 'gemini-3.5-flash-lite')).toMatchObject({
+      tier: 'light',
+    });
   });
 
   it('recommended setup refuses when no Gemini key exists', async () => {

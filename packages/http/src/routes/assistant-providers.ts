@@ -479,6 +479,16 @@ export const registerAssistantProviderRoutes = (
     const anchor = geminiKeys.reduce((oldest, key) =>
       (key.createdAt ?? 0) < (oldest.createdAt ?? 0) ? key : oldest,
     );
+    // Keep owner-set tiers: a recommended entry reuses the tier of an
+    // existing chain entry with the same provider and model, else the default.
+    const existing = configured.chain();
+    const tierOf = (providerId: string, model: string): 'standard' | 'light' => {
+      const match = existing.find(
+        (entry) => entry.providerId === providerId && entry.model === model,
+      );
+      const tier = (match as { tier?: unknown } | undefined)?.tier;
+      return tier === 'light' || tier === 'standard' ? tier : 'standard';
+    };
     const geminiEntries = Object.entries(GEMINI_MODEL_TABLE)
       .filter(([, profile]) => profile.freeRpm !== undefined && profile.freeRpd !== undefined)
       .map(([model, profile]) => ({
@@ -487,6 +497,7 @@ export const registerAssistantProviderRoutes = (
         rpmLimit: profile.freeRpm ?? null,
         rpdLimit: profile.freeRpd ?? null,
         pool: 'provider' as const,
+        tier: tierOf('gemini', model),
       }));
     const ownerEntries = configured
       .chain()
@@ -497,6 +508,7 @@ export const registerAssistantProviderRoutes = (
         rpmLimit: entry.rpmLimit,
         rpdLimit: entry.rpdLimit,
         pool: 'key' as const,
+        tier: tierOf('openrouter', entry.model),
       }));
     const entries = [...geminiEntries, ...ownerEntries];
     if (entries.length > 6) return reply.status(400).send({ error: 'too-many' });
