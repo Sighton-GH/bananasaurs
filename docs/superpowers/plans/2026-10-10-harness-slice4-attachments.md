@@ -1078,3 +1078,158 @@ it('renders the attachment caps under Assistant attachments and saves one', asyn
 - [ ] **Step 7: Commit** — `git add packages/dashboard/src/pages/assistant-tuning.test.tsx && git commit -m "Slice 4 T10: tuning page renders and saves the attachment caps"`
 
 **Done when:** every new cap renders with its help text and one saves through the existing endpoint; no dashboard component changes.
+
+---
+
+### S4-T11: capability routing and per-entry markers   ·   Wave 5
+**Owns:** Create: `apps/daemon/src/assistant/media-routing.ts`, `apps/daemon/src/assistant/media-routing.test.ts`; Modify: `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/model-chain.ts` (the `ChainEntry` shape S4-T9 extended? No — capabilities come from Slice 6), `packages/core/src/providers/contracts.ts` (S4-T2)
+**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage` (S4-T2) · (after Slice 6: `ChainEntry` carries `readonly capabilities: ModelCapabilities` with `image`/`pdf` booleans from `packages/core/src/providers/model-capabilities.ts`; `capabilitiesForEntry` in `apps/daemon/src/assistant/model-capabilities.ts`. Verify both paths in the merged code before writing — if the controller renamed them, use the merged names and note the change in the commit message.) · Produces: `export const entryCanRead = (caps: { readonly image: boolean; readonly pdf: boolean } | undefined, media: readonly GenerationMedia[]): boolean` (absent caps means text-only: false when media is present) · `export const orderEntriesForMedia = <T extends { readonly capabilities?: { readonly image: boolean; readonly pdf: boolean } | undefined }>(entries: readonly T[], media: readonly GenerationMedia[]): readonly T[]` (stable: entries that can read everything attached first; no media means unchanged order) · `export const messagesForEntry = (messages: readonly GenerationMessage[], caps: { readonly image: boolean; readonly pdf: boolean } | undefined): GenerationMessage[]` (strips disallowed media from every user message; appends one plain line per stripped file to the last user message: `${name} attached; you can't see images right now.` / `${name} attached; you can't read PDFs right now.`)
+
+- [ ] **Step 1: Write the failing test** — create `apps/daemon/src/assistant/media-routing.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { entryCanRead, messagesForEntry, orderEntriesForMedia } from './media-routing.js';
+import type { GenerationMedia } from '@bananasaurs/core';
+
+const image: GenerationMedia = { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' };
+const pdf: GenerationMedia = { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' };
+const none = { image: false, pdf: false };
+const seeImage = { image: true, pdf: false };
+const seeAll = { image: true, pdf: true };
+
+describe('media routing (ADR 0149)', () => {
+  it('prefers the first entry that can read everything, stably', () => {
+    const entries = [
+      { id: 'a', capabilities: none },
+      { id: 'b', capabilities: seeImage },
+      { id: 'c', capabilities: seeAll },
+    ];
+    expect(orderEntriesForMedia(entries, [image, pdf]).map((e) => e.id)).toEqual(['c', 'a', 'b']);
+    expect(orderEntriesForMedia(entries, []).map((e) => e.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('treats absent capabilities as text-only', () => {
+    expect(entryCanRead(undefined, [image])).toBe(false);
+    expect(entryCanRead(undefined, [])).toBe(true);
+  });
+
+  it('strips what the entry cannot read and says so plainly', () => {
+    const out = messagesForEntry(
+      [{ role: 'user', text: '[attached files: chart.png, report.pdf]', media: [image, pdf] }],
+      seeImage,
+    );
+    expect(out[0]?.media).toHaveLength(1);
+    expect(out[0]?.text).toContain('report.pdf attached; you can\'t read PDFs right now.');
+    expect(out[0]?.text).not.toContain('chart.png attached');
+  });
+});
+```
+
+In `tool-loop.test.ts`, using its `scripted`/`entry`/`baseInput` helpers (Slice 1 Task 7), add a test with two fake providers capturing their requests: chain order [text-only, image-capable], user history carrying one image — the image-capable entry is called first and its request carries the media, while a run where no entry can read sends stripped messages with the plain marker. (Read the current `entry()` helper first; after Slice 6 it carries `capabilities` — set them per entry in the test.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/media-routing.test.ts apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: FAIL (module missing; chain order never changes)
+- [ ] **Step 3: Implement**
+  - `media-routing.ts`: the three functions exactly as specified. `messagesForEntry` keeps message identity for untouched messages (map, only rebuilding user messages that lose media); the marker lines append to the last message with `role === 'user'` (which is always the current question or the S4-T9 media note). Neutralise file names in markers via the existing `neutraliseMarkers` in `../assistant/untrusted.js`? That path is `./untrusted.js` (same directory) — import from there.
+  - `tool-loop.ts`: after the recorder setup and before the entry loop (line 317 `for (let position …`), insert:
+
+```ts
+const runMedia: readonly GenerationMedia[] = input.history.flatMap((m) => (m.role === 'user' ? (m.media ?? []) : []));
+const chain = orderEntriesForMedia(input.chain, runMedia);
+```
+
+and change the loop header to iterate `chain` (`chain.length`, `chain[position]!`). In `runEntry` (line ~590), replace `const messages: GenerationMessage[] = [...deps.history, { role: 'user', text: deps.userText }];` with `const messages: GenerationMessage[] = messagesForEntry([...deps.history, { role: 'user', text: deps.userText }], deps.entry.capabilities);` importing `GenerationMedia` type and the two functions. If `deps.entry.capabilities` does not exist in the merged code, use the merged Slice 6 path and note it in the commit message.
+  - No new ledger events: a media fallback rides the normal attempt order (spec: "If none can, it uses the normal order"). The stripped marker is the model's explanation, so it never guesses.
+- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write <all four owned paths>` then `npx eslint <all four owned paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <all four owned paths> && git commit -m "Slice 4 T11: media capability routing with plain unreadable markers"`
+
+**Done when:** an image run prefers the first image-capable entry; a PDF asked of models without PDF input sends no bytes and the model is told plainly; absent capabilities behave as text-only.
+
+---
+
+### S4-T12: trace keeps names, kinds and sizes — never bytes   ·   Wave 5
+**Owns:** Modify: `packages/core/src/assistant/trace.ts`, `packages/core/src/assistant/trace.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`
+**Reads (do not edit):** `apps/daemon/src/assistant/commands.ts` (S4-T9 `AttachmentSummary`)
+**Interfaces:** Consumes: `AttachmentSummary` / `AssistantInvocation.attachmentSummary` (S4-T9) · Produces: `assistantTraceIncludedSchema` gains `attachments: z.array(z.object({ name: z.string().max(120), kind: z.enum(['text', 'image', 'pdf']), sizeBytes: z.number().int().nonnegative() })).max(10).optional()` ("ADR 0149: what rode along; metadata only, never bytes")
+
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/trace.test.ts` (read its schema round-trip pattern first):
+
+```ts
+it('keeps an attachment summary and drops rows that predate it (ADR 0149)', () => {
+  const withAttachments = assistantTraceSchema.safeParse({ ...minimalTrace(), included: { toolsOffered: [], snippetChunkIds: [], quote: false, historyTurns: 0, attachments: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }] } });
+  expect(withAttachments.success).toBe(true);
+  const legacy = assistantTraceSchema.safeParse({ ...minimalTrace(), included: { toolsOffered: [], snippetChunkIds: [], quote: false, historyTurns: 0 } });
+  expect(legacy.success).toBe(true);
+});
+```
+
+(If the file has no `minimalTrace` helper, inline the smallest object its existing tests parse.) In `service.test.ts`:
+
+```ts
+it('records the attachment summary in included and no bytes anywhere (ADR 0149)', async () => {
+  const { requests, provider, trace } = captureWithTrace();
+  await h.serviceWith(provider).invoke(
+    ask({ userId: OWNER, callerRoleIds: [], invocationId: 'int-trace-1', input: { question: 'hi' }, attachmentSummary: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }] }),
+  );
+  expect(trace().included?.attachments).toEqual([{ name: 'chart.png', kind: 'image', sizeBytes: 8 }]);
+  expect(JSON.stringify(trace())).not.toContain('aGk=');
+});
+```
+
+(If `captureWithTrace` does not exist, capture the trace the way the existing trace-assertion tests in that file do.) In `jobs/assistant.test.ts`: extend the S4-T9 media test to assert the stored trace's `included.attachments` equals the summary.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (`attachments` stripped as unknown; `included` lacks it)
+- [ ] **Step 3: Implement**
+  - `trace.ts`: add the optional `attachments` field to `assistantTraceIncludedSchema` with the ADR 0149 comment. No migration: optional, old rows still parse.
+  - `service.ts`: find every `included: {` literal (`rg -n "summaryVersion: input.summaryVersion" apps/daemon/src/assistant/service.ts`) and add `...(input.attachmentSummary === undefined ? {} : { attachments: input.attachmentSummary.slice(0, 10).map((a) => ({ name: a.name.slice(0, 120), kind: a.kind, sizeBytes: a.sizeBytes })) }),` after the `summaryVersion` spread.
+  - `jobs/assistant.ts`: extend the cursor `included` copy (lines 214–229) with `...(detail.included.attachments === undefined ? {} : { attachments: detail.included.attachments }),` after the `summaryVersion` spread, so a retry keeps the summary.
+- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write <all six owned paths>` then `npx eslint <all six owned paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <all six owned paths> && git commit -m "Slice 4 T12: trace included gains the attachment summary, never bytes"`
+
+**Done when:** the summary round-trips through the schema, the service writes it, the cursor keeps it, legacy rows still parse, and no base64 appears in any trace.
+
+---
+
+### S4-T13: state and privacy lines   ·   Wave 6
+**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`
+**Reads (do not edit):** `docs/decisions/0149-attachment-fetch-and-native-media.md` (S4-T1 wording to mirror)
+**Interfaces:** Consumes: none · Produces: none (documents)
+
+- [ ] **Step 1: Write the failing test** — no test; documents only. Confirm scope: `git status --short` shows only this plan file plus `docs/STATE.md` and `PRIVACY.md` modified.
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: PASS (nothing code-related changes in this task; the run proves the tree is still green)
+- [ ] **Step 3: Implement**
+  - `docs/STATE.md`: insert after the first `---` (same style as the Slice 1 entry at the top):
+
+```markdown
+**Attachments (Slice 4 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `<branch>`, not yet merged (ADR 0149, no migration).**
+
+- **Markers (4a):** the quote envelope, channel lines and current message render `[attached: name, type, size]` even with text; embeds render `[embed: Provider: title]`; the prompt says contents below the marker are the only readable form.
+- **Text (4b):** the job re-reads both messages through REST at start and inlines at most 3 files, 256 KB / 24,000 chars each, redacted and framed.
+- **Images and PDFs (4c, 4d):** fetched from the Discord CDN only, magic-checked, sent base64 to models that read them natively (Gemini inlineData; OpenRouter file input with the parser pinned to native). No PDF parsing or OCR anywhere. Capability routing prefers entries that can read everything; otherwise plain markers.
+- **Caps** are instance settings (`assistant.attachments.*`); traces keep names, kinds and sizes, never bytes.
+```
+
+(Replace `<branch>` with the real branch name.)
+  - `PRIVACY.md`: under "Assistant conversations and resources", add after the replied-to-message bullet: "- When a message tagged to Bananasaurs carries attached text files, images or PDFs, the bot downloads them from Discord and sends them to the AI provider that answers, and to no one else. Text is sent as redacted text; images and PDFs are sent only to models that read them directly. No file contents are stored: the bot keeps file name, type and size only." In the retention table, change the "Attachments on archived messages" row's meaning stays, and add a row: `| Attached file contents sent to the AI | Never stored; only the name, type and size travel with the conversation's trace |`. Update the "Last updated" date.
+- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md` then `npx eslint docs/STATE.md PRIVACY.md` · exit 0
+- [ ] **Step 7: Commit** — `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 4 T13: state and privacy lines for attachments"`
+
+**Done when:** STATE names the branch, ADR and caps; PRIVACY says where attachments go and that contents are never stored.
+
+## Slice gate (orchestrator only, after the last wave)
+npm run typecheck        (≈1.7 GB peak — run alone)
+npm run lint
+npx vitest run --maxWorkers=1
+## After merge (owner)
+Deploy order: stop → build → start (no migration). Then:
+1. On AI setup → Terms: confirm the provider-training disclosure still reads correctly (attachments widen what a may-train provider receives).
+2. On Assistant tuning: confirm the seven `assistant.attachments.*` settings render with defaults (256 KB / 24,000 chars / 3; 5 MB / 4; 10 MB / 2).
+3. In Discord: tag the bot with a `.txt` attached and empty body (expect the text inline), with a photo (expect a description, never a guess), and with a PDF while the chain top is a model without PDF input (expect "you can't read PDFs right now").
+4. Confirm against a live attachment URL that the CDN hosts are exactly `cdn.discordapp.com` / `media.discordapp.net`; if Discord serves a new host, amend ADR 0149 and `ATTACHMENT_HOSTS` before wider use.
