@@ -177,6 +177,15 @@ const toFutureEpochMs = (raw: string | number | undefined, nowMs: number): numbe
   return ms > nowMs ? ms : undefined;
 };
 
+/** HTTP `Retry-After` (delay seconds or HTTP date) in ms, capped to one hour. */
+const parseRetryAfterMs = (raw: string | null): number | undefined => {
+  if (raw === null || raw.trim() === '') return undefined;
+  if (/^\d+$/.test(raw.trim())) return Math.min(Number(raw.trim()) * 1000, 3_600_000);
+  const date = Date.parse(raw);
+  if (Number.isNaN(date)) return undefined;
+  return Math.min(Math.max(date - Date.now(), 0), 3_600_000);
+};
+
 /**
  * The body's `error.metadata.headers.X-RateLimit-Reset` is the primary
  * source (that is where OpenRouter actually puts it); the HTTP response
@@ -354,6 +363,10 @@ export class OpenAiCompatibleProvider implements TextProvider {
       const detail = parsedBody.success ? parsedBody.data : undefined;
       const metadata = detail?.error.metadata;
       const reason = shortReason(detail);
+      const retryAfterMs =
+        response.status === 429
+          ? parseRetryAfterMs(response.headers.get('retry-after'))
+          : undefined;
       if (
         response.status === 429 &&
         isDailyFreeQuota(request.model, detail?.error.message, metadata)
@@ -372,6 +385,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
             host: this.host,
             ...(upstream === undefined ? {} : { upstream }),
             ...(resetAt === undefined ? {} : { resetAt }),
+            ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
           },
         );
       }
@@ -387,6 +401,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           status: response.status,
           host: this.host,
           ...(upstream === undefined ? {} : { upstream }),
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         },
       );
     }

@@ -20,8 +20,14 @@ export class ProviderError extends Error {
    * Set when `kind` is `'quota'` and the cap is a `:free` model's daily
    * request allowance rather than an account credit exhaustion (ADR 0077).
    * A retry never helps this kind of quota error before `resetAt`.
+   * Slice 6 (ADR 0143) adds Gemini scopes: `day` cools until the next
+   * Pacific midnight, `minute` cools for `retryAfterMs` or 60 s.
    */
-  public readonly quotaScope?: 'daily-free';
+  public readonly quotaScope?: 'daily-free' | 'day' | 'minute';
+  /** From Retry-After or google.rpc.RetryInfo.retryDelay. */
+  public readonly retryAfterMs?: number;
+  /** quotaValue from a Gemini QuotaFailure violation. */
+  public readonly learnedLimit?: { readonly perDay?: number; readonly perMinute?: number };
   /** HTTP status when a response arrived. */
   public readonly status?: number;
   /** Allowlisted network error code (see failure.ts). */
@@ -46,7 +52,9 @@ export class ProviderError extends Error {
     public readonly retryable: boolean,
     options?: ErrorOptions & {
       resetAt?: number;
-      quotaScope?: 'daily-free';
+      quotaScope?: 'daily-free' | 'day' | 'minute';
+      retryAfterMs?: number;
+      learnedLimit?: { readonly perDay?: number; readonly perMinute?: number };
       status?: number;
       netCode?: string;
       host?: string;
@@ -63,6 +71,8 @@ export class ProviderError extends Error {
     this.name = 'ProviderError';
     if (options?.resetAt !== undefined) this.resetAt = options.resetAt;
     if (options?.quotaScope !== undefined) this.quotaScope = options.quotaScope;
+    if (options?.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs;
+    if (options?.learnedLimit !== undefined) this.learnedLimit = options.learnedLimit;
     if (options?.status !== undefined) this.status = options.status;
     if (options?.netCode !== undefined) this.netCode = options.netCode;
     if (options?.host !== undefined) this.host = options.host;
