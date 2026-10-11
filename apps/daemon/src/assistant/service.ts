@@ -1408,8 +1408,8 @@ export const createAssistantService = (
       // re-ordered remainder after the light entry's round-1 tools, so acting
       // tools never run twice and one result carries all usage, calls and
       // attempts. The plan is pure; the loop asks it before each entry.
-      // A hand-over leaves no attempt row for the entry that ran round 1, but
-      // that entry still received the content: remember it for the disclosure.
+      // The entry that ran round 1 also keeps an ok attempt row in the loop;
+      // remember it here as well so the disclosure never depends on that row.
       const handedOver: ChainEntry[] = [];
       const loop = await runToolLoop({
         chain: loopChain,

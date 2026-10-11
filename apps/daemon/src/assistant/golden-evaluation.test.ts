@@ -448,6 +448,9 @@ describe('Task 16 golden: cached injection cannot steer a round-2 set_reminder (
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_a',
         },
       ],
     );

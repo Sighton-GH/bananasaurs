@@ -327,6 +327,9 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     rpmLimit: null,
     rpdLimit: null,
     ...over,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: over.selectedKeyId ?? over.keyId ?? 'key_a',
   });
 
   const skipped = (skip: ChainEntry['skip'], model = 'model-a'): ChainEntry => ({
@@ -339,6 +342,9 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
 
   let t: MigratedTestDatabase;
@@ -849,6 +855,9 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
 
   let t: MigratedTestDatabase;
@@ -1169,6 +1178,9 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
 
   let t: MigratedTestDatabase;
@@ -1473,6 +1485,9 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
 
   const answering = (text: string): TextProvider => ({
@@ -2281,6 +2296,9 @@ describe('Task 7: loop limits from the AI tuning settings', () => {
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_a',
         },
       ],
       undefined,
@@ -2374,6 +2392,9 @@ describe('Task 10 (b): busy chain throws ChainFailedError', () => {
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
 
   it('two connect-timeout entries throw ChainFailedError naming both', async () => {
@@ -2495,6 +2516,9 @@ const setupB2b = (preferredSkillIds: readonly string[]) => {
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
   const scripted = (responses: GenerateTextResponse[]): TextProvider => {
     const queue = [...responses];
@@ -3859,6 +3883,9 @@ describe('Slice 4.1: archive search is limited to the answer channel audience', 
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_a',
         },
       ],
     );
@@ -4027,6 +4054,9 @@ describe('Slice 4.2: Did X say Y resolves from to one member with code-issued li
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_a',
         },
       ],
     );
@@ -4258,6 +4288,9 @@ describe('Slice 6.1: upcoming_events and channel_history', () => {
       mayTrain: false,
       rpmLimit: null,
       rpdLimit: null,
+      pool: 'key' as const,
+      tier: 'standard' as const,
+      selectedKeyId: 'key_a',
     },
   ];
 
@@ -4831,6 +4864,9 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_a',
         },
       ],
     );
@@ -5125,6 +5161,9 @@ describe('Task 7: No-access channels are hidden from search, recall and server_i
       mayTrain: false,
       rpmLimit: null,
       rpdLimit: null,
+      pool: 'key' as const,
+      tier: 'standard' as const,
+      selectedKeyId: 'key_a',
     },
   ];
 
@@ -5339,6 +5378,9 @@ describe('assistant service run recorder (ADR 0129 §6)', () => {
     mayTrain: false,
     rpmLimit: null,
     rpdLimit: null,
+    pool: 'key' as const,
+    tier: 'standard' as const,
+    selectedKeyId: 'key_a',
   });
 
   const answering = (text: string): TextProvider => ({
@@ -5877,6 +5919,121 @@ describe('complexity routing (ADR 0144, spec 6e)', () => {
       { tier: 'light', reason: 'greeting' },
       { tier: 'standard', reason: 'escalated-after-tool' },
     ]);
+  });
+
+  it('review: deliberate hand-over keeps both ok attempts without claiming fallback', async () => {
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    const result = await invokeReminder(
+      () => [
+        lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+        standardEntry(reminderProvider(STANDARD_MODEL, 'unused', seen, false)),
+      ],
+      'review-ok-handover',
+      events,
+      () => undefined,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.detail?.attempts.map((attempt) => attempt.outcome)).toEqual(['ok', 'ok']);
+    expect(result.trace?.usedFallback).toBe(false);
+    expect(events.map((e) => e.kind)).toEqual([
+      'routed',
+      'context-built',
+      'model-call',
+      'model-result',
+      'tool-call',
+      'tool-result',
+      'routed',
+      'model-call',
+      'model-result',
+    ]);
+  });
+
+  it('review: a skipped successor before the resumed answer really is fallback', async () => {
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    const result = await invokeReminder(
+      () => [
+        lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+        {
+          ...standardEntry(reminderProvider(STANDARD_MODEL, 'unused', seen, false)),
+          provider: undefined,
+          skip: 'no-key',
+        },
+      ],
+      'review-real-fallback',
+      events,
+      () => undefined,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.detail?.attempts.map((attempt) => attempt.outcome)).toEqual([
+      'ok',
+      'skipped',
+      'ok',
+    ]);
+    expect(result.trace?.usedFallback).toBe(true);
+  });
+
+  it.each(['2', '-1', '0.5', 'null', 'true', '"1"', '{}', '[]', '{broken'])(
+    'review: invalid routerEscalateOnTool JSON %s uses default on',
+    async (valueJson) => {
+      instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
+        key: 'assistant.routerEscalateOnTool',
+        valueJson,
+        updatedAt: NOW,
+        updatedBy: 'fixture',
+      });
+      const events: RunEvent[] = [];
+      const seen: string[] = [];
+      const result = await invokeReminder(
+        () => [
+          lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+          standardEntry(reminderProvider(STANDARD_MODEL, 'unused', seen, false)),
+        ],
+        'review-invalid-setting',
+        events,
+        () => undefined,
+      );
+      expect(result.ok).toBe(true);
+      expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${STANDARD_MODEL}:1`]);
+      expect(events.filter((e) => e.kind === 'routed')).toHaveLength(2);
+    },
+  );
+
+  it('review: a second light entry stays behind the standard successor', async () => {
+    const seen: string[] = [];
+    const events: RunEvent[] = [];
+    const second = 'gemini-3.5-flash-lite-b';
+    const result = await invokeReminder(
+      () => [
+        lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+        { ...lightEntry(reminderProvider(second, 'unused', seen, false)), model: second },
+        standardEntry(reminderProvider(STANDARD_MODEL, 'unused', seen, false)),
+      ],
+      'review-standard-first',
+      events,
+      () => undefined,
+    );
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${STANDARD_MODEL}:1`]);
+  });
+
+  it('review: without a standard successor, finish on the original light with no handover', async () => {
+    const seen: string[] = [];
+    const events: RunEvent[] = [];
+    const second = 'gemini-3.5-flash-lite-b';
+    const result = await invokeReminder(
+      () => [
+        lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+        { ...lightEntry(reminderProvider(second, 'unused', seen, false)), model: second },
+      ],
+      'review-no-standard',
+      events,
+      () => undefined,
+    );
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${LIGHT_MODEL}:2`]);
+    expect(events.filter((e) => e.kind === 'routed')).toHaveLength(1);
   });
 
   it('escalate-on-tool off: the light entry answers itself with one routed event', async () => {

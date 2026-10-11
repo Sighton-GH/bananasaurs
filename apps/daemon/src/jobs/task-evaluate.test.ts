@@ -27,7 +27,10 @@ const entry = (over: Partial<ChainEntry> & { name: string }): ChainEntry => ({
   mayTrain: false,
   rpmLimit: null,
   rpdLimit: null,
+  pool: 'key',
+  tier: 'standard',
   ...over,
+  selectedKeyId: over.selectedKeyId ?? over.keyId ?? `key-${over.name}`,
 });
 
 const evaluator = (

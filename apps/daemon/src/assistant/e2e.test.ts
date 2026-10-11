@@ -452,6 +452,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_test',
         },
       ],
     );
@@ -976,6 +979,9 @@ describe('Release 3 review fixes', () => {
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_test',
         },
       ],
     );
@@ -1073,6 +1079,9 @@ describe('Release 3 review fixes', () => {
           mayTrain: false,
           rpmLimit: null,
           rpdLimit: null,
+          pool: 'key' as const,
+          tier: 'standard' as const,
+          selectedKeyId: 'key_test',
         },
       ],
     );

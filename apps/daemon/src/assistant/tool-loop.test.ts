@@ -2330,4 +2330,33 @@ describe('escalateAfterTools (ADR 0144)', () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(light.calls).toHaveLength(2);
   });
+  it('review: all successors precede the handing-over entry and keep round-2 context', async () => {
+    const seen: string[] = [];
+    const light = scripted([
+      toolAnswer([{ name: 'set_reminder', args: { text: 'Bring batteries' } }]),
+      textAnswer('Original light should remain last.'),
+    ]);
+    const failure = scripted([new ProviderError('outage', 'HTTP 503', true)]);
+    const successor = scripted([textAnswer('Second successor answers.', 'model-c')]);
+    const lightEntry = entry({ provider: light.provider, tier: 'light' });
+    const failEntry = entry({ provider: failure.provider, model: 'model-b', keyId: 'key_b' });
+    const nextEntry = entry({ provider: successor.provider, model: 'model-c', keyId: 'key_c' });
+    const result = await runToolLoop(
+      baseInput([lightEntry, failEntry, nextEntry], {
+        tools: allTools(async (call) => {
+          seen.push(call.name);
+          return okResult(call.name);
+        }),
+        escalateAfterTools: (_current, remaining) => remaining,
+      }),
+    );
+    expect(result.text).toBe('Second successor answers.');
+    expect(light.calls).toHaveLength(1);
+    expect(failure.calls).toHaveLength(1);
+    expect(successor.calls).toHaveLength(1);
+    expect(successor.calls[0]!.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(successor.calls[0]!.tools?.map((d) => d.name)).not.toContain('set_reminder');
+    expect(seen).toEqual(['set_reminder']);
+    expect(result.attempts.map((attempt) => attempt.outcome)).toEqual(['ok', 'busy', 'ok']);
+  });
 });

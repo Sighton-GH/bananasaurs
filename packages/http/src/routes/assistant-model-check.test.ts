@@ -65,7 +65,7 @@ const post = async (
     method: 'POST',
     url: '/api/assistant/model-check',
     headers: { cookie: session.cookie, [CSRF_HEADER]: session.csrf },
-    payload,
+    payload: payload as object,
   });
   return {
     statusCode: res.statusCode,
