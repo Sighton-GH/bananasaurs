@@ -894,6 +894,10 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           displayName: member.displayName,
           ...(member.user.globalName === null ? {} : { globalName: member.user.globalName }),
           username: member.user.username,
+          roleNames: [...member.roles.cache.values()]
+            .filter((r) => r.id !== guild.id)
+            .map((r) => r.name)
+            .slice(0, 20),
         });
         if (id !== undefined) {
           return guild.members.fetch(id).then(

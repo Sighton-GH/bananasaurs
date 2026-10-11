@@ -18,13 +18,19 @@ import {
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
-import type { assistantRepo } from '@bananasaurs/storage';
+import {
+  taskBindingRepo,
+  taskRepo,
+  type assistantRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import type {
   ReminderTargetRequest,
   ReminderTargetResult,
   ResolvedReminderTargets,
 } from './reminder-targets.js';
-import { describeRecurrence, reminderSummary } from './reminder-summary.js';
+import { describeRecurrence, reminderSummary, summaryField } from './reminder-summary.js';
+import type { TaskContextAccess } from './task-context.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 import type { CitationRegistry } from './citations.js';
 import {
@@ -121,6 +127,14 @@ export interface ReminderPatch {
   readonly recurrence?: ReminderRecurrence | null;
 }
 
+/** One member a name lookup found. Ids stay in code: `find_member` never prints them. */
+export interface MemberLookupHit {
+  readonly id: string;
+  readonly displayName: string;
+  readonly username?: string | undefined;
+  readonly roleNames?: readonly string[] | undefined;
+}
+
 /** Everything a tool can reach, already scoped to one guild and one asking member. */
 export interface AssistantToolPorts {
   readonly userId: string;
@@ -206,6 +220,18 @@ export interface AssistantToolPorts {
    */
   readonly searchConversations?:
     ((query: string) => Promise<readonly ConversationRecallHit[]>) | undefined;
+  /** ADR 0145: member lookup by name, username or mention. Absent, `find_member` is not declared. */
+  readonly findMember?: ((nameOrId: string) => Promise<readonly MemberLookupHit[]>) | undefined;
+  /** ADR 0146: club task ports. Absent, the task tools are not declared. */
+  readonly taskTools?:
+    | {
+        readonly scope: GuildScope;
+        readonly access: () => Promise<TaskContextAccess | undefined>;
+        readonly resolveMember: (name: string) => Promise<readonly MemberLookupHit[]>;
+        /** Current channel; absent (Try-it) means create_task refuses. */
+        readonly destinationId: string | undefined;
+      }
+    | undefined;
 }
 
 export interface ToolSource {
@@ -354,6 +380,28 @@ const schemas = {
     })
     .strict(),
   search_conversations: z.object({ query: z.string().trim().min(2).max(200) }).strict(),
+  find_member: z.object({ name: z.string().trim().min(1).max(100) }).strict(),
+  create_task: z
+    .object({
+      title: z.string().trim().min(1).max(180),
+      details: z.string().max(5000).optional(),
+      team: z.string().min(1).max(128),
+      assignees: z.array(z.string().trim().min(1).max(100)).max(25).optional(),
+      due: z.string().min(1).max(64),
+    })
+    .strict(),
+  list_tasks: z
+    .object({
+      team: z.string().min(1).max(128).optional(),
+      includeDone: z.boolean().optional(),
+    })
+    .strict(),
+  task_progress: z
+    .object({
+      taskId: z.string().min(1).max(128),
+      note: z.string().trim().min(1).max(5000),
+    })
+    .strict(),
 } as const;
 type ToolName = keyof typeof schemas;
 
@@ -374,6 +422,10 @@ export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =
       (entry.name !== 'upcoming_events' || ports.upcomingEvents !== undefined) &&
       (entry.name !== 'channel_history' || ports.channelHistory !== undefined) &&
       (entry.name !== 'search_conversations' || ports.searchConversations !== undefined) &&
+      (entry.name !== 'find_member' || ports.findMember !== undefined) &&
+      (['create_task', 'list_tasks', 'task_progress'].includes(entry.name)
+        ? ports.taskTools !== undefined
+        : true) &&
       (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)) &&
       (entry.requiresSkill === undefined || ports.skillAllowed(entry.requiresSkill)),
   ).map((entry) => ({
@@ -1398,6 +1450,193 @@ export const runAssistantTool = async (
           text: body.text === '' ? cursor : `${body.text}\n${cursor}`,
           handles: [page.oldestId],
         };
+      }
+      case 'find_member': {
+        const { name: who } = parsed.data as { name: string };
+        if (ports.findMember === undefined)
+          return refused(name, "I can't look up members right now.");
+        const hits = (await ports.findMember(who)).slice(0, 5);
+        if (hits.length === 0) return evidence(name, 'No member matched that name.');
+        const lines = hits.map((hit) => {
+          const roles = (hit.roleNames ?? []).slice(0, 10).map(summaryField).join(', ');
+          return `${summaryField(hit.displayName)} (username ${summaryField(hit.username ?? 'unknown')}; roles: ${roles === '' ? 'none' : roles})`;
+        });
+        return { ...evidence(name, lines.join('\n')), handles: [] };
+      }
+      case 'create_task': {
+        const gate = requireSkill(ports, name, 'tasks');
+        if (gate !== undefined) return gate;
+        const tools = ports.taskTools;
+        if (tools === undefined) return refused(name, "I can't manage tasks right now.");
+        const args = parsed.data as {
+          title: string;
+          details?: string;
+          team: string;
+          assignees?: string[];
+          due: string;
+        };
+        const noAuthority = () => {
+          ports.recordSkillActivity('tasks', 'denied');
+          return refused(
+            name,
+            'Only a team lead or the president can create tasks. Tell the member.',
+          );
+        };
+        const access = await tools.access();
+        if (access === undefined || access.actorId !== ports.userId) return noAuthority();
+        if (!access.president && access.leadTeamIds.length === 0) return noAuthority();
+        const team = access.teams.find((candidate) => candidate.teamId === args.team);
+        if (team === undefined)
+          return refused(
+            name,
+            "I can't use that team. Ask a team lead for the team name, then try again.",
+          );
+        if (!access.president && !access.leadTeamIds.includes(team.teamId)) return noAuthority();
+        if (!ISO_WITH_OFFSET.test(args.due)) return refused(name, OFFSET_REFUSAL);
+        const dueAt = Date.parse(args.due);
+        if (!Number.isFinite(dueAt) || dueAt <= ports.now())
+          return refused(name, 'The due date must be in the future. Fix it and call again.');
+        if (tools.destinationId === undefined)
+          return refused(
+            name,
+            'Tasks are posted in the channel they are asked for in. Ask again from a channel.',
+          );
+        const assignees: { id: string; name: string }[] = [];
+        for (const wanted of args.assignees ?? []) {
+          const needle = wanted.trim().toLowerCase();
+          const exact = (await tools.resolveMember(wanted)).filter(
+            (hit) => hit.displayName.toLowerCase() === needle,
+          );
+          if (exact.length !== 1)
+            return refused(
+              name,
+              `I couldn't tell which member "${summaryField(wanted)}" is. Use find_member and give the exact display name.`,
+            );
+          if (!assignees.some((a) => a.id === exact[0]!.id))
+            assignees.push({ id: exact[0]!.id, name: exact[0]!.displayName });
+        }
+        const offTeam = assignees.filter(
+          (a) => !taskBindingRepo.isMember(tools.scope, team.teamId, a.id),
+        );
+        if (offTeam.length > 0)
+          return refused(
+            name,
+            `Those people are not on that team. Ask a team lead to add them first, then try again. Not on the team: ${offTeam.map((a) => summaryField(a.name)).join(', ')}.`,
+          );
+        const key = contentKey('task', ports.invocationKey, {
+          title: args.title,
+          details: args.details ?? '',
+          team: team.teamId,
+          assignees: assignees.map((a) => a.id).sort(),
+          dueAt,
+        });
+        try {
+          const taskId = taskRepo.createTask(
+            tools.scope,
+            {
+              teamId: team.teamId,
+              title: args.title,
+              description: args.details ?? '',
+              assignmentKind: assignees.length > 0 ? 'individual' : 'team',
+              assigneeIds: assignees.map((a) => a.id),
+              dueAt,
+              timezone: ports.timeZone,
+              destinationId: tools.destinationId,
+              createdBy: ports.userId,
+            },
+            { actorType: 'member', actorId: ports.userId, via: 'gateway' },
+            ports.now(),
+            key,
+          );
+          ports.recordSkillActivity('tasks', 'completed', 'create_task');
+          const who =
+            assignees.length > 0
+              ? `, assigned to ${assignees.map((a) => summaryField(a.name)).join(', ')}`
+              : '';
+          return {
+            ...evidence(name, `Task created. Its id is ${taskId}.`),
+            actionSummary: `Created task "${summaryField(args.title)}" for ${summaryField(team.name)}${who}, due ${formatClock(ports.timeZone, dueAt)}.`,
+          };
+        } catch (err) {
+          if (err instanceof Error && err.message === 'unknown-team')
+            return refused(
+              name,
+              "I can't use that team. Ask a team lead for the team name, then try again.",
+            );
+          return failed(ports, name, 'tasks', err);
+        }
+      }
+      case 'list_tasks': {
+        const gate = requireSkill(ports, name, 'tasks');
+        if (gate !== undefined) return gate;
+        const tools = ports.taskTools;
+        if (tools === undefined) return refused(name, "I can't manage tasks right now.");
+        const args = parsed.data as { team?: string; includeDone?: boolean };
+        const access = await tools.access();
+        if (access === undefined || access.actorId !== ports.userId || access.teams.length === 0)
+          return refused(
+            name,
+            'Only team members, team leads and the president can see tasks. Tell the member.',
+          );
+        const teams = new Map(access.teams.map((team) => [team.teamId, team]));
+        if (args.team !== undefined && !teams.has(args.team))
+          return refused(
+            name,
+            "I can't use that team. Ask a team lead for the team name, then try again.",
+          );
+        const tasks = taskRepo
+          .listTasks(tools.scope, {
+            ...(args.team === undefined ? {} : { teamId: args.team }),
+            ...(args.includeDone === true ? { includeDone: true } : {}),
+          })
+          .filter((task) => teams.has(task.teamId))
+          .slice(0, 20);
+        if (tasks.length === 0) return evidence(name, 'No tasks found.');
+        const lines = tasks.map(
+          (task) =>
+            `${task.taskId} | ${summaryField(task.title).slice(0, 100)} | ${summaryField(teams.get(task.teamId)!.name)} | ${task.status} | due ${formatClock(ports.timeZone, task.dueAt)}`,
+        );
+        return { ...evidence(name, lines.join('\n')), handles: tasks.map((task) => task.taskId) };
+      }
+      case 'task_progress': {
+        const gate = requireSkill(ports, name, 'tasks');
+        if (gate !== undefined) return gate;
+        const tools = ports.taskTools;
+        if (tools === undefined) return refused(name, "I can't manage tasks right now.");
+        const args = parsed.data as { taskId: string; note: string };
+        const notAssignee = () => {
+          ports.recordSkillActivity('tasks', 'denied');
+          return refused(
+            name,
+            'Only someone assigned to that task can record progress. Tell the member.',
+          );
+        };
+        const access = await tools.access();
+        if (access === undefined || access.actorId !== ports.userId) return notAssignee();
+        const task = taskRepo.getTask(tools.scope, args.taskId);
+        // A historical assignment alone never counts: the asker must still be on the team.
+        if (
+          task === undefined ||
+          task.archivedAt !== null ||
+          !access.teams.some((team) => team.teamId === task.teamId) ||
+          !taskRepo.isTaskAssignee(tools.scope, task.taskId, ports.userId)
+        )
+          return notAssignee();
+        const outcome = taskRepo.recordReport(
+          tools.scope,
+          task.taskId,
+          contentKey('taskreport', ports.invocationKey, { taskId: task.taskId, note: args.note }),
+          ports.userId,
+          args.note,
+          { actorType: 'member', actorId: ports.userId, via: 'gateway' },
+          ports.now(),
+        );
+        if (outcome === 'not-open')
+          return refused(name, 'That task is already finished, so I did not add a note.');
+        if (outcome === 'duplicate')
+          return evidence(name, 'That progress note was already recorded.');
+        ports.recordSkillActivity('tasks', 'completed', 'task_progress');
+        return evidence(name, 'Progress note recorded.');
       }
       case 'search_conversations': {
         const { query: q } = parsed.data as { query: string };

@@ -197,6 +197,8 @@ export interface FoundMember {
   readonly displayName: string;
   readonly globalName?: string | undefined;
   readonly username?: string | undefined;
+  /** Role names for `find_member` (never the `@everyone` role); absent when unknown. */
+  readonly roleNames?: readonly string[] | undefined;
 }
 
 /** What the tools need from live Discord (ADR 0067). */
@@ -939,6 +941,20 @@ export const createAssistantService = (
          * Every string is redacted like other evidence, then neutralised
          * (hard rule 3).
          */
+        findMember:
+          discord.findMember === undefined
+            ? undefined
+            : async (nameOrId: string) => (await discord.findMember!(nameOrId)).slice(0, 5),
+        taskTools:
+          discord.taskContext === undefined
+            ? undefined
+            : {
+                scope,
+                access: () => discord.taskContext!.access(input.userId),
+                resolveMember: async (name: string) =>
+                  discord.findMember === undefined ? [] : await discord.findMember(name),
+                destinationId: input.channelId,
+              },
         searchConversations: async (query: string) => {
           const visible = new Set(
             (await discord.memberChannels(input.userId)).map((channel) => channel.id),

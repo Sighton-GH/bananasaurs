@@ -21,6 +21,7 @@ import {
   modelCallsRepo,
   resourceCacheRepo,
   runRepo,
+  taskRepo,
   traceRepo,
 } from '@bananasaurs/storage';
 import {
@@ -2674,6 +2675,104 @@ describe('B2b: per-skill scopes gate chat skills', () => {
     expect(result.ok).toBe(true);
     expect(declared[0]).toContain('set_reminder');
     expect(systems[0]).toContain('Reminders and scheduled posts (');
+  });
+
+  it('declares create_task for the owner and not for a member; find_member and the Club tasks group print (ADR 0145, 0146)', async () => {
+    const declared: string[][] = [];
+    const systems: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        declared.push((req.tools ?? []).map((d) => d.name));
+        systems.push(req.systemInstruction ?? '');
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = h.serviceWith(provider, {
+      memberChannels: async () => [],
+      findMember: async () => [{ id: '678901234567890123', displayName: 'Sam L' }],
+      taskContext: { access: async () => undefined },
+    });
+    const behaviour = {
+      ...h.direct,
+      id: 'tasks-pref',
+      preferredSkillIds: ['search-club', 'reminders', 'tasks'],
+    };
+    const owner = await service.invoke(
+      ask({
+        behaviour,
+        input: { question: 'who is Sam L?' },
+        userId: OWNER,
+        callerRoleIds: [],
+        invocationId: 'int-tasks-owner',
+      }),
+    );
+    const member = await service.invoke(
+      ask({
+        behaviour,
+        input: { question: 'who is Sam L?' },
+        invocationId: 'int-tasks-member',
+      }),
+    );
+    expect(owner.ok).toBe(true);
+    expect(member.ok).toBe(true);
+    expect(declared[0]).toEqual(
+      expect.arrayContaining(['create_task', 'list_tasks', 'task_progress', 'find_member']),
+    );
+    expect(declared[1]).toContain('find_member');
+    expect(declared[1]).not.toContain('create_task');
+    expect(systems[0]).toContain('Club tasks (create_task, list_tasks, task_progress)');
+    expect(systems[0]).toContain('This server');
+    expect(systems[1]).toContain('find_member');
+  });
+
+  it('create_task through chat checks team authority in code even when the skill passes (ADR 0146)', async () => {
+    const scope = h.t.scopes.forGuild(GUILD);
+    const actor = { actorType: 'dashboard', actorId: 'owner', via: 'http' } as const;
+    const teamId = taskRepo.createTeam(
+      scope,
+      { name: 'Car Team A', categoryId: '222222222222222222', kind: 'subteam' },
+      actor,
+      NOW,
+    );
+    const due = new Date(NOW + 86_400_000).toISOString();
+    const call = {
+      name: 'create_task',
+      args: { title: 'Fix the charger', team: teamId, due },
+    };
+    const run = async (leadTeamIds: string[], invocationId: string) => {
+      const provider = h.scripted([
+        { text: '', model: 'model-a', toolCalls: [call] },
+        { text: 'done', model: 'model-a' },
+      ]);
+      const service = h.serviceWith(provider, {
+        memberChannels: async () => [],
+        taskContext: {
+          access: async (actorId: string) => ({
+            actorId,
+            teams: [
+              { teamId, name: 'Car Team A', kind: 'subteam', categoryId: '222222222222222222' },
+            ],
+            president: false,
+            leadTeamIds,
+          }),
+        },
+      });
+      return service.invoke(
+        ask({
+          behaviour: { ...h.direct, id: 'tasks-auth', preferredSkillIds: ['search-club', 'tasks'] },
+          input: { question: 'make a task to fix the charger' },
+          userId: OWNER,
+          callerRoleIds: [],
+          invocationId,
+        }),
+      );
+    };
+    await run([], 'int-task-nonlead');
+    expect(taskRepo.listTasks(scope)).toHaveLength(0);
+    await run([teamId], 'int-task-lead');
+    expect(taskRepo.listTasks(scope)).toHaveLength(1);
   });
 
   const capture = () => {

@@ -49,6 +49,13 @@ const fixturePorts = (skillAllowed: (skillId: string) => boolean): AssistantTool
     cacheFreshness: () => [],
     enqueueRefresh: () => true,
     searchConversations: async () => [],
+    findMember: async () => [],
+    taskTools: {
+      scope: undefined as never,
+      access: async () => undefined,
+      resolveMember: async () => [],
+      destinationId: undefined,
+    },
   };
   return ports;
 };
