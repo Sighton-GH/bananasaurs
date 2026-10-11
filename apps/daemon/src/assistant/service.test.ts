@@ -5764,4 +5764,192 @@ describe('complexity routing (ADR 0144, spec 6e)', () => {
     expect(cooldown).toMatchObject({ reason: 'daily-quota' });
     expect(cooldown?.until).toBeGreaterThan(NOW);
   });
+
+  const reminderTargets = {
+    memberChannels: async () => [],
+    resolveReminderTargets: async () => ({
+      ok: true as const,
+      targets: {
+        channelId: CHANNEL,
+        channelName: 'general',
+        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+        memberNames: [],
+        roleNames: [],
+      },
+    }),
+  };
+  /** A provider whose round 1 sets a reminder, then answers in round 2. */
+  const reminderProvider = (
+    model: string,
+    text: string,
+    seen: string[],
+    acts = true,
+  ): TextProvider => {
+    const usage = 10;
+    let round = 0;
+    return {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        seen.push(`${model}:${round}`);
+        if (round === 1 && acts) {
+          return {
+            text: '',
+            model,
+            usage: { promptTokens: usage },
+            toolCalls: [
+              {
+                name: 'set_reminder',
+                args: { text, when: new Date(NOW + 3_600_000).toISOString() },
+              },
+            ],
+          };
+        }
+        return { text: 'Here you go.', model, usage: { promptTokens: usage } };
+      },
+    };
+  };
+  const invokeReminder = async (
+    chain: () => readonly ChainEntry[],
+    id: string,
+    events: RunEvent[],
+    warn: () => void,
+  ) => {
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      { warn, info: () => undefined },
+      reminderTargets,
+      chain,
+      undefined,
+      () => ({ totalCalls: 1 }),
+    );
+    return service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'hi' },
+      source: 'slash-command',
+      invocationId: id,
+      recorder: {
+        runId: `run-${id}`,
+        event: (e: RunEvent) => {
+          events.push(e);
+        },
+        update: () => undefined,
+      },
+    });
+  };
+
+  it('escalation continues the same loop: one reminder, summed usage, may-train warning, two routed events', async () => {
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    const warn = vi.fn();
+    const result = await invokeReminder(
+      () => [
+        { ...lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)), mayTrain: true },
+        standardEntry(reminderProvider(STANDARD_MODEL, 'Bring the batteries', seen, false)),
+      ],
+      'fix-same-loop',
+      events,
+      warn,
+    );
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${STANDARD_MODEL}:1`]);
+    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'tool-call')).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'model-call')).toHaveLength(2);
+    expect(result.ok && result.detail?.usage?.promptTokens).toBe(20);
+    expect(result.ok && result.detail?.toolCalls).toHaveLength(1);
+    expect(result.ok && result.content).toContain('Bring batteries');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(
+      events.filter((e) => e.kind === 'routed').map((e) => ({ tier: e.tier, reason: e.reason })),
+    ).toEqual([
+      { tier: 'light', reason: 'greeting' },
+      { tier: 'standard', reason: 'escalated-after-tool' },
+    ]);
+  });
+
+  it('escalate-on-tool off: the light entry answers itself with one routed event', async () => {
+    instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
+      key: 'assistant.routerEscalateOnTool',
+      valueJson: JSON.stringify(0),
+      updatedAt: NOW,
+      updatedBy: 'fixture',
+    });
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    await invokeReminder(
+      () => [
+        lightEntry(reminderProvider(LIGHT_MODEL, 'Bring batteries', seen)),
+        standardEntry(reminderProvider(STANDARD_MODEL, 'Bring the batteries', seen)),
+      ],
+      'fix-off',
+      events,
+      () => undefined,
+    );
+    expect(seen).toEqual([`${LIGHT_MODEL}:1`, `${LIGHT_MODEL}:2`]);
+    expect(events.filter((e) => e.kind === 'routed')).toHaveLength(1);
+    expect(assistantRepo.listReminders(t.scopes.forGuild(GUILD))).toHaveLength(1);
+  });
+
+  it('a standard run that calls a tool never hands over mid-loop', async () => {
+    const events: RunEvent[] = [];
+    const seen: string[] = [];
+    await invokeReminder(
+      () => [
+        standardEntry(reminderProvider(STANDARD_MODEL, 'Bring batteries', seen)),
+        {
+          ...standardEntry(reminderProvider('gemini-3.8-flash-b', 'Bring more', seen, false)),
+          keyId: 'key_light',
+          keyLabel: 'Key B',
+        },
+      ],
+      'fix-standard-no-handover',
+      events,
+      () => undefined,
+    );
+    expect(seen).toEqual([`${STANDARD_MODEL}:1`, `${STANDARD_MODEL}:2`]);
+    expect(events.filter((e) => e.kind === 'routed')).toHaveLength(1);
+  });
+
+  it('a light run with no tool calls never escalates', async () => {
+    const seen = await runWith('hi', {});
+    expect(seen.rounds).toHaveLength(1);
+    expect(seen.answeredBy.tier).toBe('light');
+  });
+
+  it('invalid router settings and empty chips fall back to the defaults', async () => {
+    expect(
+      (await runWith('remind me', { settings: { 'assistant.routerFullModelKeywords': [] } })).routed
+        .reason,
+    ).toBe('full-model-keyword');
+    expect(
+      (
+        await runWith('hi', {
+          settings: {
+            'assistant.routerGreetingPatterns': [],
+            'assistant.routerEnabled': 2,
+            'assistant.routerMaxChars': -1,
+          },
+        })
+      ).routed.reason,
+    ).toBe('greeting');
+    expect(
+      (
+        await runWith('abcdefghijk', {
+          settings: { 'assistant.routerEnabled': 1, 'assistant.routerMaxChars': 10 },
+        })
+      ).routed.reason,
+    ).toBe('long-message');
+  });
 });

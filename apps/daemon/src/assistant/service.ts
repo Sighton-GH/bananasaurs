@@ -1331,7 +1331,7 @@ export const createAssistantService = (
         ...entry,
         tier: entry.tier ?? 'standard',
       }));
-      let loopChain: readonly ChainEntry[] = orderChainByTier(tieredChain, routed.tier);
+      const loopChain: readonly ChainEntry[] = orderChainByTier(tieredChain, routed.tier);
       recorder.event({
         kind: 'context-built',
         sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope)
@@ -1403,35 +1403,46 @@ export const createAssistantService = (
       // table decides which key and model pairs are skipped and records new
       // cooldowns; the legacy in-memory ledger path stays for callers
       // without one.
-      let loop = await runToolLoop({ chain: loopChain, instance, ...loopArgs });
-      // ADR 0144: a light run that called a tool was not simple — with
-      // escalate-on-tool on, the rest of the run re-runs standard-first and
-      // the switch is audited. The loop owns the rounds inside one entry, so
-      // the service re-runs the run on the re-ordered chain rather than
-      // swapping entries mid-loop.
-      const answeredEntry = loopChain.find(
-        (entry) => entry.model === loop.answeredBy?.model && entry.keyId === loop.answeredBy?.keyId,
-      );
-      if (
-        routed.tier === 'light' &&
-        routerRules.escalateOnTool &&
-        loop.outcome === 'answered' &&
-        loop.toolCalls.length > 0 &&
-        answeredEntry?.tier === 'light'
-      ) {
-        recorder.event({ kind: 'routed', tier: 'standard', reason: 'escalated-after-tool' });
-        loopChain = orderChainByTier(tieredChain, 'standard');
-        loop = await runToolLoop({ chain: loopChain, instance, ...loopArgs });
-      }
-      // The loop records exactly one attempt per entry, in chain order, so
-      // each attempt lines up with the entry that produced it.
+      // ADR 0144: a light run that called a tool was not simple. With
+      // escalate-on-tool on, the SAME loop hands over to the standard-first
+      // re-ordered remainder after the light entry's round-1 tools, so acting
+      // tools never run twice and one result carries all usage, calls and
+      // attempts. The plan is pure; the loop asks it before each entry.
+      // A hand-over leaves no attempt row for the entry that ran round 1, but
+      // that entry still received the content: remember it for the disclosure.
+      const handedOver: ChainEntry[] = [];
+      const loop = await runToolLoop({
+        chain: loopChain,
+        instance,
+        ...loopArgs,
+        escalateAfterTools: (entry, remaining) => {
+          if (!routerRules.escalateOnTool || entry.tier !== 'light') return undefined;
+          const standardFirst = orderChainByTier(remaining, 'standard');
+          return standardFirst.some((next) => next.tier === 'standard') ? standardFirst : undefined;
+        },
+        onEscalated: (entry) => {
+          handedOver.push(entry);
+          recorder.event({ kind: 'routed', tier: 'standard', reason: 'escalated-after-tool' });
+        },
+      });
+      // The may-train disclosure covers EVERY entry that received content:
+      // match each non-skipped attempt to its chain entry by model and key
+      // label (the hand-over means attempts no longer follow one chain order).
       let warnedMayTrain = false;
-      loop.attempts.forEach((attempt, index) => {
-        if (
-          attempt.outcome !== 'skipped' &&
-          loopChain[index]?.mayTrain === true &&
-          !warnedMayTrain
-        ) {
+      const exposed: (ChainEntry | undefined)[] = [
+        ...handedOver,
+        ...loop.attempts
+          .filter((attempt) => attempt.outcome !== 'skipped')
+          .map((attempt) =>
+            tieredChain.find(
+              (candidate) =>
+                candidate.model === attempt.model && candidate.keyLabel === attempt.keyLabel,
+            ),
+          ),
+      ];
+      for (const entry of exposed) {
+        if (warnedMayTrain) continue;
+        if (entry?.mayTrain === true) {
           warnedMayTrain = true;
           logger.warn(
             safeLogFields({
@@ -1442,7 +1453,7 @@ export const createAssistantService = (
             'assistant provider may train on server content',
           );
         }
-      });
+      }
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
       // ADR 0120: Tavily's terms allow training on queries, so an answer that
