@@ -134,6 +134,9 @@ interface ChainDraft {
   readonly model: string;
   readonly rpmLimit: string;
   readonly rpdLimit: string;
+  /** Carried through so saving the order never resets the pool or tier. */
+  readonly pool?: 'key' | 'provider';
+  readonly tier?: 'light' | 'standard';
 }
 
 /** A limit input is blank (no limit) or a whole number of 1 or more. */
@@ -171,6 +174,8 @@ function ModelOrderSection({
       model: entry.model,
       rpmLimit: entry.rpmLimit?.toString() ?? '',
       rpdLimit: entry.rpdLimit?.toString() ?? '',
+      ...(entry.pool === undefined ? {} : { pool: entry.pool }),
+      ...(entry.tier === undefined ? {} : { tier: entry.tier }),
     })),
   );
   const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
@@ -243,6 +248,8 @@ function ModelOrderSection({
             model: row.model.trim(),
             rpmLimit: row.rpmLimit === '' ? null : Number(row.rpmLimit),
             rpdLimit: row.rpdLimit === '' ? null : Number(row.rpdLimit),
+            ...(row.pool === undefined ? {} : { pool: row.pool }),
+            ...(row.tier === undefined ? {} : { tier: row.tier }),
           })),
         },
         'PUT',
