@@ -2083,7 +2083,53 @@ with `import { AssistantDigestList } from '../components/assistant-digest-list.j
 
 **Done when:** the digest list renders under Conversations with an Open detail; the five digest controls render on Memory and save through the tuning API.
 
-<!-- PASS6 -->
+### S5-T13: STATE.md entry and PRIVACY.md lines   ·   Wave 6
+**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`
+**Reads (do not edit):** `docs/STATE.md` lines 1–16 (the living-document header and the Slice 1 entry style), `PRIVACY.md` lines 101–106 (the summary/lookback lines)
+**Interfaces:** Consumes: everything above · Produces: none (docs)
+
+- [ ] **Step 1: Write the failing test** — not applicable (docs). Verify placement first: `sed -n '1,16p' docs/STATE.md` must still show the Slice 1 entry directly after the first `---`; the new entry goes between that `---` and the Slice 1 entry, same bullet style.
+- [ ] **Step 2: Run it and watch it fail** — not applicable (docs).
+- [ ] **Step 3: Implement** —
+  1. In `docs/STATE.md`, insert after the first `---` (line 5) and before the Slice 1 entry:
+
+```markdown
+**Daily digest and automatic memory proposals (Slice 5 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on this branch, not yet merged (ADR 0150, migration `daily_digests`).**
+
+- **Job (5a):** `assistant_daily_digest` runs once per guild per local day (04:00 in the club's time zone, hourly tick, `oncePerBucket` bucket key), so restarts and replays cannot run it twice. A day with no turns still records an empty digest.
+- **Input (5b, D10a):** that day's turns from `assistant_conversation_turns` grouped by conversation with rolling summaries, capped at 40,000 chars (`assistant.digestInputChars`), same redaction and outbound scan as any provider call. Runs on the guild chain in order; the `assistant.digestTier` setting (default `light`) takes effect with Slice 6's `orderChainByTier` (`orderChainForDigest` passthrough marks the spot).
+- **Output (5c):** Zod-validated `daySummary` (300 words) plus at most 10 proposals (`assistant.digestMaxProposals`) into the existing memory-proposal queue with provenance `daily-digest`; code drops duplicates of memory or pending drafts. Nothing becomes memory without owner approval.
+- **Stored (5d):** `assistant_daily_digests` keyed by guild and day; retention follows the conversation setting; `search_conversations` also searches digests through the asker's channels; dashboard "Daily digests" list under Conversations, controls on Memory.
+- **Observed (5e):** run-ledger entries with source `daily-digest`; model failures complete without retrying.
+```
+
+  2. In `PRIVACY.md`, exact anchor (line 105):
+
+```markdown
+- The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Conversations from channels the owner has marked as no-access are never used. Names are left out of what it sees. There is no opt-out.
+```
+
+exact replacement: that line plus
+
+```markdown
+- The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Conversations from channels the owner has marked as no-access are never used. Names are left out of what it sees. There is no opt-out.
+- Once a day the assistant summarises that day's conversations and drafts memory proposals for the owner to review. The summary is stored on the club's server and deleted with the conversation setting's window. A proposal becomes memory only when the owner approves it. The day's conversations are sent to the AI provider to make the summary; the provider-training disclosure above applies to them too.
+```
+
+- [ ] **Step 4: Run it and watch it pass** — `grep -n "Slice 5" docs/STATE.md | head -2` shows the new entry; `grep -n "Once a day" PRIVACY.md` shows the new line.
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md` then `npx eslint docs/STATE.md PRIVACY.md` · exit 0 (if eslint ignores markdown, note the exit-0 on prettier only)
+- [ ] **Step 7: Commit** — `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 5 T13: STATE entry and privacy lines for the daily digest"`
+
+**Done when:** STATE.md names the slice, ADR, migration and the five behaviours; PRIVACY.md covers storage, approval and provider disclosure.
+
+## Slice gate (orchestrator only, after the last wave)
+npm run typecheck        (≈1.7 GB peak — run alone)
+npm run lint
+npx vitest run --maxWorkers=1
+## After merge (owner)
+Deploy order: stop → `db:migrate` (migration `daily_digests`) → build → start. On the dashboard: Assistant → Memory holds the five digest controls (on, 04:00, 40,000 chars, 10 proposals, light tier) with defaults already set — change nothing to start. In Discord: talk to the bot one day, and the next morning check Assistant → Conversations → Daily digests for the summary and the assistant page for the drafted memory proposals; approve or dismiss one to confirm the queue path. (After Slice 6 merges first per the build order, the digest answers on the light tier with no further setup.)
+
 
 
 
