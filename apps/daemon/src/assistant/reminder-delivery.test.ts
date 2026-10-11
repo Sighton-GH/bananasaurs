@@ -80,6 +80,45 @@ describe('renderReminder', () => {
     expect(rendered.content).toBe(`⏰ standup in five\n-# Set by <@${CREATOR}>`);
   });
 
+  it('renders a message-style reminder as bare text with its pings', () => {
+    const rendered = renderReminder(
+      reminder({
+        style: 'message',
+        context: 'for the race',
+        mentions: { userIds: [USER], roleIds: [ROLE], everyone: false, here: false },
+      }),
+    );
+    expect(rendered.content).toBe(`<@&${ROLE}> <@${USER}>\nstandup in five`);
+    expect(rendered.content).not.toContain('⏰');
+    expect(rendered.content).not.toContain('Set by');
+    expect(rendered.allowedMentions).toEqual({ parse: [], roles: [ROLE], users: [USER] });
+  });
+
+  it('renders a message-style reminder with no pings as the text alone', () => {
+    const rendered = renderReminder(reminder({ style: 'message' }));
+    expect(rendered.content).toBe('standup in five');
+    expect(rendered.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it('truncates an over-long message text, never its pings, and neutralises @everyone', () => {
+    const rendered = renderReminder(
+      reminder({
+        style: 'message',
+        text: `@everyone ${'a'.repeat(3_000)}`,
+        mentions: { userIds: [USER], roleIds: [], everyone: false, here: false },
+      }),
+    );
+    expect(rendered.content.length).toBeLessThanOrEqual(2_000);
+    expect(rendered.content.startsWith(`<@${USER}>\n`)).toBe(true);
+    expect(rendered.content).not.toMatch(/@everyone/);
+    expect(rendered.allowedMentions).toEqual({ parse: [], users: [USER] });
+  });
+
+  it('keeps the reminder frame for style reminder', () => {
+    const rendered = renderReminder(reminder({ style: 'reminder' }));
+    expect(rendered.content).toBe(`⏰ standup in five\n-# Set by <@${CREATOR}>`);
+  });
+
   it('lists exactly the stored users and roles, roles before users', () => {
     const rendered = renderReminder(
       reminder({ mentions: { userIds: [USER], roleIds: [ROLE], everyone: false, here: false } }),

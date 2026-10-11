@@ -243,7 +243,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   {
     name: 'set_reminder',
     description:
-      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "<today>T23:00:00<UTC offset>", members: ["Sam L"].',
+      'Schedule a message in a channel, once or repeating, that can ping members or roles. Use it whenever a member asks to be reminded, to remind or nag someone, or to post something later. If the time is unclear, ask. Omit channel for this channel. members takes display names exactly as written in the chat. when is ISO 8601 with its UTC offset in the club\'s time zone; today\'s date is under NOW. Example: "remind Sam at 23:00 to go to sleep" becomes text "go to sleep", when "<today>T23:00:00<UTC offset>", members: ["Sam L"]. style \'message\' posts the text as is without the reminder frame; the default \'reminder\' keeps it. Reply pings in answers work the same way: write @Name and code pings only people and roles the asker mentioned or named.',
     parameters: {
       type: 'object',
       properties: {
@@ -277,6 +277,12 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
           description: 'Role names or ids; "everyone" or "here" for those pings (at most 10).',
           items: { type: 'string' },
           maxItems: 10,
+        },
+        style: {
+          type: 'string',
+          description:
+            "Post as a plain scheduled message ('message') or a framed reminder ('reminder').",
+          enum: ['reminder', 'message'],
         },
         repeat: {
           type: 'object',

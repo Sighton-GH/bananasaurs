@@ -80,6 +80,14 @@ describe('TOOL_CATALOGUE', () => {
     expect(reminder).toContain('Example:');
     expect(reminder).toContain('members: ["Sam L"]');
     expect(reminder).toContain('when "<today>T23:00:00<UTC offset>"');
+    expect(reminder).toContain("style 'message' posts the text as is");
+    expect(reminder).toContain('write @Name');
+    const styleProp = (
+      TOOL_CATALOGUE.find((e) => e.name === 'set_reminder')!.parameters as {
+        properties: Record<string, { enum?: string[] }>;
+      }
+    ).properties.style;
+    expect(styleProp?.enum).toEqual(['reminder', 'message']);
     expect(reminder).not.toContain('2026-10-10');
     expect(reminder).not.toContain('use current_time first');
     const web = TOOL_CATALOGUE.find((e) => e.name === 'web_search')!.description;

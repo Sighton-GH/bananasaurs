@@ -15,6 +15,7 @@ import {
   type Reminder,
   type ReminderMentions,
   type ReminderRecurrence,
+  type ReminderStyle,
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
@@ -327,6 +328,7 @@ const schemas = {
       members: reminderMembers,
       roles: reminderRoles,
       repeat: repeatPattern,
+      style: z.enum(['reminder', 'message']).optional(),
     })
     .strict(),
   edit_reminder: z
@@ -924,6 +926,7 @@ export const runAssistantTool = async (
                     (r.mentions.everyone ? 1 : 0) +
                     (r.mentions.here ? 1 : 0);
                   parts.push(`pings ${pings}`);
+                  if (r.style === 'message') parts.push('as message');
                   return parts.join(' · ');
                 })
                 .join('\n'),
@@ -946,12 +949,14 @@ export const runAssistantTool = async (
             members?: string[];
             roles?: string[];
             repeat?: RepeatArgs;
+            style?: 'reminder' | 'message';
           };
           const quoteGate = quotePingRefused(ports, name, args.roles);
           if (quoteGate !== undefined) return quoteGate;
           if (!ISO_WITH_OFFSET.test(args.when)) return refused(name, OFFSET_REFUSAL);
           const dueAt = Date.parse(args.when);
           if (!Number.isFinite(dueAt)) return refused(name, OFFSET_REFUSAL);
+          const style = args.style ?? 'reminder';
           let recurrence: ReminderRecurrence | undefined;
           if (args.repeat !== undefined) {
             const built = parseRecurrence(args.repeat, ports.timeZone);
@@ -993,6 +998,7 @@ export const runAssistantTool = async (
               here: targets.mentions.here,
             },
             ...(recurrence === undefined ? {} : { recurrence }),
+            style,
             creatorId: ports.userId,
           };
           const reminder: Omit<Reminder, 'guildId'> = {
@@ -1013,6 +1019,7 @@ export const runAssistantTool = async (
             ...(recurrence === undefined ? {} : { recurrence }),
             ...(normalisedContext === undefined ? {} : { context: normalisedContext }),
             deliveredCount: 0,
+            style,
           };
           const inserted = ports.reminderStore.insert(reminder);
           const buildSetSummary = (row: {
@@ -1020,8 +1027,10 @@ export const runAssistantTool = async (
             readonly dueAt: number;
             readonly recurrence?: unknown;
             readonly context?: string;
+            readonly style?: ReminderStyle | undefined;
           }): string =>
             reminderSummary('set', {
+              style: row.style ?? style,
               text: row.text,
               dueAt: row.dueAt,
               timeZone: ports.timeZone,

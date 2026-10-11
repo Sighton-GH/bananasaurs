@@ -50,6 +50,13 @@ describe('reminderSummary', () => {
     here: false,
   };
 
+  it('heads a message-style set summary with Message scheduled', () => {
+    const text = reminderSummary('set', { ...base, style: 'message' });
+    expect(text.split('\n')[0]).toBe('✅ Message scheduled: **Bring the charger**');
+    const plain = reminderSummary('set', { ...base, style: 'reminder' });
+    expect(plain.split('\n')[0]).toBe('✅ Reminder set: **Bring the charger**');
+  });
+
   it('summarises a set reminder with every line', () => {
     const text = reminderSummary('set', { ...base, context: 'for the race' });
     const lines = text.split('\n');
