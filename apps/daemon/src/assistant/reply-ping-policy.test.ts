@@ -305,4 +305,64 @@ describe('resolveReplyPings', () => {
     });
     expect(out).toEqual({ content: 'Tell @Car Team A', userIds: [], roles: [] });
   });
+
+  it('an ambiguous long name does not fall through to a shorter member name', async () => {
+    const { client } = build({
+      members: [
+        { id: '600000000000000120', displayName: 'Alex P' },
+        { id: '600000000000000121', displayName: 'Alex P' },
+        { id: '600000000000000122', displayName: 'Alex' },
+      ],
+    });
+    const out = await run(client, {
+      text: '@Alex P has the build.',
+      askerText: 'ping Alex P about the build',
+    });
+    expect(out.userIds).toEqual([]);
+    expect(out.content).toBe('@Alex P has the build.');
+  });
+
+  it('two same-name roles never fall into a member search', async () => {
+    const twins: FakeRole[] = [
+      { id: '800000000000000014', name: 'Car Team B', position: 1, mentionable: true },
+      { id: '800000000000000015', name: 'Car Team B', position: 1, mentionable: true },
+    ];
+    const { client, searches } = build({
+      roles: twins,
+      members: [{ id: '600000000000000123', displayName: 'Car Team B' }],
+    });
+    const out = await run(client, {
+      text: 'Tell @Car Team B',
+      askerText: 'ping Car Team B about the build',
+    });
+    expect(out).toEqual({ content: 'Tell @Car Team B', userIds: [], roles: [] });
+    expect(searches()).toBe(0);
+  });
+
+  it('a full page of 25 results refuses even with a single exact hit', async () => {
+    const crowd: FakeMember[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `6000000000000002${String(i).padStart(2, '0')}`,
+      displayName: `Alex P${String(i).padStart(2, '0')}`,
+    }));
+    const exactAlex = { id: '600000000000000299', displayName: 'Alex P' };
+    const { client } = build({ members: [exactAlex, ...crowd] });
+    const out = await run(client, {
+      text: '@Alex P has the build.',
+      askerText: 'ping Alex P about the build',
+    });
+    expect(out).toEqual({ content: '@Alex P has the build.', userIds: [], roles: [] });
+  });
+
+  it('pings an accented name whole, never a truncated one', async () => {
+    const jose = { id: '600000000000000130', displayName: 'José' };
+    const { client } = build({
+      members: [jose, { id: '600000000000000131', displayName: 'Jos' }],
+    });
+    const out = await run(client, {
+      text: '@José has the build.',
+      askerText: 'ping José about the build',
+    });
+    expect(out.userIds).toEqual([jose.id]);
+    expect(out.content).toBe(`<@${jose.id}> has the build.`);
+  });
 });

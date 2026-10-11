@@ -76,16 +76,23 @@ export const resolveReplyPings = async (
           extraRoles.push({ id: roleHits[0].id, name: roleHits[0].name });
           break;
         }
+        // Two roles share the name: refuse, never fall into a member search.
+        if (roleHits.length > 1) break;
         const hits = await guild.members
           .search({ query: phrase, limit: 25 })
           .catch(() => undefined);
         const exact = [...(hits?.values() ?? [])].filter(
           (m) => m.displayName.toLowerCase() === phrase.toLowerCase(),
         );
+        // A full page may hide a same-name twin past the cut: refuse.
+        if ((hits?.size ?? 0) >= 25) break;
         if (exact.length === 1 && exact[0] !== undefined) {
           extraUsers.push({ id: exact[0].id, name: exact[0].displayName });
           break;
         }
+        // Ambiguous exact name: refuse the occurrence instead of trying a
+        // shorter phrase.
+        if (exact.length > 1) break;
       }
     }
     const memberIds = matchPingNames(occurrences, [...users, ...extraUsers]).slice(0, caps.members);

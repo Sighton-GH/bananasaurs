@@ -1,7 +1,7 @@
 /** Code spans never ping, the ADR 0128 parser (`apps/daemon/src/mcp/targets.ts:418`). */
 export const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g;
 /** `@` then one word and up to three more; `@` and most punctuation end it. */
-const AT = /@([A-Za-z0-9][A-Za-z0-9.'-]*(?: [A-Za-z0-9.'-]+){0,3})/g;
+const AT = /@([\p{L}\p{N}][\p{L}\p{N}.'-]*(?: [\p{L}\p{N}.'-]+){0,3})/gu;
 
 /**
  * For each `@` outside code: the 1–4 word phrases after it, longest first
@@ -44,7 +44,11 @@ export const matchPingNames = (
   for (const phrases of occurrences) {
     for (const phrase of phrases) {
       const key = phrase.toLowerCase();
-      if (counts.get(key) !== 1) continue;
+      const count = counts.get(key) ?? 0;
+      // Two candidates share this name: refuse the whole occurrence. Falling
+      // through to a shorter phrase would ping a different person.
+      if (count > 1) break;
+      if (count === 0) continue;
       const hit = candidates.find((c) => c.name.toLowerCase() === key);
       if (hit === undefined) continue;
       if (!ids.includes(hit.id)) ids.push(hit.id);
@@ -56,7 +60,7 @@ export const matchPingNames = (
 
 /** True when `name` appears in `text` as whole words, case-insensitively. */
 export const namedIn = (text: string, name: string): boolean =>
-  new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(name)}(?![A-Za-z0-9])`, 'i').test(text);
+  new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, 'iu').test(text);
 
 /** Rewrites `@Name` → id token in prose segments only. */
 export const replacePingTokens = (
@@ -78,7 +82,7 @@ const replaceInProse = (prose: string, replacements: ReadonlyMap<string, string>
   // Longest name first so `@Sam L` wins over `@Sam` in the same text.
   const entries = [...replacements.entries()].sort((a, b) => b[0].length - a[0].length);
   for (const [name, token] of entries) {
-    const pattern = new RegExp(`@${escapeRegExp(name)}(?![A-Za-z0-9'\\-])`, 'gi');
+    const pattern = new RegExp(`@${escapeRegExp(name)}(?![\\p{L}\\p{N}'\\-])`, 'giu');
     out = out.replace(pattern, token);
   }
   return out;
