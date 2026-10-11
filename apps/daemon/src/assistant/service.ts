@@ -1362,10 +1362,10 @@ export const createAssistantService = (
       });
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
-      // ADR 0120: Tavily's terms allow training on queries, so an answer that
-      // used Tavily results warns once per request, next to the AI-provider
-      // warning above.
-      if (loop.webSources.includes('tavily')) {
+      // ADR 0120 and 0147: Tavily's and Parallel's terms allow training on
+      // queries, so an answer that used either warns once per request, next
+      // to the AI-provider warning above.
+      if (loop.webSources.includes('tavily') || loop.webSources.includes('parallel')) {
         logger.warn(
           safeLogFields({
             component: 'assistant',

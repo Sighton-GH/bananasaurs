@@ -667,7 +667,10 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       productionUseAllowed: true,
       now: NOW,
     });
-    const invokeWithSource = async (source: 'brave' | 'tavily', invocationId: string) => {
+    const invokeWithSource = async (
+      source: 'brave' | 'tavily' | 'parallel',
+      invocationId: string,
+    ) => {
       const web = fakeProvider([
         { text: '', model: 'm', toolCalls: [{ name: 'web_search', args: { query: 'lipo' } }] },
         { text: 'Store them half charged.', model: 'm' },
@@ -695,6 +698,12 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const tavilyWarn = await invokeWithSource('tavily', 'int-search-may-train-tavily');
     expect(tavilyWarn).toHaveBeenCalledTimes(1);
     expect(tavilyWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: GUILD, reason: 'search-provider-may-train' }),
+      'web search provider may train on queries',
+    );
+    const parallelWarn = await invokeWithSource('parallel', 'int-search-may-train-parallel');
+    expect(parallelWarn).toHaveBeenCalledTimes(1);
+    expect(parallelWarn).toHaveBeenCalledWith(
       expect.objectContaining({ guildId: GUILD, reason: 'search-provider-may-train' }),
       'web search provider may train on queries',
     );
