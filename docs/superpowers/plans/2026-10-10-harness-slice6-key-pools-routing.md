@@ -1801,7 +1801,7 @@ parallel settings; every new setting has label, help, default and reset semantic
 `capabilitiesForEntry`)
 **Interfaces:** Consumes: `bucketOf`, `getCooldown`/`setCooldown` signatures (S6-T6), `ProviderError`
 `quotaScope`/`retryAfterMs`/`learnedLimit` (S6-T7), `capabilitiesForEntry` (S6-T8) · Produces:
-`nextProviderDayStart(provider: string, now: number): number`,
+`nextProviderDayStart` re-used from `@bananasaurs/core` (not produced here),
 `selectPoolKey(candidates: readonly PoolCandidate[]): PoolCandidate | undefined`,
 `ChainEntry.pool: 'key' | 'provider'`, `ChainEntry.tier: 'standard' | 'light'`,
 `ChainEntry.selectedKeyId: string` (for S6-T11, S6-T13, S6-T14)
@@ -1849,17 +1849,15 @@ describe('pool resolution (ADR 0143)', () => {
     expect(bucketOf({ keyId: 'key_b', project: 'Car Team A' })).toBe('project:Car Team A');
     expect(bucketOf({ keyId: 'key_c', project: null })).toBe('key:key_c');
   });
-  it('nextProviderDayStart is the next Pacific midnight', () => {
-    // 2026-10-11 12:00 UTC = 05:00 PDT → next midnight PDT = 2026-10-12 07:00 UTC.
-    expect(nextProviderDayStart('gemini', Date.UTC(2026, 9, 11, 12))).toBe(Date.UTC(2026, 9, 12, 7));
-  });
 });
 ```
 
   (`testDeps` is the existing helper in `model-chain.test.ts` that builds `{ instance, config, openKey,
   eligibility, makeProvider }`; extend it with optional `{ keys, cooldowns }` lists using the existing
-  `assistantProvidersRepo` stub style. `NOW` is the file's existing fixed clock. Import `selectPoolKey`,
-  `nextProviderDayStart`, `bucketOf` at the top.)
+  `assistantProvidersRepo` stub style. `NOW` is the file's existing fixed clock. Import `selectPoolKey` and
+  `bucketOf` at the top. **Controller correction:** do not write a Pacific-midnight function — the daily reset is
+  `nextProviderDayStart` from `@bananasaurs/core` (`packages/core/src/providers/provider-day.ts`, already tested,
+  handles daylight saving). Import it from there wherever this slice needs it.)
 
 - [ ] **Step 2: Run it and watch it fail** —
   `npx vitest run apps/daemon/src/assistant/model-chain.test.ts --maxWorkers=1` · Expected: FAIL with
@@ -1899,15 +1897,8 @@ export function selectPoolKey(candidates: readonly PoolCandidate[]): PoolCandida
   )[0];
 }
 
-/** Next Pacific midnight after `now` (PDT = UTC-7 in October; PST = UTC-8 otherwise). */
-export function nextProviderDayStart(_provider: string, now: number): number {
-  const date = new Date(now);
-  const month = date.getUTCMonth();
-  // Rough DST: PDT (UTC-7) Mar–Nov, PST (UTC-8) otherwise. Good enough for a quota reset.
-  const offsetHours = month >= 2 && month <= 10 ? 7 : 8;
-  const pacificMidnightUtc = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) + offsetHours * 3_600_000;
-  return pacificMidnightUtc <= now ? pacificMidnightUtc + 86_400_000 : pacificMidnightUtc;
-}
+// The daily reset comes from core: `import { nextProviderDayStart } from '@bananasaurs/core';`
+// (packages/core/src/providers/provider-day.ts). Never re-implement it here.
 ```
 
   3. In `storedCandidates`, carry `pool`/`tier` from the row
@@ -1942,7 +1933,7 @@ shared project labels share a bucket; Pacific-midnight reset is pinned; chain st
 `packages/core/src/assistant/run-events.ts`, `packages/core/src/assistant/run-events.test.ts`
 **Reads (do not edit):** `apps/daemon/src/assistant/quota-ledger.ts` (constructor kept; loop no longer consults
 it), `packages/storage/src/repos/assistant-key-cooldowns.ts` (S6-T6 output)
-**Interfaces:** Consumes: `ChainEntry.pool/selectedKeyId` + `nextProviderDayStart` (S6-T10), `ProviderError`
+**Interfaces:** Consumes: `ChainEntry.pool/selectedKeyId` (S6-T10) + `nextProviderDayStart` from `@bananasaurs/core`, `ProviderError`
 quota fields (S6-T7), `getCooldown`/`setCooldown` (S6-T6) · Produces: `routed` run event
 `{ kind: 'routed', tier: 'standard' | 'light', reason: string }` (for S6-T13); loop records `model-skipped`
 with cooldown reasons and persists `day`/`minute`/`invalid` cooldowns (for S6-T13, S6-T15)
@@ -2006,23 +1997,27 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
     expect(result.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
     expect(result.events.map((e) => e.kind)).not.toContain('retry-scheduled');
   });
-  it('break-it: removing the pre-call skip calls the cooling key again', async () => {
+  it('an OpenRouter :free daily cap cools that key until its reset', async () => {
     const calls: string[] = [];
-    const chain = poolChain(['key_a', 'key_b'], 'gemini-3.8-flash', calls);
-    await runToolLoop(testInput(chain, { failKey: 'key_a', failBody: DAILY_429 }));
+    const chain = poolChain(['key_or'], 'some-model:free', calls, 'openrouter');
+    await runToolLoop(testInput(chain, { failKey: 'key_or', failError: DAILY_FREE_ERROR }));
     calls.length = 0;
-    await runToolLoop(testInput(chain, { skipCooldownCheck: true }));
-    expect(calls).toContain('key_a');
+    await runToolLoop(testInput(chain, { now: NOW + 60_000 }));
+    expect(calls).not.toContain('key_or');
   });
 });
 ```
 
   (`DAILY_429`/`MINUTE_429` are the S6-T5 fixture shape inline: `QuotaFailure` with
   `GenerateRequestsPerDayPerProjectPerModel-FreeTier` value `20` / `…PerMinute…` value `5` plus
-  `RetryInfo` `37s`. `testInput`/`poolChain`/`freshChain`/`spentPoolChain` are local helpers built on the
-  file's existing harness. For the break-it case the helper passes `skipCooldownCheck: true`, which the
-  implementation must honour as "do not consult the cooldown table" — the test fails while the guard is
-  present and passes only when the guard is removed, then the guard is restored.)
+  `RetryInfo` `37s`. `DAILY_FREE_ERROR` is `new ProviderError('quota', 'daily free cap', { quotaScope:
+  'daily-free', resetAt: NOW + 3_600_000 })` (use the constructor's real option shape in `errors.ts`).
+  `testInput`/`poolChain`/`freshChain`/`spentPoolChain` are local helpers built on the file's existing harness;
+  `poolChain`'s optional fourth argument is the provider id, default `'gemini'`.)
+
+  **Break-it (controller correction — no bypass flag in production code):** after Step 4 passes, delete the
+  pre-call `getCooldown` skip block in `tool-loop.ts`, run the same command, and watch "two runs after a daily 429
+  never call that key again" fail. Restore the block, re-run, PASS. Name the failing test in the commit message.
 
 - [ ] **Step 2: Run it and watch it fail** —
   `npx vitest run packages/core/src/assistant/run-events.test.ts apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` ·
@@ -2048,15 +2043,20 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
        call `getCooldown(instance, entry.selectedKeyId ?? entry.keyId, entry.model, input.now())`; when
        defined, record `model-skipped` with reason `daily-quota` / `minute-quota` / `invalid-key` (from the
        row's `reason`), push a skipped attempt, and `continue` — never call the provider.
-     - In the provider-error catch (anchor: `pushFailedAttempt` near line 700), when the error is a
-       `ProviderError` with `kind: 'quota'` and `quotaScope: 'day'`, call `setCooldown` with
-       `until: nextProviderDayStart('gemini', input.now())`, `reason: 'daily-quota'`, learned limits from
-       `error.learnedLimit`; when `quotaScope: 'minute'`, `until: input.now() + (error.retryAfterMs ?? 60_000)`,
-       `reason: 'minute-quota'`; when `kind: 'authentication'`, `until: Number.MAX_SAFE_INTEGER`,
-       `reason: 'invalid-key'` (cleared only by edit or re-test in S6-T12). Fully spent pools fall through
-       to the next entry and never schedule a retry (`retry-scheduled` is not emitted on this path).
-     - Support the test-only `skipCooldownCheck` input flag (default false) that bypasses the pre-call
-       `getCooldown` consult, for the break-it test only.
+     - In the provider-error catch (anchor: `pushFailedAttempt` near line 700), map a `ProviderError` to one
+       `setCooldown` call for (`entry.selectedKeyId ?? entry.keyId`, `entry.model`), using the entry's own
+       provider (`entry.providerId`), never a hard-coded `'gemini'`:
+       - `kind: 'quota'`, `quotaScope: 'day'` → `until: nextProviderDayStart(entry.providerId, input.now())`,
+         `reason: 'daily-quota'`, learned limits from `error.learnedLimit`;
+       - `kind: 'quota'`, `quotaScope: 'daily-free'` (OpenRouter `:free`, today's `QuotaLedger` case — spec 6c
+         moves it here) → `until: error.resetAt ?? nextProviderDayStart(entry.providerId, input.now())`,
+         `reason: 'daily-quota'`;
+       - `quotaScope: 'minute'`, or `kind: 'rate-limit'` with `retryAfterMs` (a plain 429 with `Retry-After`) →
+         `until: input.now() + (error.retryAfterMs ?? 60_000)`, `reason: 'minute-quota'`;
+       - `kind: 'authentication'` → `until: Number.MAX_SAFE_INTEGER`, `reason: 'invalid-key'` (cleared only by
+         edit or re-test in S6-T12).
+       Fully spent pools fall through to the next entry and never schedule a retry (`retry-scheduled` is not
+       emitted on this path).
   3. No secret, key text or response body is logged or recorded; reasons stay fixed strings.
 
 - [ ] **Step 4: Run it and watch it pass** — same command · Expected: PASS (then re-add the guard after the
@@ -2156,6 +2156,12 @@ describe('bulk keys and recommended chain (ADR 0143)', () => {
 ```
 
   (`stubStore`, `auditRows` extend the file's existing harness; keys use fake `AIza-test-*` values only.)
+
+  **Controller addition — write these first:** a signed-in non-owner account calling `POST
+  /api/assistant/keys/bulk` and the recommended-chain route gets `403` with the file's existing owner-protected
+  error code, and the store receives no key and no chain write (assert the stub's call counts are 0). Follow the
+  owner-guard tests already in this file. Break-it: remove the owner guard from the bulk route, watch the 403 test
+  fail, restore.
 
 - [ ] **Step 2: Run it and watch it fail** —
   `npx vitest run packages/http/src/routes/assistant-providers.test.ts --maxWorkers=1` · Expected: FAIL
