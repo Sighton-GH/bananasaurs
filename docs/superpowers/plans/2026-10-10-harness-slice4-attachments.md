@@ -499,7 +499,7 @@ const pdf = new Uint8Array([...Buffer.from('%PDF-1.7', 'utf8')]);
 
 describe('attachment classification and sniffing (ADR 0149)', () => {
   it('classifies by content type first, then extension', () => {
-    expect(classifyAttachment({ fileName: 'a.txt', contentType: 'text/plain', sizeBytes: 1 }).valueOf()).toBe('text');
+    expect(classifyAttachment({ fileName: 'a.txt', contentType: 'text/plain', sizeBytes: 1 })).toBe('text');
     expect(classifyAttachment({ fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 })).toBe('image');
     expect(classifyAttachment({ fileName: 'a.pdf', contentType: 'application/pdf', sizeBytes: 1 })).toBe('pdf');
     expect(classifyAttachment({ fileName: 'main.ts', contentType: 'application/octet-stream', sizeBytes: 1 })).toBe('text');
@@ -957,7 +957,7 @@ return {
 ### S4-T9: media plumbing from the job to the loop   ·   Wave 4
 **Owns:** Modify: `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts`
 **Reads (do not edit):** `apps/daemon/src/assistant/tool-loop.ts` (line 590 builds provider messages from history; it already forwards `GenerationMessage.media` on user turns to S4-T7/T8 — this task does not touch it), `packages/core/src/providers/contracts.ts` (S4-T2)
-**Interfaces:** Consumes: `fetchAttachment`, `AttachmentCaps`, `ATTACHMENT_HOSTS` (S4-T5); `GeneratedMedia`? No — `GenerationMedia` (S4-T2) · Produces: `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }` in `commands.ts` · `AssistantInvocation` gains `readonly media?: readonly GenerationMedia[] | undefined` and `readonly attachmentSummary?: readonly AttachmentSummary[] | undefined` · `fetchAttachment` gains an optional fourth parameter `forceKind?: AttachmentKind` (for embed thumbnails, which have no filename)
+**Interfaces:** Consumes: `fetchAttachment`, `AttachmentCaps`, `ATTACHMENT_HOSTS` (S4-T5); `GenerationMedia` (S4-T2) · Produces: `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }` in `commands.ts` · `AssistantInvocation` gains `readonly media?: readonly GenerationMedia[] | undefined` and `readonly attachmentSummary?: readonly AttachmentSummary[] | undefined` · `fetchAttachment` gains an optional fourth parameter `forceKind?: AttachmentKind` (for embed thumbnails, which have no filename)
 
 - [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/service.test.ts`, inside the B2b-style capture pattern (Slice 1 Task 6 `capture()`):
 
