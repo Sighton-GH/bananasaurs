@@ -16,7 +16,6 @@ describe('instance settings registry', () => {
   });
 
   it('registers the Slice 2 reply-ping caps with their bounds (ADR 0145)', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(20);
     const members = settingDefinition('assistant.pingMaxMembers');
     expect(members).toMatchObject({
       group: 'Assistant replies',

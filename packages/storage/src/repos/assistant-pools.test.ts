@@ -113,8 +113,10 @@ describe('key pool upgrade and validation', () => {
       const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
         entries: { tag: string }[];
       };
-      expect(journal.entries.at(-1)?.tag).toBe('0107_key_pools_routing');
-      journal.entries.pop();
+      // Stop just before 0107, whatever later migrations exist.
+      const at = journal.entries.findIndex((entry) => entry.tag === '0107_key_pools_routing');
+      expect(at).toBeGreaterThan(0);
+      journal.entries = journal.entries.slice(0, at);
       writeFileSync(journalPath, JSON.stringify(journal));
       raw.pragma('foreign_keys = ON');
       runMigrations(raw, db, folder);
