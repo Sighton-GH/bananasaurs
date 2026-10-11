@@ -1,6 +1,18 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-09-25 (assistant harness v2 branch, ADRs 0069–0077).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-10 (assistant capability truth, ADRs 0136–0137).
+
+---
+
+**Assistant capability truth (Slice 1 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `worktree-assistant-harness-capability-plan`, not yet merged (ADRs 0136–0137, no migration).**
+
+- **One capability block (ADR 0136):** the prompt ends with WHAT YOU CAN DO RIGHT NOW, built from the exact tools declared on that turn, grouped (reminders, club knowledge, channel, web, server, time, proposals), then prose skills, then what is not available to this member and why. A NOW line gives the date and time. When history holds earlier bot replies, the user message says the listed abilities are exact for this member.
+- **Later rounds (ADR 0137):** read-only tools run in any round, web search included; `read_chunk`, `open_resource`, `channel_history`, `edit_reminder` and `cancel_reminder` need an id an earlier result returned; acting tools run in round 1 only. Hard rule 3 reworded to match.
+- **Tools speak plainly:** every tool description says what it does and when to use it; every refusal ends with what to do next.
+- **Web search skill:** a non-acting `web-search` skill (default everyone) gates `web_search`; the owner can narrow it on the Skills page.
+- **Helpful wizard:** the default boundary helps with any reasonable request; FOCUS replaces WHAT YOU HELP WITH; sources are club first, then the web. Prompts saved by the old wizard are rewritten when compiled.
+- **AI setup page:** chain models OpenRouter no longer lists are flagged, and each OpenRouter model shows chips (reads images, reads PDFs, uses tools, thinks) from OpenRouter's public model list, refreshed hourly.
+- **Fixtures:** capability fixtures from the live transcripts check that each failing conversation now gets a prompt that makes the right answer possible.
 
 ---
 
