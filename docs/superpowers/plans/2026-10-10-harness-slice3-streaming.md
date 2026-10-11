@@ -89,6 +89,12 @@ Job-lanes merged, so the body-read code it wrapped can be replaced with streamin
 
 - [ ] **Step 4: Run it and watch it pass** — `ls docs/decisions/0148-assistant-streaming-timeouts-live-progress.md` · Expected: PASS (file exists)
 
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/decisions/0148-assistant-streaming-timeouts-live-progress.md` then `npx eslint docs/decisions/0148-assistant-streaming-timeouts-live-progress.md` · exit 0
+- [ ] **Step 7: Commit** — `git add docs/decisions/0148-assistant-streaming-timeouts-live-progress.md && git commit -m "Slice 3 T1: ADR 0148 streaming timeouts live progress"`
+
+**Done when:** ADR 0148 exists with Context/Decision/Consequences; S3-T4 and S3-T11 can quote its numbers.
+
 ### S3-T2: Contracts and run-event schema   ·   Wave 1
 **Owns:** Modify: `packages/core/src/providers/contracts.ts`; Modify: `packages/core/src/assistant/run-events.ts`; Test: `packages/core/src/assistant/run-events.test.ts`
 **Reads (do not edit):** `packages/core/src/providers/errors.ts`, `apps/daemon/src/assistant/run-recorder.ts`
@@ -125,6 +131,14 @@ it('rejects a model-progress event carrying text', () => {
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: FAIL with `model-progress` not in the union
+
+- [ ] **Step 3: Implement** — anchor: `packages/core/src/providers/contracts.ts` lines 42–75 (`GenerateTextRequest` with `thinkingBudget`, `GenerateTextResponse` with `text`, `model`, `finishReason`). Replacement adds after the `thinkingBudget` line: `readonly thinkingLevel?: 'low' | 'medium' | 'high';` and after the `tools` line: `readonly onProgress?: (progress: StreamProgress) => void;`, adds the `StreamProgress` interface above `GenerateTextRequest`, and adds `readonly reasoning?: string;` to `GenerateTextResponse` after `text`. Anchor: `packages/core/src/assistant/run-events.ts` the `model-result` object (lines 83–103). Append a new `.strict()` object after the `model-skipped` object (lines 104–113): `{ kind: z.literal('model-progress'), round: int >= 0, answerChars: int >= 0, reasoningChars: int >= 0, keepalives: int >= 0, msSinceLastByte: int >= 0 }`. (after Slice 6: keep the new ProviderError quota fields `quotaScope 'day' | 'minute'`, `retryAfterMs`, `learnedLimit` untouched when adapters are rewritten; keep the `GeminiModelProfile` table entry type name from contracts §3 — the existing `GeminiModelInfo` in `packages/core/src/providers/gemini.ts` is a different interface and must not be renamed or reused.)
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` then `npx eslint packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts && git commit -m "Slice 3 T2: stream contracts and model-progress event"`
+
+**Done when:** `runEventSchema` parses `model-progress` and rejects one carrying `text`; `StreamProgress`, `thinkingLevel`, `onProgress`, `reasoning` exist in contracts.
 
 ### S3-T3: Shared SSE parser   ·   Wave 2
 **Owns:** Create: `packages/core/src/providers/sse.ts`; Test: `packages/core/src/providers/sse.test.ts`
@@ -164,6 +178,22 @@ describe('parseSseStream', () => {
     const events = await collect(['data: line1\ndata: line2\n\n']);
     expect(events).toEqual([{ data: 'line1\nline2', keepalive: false }]);
   });
+
+  it('stops at [DONE]', async () => {
+    const events = await collect(['data: {"a":1}\n\n', 'data: [DONE]\n\n', 'data: {"a":2}\n\n']);
+    expect(events).toEqual([{ data: '{"a":1}', keepalive: false }]);
+  });
+};
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./sse.js`
+- [ ] **Step 3: Implement** — full `packages/core/src/providers/sse.ts`: buffer text across chunks, split on `\n`, hold a trailing partial line, on blank line flush the pending `data:` lines; a line starting with `:` yields keepalive; `data: [DONE]` ends the stream; strip one leading space after `data:`; join multiple data lines with `\n`. Accept both `ReadableStream<Uint8Array>` (read via `getReader`, decode with `TextDecoder` streaming) and `AsyncIterable<string>`.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` then `npx eslint packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts && git commit -m "Slice 3 T3: shared SSE parser"`
+
+**Done when:** keepalive comments, split chunks, multi-line data and `[DONE]` all parse per the four tests.
 
 ### S3-T4: Timeout and token settings   ·   Wave 2
 **Owns:** Modify: `packages/core/src/settings/instance-settings.ts`; Test: `packages/core/src/settings/instance-settings.test.ts`
@@ -259,6 +289,64 @@ it('streams deltas, ignores keepalives, and joins fragmented tool args', async (
     reasoning: { exclude: false },
   });
 
+  expect(seen.length).toBeGreaterThanOrEqual(1);
+});
+
+it('turns mid-stream finish_reason error into a retryable ProviderError', async () => {
+  const body = 'data: {"choices":[{"delta":{"content":"part"},"finish_reason":"error","error":{"message":"upstream broke"}}]}\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+  const err = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] }).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ProviderError);
+  expect(err).toMatchObject({ kind: 'outage', retryable: true });
+});
+
+it('delivers length text with reasoning and usage, and reports time-to-first-byte', async () => {
+  const body =
+    'data: {"choices":[{"delta":{"content":"half","reasoning":"why"}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":9,"total_tokens":11}}\n\n' +
+    'data: [DONE]\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+  const ttfb: number[] = [];
+  const res = await provider.generateText({
+    model: 'm',
+    messages: [{ role: 'user', text: 'hi Sam L' }],
+    onProgress: (p) => { ttfb.push(p.msSinceLastByte); },
+  });
+  expect(res.text).toBe('half');
+  expect(res.reasoning).toBe('why');
+  expect(res.finishReason).toBe('length');
+  expect(res.usage).toMatchObject({ promptTokens: 2, completionTokens: 9, totalTokens: 11 });
+  expect(ttfb.length).toBeGreaterThanOrEqual(1);
+});
+
+it('an idle stream throws a retryable timeout', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+    () => new Promise(() => {}),
+  );
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
+  const err = await provider
+    .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi Car Team A' }] })
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ProviderError);
+  expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL with `stream: true` missing from the request body and no `reasoning` on the response
+- [ ] **Step 3: Implement** — anchor: `OpenAiCompatibleProvider.generateText` body build and `response.json()` success path (lines ~300–474). Replacement: send `stream: true`, `stream_options: { include_usage: true }`, `reasoning: { exclude: false }` (after Slice 6: only when the entry `GeminiModelProfile` table capabilities allow reasoning — the name `GeminiModelInfo` already exists in `packages/core/src/providers/gemini.ts` for a different interface, so the Slice 6 type keeps the new name); read `response.body` through `parseSseStream`; assemble `delta.content`, `delta.reasoning`, and per-index `tool_calls[].function.arguments` fragments (concatenate per `index`, parse the joined JSON only when the stream ends, using the existing `parseToolArguments` helper); count every `:` comment as a keepalive and re-arm the idle timer on it; fire `onProgress` at most every 3 s with `{ round: 0, answerChars, reasoningChars, keepalives, msSinceLastByte }`; record time-to-first-byte from the existing `timeoutMs` and abort on first-byte, idle (45 s default, re-armed on every byte) and ceiling (300 s) timers; map `finish_reason: "error"` or `choices[].error` to retryable `ProviderError('outage', …)` keeping partial text as trace evidence and never delivering it; pass `length` through as `finishReason` with text, reasoning and usage intact so S3-T8 can append `-# (cut short)`; keep every existing error mapping and ProviderError field (after Slice 6: plus `quotaScope`, `retryAfterMs`, `learnedLimit`). Return `reasoning` alongside `text`, `toolCalls`, `usage`, `finishReason`, `upstream`.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 3 T6: OpenAI-compatible streaming"`
+
+**Done when:** streamed deltas assemble text, reasoning and whole tool args; keepalives are ignored but counted and re-arm the idle timer; mid-stream `error` is retryable and never delivered; `length` keeps text plus usage; request carries `stream: true` and usage options.
+
 ### S3-T7: Gemini streaming   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts`
 **Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts`, `packages/core/src/providers/errors.ts`
@@ -297,6 +385,57 @@ it('an idle stream throws a retryable timeout', async () => {
   const provider = new GeminiProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
   const err = await provider
     .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ProviderError);
+  expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+});
+
+it('uses thinkingLevel medium for the answer call and echoes providerParts', async () => {
+  const body =
+    'data: {"candidates":[{"content":{"parts":[{"text":"done"}]}}]}\n\n' +
+    'data: {"candidates":[{"content":{"parts":[{"text":"thought sum","thought":true}]}}]}\n\n' +
+    'data: {"candidates":[{"content":{"parts":[{"text":"done"}],"finishReason":"STOP"}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3,"thoughtsTokenCount":1}}\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  const res = await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi Alex P' }],
+  });
+  expect(res.text).toBe('donedone');
+  expect(res.reasoning).toBe('thought sum');
+  expect(res.providerParts).toBeDefined();
+  const [, init] = fetch.mock.calls[0] ?? [];
+  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'medium' });
+});
+
+it('surfaces MAX_TOKENS with text, usage and thinking tokens', async () => {
+  const body = 'data: {"candidates":[{"content":{"parts":[{"text":"half"}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":9,"totalTokenCount":11,"thoughtsTokenCount":4}}\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  const res = await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi' }],
+    tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+  });
+  expect(res.text).toBe('half');
+  expect(res.finishReason).toBe('MAX_TOKENS');
+  expect(res.usage).toMatchObject({ promptTokens: 2, completionTokens: 9, totalTokens: 11, thinkingTokens: 4 });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL with `:generateContent` URL and no `thinkingLevel`
+- [ ] **Step 3: Implement** — anchor: `GeminiProvider.generateText` URL `:generateContent`, `generationConfig` with `thinkingBudget`, and the single-JSON parse (lines ~137–297). Replacement: call `:streamGenerateContent?alt=sse`; send `generationConfig.thinkingConfig: { thinkingLevel }` where level is explicit `request.thinkingLevel` else tools offered → `'low'` else `'medium'` (never `minimal`); always send `includeThoughts: true` (after Slice 6: gate on the entry `GeminiModelProfile` table `capabilities.thinking !== 'none'` and reasoning on `capabilities.reasoning` — the name `GeminiModelInfo` already exists in `packages/core/src/providers/gemini.ts` for a different interface, so the Slice 6 type keeps the new name); stream `response.body` through `parseSseStream`, assembling non-thought `text` as content, `thought: true` text as reasoning, `functionCall` parts as tool calls, and `thoughtSignature` bytes into the echoed raw parts; echo the raw parts back as `providerParts` so thought signatures survive tool rounds; count every `:` comment as a keepalive and re-arm the idle timer on it; fire `onProgress` at most every 3 s with `{ round: 0, answerChars, reasoningChars, keepalives, msSinceLastByte }`; record time-to-first-byte from the existing `timeoutMs` and abort on first-byte, idle (45 s default, re-armed on every byte) and ceiling (300 s) timers; keep the empty-answer, `MAX_TOKENS` (pass through with text and usage so S3-T8 can append `-# (cut short)`) and `SAFETY` mappings, usage mapping incl. `thoughtsTokenCount → thinkingTokens`, and every ProviderError field (after Slice 6: plus `quotaScope`, `retryAfterMs`, `learnedLimit`).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts && git commit -m "Slice 3 T7: Gemini streaming"`
+
+**Done when:** the SSE endpoint assembles text, thought and function calls; `thinkingLevel` is `low` with tools and `medium` without; thought signatures survive via raw `providerParts`; keepalives re-arm the idle timer; `MAX_TOKENS` keeps text plus usage; idle streams time out retryably.
 
 ### S3-T8: Tool loop wiring and finish reasons   ·   Wave 4
 **Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`
@@ -338,6 +477,27 @@ it('emits model-progress at most every 3 s through onProgress', async () => {
   const events: RunEvent[] = [];
   await runToolLoop({
     provider: streaming,
+    chain: [entry({ provider: streaming })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    toolsOffered: [],
+    runTools: async () => ({ ok: true, name: 'x', text: 'done', sources: [] }),
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(events.filter((e) => e.kind === 'model-progress').length).toBeLessThanOrEqual(1);
+  expect(seen.length).toBeGreaterThanOrEqual(0);
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` line and no `model-progress` event
+- [ ] **Step 3: Implement** — anchor: `callProvider` in `apps/daemon/src/assistant/tool-loop.ts` (around lines 740–810: `thinkingBudget`, `maxOutputTokens`, `model-call`/`model-result` events). Replacement: pass `onProgress` that throttles to one `model-progress` event per 3 s per call (track last emit per round; carry `{ round, answerChars, reasoningChars, keepalives, msSinceLastByte }` straight into the event, which bumps `updatedAt` via the recorder); keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools); in `finishEntry`, when `finishReason` is `length` (or Gemini `MAX_TOKENS`) and guarded text is non-empty, append `\n\n-# (cut short)` after the guard; when `length` with empty text, keep today's empty-answer path; thread `response.reasoning` per round into the trace payload the service writes (S3-T9 reads it there). Keep typing alive: in `apps/daemon/src/jobs/assistant.ts` the `startTyping` call (lines 726–734) is restarted per provider call with `maxMs` set to `assistant.providerMaxCallMs` and stopped only at run end — implement by moving the stop call to the run-end backstop (line 1371) and passing the ceiling as `maxMs`. (after Slice 6: pass entry `capabilities` into the request so adapters can gate reasoning/thinking.)
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` then `npx eslint apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts && git commit -m "Slice 3 T8: tool loop progress and finish reasons"`
+
+**Done when:** `length` with text delivers the answer plus `-# (cut short)`; `model-progress` fires at most every 3 s; `reasoning` travels per round to the trace writer; typing survives a long stream.
 
 ### S3-T9: Live buffer, route and progress events   ·   Wave 4
 **Owns:** Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts`
@@ -376,6 +536,10 @@ and in `packages/http/src/routes/assistant-runs.test.ts` add (following its `req
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` then `npx eslint apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` · exit 0
+
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts && git commit -m "Slice 3 T9: live buffer and progress events"`
+
+**Done when:** the buffer caps at 8,000 per side and drops at finish; `/live` is gated like traces; `model-progress` bumps `updatedAt` so the 10-minute stalled label stays honest.
 
 ### S3-T10: Dashboard live text and progress   ·   Wave 5
 **Owns:** Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx`
@@ -452,104 +616,3 @@ npm run lint
 npx vitest run --maxWorkers=1
 ## After merge (owner)
 Deploy order: stop → build → start (no migration). On the dashboard Tuning page, check the idle timeout (45 s), max call time (300 s) and max answer length (4,096 tokens); leave the rest as is. In Discord, ask a long question and watch the run's Step log show `Receiving…` lines, then open the trace and check the saved thinking under `reasoning`.
-
-- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts && git commit -m "Slice 3 T9: live buffer and progress events"`
-
-**Done when:** the buffer caps at 8,000 per side and drops at finish; `/live` is gated like traces; `model-progress` bumps `updatedAt` so the 10-minute stalled label stays honest.
-
-    chain: [entry({ provider: streaming })],
-    systemInstruction: 'Be concise.',
-    protectedText: '',
-    toolsOffered: [],
-    runTools: async () => ({ ok: true, name: 'x', text: 'done', sources: [] }),
-    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
-    now: () => NOW,
-  });
-  expect(events.filter((e) => e.kind === 'model-progress').length).toBeLessThanOrEqual(1);
-  expect(seen.length).toBeGreaterThanOrEqual(0);
-});
-```
-
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` line and no `model-progress` event
-- [ ] **Step 3: Implement** — anchor: `callProvider` in `apps/daemon/src/assistant/tool-loop.ts` (around lines 740–810: `thinkingBudget`, `maxOutputTokens`, `model-call`/`model-result` events). Replacement: pass `onProgress` that throttles to one `model-progress` event per 3 s per call (track last emit per round; carry `{ round, answerChars, reasoningChars, keepalives, msSinceLastByte }` straight into the event, which bumps `updatedAt` via the recorder); keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools); in `finishEntry`, when `finishReason` is `length` (or Gemini `MAX_TOKENS`) and guarded text is non-empty, append `\n\n-# (cut short)` after the guard; when `length` with empty text, keep today's empty-answer path; thread `response.reasoning` per round into the trace payload the service writes (S3-T9 reads it there). Keep typing alive: in `apps/daemon/src/jobs/assistant.ts` the `startTyping` call (lines 726–734) is restarted per provider call with `maxMs` set to `assistant.providerMaxCallMs` and stopped only at run end — implement by moving the stop call to the run-end backstop (line 1371) and passing the ceiling as `maxMs`. (after Slice 6: pass entry `capabilities` into the request so adapters can gate reasoning/thinking.)
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` then `npx eslint apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts && git commit -m "Slice 3 T8: tool loop progress and finish reasons"`
-
-**Done when:** `length` with text delivers the answer plus `-# (cut short)`; `model-progress` fires at most every 3 s; `reasoning` travels per round to the trace writer; typing survives a long stream.
-
-    .catch((e: unknown) => e);
-  expect(err).toBeInstanceOf(ProviderError);
-  expect(err).toMatchObject({ kind: 'timeout', retryable: true });
-});
-```
-
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL with `:generateContent` URL and no `thinkingLevel`
-- [ ] **Step 3: Implement** — anchor: `GeminiProvider.generateText` URL `:generateContent`, `generationConfig` with `thinkingBudget`, and the single-JSON parse (lines ~137–297). Replacement: call `:streamGenerateContent?alt=sse`; send `generationConfig.thinkingConfig: { thinkingLevel }` where level is explicit `request.thinkingLevel` else tools offered → `'low'` else `'medium'` (never `minimal`); always send `includeThoughts: true` (after Slice 6: gate on entry `capabilities.thinking !== 'none'` and reasoning on `capabilities.reasoning`); stream through `parseSseStream`, assembling non-thought text, `thought: true` text as reasoning, and `functionCall` parts; echo the raw parts back as `providerParts`; keep the empty-answer, `MAX_TOKENS` and `SAFETY` mappings, usage mapping incl. `thoughtsTokenCount → thinkingTokens`, and every ProviderError field (after Slice 6: plus `quotaScope`, `retryAfterMs`, `learnedLimit`); enforce first-byte/idle/ceiling timers the same way as S3-T6.
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts && git commit -m "Slice 3 T7: Gemini streaming"`
-
-**Done when:** the SSE endpoint assembles text, thought and function calls; `thinkingLevel` is `low` with tools and `medium` without; thought signatures survive via raw `providerParts`; idle streams time out retryably.
-
-});
-
-it('turns mid-stream finish_reason error into a retryable ProviderError', async () => {
-  const body = 'data: {"choices":[{"delta":{"content":"part"},"finish_reason":"error","error":{"message":"upstream broke"}}]}\n\n';
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-  );
-  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-  const err = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] }).catch((e: unknown) => e);
-  expect(err).toBeInstanceOf(ProviderError);
-  expect(err).toMatchObject({ kind: 'outage', retryable: true });
-});
-```
-
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL with `stream: true` missing from the request body and no `reasoning` on the response
-- [ ] **Step 3: Implement** — anchor: `OpenAiCompatibleProvider.generateText` body build and `response.json()` success path (lines ~300–474). Replacement: send `stream: true`, `stream_options: { include_usage: true }`, `reasoning: { exclude: false }` (after Slice 6: only when the entry capabilities allow reasoning); read `response.body` through `parseSseStream`; accumulate `delta.content`, `delta.reasoning`, per-index `tool_calls[].function.arguments`; count keepalives; fire `onProgress` at most every 3 s with `{ round: 0, answerChars, reasoningChars, keepalives, msSinceLastByte }`; enforce first-byte (existing `timeoutMs`), idle (45 s default, re-armed per event) and ceiling timers via abort; map `finish_reason: "error"` or `choices[].error` to retryable `ProviderError('outage', …)` keeping partial text out of the message; keep every existing error mapping and ProviderError field, including (after Slice 6: `quotaScope 'day' | 'minute'`, `retryAfterMs`, `learnedLimit`). Return `reasoning` alongside `text`, `toolCalls`, `usage`, `finishReason`, `upstream`.
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 3 T6: OpenAI-compatible streaming"`
-
-**Done when:** streamed deltas assemble text, reasoning and whole tool args; keepalives are ignored but counted; mid-stream `error` is retryable and never delivered; request carries `stream: true` and usage options.
-
-
-  it('stops at [DONE]', async () => {
-    const events = await collect(['data: {"a":1}\n\n', 'data: [DONE]\n\n', 'data: {"a":2}\n\n']);
-    expect(events).toEqual([{ data: '{"a":1}', keepalive: false }]);
-  });
-};
-```
-
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./sse.js`
-- [ ] **Step 3: Implement** — full `packages/core/src/providers/sse.ts`: buffer text across chunks, split on `\n`, hold a trailing partial line, on blank line flush the pending `data:` lines; a line starting with `:` yields keepalive; `data: [DONE]` ends the stream; strip one leading space after `data:`; join multiple data lines with `\n`. Accept both `ReadableStream<Uint8Array>` (read via `getReader`, decode with `TextDecoder` streaming) and `AsyncIterable<string>`.
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` then `npx eslint packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts && git commit -m "Slice 3 T3: shared SSE parser"`
-
-**Done when:** keepalive comments, split chunks, multi-line data and `[DONE]` all parse per the four tests.
-
-- [ ] **Step 3: Implement** — anchor: `packages/core/src/providers/contracts.ts` lines 42–75 (`GenerateTextRequest` with `thinkingBudget`, `GenerateTextResponse` with `text`, `model`, `finishReason`). Replacement adds after the `thinkingBudget` line: `readonly thinkingLevel?: 'low' | 'medium' | 'high';` and after the `tools` line: `readonly onProgress?: (progress: StreamProgress) => void;`, adds the `StreamProgress` interface above `GenerateTextRequest`, and adds `readonly reasoning?: string;` to `GenerateTextResponse` after `text`. Anchor: `packages/core/src/assistant/run-events.ts` the `model-result` object (lines 83–103). Append a new `.strict()` object after the `model-skipped` object (lines 104–113): `{ kind: z.literal('model-progress'), round: int >= 0, answerChars: int >= 0, reasoningChars: int >= 0, keepalives: int >= 0, msSinceLastByte: int >= 0 }`. (after Slice 6: keep the new ProviderError quota fields `quotaScope 'day' | 'minute'`, `retryAfterMs`, `learnedLimit` untouched when adapters are rewritten; keep `ModelCapabilities` names from contracts §3.)
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` then `npx eslint packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts && git commit -m "Slice 3 T2: stream contracts and model-progress event"`
-
-**Done when:** `runEventSchema` parses `model-progress` and rejects one carrying `text`; `StreamProgress`, `thinkingLevel`, `onProgress`, `reasoning` exist in contracts.
-
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write docs/decisions/0148-assistant-streaming-timeouts-live-progress.md` then `npx eslint docs/decisions/0148-assistant-streaming-timeouts-live-progress.md` · exit 0
-- [ ] **Step 7: Commit** — `git add docs/decisions/0148-assistant-streaming-timeouts-live-progress.md && git commit -m "Slice 3 T1: ADR 0148 streaming timeouts live progress"`
-
-**Done when:** ADR 0148 exists with Context/Decision/Consequences; S3-T4 and S3-T11 can quote its numbers.
-
-
-## Tasks
-
-
-
