@@ -1903,6 +1903,30 @@ describe('runToolLoop run recorder (ADR 0129 §6)', () => {
     expect(events.find((e) => e.kind === 'guard')).toMatchObject({ removed: 1 });
   });
 
+  it('a pool entry that fails once records the selected key id on the model-result', async () => {
+    const failing = scripted([new ProviderError('timeout', 'timed out', true)]);
+    const answering = scripted([textAnswer('Done.', 'model-b')]);
+    const { recorder, events } = collecting();
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({
+            provider: failing.provider,
+            model: 'model-a',
+            keyId: 'key_anchor',
+            selectedKeyId: 'key_used',
+          }),
+          entry({ provider: answering.provider, model: 'model-b', keyId: 'key_b' }),
+        ],
+        { recorder },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    const results = events.filter((e) => e.kind === 'model-result');
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ ok: false, keyId: 'key_used' });
+  });
+
   it('ADR 0129 §8: a response costUsd lands on the ok attempt, the loop usage and the model-result event', async () => {
     const { provider } = scripted([
       {
@@ -2216,7 +2240,6 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
       'invalid-response',
       'safety-refusal',
       'capability-mismatch',
-      'rate-limit',
     ] as const;
     const chain = poolChain(['key_a'], MODEL, [], 'gemini');
     for (const kind of failures) {
@@ -2237,6 +2260,20 @@ describe('persistent cooldowns (ADR 0143, spec 6c)', () => {
     expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())[0]).toMatchObject({
       reason: 'minute-quota',
       until: NOW + 37_000,
+    });
+  });
+  it('a bare rate-limit error with no delay cools for 60 seconds', async () => {
+    const chain = poolChain(
+      ['key_a'],
+      MODEL,
+      [],
+      'gemini',
+      new Map([['key_a', new ProviderError('rate-limit', 'fake', true)]]),
+    );
+    await run(chain);
+    expect(assistantKeyCooldownsRepo.listCooldowns(t.scopes.instance())[0]).toMatchObject({
+      reason: 'minute-quota',
+      until: NOW + 60_000,
     });
   });
   it('daily-free with no reset uses OpenRouter UTC day', async () => {

@@ -334,7 +334,7 @@ export const runToolLoop = async (input: {
       kind: 'model-skipped',
       provider: entry.providerId,
       model: entry.model,
-      keyId: entry.keyId,
+      keyId: entry.selectedKeyId ?? entry.keyId,
       reason,
       ...(availableAt === undefined ? {} : { availableAt }),
     });
@@ -704,7 +704,7 @@ const runEntry = async (deps: {
       kind: 'model-result',
       provider: entry.providerId,
       model: entry.model,
-      keyId: entry.keyId,
+      keyId: entry.selectedKeyId ?? entry.keyId,
       ok: false,
       ms: eventMs ?? attempt.ms,
       ...(attempt.code === undefined ? {} : { code: attempt.code }),
@@ -774,9 +774,8 @@ const runEntry = async (deps: {
           reason: 'daily-quota',
         });
       } else if (
-        (error.kind === 'quota' || error.kind === 'rate-limit') &&
-        (error.quotaScope === 'minute' ||
-          (error.kind === 'rate-limit' && error.retryAfterMs !== undefined))
+        error.kind === 'rate-limit' ||
+        (error.kind === 'quota' && error.quotaScope === 'minute')
       ) {
         assistantKeyCooldownsRepo.setCooldown(deps.instance, {
           ...base,
@@ -881,7 +880,7 @@ const runEntry = async (deps: {
         kind: 'model-skipped',
         provider: entry.providerId,
         model: entry.model,
-        keyId: entry.keyId,
+        keyId: entry.selectedKeyId ?? entry.keyId,
         reason: reserved.code,
         availableAt: reserved.availableAt,
       });
@@ -911,7 +910,7 @@ const runEntry = async (deps: {
         of: deps.of,
         provider: entry.providerId,
         model: entry.model,
-        keyId: entry.keyId,
+        keyId: entry.selectedKeyId ?? entry.keyId,
         ...(entry.keyLabel === undefined ? {} : { keyLabel: entry.keyLabel }),
         round,
       });
@@ -926,7 +925,7 @@ const runEntry = async (deps: {
         kind: 'model-result',
         provider: entry.providerId,
         model: entry.model,
-        keyId: entry.keyId,
+        keyId: entry.selectedKeyId ?? entry.keyId,
         ok: true,
         ms: Math.max(0, deps.now() - callStarted),
         ...(response.usage?.promptTokens === undefined
@@ -1332,7 +1331,7 @@ const finishEntry = async (deps: {
       kind: 'model-skipped',
       provider: deps.entry.providerId,
       model: deps.entry.model,
-      keyId: deps.entry.keyId,
+      keyId: deps.entry.selectedKeyId ?? deps.entry.keyId,
       reason: reserved.code,
       availableAt: reserved.availableAt,
     });
@@ -1347,7 +1346,7 @@ const finishEntry = async (deps: {
         of: outer.of,
         provider: deps.entry.providerId,
         model: deps.entry.model,
-        keyId: deps.entry.keyId,
+        keyId: deps.entry.selectedKeyId ?? deps.entry.keyId,
         ...(deps.entry.keyLabel === undefined ? {} : { keyLabel: deps.entry.keyLabel }),
         round: 0,
       });
@@ -1373,7 +1372,7 @@ const finishEntry = async (deps: {
         kind: 'model-result',
         provider: deps.entry.providerId,
         model: deps.entry.model,
-        keyId: deps.entry.keyId,
+        keyId: deps.entry.selectedKeyId ?? deps.entry.keyId,
         ok: retryUsed,
         ms: Math.max(0, outer.now() - retryStarted),
         ...(retryUsed ? {} : { code: 'provider-empty-answer' }),
@@ -1439,7 +1438,7 @@ const finishEntry = async (deps: {
         kind: 'model-result',
         provider: deps.entry.providerId,
         model: deps.entry.model,
-        keyId: deps.entry.keyId,
+        keyId: deps.entry.selectedKeyId ?? deps.entry.keyId,
         ok: false,
         ms: Math.max(0, outer.now() - retryStarted),
         code: f.code,
