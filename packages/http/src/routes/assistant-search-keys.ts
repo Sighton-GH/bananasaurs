@@ -96,14 +96,17 @@ export const registerAssistantSearchKeyRoutes = (
     // Omitted limits are not sent through: the store applies its own default
     // (1000/month, no daily cap), while the audit row records the effective
     // values, never the key.
+    // ADR 0147: a new Parallel key defaults to 4,500 a month (under its 5,000 free allowance).
+    const monthlyLimit =
+      parsed.data.monthlyLimit === undefined && parsed.data.source === 'parallel'
+        ? 4500
+        : parsed.data.monthlyLimit;
     const keyId = configured.addSearchKey(
       {
         source: parsed.data.source,
         label: parsed.data.label,
         apiKey: parsed.data.apiKey,
-        ...(parsed.data.monthlyLimit === undefined
-          ? {}
-          : { monthlyLimit: parsed.data.monthlyLimit }),
+        ...(monthlyLimit === undefined ? {} : { monthlyLimit }),
         ...(parsed.data.dailyLimit === undefined ? {} : { dailyLimit: parsed.data.dailyLimit }),
       },
       deps.now(),
@@ -117,7 +120,7 @@ export const registerAssistantSearchKeyRoutes = (
       after: {
         source: parsed.data.source,
         label: parsed.data.label,
-        monthlyLimit: parsed.data.monthlyLimit === undefined ? 1000 : parsed.data.monthlyLimit,
+        monthlyLimit: monthlyLimit === undefined ? 1000 : monthlyLimit,
         dailyLimit: parsed.data.dailyLimit ?? null,
       },
     });

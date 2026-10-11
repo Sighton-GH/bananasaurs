@@ -324,6 +324,35 @@ describe('POST limits and strict bodies', () => {
     expect(nulled.statusCode).toBe(200);
   });
 
+  it('a Parallel key without a monthlyLimit gets the 4,500 default, sent through and audited', async () => {
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const added = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/search-keys',
+      headers,
+      payload: { source: 'parallel', label: 'P', apiKey: SECRET },
+    });
+    expect(added.statusCode).toBe(200);
+    expect(addedInputs.at(-1)?.['monthlyLimit']).toBe(4500);
+    const row = auditRows().find((r) => r.action === 'assistant_search.key_added');
+    expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
+      source: 'parallel',
+      monthlyLimit: 4500,
+    });
+  });
+
+  it('refuses an unknown search source with 400', async () => {
+    const owner = await signInAs('owner');
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/search-keys',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { source: 'bing', label: 'X', apiKey: SECRET },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it.each([[0], [1.5], [1_000_001]])('refuses monthlyLimit %s with 400', async (monthlyLimit) => {
     const owner = await signInAs('owner');
     const response = await app.inject({
