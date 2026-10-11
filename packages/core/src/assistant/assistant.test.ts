@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   allowedSkills,
+  BOUNDARIES_ANSWER_BRIEFLY,
+  BOUNDARIES_HELPFUL,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
   createReminder,
@@ -12,6 +14,7 @@ import {
   resolveAssistantBehaviour,
   SAFETY_SUFFIX,
   skillInstructionLine,
+  SOURCES_ORDER_LINES,
   TOOL_CATALOGUE,
   validateResourceUrl,
 } from './index.js';
@@ -535,6 +538,49 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.systemInstruction).not.toContain('search_sources');
   });
 
+  it('rewrites old stored wizard prompts at compile time (ADR 0136)', () => {
+    const stored = [
+      'ROLE',
+      'You are Default assistant, the assistant in the Discord server of UHill Physineering Club, a club. You help members.',
+      '',
+      'WHAT YOU HELP WITH',
+      '- Answering general questions about the club',
+      '',
+      'USING SOURCES',
+      "Check the club's sources before answering from general knowledge.",
+      '',
+      'BOUNDARIES',
+      BOUNDARIES_ANSWER_BRIEFLY,
+    ].join('\n');
+    const compiled = compileAssistantContext({
+      behaviour: { ...behaviour, name: 'Default assistant', systemPrompt: stored },
+      serverCard: '',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    const text = compiled.sections.find((s) => s.name === 'behaviour-prompt')!.text;
+    expect(text).toContain(
+      'You are Bananasaurs, the assistant in the Discord server of UHill Physineering Club',
+    );
+    expect(text).toContain('FOCUS (where to look first, not a limit)');
+    expect(text).toContain(BOUNDARIES_HELPFUL);
+    expect(text).not.toContain("say it's outside what you help with");
+    for (const line of SOURCES_ORDER_LINES) expect(text).toContain(line);
+  });
+  it('leaves a hand-written prompt that uses none of the old lines untouched', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: '',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(compiled.sections.find((s) => s.name === 'behaviour-prompt')!.text).toBe(
+      'Use Canadian English.',
+    );
+  });
+
   it('rewrites the old wizard boundaries sentence (ADR 0136)', () => {
     const legacyBehaviour = {
       ...behaviour,
@@ -547,9 +593,8 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
       skills: [CLUB_ASSISTANT_SKILLS.find((skill) => skill.id === 'reminders')!],
       evidence: [],
     });
-    expect(compiled.systemInstruction).toContain(
-      "For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it's outside what you help with.",
-    );
+    expect(compiled.systemInstruction).toContain(BOUNDARIES_HELPFUL);
+    expect(compiled.systemInstruction).not.toContain("say it's outside what you help with");
     expect(compiled.systemInstruction).not.toContain(LEGACY_BOUNDARIES_SENTENCE);
   });
 
@@ -558,7 +603,8 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     const compiled = compileAssistantContext({
       behaviour: {
         ...behaviour,
-        systemPrompt: 'WHAT YOU HELP WITH\n- Answer questions about the club.',
+        systemPrompt:
+          'FOCUS (where to look first, not a limit)\n- Answer questions about the club.',
       },
       serverCard: 'card',
       resources: [],

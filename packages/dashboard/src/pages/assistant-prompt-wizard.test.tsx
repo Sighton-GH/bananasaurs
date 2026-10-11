@@ -414,6 +414,16 @@ describe('AssistantPromptWizardPage', () => {
     expect(inputOf(screen.getByRole('textbox', { name: 'Club or server name' })).value).toBe('');
   });
 
+  it('shows the helpful off-topic labels', async () => {
+    renderWizard();
+    for (let i = 0; i < 5; i += 1) await next();
+    expect(await screen.findByRole('heading', { name: 'Boundaries' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Help with anything reasonable' })).toBeTruthy();
+    expect(
+      screen.getByRole('radio', { name: 'Stay on the focus areas and redirect the rest' }),
+    ).toBeTruthy();
+  });
+
   it('does not show a Sources-line checkbox in Format', async () => {
     renderWizard();
     for (let i = 0; i < 6; i += 1) await next();

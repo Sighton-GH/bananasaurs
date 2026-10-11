@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BOUNDARIES_HELPFUL,
   buildSystemPrompt,
   DEFAULT_PERSONALITY,
   DEFAULT_WIZARD_ANSWERS,
   promptWizardAnswers,
+  SOURCES_ORDER_LINES,
   type PromptWizardAnswers,
 } from './prompt-wizard.js';
 
@@ -90,12 +92,44 @@ describe('buildSystemPrompt — old stored answers still parse', () => {
   });
 });
 
+describe('buildSystemPrompt — helpful defaults (ADR 0136)', () => {
+  it('builds a helpful boundary, a FOCUS header, the sources order and the Bananasaurs name (ADR 0136)', () => {
+    const prompt = buildSystemPrompt(
+      {
+        ...minimalAnswers,
+        botName: '',
+        clubName: '',
+        helpsWith: ['club-questions'],
+        offTopic: 'answer-briefly',
+        preferClubSources: true,
+      },
+      { clubName: 'UHill Physineering Club', behaviourName: 'Default assistant' },
+    );
+    expect(prompt).toContain(
+      'You are Bananasaurs, the assistant in the Discord server of UHill Physineering Club',
+    );
+    expect(prompt).not.toContain('Default assistant');
+    expect(prompt).toContain('FOCUS (where to look first, not a limit)');
+    expect(prompt).not.toContain('WHAT YOU HELP WITH');
+    expect(prompt).toContain(BOUNDARIES_HELPFUL);
+    expect(prompt).not.toContain("say it's outside what you help with");
+    for (const line of SOURCES_ORDER_LINES) expect(prompt).toContain(line);
+  });
+  it('keeps the owner-chosen bot name', () => {
+    const prompt = buildSystemPrompt(
+      { ...minimalAnswers, botName: 'Banana' },
+      { clubName: 'X', behaviourName: 'Default assistant' },
+    );
+    expect(prompt).toContain('You are Banana, the assistant');
+  });
+});
+
 describe('buildSystemPrompt — section order', () => {
   it('emits sections in the fixed order when all are present', () => {
     const prompt = buildSystemPrompt(fullAnswers, CONTEXT);
     const headers = [
       'ROLE',
-      'WHAT YOU HELP WITH',
+      'FOCUS (where to look first, not a limit)',
       'VOICE',
       'USING SOURCES',
       'WHEN UNSURE',
@@ -114,10 +148,10 @@ describe('buildSystemPrompt — section order', () => {
 });
 
 describe('buildSystemPrompt — ROLE identity', () => {
-  it('falls back to the context behaviour and club names when botName and clubName are blank', () => {
+  it('uses the Bananasaurs name and the club name when botName and clubName are blank', () => {
     const prompt = buildSystemPrompt(minimalAnswers, CONTEXT);
     expect(prompt).toContain(
-      'You are Racerbot, the assistant in the Discord server of Racer Club, a club. You help members.',
+      'You are Bananasaurs, the assistant in the Discord server of Racer Club, a club. You help members.',
     );
   });
 
@@ -244,7 +278,7 @@ describe('buildSystemPrompt — omission of empty sections', () => {
     expect(prompt).toContain('VOICE');
     expect(prompt).toContain('BOUNDARIES');
     expect(hasHeader(prompt, 'STYLE EXAMPLES')).toBe(true);
-    expect(hasHeader(prompt, 'WHAT YOU HELP WITH')).toBe(false);
+    expect(hasHeader(prompt, 'FOCUS (where to look first, not a limit)')).toBe(false);
     expect(hasHeader(prompt, 'USING SOURCES')).toBe(false);
     expect(hasHeader(prompt, 'WHEN UNSURE')).toBe(false);
     expect(hasHeader(prompt, 'CLUB FACTS')).toBe(false);
@@ -254,12 +288,14 @@ describe('buildSystemPrompt — omission of empty sections', () => {
     expect(hasHeader(prompt, 'EXAMPLES')).toBe(false);
   });
 
-  it('includes WHAT YOU HELP WITH once helpsWith or helpsWithOther is non-empty', () => {
+  it('includes the FOCUS header once helpsWith or helpsWithOther is non-empty', () => {
     const withHelp = promptWizardAnswers.parse({
       ...minimalAnswers,
       helpsWith: ['club-questions'],
     });
-    expect(buildSystemPrompt(withHelp, CONTEXT)).toContain('WHAT YOU HELP WITH');
+    expect(buildSystemPrompt(withHelp, CONTEXT)).toContain(
+      'FOCUS (where to look first, not a limit)',
+    );
   });
 
   it('includes USING SOURCES once preferClubSources or citeSources is true', () => {
@@ -267,14 +303,13 @@ describe('buildSystemPrompt — omission of empty sections', () => {
     expect(hasHeader(buildSystemPrompt(withSources, CONTEXT), 'USING SOURCES')).toBe(true);
   });
 
-  it('emits the exact plan sentence, with a straight apostrophe, when preferClubSources is true', () => {
+  it('emits the club-then-web sources order when preferClubSources is true', () => {
     const withPreferClub = promptWizardAnswers.parse({
       ...minimalAnswers,
       preferClubSources: true,
     });
-    expect(buildSystemPrompt(withPreferClub, CONTEXT)).toContain(
-      "Check the club's sources before answering from general knowledge.",
-    );
+    const prompt = buildSystemPrompt(withPreferClub, CONTEXT);
+    for (const line of SOURCES_ORDER_LINES) expect(prompt).toContain(line);
   });
 
   it('emits the exact citation tag sentence when citeSources is true', () => {
@@ -342,7 +377,7 @@ describe('buildSystemPrompt — 4,000 character cap and trim order', () => {
     expect(hasHeader(prompt, 'CHANNELS')).toBe(false);
     expect(hasHeader(prompt, 'GLOSSARY')).toBe(false);
     expect(prompt).toContain('ROLE');
-    expect(prompt).toContain('Racerbot');
+    expect(prompt).toContain('Bananasaurs');
     expect(prompt).toContain('VOICE');
     expect(prompt).toContain('Playful');
     expect(prompt).toContain('BOUNDARIES');

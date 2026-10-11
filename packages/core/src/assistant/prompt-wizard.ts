@@ -127,11 +127,19 @@ const EMOJI_LABELS: Record<PromptWizardAnswers['emoji'], string> = {
   'a-little': 'Use emoji sparingly, only where it fits naturally.',
 };
 
+export const BOUNDARIES_HELPFUL =
+  'Help with any reasonable request, including general questions, writing and creative work, code and opinions. Decline only what the BANANASAURS RULES forbid.';
+export const FOCUS_HEADER = 'FOCUS (where to look first, not a limit)';
+export const SOURCES_ORDER_LINES: readonly string[] = [
+  "1. Questions about the club: check the club's sources first.",
+  '2. If they have nothing, or the question is general or about current events, search the web.',
+  "3. Say you couldn't find it only after both.",
+];
 export const BOUNDARIES_ANSWER_BRIEFLY =
   "For requests outside what you help with and outside WHAT YOU CAN DO, answer briefly if you can; otherwise say it's outside what you help with.";
 
 const OFF_TOPIC_LABELS: Record<PromptWizardAnswers['offTopic'], string> = {
-  'answer-briefly': BOUNDARIES_ANSWER_BRIEFLY,
+  'answer-briefly': BOUNDARIES_HELPFUL,
   redirect:
     'For questions outside what you help with, say so and redirect the person to a more appropriate channel or person.',
 };
@@ -177,7 +185,7 @@ const buildRoleSection = (
   context: { clubName: string; behaviourName: string },
 ): Section => {
   const audience = joinWithAnd(answers.audience.map((a) => AUDIENCE_LABELS[a]));
-  const name = oneLine(answers.botName) || context.behaviourName;
+  const name = oneLine(answers.botName) || 'Bananasaurs';
   const club = oneLine(answers.clubName) || context.clubName;
   const personality = neutraliseHeaderLookalikes(
     oneLine(answers.personality) || DEFAULT_PERSONALITY[answers.serverType],
@@ -193,7 +201,7 @@ const buildHelpsWithSection = (answers: PromptWizardAnswers): Section | undefine
   const other = answers.helpsWithOther.trim();
   if (other !== '') bullets.push(`- ${neutraliseHeaderLookalikes(other)}`);
   if (bullets.length === 0) return undefined;
-  return { header: 'WHAT YOU HELP WITH', body: bullets.join('\n') };
+  return { header: FOCUS_HEADER, body: bullets.join('\n') };
 };
 
 const buildVoiceSection = (answers: PromptWizardAnswers): Section => {
@@ -210,7 +218,7 @@ const buildVoiceSection = (answers: PromptWizardAnswers): Section => {
 const buildSourcesSection = (answers: PromptWizardAnswers): Section | undefined => {
   const lines: string[] = [];
   if (answers.preferClubSources) {
-    lines.push("Check the club's sources before answering from general knowledge.");
+    lines.push(...SOURCES_ORDER_LINES);
   }
   if (answers.citeSources) {
     lines.push("Tag each fact you take from a club source with that source's tag.");
