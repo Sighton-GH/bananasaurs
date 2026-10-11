@@ -1,7 +1,7 @@
 # Slice 3: Streaming, idle timeout, live progress and thinking — implementation plan
 
 > **Instinct plan.** Read with `2026-10-10-harness-00-instinct-handoff.md` and `2026-10-10-harness-00-shared-contracts.md`.
-> **Status:** DRAFT — refreshed by the controller before round 2
+> **Status:** DRAFT — refreshed by the controller before round 2 — controller note: S3-T6 and S3-T7 Step 3 are prose; full code is written at the refresh, after Slice 6 changes the adapters.
 
 **Goal:** Every provider streams its answer with an idle timeout and a hard ceiling, finish reasons are checked, and the dashboard shows live progress plus saved thinking.
 **Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §Slice 3 (3a–3e), D5(b), D6, §4.7
