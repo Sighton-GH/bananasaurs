@@ -245,7 +245,11 @@ export const runToolLoop = async (input: {
   readonly onProgress?: ((progress: StreamProgress) => void | Promise<void>) | undefined;
   /** Unthrottled deltas; service/job completion owns finished and buffer drop. */
   readonly live?:
-    { append(runId: string, answerDelta: string, reasoningDelta: string): void } | undefined;
+    | {
+        append(runId: string, answerDelta: string, reasoningDelta: string): void;
+        reset(runId: string): void;
+      }
+    | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -300,6 +304,14 @@ export const runToolLoop = async (input: {
     return {
       close: () => {
         open = false;
+      },
+      // A failed provider call must not leave its partial text in the live
+      // view: closing alone would freeze it there until the next entry's
+      // chunks append after it, so failover resets the run's text first.
+      discard: () => {
+        open = false;
+        const runId = input.runId ?? input.recorder?.runId;
+        if (runId !== undefined) input.live?.reset(runId);
       },
       // The public provider contract says void, and the streaming adapters
       // invoke progress callbacks fire-and-forget: a returned promise is
@@ -705,6 +717,7 @@ interface StreamCallbacks {
   readonly onProgress: NonNullable<GenerateTextRequest['onProgress']>;
   readonly onChunk: NonNullable<GenerateTextRequest['onChunk']>;
   readonly close: () => void;
+  readonly discard: () => void;
 }
 
 const runEntry = async (deps: {
@@ -1018,6 +1031,7 @@ const runEntry = async (deps: {
       });
       return response;
     } catch (err) {
+      stream.discard();
       failAttempt(err, Math.max(0, deps.now() - callStarted));
       return undefined;
     } finally {
@@ -1516,6 +1530,7 @@ const finishEntry = async (deps: {
         };
       }
     } catch (err) {
+      stream.discard();
       if (err instanceof ProviderError) outer.noteError(err);
       // A failed retry is still a failed answer, not a chain error — but the
       // failure is a journal line (ADR 0129 §5), never a bare `catch {}`.

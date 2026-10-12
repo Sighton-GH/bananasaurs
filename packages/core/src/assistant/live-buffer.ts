@@ -12,6 +12,8 @@ export interface LiveBuffer {
   append(runId: string, answerDelta: string, reasoningDelta: string): void;
   read(runId: string): LiveText | undefined;
   drop(runId: string): void;
+  /** Empties one run's answer and thinking, keeping the entry. */
+  reset(runId: string): void;
 }
 
 export const createLiveBuffer = (deps?: { readonly now?: () => number }): LiveBuffer => {
@@ -54,16 +56,46 @@ export const createLiveBuffer = (deps?: { readonly now?: () => number }): LiveBu
     drop(runId) {
       runs.delete(runId);
     },
+    reset(runId) {
+      const current = runs.get(runId);
+      if (current === undefined) return;
+      // Re-insert so map order tracks write recency for eviction.
+      runs.delete(runId);
+      runs.set(runId, { answer: '', thinking: '', lastWrite: now() });
+    },
   };
 };
 
 /**
  * The process-wide buffer the tool loop appends to and the HTTP route
- * reads. Tests use `createLiveBuffer()` for isolation and touch this only
- * for the route test.
+ * reads. Keyed by guild and run: every method takes a run id and the
+ * guild comes from `getLiveBuffer(guildId)`, so the same run id in two
+ * guilds is two entries. The 50-run cap and idle TTL stay global across
+ * guilds. Tests use `createLiveBuffer()` for isolation and touch this
+ * only for the route test. Views are cached per guild so spying on
+ * `getLiveBuffer(guildId)` in tests intercepts the production view.
  */
 let shared: LiveBuffer | undefined;
-export const getLiveBuffer = (): LiveBuffer => {
+const views = new Map<string, LiveBuffer>();
+export const getLiveBuffer = (guildId: string): LiveBuffer => {
   if (shared === undefined) shared = createLiveBuffer();
-  return shared;
+  const store = shared;
+  const cached = views.get(guildId);
+  if (cached !== undefined) return cached;
+  const view: LiveBuffer = {
+    append(runId, answerDelta, reasoningDelta) {
+      store.append(`${guildId}\u0000${runId}`, answerDelta, reasoningDelta);
+    },
+    read(runId) {
+      return store.read(`${guildId}\u0000${runId}`);
+    },
+    drop(runId) {
+      store.drop(`${guildId}\u0000${runId}`);
+    },
+    reset(runId) {
+      store.reset(`${guildId}\u0000${runId}`);
+    },
+  };
+  views.set(guildId, view);
+  return view;
 };

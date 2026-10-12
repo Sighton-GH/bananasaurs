@@ -161,7 +161,7 @@ export const registerAssistantRunRoutes = (
 
     const run = runRepo.getRun(session.scope, request.params.runId);
     if (run === undefined) return reply.status(404).send({ error: 'not-found' });
-    const live = getLiveBuffer().read(request.params.runId);
+    const live = getLiveBuffer(session.scope.guildId).read(request.params.runId);
     const showText = canReadConfig(session);
     return reply
       .header('cache-control', 'no-store')

@@ -1477,7 +1477,7 @@ export const createAssistantService = (
         runId: input.invocationId,
         recorder,
         ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
-        live: input.recorder === undefined ? undefined : getLiveBuffer(),
+        live: input.recorder === undefined ? undefined : getLiveBuffer(scope.guildId),
         now,
         citations,
         isCitable: isKnownResource,
@@ -1844,7 +1844,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       const traceId = `try_${randomUUID()}`;
       // ADR 0129 §6: Try-it runs the same ledger as a Discord request, under
       // the user turn id with `source: 'dashboard-test'`.
-      let recorder: RunRecorder = createLiveRunRecorder(userTurnId, getLiveBuffer());
+      let recorder: RunRecorder = createLiveRunRecorder(userTurnId, getLiveBuffer(scope.guildId));
       try {
         runRepo.ensureRun(scope, {
           runId: userTurnId,
@@ -1859,7 +1859,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
           runId: userTurnId,
           now,
           logger,
-          live: getLiveBuffer(),
+          live: getLiveBuffer(scope.guildId),
         });
       } catch (err) {
         logger.warn(

@@ -1778,18 +1778,18 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
         history: [],
       },
     }));
-    getLiveBuffer().append('inv-live-drop', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('inv-live-drop', 'partial', 'thought');
     await h.run(mention({ invocationId: 'inv-live-drop', messageId: '810000000000000027' }));
-    expect(getLiveBuffer().read('inv-live-drop')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('inv-live-drop')).toBeUndefined();
   });
 
   it('drops the live buffer when the run is refused', async () => {
     const h = harness(() => ({ ok: true, content: 'never used' }), {
       check: async () => ({ allowed: false, reason: 'no-access' }),
     });
-    getLiveBuffer().append('inv-live-refused', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('inv-live-refused', 'partial', 'thought');
     await h.run(mention({ invocationId: 'inv-live-refused', messageId: '810000000000000029' }));
-    expect(getLiveBuffer().read('inv-live-refused')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('inv-live-refused')).toBeUndefined();
   });
 
   it('keeps typing past 180 s when the ceiling setting is higher', async () => {
@@ -2938,7 +2938,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       now: () => NOW,
       recorder: input.recorder,
       runId: input.invocationId,
-      live: getLiveBuffer(),
+      live: getLiveBuffer(GUILD_ID),
     });
     if (failure) throw failure;
     return { ok: true as const, content: loop.text };
@@ -2946,14 +2946,14 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
 
   const observe = (runId: string) => {
     const order: string[] = [];
-    const append = getLiveBuffer().append.bind(getLiveBuffer());
-    const drop = getLiveBuffer().drop.bind(getLiveBuffer());
+    const append = getLiveBuffer(GUILD_ID).append.bind(getLiveBuffer(GUILD_ID));
+    const drop = getLiveBuffer(GUILD_ID).drop.bind(getLiveBuffer(GUILD_ID));
     const event = runRepo.appendRunEvent;
-    vi.spyOn(getLiveBuffer(), 'append').mockImplementation((id, answer, thought) => {
+    vi.spyOn(getLiveBuffer(GUILD_ID), 'append').mockImplementation((id, answer, thought) => {
       if (id === runId) order.push('chunk');
       append(id, answer, thought);
     });
-    vi.spyOn(getLiveBuffer(), 'drop').mockImplementation((id) => {
+    vi.spyOn(getLiveBuffer(GUILD_ID), 'drop').mockImplementation((id) => {
       if (id === runId) order.push('drop');
       drop(id);
     });
@@ -2991,7 +2991,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
       expect(order).toEqual(['chunk', 'finished', 'drop']);
       expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
-      expect(getLiveBuffer().read(id)).toBeUndefined();
+      expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     },
   );
 
@@ -3051,7 +3051,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
             now: () => Date.now(),
             recorder: input.recorder,
             runId: input.invocationId,
-            live: getLiveBuffer(),
+            live: getLiveBuffer(GUILD_ID),
           });
           expect(loop.lastError).toBeInstanceOf(ProviderError);
           if (loop.lastError === undefined) throw new Error('fixture expected timeout');
@@ -3062,7 +3062,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
         expect((await running).error).toBeUndefined();
         expect(order).toEqual(['chunk', 'finished', 'drop']);
         expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
-        expect(getLiveBuffer().read(id)).toBeUndefined();
+        expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
       } finally {
         vi.unstubAllGlobals();
         vi.useRealTimers();
@@ -3108,7 +3108,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
         now: () => NOW,
         recorder: input.recorder,
         runId: input.invocationId,
-        live: getLiveBuffer(),
+        live: getLiveBuffer(GUILD_ID),
         tools: {
           firstRound: [
             {
@@ -3129,7 +3129,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     for (const req of requests) req.onChunk?.({ text: 'late', reasoning: 'late' });
     expect(order).toEqual(['chunk', 'chunk', 'finished', 'drop']);
     expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it('T12c delivery retries keep the cursor and buffer until the actual job budget', async () => {
@@ -3149,14 +3149,14 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(first.error).toBe(error);
     expect(first.cursor).not.toBeNull();
     expect(order).toEqual(['chunk']);
-    expect(getLiveBuffer().read(id)?.answer).toBe('partial answer');
+    expect(getLiveBuffer(GUILD_ID).read(id)?.answer).toBe('partial answer');
     const last = await h.run(mention(id), 3, first.cursor, jobId);
     expect(last.error).toBe(error);
     expect(h.inputs).toHaveLength(1);
     lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
     expect(order).toEqual(['chunk', 'finished', 'drop']);
     expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it('T12c actual worker budget ends a retryable provider failure before provider ceiling', async () => {
@@ -3174,7 +3174,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     }).jobId!;
     expect((await h.run(mention(id), 1, null, jobId)).error).toBeInstanceOf(RetryAfterError);
     expect(order).toEqual(['chunk', 'finished', 'drop']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it('T12c optional handler fails safe on delivery rejection without a budget', async () => {
@@ -3185,7 +3185,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     h.send.mockRejectedValue(error);
     expect((await h.run(mention(id))).error).toBe(error);
     expect(order).toEqual(['chunk', 'drop']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it('T12c final answerSingle rejection still closes a streamed provider failure', async () => {
@@ -3205,7 +3205,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     }).jobId!;
     expect((await h.run(mention(id), 2, null, jobId)).error).toBe(error);
     expect(order).toEqual(['chunk', 'finished', 'drop']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it.each([false, true])(
@@ -3218,7 +3218,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       });
       const h = harness(streamed, { noConversations });
       expect((await h.run(mention(id))).error).toBeUndefined();
-      expect(getLiveBuffer().read(id)).toBeUndefined();
+      expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
       lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
       expect(h.completionEvents).toEqual(['finished']);
       expect(order.at(-1)).toBe('drop');
@@ -3295,7 +3295,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(first.error).toBe(error);
     expect(first.cursor).not.toBeNull();
     expect(finishedOutcomes(id)).toEqual(['answered']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     // Attempt 2 from the durable cursor: the escalation send rejects on the
     // final attempt. The member has their answer, so the ledger must keep
     // 'answered' - never a second finished, never 'failed' - while the error
@@ -3305,7 +3305,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(h.inputs).toHaveLength(1);
     expect(finishedOutcomes(id)).toEqual(['answered']);
     expect(runRepo.getRun(scope(), id)?.state).toBe('answered');
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
   });
 
@@ -3329,13 +3329,13 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(first.error).toBe(error);
     expect(first.cursor).not.toBeNull();
     expect(finishedOutcomes(id)).toEqual(['answered']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     const last = await h.run(mention(id), 2, first.cursor, jobId);
     expect(last.error).toBe(error);
     expect(h.inputs).toHaveLength(1);
     expect(finishedOutcomes(id)).toEqual(['answered']);
     expect(runRepo.getRun(scope(), id)?.state).toBe('answered');
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
   });
 
@@ -3369,13 +3369,13 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(first.error).toBe(error);
     expect(first.cursor).not.toBeNull();
     expect(finishedOutcomes(id)).toEqual(['refused']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     const last = await h.run(mention(id), 2, first.cursor, jobId);
     expect(last.error).toBe(error);
     expect(h.inputs).toHaveLength(1);
     expect(finishedOutcomes(id)).toEqual(['refused']);
     expect(runRepo.getRun(scope(), id)?.state).toBe('refused');
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
   });
 
@@ -3426,7 +3426,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       expect(row?.stage).toBe('done');
       expect(row?.finishedAt).toBeDefined();
       expect(row?.finishedAt).not.toBeNull();
-      expect(getLiveBuffer().read(id)).toBeUndefined();
+      expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     },
   );
 
@@ -3457,7 +3457,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     const row = runRepo.getRun(scope(), id);
     expect(row?.state).toBe('answered');
     expect(row?.stage).toBe('done');
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it.each([
@@ -3513,7 +3513,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       expect(row?.stage).toBe('done');
       expect(row?.finishedAt).toBeDefined();
       expect(row?.finishedAt).not.toBeNull();
-      expect(getLiveBuffer().read(id)).toBeUndefined();
+      expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
     },
   );
 
@@ -3555,7 +3555,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     const row = runRepo.getRun(scope(), id);
     expect(row?.state).toBe('answered');
     expect(row?.stage).toBe('done');
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it('T12g hitting the ledger page bound without reaching the end adds no second finish', async () => {
@@ -3599,7 +3599,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     fake = false;
     expect(second.error).toBeUndefined();
     expect(finishedOutcomes(id)).toEqual(['answered']);
-    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read(id)).toBeUndefined();
   });
 
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
@@ -3694,9 +3694,9 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
         { provider: 'openrouter', model: 'm', outcome: 'error', code: 'provider-bad-model', ms: 5 },
       ]);
     });
-    getLiveBuffer().append('rec-chain', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('rec-chain', 'partial', 'thought');
     await h.run(mention('rec-chain'), 1);
-    expect(getLiveBuffer().read('rec-chain')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('rec-chain')).toBeUndefined();
     const finished = runRepo
       .listRunEvents(scope(), 'rec-chain', 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
@@ -3707,9 +3707,9 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     const h = harness(async () => {
       throw new DOMException('The operation was aborted', 'AbortError');
     });
-    getLiveBuffer().append('rec-abort', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('rec-abort', 'partial', 'thought');
     await h.run(mention('rec-abort'), 1);
-    expect(getLiveBuffer().read('rec-abort')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('rec-abort')).toBeUndefined();
     const finished = runRepo
       .listRunEvents(scope(), 'rec-abort', 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
@@ -3720,10 +3720,10 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     const h = harness(async () => {
       throw new ProviderError('timeout', 'idle timeout waiting for the provider', true);
     });
-    getLiveBuffer().append('rec-timeout', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('rec-timeout', 'partial', 'thought');
     // Attempts at the retry ceiling: the timeout is terminal for this run.
     await h.run(mention('rec-timeout'), 4);
-    expect(getLiveBuffer().read('rec-timeout')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('rec-timeout')).toBeUndefined();
     const finished = runRepo
       .listRunEvents(scope(), 'rec-timeout', 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
@@ -3740,9 +3740,9 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
         ticketId: 'ticket-1',
       },
     }));
-    getLiveBuffer().append('rec-escalation', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('rec-escalation', 'partial', 'thought');
     await h.run(mention('rec-escalation'), 1);
-    expect(getLiveBuffer().read('rec-escalation')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('rec-escalation')).toBeUndefined();
     const finished = runRepo
       .listRunEvents(scope(), 'rec-escalation', 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
@@ -3753,9 +3753,9 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     const h = harness(async () => {
       throw new Error('context build exploded');
     });
-    getLiveBuffer().append('rec-pre', 'partial', 'thought');
+    getLiveBuffer(GUILD_ID).append('rec-pre', 'partial', 'thought');
     await h.run(mention('rec-pre'), 1);
-    expect(getLiveBuffer().read('rec-pre')).toBeUndefined();
+    expect(getLiveBuffer(GUILD_ID).read('rec-pre')).toBeUndefined();
     const finished = runRepo
       .listRunEvents(scope(), 'rec-pre', 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;

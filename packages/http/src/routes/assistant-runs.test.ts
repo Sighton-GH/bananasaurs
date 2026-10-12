@@ -92,7 +92,9 @@ beforeEach(async () => {
   app = createServer({ deps, registerRoutes: registerAssistantRunRoutes });
 });
 afterEach(async () => {
-  for (const runId of ['run-1', 'run-2', 'run-other', 'no-such-run']) getLiveBuffer().drop(runId);
+  for (const runId of ['run-1', 'run-2', 'run-other', 'no-such-run'])
+    getLiveBuffer(GUILD).drop(runId);
+  getLiveBuffer(OTHER_GUILD).drop('run-other');
   await app.close();
   t.close();
 });
@@ -114,7 +116,7 @@ describe('assistant run routes', () => {
     grant('audit.read');
     seedRun('run-1');
     grant('config.read');
-    getLiveBuffer().append('run-1', 'hello Sam L', 'why this answer');
+    getLiveBuffer(GUILD).append('run-1', 'hello Sam L', 'why this answer');
     const ok = await app.inject({
       method: 'GET',
       url: '/api/assistant/runs/run-1/live',
@@ -128,7 +130,7 @@ describe('assistant run routes', () => {
     const { cookie } = await signIn();
     grant('audit.read');
     seedRun('run-1');
-    getLiveBuffer().append('run-1', 'hello Sam L', 'why this answer');
+    getLiveBuffer(GUILD).append('run-1', 'hello Sam L', 'why this answer');
     const ok = await app.inject({
       method: 'GET',
       url: '/api/assistant/runs/run-1/live',
@@ -143,7 +145,7 @@ describe('assistant run routes', () => {
     const { cookie } = await signIn();
     seedRun('run-1');
     const thinkingText = 'Private thinking for Sam L';
-    getLiveBuffer().append('run-1', 'hello Sam L', thinkingText);
+    getLiveBuffer(GUILD).append('run-1', 'hello Sam L', thinkingText);
     const without = await app.inject({
       method: 'GET',
       url: '/api/assistant/runs/run-1/live',
@@ -167,7 +169,7 @@ describe('assistant run routes', () => {
   it('live text needs audit.read before checking whether the run exists', async () => {
     const { cookie } = await signIn();
     seedRun('run-2');
-    getLiveBuffer().append('run-2', 'hello', 'private thinking');
+    getLiveBuffer(GUILD).append('run-2', 'hello', 'private thinking');
     for (const runId of ['run-2', 'no-such-run']) {
       const denied = await app.inject({
         method: 'GET',
@@ -181,7 +183,7 @@ describe('assistant run routes', () => {
 
   it('live text requires a signed-in session', async () => {
     seedRun('run-1');
-    getLiveBuffer().append('run-1', 'hello', 'private thinking');
+    getLiveBuffer(GUILD).append('run-1', 'hello', 'private thinking');
     const denied = await app.inject({ method: 'GET', url: '/api/assistant/runs/run-1/live' });
     expect(denied.statusCode).toBe(401);
     expect(denied.body).not.toContain('private thinking');
@@ -198,7 +200,7 @@ describe('assistant run routes', () => {
       source: 'mention',
       queuedAt: clock,
     });
-    getLiveBuffer().append('run-other', 'other guild answer', 'other guild thinking');
+    getLiveBuffer(OTHER_GUILD).append('run-other', 'other guild answer', 'other guild thinking');
     const other = await app.inject({
       method: 'GET',
       url: '/api/assistant/runs/run-other/live',
@@ -212,7 +214,7 @@ describe('assistant run routes', () => {
   it('answers 404 for an unknown run even if live text exists', async () => {
     grant('audit.read');
     const { cookie } = await signIn();
-    getLiveBuffer().append('no-such-run', 'orphan answer', 'orphan thinking');
+    getLiveBuffer(GUILD).append('no-such-run', 'orphan answer', 'orphan thinking');
     const unknown = await app.inject({
       method: 'GET',
       url: '/api/assistant/runs/no-such-run/live',
@@ -229,8 +231,8 @@ describe('assistant run routes', () => {
     seedRun('run-1');
     for (const dropped of [false, true]) {
       if (dropped) {
-        getLiveBuffer().append('run-1', 'answer', 'thinking');
-        getLiveBuffer().drop('run-1');
+        getLiveBuffer(GUILD).append('run-1', 'answer', 'thinking');
+        getLiveBuffer(GUILD).drop('run-1');
       }
       const response = await app.inject({
         method: 'GET',

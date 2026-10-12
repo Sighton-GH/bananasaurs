@@ -452,16 +452,19 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
         return { text: 'hello', model: 'm' };
       },
     };
-    const recorder = createLiveRunRecorder('int-owned-live', getLiveBuffer());
+    const recorder = createLiveRunRecorder('int-owned-live', getLiveBuffer(GUILD));
     const result = await serviceWith(() => [usable(provider)]).invoke({
       ...ask,
       invocationId: 'int-owned-live',
       recorder,
     });
     expect(result).toMatchObject({ ok: true });
-    expect(getLiveBuffer().read('int-owned-live')).toEqual({ answer: 'hello', thinking: 'think' });
+    expect(getLiveBuffer(GUILD).read('int-owned-live')).toEqual({
+      answer: 'hello',
+      thinking: 'think',
+    });
     recorder.event({ kind: 'finished', outcome: 'answered', durationMs: 0 });
-    expect(getLiveBuffer().read('int-owned-live')).toBeUndefined();
+    expect(getLiveBuffer(GUILD).read('int-owned-live')).toBeUndefined();
   });
 
   it('T12c a direct service call without a lifetime owner does not buffer streamed text', async () => {
@@ -477,7 +480,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const service = serviceWith(() => [usable(provider)]);
     const result = await service.invoke({ ...ask, invocationId: 'int-live-1' });
     expect(result).toMatchObject({ ok: true });
-    expect(getLiveBuffer().read('int-live-1')).toBeUndefined();
+    expect(getLiveBuffer(GUILD).read('int-live-1')).toBeUndefined();
     // No recorder means no lifetime owner, so no live sink is supplied.
   });
 
@@ -1677,8 +1680,8 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
   };
 
   it('T12c Try-it drops real streamed text when ensureRun fails', async () => {
-    const append = vi.spyOn(getLiveBuffer(), 'append');
-    const drop = vi.spyOn(getLiveBuffer(), 'drop');
+    const append = vi.spyOn(getLiveBuffer(GUILD), 'append');
+    const drop = vi.spyOn(getLiveBuffer(GUILD), 'drop');
     const service = serviceWith({
       id: 'fake',
       capabilities: new Set(['text']),
@@ -1694,7 +1697,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
       await service.tryIt({ behaviourId: 'direct', question: 'hi', accountUsername: 'Alex P' });
       expect(append).toHaveBeenCalledTimes(1);
       const id = append.mock.calls[0]![0];
-      expect(getLiveBuffer().read(id)).toBeUndefined();
+      expect(getLiveBuffer(GUILD).read(id)).toBeUndefined();
       expect(drop).toHaveBeenCalledExactlyOnceWith(id);
       expect(drop.mock.invocationCallOrder[0]).toBeGreaterThan(append.mock.invocationCallOrder[0]!);
     } finally {

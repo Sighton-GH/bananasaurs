@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   nextProviderDayStart,
   capTrace,
+  createLiveBuffer,
   TRUNCATION_SUFFIX,
   type AssistantTrace,
   ProviderError,
@@ -2671,6 +2672,7 @@ describe('Slice 3 streaming edge paths', () => {
     async (failed) => {
       let saved: GenerateTextRequest | undefined;
       const append = vi.fn();
+      const reset = vi.fn();
       const fanout = vi.fn<(progress: StreamProgress) => void>();
       const error = new ProviderError('quota', 'invented quota', false, {
         quotaScope: 'minute',
@@ -2690,11 +2692,16 @@ describe('Slice 3 streaming edge paths', () => {
       const loop = await runToolLoop(
         baseInput([entry({ provider })], {
           recorder: { runId: 'r-live', event: () => undefined, update: () => undefined },
-          live: { append },
+          live: { append, reset },
           onProgress: fanout,
         }),
       );
       expect(append).toHaveBeenCalledExactlyOnceWith('r-live', 'answer delta', 'thought delta');
+      if (failed) {
+        expect(reset).toHaveBeenCalledExactlyOnceWith('r-live');
+      } else {
+        expect(reset).not.toHaveBeenCalled();
+      }
       saved?.onChunk?.({ text: 'late', reasoning: 'late' });
       saved?.onProgress?.({
         round: 0,
@@ -2725,6 +2732,69 @@ describe('Slice 3 streaming edge paths', () => {
       }
     },
   );
+
+  it('drops the failed attempt partial text on failover: the live view holds only the answer', async () => {
+    const live = createLiveBuffer();
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (request) => {
+        request.onChunk?.({ text: 'partial', reasoning: 'partial thought' });
+        throw new ProviderError('outage', 'invented outage', true);
+      },
+    };
+    const answering: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (request) => {
+        request.onChunk?.({ text: 'final', reasoning: '' });
+        return textAnswer('final', 'model-b');
+      },
+    };
+    const loop = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: failing, model: 'model-a' }),
+          entry({ provider: answering, model: 'model-b' }),
+        ],
+        {
+          runId: 'r-failover',
+          recorder: { runId: 'r-failover', event: () => undefined, update: () => undefined },
+          live,
+        },
+      ),
+    );
+    expect(loop.outcome).toBe('answered');
+    expect(loop.text).toBe('final');
+    expect(live.read('r-failover')).toEqual({ answer: 'final', thinking: '' });
+  });
+
+  it('never resets the live buffer when the first call succeeds', async () => {
+    const live = createLiveBuffer();
+    const reset = vi.spyOn(live, 'reset');
+    try {
+      const provider: TextProvider = {
+        id: 'fake',
+        capabilities: new Set(['text']),
+        generateText: async (request) => {
+          request.onChunk?.({ text: 'hello', reasoning: 'why' });
+          return textAnswer('hello');
+        },
+      };
+      const loop = await runToolLoop(
+        baseInput([entry({ provider })], {
+          runId: 'r-ok',
+          recorder: { runId: 'r-ok', event: () => undefined, update: () => undefined },
+          live,
+        }),
+      );
+      expect(loop.outcome).toBe('answered');
+      expect(live.read('r-ok')).toEqual({ answer: 'hello', thinking: 'why' });
+      expect(reset).not.toHaveBeenCalled();
+    } finally {
+      reset.mockRestore();
+    }
+  });
 });
 
 it('keeps progress ledger events metadata-only even if a provider adds fields', async () => {
@@ -2845,7 +2915,7 @@ it('wires guard-retry capabilities, progress and live chunks, then closes the re
         },
         update: () => undefined,
       },
-      live: { append },
+      live: { append, reset: () => undefined },
     }),
   );
   expect(seen[1]?.capabilities).toEqual(capabilities);
