@@ -87,10 +87,19 @@ export const sniffMediaKind = (
     startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
     startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
   ) {
-    const head = Buffer.from(bytes.slice(0, 300)).toString('latin1');
-    return head.includes('NETSCAPE2.0') ? 'animated-gif' : 'image';
+    return Buffer.from(bytes).includes('NETSCAPE2.0', 0, 'latin1') ? 'animated-gif' : 'image';
   }
   return 'unknown';
+};
+
+/** The MIME type we send on, taken from validated magic bytes and never from the HTTP header. */
+const mimeFromMagic = (bytes: Uint8Array): string | undefined => {
+  if (startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return 'application/pdf';
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (startsWith(bytes, [0x52, 0x49, 0x46, 0x46])) return 'image/webp';
+  if (startsWith(bytes, [0x47, 0x49, 0x46, 0x38])) return 'image/gif';
+  return undefined;
 };
 
 export const textEnvelopeFor = (name: string, text: string): string => {
@@ -148,12 +157,20 @@ export const fetchAttachment = async (
     return { ok: false, code: 'too-large', note: `${source.fileName} is over the size limit.` };
   if (source.url === undefined || source.url === '')
     return { ok: false, code: 'missing-url', note: `${source.fileName} has no download link.` };
+  let parsed: URL;
   let host: string;
   try {
-    host = new URL(source.url).hostname.toLowerCase();
+    parsed = new URL(source.url);
+    host = parsed.hostname.toLowerCase();
   } catch {
     return { ok: false, code: 'bad-host', note: `${source.fileName} has no valid download link.` };
   }
+  if (parsed.port !== '' && parsed.port !== '443')
+    return {
+      ok: false,
+      code: 'bad-host',
+      note: `${source.fileName} is not on the attachment host.`,
+    };
   if (!ATTACHMENT_HOSTS.some((h) => host === h))
     return {
       ok: false,
@@ -177,7 +194,7 @@ export const fetchAttachment = async (
       ok: true,
       kind,
       name: source.fileName,
-      mediaType: fetched.mediaType,
+      mediaType: mimeFromMagic(fetched.bytes) ?? 'application/octet-stream',
       dataBase64: Buffer.from(fetched.bytes).toString('base64'),
       sizeBytes: fetched.bytes.byteLength,
     };

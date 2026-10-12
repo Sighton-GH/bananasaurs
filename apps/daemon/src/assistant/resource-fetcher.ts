@@ -107,7 +107,6 @@ export interface ByteFetchSuccess {
   readonly ok: true;
   readonly bytes: Uint8Array;
   readonly mediaType: string;
-  readonly url: string;
 }
 export type ByteFetchResult = ByteFetchSuccess | ResourceFetchFailure;
 
@@ -360,6 +359,10 @@ export class ReviewedResourceFetcher {
     } catch {
       return fail('invalid-url', 'The attachment URL is not an allowed public HTTPS URL.');
     }
+    if (initial.port !== '' && initial.port !== '443')
+      return fail('invalid-url', 'The attachment URL must use the standard HTTPS port.', {
+        host: initial.hostname,
+      });
     if (!options.allowedHosts.some((host) => initial.hostname.toLowerCase() === host.toLowerCase()))
       return fail('redirect', 'The attachment URL is outside the allowed hosts.', {
         host: initial.hostname,
@@ -432,11 +435,13 @@ export class ReviewedResourceFetcher {
         });
       }
       if (
+        redirected.hostname.toLowerCase() !== url.hostname.toLowerCase() ||
+        (redirected.port !== '' && redirected.port !== '443') ||
         !options.allowedHosts.some(
           (host) => redirected.hostname.toLowerCase() === host.toLowerCase(),
         )
       )
-        return fail('redirect', 'The attachment redirected outside the allowed hosts.', {
+        return fail('redirect', 'The attachment redirected away from its own host or port.', {
           host: redirected.hostname,
         });
       return this.#fetchBytesFrom(redirected, visited, redirects + 1, limits, options);
@@ -478,7 +483,7 @@ export class ReviewedResourceFetcher {
     } catch {
       return fail('network', 'The attachment body could not be read.', { host: url.hostname });
     }
-    return { ok: true, bytes: Buffer.concat(chunks), mediaType, url: url.href };
+    return { ok: true, bytes: Buffer.concat(chunks), mediaType };
   }
 
   async #fetchFrom(

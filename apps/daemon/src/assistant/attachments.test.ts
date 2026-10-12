@@ -145,4 +145,87 @@ describe('attachment classification and sniffing (ADR 0149)', () => {
   it('pins the CDN allowlist', () => {
     expect([...ATTACHMENT_HOSTS]).toEqual(['cdn.discordapp.com', 'media.discordapp.net']);
   });
+
+  const caps = {
+    textMaxBytes: 262_144,
+    textMaxChars: 24_000,
+    textMaxCount: 3,
+    imageMaxBytes: 5_242_880,
+    imageMaxCount: 4,
+    pdfMaxBytes: 10_485_760,
+    pdfMaxCount: 2,
+  };
+  const cdn = 'https://cdn.discordapp.com/attachments/1/2/';
+
+  it('refuses a non-443 port before fetching', async () => {
+    const fetchBytes = vi.fn(async () => ({
+      ok: true as const,
+      bytes: png,
+      mediaType: 'image/png',
+    }));
+    const result = await fetchAttachment(
+      { fetchBytes },
+      {
+        fileName: 'a.png',
+        contentType: 'image/png',
+        sizeBytes: 9,
+        url: 'https://cdn.discordapp.com:8443/a.png',
+      },
+      caps,
+    );
+    expect(result).toMatchObject({ ok: false, code: 'bad-host' });
+    expect(fetchBytes).not.toHaveBeenCalled();
+  });
+
+  it('finds NETSCAPE2.0 anywhere in the body of a 256-colour GIF', async () => {
+    const big = new Uint8Array([
+      ...Buffer.from('GIF89a', 'utf8'),
+      ...new Uint8Array(7 + 768),
+      ...Buffer.from('!\u00ff\u000bNETSCAPE2.0', 'latin1'),
+    ]);
+    expect(big.length).toBeGreaterThan(781);
+    expect(sniffMediaKind(big)).toBe('animated-gif');
+    const fetchBytes = vi.fn(async () => ({
+      ok: true as const,
+      bytes: big,
+      mediaType: 'image/gif',
+    }));
+    const result = await fetchAttachment(
+      { fetchBytes },
+      { fileName: 'a.gif', contentType: 'image/gif', sizeBytes: big.length, url: `${cdn}a.gif` },
+      caps,
+    );
+    expect(result).toMatchObject({ ok: false, code: 'animated' });
+  });
+
+  it.each(['text/html', 'application/octet-stream', ''])(
+    'takes the image MIME from the magic bytes, not the header %j',
+    async (header) => {
+      const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes: png, mediaType: header }));
+      const result = await fetchAttachment(
+        { fetchBytes },
+        { fileName: 'a.png', contentType: 'image/png', sizeBytes: 9, url: `${cdn}a.png` },
+        caps,
+      );
+      expect(result).toMatchObject({ ok: true, kind: 'image', mediaType: 'image/png' });
+    },
+  );
+
+  it('maps each validated kind to its own MIME type', async () => {
+    const cases: Array<[Uint8Array, string, string]> = [
+      [jpeg, 'a.jpg', 'image/jpeg'],
+      [webp, 'a.webp', 'image/webp'],
+      [gifStatic, 'a.gif', 'image/gif'],
+      [pdf, 'a.pdf', 'application/pdf'],
+    ];
+    for (const [bytes, name, mime] of cases) {
+      const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes, mediaType: 'text/html' }));
+      const result = await fetchAttachment(
+        { fetchBytes },
+        { fileName: name, sizeBytes: bytes.length, url: `${cdn}${name}` },
+        caps,
+      );
+      expect(result).toMatchObject({ ok: true, mediaType: mime });
+    }
+  });
 });

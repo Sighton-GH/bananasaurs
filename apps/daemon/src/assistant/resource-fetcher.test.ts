@@ -462,3 +462,70 @@ it('fetchBytes refuses a redirect to another host without following it', async (
   expect(result).toMatchObject({ ok: false, code: 'redirect', host: 'evil.example' });
   expect(request).toHaveBeenCalledTimes(1);
 });
+
+describe('fetchBytes port and same-host redirect rules (T5 repair)', () => {
+  const hosts = ['cdn.discordapp.com', 'media.discordapp.net'];
+  const empty = async function* (): AsyncIterable<Uint8Array> {};
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const body = async function* (): AsyncIterable<Uint8Array> {
+    yield png;
+  };
+
+  it('refuses a non-443 initial port before any request', async () => {
+    const request = vi.fn<PinnedRequest>();
+    const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+    const result = await fetcher.fetchBytes('https://cdn.discordapp.com:8443/a/b/c.png', {
+      allowedHosts: hosts,
+      maxBytes: 1_024,
+    });
+    expect(result.ok).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('refuses a redirect to a non-443 port on the same host', async () => {
+    const request = vi.fn<PinnedRequest>(async () => ({
+      status: 302,
+      headers: { location: 'https://cdn.discordapp.com:444/final.png' },
+      body: empty(),
+    }));
+    const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+    const result = await fetcher.fetchBytes('https://cdn.discordapp.com/a/b/c.png', {
+      allowedHosts: hosts,
+      maxBytes: 1_024,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'redirect' });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a redirect from one allowed host to the other', async () => {
+    const request = vi.fn<PinnedRequest>(async () => ({
+      status: 302,
+      headers: { location: 'https://media.discordapp.net/a/b/c.png' },
+      body: empty(),
+    }));
+    const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+    const result = await fetcher.fetchBytes('https://cdn.discordapp.com/a/b/c.png', {
+      allowedHosts: hosts,
+      maxBytes: 1_024,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'redirect' });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('still follows a same-host https redirect', async () => {
+    let calls = 0;
+    const request = vi.fn<PinnedRequest>(async () => {
+      calls += 1;
+      return calls === 1
+        ? { status: 302, headers: { location: '/other/path.png' }, body: empty() }
+        : { status: 200, headers: { 'content-type': 'image/png' }, body: body() };
+    });
+    const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+    const result = await fetcher.fetchBytes('https://cdn.discordapp.com/a/b/c.png', {
+      allowedHosts: hosts,
+      maxBytes: 1_024,
+    });
+    expect(result.ok).toBe(true);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
