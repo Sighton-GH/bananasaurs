@@ -529,3 +529,68 @@ describe('fetchBytes port and same-host redirect rules (T5 repair)', () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('fetchBytes timeout (live, timeout only)', () => {
+  const png = async function* (): AsyncIterable<Uint8Array> {
+    yield new Uint8Array([1]);
+  };
+  const run = async (
+    limits: ConstructorParameters<typeof ReviewedResourceFetcher>[0] extends infer O
+      ? O extends { limits?: infer L }
+        ? L
+        : never
+      : never,
+    calls: () => void = () => undefined,
+  ): Promise<number[]> => {
+    const timeouts: number[] = [];
+    const request = vi.fn<PinnedRequest>(async (_url, _addr, timeoutMs) => {
+      timeouts.push(timeoutMs);
+      return { status: 200, headers: { 'content-type': 'image/png' }, body: png() };
+    });
+    const fetcher = new ReviewedResourceFetcher({
+      resolve: publicDns,
+      request,
+      ...(limits === undefined ? {} : { limits }),
+    });
+    const opts = { allowedHosts: ['cdn.discordapp.com'], maxBytes: 100 };
+    await fetcher.fetchBytes('https://cdn.discordapp.com/a.png', opts);
+    calls();
+    await fetcher.fetchBytes('https://cdn.discordapp.com/a.png', opts);
+    return timeouts;
+  };
+
+  it('uses the default timeout when no limits are given', async () => {
+    expect(await run(undefined)).toEqual([5_000, 5_000]);
+  });
+  it('uses an object snapshot timeout', async () => {
+    expect(await run({ timeoutMs: 1_234 })).toEqual([1_234, 1_234]);
+  });
+  it('re-reads a limits getter on every call', async () => {
+    let timeoutMs = 2_000;
+    const timeouts = await run(
+      () => ({ timeoutMs }),
+      () => {
+        timeoutMs = 9_000;
+      },
+    );
+    expect(timeouts).toEqual([2_000, 9_000]);
+  });
+  it('takes only timeout from the getter: maxBytes stays per call, no caching', async () => {
+    const request = vi.fn<PinnedRequest>(async () => ({
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+      body: (async function* () {
+        yield new Uint8Array([1, 2, 3, 4]);
+      })(),
+    }));
+    const fetcher = new ReviewedResourceFetcher({
+      resolve: publicDns,
+      request,
+      limits: () => ({ timeoutMs: 1_000, maxBytes: 1, maxRedirects: 0, cacheTtlMs: 999_999 }),
+    });
+    const opts = { allowedHosts: ['cdn.discordapp.com'], maxBytes: 100 };
+    expect((await fetcher.fetchBytes('https://cdn.discordapp.com/a.png', opts)).ok).toBe(true);
+    expect((await fetcher.fetchBytes('https://cdn.discordapp.com/a.png', opts)).ok).toBe(true);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
