@@ -548,10 +548,20 @@ Keep `byteSize`, `truncateTo`, `estimateTokens` and the fixed-fields-never-touch
 
 ### S3-T6: OpenAI-compatible streaming   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/openai-compatible.ts`; Test: `packages/core/src/providers/openai-compatible.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts` (`StreamProgress`, `onProgress`), `packages/core/src/providers/errors.ts`
-**Interfaces:** Consumes: `parseSseStream` from S3-T3; `StreamProgress` from S3-T2 · Produces: `OpenAiCompatibleProvider.generateText` streams with `stream: true`, `stream_options: { include_usage: true }`, `reasoning: { exclude: false }`, idle/ceiling timers and `reasoning` in the response
+**Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts` (`StreamProgress`, `StreamChunk`, `onProgress`, `onChunk`, `capabilities`), `packages/core/src/providers/errors.ts`, `packages/core/src/providers/model-capabilities.ts` (`TEXT_AND_TOOLS_ONLY`)
+**Interfaces:** Consumes: `parseSseStream` from S3-T3; `StreamProgress`, `StreamChunk` from S3-T2 · Produces: `OpenAiCompatibleProvider.generateText` streams with `stream: true`, `stream_options: { include_usage: true }` (OpenRouter only), capability-gated `reasoning: { exclude: false }`, first-byte/idle/ceiling timers, `reasoning` in the response; constructor options `idleTimeoutMs` (default 45,000) and `maxCallMs` (default 300,000)
 
-- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/openai-compatible.test.ts`, using its `vi.fn` fetch style, add:
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/openai-compatible.test.ts` (imports `createOpenRouterProvider`, `createNvidiaNimProvider`, `ProviderError` at lines 1–3; `vi.fn` fetch style). First add an SSE helper at the top of the `describe` block and convert every existing success-path mock: the adapter will always send `stream: true`, so `new Response(JSON.stringify(...))` bodies must become SSE. For each existing test that mocks a 200 JSON body (the shared `response` at lines 5–12, the tool-declaration test at 64–73, and every other `ok`-style mock in the file), wrap the same payload object with:
+
+```ts
+const sse = (...payloads: unknown[]): Response =>
+  new Response(
+    `${payloads.map((p) => `data: ${JSON.stringify(p)}\n\n`).join('')}data: [DONE]\n\n`,
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+```
+
+i.e. `sse({ model: 'served', choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }], usage: {...} })`. Non-2xx error-path mocks stay unchanged (the error path still reads text). The old non-streaming `response.json()` success path is deleted, so unconverted tests fail with `invalid-response`/`returned no text` — convert all of them. Then add:
 
 ```ts
 it('streams deltas, ignores keepalives, and joins fragmented tool args', async () => {
@@ -567,24 +577,64 @@ it('streams deltas, ignores keepalives, and joins fragmented tool args', async (
   );
   const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
   const seen: Array<{ answerChars: number; keepalives: number }> = [];
+  const chunks: Array<{ text: string; reasoning: string }> = [];
   const res = await provider.generateText({
     model: 'm',
     messages: [{ role: 'user', text: 'hi Sam L' }],
+    capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'budget' },
     onProgress: (p) => { seen.push({ answerChars: p.answerChars, keepalives: p.keepalives }); },
+    onChunk: (c) => { chunks.push({ ...c }); },
   });
   expect(res.text).toBe('hello');
   expect(res.reasoning).toBe('why');
   expect(res.toolCalls).toEqual([{ id: 'c1', name: 'search_sources', args: { que: 1 } }]);
+  expect(seen.length).toBeGreaterThanOrEqual(1);
   expect(seen.some((s) => s.keepalives >= 1)).toBe(true);
+  expect(chunks.map((c) => c.text).join('')).toBe('hello');
   expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({
     stream: true,
     stream_options: { include_usage: true },
     reasoning: { exclude: false },
   });
-
-  expect(seen.length).toBeGreaterThanOrEqual(1);
 });
 
+it('omits the reasoning request without capabilities or without reasoning support', async () => {
+  const payload = { choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }] };
+  const mk = () => vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse(payload));
+  const noCaps = createOpenRouterProvider({ apiKey: 'secret', fetch: mk() });
+  await noCaps.generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] });
+  expect('reasoning' in JSON.parse(noCapsFetchBody())).toBe(false);
+  const denied = createOpenRouterProvider({ apiKey: 'secret', fetch: mk() });
+  await denied.generateText({
+    model: 'm',
+    messages: [{ role: 'user', text: 'hi' }],
+    capabilities: { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' },
+  });
+  expect('reasoning' in JSON.parse(deniedFetchBody())).toBe(false);
+});
+```
+
+(write it with two explicit fetch mocks and read each body from its own mock — the sketch above abbreviates; the real test asserts on `fetch.mock.calls[0][1].body` per provider). Also: NIM never sends `reasoning` even with reasoning capabilities (it has no such field):
+
+```ts
+it('nim never sends a reasoning request field', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    sse({ choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }] }),
+  );
+  const provider = createNvidiaNimProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'm',
+    messages: [{ role: 'user', text: 'hi' }],
+    capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'budget' },
+  });
+  const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
+  expect('reasoning' in body).toBe(false);
+  expect(body).toMatchObject({ stream: true });
+  expect('stream_options' in body).toBe(false);
+});
+```
+
+```ts
 it('turns mid-stream finish_reason error into a retryable ProviderError', async () => {
   const body = 'data: {"choices":[{"delta":{"content":"part"},"finish_reason":"error","error":{"message":"upstream broke"}}]}\n\n';
   const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
@@ -593,10 +643,10 @@ it('turns mid-stream finish_reason error into a retryable ProviderError', async 
   const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
   const err = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] }).catch((e: unknown) => e);
   expect(err).toBeInstanceOf(ProviderError);
-  expect(err).toMatchObject({ kind: 'outage', retryable: true });
+  expect(err).toMatchObject({ kind: 'outage', retryable: true, finishReason: 'error' });
 });
 
-it('delivers length text with reasoning and usage, and reports time-to-first-byte', async () => {
+it('delivers length text with reasoning and usage', async () => {
   const body =
     'data: {"choices":[{"delta":{"content":"half","reasoning":"why"}}]}\n\n' +
     'data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":9,"total_tokens":11}}\n\n' +
@@ -605,17 +655,15 @@ it('delivers length text with reasoning and usage, and reports time-to-first-byt
     new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
   );
   const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-  const ttfb: number[] = [];
   const res = await provider.generateText({
     model: 'm',
     messages: [{ role: 'user', text: 'hi Sam L' }],
-    onProgress: (p) => { ttfb.push(p.msSinceLastByte); },
+    capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'budget' },
   });
   expect(res.text).toBe('half');
   expect(res.reasoning).toBe('why');
   expect(res.finishReason).toBe('length');
   expect(res.usage).toMatchObject({ promptTokens: 2, completionTokens: 9, totalTokens: 11 });
-  expect(ttfb.length).toBeGreaterThanOrEqual(1);
 });
 
 it('an idle stream throws a retryable timeout', async () => {
@@ -629,16 +677,309 @@ it('an idle stream throws a retryable timeout', async () => {
   expect(err).toBeInstanceOf(ProviderError);
   expect(err).toMatchObject({ kind: 'timeout', retryable: true });
 });
+
+it('a stalled mid-stream body hits the idle timer', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+    () =>
+      new Response(
+        new ReadableStream<Uint8Array>({ start() {} }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      ),
+  );
+  const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, idleTimeoutMs: 50 });
+  const err = await provider
+    .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ProviderError);
+  expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+});
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL with `stream: true` missing from the request body and no `reasoning` on the response
-- [ ] **Step 3: Implement** — anchor: `OpenAiCompatibleProvider.generateText` body build and `response.json()` success path (lines ~300–474). Replacement: send `stream: true`, `stream_options: { include_usage: true }`, `reasoning: { exclude: false }` (after Slice 6: only when the entry `GeminiModelProfile` table capabilities allow reasoning — the name `GeminiModelInfo` already exists in `packages/core/src/providers/gemini.ts` for a different interface, so the Slice 6 type keeps the new name); read `response.body` through `parseSseStream`; assemble `delta.content`, `delta.reasoning`, and per-index `tool_calls[].function.arguments` fragments (concatenate per `index`, parse the joined JSON only when the stream ends, using the existing `parseToolArguments` helper); count every `:` comment as a keepalive and re-arm the idle timer on it; fire `onProgress` at most every 3 s with `{ round: 0, answerChars, reasoningChars, keepalives, msSinceLastByte }`; record time-to-first-byte from the existing `timeoutMs` and abort on first-byte, idle (45 s default, re-armed on every byte) and ceiling (300 s) timers; map `finish_reason: "error"` or `choices[].error` to retryable `ProviderError('outage', …)` keeping partial text as trace evidence and never delivering it; pass `length` through as `finishReason` with text, reasoning and usage intact so S3-T8 can append `-# (cut short)`; keep every existing error mapping and ProviderError field (after Slice 6: plus `quotaScope`, `retryAfterMs`, `learnedLimit`). Return `reasoning` alongside `text`, `toolCalls`, `usage`, `finishReason`, `upstream`.
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL with `stream: true` missing from the request body, no `reasoning` on the response, and every unconverted JSON mock failing
+- [ ] **Step 3: Implement** — in `packages/core/src/providers/openai-compatible.ts`, against the current code:
+
+(a) Options: extend `OpenAiCompatibleProviderOptions` (lines 56–63) with `readonly idleTimeoutMs?: number; readonly maxCallMs?: number;`, add `private readonly idleTimeoutMs: number; private readonly maxCallMs: number;` beside `timeoutMs` (line 290), and default them in the constructor (line 300) to `options.idleTimeoutMs ?? 45_000` and `options.maxCallMs ?? 300_000`.
+
+(b) Imports: add `import { parseSseStream } from './sse.js';`, `import { TEXT_AND_TOOLS_ONLY } from './model-capabilities.js';`, and `import type { ModelCapabilities } from './model-capabilities.js';` (for the request field already typed in contracts).
+
+(c) Hoist the `usage` object out of `responseSchema` (lines 41–53) into a module `usageSchema` const used by both the old error-path shape (kept for reference) and the new chunk schema below; keep `toolCallSchema`, `readErrorBody`, `shortReason`, quota helpers and `parseToolArguments` exactly as they are.
+
+(d) Add the chunk schema after `responseSchema`:
+
+```ts
+const streamErrorSchema = z.object({
+  message: z.string().optional(),
+  code: z.union([z.number(), z.string()]).optional(),
+});
+
+const streamChunkSchema = z.object({
+  model: z.string().optional(),
+  provider: z.string().optional(),
+  choices: z
+    .array(
+      z.object({
+        delta: z
+          .object({
+            content: z.string().nullable().optional(),
+            reasoning: reasoningTextSchema,
+            tool_calls: z
+              .array(
+                z.object({
+                  index: z.number().int().nonnegative().optional(),
+                  id: z.string().optional(),
+                  type: z.string().optional(),
+                  function: z.object({
+                    name: z.string().min(1).optional(),
+                    arguments: z.string().optional(),
+                  }),
+                }),
+              )
+              .optional(),
+          })
+          .optional(),
+        finish_reason: z.string().nullable().optional(),
+        error: streamErrorSchema.optional(),
+      }),
+    )
+    .default([]),
+  usage: usageSchema,
+});
+```
+
+A chunk that fails this parse is a retryable `ProviderError('invalid-response', …)`? No — an unreadable mid-stream chunk means the stream is corrupt: throw `ProviderError('invalid-response', …, false)` with cause, like the old single-JSON parse failure. Keep that mapping.
+
+(e) Replace `generateText` (lines 304–489) in full. The fetch setup, `toWireMessage` body build (lines 313–338) and the `!response.ok` error path (lines 361–407, quota/daily-free/retryAfter logic) stay byte-identical except the body gains streaming fields:
+
+```ts
+const capabilities: ModelCapabilities = request.capabilities ?? TEXT_AND_TOOLS_ONLY;
+const body = JSON.stringify({
+  model: request.model,
+  messages: [ ...same as today... ],
+  ...(same tools / max_tokens / temperature / usage-include as today)...,
+  stream: true,
+  // NIM has no usage-include field (see today's comment), so it gets
+  // neither streaming-usage option.
+  ...(this.id === 'openrouter' ? { stream_options: { include_usage: true } } : {}),
+  // Capability gate: reasoning is asked only for models that support it.
+  ...(this.id === 'openrouter' && capabilities.reasoning ? { reasoning: { exclude: false } } : {}),
+});
+```
+
+Timers (replacing the single `AbortSignal.timeout` at lines 308–310):
+
+```ts
+const controller = new AbortController();
+const timers: ReturnType<typeof setTimeout>[] = [];
+const clearTimers = (): void => {
+  while (timers.length > 0) clearTimeout(timers.pop());
+};
+const abortTimeout = (): void => {
+  controller.abort(new DOMException(`${this.id} stream timed out`, 'TimeoutError'));
+};
+try {
+  request.signal?.addEventListener('abort', () => controller.abort(request.signal?.reason), { once: true });
+  const signal = controller.signal;
+  timers.push(setTimeout(abortTimeout, this.maxCallMs)); // hard ceiling
+  const firstByteTimer = setTimeout(abortTimeout, this.timeoutMs); // time to first byte
+  timers.push(firstByteTimer);
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const rearmIdle = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(abortTimeout, this.idleTimeoutMs);
+    timers.push(idleTimer);
+  };
+  let response: Response;
+  try {
+    response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.apiKey}`,
+        ...this.extraHeaders,
+      },
+      body,
+      signal,
+    });
+  } catch (error) {
+    // Unchanged mapping: TimeoutError (ours or the caller's deadline) →
+    // retryable timeout; anything else → outage. A caller abort surfaces
+    // as an AbortError (not TimeoutError) and keeps today's outage mapping.
+    const timeout = isTimeoutError(error);
+    const netCode = netCodeOf(error);
+    throw new ProviderError(
+      timeout ? 'timeout' : 'outage',
+      `${this.id} request ${timeout ? 'timed out' : 'failed'}`,
+      true,
+      { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
+    );
+  }
+  ... unchanged !response.ok path, but every `await response.text()` there
+  ... must tolerate our timers: wrap in try/finally that does NOT clear
+  ... timers early (they die in the outer finally).
+  if (response.body === null)
+    throw new ProviderError('invalid-response', `${this.id} returned no body`, false, { host: this.host });
+  clearTimeout(firstByteTimer); // headers arrived: first byte counts as started
+  let sawFirstByte = false;
+  let text = '';
+  let reasoning = '';
+  let model: string | undefined;
+  let upstream: string | undefined;
+  let finishReason: string | undefined;
+  let usage: z.infer<typeof usageSchema> | undefined;
+  const toolFragments = new Map<number, { id?: string; name?: string; argsText: string }>();
+  let answerChars = 0;
+  let reasoningChars = 0;
+  let keepalives = 0;
+  let lastByteAt = Date.now();
+  let lastEmitAt = 0;
+  const emitProgress = (): void => {
+    if (request.onProgress === undefined) return;
+    const now = Date.now();
+    if (lastEmitAt !== 0 && now - lastEmitAt < 3_000) return; // at most every 3 s; first emit immediate
+    lastEmitAt = now;
+    request.onProgress({
+      round: 0, // the tool loop stamps the real round
+      answerChars,
+      reasoningChars,
+      keepalives,
+      msSinceLastByte: Math.max(0, now - lastByteAt),
+    });
+  };
+  try {
+    for await (const event of parseSseStream(response.body)) {
+      lastByteAt = Date.now();
+      if (!sawFirstByte) {
+        sawFirstByte = true;
+        clearTimeout(firstByteTimer);
+      }
+      rearmIdle(); // keepalives count as bytes
+      if (event.keepalive) {
+        keepalives += 1;
+        emitProgress();
+        continue;
+      }
+      const parsed = streamChunkSchema.safeParse(JSON.parse(event.data));
+      if (!parsed.success)
+        throw new ProviderError('invalid-response', `${this.id} returned an invalid chunk`, false, { cause: parsed.error });
+      const chunk = parsed.data;
+      if (chunk.model !== undefined) model = chunk.model;
+      if (chunk.provider !== undefined) upstream = chunk.provider;
+      if (chunk.usage !== undefined) usage = chunk.usage;
+      let deltaText = '';
+      let deltaReasoning = '';
+      for (const choice of chunk.choices) {
+        if (choice.error !== undefined || choice.finish_reason === 'error') {
+          // Mid-stream failure inside a 200: retryable, partial text
+          // discarded — never delivered, never stored.
+          throw new ProviderError('outage', `${this.id} stream failed mid-response`, true, {
+            host: this.host,
+            finishReason: 'error',
+            ...(upstream === undefined ? {} : { upstream }),
+          });
+        }
+        if (choice.finish_reason !== undefined && choice.finish_reason !== null && choice.finish_reason !== '')
+          finishReason = choice.finish_reason;
+        const delta = choice.delta;
+        if (delta === undefined) continue;
+        if (delta.content !== undefined && delta.content !== null) {
+          text += delta.content;
+          deltaText += delta.content;
+          answerChars += delta.content.length;
+        }
+        if (delta.reasoning !== undefined && delta.reasoning !== null) {
+          reasoning += delta.reasoning;
+          deltaReasoning += delta.reasoning;
+          reasoningChars += delta.reasoning.length;
+        }
+        for (const call of delta.tool_calls ?? []) {
+          const index = call.index ?? 0;
+          const frag = toolFragments.get(index);
+          if (frag === undefined) {
+            toolFragments.set(index, {
+              ...(call.id === undefined ? {} : { id: call.id }),
+              ...(call.function.name === undefined ? {} : { name: call.function.name }),
+              argsText: call.function.arguments ?? '',
+            });
+          } else {
+            // First-seen id/name win; a name arriving only in a later
+            // fragment is still picked up; args concatenate per index and
+            // parse once at the end.
+            toolFragments.set(index, {
+              ...(call.id !== undefined && frag.id === undefined ? { id: call.id } : frag.id === undefined ? {} : { id: frag.id }),
+              ...(call.function.name !== undefined && frag.name === undefined
+                ? { name: call.function.name }
+                : frag.name === undefined
+                  ? {}
+                  : { name: frag.name }),
+              argsText: frag.argsText + (call.function.arguments ?? ''),
+            });
+          }
+        }
+      }
+      if (deltaText !== '' || deltaReasoning !== '') request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
+      emitProgress();
+    }
+  } catch (error) {
+    // Our first-byte/idle/ceiling timers abort with TimeoutError → retryable
+    // timeout (same mapping as the fetch catch). Errors thrown above
+    // (mid-stream outage, invalid chunk) pass through unchanged.
+    if (error instanceof ProviderError) throw error;
+    if (isTimeoutError(error))
+      throw new ProviderError('timeout', `${this.id} stream timed out`, true, {
+        cause: error,
+        host: this.host,
+      });
+    throw new ProviderError('outage', `${this.id} stream failed`, true, {
+      cause: error,
+      host: this.host,
+    });
+  } finally {
+    clearTimers();
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+  }
+
+After the stream ends, assemble in index order and finish with the existing mappings (same `finishReason` slice-40, `upstream` slice-60, usage incl. `thinkingTokens`/`costUsd`, same empty-answer throw with `reasoningOnly: reasoning !== ''`):
+    .sort(([a], [b]) => a - b)
+    .flatMap(([, frag]) =>
+      frag.name === undefined
+        ? []
+        : [{ ...(frag.id === undefined ? {} : { id: frag.id }), name: frag.name, args: parseToolArguments(frag.argsText) }],
+    );
+  const finish = finishReason === '' || finishReason === undefined ? undefined : finishReason;
+  const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
+  const reasoningOnly = reasoning !== '';
+  if (text === '' && toolCalls.length === 0)
+    throw new ProviderError('invalid-response', `${this.id} returned no text`, false, {
+      host: this.host,
+      ...(finish === undefined ? {} : { finishReason: finish }),
+      ...(upstream === undefined ? {} : { upstream }),
+      emptyAnswer: {
+        ...(usage?.completion_tokens !== undefined ? { completionTokens: usage.completion_tokens } : {}),
+        ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+        reasoningOnly,
+      },
+    });
+  return {
+    text,
+    model: model ?? request.model,
+    ...(finish ? { finishReason: finish.slice(0, 40) } : {}),
+    ...(toolCalls.length === 0 ? {} : { toolCalls }),
+    ...(reasoning === '' ? {} : { reasoning }),
+    ...(upstream === undefined ? {} : { upstream: upstream.slice(0, 60) }),
+    ...(usage ? { usage: { ...same usage mapping as today... } } : {}),
+  };
+} finally {
+  clearTimers();
+}
+```
+
+Keep every existing error-mapping branch and every ProviderError field (no `quotaScope`/`retryAfterMs`/`learnedLimit` on these paths today — the non-ok path already sets them where it did). `length` passes through as `finishReason` with text, reasoning and usage intact so S3-T8 can append `-# (cut short)`. Delete the old `response.json()` success path (lines 408–430) and the old non-streaming assembly (lines 431–488), replaced by the above.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 3 T6: OpenAI-compatible streaming"`
 
-**Done when:** streamed deltas assemble text, reasoning and whole tool args; keepalives are ignored but counted and re-arm the idle timer; mid-stream `error` is retryable and never delivered; `length` keeps text plus usage; request carries `stream: true` and usage options.
+**Done when:** streamed deltas assemble text, reasoning and whole tool args; keepalives are ignored but counted and re-arm the idle timer; mid-stream `error` is retryable and never delivered or stored; `length` keeps text plus usage; request carries `stream: true` and usage options; no `reasoning` field without `reasoning: true` capabilities (NIM never); every pre-existing JSON mock is converted to SSE.
 
 ### S3-T7: Gemini streaming   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts`
