@@ -1282,10 +1282,24 @@ export const assistantInvokeHandler = (deps: {
             // ADR 0149 (S4-T6): the current message's own files, re-read
             // fresh for the same reason as the quote. A failed re-read means
             // silence, never a job failure. Joined after the channel-context
-            // window so neither block overwrites the other, and gated by the
-            // same ADR 0126 Read check: denied means no fetches at all.
+            // window so neither block overwrites the other.
+            //
+            // ADR 0126 (fail-closed): the re-read needs its own Read pass,
+            // independent of the channel-context window and of
+            // fetchChannelMessages being wired. Missing access, a denial or
+            // a check error skips the re-read silently. Whether the invoking
+            // message should instead ride the tagged-message exemption the
+            // quote fetch uses is an open owner decision (task report).
+            let attachmentReadAllowed = false;
+            if (deps.channelAccess !== undefined) {
+              try {
+                attachmentReadAllowed = (await deps.channelAccess.check('read', channelId)).allowed;
+              } catch {
+                attachmentReadAllowed = false;
+              }
+            }
             if (
-              channelContextAllowed &&
+              attachmentReadAllowed &&
               payload.messageId !== undefined &&
               deps.fetchMessageContent !== undefined
             ) {

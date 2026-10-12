@@ -1096,7 +1096,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
   });
 
   it('inlines a current-message text attachment in the message wrapper, never the payload (ADR 0149)', async () => {
-    const h = harness(() => ({ ok: true, content: 'answer' }));
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
     h.fetchMessageContent.mockResolvedValue({
       authorId: '444444444444444444',
       authorName: 'Ama',
@@ -1129,7 +1129,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
   });
 
   it('caps text files at three per message and 24,000 chars each (ADR 0149)', async () => {
-    const h = harness(() => ({ ok: true, content: 'answer' }));
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
     h.fetchMessageContent.mockResolvedValue({
       authorId: '111111111111111111',
       authorName: 'Sam L',
@@ -1157,29 +1157,32 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     // The service (S4-T6 scope correction) strips the attachment wrapper from
     // the traced user message; this mock returns that stripped detail, pinning
     // that the job's cursor and stored trace carry nothing more.
-    const h = harness((input) => ({
-      ok: true,
-      content: 'answer',
-      detail: {
-        sections: [
-          { name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' },
-          {
-            name: 'user-message',
-            chars: (input.channelContext ?? '').length,
-            estTokens: 1,
-            text: (input.channelContext ?? '').replace(
-              /\[UNTRUSTED MESSAGE ATTACHMENTS\][\s\S]*?\[\/UNTRUSTED MESSAGE ATTACHMENTS\]/g,
-              '[message attachments: not kept in the trace]',
-            ),
-          },
-        ],
-        history: [],
-        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
-        toolCalls: [],
-        usage: {},
-        guard: { removed: [] },
-      },
-    }));
+    const h = harness(
+      (input) => ({
+        ok: true,
+        content: 'answer',
+        detail: {
+          sections: [
+            { name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' },
+            {
+              name: 'user-message',
+              chars: (input.channelContext ?? '').length,
+              estTokens: 1,
+              text: (input.channelContext ?? '').replace(
+                /\[UNTRUSTED MESSAGE ATTACHMENTS\][\s\S]*?\[\/UNTRUSTED MESSAGE ATTACHMENTS\]/g,
+                '[message attachments: not kept in the trace]',
+              ),
+            },
+          ],
+          history: [],
+          attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+          toolCalls: [],
+          usage: {},
+          guard: { removed: [] },
+        },
+      }),
+      fakeAccess({}),
+    );
     h.fetchMessageContent.mockResolvedValue({
       authorId: '444444444444444444',
       authorName: 'Ama',
@@ -1346,6 +1349,60 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
         ?.sections.find((section) => section.name === 'user-message')?.text ?? '';
     expect(traced).not.toContain('SECRET');
     expect(traced).not.toContain('sentinel');
+  });
+
+  const ATTACHING_MESSAGE = {
+    authorId: OTHER_ID,
+    authorName: 'Alex P',
+    content: '',
+    attachments: [
+      {
+        attachmentId: '1',
+        fileName: 'notes.txt',
+        contentType: 'text/plain',
+        sizeBytes: 6,
+        url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+      },
+    ],
+    embeds: [],
+  };
+
+  it('skips the current-message re-read when Read is not granted, window off (ADR 0126, fail-closed)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({ read: 'not-granted' }));
+    h.fetchMessageContent.mockResolvedValue(ATTACHING_MESSAGE);
+    h.fetchAttachmentBytes.mockResolvedValue({
+      ok: true,
+      bytes: Buffer.from('SECRET'),
+      mediaType: 'text/plain',
+    });
+    await h.run(mention({ invocationId: 'inv-att-denied', messageId: '810000000000000029' }));
+    expect(h.fetchMessageContent).not.toHaveBeenCalled();
+    expect(h.fetchAttachmentBytes).not.toHaveBeenCalled();
+    expect(h.inputs[0]?.channelContext).toBeUndefined();
+    expect(h.sent).toHaveLength(1);
+  });
+
+  it('skips the current-message re-read silently when the Read check errors (fail-closed)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), {
+      check: async (purpose) => {
+        if (purpose === 'read') throw new Error('lookup down');
+        return { allowed: true, grantedBy: 'grant' };
+      },
+    });
+    h.fetchMessageContent.mockResolvedValue(ATTACHING_MESSAGE);
+    await h.run(mention({ invocationId: 'inv-att-cerr', messageId: '810000000000000030' }));
+    expect(h.fetchMessageContent).not.toHaveBeenCalled();
+    expect(h.inputs[0]?.channelContext).toBeUndefined();
+    expect(h.sent).toHaveLength(1);
+  });
+
+  it('skips the current-message re-read when no channel access is wired (fail-closed)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.fetchMessageContent.mockResolvedValue(ATTACHING_MESSAGE);
+    await h.run(mention({ invocationId: 'inv-att-noacc', messageId: '810000000000000031' }));
+    expect(h.fetchMessageContent).not.toHaveBeenCalled();
+    expect(h.inputs[0]?.channelContext).toBeUndefined();
+    expect(h.sent).toHaveLength(1);
   });
 
   it('a quoted reply stores the quote as a turn once, even on retry', async () => {
