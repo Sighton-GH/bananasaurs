@@ -1371,9 +1371,9 @@ describe('listGeminiModels (ADR 0068)', () => {
       .fn<typeof globalThis.fetch>()
       .mockImplementation(() => Promise.resolve(ok({ models: [], nextPageToken: 'more' })));
     const warn = vi.fn();
-    await expect(
-      listGeminiModels({ apiKey: 'secret', fetch, logger: { warn } }),
-    ).resolves.toEqual([]);
+    await expect(listGeminiModels({ apiKey: 'secret', fetch, logger: { warn } })).resolves.toEqual(
+      [],
+    );
     expect(fetch).toHaveBeenCalledTimes(10);
     expect(warn).toHaveBeenCalledTimes(1);
   });

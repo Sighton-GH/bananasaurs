@@ -875,13 +875,11 @@ describe('OpenAI-compatible providers', () => {
       const key = 'sk-or-base64secret';
       const std = Buffer.from(key, 'utf8').toString('base64');
       const url = Buffer.from(key, 'utf8').toString('base64url');
-      const fetch = vi
-        .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ error: { code: 401, message: `bad ${std} or ${url}` } }), {
-            status: 401,
-          }),
-        );
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code: 401, message: `bad ${std} or ${url}` } }), {
+          status: 401,
+        }),
+      );
       const provider = createOpenRouterProvider({ apiKey: key, fetch });
       const err = await provider
         .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })

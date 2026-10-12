@@ -14,9 +14,7 @@ export interface LiveBuffer {
   drop(runId: string): void;
 }
 
-export const createLiveBuffer = (deps?: {
-  readonly now?: () => number;
-}): LiveBuffer => {
+export const createLiveBuffer = (deps?: { readonly now?: () => number }): LiveBuffer => {
   const now = deps?.now ?? Date.now;
   const runs = new Map<string, { answer: string; thinking: string; lastWrite: number }>();
   const cap = (text: string, limit: number): string =>
@@ -49,7 +47,9 @@ export const createLiveBuffer = (deps?: {
     read(runId) {
       prune();
       const current = runs.get(runId);
-      return current === undefined ? undefined : { answer: current.answer, thinking: current.thinking };
+      return current === undefined
+        ? undefined
+        : { answer: current.answer, thinking: current.thinking };
     },
     drop(runId) {
       runs.delete(runId);

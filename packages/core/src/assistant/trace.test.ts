@@ -373,7 +373,10 @@ describe('capTrace', () => {
 
   it('caps reasoning at its first 12 entries', () => {
     const trace = fixtureTrace({
-      reasoning: Array.from({ length: 15 }, (_, index) => ({ round: index + 1, text: `t${index}` })),
+      reasoning: Array.from({ length: 15 }, (_, index) => ({
+        round: index + 1,
+        text: `t${index}`,
+      })),
     });
     const capped = capTrace(trace);
     expect(capped.reasoning).toHaveLength(12);

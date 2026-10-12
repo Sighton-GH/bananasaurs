@@ -167,8 +167,8 @@ export const registerAssistantRunRoutes = (
       .header('cache-control', 'no-store')
       .status(200)
       .send({
-      answer: live?.answer ?? '',
-      thinking: showText ? (live?.thinking ?? '') : '',
-    });
+        answer: live?.answer ?? '',
+        thinking: showText ? (live?.thinking ?? '') : '',
+      });
   });
 };
