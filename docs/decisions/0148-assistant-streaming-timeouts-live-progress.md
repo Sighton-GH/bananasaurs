@@ -1,8 +1,4 @@
-# 0148. Assistant streaming, idle timeout, finish reasons, live buffer, saved thinking
-
-Date: 2026-10-11
-
-Status: accepted (owner round-2 brief, 2026-10-11).
+# 0148: Assistant streaming, idle timeout, finish reasons, live buffer, saved thinking
 
 ## Context
 
