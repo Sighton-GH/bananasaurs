@@ -222,7 +222,11 @@ export const TRUNCATION_SUFFIX = '… [truncated]';
 const truncateTo = (text: string, maxChars: number): string => {
   if (text.length <= maxChars) return text;
   if (maxChars <= TRUNCATION_SUFFIX.length) return TRUNCATION_SUFFIX;
-  return text.slice(0, maxChars - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+  let end = maxChars - TRUNCATION_SUFFIX.length;
+  // Never cut between the halves of a surrogate pair: drop the orphaned high half.
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end) + TRUNCATION_SUFFIX;
 };
 
 const byteSize = (t: AssistantTrace): number => new TextEncoder().encode(JSON.stringify(t)).length;

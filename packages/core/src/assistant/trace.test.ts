@@ -295,7 +295,27 @@ describe('estimateTokens', () => {
   });
 });
 
+const hasLoneSurrogate = (text: string): boolean =>
+  /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(text);
+
 describe('capTrace', () => {
+  it('never leaves a lone surrogate when the reasoning cap cuts an emoji', () => {
+    const text = 'x'.repeat(7986) + '😀' + 'y'.repeat(9000);
+    const capped = capTrace(fixtureTrace({ reasoning: [{ round: 1, text }] }));
+    const out = capped.reasoning?.[0]?.text ?? '';
+    expect(out.length).toBeLessThanOrEqual(8000);
+    expect(out.endsWith('… [truncated]')).toBe(true);
+    expect(hasLoneSurrogate(out)).toBe(false);
+  });
+
+  it('never leaves a lone surrogate when budget halving cuts an emoji', () => {
+    const text = 'x'.repeat(3986) + '😀' + 'y'.repeat(4012);
+    const capped = capTrace(fixtureTrace({ reasoning: [{ round: 1, text }] }), 5000);
+    const out = capped.reasoning?.[0]?.text ?? '';
+    expect(out.endsWith('… [truncated]')).toBe(true);
+    expect(hasLoneSurrogate(out)).toBe(false);
+  });
+
   it('keeps per-round reasoning capped at 8000 chars', () => {
     const trace = fixtureTrace({ reasoning: [{ round: 1, text: 'x'.repeat(9000) }] });
     const capped = capTrace({ ...trace, answer: 'a'.repeat(199_000) });
