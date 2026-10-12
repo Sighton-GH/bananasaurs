@@ -477,10 +477,10 @@ In `packages/core/src/jobs/lanes.ts`, append one line at the end of the `JOB_LAN
 
 ### S5-T4: migration and digest store   ·   Wave 2
 **Owns:** Modify: `packages/storage/src/schema.ts`, `packages/storage/src/index.ts` (append one `digestRepo` export line) · Create: `drizzle/` migration (generated only), `packages/storage/src/repos/digests.ts` · Test: `packages/storage/src/repos/digests.test.ts`
-**Reads (do not edit):** `packages/storage/src/repos/assistant.test.ts` lines 1–56 (the `openMigratedTestDatabase` + `t.scopes.forGuild(G)` + `guildRepo.upsertGuild` fixture shape), `packages/storage/src/repos/conversations.ts` lines 811–848 (`getSummary` lenient-parse pattern) and 962–1021 (`searchSummaries` guild-join pattern)
+**Reads (do not edit):** `packages/storage/src/repos/assistant.test.ts` (the `openMigratedTestDatabase` + `t.scopes.forGuild(G)` + `guildRepo.upsertGuild` fixture shape in its `beforeEach`), `packages/storage/src/repos/conversations.ts` lines 811–848 (`getSummary` lenient-parse pattern) and 962–1021 (`searchSummaries` guild-join pattern)
 **Interfaces:** Consumes: `DigestOutput`, `normalizeProposalText` (S5-T2) · Produces: `assistantDailyDigests` table · `digestRepo.putDigestOnce`, `digestRepo.getDigest`, `digestRepo.listDigests`, `digestRepo.deleteDigestsOlderThan`, `digestRepo.turnsForDay`, `digestRepo.searchDigests` with signatures exactly as in Step 3
 
-- [ ] **Step 1: Write the failing test** — create `packages/storage/src/repos/digests.test.ts`, copying the fixture shape from `assistant.test.ts` lines 50–56 (`openMigratedTestDatabase`, snowflake `G = parseGuildId('111111111111111111')`, `guildRepo.upsertGuild` in `beforeEach`). Invented names only (Sam L, Alex P). Conversations and turns are seeded with `createConversation` / `appendTurn` from `./conversations.js` (imported in `assistant.test.ts` line 47 — read the `NewConversation`/`NewTurn` interfaces at `conversations.ts` lines 26–59 for exact fields):
+- [ ] **Step 1: Write the failing test** — create `packages/storage/src/repos/digests.test.ts`, copying the fixture shape from `assistant.test.ts` (`openMigratedTestDatabase`, snowflake `G = parseGuildId('111111111111111111')`, `guildRepo.upsertGuild` in `beforeEach`). Invented names only (Sam L, Alex P). Conversations and turns are seeded with `createConversation` / `appendTurn` from `./conversations.js` (imported in `assistant.test.ts` — read the `NewConversation`/`NewTurn` interfaces at `conversations.ts` lines 26–59 for exact fields):
 
 ```ts
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -556,7 +556,7 @@ describe('digest store (ADR 0150 decision 4)', () => {
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/storage/src/repos/digests.test.ts --maxWorkers=1` · Expected: FAIL with `Failed to resolve import "./digests.js"`
 - [ ] **Step 3: Implement** — the only task in this slice that touches `packages/storage/src/schema.ts` or `drizzle/`.
-  1. In `schema.ts`, widen the runs source CHECK (exact anchor, lines 2453–2456):
+  1. In `schema.ts`, widen the runs source CHECK (exact anchor, lines 2495–2498):
 
 ```ts
     check(
@@ -574,7 +574,7 @@ exact replacement:
     ),
 ```
 
-  2. In `schema.ts`, insert the new table between the end of `assistantRunEvents` (line 2493 `);`) and the `// ADR 0073` comment (line 2495):
+  2. In `schema.ts`, insert the new table between the end of `assistantRunEvents` (line 2535 `);`) and the `// ADR 0073` comment (line 2537):
 
 ```ts
 // ADR 0150: one row per guild per local day holding that day's digest. The
@@ -603,11 +603,11 @@ export const assistantDailyDigests = sqliteTable(
 );
 ```
 
-  3. Run `npm run db:generate -- --name daily_digests`, read the generated SQL, and confirm it contains `CREATE TABLE \`assistant_daily_digests\`` and the widened `assistant_runs_source` CHECK (drizzle-kit takes the next free number on this base; do not renumber — the controller renumbers when merging bundles).
+  3. Run `npm run db:generate -- --name daily_digests`, read the generated SQL, and confirm it contains `CREATE TABLE \`assistant_daily_digests\`` and the widened `assistant_runs_source` CHECK (drizzle-kit takes the next free number — 0109 on this base; never hand-number or renumber).
   4. Create `packages/storage/src/repos/digests.ts`:
 
 ```ts
-import { and, asc, desc, gte, lt, lte, like, sql } from 'drizzle-orm';
+import { asc, desc, gte, lt, like, sql } from 'drizzle-orm';
 import { digestOutputSchema, type DigestOutput } from '@bananasaurs/core';
 import { assistantConversationTurns, assistantConversations, assistantDailyDigests } from '../schema.js';
 import type { GuildScope } from '../scope.js';
@@ -830,7 +830,7 @@ export const searchDigests = (
 
 (Notes: `scope.only` takes the table plus conditions — verify against `conversations.ts` usage; `sql.join` exists in drizzle-orm. If either differs, use the file's own idiom. The `like` value interpolation builds `%word%` patterns; words come from the query after lowercasing and length filtering, and `%`/`_` in them are matched literally enough for a prefilter — the JS `toRow` parse is the real gate. Keep it.)
 
-  5. Append to `packages/storage/src/index.ts` (same style as the other repo lines): `export * as digestRepo from './repos/digests.js';`
+  5. In `packages/storage/src/index.ts`, append after the `conversationRepo` line (line 67): `export * as digestRepo from './repos/digests.js';`
 
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/storage/src/repos/digests.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
@@ -842,21 +842,23 @@ export const searchDigests = (
 ---
 
 ### S5-T5: digest instance settings   ·   Wave 3
-**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`
-**Reads (do not edit):** `packages/core/src/settings/instance-settings.ts` lines 118–127 (the `channelContextMessages` definition style) and 257–297 (registry list plus `InstanceSettingValues`)
-**Interfaces:** Consumes: `DIGEST_DEFAULT_INPUT_CHARS`, `DIGEST_DEFAULT_MAX_PROPOSALS`, `DIGEST_DEFAULT_HOUR` (S5-T2, defaults only) · Produces: keys `assistant.digestEnabled`, `assistant.digestHour`, `assistant.digestInputChars`, `assistant.digestMaxProposals`, `assistant.digestTier`
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`, `packages/http/src/routes/assistant-tuning.test.ts`
+**Reads (do not edit):** `packages/core/src/settings/instance-settings.ts` lines 119–129 (the `channelContextMessages` definition style) and 405–427 (registry list plus `InstanceSettingValues`)
+**Interfaces:** Consumes: `DIGEST_DEFAULT_INPUT_CHARS`, `DIGEST_DEFAULT_MAX_PROPOSALS`, `DIGEST_DEFAULT_HOUR` (S5-T2, defaults only); `assistant.routerDailyDigestTier` default `light` (Slice 6, already in the registry) · Produces: keys `assistant.digestEnabled`, `assistant.digestHour`, `assistant.digestInputChars`, `assistant.digestMaxProposals`
 
 - [ ] **Step 1: Write the failing test** — append to `packages/core/src/settings/instance-settings.test.ts`:
 
 ```ts
-it('registers the five digest settings with spec defaults (ADR 0150, spec §4.7)', () => {
-  expect(INSTANCE_SETTINGS).toHaveLength(23);
+it('registers the four digest settings with spec defaults (ADR 0150, spec §4.7)', () => {
+  expect(INSTANCE_SETTINGS).toHaveLength(32);
   const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
   expect(valueOf('assistant.digestEnabled')).toBe(1);
   expect(valueOf('assistant.digestHour')).toBe(4);
   expect(valueOf('assistant.digestInputChars')).toBe(40_000);
   expect(valueOf('assistant.digestMaxProposals')).toBe(10);
-  expect(valueOf('assistant.digestTier')).toBe('light');
+  // The tier is Slice 6's key, not a digest key: the digest reads it through
+  // backgroundTier('daily-digest').
+  expect(valueOf('assistant.routerDailyDigestTier')).toBe('light');
   const enabled = settingDefinition('assistant.digestEnabled');
   expect(enabled?.group).toBe('Assistant context');
   expect(enabled?.display).toBe('count');
@@ -866,18 +868,14 @@ it('registers the five digest settings with spec defaults (ADR 0150, spec §4.7)
   const hour = settingDefinition('assistant.digestHour');
   expect(hour?.schema.safeParse(4).success).toBe(true);
   expect(hour?.schema.safeParse(24).success).toBe(false);
-  const tier = settingDefinition('assistant.digestTier');
-  expect(tier?.schema.safeParse('light').success).toBe(true);
-  expect(tier?.schema.safeParse('standard').success).toBe(true);
-  expect(tier?.schema.safeParse('heavy').success).toBe(false);
   expect(isInstanceSettingKey('assistant.digestEnabled')).toBe(true);
 });
 ```
 
-Also update the existing `has 18 definitions` test to `toHaveLength(23)` (18 + 5).
+Also update the existing `has 28 definitions` test to `toHaveLength(32)` (28 + 4), and in `packages/http/src/routes/assistant-tuning.test.ts` update `lists the 28 settings for the owner` to expect 32 and add `expect(body.settings.map((s) => s.key)).toContain('assistant.digestEnabled');` beside the other `toContain` lines.
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with `expected 18 to have length 23` (and unknown keys)
-- [ ] **Step 3: Implement** — in `packages/core/src/settings/instance-settings.ts`, add five definitions after `channelContextMessages` (same shape), all in group `'Assistant context'` (no new group: the generic tuning page renders them as-is):
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts --maxWorkers=1` · Expected: FAIL with `expected 28 to have length 32` (and unknown keys)
+- [ ] **Step 3: Implement** — in `packages/core/src/settings/instance-settings.ts`, add four definitions after `channelContextMessages` (same shape), all in group `'Assistant context'` (no new group: the generic tuning page renders them as-is):
 
 ```ts
 const digestEnabled: SettingDefinition<number> = {
@@ -923,40 +921,29 @@ const digestMaxProposals: SettingDefinition<number> = {
   defaultValue: DIGEST_DEFAULT_MAX_PROPOSALS,
   bounds: { min: 1, max: 10 },
 };
-
-const digestTier: SettingDefinition<string> = {
-  key: 'assistant.digestTier',
-  group: 'Assistant context',
-  label: 'Daily digest model tier',
-  help: 'Which model tier answers the daily digest: light (cheap, the default) or standard. Takes effect with Slice 6\u2019s tiered chain; until then the digest uses the guild\u2019s chain in order.',
-  display: 'text',
-  schema: z.enum(['light', 'standard']),
-  defaultValue: 'light',
-};
 ```
 
-Import the three defaults from `./assistant/digest.js` (check how `instance-settings.ts` imports today — it has no imports beyond `zod`; add `import { DIGEST_DEFAULT_HOUR, DIGEST_DEFAULT_INPUT_CHARS, DIGEST_DEFAULT_MAX_PROPOSALS } from '../assistant/digest.js';` adjusting the relative path to the real one). Append the five to `INSTANCE_SETTINGS` after `channelContextMessages`, and extend `InstanceSettingValues` with:
+Import the three defaults at the top of `instance-settings.ts` (it imports only `zod` today — add `import { DIGEST_DEFAULT_HOUR, DIGEST_DEFAULT_INPUT_CHARS, DIGEST_DEFAULT_MAX_PROPOSALS } from '../assistant/digest.js';` on its own line). Append the four to the end of `INSTANCE_SETTINGS` (after `pingMaxRoles` — contracts §4 additive rule), and extend `InstanceSettingValues` with:
 
 ```ts
   readonly 'assistant.digestEnabled': number;
   readonly 'assistant.digestHour': number;
   readonly 'assistant.digestInputChars': number;
   readonly 'assistant.digestMaxProposals': number;
-  readonly 'assistant.digestTier': string;
 ```
 
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 5 T5: daily digest instance settings"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts && git commit -m "Slice 5 T5: daily digest instance settings"`
 
-**Done when:** 23 definitions, every default parses under its own schema; `digestEnabled` is 0/1 (no new display type).
+**Done when:** 32 definitions, every default parses under its own schema; `digestEnabled` is 0/1 (no new display type); the tuning list shows 32 with the digest keys.
 
 ---
 
 ### S5-T6: run ledger source for the digest   ·   Wave 3
 **Owns:** Modify: `packages/core/src/assistant/run-events.ts`, `packages/core/src/assistant/run-events.test.ts`, `packages/storage/src/repos/runs.test.ts`
-**Reads (do not edit):** `packages/core/src/assistant/run-events.test.ts` lines 1–60 (the `everyKind` round-trip list), `packages/storage/src/repos/runs.test.ts` lines 40–140 (the `ensureRun`/`getRun` usage and raw-SQL CHECK probes)
+**Reads (do not edit):** `packages/core/src/assistant/run-events.test.ts` lines 1–60 (the `everyKind` round-trip list), `packages/storage/src/repos/runs.test.ts` lines 1–45 (the `openMigratedTestDatabase` + `upsertGuild` + `seed` helpers with `GUILD_A`/`GUILD_B`)
 **Interfaces:** Consumes: ADR 0150 decision 5 · Produces: `RunRow['source']` gains `'daily-digest'` · `queued` event `via` gains `'schedule'`
 
 - [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/run-events.test.ts` append:
@@ -965,16 +952,22 @@ Import the three defaults from `./assistant/digest.js` (check how `instance-sett
 it('accepts a scheduled digest run (ADR 0150 decision 5)', () => {
   expect(runEventSchema.safeParse({ kind: 'queued', via: 'schedule' }).success).toBe(true);
 });
+
+it('accepts the background-tier routed reason the digest and summaries record', () => {
+  expect(
+    runEventSchema.safeParse({ kind: 'routed', tier: 'light', reason: 'background-tier' }).success,
+  ).toBe(true);
+});
 ```
 
-In `packages/storage/src/repos/runs.test.ts` append (using that file's existing database/scope helpers — read its top for names; the shape below mirrors `assistant.test.ts`):
+In `packages/storage/src/repos/runs.test.ts` append (using that file's `GUILD_A` scope and `ensureRun`/`getRun` imports):
 
 ```ts
 it('stores a daily-digest run and still refuses an unknown source', () => {
-  const scope = t.scopes.forGuild(G);
+  const scope = t.scopes.forGuild(GUILD_A);
   ensureRun(scope, {
     runId: 'digest-2026-10-09',
-    userId: '999999999999999999',
+    userId: USER,
     behaviourId: 'default',
     source: 'daily-digest',
     queuedAt: 1_790_000_000_000,
@@ -983,16 +976,16 @@ it('stores a daily-digest run and still refuses an unknown source', () => {
   expect(() =>
     ensureRun(scope, {
       runId: 'digest-bogus',
-      userId: '999999999999999999',
+      userId: USER,
       behaviourId: 'default',
-      source: 'nope',
+      source: 'nope' as 'mention',
       queuedAt: 1_790_000_000_000,
     }),
   ).toThrow();
 });
 ```
 
-(If `runs.test.ts` names its fixtures differently, keep the two assertions and adapt only the fixture names.)
+(The `as 'mention'` cast is this file's idiom for CHECK probes — see the `rejects an event carrying an extra field` test's `as unknown as` cast. Keep the two assertions.)
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/run-events.test.ts packages/storage/src/repos/runs.test.ts --maxWorkers=1` · Expected: FAIL (`via: 'schedule'` rejected; CHECK rejects `daily-digest` until S5-T4's migration is on this base — if the CHECK failure persists after S5-T4 merged, the migration task is wrong, not this one)
 - [ ] **Step 3: Implement** — in `packages/core/src/assistant/run-events.ts`:
