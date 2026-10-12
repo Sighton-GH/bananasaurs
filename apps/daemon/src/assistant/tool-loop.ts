@@ -8,6 +8,7 @@ import {
   type AssistantTrace,
   type GenerateTextRequest,
   type GenerateTextResponse,
+  type GenerationMedia,
   type GenerationMessage,
   type Logger,
   type TextProvider,
@@ -26,6 +27,7 @@ import type { QuotaLedger } from './quota-ledger.js';
 import type { AssistantToolResult, ToolSource } from './tools.js';
 import { attemptReasonFor } from './provider-failure.js';
 import { neutraliseMarkers } from './untrusted.js';
+import { messagesForEntry, orderEntriesForMedia } from './media-routing.js';
 
 export interface LoopTools {
   /** Round 1 may call any allowed read-only tool. */
@@ -409,7 +411,10 @@ export const runToolLoop = async (input: {
     });
   };
 
-  let chain: readonly ChainEntry[] = input.chain;
+  const runMedia: readonly GenerationMedia[] = input.history.flatMap((m) =>
+    m.role === 'user' ? (m.media ?? []) : [],
+  );
+  let chain: readonly ChainEntry[] = orderEntriesForMedia(input.chain, runMedia);
   // Set once an entry hands the loop over after its round-1 tools.
   let resume: Resume | undefined;
   for (let position = 0; position < chain.length; position += 1) {
@@ -766,9 +771,13 @@ const runEntry = async (deps: {
   const { entry, limits } = deps;
   const provider = entry.provider as TextProvider;
   const handles = new Set<string>(deps.resume?.handles ?? deps.initialHandles);
-  const messages: GenerationMessage[] = deps.resume
+  // The unfiltered start. Filtering is a length-preserving map, so a handoff
+  // carries `raw` plus whatever this entry appended, and the successor strips
+  // fresh with its own capabilities (no stale marker or lost media from here).
+  const raw: readonly GenerationMessage[] = deps.resume
     ? [...deps.resume.messages]
     : [...deps.history, { role: 'user', text: deps.userText }];
+  const messages: GenerationMessage[] = messagesForEntry(raw, entry.capabilities);
   // Tools run only when they were offered: a provider without the `tools`
   // capability answers text-only, and any tool calls it returns anyway are
   // refused rather than executed.
@@ -1283,7 +1292,7 @@ const runEntry = async (deps: {
       return {
         handoff: {
           // Provider-specific parts never cross entries (ADR 0075).
-          messages: messages.map((message) => {
+          messages: [...raw, ...messages.slice(raw.length)].map((message) => {
             if (message.role !== 'assistant' || message.providerParts === undefined) return message;
             const clean: { -readonly [K in keyof GenerationMessage]: GenerationMessage[K] } = {
               ...message,
