@@ -1906,4 +1906,102 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
       expect(observable(err)).not.toContain(key);
     }
   });
+
+  it('redacts a key spelled half literal and half percent-encoded next to a malformed escape', async () => {
+    const hexOf = (c: string): string => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`;
+    const spellings = [
+      `sk-${hexOf('h')}ostile-key123%zz`,
+      [...key].map((c) => hexOf(c).replace(/[a-f]/g, (h) => h.toUpperCase())).join('') + '%zz',
+      [...key].map((c) => hexOf(c)).join('') + '%zz',
+    ];
+    for (const echoed of spellings) {
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: key,
+          fetch: async () => {
+            throw new Error(echoed);
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+      expect(observable(err)).not.toContain(echoed);
+    }
+  });
+
+  it('keeps a validated netCode when cloning a callback ProviderError', async () => {
+    const fetch = async (): Promise<Response> =>
+      sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
+    const err = await createOpenRouterProvider({ apiKey: key, fetch })
+      .generateText({
+        ...req,
+        onChunk: () => {
+          throw new ProviderError('outage', 'reset', true, { netCode: 'ECONNRESET' });
+        },
+      })
+      .catch((error: unknown) => error as Error);
+    expect(err).toMatchObject({ kind: 'outage', netCode: 'ECONNRESET' });
+  });
+
+  it('survives an object that inherits a trapping Proxy prototype and a descriptor-trapping Proxy', async () => {
+    const protoTrap = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error(key);
+        },
+        getOwnPropertyDescriptor() {
+          throw new Error(key);
+        },
+        has() {
+          throw new Error(key);
+        },
+      },
+    );
+    const inherited = Object.create(protoTrap) as Error;
+    const descriptorTrap = new Proxy(new Error('x'), {
+      getOwnPropertyDescriptor() {
+        throw new Error(key);
+      },
+    });
+    for (const hostile of [inherited, descriptorTrap]) {
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: key,
+          fetch: async () => {
+            throw hostile;
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+      const controller = new AbortController();
+      controller.abort(hostile);
+      const pre = await createOpenRouterProvider({
+        apiKey: key,
+        fetch: async () => sse({ choices: [{ delta: { content: 'a' } }] }),
+      })
+        .generateText({ ...req, signal: controller.signal })
+        .catch((error: unknown) => error as Error);
+      expect(observable(pre)).not.toContain(key);
+    }
+  });
+
+  it('never reads data from a Proxy, even when its descriptor trap answers politely', async () => {
+    const polite = new Proxy(new Error('x'), {
+      getOwnPropertyDescriptor(_target, name) {
+        return name === 'code'
+          ? { value: 'ECONNRESET', configurable: true, enumerable: true, writable: true }
+          : undefined;
+      },
+    });
+    const err = await failure(
+      createOpenRouterProvider({
+        apiKey: key,
+        fetch: async () => {
+          throw polite;
+        },
+      }),
+    );
+    expect(err).toMatchObject({ kind: 'outage' });
+    expect((err as ProviderError).netCode).toBeUndefined();
+  });
 });

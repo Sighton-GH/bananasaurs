@@ -219,10 +219,18 @@ const redactKey = (text: string, key: string): string => {
     for (const form of keyForms(candidate))
       if (form !== '') out = out.split(form).join('(redacted)');
   const hasKey = (value: string): boolean => keys.some((candidate) => value.includes(candidate));
+  // Tolerant decode of the whole string: every valid ASCII %XX is decoded in place, literal
+  // characters stay, and a malformed % is left alone, so a mixed literal/encoded spelling of
+  // the key is still found.
+  const tolerant = out.replace(/%([0-9a-fA-F]{2})/g, (match, hex: string) => {
+    const code = Number.parseInt(hex, 16);
+    return code < 0x80 ? String.fromCharCode(code) : match;
+  });
+  if (hasKey(tolerant)) return '(redacted)';
   try {
     if (hasKey(decodeURIComponent(out))) return '(redacted)';
   } catch {
-    // Malformed percent-encoding somewhere: check each valid run on its own below.
+    // Malformed percent-encoding: the tolerant pass above already covered ASCII keys.
   }
   return out.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
     try {
@@ -318,7 +326,10 @@ const sanitizeCause = (error: unknown, key: string): Error => {
     const retryAfterMs = safeNumber('retryAfterMs');
     const resetAt = safeNumber('resetAt');
     const host = safeString('host', 253);
-    const netCode = safeNetCode(error);
+    const ownNetCode = readOwn(error, 'netCode');
+    const netCode =
+      (typeof ownNetCode === 'string' ? netCodeOf({ code: ownNetCode }) : undefined) ??
+      safeNetCode(error);
     const upstream = safeString('upstream', 60);
     const finishReason = safeString('finishReason', 60);
     const safe = new ProviderError(
