@@ -21,7 +21,8 @@ export type SettingGroup =
   | 'Assistant replies'
   | 'Network'
   | 'Resources'
-  | 'MCP connector';
+  | 'MCP connector'
+  | 'Assistant attachments';
 
 export interface SettingDefinition<T> {
   readonly key: string;
@@ -466,6 +467,83 @@ const pingMaxRoles: SettingDefinition<number> = {
   bounds: { min: 1, max: 3 },
 };
 
+const attachmentTextMaxBytes: SettingDefinition<number> = {
+  key: 'assistant.attachments.textMaxBytes',
+  group: 'Assistant attachments',
+  label: 'Text attachment size limit',
+  help: 'The largest text file read from a message, in bytes. Larger files are skipped with a note.',
+  display: 'count',
+  schema: z.number().int().min(1024).max(1_048_576),
+  defaultValue: 262_144,
+  bounds: { min: 1024, max: 1_048_576 },
+};
+
+const attachmentTextMaxChars: SettingDefinition<number> = {
+  key: 'assistant.attachments.textMaxChars',
+  group: 'Assistant attachments',
+  label: 'Text attachment characters sent',
+  help: 'How many characters of each text file are sent to the AI. Longer files are cut with a note.',
+  display: 'count',
+  schema: z.number().int().min(1000).max(100_000),
+  defaultValue: 24_000,
+  bounds: { min: 1000, max: 100_000 },
+};
+
+const attachmentTextMaxCount: SettingDefinition<number> = {
+  key: 'assistant.attachments.textMaxCount',
+  group: 'Assistant attachments',
+  label: 'Text files read per message',
+  help: 'How many text files are read from one message. 0 turns text attachments off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(10),
+  defaultValue: 3,
+  bounds: { min: 0, max: 10 },
+};
+
+const attachmentImageMaxBytes: SettingDefinition<number> = {
+  key: 'assistant.attachments.imageMaxBytes',
+  group: 'Assistant attachments',
+  label: 'Image size limit',
+  help: 'The largest image sent to the AI, in bytes. Larger images are skipped with a note.',
+  display: 'count',
+  schema: z.number().int().min(1024).max(20_971_520),
+  defaultValue: 5_242_880,
+  bounds: { min: 1024, max: 20_971_520 },
+};
+
+const attachmentImageMaxCount: SettingDefinition<number> = {
+  key: 'assistant.attachments.imageMaxCount',
+  group: 'Assistant attachments',
+  label: 'Images read per message',
+  help: 'How many images are sent to the AI from one message. 0 turns image attachments off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(10),
+  defaultValue: 4,
+  bounds: { min: 0, max: 10 },
+};
+
+const attachmentPdfMaxBytes: SettingDefinition<number> = {
+  key: 'assistant.attachments.pdfMaxBytes',
+  group: 'Assistant attachments',
+  label: 'PDF size limit',
+  help: 'The largest PDF sent to the AI, in bytes. Larger PDFs are skipped with a note.',
+  display: 'count',
+  schema: z.number().int().min(1024).max(31_457_280),
+  defaultValue: 10_485_760,
+  bounds: { min: 1024, max: 31_457_280 },
+};
+
+const attachmentPdfMaxCount: SettingDefinition<number> = {
+  key: 'assistant.attachments.pdfMaxCount',
+  group: 'Assistant attachments',
+  label: 'PDFs read per message',
+  help: 'How many PDFs are sent to the AI from one message. 0 turns PDF attachments off.',
+  display: 'count',
+  schema: z.number().int().min(0).max(10),
+  defaultValue: 2,
+  bounds: { min: 0, max: 10 },
+};
+
 export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   retryDelays,
   providerTimeout,
@@ -501,6 +579,13 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   digestHour,
   digestInputChars,
   digestMaxProposals,
+  attachmentTextMaxBytes,
+  attachmentTextMaxChars,
+  attachmentTextMaxCount,
+  attachmentImageMaxBytes,
+  attachmentImageMaxCount,
+  attachmentPdfMaxBytes,
+  attachmentPdfMaxCount,
 ];
 
 export interface InstanceSettingValues {
@@ -538,6 +623,13 @@ export interface InstanceSettingValues {
   readonly 'mcp.cap.pin_react': number;
   readonly 'assistant.pingMaxMembers': number;
   readonly 'assistant.pingMaxRoles': number;
+  readonly 'assistant.attachments.textMaxBytes': number;
+  readonly 'assistant.attachments.textMaxChars': number;
+  readonly 'assistant.attachments.textMaxCount': number;
+  readonly 'assistant.attachments.imageMaxBytes': number;
+  readonly 'assistant.attachments.imageMaxCount': number;
+  readonly 'assistant.attachments.pdfMaxBytes': number;
+  readonly 'assistant.attachments.pdfMaxCount': number;
 }
 
 export type InstanceSettingKey = keyof InstanceSettingValues;
