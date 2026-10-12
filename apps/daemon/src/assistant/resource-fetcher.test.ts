@@ -535,11 +535,13 @@ describe('fetchBytes timeout (live, timeout only)', () => {
     yield new Uint8Array([1]);
   };
   const run = async (
-    limits: ConstructorParameters<typeof ReviewedResourceFetcher>[0] extends infer O
-      ? O extends { limits?: infer L }
-        ? L
-        : never
-      : never,
+    limits:
+      | (ConstructorParameters<typeof ReviewedResourceFetcher>[0] extends infer O
+          ? O extends { limits?: infer L }
+            ? L
+            : never
+          : never)
+      | undefined,
     calls: () => void = () => undefined,
   ): Promise<number[]> => {
     const timeouts: number[] = [];

@@ -200,7 +200,7 @@ const buildWithSettings = (
 ): InvokeDeps => {
   const scopeA = t.scopes.forGuild(GUILD_A);
   guildRepo.upsertGuild(scopeA, { name: 'guild a', now: NOW });
-  const settings = {
+  const settings: InstanceSettingsStore = {
     get: ((key: string) => {
       requested.push(key);
       return values[key];
@@ -211,7 +211,9 @@ const buildWithSettings = (
     reset: () => {
       throw new Error('not used in this test');
     },
-  } as InstanceSettingsStore;
+    list: () => [],
+    onChange: () => () => undefined,
+  };
   const config = parseConfig({
     DISCORD_BOT_TOKEN: 'NOT.A.REALTOKEN',
     DISCORD_APPLICATION_ID: BOT,

@@ -427,7 +427,12 @@ describe('T15 metadata boundaries', () => {
     '',
     'x'.repeat(5000),
   ])('flattens and redacts marker, quote and channel metadata: %s', (value) => {
-    const file = { fileName: value, contentType: value, sizeBytes: 1024 };
+    const file = {
+      attachmentId: '900000000000000002',
+      fileName: value,
+      contentType: value,
+      sizeBytes: 1024,
+    };
     const marker = attachmentMarker(file);
     expect(marker).toBe(
       `[attached: ${safeAttachmentLabel(value)}, ${safeAttachmentLabel(value)}, 1 KB]`,
@@ -449,6 +454,7 @@ describe('T15 metadata boundaries', () => {
       messageId: '900000000000000001',
       authorId: AMA,
       authorName: 'Sam L',
+      authorIsBot: false,
       content: '',
       at: NOW,
       hasAttachments: true,
