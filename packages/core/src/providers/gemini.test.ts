@@ -1321,6 +1321,27 @@ describe('listGeminiModels (ADR 0068)', () => {
     expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get('x-goog-api-key')).toBe('secret');
   });
 
+  it('treats a body stream that dies mid-read as a retryable outage', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new TypeError('terminated'));
+      },
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(body));
+    await expect(listGeminiModels({ apiKey: 'k', fetch })).rejects.toMatchObject({
+      kind: 'outage',
+      retryable: true,
+    });
+  });
+
+  it('keeps a malformed list body non-retryable', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('not json'));
+    await expect(listGeminiModels({ apiKey: 'k', fetch })).rejects.toMatchObject({
+      kind: 'invalid-response',
+      retryable: false,
+    });
+  });
+
   it('turns a rejected key into an authentication error', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

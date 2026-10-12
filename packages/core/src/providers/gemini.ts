@@ -899,7 +899,10 @@ export const listGeminiModels = async (options: {
       let text = '';
       let bytesRead = 0;
       for (;;) {
+        // A body stream that dies mid-read is a transport outage (retryable), not a bad list.
+        fetching = true;
         const chunk = await Promise.race([reader.read(), expired]);
+        fetching = false;
         if (chunk.done) break;
         bytesRead += chunk.value.byteLength;
         // Generous for 1000 models with descriptions, but never an unbounded read.
