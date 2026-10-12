@@ -13,6 +13,8 @@ import {
   type AssistantBehaviour,
   type ChannelAccess,
   type DiscordMessageRef,
+  type FetchedAttachment,
+  type FetchedEmbed,
   type JobContext,
   type Logger,
   type OutgoingMessage,
@@ -29,6 +31,7 @@ import type {
   AssistantInvocationResult,
   AssistantTraceDetail,
 } from '../assistant/commands.js';
+import type { AttachmentCaps } from '../assistant/attachments.js';
 import { assistantInvokeHandler } from './assistant.js';
 import { runToolLoop } from '../assistant/tool-loop.js';
 import { makeProvider } from '../assistant/model-chain.js';
@@ -399,9 +402,33 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     const respond = vi.fn(async () => nextRef(CHANNEL_ID));
     const sendTyping = vi.fn(async () => undefined);
     const fetchMessageContent = vi.fn(
-      async (): Promise<{ authorId: string; authorName: string; content: string } | undefined> =>
-        undefined,
+      async (): Promise<
+        | {
+            authorId: string;
+            authorName: string;
+            content: string;
+            attachments?: readonly FetchedAttachment[];
+            embeds?: readonly FetchedEmbed[];
+          }
+        | undefined
+      > => undefined,
     );
+    // ADR 0149 (S4-T6): the attachment byte fetch and live caps. The
+    // refusing default keeps every existing test fetching nothing.
+    const fetchAttachmentBytes = vi.fn(
+      async (): Promise<
+        { ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }
+      > => ({ ok: false, code: 'unavailable' }),
+    );
+    const attachmentCaps = vi.fn((): AttachmentCaps => ({
+      textMaxBytes: 262_144,
+      textMaxChars: 24_000,
+      textMaxCount: 3,
+      imageMaxBytes: 5_242_880,
+      imageMaxCount: 4,
+      pdfMaxBytes: 10_485_760,
+      pdfMaxCount: 2,
+    }));
     const fetchChannelMessages = vi.fn(
       async (): Promise<readonly RecentMessage[] | undefined> => undefined,
     );
@@ -420,6 +447,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       conversations: { scope: scope(), botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
       sendTyping,
       fetchMessageContent,
+      fetchAttachmentBytes,
+      attachmentCaps,
       fetchChannelMessages,
       channelContextMessages,
       ...(channelAccess === undefined ? {} : { channelAccess }),
@@ -462,6 +491,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       respond,
       sendTyping,
       fetchMessageContent,
+      fetchAttachmentBytes,
+      attachmentCaps,
       fetchChannelMessages,
       channelContextMessages,
       run,
@@ -1031,6 +1062,155 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, '840000000000000001');
     expect(h.inputs[0]?.quoteEnvelope).toBe(
       '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+    );
+  });
+
+  it('inlines a quoted text attachment with its marker (ADR 0149)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '111111111111111111',
+      authorName: 'Alex P',
+      content: 'the hall opens at seven',
+      attachments: [
+        {
+          attachmentId: '1',
+          fileName: 'message.txt',
+          contentType: 'text/plain',
+          sizeBytes: 15,
+          url: 'https://cdn.discordapp.com/attachments/1/2/message.txt',
+        },
+      ],
+      embeds: [],
+    });
+    h.fetchAttachmentBytes.mockResolvedValue({
+      ok: true,
+      bytes: Buffer.from('pasted details'),
+      mediaType: 'text/plain',
+    });
+    await h.run(
+      mention({ invocationId: 'inv-att-text', referencedMessageId: '840000000000000001' }),
+    );
+    expect(h.inputs[0]?.quoteEnvelope).toContain('[attached: message.txt, text/plain, 1 KB]');
+    expect(h.inputs[0]?.quoteEnvelope).toContain('[UNTRUSTED ATTACHMENT name="message.txt"]');
+    expect(h.inputs[0]?.quoteEnvelope).toContain('pasted details');
+  });
+
+  it('inlines a current-message text attachment in the message wrapper, never the payload (ADR 0149)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '444444444444444444',
+      authorName: 'Ama',
+      content: '',
+      attachments: [
+        {
+          attachmentId: '2',
+          fileName: 'notes.txt',
+          contentType: 'text/plain',
+          sizeBytes: 9,
+          url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+        },
+      ],
+      embeds: [],
+    });
+    h.fetchAttachmentBytes.mockResolvedValue({
+      ok: true,
+      bytes: Buffer.from('some notes'),
+      mediaType: 'text/plain',
+    });
+    await h.run(mention({ invocationId: 'inv-att-current', messageId: '810000000000000021' }));
+    expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, '810000000000000021');
+    expect(h.fetchAttachmentBytes).toHaveBeenCalledWith(
+      'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+      expect.any(Number),
+    );
+    expect(h.inputs[0]?.channelContext).toContain('[UNTRUSTED MESSAGE ATTACHMENTS]');
+    expect(h.inputs[0]?.channelContext).toContain('[attached: notes.txt, text/plain, 1 KB]');
+    expect(h.inputs[0]?.channelContext).toContain('some notes');
+  });
+
+  it('caps text files at three per message and 24,000 chars each (ADR 0149)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '111111111111111111',
+      authorName: 'Sam L',
+      content: '',
+      attachments: [1, 2, 3, 4].map((n) => ({
+        attachmentId: `${n}`,
+        fileName: `f${n}.txt`,
+        contentType: 'text/plain',
+        sizeBytes: 10,
+        url: `https://cdn.discordapp.com/attachments/1/${n}/f${n}.txt`,
+      })),
+      embeds: [],
+    });
+    h.fetchAttachmentBytes.mockResolvedValue({
+      ok: true,
+      bytes: Buffer.from('x'.repeat(30_000)),
+      mediaType: 'text/plain',
+    });
+    await h.run(mention({ invocationId: 'inv-att-caps', messageId: '810000000000000022' }));
+    expect(h.inputs[0]?.channelContext).toContain('cut after 24,000 characters');
+    expect(h.inputs[0]?.channelContext?.match(/\[UNTRUSTED ATTACHMENT/g)).toHaveLength(3);
+  });
+
+  it('stores only the stripped attachment detail in the durable cursor and trace (ADR 0149)', async () => {
+    // The service (S4-T6 scope correction) strips the attachment wrapper from
+    // the traced user message; this mock returns that stripped detail, pinning
+    // that the job's cursor and stored trace carry nothing more.
+    const h = harness((input) => ({
+      ok: true,
+      content: 'answer',
+      detail: {
+        sections: [
+          { name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' },
+          {
+            name: 'user-message',
+            chars: (input.channelContext ?? '').length,
+            estTokens: 1,
+            text: (input.channelContext ?? '').replace(
+              /\[UNTRUSTED MESSAGE ATTACHMENTS\][\s\S]*?\[\/UNTRUSTED MESSAGE ATTACHMENTS\]/g,
+              '[message attachments: not kept in the trace]',
+            ),
+          },
+        ],
+        history: [],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+      },
+    }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '444444444444444444',
+      authorName: 'Ama',
+      content: '',
+      attachments: [
+        {
+          attachmentId: '2',
+          fileName: 'notes.txt',
+          contentType: 'text/plain',
+          sizeBytes: 9,
+          url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+        },
+      ],
+      embeds: [],
+    });
+    h.fetchAttachmentBytes.mockResolvedValue({
+      ok: true,
+      bytes: Buffer.from('some notes'),
+      mediaType: 'text/plain',
+    });
+    const r = await h.run(
+      mention({ invocationId: 'inv-att-trace', messageId: '810000000000000024' }),
+    );
+    // The provider-visible input carries the attachment text...
+    expect(h.inputs[0]?.channelContext).toContain('some notes');
+    // ...but the durable cursor and stored trace carry only the stripped detail.
+    expect(r.cursor ?? '').toContain('[message attachments: not kept in the trace]');
+    expect(r.cursor ?? '').not.toContain('some notes');
+    const trace = traceRepo.getTrace(scope(), 'trace_inv-att-trace');
+    expect(trace?.sections.find((section) => section.name === 'user-message')?.text).not.toContain(
+      'some notes',
     );
   });
 

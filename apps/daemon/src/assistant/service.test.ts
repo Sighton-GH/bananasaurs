@@ -1471,6 +1471,61 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(userMessage?.text).toContain('[quoted message: not kept in the trace]');
   });
 
+  const attachmentContext =
+    '[UNTRUSTED MESSAGE ATTACHMENTS]\n[attached: notes.txt, text/plain, 1 KB]\n[UNTRUSTED ATTACHMENT name="notes.txt"]\nsome notes\n[/UNTRUSTED ATTACHMENT]\n[/UNTRUSTED MESSAGE ATTACHMENTS]';
+
+  it('keeps current-message attachments out of the traced user message (ADR 0149)', async () => {
+    const { requests, service } = capturing();
+    const result = await service.invoke(
+      ask({ channelContext: attachmentContext, askerName: 'Ama' }),
+    );
+    expect(result.ok).toBe(true);
+    // The provider still gets the attachment text...
+    const lastText = requests[0]?.messages.at(-1)?.text ?? '';
+    expect(lastText).toContain('some notes');
+    // ...but the trace keeps a placeholder instead.
+    const sections = result.detail?.sections ?? [];
+    const userMessage = sections.find((section) => section.name === 'user-message');
+    expect(userMessage?.text).not.toContain('some notes');
+    expect(userMessage?.text).not.toContain('UNTRUSTED ATTACHMENT');
+    expect(userMessage?.text).toContain('[message attachments: not kept in the trace]');
+  });
+
+  it('keeps current-message attachments out of the failure detail (ADR 0149)', async () => {
+    const seen: string[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        seen.push(req.messages.at(-1)?.text ?? '');
+        throw new ProviderError('outage', 'connect timeout', true);
+      },
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [usable(provider)],
+    );
+    const failed: unknown = await service
+      .invoke(ask({ channelContext: attachmentContext }))
+      .catch((err: unknown) => err);
+    // The provider still got the attachment text...
+    expect(seen[0]).toContain('some notes');
+    // ...but the failure detail the job traces keeps a placeholder instead.
+    expect(failed).toBeInstanceOf(ChainFailedError);
+    const detail = (failed as ChainFailedError).detail;
+    const userMessage = detail?.sections.find((section) => section.name === 'user-message');
+    expect(userMessage?.text).not.toContain('some notes');
+    expect(userMessage?.text).not.toContain('UNTRUSTED ATTACHMENT');
+    expect(userMessage?.text).toContain('[message attachments: not kept in the trace]');
+  });
+
   it('returns trace detail with capability sections plus history when history was sent (ADR 0136)', async () => {
     const { service } = capturing();
     const history = [{ role: 'user' as const, text: 'first question' }];

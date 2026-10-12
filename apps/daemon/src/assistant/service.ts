@@ -97,8 +97,15 @@ const textOf = (input: Readonly<Record<string, string>>): string => Object.value
  * The trace's `user-message` section carries the same text minus the quoted
  * message itself: the envelope arrives as its own part, so the trace swaps
  * it for a placeholder while the provider request is unchanged.
+ *
+ * ADR 0149 (S4-T6): the current message's attachment wrapper is swapped the
+ * same way. The file text is evidence the provider needs once, never for
+ * keeps — the durable cursor and the stored trace carry the placeholder.
  */
 const TRACE_QUOTE_PLACEHOLDER = '[quoted message: not kept in the trace]';
+const TRACE_ATTACHMENTS_PLACEHOLDER = '[message attachments: not kept in the trace]';
+const MESSAGE_ATTACHMENTS_WRAPPER =
+  /\[UNTRUSTED MESSAGE ATTACHMENTS\][\s\S]*?\[\/UNTRUSTED MESSAGE ATTACHMENTS\]/g;
 const traceSections = (
   context: CompiledAssistantContext,
   history: readonly GenerationMessage[],
@@ -121,10 +128,14 @@ const traceSections = (
             { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
           ];
         })();
-  const tracedUserText =
+  const withoutQuote =
     quoteEnvelope === undefined || quoteEnvelope === ''
       ? userText
       : userText.replaceAll(quoteEnvelope, TRACE_QUOTE_PLACEHOLDER);
+  const tracedUserText = withoutQuote.replace(
+    MESSAGE_ATTACHMENTS_WRAPPER,
+    TRACE_ATTACHMENTS_PLACEHOLDER,
+  );
   return [
     ...withHistory,
     {
