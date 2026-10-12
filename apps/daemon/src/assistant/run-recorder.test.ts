@@ -5,7 +5,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { createRunRecorder, NOOP_RUN_RECORDER } from './run-recorder.js';
+import { createRunRecorder, createLiveRunRecorder, NOOP_RUN_RECORDER } from './run-recorder.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const USER = '100000000000000001';
@@ -226,6 +226,53 @@ describe('createRunRecorder', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it('T12c latches finish before writing and drops last exactly once', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    runRepo.ensureRun(scope, {
+      runId: 'run-latch',
+      userId: USER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: NOW,
+    });
+    const order: string[] = [];
+    const write = runRepo.appendRunEvent;
+    vi.spyOn(runRepo, 'appendRunEvent').mockImplementation((...args) => {
+      order.push(args[3].kind);
+      return write(...args);
+    });
+    let reentered = false;
+    const recorder = createRunRecorder({
+      scope,
+      runId: 'run-latch',
+      now: () => NOW,
+      logger: { warn: vi.fn() },
+      live: {
+        drop: () => {
+          order.push('drop');
+          if (!reentered) {
+            reentered = true;
+            recorder.event({ kind: 'finished', outcome: 'failed', durationMs: 0 });
+          }
+        },
+      },
+    });
+    recorder.event({ kind: 'finished', outcome: 'answered', durationMs: 1 });
+    recorder.event({ kind: 'finished', outcome: 'failed', durationMs: 2 });
+    recorder.event({
+      kind: 'model-progress',
+      round: 1,
+      answerChars: 1,
+      reasoningChars: 1,
+      keepalives: 0,
+      msSinceLastByte: 0,
+    });
+    recorder.update({ stage: 'calling-model' });
+    expect(order).toEqual(['finished', 'drop']);
+    expect(runRepo.getRun(scope, 'run-latch')?.state).toBe('answered');
+    expect(runRepo.getRun(scope, 'run-latch')?.stage).toBe('done');
+  });
+
   it('update() writes a direct run-row patch', () => {
     const scope = t.scopes.forGuild(GUILD);
     runRepo.ensureRun(scope, {
@@ -270,6 +317,17 @@ describe('createRunRecorder', () => {
     ).not.toThrow();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(runRepo.listRunEvents(scope, 'run-1', 0, 10)).toEqual([]);
+  });
+
+  it('storage-free recorder drops once with its actual run id', () => {
+    const drop = vi.fn();
+    const recorder = createLiveRunRecorder('fixture-storage-free', { drop });
+    expect(recorder.runId).toBe('fixture-storage-free');
+    recorder.event({ kind: 'started', attempt: 1, queueWaitMs: 0 });
+    expect(drop).not.toHaveBeenCalled();
+    recorder.event({ kind: 'finished', outcome: 'answered', durationMs: 0 });
+    recorder.event({ kind: 'finished', outcome: 'failed', durationMs: 1 });
+    expect(drop).toHaveBeenCalledExactlyOnceWith('fixture-storage-free');
   });
 
   it('NOOP_RUN_RECORDER does nothing', () => {

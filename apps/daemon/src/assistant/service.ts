@@ -71,7 +71,12 @@ import {
   type UpcomingEventItem,
 } from './tools.js';
 import { formatChannelLines } from './channel-context.js';
-import { createRunRecorder, NOOP_RUN_RECORDER, type RunRecorder } from './run-recorder.js';
+import {
+  createRunRecorder,
+  createLiveRunRecorder,
+  NOOP_RUN_RECORDER,
+  type RunRecorder,
+} from './run-recorder.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
@@ -1456,7 +1461,7 @@ export const createAssistantService = (
         runId: input.invocationId,
         recorder,
         ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
-        live: getLiveBuffer(),
+        live: input.recorder === undefined ? undefined : getLiveBuffer(),
         now,
         citations,
         isCitable: isKnownResource,
@@ -1823,7 +1828,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       const traceId = `try_${randomUUID()}`;
       // ADR 0129 §6: Try-it runs the same ledger as a Discord request, under
       // the user turn id with `source: 'dashboard-test'`.
-      let recorder: RunRecorder = NOOP_RUN_RECORDER;
+      let recorder: RunRecorder = createLiveRunRecorder(userTurnId, getLiveBuffer());
       try {
         runRepo.ensureRun(scope, {
           runId: userTurnId,

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   nextProviderDayStart,
+  capTrace,
+  TRUNCATION_SUFFIX,
+  type AssistantTrace,
   ProviderError,
   RETURNED_ID_ARGS,
   TOOL_CATALOGUE,
@@ -2710,7 +2713,16 @@ describe('Slice 3 streaming edge paths', () => {
           learnedLimit: { perMinute: 3 },
         });
         expect(loop.reasoning).toEqual([]);
-      } else expect(loop.reasoning).toEqual([{ round: 1, text: 'x'.repeat(8000) }]);
+      } else {
+        const text = 'x'.repeat(8000 - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+        expect(loop.reasoning).toEqual([{ round: 1, text }]);
+        const trace = capTrace({
+          sections: [],
+          toolCalls: [],
+          reasoning: loop.reasoning,
+        } as unknown as AssistantTrace);
+        expect(trace.reasoning).toEqual([{ round: 1, text }]);
+      }
     },
   );
 });
