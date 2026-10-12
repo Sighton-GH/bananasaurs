@@ -36,6 +36,11 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'The pasted text had no key lines. Nothing was saved.',
     hint: 'Paste one key per line, then try again.',
   },
+  'too-many-keys': {
+    title: 'Too many keys at once',
+    explanation: 'One paste can add at most 50 keys. Nothing was saved.',
+    hint: 'Split the keys into smaller pastes of 50 or fewer.',
+  },
   'no-gemini-key': {
     title: 'No Gemini key to build from',
     explanation:

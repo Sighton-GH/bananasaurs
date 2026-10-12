@@ -27,6 +27,9 @@ const keyBody = z
   })
   .strict();
 
+/** Most key lines one paste may add; more is refused, nothing saved. */
+const MAX_BULK_KEYS = 50;
+
 const bulkBody = z
   .object({
     provider: z.enum(PROVIDERS),
@@ -288,6 +291,7 @@ export const registerAssistantProviderRoutes = (
       .map((line) => line.trim())
       .filter((line) => line !== '');
     if (lines.length === 0) return reply.status(400).send({ error: 'empty-paste' });
+    if (lines.length > MAX_BULK_KEYS) return reply.status(400).send({ error: 'too-many-keys' });
     const seen = new Set(
       configured
         .keys()
@@ -296,7 +300,17 @@ export const registerAssistantProviderRoutes = (
     );
     let added = 0;
     let duplicates = 0;
-    let sequence = configured.keys().filter((key) => key.provider === parsed.data.provider).length;
+    // Number after the highest existing "<provider> N" label, so a deletion
+    // can never make two keys share a label.
+    const labelPrefix = `${parsed.data.provider} `;
+    let sequence = configured
+      .keys()
+      .filter((key) => key.provider === parsed.data.provider)
+      .map((key) => key.label)
+      .filter((label) => label.startsWith(labelPrefix))
+      .map((label) => Number(label.slice(labelPrefix.length)))
+      .filter((n) => Number.isSafeInteger(n) && n > 0)
+      .reduce((max, n) => Math.max(max, n), 0);
     for (const line of lines) {
       const fingerprint = assistantProvidersRepo.fingerprintOf(line);
       if (seen.has(fingerprint)) {

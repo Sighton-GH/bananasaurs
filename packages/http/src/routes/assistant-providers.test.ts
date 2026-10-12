@@ -1312,6 +1312,41 @@ describe('bulk keys and recommended chain (ADR 0143)', () => {
     }
   });
 
+  it('numbers a pasted key after the highest existing label, never reusing one', async () => {
+    const store = fakeStore({
+      keys: [
+        { keyId: 'key_1', provider: 'gemini', label: 'gemini 1', costClass: 'free', enabled: true },
+        { keyId: 'key_3', provider: 'gemini', label: 'gemini 3', costClass: 'free', enabled: true },
+      ],
+    });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { provider: 'gemini', keysText: 'AIza-test-new' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(store.keys().map((key) => key.label)).toEqual(['gemini 1', 'gemini 3', 'gemini 4']);
+  });
+
+  it('refuses more than 50 key lines and saves nothing', async () => {
+    const store = fakeStore({ keys: [] });
+    await rebuildWithStore(store);
+    const owner = await signInAs('owner');
+    const keysText = Array.from({ length: 51 }, (_, i) => `AIza-test-${String(i)}`).join('\n');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys/bulk',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { provider: 'gemini', keysText },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'too-many-keys' });
+    expect(store.keys()).toHaveLength(0);
+  });
+
   it('recommended setup builds the Gemini chain then owner OpenRouter entries', async () => {
     const store = fakeStore({
       keys: [
