@@ -72,10 +72,32 @@ export interface DigestDeps {
 
 const EMPTY_SUMMARY = 'No assistant conversations that day.';
 
+/**
+ * This job's own block markers. `neutraliseMarkers` covers the shared request
+ * markers only, so a title, summary, name or turn carrying `[CONVERSATION ...]`
+ * or `[/CONVERSATION]` could forge a block boundary in the model input
+ * (lead repair, review A major 2). Turn them into inert text.
+ */
+const neutraliseDigestMarkers = (text: string): string =>
+  text.replace(/\[(\/?)CONVERSATION/gi, '[$1conversation-block');
+
+const cleanForModel = (text: string): string =>
+  neutraliseDigestMarkers(neutraliseMarkers(redactEvidenceText(text).text));
+
 const speakerOf = (authorName: string, role: string): string => {
+  if (role === 'assistant') return 'bot';
   const cleaned = safeDisplayName(authorName);
-  const name = cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
-  return role === 'assistant' ? 'bot' : name;
+  // A name that trips the redaction filter (email, phone, key) is not sent at
+  // all: the provider's outbound scan would refuse the whole day (lead
+  // repair, review A major 1).
+  if (
+    cleaned === undefined ||
+    /^\d{17,20}$/.test(cleaned) ||
+    redactEvidenceText(cleaned).text !== cleaned
+  ) {
+    return 'a member';
+  }
+  return neutraliseDigestMarkers(cleaned);
 };
 
 /**
@@ -286,7 +308,7 @@ export const assistantDailyDigestHandler = (
         answer('answered');
         return;
       }
-      const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+      const clean = cleanForModel;
       // Every field the provider sees - title and rolling summary included,
       // not only turn text — goes through the same redaction and marker
       // neutralisation (ADR 0150 decision 2): a key in a title would trip the
@@ -439,7 +461,7 @@ export const assistantDailyDigestHandler = (
 /** Clean model JSON the way evidence is cleaned everywhere (hard rule 3). */
 const cleanDigestJson = (parsed: unknown): unknown => {
   if (typeof parsed !== 'object' || parsed === null) return parsed;
-  const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+  const clean = cleanForModel;
   const o = parsed as { daySummary?: unknown; memoryProposals?: unknown };
   return {
     ...(typeof o.daySummary === 'string' ? { daySummary: clean(o.daySummary) } : {}),
