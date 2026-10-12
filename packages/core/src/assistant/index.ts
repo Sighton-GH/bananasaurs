@@ -18,3 +18,4 @@ export * from './model-health.js';
 export * from './conversation.js';
 export * from './conversation-summary.js';
 export * from './untrusted.js';
+export * from './digest.js';
