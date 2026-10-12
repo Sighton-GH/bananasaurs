@@ -8,6 +8,8 @@ import {
   SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
   getLiveBuffer,
+  neutraliseMarkers,
+  redactEvidenceText,
   resolveConversation,
   RetryAfterError,
   safeLogFields,
@@ -21,6 +23,8 @@ import {
   type ChannelAccess,
   type ConversationResolution,
   type DiscordMessageRef,
+  type FetchedAttachment,
+  type FetchedEmbed,
   type GenerationMessage,
   type JobHandler,
   type Logger,
@@ -44,6 +48,13 @@ import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import {
+  classifyAttachment,
+  fetchAttachment,
+  textEnvelopeFor,
+  type AttachmentCaps,
+} from '../assistant/attachments.js';
+import {
+  attachmentMarker,
   buildConversationContext,
   HISTORY_CHARS,
   HISTORY_TURNS,
@@ -373,8 +384,34 @@ export const assistantInvokeHandler = (deps: {
     | ((
         channelId: string,
         messageId: string,
-      ) => Promise<{ authorId: string; authorName: string; content: string } | undefined>)
+      ) => Promise<
+        | {
+            authorId: string;
+            authorName: string;
+            content: string;
+            attachments?: readonly FetchedAttachment[] | undefined;
+            embeds?: readonly FetchedEmbed[] | undefined;
+          }
+        | undefined
+      >)
     | undefined;
+  /**
+   * ADR 0149: the attachment byte fetch. CDN hosts only, enforced upstream
+   * (S4-T5). Absent means attachments read as markers with a note.
+   */
+  fetchAttachmentBytes?:
+    | ((
+        url: string,
+        maxBytes: number,
+      ) => Promise<
+        { ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }
+      >)
+    | undefined;
+  /**
+   * ADR 0149: the live attachment caps (the `assistant.attachments.*`
+   * settings). Absent means the D7 defaults.
+   */
+  attachmentCaps?: (() => AttachmentCaps) | undefined;
   /**
    * ADR 0089: channel context for mentions — a guild-scoped closure over the
    * Discord port's `fetchChannelMessages`. Absent means no channel context.
@@ -885,7 +922,15 @@ export const assistantInvokeHandler = (deps: {
             // Quoted rules name a message we do not know: fetch it in the same
             // channel as untrusted evidence. A fetch failure flags the trace
             // `quote-unavailable` and continues without the quote (ruling).
-            let quoted: { authorId: string; authorName: string; content: string } | undefined;
+            let quoted:
+              | {
+                  authorId: string;
+                  authorName: string;
+                  content: string;
+                  attachments?: readonly FetchedAttachment[] | undefined;
+                  embeds?: readonly FetchedEmbed[] | undefined;
+                }
+              | undefined;
             if (resolved.kind === 'new' && resolved.quotedMessageId !== undefined) {
               if (deps.fetchMessageContent === undefined) {
                 flags.push('quote-unavailable');
@@ -901,6 +946,8 @@ export const assistantInvokeHandler = (deps: {
                       authorId: fetched.authorId,
                       authorName: fetched.authorName,
                       content: fetched.content,
+                      attachments: fetched.attachments,
+                      embeds: fetched.embeds,
                     };
                 } catch (err) {
                   deps.logger.warn(
@@ -1022,6 +1069,83 @@ export const assistantInvokeHandler = (deps: {
             history = built.history;
             quoteEnvelope = built.quoteEnvelope;
             quoteInHistory = built.quoteInHistory;
+            // ADR 0149 (S4-T6): text attachments. Both messages are re-read
+            // through REST at job start — gateway events carry no URLs and
+            // the signed links expire, so a retry re-reads too. Text files
+            // join the turn as framed evidence; anything else is a marker
+            // with a plain note (bytes for images and PDFs land in S4-T9).
+            const attachmentCaps: AttachmentCaps = deps.attachmentCaps?.() ?? {
+              textMaxBytes: 262_144,
+              textMaxChars: 24_000,
+              textMaxCount: 3,
+              imageMaxBytes: 5_242_880,
+              imageMaxCount: 4,
+              pdfMaxBytes: 10_485_760,
+              pdfMaxCount: 2,
+            };
+            const attachmentFetchBytes: (
+              url: string,
+              maxBytes: number,
+            ) => Promise<
+              { ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }
+            > =
+              deps.fetchAttachmentBytes ??
+              (() => Promise.resolve({ ok: false as const, code: 'unavailable' }));
+            // One message's text attachments end to end: markers plus
+            // envelopes for text files, marker-plus-note for anything else.
+            const readTextAttachments = async (
+              sources: readonly FetchedAttachment[],
+            ): Promise<{ markers: string[]; texts: string[] }> => {
+              const markers: string[] = [];
+              const texts: string[] = [];
+              const textSources = sources.filter((source) => classifyAttachment(source) === 'text');
+              for (const source of sources.filter(
+                (source) => classifyAttachment(source) !== 'text',
+              )) {
+                markers.push(
+                  `${attachmentMarker(source)} (not read: this file is not a text file)`,
+                );
+              }
+              const readable = textSources.slice(0, attachmentCaps.textMaxCount);
+              for (const source of textSources.slice(attachmentCaps.textMaxCount)) {
+                markers.push(
+                  `${attachmentMarker(source)} (skipped: at most ${attachmentCaps.textMaxCount} text files per message)`,
+                );
+              }
+              for (const source of readable) {
+                const fetched = await fetchAttachment(
+                  { fetchBytes: attachmentFetchBytes },
+                  source,
+                  attachmentCaps,
+                );
+                if (!fetched.ok) {
+                  // The refusal note embeds the raw file name: neutralise the
+                  // whole note before it joins either envelope, or a hostile
+                  // name could forge a close and promote the rest (ADR 0149).
+                  const note = neutraliseMarkers(redactEvidenceText(fetched.note).text);
+                  markers.push(`${attachmentMarker(source)} (skipped: ${note})`);
+                  continue;
+                }
+                // Unreachable for a text-classified source: narrows the union.
+                if (fetched.kind !== 'text') continue;
+                markers.push(attachmentMarker(source));
+                const cut =
+                  fetched.text.length > attachmentCaps.textMaxChars
+                    ? `${fetched.text.slice(0, attachmentCaps.textMaxChars)}\n(cut after ${attachmentCaps.textMaxChars.toLocaleString('en-CA')} characters)`
+                    : fetched.text;
+                texts.push(textEnvelopeFor(source.fileName, cut));
+              }
+              return { markers, texts };
+            };
+            // The quoted message's files join its envelope as evidence.
+            if (quoted !== undefined) {
+              const quotedFiles = await readTextAttachments(quoted.attachments ?? []);
+              if (quotedFiles.markers.length > 0 || quotedFiles.texts.length > 0) {
+                quoteEnvelope = [quoteEnvelope, ...quotedFiles.markers, ...quotedFiles.texts]
+                  .filter((part) => part !== undefined && part !== '')
+                  .join('\n');
+              }
+            }
             // ADR 0089: channel context for mentions. The channel's recent
             // messages (and, in a thread, the thread's starter) travel as
             // untrusted background ahead of the question. A failed fetch flags
@@ -1153,6 +1277,53 @@ export const assistantInvokeHandler = (deps: {
                   'assistant channel context fetch failed; continuing without the block',
                 );
                 flagUnavailable();
+              }
+            }
+            // ADR 0149 (S4-T6): the current message's own files, re-read
+            // fresh for the same reason as the quote. A failed re-read means
+            // silence, never a job failure. Joined after the channel-context
+            // window so neither block overwrites the other.
+            //
+            // ADR 0126 (fail-closed): the re-read needs its own Read pass,
+            // independent of the channel-context window and of
+            // fetchChannelMessages being wired. Missing access, a denial or
+            // a check error skips the re-read silently. Whether the invoking
+            // message should instead ride the tagged-message exemption the
+            // quote fetch uses is an open owner decision (task report).
+            let attachmentReadAllowed = false;
+            if (deps.channelAccess !== undefined) {
+              try {
+                attachmentReadAllowed = (await deps.channelAccess.check('read', channelId)).allowed;
+              } catch {
+                attachmentReadAllowed = false;
+              }
+            }
+            if (
+              attachmentReadAllowed &&
+              payload.messageId !== undefined &&
+              deps.fetchMessageContent !== undefined
+            ) {
+              try {
+                const current = await deps.fetchMessageContent(channelId, payload.messageId);
+                const currentFiles = await readTextAttachments(current?.attachments ?? []);
+                if (currentFiles.markers.length > 0 || currentFiles.texts.length > 0) {
+                  channelContext = [
+                    channelContext,
+                    `[UNTRUSTED MESSAGE ATTACHMENTS]\n${[...currentFiles.markers, ...currentFiles.texts].join('\n')}\n[/UNTRUSTED MESSAGE ATTACHMENTS]`,
+                  ]
+                    .filter((part) => part !== undefined && part !== '')
+                    .join('\n\n');
+                }
+              } catch (err) {
+                deps.logger.warn(
+                  safeLogFields({
+                    component: 'assistant-job',
+                    guildId: deps.guildId,
+                    runId: payload.invocationId,
+                    err,
+                  }),
+                  'assistant current-message re-read failed; continuing without attachments',
+                );
               }
             }
             // ADR 0129 §6: the conversation join is a ledger step, and the row
