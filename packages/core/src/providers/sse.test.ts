@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseSseStream } from './sse.js';
 
 const collect = async (chunks: readonly string[]) => {
@@ -122,7 +122,8 @@ describe('parseSseStream', () => {
     const pending = parseSseStream(body).next();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const lockedBeforeEof = body.locked;
-    source?.close();
+    // An early [DONE] now cancels and closes the source itself.
+    if (lockedBeforeEof) source?.close();
     expect(await pending).toEqual({ value: undefined, done: true });
     expect(lockedBeforeEof).toBe(false);
   });
@@ -181,6 +182,143 @@ describe('parseSseStream', () => {
       },
     });
     await expect(parseSseStream(body).next()).rejects.toBe(failure);
+    expect(body.locked).toBe(false);
+  });
+  it('handles CR-only and mixed line endings', async () => {
+    expect(await collect(['data: a\r\rdata: b\r\r'])).toEqual([
+      { data: 'a', keepalive: false },
+      { data: 'b', keepalive: false },
+    ]);
+    expect(await collect(['data: a\rdata: b\n', 'data: c\r', '\n\r', '\ndata: d\n\n'])).toEqual([
+      { data: 'a\nb\nc', keepalive: false },
+      { data: 'd', keepalive: false },
+    ]);
+  });
+
+  it('accepts a bare data field as an empty data line', async () => {
+    expect(await collect(['data\n\n'])).toEqual([{ data: '', keepalive: false }]);
+    expect(await collect(['data: a\ndata\ndata: b\n\n'])).toEqual([
+      { data: 'a\n\nb', keepalive: false },
+    ]);
+  });
+
+  it('strips one initial BOM across empty chunks but preserves later BOMs', async () => {
+    expect(await collect(['', '\uFEFF', 'data: first\n\ndata: \uFEFFlater\n\n'])).toEqual([
+      { data: 'first', keepalive: false },
+      { data: '\uFEFFlater', keepalive: false },
+    ]);
+    expect(await collect(['\uFEFF\uFEFFdata: ignored\n\ndata: next\n\n'])).toEqual([
+      { data: 'next', keepalive: false },
+    ]);
+  });
+
+  it.each(['done', 'return', 'throw'] as const)(
+    'cancels the byte source on %s and releases its lock',
+    async (mode) => {
+      const cancel = vi.fn();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(mode === 'done' ? 'data: [DONE]\n\n' : 'data: first\n\n'),
+          );
+        },
+        cancel,
+      });
+      const events = parseSseStream(body);
+      if (mode === 'done') {
+        expect(await events.next()).toEqual({ value: undefined, done: true });
+      } else {
+        await events.next();
+        if (mode === 'return') await events.return(undefined);
+        else {
+          const failure = new Error('consumer failed');
+          await expect(events.throw(failure)).rejects.toBe(failure);
+        }
+      }
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+    },
+  );
+
+  it('does not mask an original error when cancellation rejects', async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error('cleanup failed'));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: first\n\n'));
+      },
+      cancel,
+    });
+    const events = parseSseStream(body);
+    await events.next();
+    const failure = new Error('consumer failed');
+    await expect(events.throw(failure)).rejects.toBe(failure);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+
+  it('rejects oversized lines deterministically and cancels the source', async () => {
+    const cancel = vi.fn();
+    let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        source = controller;
+        controller.enqueue(new TextEncoder().encode('data: ' + 'x'.repeat(1_048_577)));
+      },
+      cancel,
+    });
+    const pending = expect(parseSseStream(body).next()).rejects.toThrow(
+      'SSE line exceeds 1048576 characters',
+    );
+    // Release a broken parser that waits for EOF instead of enforcing a limit.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (body.locked) source?.close();
+    await pending;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+
+  it('rejects oversized multiline events and closes the iterator', async () => {
+    let closed = false;
+    async function* feed() {
+      try {
+        for (let i = 0; i < 9; i++) yield 'data: ' + 'x'.repeat(1_048_000) + '\n';
+        yield '\n';
+      } finally {
+        closed = true;
+      }
+    }
+    await expect(parseSseStream(feed()).next()).rejects.toThrow(
+      'SSE event exceeds 8388608 characters',
+    );
+    expect(closed).toBe(true);
+  });
+  it('strips exactly one BOM split across byte chunks', async () => {
+    const bytes = new TextEncoder().encode('\uFEFFdata: first\n\ndata: \uFEFFlater\n\n');
+    const events = [];
+    for await (const event of parseSseStream(
+      byteStream(Array.from(bytes, (byte) => Uint8Array.of(byte))),
+    )) {
+      events.push(event);
+    }
+    expect(events).toEqual([
+      { data: 'first', keepalive: false },
+      { data: '\uFEFFlater', keepalive: false },
+    ]);
+  });
+
+  it('cancels a byte source on an oversized event without masking the limit error', async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error('cleanup failed'));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 9; i++)
+          controller.enqueue(new TextEncoder().encode('data: ' + 'x'.repeat(1_048_000) + '\n'));
+      },
+      cancel,
+    });
+    await expect(parseSseStream(body).next()).rejects.toThrow(
+      'SSE event exceeds 8388608 characters',
+    );
+    expect(cancel).toHaveBeenCalledOnce();
     expect(body.locked).toBe(false);
   });
 });
