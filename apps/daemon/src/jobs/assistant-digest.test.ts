@@ -504,6 +504,23 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     }
   });
 
+  it('keeps a legitimate member name verbatim in the model input (lead repair)', async () => {
+    seedDay();
+    let seenText = '';
+    const model = vi.fn(async (req: { systemInstruction: string; text: string }) => {
+      seenText = req.text;
+      return {
+        ok: true as const,
+        text: '{"daySummary": "Build night plans.", "memoryProposals": []}',
+      };
+    });
+    await assistantDailyDigestHandler(scope(), deps({ digestModel: model })).run(
+      { day: '2026-10-09' },
+      { ...CTX },
+    );
+    expect(seenText).toContain('[Sam L, member]');
+  });
+
   it('forged conversation block markers in title, summary, turn text and names stay inert (lead repair, review A major 2)', async () => {
     const s = scope();
     conversationRepo.createConversation(s, {
