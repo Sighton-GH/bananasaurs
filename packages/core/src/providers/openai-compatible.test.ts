@@ -67,12 +67,44 @@ describe('OpenAI-compatible providers', () => {
         { type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } },
         {
           type: 'file',
-          file: { filename: 'report.pdf', file_data: 'data:application/pdf;base64,amVm' },
+          file: { filename: 'document.pdf', file_data: 'data:application/pdf;base64,amVm' },
         },
       ],
     });
     expect(body.plugins).toEqual([{ id: 'file-parser', pdf: { engine: 'native' } }]);
     expect(init?.body as string).not.toContain('discordapp');
+  });
+
+  it('never sends a PDF attachment name on the wire; the filename is fixed', async () => {
+    const hostile = [
+      'sk-or-v1-abcdef0123456789abcdef0123456789.pdf',
+      'jane.doe@example.com.pdf',
+      `${'a'.repeat(5000)}.pdf`,
+    ];
+    for (const name of hostile) {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await provider.generateText({
+        model: 'free-model',
+        messages: [
+          {
+            role: 'user',
+            text: '',
+            media: [{ kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name }],
+          },
+        ],
+      });
+      const raw = fetch.mock.calls[0]?.[1]?.body as string;
+      const body = JSON.parse(raw) as {
+        plugins?: unknown;
+        messages: { content: { type: string; file?: { filename: string; file_data: string } }[] }[];
+      };
+      const part = body.messages.at(-1)?.content.find((c) => c.type === 'file');
+      expect(part?.file?.filename).toBe('document.pdf');
+      expect(part?.file?.file_data).toBe('data:application/pdf;base64,amVm');
+      expect(raw).not.toContain(name);
+      expect(body.plugins).toEqual([{ id: 'file-parser', pdf: { engine: 'native' } }]);
+    }
   });
 
   it('sends no plugins without a PDF and keeps text-only turns as strings (ADR 0149)', async () => {
