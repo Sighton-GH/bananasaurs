@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { GeminiProvider, listGeminiModels } from './gemini.js';
@@ -581,6 +582,168 @@ describe('GeminiProvider', () => {
       completionTokens: 9,
       totalTokens: 11,
       thinkingTokens: 4,
+    });
+  });
+  describe('nested diagnostic safety', () => {
+    const key = 'AIza_FAKE_ONLY_FRESH_SECRET_987654321';
+    const request = { model: 'm', messages: [{ role: 'user' as const, text: 'hi' }] };
+    it.each(['fetch', 'body', 'chunk', 'progress'] as const)(
+      'rebuilds ProviderError subclasses with nested aggregate diagnostics from %s',
+      async (where) => {
+        class DiagnosticError extends ProviderError {
+          diagnostics = new AggregateError([new Error(key)], 'safe aggregate');
+        }
+        const error = new DiagnosticError('quota', 'safe own message', false, {
+          quotaScope: 'minute',
+          learnedLimit: { perMinute: 8 },
+        });
+        const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+          if (where === 'fetch') throw error;
+          if (where === 'body')
+            return new Response(
+              new ReadableStream({
+                start(c) {
+                  c.error(error);
+                },
+              }),
+            );
+          return sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] });
+        });
+        const throwError = () => {
+          throw error;
+        };
+        const caught = await new GeminiProvider({ apiKey: key, fetch })
+          .generateText({
+            ...request,
+            ...(where === 'chunk' ? { onChunk: throwError } : {}),
+            ...(where === 'progress' ? { onProgress: throwError } : {}),
+          })
+          .catch((e: unknown) => e);
+        expect(caught).not.toBe(error);
+        expect(caught).toMatchObject({
+          kind: 'quota',
+          retryable: false,
+          quotaScope: 'minute',
+          learnedLimit: { perMinute: 8 },
+        });
+        expect(inspect(caught, { depth: 12 })).not.toContain(key);
+      },
+    );
+    it.each(['nonenumerable', 'toJSON', 'limit', 'invalid'] as const)(
+      'does not retain unsafe %s metadata',
+      async (mode) => {
+        const error = new ProviderError('quota', 'safe message', true, {
+          learnedLimit: { perMinute: 8 },
+        });
+        if (mode === 'nonenumerable')
+          Object.defineProperty(error, 'errors', { value: [new Error(key)] });
+        if (mode === 'toJSON') {
+          Object.defineProperty(error, 'diagnostics', { value: key });
+          Object.defineProperty(error, 'toJSON', { value: () => ({}) });
+        }
+        if (mode === 'limit')
+          Object.defineProperty(error.learnedLimit, 'detail', { value: new Error(key) });
+        if (mode === 'invalid') {
+          for (const field of [
+            'kind',
+            'retryable',
+            'quotaScope',
+            'resetAt',
+            'status',
+            'retryAfterMs',
+          ])
+            Object.defineProperty(error, field, { value: key });
+          Object.defineProperty(error.learnedLimit, 'perMinute', { value: key });
+        }
+        const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(error);
+        const caught = await new GeminiProvider({ apiKey: key, fetch })
+          .generateText(request)
+          .catch((e: unknown) => e);
+        expect(caught).not.toBe(error);
+        expect(inspect(caught, { depth: 12 })).not.toContain(key);
+      },
+    );
+    it('empty 429 chunks cannot delay the first-byte deadline', async () => {
+      vi.useFakeTimers();
+      try {
+        let source!: ReadableStreamDefaultController<Uint8Array>;
+        const cancel = vi.fn();
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            source = c;
+          },
+          cancel,
+        });
+        const fetch = vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(new Response(body, { status: 429 }));
+        const pending = new GeminiProvider({
+          apiKey: key,
+          fetch,
+          timeoutMs: 20,
+          idleTimeoutMs: 20,
+          maxCallMs: 100,
+        })
+          .generateText(request)
+          .catch((e: unknown) => e);
+        for (let i = 0; i < 10; i++) {
+          source.enqueue(new Uint8Array());
+          await vi.advanceTimersByTimeAsync(2);
+        }
+        // End a broken implementation without hanging the test.
+        const raced = await Promise.race([pending, Promise.resolve('still pending')]);
+        if (raced === 'still pending') {
+          source.close();
+          await pending;
+        }
+        expect(raced).toMatchObject({ kind: 'timeout' });
+        expect(body.locked).toBe(false);
+        expect(cancel).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('empty 429 chunks cannot delay idle after a real byte', async () => {
+      vi.useFakeTimers();
+      try {
+        let source!: ReadableStreamDefaultController<Uint8Array>;
+        const cancel = vi.fn();
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            source = c;
+          },
+          cancel,
+        });
+        const fetch = vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(new Response(body, { status: 429 }));
+        const pending = new GeminiProvider({
+          apiKey: key,
+          fetch,
+          timeoutMs: 20,
+          idleTimeoutMs: 20,
+          maxCallMs: 100,
+        })
+          .generateText(request)
+          .catch((e: unknown) => e);
+        source.enqueue(new TextEncoder().encode('{'));
+        await vi.advanceTimersByTimeAsync(0);
+        for (let i = 0; i < 10; i++) {
+          source.enqueue(new Uint8Array());
+          await vi.advanceTimersByTimeAsync(2);
+        }
+        // End a broken implementation without hanging the test.
+        const raced = await Promise.race([pending, Promise.resolve('still pending')]);
+        if (raced === 'still pending') {
+          source.close();
+          await pending;
+        }
+        expect(raced).toMatchObject({ kind: 'timeout' });
+        expect(body.locked).toBe(false);
+        expect(cancel).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
   describe('review regressions', () => {

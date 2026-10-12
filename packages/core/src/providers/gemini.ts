@@ -161,64 +161,144 @@ export class GeminiProvider implements TextProvider {
     this.maxCallMs = options.maxCallMs ?? 300_000;
   }
 
-  /** Preserve safe structured evidence, never arbitrary causes or key-bearing fields. */
+  /** Only the exact, validated ProviderError shape can retain its identity. */
   private safeError(error: ProviderError): ProviderError {
-    const containsKey = (value: unknown): boolean =>
-      typeof value === 'string' && value.includes(this.apiKey);
-    let serialized: string;
-    try {
-      serialized = JSON.stringify(error);
-    } catch {
-      serialized = this.apiKey;
+    const finite = z.number().finite();
+    const cleanString = z.string().refine((value) => !value.includes(this.apiKey));
+    const shape = z
+      .object({
+        kind: z.enum([
+          'authentication',
+          'quota',
+          'rate-limit',
+          'timeout',
+          'safety-refusal',
+          'invalid-request',
+          'outage',
+          'capability-mismatch',
+          'invalid-response',
+        ]),
+        retryable: z.boolean(),
+        name: cleanString.optional(),
+        message: cleanString,
+        stack: cleanString.optional(),
+        cause: z.undefined().optional(),
+        resetAt: finite.optional(),
+        quotaScope: z.enum(['daily-free', 'day', 'minute']).optional(),
+        retryAfterMs: finite.optional(),
+        status: finite.optional(),
+        learnedLimit: z
+          .object({ perDay: finite.optional(), perMinute: finite.optional() })
+          .strict()
+          .optional(),
+        host: cleanString.optional(),
+        netCode: cleanString.optional(),
+        upstream: cleanString.optional(),
+        finishReason: cleanString.refine((value) => FINISH_REASONS.has(value)).optional(),
+        emptyAnswer: z
+          .object({
+            completionTokens: finite.optional(),
+            reasoningTokens: finite.optional(),
+            reasoningOnly: z.boolean(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict();
+    // Read data descriptors, never accessors or toJSON. Reject subclasses and
+    // extra fields rather than trusting their arbitrary reachable diagnostics.
+    const own: Record<string, unknown> = {};
+    let dataOnly = true;
+    for (const key of Reflect.ownKeys(error)) {
+      const descriptor = Object.getOwnPropertyDescriptor(error, key);
+      if (
+        key === 'stack' &&
+        descriptor?.get === Object.getOwnPropertyDescriptor(new Error(), 'stack')?.get
+      ) {
+        try {
+          own.stack = error.stack;
+        } catch {
+          dataOnly = false;
+        }
+        continue;
+      }
+      if (typeof key !== 'string' || descriptor === undefined || !('value' in descriptor)) {
+        dataOnly = false;
+        continue;
+      }
+      own[key] = descriptor.value as unknown;
     }
+    const plainNested = (value: unknown, keys: readonly string[]): boolean => {
+      if (value === undefined) return true;
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        Object.getPrototypeOf(value) !== Object.prototype
+      )
+        return false;
+      return Reflect.ownKeys(value).every((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return (
+          typeof key === 'string' &&
+          keys.includes(key) &&
+          descriptor !== undefined &&
+          'value' in descriptor
+        );
+      });
+    };
     if (
-      error.cause === undefined &&
-      !containsKey(serialized) &&
-      !containsKey(error.message) &&
-      !containsKey(error.stack)
+      dataOnly &&
+      Object.getPrototypeOf(error) === ProviderError.prototype &&
+      plainNested(own.learnedLimit, ['perDay', 'perMinute']) &&
+      plainNested(own.emptyAnswer, ['completionTokens', 'reasoningTokens', 'reasoningOnly']) &&
+      shape.safeParse(own).success
     )
       return error;
-    const safeString = (value: string | undefined): string | undefined =>
-      containsKey(value) ? undefined : value;
-    const host = safeString(error.host);
-    const netCode = safeString(error.netCode);
-    const upstream = safeString(error.upstream);
-    const finishReason = safeFinishReason(error.finishReason);
-    return new ProviderError(error.kind, 'Gemini provider failed', error.retryable, {
-      ...(error.resetAt === undefined ? {} : { resetAt: error.resetAt }),
-      ...(error.quotaScope === undefined ? {} : { quotaScope: error.quotaScope }),
-      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-      ...(error.learnedLimit === undefined
-        ? {}
-        : {
-            learnedLimit: {
-              ...(error.learnedLimit.perDay === undefined
-                ? {}
-                : { perDay: error.learnedLimit.perDay }),
-              ...(error.learnedLimit.perMinute === undefined
-                ? {}
-                : { perMinute: error.learnedLimit.perMinute }),
-            },
-          }),
-      ...(error.status === undefined ? {} : { status: error.status }),
-      ...(host === undefined ? {} : { host }),
-      ...(netCode === undefined ? {} : { netCode }),
-      ...(upstream === undefined ? {} : { upstream }),
-      ...(finishReason === undefined ? {} : { finishReason }),
-      ...(error.emptyAnswer === undefined
-        ? {}
-        : {
-            emptyAnswer: {
-              reasoningOnly: error.emptyAnswer.reasoningOnly,
-              ...(error.emptyAnswer.completionTokens === undefined
-                ? {}
-                : { completionTokens: error.emptyAnswer.completionTokens }),
-              ...(error.emptyAnswer.reasoningTokens === undefined
-                ? {}
-                : { reasoningTokens: error.emptyAnswer.reasoningTokens }),
-            },
-          }),
-    });
+
+    // Rebuild only validated primitive evidence, discarding unknown objects,
+    // nonenumerable diagnostics, aggregate errors, causes and custom hooks.
+    const primitive = <T>(schema: z.ZodType<T>, value: unknown): T | undefined => {
+      const result = schema.safeParse(value);
+      return result.success ? result.data : undefined;
+    };
+    const kind = primitive(shape.shape.kind, own.kind) ?? 'outage';
+    const retryable = primitive(z.boolean(), own.retryable) ?? true;
+    const evidence: Record<string, unknown> = {};
+    for (const key of ['resetAt', 'retryAfterMs', 'status'] as const) {
+      const value = primitive(finite, own[key]);
+      if (value !== undefined) evidence[key] = value;
+    }
+    for (const key of ['host', 'netCode', 'upstream'] as const) {
+      const value = primitive(cleanString, own[key]);
+      if (value !== undefined) evidence[key] = value;
+    }
+    const quotaScope = primitive(z.enum(['daily-free', 'day', 'minute']), own.quotaScope);
+    if (quotaScope !== undefined) evidence.quotaScope = quotaScope;
+    const finishReason = primitive(shape.shape.finishReason, own.finishReason);
+    if (finishReason !== undefined) evidence.finishReason = finishReason;
+    const nested = (object: unknown, keys: readonly string[]): Record<string, unknown> => {
+      const result: Record<string, unknown> = {};
+      if (typeof object !== 'object' || object === null) return result;
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(object, key);
+        if (descriptor === undefined || !('value' in descriptor)) continue;
+        const value =
+          key === 'reasoningOnly'
+            ? primitive(z.boolean(), descriptor.value as unknown)
+            : primitive(finite, descriptor.value as unknown);
+        if (value !== undefined) result[key] = value;
+      }
+      return result;
+    };
+    const learnedLimit = nested(own.learnedLimit, ['perDay', 'perMinute']);
+    if (Object.keys(learnedLimit).length > 0) evidence.learnedLimit = learnedLimit;
+    const emptyAnswer = nested(own.emptyAnswer, [
+      'completionTokens',
+      'reasoningTokens',
+      'reasoningOnly',
+    ]);
+    if (typeof emptyAnswer.reasoningOnly === 'boolean') evidence.emptyAnswer = emptyAnswer;
+    return new ProviderError(kind, 'Gemini provider failed', retryable, evidence);
   }
 
   public async generateText(request: GenerateTextRequest): Promise<GenerateTextResponse> {
@@ -374,7 +454,7 @@ export class GeminiProvider implements TextProvider {
                 const chunk = await Promise.race([reader.read(), aborted]);
                 checkAbort();
                 if (chunk.done) break;
-                noteByte();
+                if (chunk.value.byteLength > 0) noteByte();
                 const available = chunk.value.subarray(0, 16_384 - bytesRead);
                 bytesRead += available.byteLength;
                 text += decoder.decode(available, { stream: true });
