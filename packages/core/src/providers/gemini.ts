@@ -87,7 +87,14 @@ const toContents = (messages: readonly GenerationMessage[]): unknown[] => {
     }
     contents.push({
       role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.text }],
+      parts: [
+        { text: message.text },
+        ...(message.role === 'user' && message.media !== undefined
+          ? message.media.map((m) => ({
+              inlineData: { mimeType: m.mediaType, data: m.dataBase64 },
+            }))
+          : []),
+      ],
     });
   }
   return contents;
