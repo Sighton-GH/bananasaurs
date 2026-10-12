@@ -7,6 +7,7 @@ import {
   renderSummary,
   SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
+  getLiveBuffer,
   resolveConversation,
   RetryAfterError,
   safeLogFields,
@@ -196,6 +197,11 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
     removed: [...detail.guard.removed],
     ...(detail.guard.blocked === undefined ? {} : { blocked: detail.guard.blocked }),
   },
+  // Slice 3: saved thinking per round. capTrace owns the 8,000-char
+  // truncation (and its marker) at the storage boundary.
+  ...(detail.reasoning === undefined
+    ? {}
+    : { reasoning: detail.reasoning.slice(0, 12).map((r) => ({ round: r.round, text: r.text })) }),
   ...(detail.model === undefined ? {} : { model: detail.model }),
   ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
   ...(detail.web === undefined ? {} : { web: detail.web }),
@@ -337,6 +343,8 @@ export const assistantInvokeHandler = (deps: {
     message: OutgoingMessage,
   ) => Promise<DiscordMessageRef | undefined>;
   send: (channelId: string, message: OutgoingMessage) => Promise<DiscordMessageRef | undefined>;
+  /** Slice 3: typing ceiling override; absent means 300,000 (the hard ceiling). */
+  progressCeilingMs?: (() => number) | undefined;
   logger: Logger;
   /** ADR 0065: the AI log channel, read at run time; undefined means no log. */
   logChannelId: () => string | undefined;
@@ -454,6 +462,7 @@ export const assistantInvokeHandler = (deps: {
           runId: payload.invocationId,
           now: deps.now,
           logger: deps.logger,
+          live: getLiveBuffer(),
         });
       } catch (err) {
         deps.logger.warn(
@@ -725,6 +734,9 @@ export const assistantInvokeHandler = (deps: {
         if (payload.channelId !== undefined && deps.sendTyping !== undefined) {
           stopTyping = startTyping(() => deps.sendTyping!(payload.channelId!), {
             ...(deps.typingIntervalMs === undefined ? {} : { intervalMs: deps.typingIntervalMs }),
+            // Slice 3: while bytes arrive the indicator stays alive to the
+            // hard ceiling; the finally below still stops it at run end.
+            maxMs: deps.progressCeilingMs?.() ?? 300_000,
             onError: (err) =>
               deps.logger.warn(
                 safeLogFields({
@@ -1184,6 +1196,9 @@ export const assistantInvokeHandler = (deps: {
             usage: detail?.usage ?? {},
             guard: detail?.guard ?? { removed: [] },
             ...(detail?.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
+            ...(detail?.reasoning === undefined
+              ? {}
+              : { reasoning: detail.reasoning.slice(0, 12).map((r) => ({ ...r })) }),
             ...(included === undefined
               ? {}
               : {
@@ -1552,6 +1567,9 @@ export const assistantInvokeHandler = (deps: {
             sections: detail?.sections ?? [],
             toolCalls: detail?.toolCalls ?? [],
             guard: detail?.guard ?? { removed: [] },
+            ...(detail?.reasoning === undefined
+              ? {}
+              : { reasoning: detail.reasoning.slice(0, 12).map((r) => ({ ...r })) }),
             ...(detail?.included === undefined
               ? {}
               : {

@@ -4,6 +4,7 @@ import { pino } from 'pino';
 import {
   assistantInvokeCursor,
   assistantSummarisePayload,
+  getLiveBuffer,
   JOB_KINDS,
   parseGuildId,
   ProviderError,
@@ -1692,6 +1693,134 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     });
   });
 
+  it('writes reasoning from the detail into the stored trace, capped', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'short answer',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        history: [],
+        reasoning: [
+          { round: 1, text: 'why this answer' },
+          { round: 2, text: 'x'.repeat(9000) },
+        ],
+      },
+    }));
+    await h.run(mention({ invocationId: 'inv-reasoning', messageId: '810000000000000026' }));
+
+    const stored = traceRepo.getTrace(scope(), 'trace_inv-reasoning')?.reasoning;
+    expect(stored?.[0]).toEqual({ round: 1, text: 'why this answer' });
+    expect(stored?.[1]?.text.length).toBeLessThanOrEqual(8000);
+    expect(stored?.[1]?.text.endsWith('… [truncated]')).toBe(true);
+  });
+
+  it('a retry from an invoke-done cursor keeps the saved reasoning', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'hello',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        history: [],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        reasoning: [{ round: 1, text: 'why this answer' }],
+      },
+    }));
+    const input = mention({ invocationId: 'inv-retry-reasoning', messageId: '810000000000000028' });
+
+    // The first attempt invokes, saves invoke-done, then fails posting the answer.
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    const attempt1 = await h.run(input);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(h.inputs).toHaveLength(1);
+    expect(attempt1.cursor).not.toBeNull();
+
+    // The retry resumes from that cursor: no second invoke, reasoning kept.
+    const attempt2 = await h.run(input, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(h.inputs).toHaveLength(1);
+
+    expect(traceRepo.getTrace(scope(), 'trace_inv-retry-reasoning')?.reasoning).toEqual([
+      { round: 1, text: 'why this answer' },
+    ]);
+  });
+
+  it('drops the live buffer when the run finishes', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'short answer',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        history: [],
+      },
+    }));
+    getLiveBuffer().append('inv-live-drop', 'partial', 'thought');
+    await h.run(mention({ invocationId: 'inv-live-drop', messageId: '810000000000000027' }));
+    expect(getLiveBuffer().read('inv-live-drop')).toBeUndefined();
+  });
+
+  it('drops the live buffer when the run is refused', async () => {
+    const h = harness(() => ({ ok: true, content: 'never used' }), {
+      check: async () => ({ allowed: false, reason: 'no-write' }),
+    });
+    getLiveBuffer().append('inv-live-refused', 'partial', 'thought');
+    await h.run(mention({ invocationId: 'inv-live-refused', messageId: '810000000000000029' }));
+    expect(getLiveBuffer().read('inv-live-refused')).toBeUndefined();
+  });
+
+  it('keeps typing past 180 s when the ceiling setting is higher', async () => {
+    vi.useFakeTimers();
+    try {
+      const sendTyping = vi.fn(async () => undefined);
+      let resolveInvoke!: (value: AssistantInvocationResult) => void;
+      const svc = service(
+        () =>
+          new Promise<AssistantInvocationResult>((resolve) => {
+            resolveInvoke = resolve;
+          }),
+      );
+      const { deps } = baseDeps(svc, pino({ level: 'silent' }));
+      const handler = assistantInvokeHandler({
+        ...deps,
+        sendTyping,
+        typingIntervalMs: 1000,
+        progressCeilingMs: () => 300_000,
+      });
+      const runPromise = handler.run(
+        handler.payload.parse({ ...payload, channelId: '555555555555555555' }),
+        context({ attempts: 1 }),
+      );
+      await vi.advanceTimersByTimeAsync(190_000);
+      // Past the old 180 s cap: still typing because the ceiling is 300 s.
+      expect(sendTyping.mock.calls.length).toBeGreaterThan(180);
+      resolveInvoke({
+        ok: true,
+        content: 'done',
+        detail: {
+          sections: [],
+          attempts: [],
+          toolCalls: [],
+          usage: {},
+          guard: { removed: [] },
+          history: [],
+        },
+      });
+      await runPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a retry from an invoke-done cursor keeps the saved included', async () => {
     const h = harness(() => ({
       ok: true,
@@ -2811,5 +2940,79 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       .all(GUILD_ID) as { dataJson: string }[];
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.dataJson).not.toContain('zebracorn');
+  });
+
+  it('drops the live buffer when the chain fails on every entry', async () => {
+    const h = harness(async () => {
+      throw new ChainFailedError('invalid-request', 'chain failed', false, [
+        { provider: 'openrouter', model: 'm', outcome: 'error', code: 'provider-bad-model', ms: 5 },
+      ]);
+    });
+    getLiveBuffer().append('rec-chain', 'partial', 'thought');
+    await h.run(mention('rec-chain'), 1);
+    expect(getLiveBuffer().read('rec-chain')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-chain', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('drops the live buffer when the run is aborted', async () => {
+    const h = harness(async () => {
+      throw new DOMException('The operation was aborted', 'AbortError');
+    });
+    getLiveBuffer().append('rec-abort', 'partial', 'thought');
+    await h.run(mention('rec-abort'), 1);
+    expect(getLiveBuffer().read('rec-abort')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-abort', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('drops the live buffer when a provider timeout exhausts the retries', async () => {
+    const h = harness(async () => {
+      throw new ProviderError('timeout', 'idle timeout waiting for the provider', true);
+    });
+    getLiveBuffer().append('rec-timeout', 'partial', 'thought');
+    // Attempts at the retry ceiling: the timeout is terminal for this run.
+    await h.run(mention('rec-timeout'), 4);
+    expect(getLiveBuffer().read('rec-timeout')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-timeout', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('drops the live buffer when the run escalates to reviewers', async () => {
+    const h = harness(async () => ({
+      ok: true as const,
+      content: 'escalated summary',
+      escalation: {
+        channelId: '555555555555555555',
+        reviewerRoleIds: ['666666666666666666'],
+        ticketId: 'ticket-1',
+      },
+    }));
+    getLiveBuffer().append('rec-escalation', 'partial', 'thought');
+    await h.run(mention('rec-escalation'), 1);
+    expect(getLiveBuffer().read('rec-escalation')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-escalation', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'answered' });
+  });
+
+  it('drops the live buffer when the invoke throws before any provider call', async () => {
+    const h = harness(async () => {
+      throw new Error('context build exploded');
+    });
+    getLiveBuffer().append('rec-pre', 'partial', 'thought');
+    await h.run(mention('rec-pre'), 1);
+    expect(getLiveBuffer().read('rec-pre')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-pre', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
   });
 });

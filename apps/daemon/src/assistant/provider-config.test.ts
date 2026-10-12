@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseConfig } from '@bananasaurs/core';
+import { geminiCapabilities, parseConfig, TEXT_AND_TOOLS_ONLY } from '@bananasaurs/core';
 import {
   assistantKeyCooldownsRepo,
   assistantProviderRepo,
@@ -726,6 +726,41 @@ describe('chain pool and tier settings (ADR 0143)', () => {
       { pool: 'provider', tier: 'light', selectedKeyId: keyId },
       { pool: 'key', tier: 'standard', selectedKeyId: keyId },
     ]);
+  });
+  it('populates entry capabilities from the model catalogue', () => {
+    const modelCatalogue = { peek: () => undefined, refresh: async () => undefined };
+    const envBase = {
+      ...base,
+      AI_PROVIDER: 'gemini' as const,
+      AI_MODEL: 'gemini-3.8-flash',
+      GEMINI_API_KEY: 'env-key',
+      AI_PROFILE_COST_CLASS: 'free' as const,
+    };
+    const envStore = createProviderConfigStore(
+      t.scopes.instance(),
+      'a'.repeat(32),
+      'file',
+      envBase,
+      undefined,
+      { modelCatalogue },
+    );
+    expect(envStore.chain()[0]?.capabilities).toEqual(geminiCapabilities('gemini-3.8-flash'));
+
+    const store = createProviderConfigStore(
+      t.scopes.instance(),
+      'a'.repeat(32),
+      'env',
+      undefined,
+      undefined,
+      { modelCatalogue },
+    );
+    const keyId = store.addKey(
+      { provider: 'openrouter', label: 'OpenRouter', apiKey: 'or-key' },
+      10,
+    );
+    store.saveChain([{ keyId, model: 'acme/unlisted-model' }], 10);
+    // An unlisted OpenRouter model is text plus tools only: no thinking parameter.
+    expect(store.chain()[0]?.capabilities).toEqual(TEXT_AND_TOOLS_ONLY);
   });
   it('rejects invalid pool and tier without replacing the saved chain', () => {
     const scope = t.scopes.instance();
