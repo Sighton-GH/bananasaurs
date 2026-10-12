@@ -81,8 +81,8 @@
 | 3 | S3-T6 OpenAI-compatible streaming | Modify: `packages/core/src/providers/openai-compatible.ts`; Test: `packages/core/src/providers/openai-compatible.test.ts` | S3-T2, S3-T3 |
 | 3 | S3-T7 Gemini streaming | Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts` | S3-T2, S3-T3 |
 | 4 | S3-T8 Tool loop wiring, finish reasons, chain timeouts | Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/assistant/model-chain.ts`; Test: `apps/daemon/src/assistant/model-chain.test.ts` | S3-T2, S3-T6, S3-T7 |
-| 4 | S3-T9 Live buffer, route and progress events | Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts` | S3-T2 |
-| 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx` | S3-T4, S3-T9 |
+| 4 | S3-T9 Live buffer, route and progress events | Create: `packages/core/src/assistant/live-buffer.ts`; Test: `packages/core/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts` | S3-T2 |
+| 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx` | S3-T9 |
 | 5 | S3-T11 State and privacy paperwork | Modify: `docs/STATE.md`; Modify: `PRIVACY.md` | S3-T1 |
 | 5 | S3-T12 Discord progress notice and daemon wiring | Modify: `apps/daemon/src/jobs/assistant.ts`; Test: `apps/daemon/src/jobs/assistant.test.ts`; Modify: `packages/core/src/jobs/kinds.ts`; Modify: `apps/daemon/src/assistant/commands.ts`; Modify: `apps/daemon/src/assistant/service.ts`; Test: `apps/daemon/src/assistant/service.test.ts`; Modify: `apps/daemon/src/runtime/guild.ts`; Modify: `apps/daemon/src/runtime/daemon.ts` | S3-T2, S3-T8 |
 
@@ -1554,11 +1554,11 @@ and return `text: cutShort ? guarded.text + CUT_SHORT : guarded.text` in the `gu
 **Done when:** `length`/`MAX_TOKENS` with text delivers the answer plus `\n\n-# (cut short)`; `model-progress` fires at most every 3 s on one run-shared throttle that survives the escalation hand-over; skipped/cooled entries emit nothing; `reasoning` travels per round on `LoopResult`; chain entries forward idle/ceiling timeouts to the adapters.
 
 ### S3-T9: Live buffer, route and progress events   ·   Wave 4
-**Owns:** Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts`
+**Owns:** Create: `packages/core/src/assistant/live-buffer.ts`; Test: `packages/core/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts`
 **Reads (do not edit):** `packages/core/src/assistant/run-events.ts` (`model-progress`), `packages/core/src/assistant/trace.ts` (`reasoning` from S3-T5)
-**Interfaces:** Consumes: `model-progress` event from S3-T2; trace `reasoning` from S3-T5 · Produces: `LiveBuffer` with `append(runId, answer, reasoning)`, `read(runId)`, `drop(runId)` capped at 8,000 chars per side; `GET /api/assistant/runs/:runId/live` gated by `audit.read`; `model-progress` patch bumps `updatedAt`
+**Interfaces:** Consumes: `model-progress` event from S3-T2; trace `reasoning` from S3-T5 · Produces: `LiveBuffer` with `append(runId, answerDelta, reasoningDelta)`, `read(runId)`, `drop(runId)` capped at 8,000 chars per side plus a module singleton `getLiveBuffer()`; `GET /api/assistant/runs/:runId/live` gated by `audit.read`; `model-progress` patch bumps `updatedAt`; the recorder drops the run id on `finished`
 
-- [ ] **Step 1: Write the failing test** — create `apps/daemon/src/assistant/live-buffer.test.ts`:
+- [ ] **Step 1: Write the failing test** — create `packages/core/src/assistant/live-buffer.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -1580,25 +1580,140 @@ describe('createLiveBuffer', () => {
     buf.append('run-1', 'lo', ' not');
     expect(buf.read('run-1')).toEqual({ answer: 'hello', thinking: 'why not' });
   });
+
+  it('reads unknown runs as undefined', () => {
+    expect(createLiveBuffer().read('nope')).toBeUndefined();
+  });
 });
 ```
 
-and in `packages/http/src/routes/assistant-runs.test.ts` add (following its `requires audit.read` test at line 100, using its app/seed helpers): a run seeded in-guild returns `{ answer, thinking }` from `GET /api/assistant/runs/:runId/live`; without `audit.read` it 403s; a run seeded in another guild 404s.
+and in `packages/http/src/routes/assistant-runs.test.ts` add (following the `requires audit.read` test at line 100, using the `seedRun` helper at lines 45–69, the `grant` helper at line 37 and the `signIn` + `app.inject` pattern at lines 26–36):
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./live-buffer.js` and 404 on `/live`
-- [ ] **Step 3: Implement** — full `apps/daemon/src/assistant/live-buffer.ts`: a `Map<string, { answer: string; thinking: string }>`; `append` concatenates then slices each side to the last 8,000 chars; `read` returns a copy or undefined; `drop` deletes. Anchor: `packages/http/src/routes/assistant-runs.ts` the `/events` handler (lines 129–160). Add after it `GET /api/assistant/runs/:runId/live` with the same `guard.require` + `requireCapability(session, 'audit.read', reply)` + guild-scoped `getRun` 404, returning `{ answer, thinking }` from the buffer (empty strings when absent). Anchor: `apps/daemon/src/assistant/run-recorder.ts` `patchFor` (lines 18–70). Add `case 'model-progress': return { updatedAt: now };` alongside the metadata-only group. The tool loop calls `buf.append` from its `onProgress`/chunk handler and `buf.drop` when it records `finished`; trace writing stores per-round `reasoning` (S3-T5 field) capped at 8,000.
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: PASS
+```ts
+it('serves live text for an in-guild run and hides it otherwise', async () => {
+  const { cookie, csrf } = await signIn();
+  grant('audit.read');
+  seedRun('run-1');
+  getLiveBuffer().append('run-1', 'hello Sam L', 'why this answer');
+  const ok = await app.inject({
+    method: 'GET',
+    url: '/api/assistant/runs/run-1/live',
+    headers: { cookie, 'x-csrf-token': csrf },
+  });
+  expect(ok.statusCode).toBe(200);
+  expect(ok.json()).toEqual({ answer: 'hello Sam L', thinking: 'why this answer' });
+  getLiveBuffer().drop('run-1');
+});
+
+it('live text needs audit.read and is guild-scoped', async () => {
+  const { cookie, csrf } = await signIn();
+  seedRun('run-2');
+  getLiveBuffer().append('run-2', 'hello', '');
+  const denied = await app.inject({
+    method: 'GET',
+    url: '/api/assistant/runs/run-2/live',
+    headers: { cookie, 'x-csrf-token': csrf },
+  });
+  expect(denied.statusCode).toBe(403);
+  grant('audit.read');
+  const other = await app.inject({
+    method: 'GET',
+    url: '/api/assistant/runs/no-such-run/live',
+    headers: { cookie, 'x-csrf-token': csrf },
+  });
+  expect(other.statusCode).toBe(404);
+  getLiveBuffer().drop('run-2');
+});
+```
+
+(check the CSRF header name against the existing tests in the file — use exactly what the line-100 test sends; the sketch above assumes `x-csrf-token`). The route test imports `getLiveBuffer` from `@bananasaurs/core`: export `createLiveBuffer`, `getLiveBuffer` and the `LiveBuffer`/`LiveText` types from the package index the way the neighbouring assistant modules are exported (check `packages/core/src/index.ts` for the `assistant/` export block and extend it additively). A run in another guild 404s by guild scope: seed `run-1` only in `GUILD` and request it with a session scoped to `OTHER_GUILD` the way the existing cross-guild test does — follow that test's pattern rather than inventing one.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./live-buffer.js` and 404 on `/live`
+- [ ] **Step 3: Implement** — create `packages/core/src/assistant/live-buffer.ts` in full (no existing file; `packages/http` already depends on `@bananasaurs/core`, so both the daemon loop and the route share it):
+
+```ts
+/** One run's live text: streamed answer plus thinking, each capped. */
+export interface LiveText {
+  readonly answer: string;
+  readonly thinking: string;
+}
+
+const ANSWER_CAP = 8_000;
+const THINKING_CAP = 8_000;
+
+/** In-memory per-run streaming text (ADR 0148). Never persisted, never logged. */
+export interface LiveBuffer {
+  append(runId: string, answerDelta: string, reasoningDelta: string): void;
+  read(runId: string): LiveText | undefined;
+  drop(runId: string): void;
+}
+
+export const createLiveBuffer = (): LiveBuffer => {
+  const runs = new Map<string, { answer: string; thinking: string }>();
+  const cap = (text: string, limit: number): string =>
+    text.length <= limit ? text : text.slice(text.length - limit);
+  return {
+    append(runId, answerDelta, reasoningDelta) {
+      const current = runs.get(runId) ?? { answer: '', thinking: '' };
+      runs.set(runId, {
+        answer: cap(current.answer + answerDelta, ANSWER_CAP),
+        thinking: cap(current.thinking + reasoningDelta, THINKING_CAP),
+      });
+    },
+    read(runId) {
+      const current = runs.get(runId);
+      return current === undefined ? undefined : { ...current };
+    },
+    drop(runId) {
+      runs.delete(runId);
+    },
+  };
+};
+
+/**
+ * The process-wide buffer the tool loop appends to and the HTTP route
+ * reads. Tests use `createLiveBuffer()` for isolation and touch this only
+ * for the route test.
+ */
+let shared: LiveBuffer | undefined;
+export const getLiveBuffer = (): LiveBuffer => {
+  if (shared === undefined) shared = createLiveBuffer();
+  return shared;
+};
+```
+
+Anchor: `packages/http/src/routes/assistant-runs.ts` the `/events` handler (lines 129–155). Add after it, mirroring the `/:runId` detail handler's guard order (lines 108–114: `guard.require`, `requireCapability(session, 'audit.read', reply)`, guild-scoped `getRun` 404):
+
+```ts
+app.get<{ Params: { runId: string } }>('/api/assistant/runs/:runId/live', (request, reply) => {
+  const session = guard.require(request, reply);
+  if (session === undefined) return reply;
+  if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+  const run = runRepo.getRun(session.scope, request.params.runId);
+  if (run === undefined) return reply.status(404).send({ error: 'not-found' });
+  const live = getLiveBuffer().read(request.params.runId);
+  return reply.status(200).send({ answer: live?.answer ?? '', thinking: live?.thinking ?? '' });
+});
+```
+
+with `import { getLiveBuffer } from '@bananasaurs/core';` alongside the existing core import (line 3). The tool loop appends through its `live` input (S3-T8); the recorder drops the run on `finished` (below); the thinking side is trace-capable viewers only, same gate as traces.
+
+Anchor: `apps/daemon/src/assistant/run-recorder.ts` `patchFor` (lines 18–70): add `case 'model-progress': return { updatedAt: now };` to the metadata-only group (`model-result`/`model-skipped`/`tool-result`/`guard`/`delivered`, lines 41–46). Extend `createRunRecorder` deps (lines 72–77) with `readonly live?: { drop(runId: string): void } | undefined`, and in `event()` (lines 98–106) after the patch, add `if (e.kind === 'finished') deps.live?.drop(deps.runId);` — the buffer dies with the run. Passing the singleton from `ledgerForRun` in `jobs/assistant.ts` lands in S3-T12 (which owns that file); this task only adds the optional dep. The trace writer stores per-round `reasoning` (S3-T5 field) capped at 8,000 — that persistence also lands in S3-T12 with the cursor detail.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` then `npx eslint apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` · exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/assistant/live-buffer.ts packages/core/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` then `npx eslint packages/core/src/assistant/live-buffer.ts packages/core/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts` · exit 0
 
-- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/live-buffer.ts apps/daemon/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts && git commit -m "Slice 3 T9: live buffer and progress events"`
+- [ ] **Step 7: Commit** — `git add packages/core/src/assistant/live-buffer.ts packages/core/src/assistant/live-buffer.test.ts packages/http/src/routes/assistant-runs.ts packages/http/src/routes/assistant-runs.test.ts apps/daemon/src/assistant/run-recorder.ts && git commit -m "Slice 3 T9: live buffer and progress events"`
 
 **Done when:** the buffer caps at 8,000 per side and drops at finish; `/live` is gated like traces; `model-progress` bumps `updatedAt` so the 10-minute stalled label stays honest.
 
 ### S3-T10: Dashboard live text and progress   ·   Wave 5
-**Owns:** Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx`
-**Reads (do not edit):** `packages/dashboard/src/pages/assistant-live.tsx` (`StepLog`, `InProgressPanel`, 2 s `useLiveResource`), `packages/dashboard/src/hooks/useLiveResource.tsx`
-**Interfaces:** Consumes: `GET /api/assistant/runs/:runId/live` from S3-T9; settings keys from S3-T4 · Produces: `describeRunEvent` renders `model-progress`; `LiveText` component polling `/live` every 2 s; tuning rows for the two timeouts
+**Owns:** Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx`
+**Reads (do not edit):** `packages/dashboard/src/pages/assistant-live.tsx` (`StepLog` at lines 172–267, 2 s `useLiveResource`), `packages/dashboard/src/hooks/useLiveResource.tsx`
+**Interfaces:** Consumes: `GET /api/assistant/runs/:runId/live` from S3-T9 · Produces: `describeRunEvent` renders `model-progress`; `runLiveUrl`; `LiveTextResponse`; `LiveText` component polling `/live` every 2 s, mounted in the StepLog card
+
+(No tuning-page change: rows render generically from settings — S3-T4 covers the two new rows with fixture-only test changes.)
 
 - [ ] **Step 1: Write the failing test** — create `packages/dashboard/src/pages/assistant-live-buffer.test.tsx` (`// @vitest-environment jsdom`, following `assistant-live.test.tsx` imports of `renderWithSession`, `stubFetch`):
 
@@ -1626,16 +1741,92 @@ describe('LiveText', () => {
 });
 ```
 
-and in `packages/dashboard/src/pages/assistant-tuning.test.tsx` extend the `renders the five group headings` test style: the idle-timeout and max-call rows render with defaults 45 s and 300 s, and saving the idle timeout converts seconds to milliseconds.
+and in `packages/dashboard/src/pages/assistant-tuning.test.tsx` extend the `renders the five group headings` test style: the idle-timeout and max-call rows render with defaults 45 s and 300 s, and saving the idle timeout converts seconds to milliseconds. (Moved to S3-T4: that task owns the tuning test and makes exactly this fixture change. This task touches no tuning file.)
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL with cannot find module `./assistant-live-buffer.js` and missing timeout rows
-- [ ] **Step 3: Implement** — anchor: `packages/dashboard/src/api/runs.ts` `describeRunEvent` (line 36) and `runEventsUrl`. Add `export const runLiveUrl = (runId: string): string => …/live` plus a `LiveTextResponse { answer: string; thinking: string }` interface; add the `model-progress` case: `` `Receiving… ${num(answerChars)} chars of answer` `` plus `` `, ${num(reasoningChars)} chars of thinking` `` when non-zero. New `assistant-live-buffer.tsx`: a `LiveText({ runId })` component using the same `useLiveResource` 2 s fast / 15 s slow cadence as `StepLog`, rendering the answer text and the thinking collapsed in a `<details>` element labelled `Thinking`. Anchor: `packages/dashboard/src/pages/assistant-tuning.tsx` rows (the provider-timeout row tested at line 133). Add two rows bound to `assistant.providerIdleTimeoutMs` and `assistant.providerMaxCallMs` with seconds display, same save path as the existing timeout row. Mount `LiveText` inside the StepLog card in `assistant-live.tsx` — mount-only change (contracts §4 dashboard rule).
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: PASS
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx --maxWorkers=1` · Expected: FAIL with cannot find module `./assistant-live-buffer.js`
+- [ ] **Step 3: Implement** — anchor: `packages/dashboard/src/api/runs.ts` `runEventsUrl` (lines 13–14) and `describeRunEvent` (line 36; `model-call` case at line 53, `model-result` at 55–75, `routed` at 114–117, and the `default` exhaustiveness guard at 118–124 — a new event kind without a case fails typecheck because of the `never` assignment). Add after `runEventsUrl`:
+
+```ts
+export const runLiveUrl = (runId: string): string =>
+  `${RUNS_URL}/${encodeURIComponent(runId)}/live`;
+
+export interface LiveTextResponse {
+  readonly answer: string;
+  readonly thinking: string;
+}
+```
+
+and add the `model-progress` case before `default` (keep every existing case byte-identical):
+
+```ts
+    case 'model-progress': {
+      let text = `Receiving… ${num(event.answerChars)} chars of answer`;
+      if (event.reasoningChars > 0) text += `, ${num(event.reasoningChars)} chars of thinking`;
+      return text;
+    }
+```
+
+(zero answer with thinking renders `Receiving… 0 chars of answer, …` — matches the ADR's `Receiving… 1,240 chars of answer, 3,100 chars of thinking` shape with a side omitted only when it is the thinking side at 0.)
+
+New `packages/dashboard/src/pages/assistant-live-buffer.tsx` in full (`LiveText` mirrors `StepLog`'s `useLiveResource` 2 s fast / 15 s slow cadence; thinking renders collapsed so member-echoed text is never shown in the open):
+
+```tsx
+import { useCallback, type JSX } from 'react';
+import { useSession } from '../app/session.js';
+import { useLiveResource } from '../hooks/useLiveResource.js';
+import { Card } from '../ui/Card.js';
+import { DataState } from '../ui/DataState.js';
+import { runLiveUrl, type LiveTextResponse } from '../api/runs.js';
+
+/** Live answer plus collapsed thinking for one run (ADR 0148). Polls; no SSE. */
+export function LiveText(props: { readonly runId: string }): JSX.Element {
+  const session = useSession();
+  const { runId } = props;
+  const load = useCallback(() => session.read<LiveTextResponse>(runLiveUrl(runId)), [session, runId]);
+  const live = useLiveResource<LiveTextResponse>('live text', load, {
+    fastMs: 2000,
+    slowMs: 15000,
+    isFast: (d) => d.answer === '' || d.thinking === '',
+    isDone: (d) => d.answer !== '' && d.thinking !== '',
+  });
+  void live;
+  return (
+    <Card title="Live answer">
+      <DataState
+        resource={live.resource}
+        isEmpty={() => false}
+        empty={<p className="text-sm text-ink-muted">Waiting for the first streamed text.</p>}
+      >
+        {() => {
+          const data = live.resource.state === 'ready' ? live.resource.data : undefined;
+          return (
+            <>
+              <p className="text-sm">{data?.answer ?? ''}</p>
+              {data?.thinking !== undefined && data.thinking !== '' && (
+                <details>
+                  <summary>Thinking</summary>
+                  <p className="text-sm text-ink-muted">{data.thinking}</p>
+                </details>
+              )}
+            </>
+          );
+        }}
+      </DataState>
+      {live.stale && <p className="mt-2 text-xs text-ink-muted">Reconnecting…</p>}
+    </Card>
+  );
+}
+```
+
+(check `useLiveResource`'s options and `DataState`'s props against `StepLog` (lines 172–267) and `useLiveResource.tsx` before shipping: `isFast`/`isDone` signatures, the `resource`/`stale` fields, and whether `DataState` takes `isEmpty`/`empty`/children exactly as above. If the hook has no `isDone`, drop that key and stop polling on unmount only — keep the 2 s/15 s cadence keys which `StepLog` proves exist. If `DataState`'s children render-prop shape differs, copy `StepLog`'s usage verbatim.)
+
+Anchor: `assistant-live.tsx` `StepLog`'s `<Card title="Step log">` return (lines 232–266). Mount-only change per contracts §4: import `LiveText` and render `<LiveText runId={runId} />` directly below the StepLog card's closing tag (inside the same fragment), passing the same `runId` prop. No other change to the file.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx packages/dashboard/src/pages/assistant-live.tsx` then `npx eslint packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx packages/dashboard/src/pages/assistant-live.tsx` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-tuning.tsx packages/dashboard/src/pages/assistant-tuning.test.tsx packages/dashboard/src/pages/assistant-live.tsx && git commit -m "Slice 3 T10: dashboard live text and progress"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-live.tsx` then `npx eslint packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-live.tsx` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/dashboard/src/api/runs.ts packages/dashboard/src/pages/assistant-live-buffer.tsx packages/dashboard/src/pages/assistant-live-buffer.test.tsx packages/dashboard/src/pages/assistant-live.tsx && git commit -m "Slice 3 T10: dashboard live text and progress"`
 
-**Done when:** `model-progress` renders the `Receiving…` line; live text polls every 2 s with thinking collapsed; both timeout settings render and save.
+**Done when:** `model-progress` renders the `Receiving…` line (typecheck pins the new case via the `never` guard); live text polls every 2 s with thinking collapsed; the StepLog card mounts `LiveText` with no other page change.
 
 
 ### S3-T11: State and privacy paperwork   ·   Wave 5
