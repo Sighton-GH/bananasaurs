@@ -490,12 +490,16 @@ export const assistantInvokeHandler = (deps: {
     // leave an open ticket nobody was told about.
     const prior = parseCursor(context.cursor);
     const reached = prior === undefined ? -1 : stageRank(prior.stage);
-    // T12d: true once the run's answered/refused finish is recorded. Already
-    // true on a retry whose cursor passed the answered stage (the finish is
-    // recorded with the cursor save, before any post-answer stage), so it
-    // survives the fresh recorder a retry builds; set again below when this
-    // attempt records the finish itself.
-    let answerFinishRecorded = reached >= stageRank('answered');
+    // T12e: the staged answered/refused result once the cursor has reached
+    // that stage (from the prior cursor on a retry, set by saveStaged on this
+    // attempt). A cursor stage is not proof a ledger finish was persisted
+    // (the ledger may have been unavailable on the attempt that answered), so
+    // terminal points consult the ledger itself via closeStagedRun.
+    let staged:
+      { result: AssistantInvocationResult; conversationId: string | undefined } | undefined =
+      prior !== undefined && reached >= stageRank('answered')
+        ? { result: prior.result, conversationId: prior.conversationId }
+        : undefined;
     if (
       prior === undefined &&
       payload.interaction !== undefined &&
@@ -603,6 +607,42 @@ export const assistantInvokeHandler = (deps: {
     // ADR 0129 §6: every step of the run lands in the run ledger, on every
     // attempt including retries.
     const recorder = ledgerForRun();
+    // T12e: terminal close for a run whose cursor is past 'answered'. Reads
+    // the ledger for an existing terminal `finished` event: none -> append
+    // `finished` with the STAGED outcome (same duration/tokens/trace rules as
+    // the original finish); one exists -> append nothing (exactly one) and
+    // only re-close a row a retry's `started` event re-opened. The live buffer
+    // is dropped last, by run id.
+    const closeStagedRun = (): void => {
+      const st = staged;
+      if (st === undefined) return;
+      const outcome = st.result.ok ? 'answered' : (st.result.outcome ?? 'refused');
+      let hasFinished = false;
+      try {
+        if (deps.conversations !== undefined)
+          hasFinished = runRepo
+            .listRunEvents(deps.conversations.scope, payload.invocationId, 0, 1_000)
+            .some((row) => row.event.kind === 'finished');
+      } catch {
+        /* Ledger availability must not disable retention cleanup. */
+      }
+      if (hasFinished) {
+        recorder.update({ state: outcome, stage: 'done' });
+      } else {
+        const detail = st.result.detail;
+        const total = detail === undefined ? null : totalTokensOf(detail.usage);
+        recorder.event({
+          kind: 'finished',
+          outcome,
+          durationMs: Math.max(0, deps.now() - startedAt),
+          ...(total === null ? {} : { totalTokens: total }),
+          ...(st.conversationId === undefined || deps.conversations === undefined
+            ? {}
+            : { traceId: `trace_${payload.invocationId}` }),
+        });
+      }
+      getLiveBuffer().drop(payload.invocationId);
+    };
     try {
       {
         let queueWaitMs = 0;
@@ -672,6 +712,7 @@ export const assistantInvokeHandler = (deps: {
         Math.max(deps.now(), ...existing.map((turn) => turn.at + 1));
 
       const saveStaged = (stage: CursorStage, result: AssistantInvocationResult): void => {
+        if (stageRank(stage) >= stageRank('answered')) staged = { result, conversationId };
         context.saveCursor(
           JSON.stringify({
             stage,
@@ -1650,7 +1691,6 @@ export const assistantInvokeHandler = (deps: {
               ? {}
               : { traceId: `trace_${key}` }),
           });
-          answerFinishRecorded = true;
         }
         // ADR 0093 decision 3: every conversation whose summary this run
         // looked back at is linked with kind `recalled`. The insert is
@@ -1760,6 +1800,9 @@ export const assistantInvokeHandler = (deps: {
         );
         saveStaged('logged', result);
       }
+      // T12e: a retry past 'answered' that succeeds must close the row its
+      // `started` event re-opened (and record the finish if the ledger lacks one).
+      if (prior !== undefined && reached >= stageRank('answered')) closeStagedRun();
     } catch (err) {
       // JobContext omits the worker budget. Read the actual guild-scoped row;
       // without a row/scope, fail safe for retention rather than retaining text.
@@ -1775,30 +1818,15 @@ export const assistantInvokeHandler = (deps: {
           ? !(err instanceof RetryAfterError)
           : context.attempts >= maxAttempts
       ) {
-        // T12d: a run whose answered/refused finish is already recorded keeps
-        // that outcome - the member has their answer, so a post-answer
-        // delivery failure must not append a second finished that flips the
-        // run to failed. A retry's `started` event moved the row back to
-        // running, so re-close it with the staged outcome (a direct row
-        // patch, not a second finished event); a same-attempt failure needs
-        // no patch because the finish already closed the row. Retention must
-        // not depend on the append: drop the live buffer directly by run id
-        // instead (stop appending first, drop last).
-        if (answerFinishRecorded) {
-          if (reached >= stageRank('answered') && prior !== undefined) {
-            recorder.update({
-              state: prior.result.ok ? 'answered' : (prior.result.outcome ?? 'refused'),
-              stage: 'done',
-            });
-          }
-          getLiveBuffer().drop(payload.invocationId);
-        } else {
+        // T12d/T12e: past the answered stage the member has their answer, so
+        // never finish 'failed'; close the run with the staged outcome.
+        if (staged !== undefined) closeStagedRun();
+        else
           recorder.event({
             kind: 'finished',
             outcome: 'failed',
             durationMs: Math.max(0, deps.now() - startedAt),
           });
-        }
       }
       throw err;
     }

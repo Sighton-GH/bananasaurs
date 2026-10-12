@@ -3379,6 +3379,87 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
   });
 
+  it.each([
+    ['answered', undefined],
+    ['refused', 'refused'],
+  ] as const)(
+    'T12e a %s run whose attempt-1 ledger was unavailable finishes with its staged outcome when the final log send fails',
+    async (outcome, refusal) => {
+      const id = `terminal-t12e-ledger-gap-${outcome}`;
+      observe(id);
+      let down = true;
+      const realEnsure = runRepo.ensureRun;
+      vi.spyOn(runRepo, 'ensureRun').mockImplementation((...args) => {
+        if (down) throw new Error('fixture ledger unavailable');
+        return realEnsure(...args);
+      });
+      const h = harness(
+        async (input) => {
+          const result = await streamed(input);
+          return refusal === undefined
+            ? result
+            : { ok: false as const, outcome: 'refused' as const, content: 'I cannot help.' };
+        },
+        { logChannelId: '666666666666666666' },
+      );
+      const error = new Error('fixture log channel unavailable');
+      h.send.mockImplementation(async (channelId: string) => {
+        if (channelId === '666666666666666666') throw error;
+        return { channelId, messageId: '829000000000000061' };
+      });
+      const jobId = jobRepo.enqueue(scope(), {
+        kind: JOB_KINDS.assistantInvoke,
+        payload: JSON.stringify(mention(id)),
+        dedupeKey: id,
+        maxAttempts: 2,
+        now: NOW,
+      }).jobId!;
+      const first = await h.run(mention(id), 1, null, jobId);
+      expect(first.error).toBe(error);
+      expect(first.cursor).not.toBeNull();
+      down = false;
+      const last = await h.run(mention(id), 2, first.cursor, jobId);
+      expect(last.error).toBe(error);
+      expect(finishedOutcomes(id)).toEqual([outcome]);
+      const row = runRepo.getRun(scope(), id);
+      expect(row?.state).toBe(outcome);
+      expect(row?.stage).toBe('done');
+      expect(row?.finishedAt).toBeDefined();
+      expect(row?.finishedAt).not.toBeNull();
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+    },
+  );
+
+  it('T12e a retry past answered that then succeeds closes the run row exactly once', async () => {
+    const id = 'terminal-t12e-retry-success';
+    observe(id);
+    const h = harness(streamed, { logChannelId: '666666666666666666' });
+    const error = new Error('fixture log channel unavailable');
+    let logDown = true;
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666' && logDown) throw error;
+      return { channelId, messageId: '829000000000000062' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    logDown = false;
+    const second = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(second.error).toBeUndefined();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    const row = runRepo.getRun(scope(), id);
+    expect(row?.state).toBe('answered');
+    expect(row?.stage).toBe('done');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
     const h = harness(async () => ({ ok: true, content: 'answer' }));
     await h.run(mention('rec-1'));
