@@ -22,6 +22,7 @@ import {
 import {
   assistantDailyDigestHandler,
   pickBackgroundEntry,
+  putDigestWithDrafts,
   type DigestDeps,
 } from './assistant-digest.js';
 
@@ -159,6 +160,63 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     expect(kinds.filter((k) => k === 'queued')).toHaveLength(1);
     expect(kinds.filter((k) => k === 'started')).toHaveLength(1);
   });
+  it('a duplicate digest writes no second draft set', () => {
+    const s = scope();
+    const bonds = [{ conversationId: 'conv-1', channelId: CHANNEL_A, title: 'Build night' }];
+    const first = {
+      daySummary: 'First summary.',
+      memoryProposals: [
+        {
+          text: 'The laser cutter needs a new lens.',
+          why: 'Alex P reported it.',
+          sourceConversationIds: ['conv-1'],
+        },
+      ],
+    };
+    const second = {
+      daySummary: 'Second summary.',
+      memoryProposals: [
+        {
+          text: 'The kiln controller is acting up badly.',
+          why: 'Sam L reported it.',
+          sourceConversationIds: ['conv-1'],
+        },
+        {
+          text: 'The workshop needs more ventilation now.',
+          why: 'Alex P reported it.',
+          sourceConversationIds: ['conv-1'],
+        },
+      ],
+    };
+    expect(
+      putDigestWithDrafts(s, {
+        day: '2026-10-09',
+        summary: first,
+        conversations: bonds,
+        botUserId: BOT,
+        now: NOW,
+      }),
+    ).toBe('created');
+    // A replay races past the handler's early return: the digest row already
+    // exists, so no second draft set may land.
+    expect(
+      putDigestWithDrafts(s, {
+        day: '2026-10-09',
+        summary: second,
+        conversations: bonds,
+        botUserId: BOT,
+        now: NOW,
+      }),
+    ).toBe('duplicate');
+    expect(digestRepo.listDigests(s, 10)).toHaveLength(1);
+    expect(digestRepo.getDigest(s, '2026-10-09')?.summary.daySummary).toBe('First summary.');
+    const drafts = assistantRepo
+      .listDecisions(s)
+      .filter((d) => d.provenance === 'daily-digest');
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.summary).toContain('laser cutter');
+  });
+
   it('records the forced tier as a background-tier routed event, never routeRun', async () => {
     seedDay();
     const s = scope();

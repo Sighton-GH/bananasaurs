@@ -119,7 +119,7 @@ const renderDigestText = (
     ...conversations.map((c) => c.title),
   ].join('\n');
 
-const putDigestWithDrafts = (
+export const putDigestWithDrafts = (
   scope: GuildScope,
   input: {
     readonly day: string;
@@ -132,11 +132,12 @@ const putDigestWithDrafts = (
     readonly botUserId: string;
     readonly now: number;
   },
-): void =>
+): 'created' | 'duplicate' =>
   write(scope, ({ db }) => {
     const parsed = digestOutputSchema.parse(input.summary);
     const stored = { summary: parsed, conversations: [...input.conversations] };
-    db.insert(schema.assistantDailyDigests)
+    const changed = db
+      .insert(schema.assistantDailyDigests)
       .values({
         guildId: scope.guildId,
         day: input.day,
@@ -149,7 +150,12 @@ const putDigestWithDrafts = (
       .onConflictDoNothing({
         target: [schema.assistantDailyDigests.guildId, schema.assistantDailyDigests.day],
       })
-      .run();
+      .run().changes;
+    // A replay that raced past the handler's early return lands here with
+    // the digest row already written: file no second draft set (hard rule 6
+    // — the `digest:<day>:<index>` ids would otherwise collide or, with a
+    // different proposal count, leak extra drafts).
+    if (changed === 0) return 'duplicate';
     parsed.memoryProposals.forEach((p, index) => {
       db.insert(schema.assistantDecisions)
         .values({
@@ -167,6 +173,7 @@ const putDigestWithDrafts = (
         })
         .run();
     });
+    return 'created';
   });
 
 /**
@@ -420,7 +427,7 @@ export const assistantDailyDigestHandler = (
           return true;
         })
         .slice(0, deps.digestMaxProposals());
-      putDigestWithDrafts(scope, {
+      const stored = putDigestWithDrafts(scope, {
         day: payload.day,
         summary: { daySummary: merged.daySummary, memoryProposals: kept },
         conversations: groups.map((g) => ({
@@ -431,6 +438,16 @@ export const assistantDailyDigestHandler = (
         botUserId: deps.botUserId,
         now: deps.now(),
       });
+      if (stored === 'duplicate') {
+        deps.logger.info(
+          safeLogFields({
+            component: 'assistant-digest',
+            guildId: scope.guildId,
+            day: payload.day,
+          }),
+          'daily digest already done; skipping second draft set',
+        );
+      }
       answer('answered');
     } catch (err) {
       deps.logger.warn(
