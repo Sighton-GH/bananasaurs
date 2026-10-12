@@ -217,6 +217,28 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     expect(drafts[0]?.summary).toContain('laser cutter');
   });
 
+  it('a run that succeeds on retry carries no stale error code', async () => {
+    seedDay();
+    const s = scope();
+    const failing = assistantDailyDigestHandler(
+      s,
+      deps({
+        digestModel: async () => {
+          throw new Error('boom');
+        },
+      }),
+    );
+    await expect(failing.run({ day: '2026-10-09' }, { ...CTX })).rejects.toThrow('boom');
+    expect(runRepo.getRun(s, 'digest-2026-10-09')).toMatchObject({
+      state: 'failed',
+      errorCode: 'digest-error',
+    });
+    await assistantDailyDigestHandler(s, deps()).run({ day: '2026-10-09' }, { ...CTX });
+    const recovered = runRepo.getRun(s, 'digest-2026-10-09');
+    expect(recovered?.state).toBe('answered');
+    expect(recovered).not.toHaveProperty('errorCode');
+  });
+
   it('records the forced tier as a background-tier routed event, never routeRun', async () => {
     seedDay();
     const s = scope();
