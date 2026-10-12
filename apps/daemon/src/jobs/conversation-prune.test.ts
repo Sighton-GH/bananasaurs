@@ -96,6 +96,86 @@ beforeEach(() => {
 afterEach(() => t.close());
 
 describe('conversationPruneHandler', () => {
+  for (const failure of ['digest-delete', 'audit-insert'] as const) {
+    it(`rolls back retention deletes on ${failure} failure and audits correct counts on retry`, async () => {
+      const scope = t.scopes.forGuild(GUILD_A);
+      assistantRepo.setConversationRetention(scope, 61, NOW);
+      seedConversation(GUILD_A, 'conv-old', NOW - 62 * DAY_MS);
+      traceRepo.insertTrace(scope, trace({ traceId: 'old-trace', conversationId: 'conv-old' }));
+      runRepo.ensureRun(scope, {
+        runId: 'run-old',
+        userId: MEMBER,
+        behaviourId: 'club',
+        source: 'mention',
+        queuedAt: NOW,
+      });
+      runRepo.updateRun(scope, 'run-old', { conversationId: 'conv-old', updatedAt: NOW });
+      digestRepo.putDigestOnce(scope, {
+        day: '2026-01-01',
+        summary: { daySummary: 'Old.', memoryProposals: [] },
+        conversations: [],
+        now: NOW,
+      });
+      t.raw.exec(
+        failure === 'digest-delete'
+          ? `CREATE TRIGGER fail_prune BEFORE DELETE ON assistant_daily_digests
+           WHEN OLD.guild_id = '111111111111111111'
+           BEGIN SELECT RAISE(ABORT, 'injected digest failure'); END;`
+          : `CREATE TRIGGER fail_prune BEFORE INSERT ON audit_events
+           WHEN NEW.guild_id = '111111111111111111' AND NEW.action = 'assistant_conversation.pruned'
+           BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;`,
+      );
+      const handler = conversationPruneHandler(scope, { now: () => NOW, logger });
+      expect(() => handler.run({ day: '2026-09-25' }, { ...context })).toThrow('injected');
+      expect(conversationRepo.getConversation(scope, 'conv-old')).toBeDefined();
+      expect(conversationRepo.listTurns(scope, 'conv-old')).toHaveLength(1);
+      expect(traceRepo.getTrace(scope, 'old-trace')).toBeDefined();
+      expect(runRepo.getRun(scope, 'run-old')).toBeDefined();
+      expect(digestRepo.getDigest(scope, '2026-01-01')).toBeDefined();
+      expect(
+        effectRepo
+          .tailAudit(scope, { limit: 10 })
+          .filter((r) => r.action === 'assistant_conversation.pruned'),
+      ).toEqual([]);
+      t.raw.exec('DROP TRIGGER fail_prune');
+      await handler.run({ day: '2026-09-25' }, { ...context });
+      expect(conversationRepo.getConversation(scope, 'conv-old')).toBeUndefined();
+      expect(traceRepo.getTrace(scope, 'old-trace')).toBeUndefined();
+      expect(runRepo.getRun(scope, 'run-old')).toBeUndefined();
+      expect(digestRepo.getDigest(scope, '2026-01-01')).toBeUndefined();
+      const pruned = effectRepo
+        .tailAudit(scope, { limit: 10 })
+        .filter((r) => r.action === 'assistant_conversation.pruned');
+      expect(pruned).toHaveLength(1);
+      expect(pruned[0]?.after).toBe(JSON.stringify({ count: 1, digests: 1 }));
+    });
+  }
+
+  it('rolls back digest-only deletion when the audit fails and audits its retry', async () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    assistantRepo.setConversationRetention(scope, 61, NOW);
+    digestRepo.putDigestOnce(scope, {
+      day: '2026-01-01',
+      summary: { daySummary: 'Old.', memoryProposals: [] },
+      conversations: [],
+      now: NOW,
+    });
+    t.raw.exec(`CREATE TRIGGER fail_prune BEFORE INSERT ON audit_events
+      WHEN NEW.guild_id = '111111111111111111' AND NEW.action = 'assistant_conversation.pruned'
+      BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;`);
+    const handler = conversationPruneHandler(scope, { now: () => NOW, logger });
+    expect(() => handler.run({ day: '2026-09-25' }, { ...context })).toThrow('injected');
+    expect(digestRepo.getDigest(scope, '2026-01-01')).toBeDefined();
+    t.raw.exec('DROP TRIGGER fail_prune');
+    await handler.run({ day: '2026-09-25' }, { ...context });
+    expect(digestRepo.getDigest(scope, '2026-01-01')).toBeUndefined();
+    const pruned = effectRepo
+      .tailAudit(scope, { limit: 10 })
+      .filter((r) => r.action === 'assistant_conversation.pruned');
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]?.after).toBe(JSON.stringify({ count: 0, digests: 1 }));
+  });
+
   it('prunes digest rows older than the retention window with the conversations', async () => {
     const s = t.scopes.forGuild(GUILD_A);
     assistantRepo.setConversationRetention(s, 61, 100);

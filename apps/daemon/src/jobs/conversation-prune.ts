@@ -13,6 +13,7 @@ import {
   effectRepo,
   runRepo,
   traceRepo,
+  write,
   type GuildScope,
 } from '@bananasaurs/storage';
 
@@ -44,35 +45,45 @@ export const conversationPruneHandler = (
 
     const days = assistantRepo.getConversationRetention(scope);
     if (days === null) return;
-    const { conversations, ids } = conversationRepo.pruneOlderThan(scope, now - days * 86_400_000);
-    traceRepo.deleteTracesForConversations(scope, ids);
-    runRepo.deleteRunsForConversations(scope, ids);
-    // ADR 0150 decision 4: digest rows follow the same window, keyed by day.
-    // The cutoff is a UTC day; a digest written near a zone edge can outlive
-    // the conversations by under a day. Keep-forever (`null`) returns above
-    // and keeps digests too.
-    const digests = digestRepo.deleteDigestsOlderThan(
-      scope,
-      new Date(now - days * 86_400_000).toISOString().slice(0, 10),
-    );
-    if (conversations === 0 && digests === 0) return;
-    effectRepo.recordAudit(scope, {
-      at: now,
-      actorType: 'system',
-      actorId: undefined,
-      action: 'assistant_conversation.pruned',
-      subjectType: 'assistant_conversation',
-      subjectId: undefined,
-      after: { count: conversations, digests },
-      dryRun: false,
+    // Keep retention deletes and their count audit atomic: a retry after any
+    // storage failure must still see every row and produce the full counts.
+    const counts = write(scope, () => {
+      const { conversations, ids } = conversationRepo.pruneOlderThan(
+        scope,
+        now - days * 86_400_000,
+      );
+      traceRepo.deleteTracesForConversations(scope, ids);
+      runRepo.deleteRunsForConversations(scope, ids);
+      // ADR 0150 decision 4: digest rows follow the same window, keyed by day.
+      // The cutoff is a UTC day, not the club's local day. The exact retention
+      // edge differs from conversations by the local zone and time of day.
+      // Keep-forever (`null`) returns above and keeps digests too.
+      const digests = digestRepo.deleteDigestsOlderThan(
+        scope,
+        new Date(now - days * 86_400_000).toISOString().slice(0, 10),
+      );
+      if (conversations === 0 && digests === 0) return undefined;
+      effectRepo.recordAudit(scope, {
+        at: now,
+        actorType: 'system',
+        actorId: undefined,
+        action: 'assistant_conversation.pruned',
+        subjectType: 'assistant_conversation',
+        subjectId: undefined,
+        after: { count: conversations, digests },
+        dryRun: false,
+      });
+      return { conversations, digests };
     });
+    if (counts === undefined) return;
     deps.logger.info(
       safeLogFields({
+        guildId: scope.guildId,
         component: 'conversations',
         jobKind: JOB_KINDS.conversationPrune,
-        count: conversations,
+        count: counts.conversations,
       }),
-      'conversations: prune run deleted expired conversations',
+      `conversations: prune run deleted ${counts.conversations} expired conversations and ${counts.digests} digests`,
     );
   },
 });
