@@ -755,23 +755,42 @@ export class OpenAiCompatibleProvider implements TextProvider {
           closeBody();
         }
       };
+      /**
+       * Typed void callbacks can still return promises (same as Gemini): observe them, race
+       * them against the abort so a slow callback stays inside the ceiling, and sanitise
+       * any rejection so it can neither reach the key nor become an unhandled rejection.
+       */
+      const runCallback = async (call: () => unknown): Promise<void> => {
+        let pending: Promise<unknown>;
+        try {
+          pending = Promise.resolve(call());
+        } catch (error) {
+          throw sanitizeCause(error, this.apiKey);
+        }
+        const guarded = pending.then(
+          () => undefined,
+          (error: unknown) => {
+            throw sanitizeCause(error, this.apiKey);
+          },
+        );
+        await Promise.race([guarded, abortRace]);
+      };
       let lastEmitAt = 0;
-      const emitProgress = (): void => {
-        if (request.onProgress === undefined) return;
+      const emitProgress = async (): Promise<void> => {
+        const onProgress = request.onProgress;
+        if (onProgress === undefined) return;
         const now = Date.now();
         if (lastEmitAt !== 0 && now - lastEmitAt < 3_000) return; // at most every 3 s
         lastEmitAt = now;
-        try {
-          request.onProgress({
+        await runCallback(() =>
+          onProgress({
             round: 0, // the tool loop stamps the real round
             answerChars,
             reasoningChars,
             keepalives,
             msSinceLastByte: Math.max(0, now - lastByteAt),
-          });
-        } catch (error) {
-          throw sanitizeCause(error, this.apiKey);
-        }
+          }),
+        );
       };
       const events = parseSseStream(byteChunks());
       // Tracks whether the generator is parked at a yield: only then can
@@ -788,7 +807,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           const event = result.value;
           if (event.keepalive) {
             keepalives += 1;
-            emitProgress();
+            await emitProgress();
             continue;
           }
           if (event.data === '') continue; // bare empty-data event: bytes, not a chunk
@@ -886,13 +905,11 @@ export class OpenAiCompatibleProvider implements TextProvider {
             }
           }
           if (deltaText !== '' || deltaReasoning !== '') {
-            try {
-              request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
-            } catch (error) {
-              throw sanitizeCause(error, this.apiKey);
-            }
+            const onChunk = request.onChunk;
+            if (onChunk !== undefined)
+              await runCallback(() => onChunk({ text: deltaText, reasoning: deltaReasoning }));
           }
-          emitProgress();
+          await emitProgress();
         }
       } catch (error) {
         closeBody();

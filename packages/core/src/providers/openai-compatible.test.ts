@@ -1700,4 +1700,78 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
       expect(observable(err).toLowerCase()).not.toContain(echoed.toLowerCase());
     }
   });
+
+  it.each(['onChunk', 'onProgress'] as const)(
+    'sanitises an async %s rejection and raises no unhandled rejection',
+    async (name) => {
+      const unhandled: unknown[] = [];
+      const listener = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on('unhandledRejection', listener);
+      try {
+        const fetch = async (): Promise<Response> =>
+          sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
+        let err: Error | undefined;
+        try {
+          await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
+            ...req,
+            [name]: () => Promise.reject(new Error(key)),
+          });
+        } catch (error) {
+          err = error as Error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(err).toBeDefined();
+        expect(observable(err)).not.toContain(key);
+        expect(err).toMatchObject({ kind: 'outage', retryable: true });
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', listener);
+      }
+    },
+  );
+
+  it('sanitises a synchronous onProgress throw', async () => {
+    const fetch = async (): Promise<Response> =>
+      sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
+    const err = await createOpenRouterProvider({ apiKey: key, fetch })
+      .generateText({
+        ...req,
+        onProgress: () => {
+          throw new Error(key);
+        },
+      })
+      .catch((error: unknown) => error as Error);
+    expect(observable(err)).not.toContain(key);
+  });
+
+  it('stops a never-ending byte trickle at the absolute maxCallMs ceiling', async () => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        timer = setInterval(() => {
+          controller.enqueue(
+            new TextEncoder().encode(
+              `data: ${JSON.stringify({ choices: [{ delta: { content: 'x' } }] })}\n\n`,
+            ),
+          );
+        }, 5);
+      },
+      cancel() {
+        clearInterval(timer);
+      },
+    });
+    const err = await createOpenRouterProvider({
+      apiKey: key,
+      maxCallMs: 60,
+      idleTimeoutMs: 10_000,
+      timeoutMs: 10_000,
+      fetch: async () => new Response(body),
+    })
+      .generateText(req)
+      .catch((error: unknown) => error as Error);
+    clearInterval(timer);
+    expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+  });
 });
