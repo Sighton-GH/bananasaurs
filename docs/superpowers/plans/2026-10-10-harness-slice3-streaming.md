@@ -1,43 +1,72 @@
 # Slice 3: Streaming, idle timeout, live progress and thinking — implementation plan
 
 > **Instinct plan.** Read with `2026-10-10-harness-00-instinct-handoff.md` and `2026-10-10-harness-00-shared-contracts.md`.
-> **Status:** DRAFT — refreshed by the controller before round 2 — controller note: S3-T6 and S3-T7 Step 3 are prose; full code is written at the refresh, after Slice 6 changes the adapters.
+> **Status:** READY — refreshed against harness-round1 (Slices 6+2 merged)
 
 **Goal:** Every provider streams its answer with an idle timeout and a hard ceiling, finish reasons are checked, and the dashboard shows live progress plus saved thinking.
 **Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §Slice 3 (3a–3e), D5(b), D6, §4.7
 **ADRs:** 0148   **Migration:** none
-**Base:** main @ 0371edc3
+**Base:** main @ 0371edc3 (working tree also contains merged Slices 6+2: key pools, cooldowns, routing with escalation hand-over, capabilities)
 
-**Slice 6 note:** Written against today's code; Slice 6 merges first. Slice 6 adds the ProviderError quota fields (`quotaScope: 'day' | 'minute'`, `retryAfterMs`, `learnedLimit`) and the ModelCapabilities record (contracts §3). Every Slice 6 spot is marked "(after Slice 6: …)" in its task.
+## Refresh notes (READY refresh, 2026-10-12)
+
+- Status DRAFT → READY; every file/line anchor re-checked against the merged tree.
+- S3-T2: `GenerateTextRequest` also gains `capabilities` and `onChunk` (live text needs unthrottled deltas; the ledger stays metadata-only).
+- S3-T3: Step 3 is now complete `sse.ts` code, not prose.
+- S3-T4: settings count pin goes 28 → 30 in both `instance-settings.test.ts` and the tuning fixture; tuning page needs no code change (generic rows).
+- S3-T5: Step 3 is now the complete new `capTrace`, not prose.
+- S3-T6/S3-T7: Step 3 is now complete adapter code (timers, SSE assembly, capability gating with conservative defaults); capability tables are real (`model-capabilities.ts`, daemon `capabilitiesForEntry`).
+- S3-T8: typing-keepalive job edit moved out (it does not own `jobs/assistant.ts`); progress throttle is per-run and shared across the escalation hand-over; `model-chain.ts` timeout wiring added here.
+- New S3-T12: the brief's Discord progress design check (one code-built notice per run, posted/edited/deleted, durable cursor id, Write-gated) plus service/daemon wiring, typing ceiling and trace-`reasoning` persistence.
+- Deviation from contracts §3 for the controller: `ChainEntry` has NO `capabilities` field in the merged code, so capabilities resolve per request via daemon `capabilitiesForEntry`, not from the entry.
+
+## Merged-code notes (verified, not assumed)
+
+- `ProviderError` already carries `quotaScope 'daily-free' | 'day' | 'minute'`, `retryAfterMs`, `learnedLimit` (`packages/core/src/providers/errors.ts` lines 26–30). Adapter rewrites keep every field.
+- `packages/core/src/providers/model-capabilities.ts` is real: `ThinkingControl`, `ModelCapabilities`, `GeminiModelProfile`, `GEMINI_MODEL_TABLE` (3 rows), `geminiCapabilities` (unknown → `TEXT_AND_TOOLS_ONLY`), `TEXT_AND_TOOLS_ONLY`.
+- Daemon `capabilitiesForEntry(entry, catalogue)` is real (`apps/daemon/src/assistant/model-capabilities.ts` lines 10–25); the OpenRouter catalogue lives at the composition root (`apps/daemon/src/runtime/daemon.ts` lines 210, 229) and reaches guilds via `buildGuildRuntime` (`daemon.ts` line 316).
+- Escalation hand-over is real: `escalateAfterTools` / `onEscalated` / `Resume` (`apps/daemon/src/assistant/tool-loop.ts` lines 230–241, 466–531, 1184–1208); service orders by tier and records `routed` + `escalated-after-tool` (`apps/daemon/src/assistant/service.ts` lines 1370–1486).
+- `ChainEntry` has `pool`, `tier`, `selectedKeyId` but no `capabilities` (`apps/daemon/src/assistant/model-chain.ts` lines 42–61).
+- `SafeProvider.generateText` forwards the whole request untouched (`packages/core/src/providers/safe-provider.ts` lines 22–26), so `thinkingLevel`, `capabilities`, `onProgress`, `onChunk` pass through.
+- Invoke payload already has `hasAttachments` (`apps/daemon/src/assistant/commands.ts`); `AssistantInvocation` (lines 35–107) is where `onProgress` lands.
+- Instance settings are 28 (`packages/core/src/settings/instance-settings.ts` lines 398–427; pin at `instance-settings.test.ts:12`); migrations end at `drizzle/0108_parallel_search_source.sql`; run sources are `mention | slash-command | dashboard-test` (`packages/storage/src/schema.ts` line 2497).
+- The Discord port already supports edits and deletes (`editMessage` at `packages/discord/src/rest/port.ts:353`, port type at `packages/core/src/discord/port.ts:327,367`); the invoke job today only wires `send`/`respond` plus typing (`apps/daemon/src/jobs/assistant.ts` lines 339, 725–739; wiring at `apps/daemon/src/runtime/guild.ts:1299–1334`).
+- The job cursor (`assistantInvokeCursor` in `packages/core/src/jobs/kinds.ts` lines 611–619, staged in `jobs/assistant.ts` lines 92–105, 649–661) is the durable idempotency mechanism to extend.
 
 ## Global Constraints
 
-- `CLAUDE.md` hard rules 1–9 apply. AI is never in the enforcement path; every query, key and job carries a guild id; model output passes Zod; every Discord side effect has a durable idempotency key; no secrets in code, logs or fixtures; no new outbound destination unless the ADR records it.
+- `CLAUDE.md` hard rules 1–9 apply. In particular: AI is never in the enforcement path; every query, key and job carries a guild id; model output passes Zod; every Discord side effect has a durable idempotency key; no secrets in code, logs or fixtures; no new outbound destination unless the slice's ADR records the owner's instruction.
 - No new dependency.
 - Fixtures use invented names (Sam L, Alex P, Car Team A). Never a real member's name or id.
 - Canadian English, plain words in prompts and dashboard copy. No tool names shown to members.
 - Write the failing test first for anything touching permissions, pings, idempotency, retention or guild scope, and watch it fail before writing the code.
 
-- Slice rules: `assistant.providerTimeoutMs` (60,000) becomes time-to-first-byte; new `assistant.providerIdleTimeoutMs` default 45,000 (re-armed on every byte, keepalives count); new `assistant.providerMaxCallMs` default 300,000 (hard ceiling). `assistant.maxOutputTokens` default 2,048 → 4,096, bounds stay 256–8,192. Gemini thinking is `thinkingConfig.thinkingLevel`: `low` for tool rounds, `medium` for the answer, never `minimal`. OpenRouter sends `reasoning: { exclude: false }` until Slice 6 gates it. `model-progress` carries `{ round, answerChars, reasoningChars, keepalives, msSinceLastByte }`, at most every 3 s, bumping `updatedAt`. Live buffer caps at 8,000 chars of answer and 8,000 of thinking per run, dropped at finish; thinking saved under trace `reasoning` per round. StepLog polls every 2 s (no browser SSE). Every new setting gets registry plus dashboard control plus test. Contracts §4 files edited additively. No migration.
+- Slice rules: `assistant.providerTimeoutMs` (60,000) becomes time-to-first-byte; new `assistant.providerIdleTimeoutMs` default 45,000 (re-armed on every byte, keepalives count); new `assistant.providerMaxCallMs` default 300,000 (hard ceiling). `assistant.maxOutputTokens` default 2,048 → 4,096, bounds stay 256–8,192. A thinking parameter is never sent to a model whose capabilities do not support it: Gemini sends `thinkingConfig.thinkingLevel` (`low` for tool rounds, `medium` for the answer, never `minimal`) only when capabilities say `levels`, keeps the legacy `thinkingBudget` only when they say `budget`, and sends neither (nor `includeThoughts`) when `none`; OpenRouter sends `reasoning: { exclude: false }` only when the entry capabilities say `reasoning: true`, NIM never. `model-progress` carries `{ round, answerChars, reasoningChars, keepalives, msSinceLastByte }`, at most every 3 s per run (one shared throttle across the escalation hand-over, so a light round 1 plus a standard round 2 never emit a second stream), bumping `updatedAt`. Live buffer caps at 8,000 chars of answer and 8,000 of thinking per run, dropped at finish; thinking saved under trace `reasoning` per round (each max 8,000, at most 12). StepLog polls every 2 s (no browser SSE). Discord shows one code-built progress notice per run (`Working on it…`, posted once, edited at most every 10 s, deleted after delivery; text never contains model or member text; `allowedMentions: { parse: [] }` on every post and edit; message id in the staged job cursor so a retry edits instead of posting a second; Write-gated like the reply; typing-only fallback when no channel or no edit/delete wiring). Every new setting gets registry plus dashboard control plus test. Contracts §4 files edited additively. No migration. No new outbound host: the streaming endpoints are the same provider hosts.
 
 ## Plan decisions
 
-- New SSE parsing lives in `packages/core/src/providers/sse.ts` (`parseSseStream`); both adapters share it for comment lines, split chunks and `[DONE]`.
-- Until Slice 6 lands there is no capability table, so OpenRouter always sends `reasoning: { exclude: false }` and Gemini always sends `includeThoughts: true` with `thinkingLevel`; (after Slice 6: gate both on the entry capabilities).
-- `thinkingLevel` is derived in the adapters from tools offered (tools present → `low`, answer call → `medium`); explicit `GenerateTextRequest.thinkingLevel` wins when set.
-- Timeouts use the `AbortSignal.timeout` style already in both adapters: first-byte timer, idle timer re-armed per chunk, absolute deadline; idle timeout throws retryable `ProviderError('timeout', …)`.
-- `length` with text appends code-built `-# (cut short)` after the guard, so the marker is never stripped.
+- New SSE parsing lives in `packages/core/src/providers/sse.ts` (`parseSseStream`); both adapters share it for comment lines, split chunks and `[DONE]`. Reason: one keepalive/idle behaviour for both providers.
+- Capability gating is enforced inside the adapters with conservative built-ins (Gemini falls back to `geminiCapabilities(request.model)`, OpenAI-compatible falls back to `TEXT_AND_TOOLS_ONLY`), overridden by `request.capabilities` when the daemon supplies it. Reason: the brief forbids blind thinking parameters, and seed/test paths have no catalogue.
+- `thinkingLevel` is explicit `GenerateTextRequest.thinkingLevel` when set, else tools offered → `low`, answer call → `medium`, never `minimal`. Reason: spec 3a plus the 3.8 Flash `minimal` error.
+- Three timers compose through one linked `AbortController` (time-to-first-byte, idle re-armed per SSE event, absolute ceiling); idle timeout throws retryable `ProviderError('timeout', …)`. Reason: `AbortSignal.timeout` alone cannot express three timers plus the caller's signal.
+- Mid-stream `error`/`choices[].error` becomes retryable `ProviderError('outage', …)` with `finishReason: 'error'`; the partial text is discarded, never delivered or stored — only the already-emitted progress counters remain. Reason: the ledger is metadata-only and cannot carry text.
+- `length`/`MAX_TOKENS` with text is delivered with code-built `\n\n-# (cut short)` appended after the guard, so the marker is never stripped. Reason: the guard would otherwise remove or refuse it.
+- The `model-progress` throttle lives per `runToolLoop` call and is shared across entries and the escalation hand-over. Reason: one progress stream per run across light round 1 → standard round 2.
+- Live text flows through unthrottled `onChunk` deltas into a module-singleton buffer the routes read; the run recorder drops the run id on `finished`. Reason: routes cannot take new deps without touching `HttpDeps`, and the buffer must die with the run.
+- The Discord progress notice is posted, edited and deleted inside the run's existing reply scope — not an autonomous write. Retry safety comes from the staged cursor's `progressMessageId`, not a new table. Reason: hard rule 6 with no migration.
+- `ChainEntry` carries no `capabilities` (merged code deviates from contracts §3); the service resolves per request with daemon `capabilitiesForEntry`. The controller owns updating the contracts file.
+- Dashboard tuning rows render generically from settings, so new settings need fixture rows but no page change. Reason: `TuningCards` maps `data.settings`.
 - Live buffer is a daemon in-memory map by run id (`apps/daemon/src/assistant/live-buffer.ts`), deleted on `finished`; keeps the ledger metadata-only with no storage change.
 - `describeRunEvent` for `model-progress` renders `Receiving… 1,240 chars of answer, 3,100 chars of thinking`, omitting a side with 0 chars.
-- Typing stays alive by restarting `startTyping` per provider call with `maxMs` set to the hard ceiling and stopping only at run end.
+- Typing stays alive by raising `maxMs` to the hard ceiling for the run and stopping only at run end.
 
 ## Review Focus
 
 1. **A stream that trickles forever.** One byte every 40 s must hit the 45 s idle timer with a retryable `timeout`; a stream under idle but past 300 s must hit the ceiling. Pinned in S3-T6 and S3-T7.
-2. **Mid-stream `finish_reason: "error"` inside a 200.** Becomes retryable `ProviderError`; partial text kept for the trace, never delivered. Pinned in S3-T6.
+2. **Mid-stream `finish_reason: "error"` inside a 200.** Becomes retryable `ProviderError`; partial text discarded, never delivered or stored. Pinned in S3-T6.
 3. **Fragmented tool-call arguments across chunks.** Concatenated per index, parsed only when complete. Pinned in S3-T6.
-4. **Thinking that echoes a member message.** Live in the buffer, saved under trace `reasoning`, shown only with trace capability, plus a PRIVACY.md line. Pinned in S3-T9 and S3-T11.
-5. **A member watching mid-run.** Step log shows `Receiving…` at most every 3 s; live text polls every 2 s with no duplicate rows. Pinned in S3-T9 and S3-T10.
+4. **Thinking sent blind or echoed.** A thinking parameter is never sent when capabilities forbid it (unknown model → none); thinking that echoes a member message lives in the buffer, is saved under trace `reasoning`, and is shown only with trace capability, plus a PRIVACY.md line. Pinned in S3-T6, S3-T7, S3-T9 and S3-T11.
+5. **Progress across the escalation hand-over.** A light entry's round 1 plus a standard entry from round 2 emit one throttled progress stream per run (edited, never a second); a cooled or skipped entry emits nothing; the Discord notice follows the same one-run rule with a durable cursor id. Pinned in S3-T8 and S3-T12.
 
 
 ## Waves
@@ -47,14 +76,15 @@
 | 1 | S3-T1 ADR 0148 | Create: `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md` | — |
 | 1 | S3-T2 Contracts and run-event schema | Modify: `packages/core/src/providers/contracts.ts`; Modify: `packages/core/src/assistant/run-events.ts`; Test: `packages/core/src/assistant/run-events.test.ts` | — |
 | 2 | S3-T3 Shared SSE parser | Create: `packages/core/src/providers/sse.ts`; Test: `packages/core/src/providers/sse.test.ts` | S3-T2 |
-| 2 | S3-T4 Timeout and token settings | Modify: `packages/core/src/settings/instance-settings.ts`; Test: `packages/core/src/settings/instance-settings.test.ts` | S3-T1 |
+| 2 | S3-T4 Timeout and token settings | Modify: `packages/core/src/settings/instance-settings.ts`; Test: `packages/core/src/settings/instance-settings.test.ts`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx` | S3-T1 |
 | 2 | S3-T5 Trace reasoning field | Modify: `packages/core/src/assistant/trace.ts`; Test: `packages/core/src/assistant/trace.test.ts` | S3-T2 |
 | 3 | S3-T6 OpenAI-compatible streaming | Modify: `packages/core/src/providers/openai-compatible.ts`; Test: `packages/core/src/providers/openai-compatible.test.ts` | S3-T2, S3-T3 |
 | 3 | S3-T7 Gemini streaming | Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts` | S3-T2, S3-T3 |
-| 4 | S3-T8 Tool loop wiring and finish reasons | Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/jobs/assistant.ts` | S3-T2, S3-T6, S3-T7 |
+| 4 | S3-T8 Tool loop wiring, finish reasons, chain timeouts | Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/assistant/model-chain.ts`; Test: `apps/daemon/src/assistant/model-chain.test.ts` | S3-T2, S3-T6, S3-T7 |
 | 4 | S3-T9 Live buffer, route and progress events | Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts` | S3-T2 |
-| 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-tuning.tsx`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx` | S3-T4, S3-T9 |
+| 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx` | S3-T4, S3-T9 |
 | 5 | S3-T11 State and privacy paperwork | Modify: `docs/STATE.md`; Modify: `PRIVACY.md` | S3-T1 |
+| 5 | S3-T12 Discord progress notice and daemon wiring | Modify: `apps/daemon/src/jobs/assistant.ts`; Test: `apps/daemon/src/jobs/assistant.test.ts`; Modify: `packages/core/src/jobs/kinds.ts`; Modify: `apps/daemon/src/assistant/commands.ts`; Modify: `apps/daemon/src/assistant/service.ts`; Test: `apps/daemon/src/assistant/service.test.ts`; Modify: `apps/daemon/src/runtime/guild.ts`; Modify: `apps/daemon/src/runtime/daemon.ts` | S3-T2, S3-T8 |
 
 ### S3-T1: ADR 0148   ·   Wave 1
 **Owns:** Create: `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md`
