@@ -377,6 +377,38 @@ describe('searchKeyUsage', () => {
   });
 });
 
+describe('migration 0108 rebuilds the search-key table without losing history', () => {
+  it('keeps every search key and its call rows (the calls cascade on key delete)', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    runMigrations(raw, db, migrationsFolderUpTo(107));
+    raw
+      .prepare(
+        `INSERT INTO assistant_search_keys
+           (key_id, source, label, api_key_enc, enabled, position, monthly_limit, created_at, updated_at)
+         VALUES ('skey_t', 'tavily', 'Tavily key', 'sealed-t', 1, 0, 1000, 5, 5)`,
+      )
+      .run();
+    const insertCall = raw.prepare(
+      `INSERT INTO assistant_search_calls (key_id, at, guild_id) VALUES ('skey_t', ?, '234567890123456789')`,
+    );
+    insertCall.run(10);
+    insertCall.run(20);
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const migrated = createScopeFactory(db, { readonly: false }).instance();
+    expect(listSearchKeys(migrated)).toEqual([
+      expect.objectContaining({ keyId: 'skey_t', source: 'tavily', apiKeyEnc: 'sealed-t' }),
+    ]);
+    expect(
+      raw.prepare(`SELECT at FROM assistant_search_calls WHERE key_id = 'skey_t' ORDER BY at`).all(),
+    ).toEqual([{ at: 10 }, { at: 20 }]);
+    raw.close();
+  });
+});
+
 describe('migration 0090 copies the saved Brave key into search keys', () => {
   it('turns a saved search_api_key_enc row into the first Brave search key', () => {
     const raw = new Database(':memory:');
