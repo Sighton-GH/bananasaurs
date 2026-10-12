@@ -85,12 +85,7 @@ export const reserveModelCall = (
       const minuteRows = db
         .select({ at: assistantModelCalls.at })
         .from(assistantModelCalls)
-        .where(
-          and(
-            window,
-            sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`,
-          ),
-        )
+        .where(and(window, sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`))
         .all();
       if (minuteRows.length >= input.rpmLimit) {
         const oldest = minuteRows.reduce((min, r) => Math.min(min, r.at), Number.POSITIVE_INFINITY);
@@ -106,12 +101,7 @@ export const reserveModelCall = (
       const today = db
         .select({ n: sql<number>`count(*)` })
         .from(assistantModelCalls)
-        .where(
-          and(
-            window,
-            sql`${assistantModelCalls.at} >= ${input.dayStart}`,
-          ),
-        )
+        .where(and(window, sql`${assistantModelCalls.at} >= ${input.dayStart}`))
         .get()?.n;
       if ((today ?? 0) >= input.rpdLimit) {
         return { ok: false as const, limit: 'rpd' as const, availableAt: input.nextDayStart };

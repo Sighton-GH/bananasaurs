@@ -403,7 +403,9 @@ describe('migration 0108 rebuilds the search-key table without losing history', 
       expect.objectContaining({ keyId: 'skey_t', source: 'tavily', apiKeyEnc: 'sealed-t' }),
     ]);
     expect(
-      raw.prepare(`SELECT at FROM assistant_search_calls WHERE key_id = 'skey_t' ORDER BY at`).all(),
+      raw
+        .prepare(`SELECT at FROM assistant_search_calls WHERE key_id = 'skey_t' ORDER BY at`)
+        .all(),
     ).toEqual([{ at: 10 }, { at: 20 }]);
     raw.close();
   });

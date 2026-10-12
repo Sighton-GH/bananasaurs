@@ -410,7 +410,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         ...(event.mentionedRoleIds.length === 0
           ? {}
           : { mentionedRoleIds: event.mentionedRoleIds.slice(0, 50) }),
-        ...(event.attachments.length === 0 ? {} : { hasAttachments: true as const }),
+        hasAttachments: event.attachments.length > 0,
       },
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
       orderingKey: assistantOrderingKey({

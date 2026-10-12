@@ -69,8 +69,7 @@ export const reserveEntryCall = (
       : keys
           .filter(
             (key) =>
-              assistantProvidersRepo.bucketOf(key) ===
-              assistantProvidersRepo.bucketOf(selectedKey),
+              assistantProvidersRepo.bucketOf(key) === assistantProvidersRepo.bucketOf(selectedKey),
           )
           .map((key) => key.keyId);
   const r = modelCallsRepo.reserveModelCall(instance, {

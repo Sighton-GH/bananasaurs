@@ -262,9 +262,7 @@ describe('assistant command subscriber', () => {
       authorRoleIds: [],
       mentionedRoleIds: [club.mentionRoleId!],
       mentionsEveryone: false,
-      attachments: [
-        { fileName: 'photo.png', contentType: 'image/png', sizeBytes: 10 },
-      ],
+      attachments: [{ fileName: 'photo.png', contentType: 'image/png', sizeBytes: 10 }],
     });
     expect(h.queued[0]).toMatchObject({ hasAttachments: true });
   });

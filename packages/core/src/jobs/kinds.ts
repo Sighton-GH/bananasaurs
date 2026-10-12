@@ -464,7 +464,7 @@ export const assistantInvokePayload = z.object({
    * attachment the model would have to read. Optional so old payloads read
    * as false; the mention flow sets it from the gateway message.
    */
-  hasAttachments: z.boolean().optional().default(false),
+  hasAttachments: z.boolean().optional(),
 });
 export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
 

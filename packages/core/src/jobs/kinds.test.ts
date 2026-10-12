@@ -164,10 +164,10 @@ describe('assistantInvokePayload attachments', () => {
     source: 'mention' as const,
     invocationId: 'inv-1',
   };
-  it('defaults missing hasAttachments to false and accepts true', () => {
+  it('accepts a payload without hasAttachments (old jobs) and accepts true', () => {
     const missing = assistantInvokePayload.safeParse(base);
     expect(missing.success).toBe(true);
-    if (missing.success) expect(missing.data.hasAttachments).toBe(false);
+    if (missing.success) expect(missing.data.hasAttachments).toBeUndefined();
     const present = assistantInvokePayload.safeParse({ ...base, hasAttachments: true });
     expect(present.success).toBe(true);
     if (present.success) expect(present.data.hasAttachments).toBe(true);
