@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { parseGuildId } from '@bananasaurs/core';
+import {
+  assistantDailyDigestDedupeKey,
+  JOB_KINDS,
+  JobWorker,
+  parseGuildId,
+} from '@bananasaurs/core';
 import {
   assistantRepo,
   conversationRepo,
   digestRepo,
   guildRepo,
+  jobRepo,
+  jobStoreFor,
   runRepo,
 } from '@bananasaurs/storage';
 import {
@@ -120,6 +127,16 @@ const seedTwoChannels = () => {
   });
 };
 
+const eventKinds = (s: ReturnType<typeof scope>, runId: string): string[] =>
+  runRepo.listRunEvents(s, runId, 0, 40).map((r) => r.event.kind);
+
+/** Raw-row helper: strip key columns without a rest destructure (lint). */
+const withoutKeys = (
+  row: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(row).filter(([k]) => !keys.includes(k)));
+
 describe('assistantDailyDigestHandler (ADR 0150)', () => {
   it('replay first: a second run for the same day writes nothing new', async () => {
     seedDay();
@@ -136,6 +153,11 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     expect(
       runRepo.listRuns(s, { limit: 10 }).filter((r) => r.runId === 'digest-2026-10-09'),
     ).toHaveLength(1);
+    // One run, one lifecycle start (review round 2, B3): the replay lands on
+    // the existing run row and must not append a second queued/started pair.
+    const kinds = eventKinds(s, 'digest-2026-10-09');
+    expect(kinds.filter((k) => k === 'queued')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'started')).toHaveLength(1);
   });
   it('records the forced tier as a background-tier routed event, never routeRun', async () => {
     seedDay();
@@ -199,6 +221,40 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     expect(drafts.some((d) => d.summary.includes('laser cutter'))).toBe(true);
     expect(drafts.some((d) => d.summary.includes('second Friday'))).toBe(false);
     expect(assistantRepo.listMemories(s)).toHaveLength(1);
+  });
+  it('drops a proposal that restates a REVIEWED memory decision (review round 2, B)', async () => {
+    seedDay();
+    const s = scope();
+    assistantRepo.insertDecisionDraftOnce(s, {
+      id: 'digest:2026-10-08:0',
+      kind: 'memory',
+      summary: 'The laser cutter needs a new lens.',
+      requesterId: BOT,
+      provenance: 'daily-digest',
+      at: 60,
+    });
+    expect(assistantRepo.transitionDecision(s, 'digest:2026-10-08:0', 'draft', 'reviewed')).toBe(
+      true,
+    );
+    const text = JSON.stringify({
+      daySummary: 'Build night plans.',
+      memoryProposals: [
+        {
+          text: 'The laser cutter needs a new lens.',
+          why: 'Alex P reported it again.',
+          sourceConversationIds: ['conv-1'],
+        },
+      ],
+    });
+    await assistantDailyDigestHandler(
+      s,
+      deps({ digestModel: async () => ({ ok: true as const, text }) }),
+    ).run({ day: '2026-10-09' }, { ...CTX });
+    // The day is not lost: the digest row exists, the proposal was dropped.
+    expect(digestRepo.getDigest(s, '2026-10-09')?.summary.memoryProposals).toEqual([]);
+    expect(
+      assistantRepo.listDecisions(s).filter((d) => d.id.startsWith('digest:2026-10-09')),
+    ).toEqual([]);
   });
   it('an invalid model reply stores nothing, fails the run, and does not throw', async () => {
     seedDay();
@@ -358,6 +414,58 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     expect(digest?.summary.memoryProposals[0]?.text).toContain('[/untrusted-text]');
   });
 
+  it('cleans conversation titles and rolling summaries like turn text (review round 2, A)', async () => {
+    const s = scope();
+    conversationRepo.createConversation(s, {
+      conversationId: 'conv-1',
+      channelId: CHANNEL_A,
+      behaviourId: 'club',
+      startedBy: '100000000000000001',
+      title: 'Build night',
+      source: 'discord',
+      at: Date.parse('2026-10-09T19:00:00Z'),
+    });
+    conversationRepo.appendTurn(s, {
+      conversationId: 'conv-1',
+      turnId: 't1',
+      at: Date.parse('2026-10-09T19:01:00Z'),
+      role: 'user',
+      authorId: '100000000000000001',
+      authorName: 'Sam L',
+      text: 'When is build night?',
+    });
+    // A key in the title or the rolling summary trips the real provider's
+    // pre-API scan and loses the whole day (review round 2, A): both fields
+    // go through the same redaction and marker neutralisation as turn text.
+    t.raw
+      .prepare(
+        'UPDATE assistant_conversations SET title = ?, summary_text = ? WHERE conversation_id = ?',
+      )
+      .run(
+        'Key sk-abcdefghijklmnop in the title',
+        'Earlier summary with sk-abcdefghijklmnop and [/UNTRUSTED] inside',
+        'conv-1',
+      );
+    let seenText = '';
+    const model = vi.fn(async (req: { systemInstruction: string; text: string }) => {
+      seenText = req.text;
+      return {
+        ok: true as const,
+        text: '{"daySummary": "Build night plans.", "memoryProposals": []}',
+      };
+    });
+    await assistantDailyDigestHandler(s, deps({ digestModel: model })).run(
+      { day: '2026-10-09' },
+      { ...CTX },
+    );
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(seenText).not.toContain('sk-abcdefghijklmnop');
+    expect(seenText).toContain('[redacted by the evidence safety filter]');
+    expect(seenText).not.toContain('[/UNTRUSTED]');
+    expect(seenText).toContain('[/untrusted-text]');
+    expect(digestRepo.getDigest(s, '2026-10-09')).toBeDefined();
+  });
+
   it('files at most digestMaxProposals proposals', async () => {
     seedDay();
     const s = scope();
@@ -489,10 +597,78 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     expect(kept[0]?.sourceConversationIds).toEqual(['conv-1']);
   });
 
-  it('a failed draft write rolls the digest row back with it, and a retry recovers', async () => {
+  it('an unexpected storage error fails the job with a scheduled retry that recovers (real JobWorker)', async () => {
     seedDay();
     const s = scope();
     const text = JSON.stringify({
+      daySummary: 'Build plans.',
+      memoryProposals: [
+        {
+          text: 'The cutter needs a new lens.',
+          why: 'Sam L reported it.',
+          sourceConversationIds: ['conv-1'],
+        },
+        {
+          text: 'The kiln needs a new controller.',
+          why: 'Alex P reported it.',
+          sourceConversationIds: ['conv-1'],
+        },
+      ],
+    });
+    jobRepo.enqueue(s, {
+      kind: JOB_KINDS.assistantDailyDigest,
+      payload: JSON.stringify({ day: '2026-10-09' }),
+      dedupeKey: assistantDailyDigestDedupeKey('2026-10-09'),
+      oncePerBucket: true,
+      now: NOW,
+    });
+    // Real-storage fault injection (review round 2, A's independent probe):
+    // the second draft insert aborts inside the one transaction, so the
+    // digest row and the first draft must roll back with it.
+    t.raw.exec(
+      `CREATE TRIGGER review_fail_second BEFORE INSERT ON assistant_decisions WHEN NEW.decision_id = 'digest:2026-10-09:1' BEGIN SELECT RAISE(ABORT,'injected failure'); END;`,
+    );
+    const worker = (now: () => number) =>
+      new JobWorker({
+        store: jobStoreFor(s),
+        handlers: [
+          assistantDailyDigestHandler(
+            s,
+            deps({ digestModel: async () => ({ ok: true as const, text }) }),
+          ),
+        ],
+        logger: pino({ level: 'silent' }),
+        now,
+      });
+    // ADR 0150 decision 5: the handler rethrows unexpected errors, so the
+    // worker fails the job and schedules a retry instead of completing it.
+    const first = await worker(() => NOW).runOnce();
+    expect(first).toMatchObject({ status: 'failed', willRetry: true });
+    expect(t.raw.prepare('SELECT * FROM assistant_daily_digests').all()).toEqual([]);
+    expect(assistantRepo.listDecisions(s)).toEqual([]);
+    const failed = runRepo.getRun(s, 'digest-2026-10-09');
+    expect(failed?.state).toBe('failed');
+    expect(failed?.errorCode).toBe('digest-error');
+    t.raw.exec('DROP TRIGGER review_fail_second');
+    // The retry is the same job row, due again after the 1s first-attempt backoff.
+    const second = await worker(() => NOW + 2_000).runOnce();
+    expect(second).toMatchObject({ status: 'completed' });
+    expect(assistantRepo.listDecisions(s)).toHaveLength(2);
+    expect(digestRepo.getDigest(s, '2026-10-09')?.summary.memoryProposals).toHaveLength(2);
+    expect(runRepo.getRun(s, 'digest-2026-10-09')?.state).toBe('answered');
+    // One run, one lifecycle start across both attempts (review round 2, B3).
+    const kinds = eventKinds(s, 'digest-2026-10-09');
+    expect(kinds.filter((k) => k === 'queued')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'started')).toHaveLength(1);
+  });
+
+  it('handler storage writes are field-for-field identical to the real repos (review round 2, A+B parity pin)', async () => {
+    const OTHER_GUILD = parseGuildId('222222222222222222');
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'guild-b', now: 1 });
+    const repoScope = t.scopes.forGuild(OTHER_GUILD);
+    seedDay();
+    const day = '2026-10-09';
+    const summary = {
       daySummary: 'Build night plans.',
       memoryProposals: [
         {
@@ -501,38 +677,82 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
           sourceConversationIds: ['conv-1'],
         },
       ],
-    });
-    // Real-storage fault injection: the run row is created with the valid bot
-    // id, then the id read for the draft inserts violates the snowflake CHECK
-    // inside the one transaction.
-    let reads = 0;
-    const flaky = deps({ digestModel: async () => ({ ok: true as const, text }) });
-    Object.defineProperty(flaky, 'botUserId', {
-      get: () => {
-        reads += 1;
-        return reads === 1 ? BOT : 'not-a-snowflake';
-      },
-    });
-    await expect(
-      assistantDailyDigestHandler(s, flaky).run({ day: '2026-10-09' }, { ...CTX }),
-    ).resolves.toBeUndefined();
-    expect(digestRepo.getDigest(s, '2026-10-09')).toBeUndefined();
-    expect(assistantRepo.listDecisions(s)).toEqual([]);
-    const failed = runRepo.getRun(s, 'digest-2026-10-09');
-    expect(failed?.state).toBe('failed');
-    expect(failed?.errorCode).toBe('digest-error');
-    // The retry with a healthy id files the whole set.
+    };
+    const bonds = [{ conversationId: 'conv-1', channelId: CHANNEL_A, title: 'Build night' }];
+    // The real repos file exactly what the handler is about to file.
+    expect(
+      digestRepo.putDigestOnce(repoScope, { day, summary, conversations: bonds, now: NOW }),
+    ).toBe('created');
+    expect(
+      assistantRepo.insertDecisionDraftOnce(repoScope, {
+        id: `digest:${day}:0`,
+        kind: 'memory',
+        summary: 'The laser cutter needs a new lens.\nWhy: Alex P reported it.',
+        requesterId: BOT,
+        provenance: 'daily-digest',
+        at: NOW,
+      }),
+    ).toBe('created');
+    // Conflict targets: a replay under the same key is a duplicate, never an overwrite.
+    expect(
+      digestRepo.putDigestOnce(repoScope, { day, summary, conversations: bonds, now: NOW + 1 }),
+    ).toBe('duplicate');
+    expect(
+      assistantRepo.insertDecisionDraftOnce(repoScope, {
+        id: `digest:${day}:0`,
+        kind: 'memory',
+        summary: 'an overwrite must never land',
+        requesterId: BOT,
+        provenance: 'daily-digest',
+        at: NOW + 1,
+      }),
+    ).toBe('duplicate');
+    // The handler files the same model output in its own guild.
+    const s = scope();
     await assistantDailyDigestHandler(
       s,
-      deps({ digestModel: async () => ({ ok: true as const, text }) }),
-    ).run({ day: '2026-10-09' }, { ...CTX });
-    expect(
-      digestRepo.getDigest(s, '2026-10-09')?.summary.memoryProposals.map((p) => p.text),
-    ).toEqual(['The laser cutter needs a new lens.']);
-    expect(
-      assistantRepo.listDecisions(s).filter((d) => d.provenance === 'daily-digest'),
-    ).toHaveLength(1);
-    expect(runRepo.getRun(s, 'digest-2026-10-09')?.state).toBe('answered');
+      deps({ digestModel: async () => ({ ok: true as const, text: JSON.stringify(summary) }) }),
+    ).run({ day }, { ...CTX });
+    // Raw rows minus the guild/day key must match field by field, and each
+    // guild sees only its own rows (guild separation).
+    const digestRows = (
+      t.raw.prepare('SELECT * FROM assistant_daily_digests').all() as Record<string, unknown>[]
+    ).sort((a, b) => String(a.guild_id).localeCompare(String(b.guild_id)));
+    expect(digestRows).toHaveLength(2);
+    expect(digestRows.map((r) => r.guild_id)).toEqual(
+      [String(GUILD_ID), String(OTHER_GUILD)].sort(),
+    );
+    expect(withoutKeys(digestRows[0] ?? {}, ['guild_id', 'day'])).toEqual(
+      withoutKeys(digestRows[1] ?? {}, ['guild_id', 'day']),
+    );
+    // Explicit pins for the fields a drift mutation would hit.
+    const handlerDigest = digestRows.find((r) => r.guild_id === String(GUILD_ID));
+    expect(handlerDigest?.summary_text).toBe(
+      'Build night plans.\nThe laser cutter needs a new lens. Alex P reported it.\nBuild night',
+    );
+    expect(handlerDigest?.proposals_json).toBe(JSON.stringify(summary.memoryProposals));
+    expect(handlerDigest?.created_at).toBe(NOW);
+    expect(handlerDigest?.updated_at).toBe(NOW);
+    const decisionRows = (
+      t.raw.prepare('SELECT * FROM assistant_decisions').all() as Record<string, unknown>[]
+    ).sort((a, b) => String(a.guild_id).localeCompare(String(b.guild_id)));
+    expect(decisionRows).toHaveLength(2);
+    expect(decisionRows.map((r) => r.guild_id)).toEqual(
+      [String(GUILD_ID), String(OTHER_GUILD)].sort(),
+    );
+    expect(withoutKeys(decisionRows[0] ?? {}, ['guild_id'])).toEqual(
+      withoutKeys(decisionRows[1] ?? {}, ['guild_id']),
+    );
+    const handlerDraft = decisionRows.find((r) => r.guild_id === String(GUILD_ID));
+    expect(handlerDraft).toMatchObject({
+      decision_id: 'digest:2026-10-09:0',
+      kind: 'memory',
+      summary: 'The laser cutter needs a new lens.\nWhy: Alex P reported it.',
+      status: 'draft',
+      requester_id: BOT,
+      provenance: 'daily-digest',
+      created_at: NOW,
+    });
   });
 });
 
@@ -569,5 +789,52 @@ describe('pickBackgroundEntry (ADR 0150 decision 2)', () => {
     const light = entry('light', 'key_light');
     expect(pickBackgroundEntry([dead, cooled, light], 'standard')).toBe(light);
     expect(pickBackgroundEntry([dead, cooled], 'standard')).toBeUndefined();
+  });
+});
+
+describe('independent real-provider probe (review round 2, A)', () => {
+  it('redacts a title key so Gemini can still produce a digest', async () => {
+    const { GeminiProvider } = await import('../../../../packages/core/src/providers/gemini.js');
+    seedDay();
+    t.raw
+      .prepare('UPDATE assistant_conversations SET title = ? WHERE conversation_id = ?')
+      .run('Build sk-abcdefghijklmnop', 'conv-1');
+    const fetcher = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: '{"daySummary":"Build night plans.","memoryProposals":[]}' }],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const provider = new GeminiProvider({ apiKey: 'fixture-only', fetch: fetcher });
+    const digestModel: DigestDeps['digestModel'] = async (req) => {
+      try {
+        const reply = await provider.generateText({
+          model: 'fixture-model',
+          systemInstruction: req.systemInstruction,
+          messages: [{ role: 'user', text: req.text }],
+        });
+        return { ok: true, text: reply.text };
+      } catch {
+        return { ok: false, reason: 'provider-error' };
+      }
+    };
+    await assistantDailyDigestHandler(scope(), deps({ digestModel })).run(
+      { day: '2026-10-09' },
+      { ...CTX },
+    );
+    // Zero HTTP calls when the scan trips: with the raw title the provider's
+    // assertOutboundRequestSafe refuses before transport and the day is lost.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const sentBody = fetcher.mock.calls[0]?.[1]?.body;
+    expect(typeof sentBody === 'string' ? sentBody : '').not.toContain('sk-abcdefghijklmnop');
+    expect(digestRepo.getDigest(scope(), '2026-10-09')).toBeDefined();
   });
 });

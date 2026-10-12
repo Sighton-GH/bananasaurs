@@ -185,9 +185,11 @@ const MIN_CONTAINMENT_CHARS = 20;
  * early when the digest row already exists — so a replayed or retried run
  * can never file proposals twice. The tier never comes from `routeRun`:
  * the `routed` event below carries reason `background-tier`. Model and parse
- * failures are completed failures (`failed` run, no retry); anything
- * unexpected is caught, marked `digest-error`, and also never retried — a
- * bad day waits for the next local day either way.
+ * failures are completed failures (`failed` run, no retry); unexpected
+ * errors are marked `digest-error` on the run and RETHROWN, so the
+ * JobWorker schedules its bounded retry (ADR 0150 decision 5). Each retry
+ * re-invokes the model, so the job's max attempts are the bound on extra
+ * provider requests.
  */
 export const assistantDailyDigestHandler = (
   scope: GuildScope,
@@ -206,6 +208,18 @@ export const assistantDailyDigestHandler = (
     }
     const runId = `digest-${payload.day}`;
     const tz = deps.timeZone();
+    // One run, one lifecycle start (review round 2, B3): a replay or a job
+    // retry lands on the run row the first attempt created (`ensureRun`
+    // keeps it), so queued/started are appended only when the row is new.
+    // `routed` still logs each attempt's tier, and a later attempt's
+    // answer/fail moves the same row to its final state with its own
+    // finished event - the schema puts no uniqueness on event kinds, so the
+    // event log keeps every attempt's outcome.
+    const runExists = runRepo.getRun(scope, runId) !== undefined;
+    // These storage calls (and `fail` below) can throw on a storage error.
+    // That is ADR 0150 decision 5's contract too: an unexpected error here
+    // propagates to the job retry exactly like one inside the try - before
+    // the run row exists there is nothing to mark.
     runRepo.ensureRun(scope, {
       runId,
       userId: deps.botUserId,
@@ -214,12 +228,14 @@ export const assistantDailyDigestHandler = (
       queuedAt: now,
     });
     const startedAt = deps.now();
-    runRepo.appendRunEvent(scope, runId, startedAt, { kind: 'queued', via: 'schedule' });
-    runRepo.appendRunEvent(scope, runId, startedAt, {
-      kind: 'started',
-      attempt: 1,
-      queueWaitMs: 0,
-    });
+    if (!runExists) {
+      runRepo.appendRunEvent(scope, runId, startedAt, { kind: 'queued', via: 'schedule' });
+      runRepo.appendRunEvent(scope, runId, startedAt, {
+        kind: 'started',
+        attempt: 1,
+        queueWaitMs: 0,
+      });
+    }
     runRepo.appendRunEvent(scope, runId, deps.now(), {
       kind: 'routed',
       tier: deps.forcedTier(),
@@ -271,11 +287,15 @@ export const assistantDailyDigestHandler = (
         return;
       }
       const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+      // Every field the provider sees - title and rolling summary included,
+      // not only turn text — goes through the same redaction and marker
+      // neutralisation (ADR 0150 decision 2): a key in a title would trip the
+      // provider's pre-API scan and lose the whole day (review round 2, A).
       const input = buildDigestInput(
         groups.map((g) => ({
           conversationId: g.conversationId,
-          title: g.title,
-          summaryText: g.summaryText,
+          title: clean(g.title),
+          summaryText: g.summaryText === null ? null : clean(g.summaryText),
           lines: g.turns.map(
             (turn) =>
               `[${speakerOf(turn.authorName, turn.role)}, ${turn.role === 'assistant' ? 'bot' : 'member'}] ${clean(turn.text)}`,
@@ -390,12 +410,28 @@ export const assistantDailyDigestHandler = (
         now: deps.now(),
       });
       answer('answered');
-    } catch {
+    } catch (err) {
       deps.logger.warn(
         safeLogFields({ component: 'assistant-digest', guildId: scope.guildId, day: payload.day }),
-        'daily digest failed unexpectedly; run marked failed',
+        'daily digest failed unexpectedly; run marked failed, error rethrown for the job retry',
       );
-      fail('digest-error');
+      // Mark the ledger terminal-failed for the dashboard, then let the
+      // original error reach the JobWorker so its bounded retry is actually
+      // scheduled (ADR 0150 decision 5). A failure of the marking itself
+      // (storage down) must not mask the original error.
+      try {
+        fail('digest-error');
+      } catch {
+        deps.logger.warn(
+          safeLogFields({
+            component: 'assistant-digest',
+            guildId: scope.guildId,
+            day: payload.day,
+          }),
+          'daily digest could not mark the run failed; the original error still propagates',
+        );
+      }
+      throw err;
     }
   },
 });
