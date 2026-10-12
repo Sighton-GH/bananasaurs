@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { buildUserMessage } from './user-message.js';
 
 describe('buildUserMessage', () => {
-  it('tells the model attachments read only through contents below (ADR 0149)', () => {
+  it('tells the model the attachment line is independent of position (ADR 0149)', () => {
     expect(buildUserMessage({ question: 'hi', askerName: 'Sam L' })).toContain(
-      'You can read an attachment only if its contents appear below.',
+      'You can read an attachment only if its contents are included here.',
     );
   });
 
@@ -17,7 +17,7 @@ describe('buildUserMessage', () => {
         quoteEnvelope: 'quote-body',
       }),
     ).toBe(
-      'evidence-body\n\nquote-body\n\n[CURRENT MESSAGE from="Ama"]\nwhen is the meeting?\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama\'s current message.',
+      'evidence-body\n\nquote-body\n\n[CURRENT MESSAGE from="Ama"]\nwhen is the meeting?\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama\'s current message.',
     );
   });
 
@@ -30,10 +30,10 @@ describe('buildUserMessage', () => {
         quoteEnvelope: '',
       }),
     ).toBe(
-      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama\'s current message.',
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama\'s current message.',
     );
     expect(buildUserMessage({ question: 'hi', askerName: 'Ama' })).toBe(
-      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama\'s current message.',
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama\'s current message.',
     );
   });
 
@@ -61,25 +61,25 @@ describe('buildUserMessage', () => {
       quoteEnvelope: 'quote-body',
     });
     expect(text).toBe(
-      'channel-body\n\nchunk=evidence\n\nquote-body\n\n[CURRENT MESSAGE from="Ama"]\nthe question\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama\'s current message.',
+      'channel-body\n\nchunk=evidence\n\nquote-body\n\n[CURRENT MESSAGE from="Ama"]\nthe question\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama\'s current message.',
     );
   });
 
   it('omits channel context when empty or undefined', () => {
     expect(buildUserMessage({ question: 'hi', askerName: 'Ama', channelContext: '' })).toBe(
-      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama\'s current message.',
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama\'s current message.',
     );
     expect(buildUserMessage({ question: 'hi', askerName: 'Ama' })).toBe(
-      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama\'s current message.',
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama\'s current message.',
     );
   });
 
   it('falls back to the member when the name is missing', () => {
     expect(buildUserMessage({ question: 'hi' })).toBe(
-      '[CURRENT MESSAGE from="the member"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer the member\'s current message.',
+      '[CURRENT MESSAGE from="the member"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer the member\'s current message.',
     );
     expect(buildUserMessage({ question: 'hi', askerName: '   ' })).toBe(
-      '[CURRENT MESSAGE from="the member"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer the member\'s current message.',
+      '[CURRENT MESSAGE from="the member"]\nhi\n[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer the member\'s current message.',
     );
   });
 
