@@ -3460,6 +3460,104 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(getLiveBuffer().read(id)).toBeUndefined();
   });
 
+  it.each([
+    ['answered', undefined],
+    ['refused', 'refused'],
+  ] as const)(
+    'T12f a %s retry that cannot read the ledger adds no second finish',
+    async (outcome, refusal) => {
+      const id = `terminal-t12f-read-failure-${outcome}`;
+      observe(id);
+      const h = harness(
+        async (input) => {
+          const result = await streamed(input);
+          return refusal === undefined
+            ? result
+            : { ok: false as const, outcome: 'refused' as const, content: 'I cannot help.' };
+        },
+        { logChannelId: '666666666666666666' },
+      );
+      const error = new Error('fixture log channel unavailable');
+      let logDown = true;
+      h.send.mockImplementation(async (channelId: string) => {
+        if (channelId === '666666666666666666' && logDown) throw error;
+        return { channelId, messageId: '829000000000000063' };
+      });
+      const jobId = jobRepo.enqueue(scope(), {
+        kind: JOB_KINDS.assistantInvoke,
+        payload: JSON.stringify(mention(id)),
+        dedupeKey: id,
+        maxAttempts: 3,
+        now: NOW,
+      }).jobId!;
+      // Attempt 1: durable finish lands, then the log send rejects.
+      const first = await h.run(mention(id), 1, null, jobId);
+      expect(first.error).toBe(error);
+      expect(finishedOutcomes(id)).toEqual([outcome]);
+      logDown = false;
+      // Attempt 2: the ledger read itself fails. A read failure is not proof
+      // of a missing finish: no second finish may be appended; the row is
+      // still re-closed and the live buffer still dropped.
+      let readDown = true;
+      const realList = runRepo.listRunEvents;
+      vi.spyOn(runRepo, 'listRunEvents').mockImplementation((...args) => {
+        if (readDown) throw new Error('fixture ledger read unavailable');
+        return realList(...args);
+      });
+      const second = await h.run(mention(id), 2, first.cursor, jobId);
+      readDown = false;
+      expect(second.error).toBeUndefined();
+      expect(finishedOutcomes(id)).toEqual([outcome]);
+      const row = runRepo.getRun(scope(), id);
+      expect(row?.state).toBe(outcome);
+      expect(row?.stage).toBe('done');
+      expect(row?.finishedAt).toBeDefined();
+      expect(row?.finishedAt).not.toBeNull();
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+    },
+  );
+
+  it('T12f a finish past the first 1,000 ledger events is still seen on retry', async () => {
+    const id = 'terminal-t12f-long-ledger';
+    observe(id);
+    const h = harness(
+      async (input) => {
+        // 1,000 valid metadata-only events push the finish past the oldest page.
+        for (let i = 0; i < 1_000; i += 1) input.recorder?.event({ kind: 'guard', removed: 0 });
+        return streamed(input);
+      },
+      { logChannelId: '666666666666666666' },
+    );
+    const error = new Error('fixture log channel unavailable');
+    let logDown = true;
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666' && logDown) throw error;
+      return { channelId, messageId: '829000000000000064' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    const allOutcomes = () =>
+      runRepo
+        .listRunEvents(scope(), id, 0, 2_000)
+        .flatMap((row) => (row.event.kind === 'finished' ? [row.event.outcome] : []));
+    expect(allOutcomes()).toEqual(['answered']);
+    logDown = false;
+    const second = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(second.error).toBeUndefined();
+    expect(allOutcomes()).toEqual(['answered']);
+    const row = runRepo.getRun(scope(), id);
+    expect(row?.state).toBe('answered');
+    expect(row?.stage).toBe('done');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
     const h = harness(async () => ({ ok: true, content: 'answer' }));
     await h.run(mention('rec-1'));

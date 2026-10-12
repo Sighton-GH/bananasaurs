@@ -617,16 +617,36 @@ export const assistantInvokeHandler = (deps: {
       const st = staged;
       if (st === undefined) return;
       const outcome = st.result.ok ? 'answered' : (st.result.outcome ?? 'refused');
-      let hasFinished = false;
+      // T12f: a read failure is not proof of a missing finish. 'unknown' adds
+      // no finish event and only re-closes the row and drops the buffer; a
+      // verified-missing finish is the only case that appends. Page the whole
+      // ledger (bounded) so a terminal event past the first 1,000 rows - a
+      // long run - is still found; the oldest page alone cannot prove absence.
+      let hasFinished: boolean | 'unknown' = false;
       try {
-        if (deps.conversations !== undefined)
-          hasFinished = runRepo
-            .listRunEvents(deps.conversations.scope, payload.invocationId, 0, 1_000)
-            .some((row) => row.event.kind === 'finished');
+        if (deps.conversations !== undefined) {
+          let afterSeq = 0;
+          for (let pages = 0; pages < 64; pages += 1) {
+            const page = runRepo.listRunEvents(
+              deps.conversations.scope,
+              payload.invocationId,
+              afterSeq,
+              1_000,
+            );
+            if (page.some((row) => row.event.kind === 'finished')) {
+              hasFinished = true;
+              break;
+            }
+            const lastSeq = page.at(-1)?.seq;
+            if (lastSeq === undefined || page.length < 1_000) break;
+            afterSeq = lastSeq;
+          }
+        }
       } catch {
         /* Ledger availability must not disable retention cleanup. */
+        hasFinished = 'unknown';
       }
-      if (hasFinished) {
+      if (hasFinished !== false) {
         recorder.update({ state: outcome, stage: 'done' });
       } else {
         const detail = st.result.detail;
