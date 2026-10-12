@@ -8,6 +8,7 @@ import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { MemberRef } from '../ui/MemberRef.js';
+import { LiveText } from './assistant-live-buffer.js';
 import {
   activeRunsUrl,
   describeRunEvent,
@@ -174,6 +175,9 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
   const [events, setEvents] = useState<readonly RunEventRow[]>([]);
   const lastSeq = useRef(0);
   const seenFinished = useRef(false);
+  // Set once a load shows the run still unfinished: a trace that is already
+  // finished at open never mounts LiveText (the daemon keeps no live text then).
+  const [liveOpen, setLiveOpen] = useState(false);
   const { runId } = props;
 
   const load = useCallback(
@@ -199,6 +203,7 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
     prevRunId.current = runId;
     lastSeq.current = 0;
     seenFinished.current = false;
+    setLiveOpen(false);
     setEvents([]);
   }
 
@@ -207,6 +212,9 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
   const resource = live.resource;
   useEffect(() => {
     if (resource.state !== 'ready') return;
+    if (!seenFinished.current && !resource.data.events.some((e) => e.event.kind === 'finished')) {
+      setLiveOpen(true);
+    }
     const fresh = resource.data.events.filter((e) => e.seq > lastSeq.current);
     if (fresh.length === 0) return;
     lastSeq.current = Math.max(...fresh.map((e) => e.seq));
@@ -226,42 +234,46 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
     );
   }
 
+  const finished = events.some((e) => e.event.kind === 'finished');
   const firstAt = events.length > 0 ? (events[0]?.at ?? 0) : 0;
   const maxMs = Math.max(0, ...events.map((e) => timedMs(e) ?? 0));
 
   return (
-    <Card title="Step log">
-      <DataState
-        resource={resource}
-        isEmpty={() => events.length === 0}
-        empty={<p className="text-sm text-ink-muted">No steps recorded for this run.</p>}
-      >
-        {() => (
-          <ol className="grid gap-2">
-            {events.map((row) => {
-              const ms = timedMs(row);
-              return (
-                <li key={row.seq} className="text-sm">
-                  <span className="font-mono text-xs text-ink-muted">
-                    +{((row.at - firstAt) / 1000).toFixed(1)} s
-                  </span>{' '}
-                  <span className="font-mono text-xs">{row.event.kind}</span>{' '}
-                  <span>{describeRunEvent(row.event)}</span>
-                  {ms !== undefined && maxMs > 0 && (
-                    <div className="mt-0.5 h-1 rounded-sm bg-canvas">
-                      <div
-                        className="h-full rounded-sm bg-hold"
-                        style={{ width: `${String(Math.min(100, (ms / maxMs) * 100))}%` }}
-                      />
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </DataState>
-      {live.stale && <p className="mt-2 text-xs text-ink-muted">Reconnecting…</p>}
-    </Card>
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
+      <Card title="Step log">
+        <DataState
+          resource={resource}
+          isEmpty={() => events.length === 0}
+          empty={<p className="text-sm text-ink-muted">No steps recorded for this run.</p>}
+        >
+          {() => (
+            <ol className="grid gap-2">
+              {events.map((row) => {
+                const ms = timedMs(row);
+                return (
+                  <li key={row.seq} className="text-sm">
+                    <span className="font-mono text-xs text-ink-muted">
+                      +{((row.at - firstAt) / 1000).toFixed(1)} s
+                    </span>{' '}
+                    <span className="font-mono text-xs">{row.event.kind}</span>{' '}
+                    <span>{describeRunEvent(row.event)}</span>
+                    {ms !== undefined && maxMs > 0 && (
+                      <div className="mt-0.5 h-1 rounded-sm bg-canvas">
+                        <div
+                          className="h-full rounded-sm bg-hold"
+                          style={{ width: `${String(Math.min(100, (ms / maxMs) * 100))}%` }}
+                        />
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </DataState>
+        {live.stale && <p className="mt-2 text-xs text-ink-muted">Reconnecting…</p>}
+      </Card>
+      {liveOpen && <LiveText runId={runId} finished={finished} />}
+    </div>
   );
 }

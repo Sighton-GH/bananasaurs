@@ -38,6 +38,7 @@ const patchFor = (e: RunEvent, now: number): runRepo.RunPatch | undefined => {
         ...(e.keyLabel === undefined ? {} : { keyLabel: e.keyLabel }),
         updatedAt: now,
       };
+    case 'model-progress':
     case 'model-result':
     case 'model-skipped':
     case 'tool-result':
@@ -75,11 +76,13 @@ export const createRunRecorder: (deps: {
   readonly runId: string;
   readonly now: () => number;
   readonly logger: Pick<Logger, 'warn'>;
+  readonly live?: { drop(runId: string): void } | undefined;
 }) => RunRecorder = (deps) => {
   // Observability never changes behaviour: the first write failure warns
   // once (`assistant run ledger write failed`, with the run id) and every
   // later failure stays silent while the run continues.
   let warned = false;
+  let finished = false;
   const warnOnce = (err: unknown): void => {
     if (warned) return;
     warned = true;
@@ -96,6 +99,8 @@ export const createRunRecorder: (deps: {
   return {
     runId: deps.runId,
     event: (e) => {
+      if (finished) return;
+      if (e.kind === 'finished') finished = true;
       try {
         runRepo.appendRunEvent(deps.scope, deps.runId, deps.now(), e);
         const patch = patchFor(e, deps.now());
@@ -103,8 +108,18 @@ export const createRunRecorder: (deps: {
       } catch (err) {
         warnOnce(err);
       }
+      // Retention must not depend on a successful ledger write. Keep cleanup
+      // inside its own catch so observability still never changes behaviour.
+      if (e.kind === 'finished') {
+        try {
+          deps.live?.drop(deps.runId);
+        } catch (err) {
+          warnOnce(err);
+        }
+      }
     },
     update: (patch) => {
+      if (finished) return;
       try {
         runRepo.updateRun(deps.scope, deps.runId, { ...patch, updatedAt: deps.now() });
       } catch (err) {
@@ -118,4 +133,21 @@ export const NOOP_RUN_RECORDER: RunRecorder = {
   runId: '',
   event: () => undefined,
   update: () => undefined,
+};
+
+/** Storage-free recorder: live retention still ends when ledger creation fails. */
+export const createLiveRunRecorder = (
+  runId: string,
+  live: { drop(runId: string): void },
+): RunRecorder => {
+  let finished = false;
+  return {
+    runId,
+    event: (e) => {
+      if (finished || e.kind !== 'finished') return;
+      finished = true;
+      live.drop(runId);
+    },
+    update: () => undefined,
+  };
 };

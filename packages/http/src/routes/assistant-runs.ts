@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { describeRun, type RunEvent, type RunRow } from '@bananasaurs/core';
+import { describeRun, getLiveBuffer, type RunEvent, type RunRow } from '@bananasaurs/core';
 import { runRepo, type GuildScope } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
@@ -12,9 +12,9 @@ import { canReadConfig, requireCapability } from './capability.js';
  *
  * Read-only, like `assistant-traces.ts` — every handler goes through
  * `guard.require` plus `audit.read`. A `model-result` event's
- * `providerMessage` is configuration-shaped text, so it needs `config.read`,
- * checked with `canReadConfig` so a viewer without it still gets
- * the events with the text withheld, never a 403.
+ * `providerMessage` and live thinking are configuration-shaped text, so
+ * they need `config.read`, checked with `canReadConfig` so a viewer without
+ * it still gets the events or live answer with that text withheld, never a 403.
  */
 
 const runListQuerySchema = z.object({
@@ -152,5 +152,20 @@ export const registerAssistantRunRoutes = (
       }
     }
     return reply.status(200).send({ events });
+  });
+
+  app.get<{ Params: { runId: string } }>('/api/assistant/runs/:runId/live', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+    const run = runRepo.getRun(session.scope, request.params.runId);
+    if (run === undefined) return reply.status(404).send({ error: 'not-found' });
+    const live = getLiveBuffer().read(request.params.runId);
+    const showText = canReadConfig(session);
+    return reply.status(200).send({
+      answer: live?.answer ?? '',
+      thinking: showText ? (live?.thinking ?? '') : '',
+    });
   });
 };

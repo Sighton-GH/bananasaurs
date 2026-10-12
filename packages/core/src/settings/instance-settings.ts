@@ -72,6 +72,28 @@ const providerTimeout: SettingDefinition<number> = {
   bounds: { min: 5000, max: 120000 },
 };
 
+const providerIdleTimeout: SettingDefinition<number> = {
+  key: 'assistant.providerIdleTimeoutMs',
+  group: 'Assistant retries',
+  label: 'Provider idle timeout',
+  help: 'How long one AI answer may go without any data before it is abandoned. Keepalive messages count as data.',
+  display: 'seconds',
+  schema: z.number().int().min(5000).max(120000),
+  defaultValue: 45000,
+  bounds: { min: 5000, max: 120000 },
+};
+
+const providerMaxCall: SettingDefinition<number> = {
+  key: 'assistant.providerMaxCallMs',
+  group: 'Assistant retries',
+  label: 'Provider max call time',
+  help: 'The longest one AI answer may take in total, even when data keeps arriving.',
+  display: 'seconds',
+  schema: z.number().int().min(60000).max(600000),
+  defaultValue: 300000,
+  bounds: { min: 60000, max: 600000 },
+};
+
 const maxConcurrentRuns: SettingDefinition<number> = {
   key: 'assistant.maxConcurrentRuns',
   group: 'Assistant retries',
@@ -112,7 +134,7 @@ const maxOutputTokens: SettingDefinition<number> = {
   help: 'The longest answer a model may write, in tokens (about 4 characters each).',
   display: 'count',
   schema: z.number().int().min(256).max(8192),
-  defaultValue: 2048,
+  defaultValue: 4096,
   bounds: { min: 256, max: 8192 },
 };
 
@@ -398,6 +420,8 @@ const pingMaxRoles: SettingDefinition<number> = {
 export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   retryDelays,
   providerTimeout,
+  providerIdleTimeout,
+  providerMaxCall,
   maxConcurrentRuns,
   maxToolRounds,
   maxToolCalls,
@@ -429,6 +453,8 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
 export interface InstanceSettingValues {
   readonly 'assistant.retryDelaysMs': number[];
   readonly 'assistant.providerTimeoutMs': number;
+  readonly 'assistant.providerIdleTimeoutMs': number;
+  readonly 'assistant.providerMaxCallMs': number;
   readonly 'assistant.maxConcurrentRuns': number;
   readonly 'assistant.maxToolRounds': number;
   readonly 'assistant.maxToolCalls': number;

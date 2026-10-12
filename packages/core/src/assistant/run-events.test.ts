@@ -48,6 +48,32 @@ const everyKind = [
 ] as const;
 
 describe('runEventSchema (ADR 0129 §6)', () => {
+  it('round-trips a model-progress event', () => {
+    const event = {
+      kind: 'model-progress',
+      round: 1,
+      answerChars: 1240,
+      reasoningChars: 3100,
+      keepalives: 2,
+      msSinceLastByte: 400,
+    } as const;
+    expect(runEventSchema.parse(event)).toEqual(event);
+  });
+
+  it('rejects a model-progress event carrying text', () => {
+    expect(
+      runEventSchema.safeParse({
+        kind: 'model-progress',
+        round: 1,
+        answerChars: 3,
+        reasoningChars: 0,
+        keepalives: 0,
+        msSinceLastByte: 1,
+        text: 'partial answer',
+      }).success,
+    ).toBe(false);
+  });
+
   it('round-trips every kind', () => {
     for (const event of everyKind) {
       expect(runEventSchema.parse(event)).toEqual(event);

@@ -622,6 +622,8 @@ export type {
   ProviderCapability,
   ProviderEligibility,
   ProviderUsage,
+  StreamChunk,
+  StreamProgress,
   TextProvider,
   ToolCall,
   ToolDeclaration,
@@ -679,6 +681,7 @@ export {
 export * from './assistant/index.js';
 export * from './assistant/capabilities.js';
 export * from './assistant/run-events.js';
+export * from './assistant/live-buffer.js';
 export * from './assistant/run-label.js';
 
 export {

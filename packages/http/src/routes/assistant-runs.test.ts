@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, type Capability } from '@bananasaurs/core';
+import { getLiveBuffer, parseGuildId, type Capability } from '@bananasaurs/core';
 import { accountRepo, authzRepo, guildRepo, runRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
@@ -92,6 +92,7 @@ beforeEach(async () => {
   app = createServer({ deps, registerRoutes: registerAssistantRunRoutes });
 });
 afterEach(async () => {
+  for (const runId of ['run-1', 'run-2', 'run-other', 'no-such-run']) getLiveBuffer().drop(runId);
   await app.close();
   t.close();
 });
@@ -105,6 +106,125 @@ describe('assistant run routes', () => {
       '/api/assistant/runs/run-1/events',
     ]) {
       expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(403);
+    }
+  });
+
+  it('serves live answer and thinking with config.read for an in-guild run', async () => {
+    const { cookie } = await signIn();
+    grant('audit.read');
+    seedRun('run-1');
+    grant('config.read');
+    getLiveBuffer().append('run-1', 'hello Sam L', 'why this answer');
+    const ok = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-1/live',
+      headers: { cookie },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ answer: 'hello Sam L', thinking: 'why this answer' });
+  });
+
+  it('withholds live thinking without config.read while returning the answer', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    seedRun('run-1');
+    const thinkingText = 'Private thinking for Sam L';
+    getLiveBuffer().append('run-1', 'hello Sam L', thinkingText);
+    const without = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-1/live',
+      headers: { cookie },
+    });
+    expect(without.statusCode).toBe(200);
+    expect(without.body).not.toContain(thinkingText);
+    expect(without.json()).toEqual({ answer: 'hello Sam L', thinking: '' });
+
+    grant('config.read');
+    const withGrant = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-1/live',
+      headers: { cookie },
+    });
+    expect(withGrant.statusCode).toBe(200);
+    expect(withGrant.body).toContain(thinkingText);
+    expect(withGrant.json()).toEqual({ answer: 'hello Sam L', thinking: thinkingText });
+  });
+
+  it('live text needs audit.read before checking whether the run exists', async () => {
+    const { cookie } = await signIn();
+    seedRun('run-2');
+    getLiveBuffer().append('run-2', 'hello', 'private thinking');
+    for (const runId of ['run-2', 'no-such-run']) {
+      const denied = await app.inject({
+        method: 'GET',
+        url: `/api/assistant/runs/${runId}/live`,
+        headers: { cookie },
+      });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.body).not.toContain('private thinking');
+    }
+  });
+
+  it('live text requires a signed-in session', async () => {
+    seedRun('run-1');
+    getLiveBuffer().append('run-1', 'hello', 'private thinking');
+    const denied = await app.inject({ method: 'GET', url: '/api/assistant/runs/run-1/live' });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.body).not.toContain('private thinking');
+  });
+
+  it('hides live text belonging to a run in another guild', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: clock });
+    runRepo.ensureRun(t.scopes.forGuild(OTHER_GUILD), {
+      runId: 'run-other',
+      userId: MEMBER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: clock,
+    });
+    getLiveBuffer().append('run-other', 'other guild answer', 'other guild thinking');
+    const other = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-other/live',
+      headers: { cookie },
+    });
+    expect(other.statusCode).toBe(404);
+    expect(other.json()).toMatchObject({ error: 'not-found' });
+    expect(other.body).not.toContain('other guild');
+  });
+
+  it('answers 404 for an unknown run even if live text exists', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    getLiveBuffer().append('no-such-run', 'orphan answer', 'orphan thinking');
+    const unknown = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/no-such-run/live',
+      headers: { cookie },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toMatchObject({ error: 'not-found' });
+    expect(unknown.body).not.toContain('orphan');
+  });
+
+  it('returns empty live sides before streaming and after drop', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    seedRun('run-1');
+    for (const dropped of [false, true]) {
+      if (dropped) {
+        getLiveBuffer().append('run-1', 'answer', 'thinking');
+        getLiveBuffer().drop('run-1');
+      }
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/assistant/runs/run-1/live',
+        headers: { cookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ answer: '', thinking: '' });
     }
   });
 

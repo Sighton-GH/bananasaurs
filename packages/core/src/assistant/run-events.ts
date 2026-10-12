@@ -165,6 +165,16 @@ export const runEventSchema = z.discriminatedUnion('kind', [
       traceId: z.string().max(80).optional(),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('model-progress'),
+      round: z.number().int().nonnegative(),
+      answerChars: z.number().int().nonnegative(),
+      reasoningChars: z.number().int().nonnegative(),
+      keepalives: z.number().int().nonnegative(),
+      msSinceLastByte: z.number().int().nonnegative(),
+    })
+    .strict(),
 ]);
 export type RunEvent = z.infer<typeof runEventSchema>;
 export interface RunEventRow {

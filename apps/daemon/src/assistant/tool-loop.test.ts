@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   nextProviderDayStart,
+  capTrace,
+  TRUNCATION_SUFFIX,
+  type AssistantTrace,
   ProviderError,
   RETURNED_ID_ARGS,
   TOOL_CATALOGUE,
@@ -8,11 +11,12 @@ import {
   type GenerateTextResponse,
   type GenerationMessage,
   type RunEvent,
+  type StreamProgress,
   type TextProvider,
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
-import type { ChainEntry } from './model-chain.js';
+import { makeProvider, type ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { assistantKeyCooldownsRepo, assistantProvidersRepo } from '@bananasaurs/storage';
 import {
@@ -2428,4 +2432,503 @@ it('records Parallel web use in first-seen order without duplicates', async () =
   );
   expect(result.web).toBe(true);
   expect(result.webSources).toEqual(['parallel', 'brave']);
+});
+
+it('appends a cut-short marker when finishReason is length with text', async () => {
+  const { provider } = scripted([
+    { text: 'long answer', model: 'model-a', finishReason: 'length' },
+  ]);
+  const loop = await runToolLoop({
+    chain: [entry({ provider })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Summarise this for Sam L.',
+    initialHandles: [],
+    recorder: { runId: 'r1', event: () => undefined, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(loop.text).toBe('long answer\n\n-# (cut short)');
+});
+
+it('throttles model-progress to one stream per run and passes capabilities through', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const streaming: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      seen.push(req);
+      req.onProgress?.({
+        round: 0,
+        answerChars: 10,
+        reasoningChars: 0,
+        keepalives: 0,
+        msSinceLastByte: 100,
+      });
+      req.onProgress?.({
+        round: 0,
+        answerChars: 20,
+        reasoningChars: 5,
+        keepalives: 1,
+        msSinceLastByte: 200,
+      });
+      req.onProgress?.({
+        round: 0,
+        answerChars: 30,
+        reasoningChars: 9,
+        keepalives: 1,
+        msSinceLastByte: 300,
+      });
+      return { text: 'done', model: 'model-a', reasoning: 'why' };
+    },
+  };
+  const events: RunEvent[] = [];
+  const loop = await runToolLoop({
+    chain: [
+      entry({
+        provider: streaming,
+        capabilities: {
+          tools: true,
+          image: false,
+          pdf: false,
+          reasoning: true,
+          thinking: 'levels',
+        },
+      }),
+    ],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    recorder: {
+      runId: 'r1',
+      event: (e) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    },
+    now: () => NOW,
+  });
+  // One shared throttle on a fixed clock: three rapid callbacks, one event.
+  expect(events.filter((e) => e.kind === 'model-progress')).toHaveLength(1);
+  expect(seen[0]?.capabilities).toEqual({
+    tools: true,
+    image: false,
+    pdf: false,
+    reasoning: true,
+    thinking: 'levels',
+  });
+  expect(loop.reasoning).toEqual([{ round: 1, text: 'why' }]);
+});
+
+it('a skipped entry emits no progress', async () => {
+  const { provider } = scripted([textAnswer('unreached')]);
+  const events: RunEvent[] = [];
+  await runToolLoop({
+    chain: [entry({ provider: undefined, skip: 'disabled' }), entry({ provider })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    recorder: {
+      runId: 'r1',
+      event: (e) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    },
+    now: () => NOW,
+  });
+  const progress = events.filter((e) => e.kind === 'model-progress');
+  expect(progress).toHaveLength(0);
+  expect(events.filter((e) => e.kind === 'model-skipped')).toHaveLength(1);
+});
+
+it('progress survives the escalation hand-over on one shared throttle', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const fire = (req: GenerateTextRequest): void => {
+    seen.push(req);
+    req.onProgress?.({
+      round: 0,
+      answerChars: 10,
+      reasoningChars: 0,
+      keepalives: 0,
+      msSinceLastByte: 50,
+    });
+    req.onProgress?.({
+      round: 0,
+      answerChars: 20,
+      reasoningChars: 0,
+      keepalives: 0,
+      msSinceLastByte: 60,
+    });
+  };
+  const light: TextProvider = {
+    id: 'fake-light',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      fire(req);
+      return toolAnswer([{ name: 'search_sources', args: {} }]);
+    },
+  };
+  const standard: TextProvider = {
+    id: 'fake-standard',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      fire(req);
+      return textAnswer('standard answer', 'model-s');
+    },
+  };
+  const events: RunEvent[] = [];
+  const loop = await runToolLoop({
+    chain: [
+      entry({ provider: light, providerId: 'openrouter', model: 'model-light', tier: 'light' }),
+      entry({ provider: standard, providerId: 'gemini', model: 'model-s', tier: 'standard' }),
+    ],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    tools: loopTools(async () => okResult('search_sources')),
+    escalateAfterTools: (_entry, remaining) => remaining,
+    recorder: {
+      runId: 'r1',
+      event: (e) => {
+        events.push(e);
+      },
+      update: () => undefined,
+    },
+    now: () => NOW,
+  });
+  expect(loop.text).toBe('standard answer');
+  // Both entries were wired (round-1 light plus round-2 standard)…
+  expect(seen).toHaveLength(2);
+  expect(seen.every((r) => r.onProgress !== undefined)).toBe(true);
+  // …but the fixed clock means one throttled event, never a second stream.
+  expect(events.filter((e) => e.kind === 'model-progress')).toHaveLength(1);
+});
+
+describe('Slice 3 streaming edge paths', () => {
+  it.each(['length', 'MAX_TOKENS'])(
+    'marks a %s guard-retry answer, but not an empty answer',
+    async (finishReason) => {
+      const { provider } = scripted([
+        { text: '', model: 'model-a', finishReason },
+        { text: 'retry answer', model: 'model-a', finishReason, reasoning: 'retry thought' },
+      ]);
+      const loop = await runToolLoop(baseInput([entry({ provider })]));
+      expect(loop.text).toBe('retry answer\n\n-# (cut short)');
+      expect(loop.reasoning).toEqual([{ round: 0, text: 'retry thought' }]);
+    },
+  );
+
+  it('throttles on a zero clock and reopens only at three seconds', async () => {
+    let clock = 0;
+    const events: RunEvent[] = [];
+    const fanout = vi.fn<(progress: StreamProgress) => void>();
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (request) => {
+        for (const ms of [0, 0, 2999, 3000, 3001, 6000]) {
+          clock = ms;
+          request.onProgress?.({
+            round: 0,
+            answerChars: ms,
+            reasoningChars: 0,
+            keepalives: 1,
+            msSinceLastByte: 0,
+          });
+        }
+        return textAnswer('done');
+      },
+    };
+    await runToolLoop(
+      baseInput([entry({ provider })], {
+        now: () => clock,
+        onProgress: fanout,
+        recorder: {
+          runId: 'r-zero',
+          event: (e) => {
+            events.push(e);
+          },
+          update: () => undefined,
+        },
+      }),
+    );
+    expect(events.filter((e) => e.kind === 'model-progress').map((e) => e.answerChars)).toEqual([
+      0, 3000, 6000,
+    ]);
+    expect(fanout).toHaveBeenCalledTimes(3);
+    expect(fanout.mock.calls[0]?.[0].round).toBe(1);
+  });
+
+  it.each([false, true])(
+    'closes live and progress callbacks after a provider settles (failed=%s)',
+    async (failed) => {
+      let saved: GenerateTextRequest | undefined;
+      const append = vi.fn();
+      const fanout = vi.fn<(progress: StreamProgress) => void>();
+      const error = new ProviderError('quota', 'invented quota', false, {
+        quotaScope: 'minute',
+        retryAfterMs: 9000,
+        learnedLimit: { perMinute: 3 },
+      });
+      const provider: TextProvider = {
+        id: 'fake',
+        capabilities: new Set(['text']),
+        generateText: async (request) => {
+          saved = request;
+          request.onChunk?.({ text: 'answer delta', reasoning: 'thought delta' });
+          if (failed) throw error;
+          return { ...textAnswer('done'), reasoning: 'x'.repeat(9000) };
+        },
+      };
+      const loop = await runToolLoop(
+        baseInput([entry({ provider })], {
+          recorder: { runId: 'r-live', event: () => undefined, update: () => undefined },
+          live: { append },
+          onProgress: fanout,
+        }),
+      );
+      expect(append).toHaveBeenCalledExactlyOnceWith('r-live', 'answer delta', 'thought delta');
+      saved?.onChunk?.({ text: 'late', reasoning: 'late' });
+      saved?.onProgress?.({
+        round: 0,
+        answerChars: 999,
+        reasoningChars: 0,
+        keepalives: 0,
+        msSinceLastByte: 0,
+      });
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(fanout).not.toHaveBeenCalled();
+      if (failed) {
+        expect(loop.lastError).toBe(error);
+        expect(loop.lastError).toMatchObject({
+          quotaScope: 'minute',
+          retryAfterMs: 9000,
+          learnedLimit: { perMinute: 3 },
+        });
+        expect(loop.reasoning).toEqual([]);
+      } else {
+        const text = 'x'.repeat(8000 - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+        expect(loop.reasoning).toEqual([{ round: 1, text }]);
+        const trace = capTrace({
+          sections: [],
+          toolCalls: [],
+          reasoning: loop.reasoning,
+        } as unknown as AssistantTrace);
+        expect(trace.reasoning).toEqual([{ round: 1, text }]);
+      }
+    },
+  );
+});
+
+it('keeps progress ledger events metadata-only even if a provider adds fields', async () => {
+  const events: RunEvent[] = [];
+  const provider: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text']),
+    generateText: async (request) => {
+      const progress = {
+        round: 0,
+        answerChars: 4,
+        reasoningChars: 5,
+        keepalives: 0,
+        msSinceLastByte: 1,
+        text: 'private answer',
+        reasoning: 'private thought',
+      };
+      request.onProgress?.(progress);
+      return textAnswer('done');
+    },
+  };
+  await runToolLoop(
+    baseInput([entry({ provider })], {
+      recorder: {
+        runId: 'r-meta',
+        event: (e) => {
+          events.push(e);
+        },
+        update: () => undefined,
+      },
+    }),
+  );
+  expect(events.filter((e) => e.kind === 'model-progress')).toEqual([
+    {
+      kind: 'model-progress',
+      round: 1,
+      answerChars: 4,
+      reasoningChars: 5,
+      keepalives: 0,
+      msSinceLastByte: 1,
+    },
+  ]);
+});
+
+it('preserves every ProviderError field when a guard retry fails', async () => {
+  const error = new ProviderError('quota', 'invented limit', false, {
+    quotaScope: 'day',
+    retryAfterMs: 5000,
+    learnedLimit: { perDay: 20 },
+    resetAt: NOW + 5000,
+    status: 429,
+    netCode: 'ETIMEDOUT',
+    host: 'example.invalid',
+    finishReason: 'error',
+    upstream: 'invented upstream',
+  });
+  const { provider } = scripted([textAnswer(''), error]);
+  const loop = await runToolLoop(baseInput([entry({ provider })]));
+  expect(loop.lastError).toBe(error);
+});
+
+it('caps saved reasoning at twelve calls across failover entries', async () => {
+  let calls = 0;
+  const provider: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async () => {
+      calls += 1;
+      if (calls % 2 === 0) throw new ProviderError('outage', 'invented outage', true);
+      return toolAnswer([{ name: 'search_sources', args: {} }], {
+        reasoning: String((calls + 1) / 2),
+      });
+    },
+  };
+  const loop = await runToolLoop(
+    baseInput(Array.from({ length: 14 }, (_, i) => entry({ provider, model: `invented-${i}` }))),
+  );
+  expect(loop.reasoning).toHaveLength(12);
+  expect(loop.reasoning.map((r) => r.text)).toEqual(
+    Array.from({ length: 12 }, (_, i) => String(i + 1)),
+  );
+});
+
+it('wires guard-retry capabilities, progress and live chunks, then closes the retry callbacks', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const events: RunEvent[] = [];
+  const append = vi.fn();
+  const capabilities = {
+    tools: true,
+    image: false,
+    pdf: false,
+    reasoning: true,
+    thinking: 'levels' as const,
+  };
+  const provider: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text']),
+    generateText: async (request) => {
+      seen.push(request);
+      if (seen.length === 1) return textAnswer('');
+      request.onChunk?.({ text: 'retry delta', reasoning: 'thought' });
+      request.onProgress?.({
+        round: 999,
+        answerChars: 11,
+        reasoningChars: 7,
+        keepalives: 0,
+        msSinceLastByte: 0,
+      });
+      return { ...textAnswer('retry'), reasoning: 'thought' };
+    },
+  };
+  await runToolLoop(
+    baseInput([entry({ provider, capabilities })], {
+      recorder: {
+        runId: 'r-retry',
+        event: (e) => {
+          events.push(e);
+        },
+        update: () => undefined,
+      },
+      live: { append },
+    }),
+  );
+  expect(seen[1]?.capabilities).toEqual(capabilities);
+  expect(events.filter((e) => e.kind === 'model-progress')).toEqual([
+    {
+      kind: 'model-progress',
+      round: 0,
+      answerChars: 11,
+      reasoningChars: 7,
+      keepalives: 0,
+      msSinceLastByte: 0,
+    },
+  ]);
+  expect(append).toHaveBeenCalledExactlyOnceWith('r-retry', 'retry delta', 'thought');
+  seen[1]?.onChunk?.({ text: 'late retry', reasoning: 'late' });
+  expect(append).toHaveBeenCalledTimes(1);
+});
+
+describe('async downstream progress through the real adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const streamAnswer = (): void => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+      ),
+    );
+  };
+
+  it('holds provider settlement until downstream progress resolves', async () => {
+    streamAnswer();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const callbackEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let settled = false;
+    const running = runToolLoop(
+      baseInput([entry({ provider: makeProvider('openrouter', 'k', 'free') })], {
+        onProgress: () => {
+          entered();
+          return pending;
+        },
+      }),
+    ).then((loop) => {
+      settled = true;
+      return loop;
+    });
+    await callbackEntered;
+    // Wait a task tick, not just one microtask: the adapter can finish parsing
+    // the whole stream if the wrapper discards the callback promise.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    const settledBeforeRelease = settled;
+    release();
+    const loop = await running;
+    expect(settledBeforeRelease).toBe(false);
+    expect(loop.text).toBe('done');
+    expect(loop.outcome).toBe('answered');
+  });
+
+  it('lets the adapter sanitise an async progress rejection as a retryable outage', async () => {
+    streamAnswer();
+    const rejection = Promise.reject(new Error('invented private callback detail'));
+    // Avoid an unhandled rejection in the red run, where the broken wrapper
+    // discards the promise before the adapter can attach its own handler.
+    void rejection.catch(() => undefined);
+    const loop = await runToolLoop(
+      baseInput([entry({ provider: makeProvider('openrouter', 'k', 'free') })], {
+        onProgress: () => rejection,
+      }),
+    );
+    expect(loop.outcome).toBe('failed');
+    expect(loop.text).toBe('');
+    expect(loop.lastError).toMatchObject({ kind: 'outage', retryable: true });
+    expect(loop.lastError?.message).not.toContain('invented private callback detail');
+  });
 });

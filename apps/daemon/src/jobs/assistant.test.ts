@@ -4,6 +4,7 @@ import { pino } from 'pino';
 import {
   assistantInvokeCursor,
   assistantSummarisePayload,
+  getLiveBuffer,
   JOB_KINDS,
   parseGuildId,
   ProviderError,
@@ -29,6 +30,9 @@ import type {
   AssistantTraceDetail,
 } from '../assistant/commands.js';
 import { assistantInvokeHandler } from './assistant.js';
+import { runToolLoop } from '../assistant/tool-loop.js';
+import { makeProvider } from '../assistant/model-chain.js';
+import type { GenerateTextRequest, TextProvider } from '@bananasaurs/core';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { dailyQuotaReply } from '../assistant/fallback-replies.js';
@@ -421,14 +425,25 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       ...(channelAccess === undefined ? {} : { channelAccess }),
       ...(guildReady === undefined ? {} : { guildReady }),
     });
+    const fixtureJobs = new Map<string, number>();
     const run = async (
       input: Record<string, unknown>,
       cursor: string | null = null,
     ): Promise<{ cursor: string | null; error?: unknown }> => {
       let saved: string | null = cursor;
+      const key = String(input.invocationId);
+      const enqueued = jobRepo.enqueue(scope(), {
+        kind: JOB_KINDS.assistantInvoke,
+        payload: JSON.stringify(input),
+        dedupeKey: key,
+        now: nowMs,
+      });
+      const jobId = enqueued.jobId ?? fixtureJobs.get(key);
+      if (enqueued.jobId !== undefined) fixtureJobs.set(key, enqueued.jobId);
+      if (jobId === undefined) throw new Error('fixture job missing');
       try {
         await handler.run(handler.payload.parse(input), {
-          jobId: 1,
+          jobId,
           attempts: cursor === null ? 1 : 2,
           cursor,
           saveCursor: (c) => {
@@ -1692,6 +1707,134 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     });
   });
 
+  it('writes reasoning from the detail into the stored trace, capped', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'short answer',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        history: [],
+        reasoning: [
+          { round: 1, text: 'why this answer' },
+          { round: 2, text: 'x'.repeat(9000) },
+        ],
+      },
+    }));
+    await h.run(mention({ invocationId: 'inv-reasoning', messageId: '810000000000000026' }));
+
+    const stored = traceRepo.getTrace(scope(), 'trace_inv-reasoning')?.reasoning;
+    expect(stored?.[0]).toEqual({ round: 1, text: 'why this answer' });
+    expect(stored?.[1]?.text.length).toBeLessThanOrEqual(8000);
+    expect(stored?.[1]?.text.endsWith('… [truncated]')).toBe(true);
+  });
+
+  it('a retry from an invoke-done cursor keeps the saved reasoning', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'hello',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        history: [],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        reasoning: [{ round: 1, text: 'why this answer' }],
+      },
+    }));
+    const input = mention({ invocationId: 'inv-retry-reasoning', messageId: '810000000000000028' });
+
+    // The first attempt invokes, saves invoke-done, then fails posting the answer.
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    const attempt1 = await h.run(input);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(h.inputs).toHaveLength(1);
+    expect(attempt1.cursor).not.toBeNull();
+
+    // The retry resumes from that cursor: no second invoke, reasoning kept.
+    const attempt2 = await h.run(input, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(h.inputs).toHaveLength(1);
+
+    expect(traceRepo.getTrace(scope(), 'trace_inv-retry-reasoning')?.reasoning).toEqual([
+      { round: 1, text: 'why this answer' },
+    ]);
+  });
+
+  it('drops the live buffer when the run finishes', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'short answer',
+      detail: {
+        sections: [{ name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' }],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        history: [],
+      },
+    }));
+    getLiveBuffer().append('inv-live-drop', 'partial', 'thought');
+    await h.run(mention({ invocationId: 'inv-live-drop', messageId: '810000000000000027' }));
+    expect(getLiveBuffer().read('inv-live-drop')).toBeUndefined();
+  });
+
+  it('drops the live buffer when the run is refused', async () => {
+    const h = harness(() => ({ ok: true, content: 'never used' }), {
+      check: async () => ({ allowed: false, reason: 'no-access' }),
+    });
+    getLiveBuffer().append('inv-live-refused', 'partial', 'thought');
+    await h.run(mention({ invocationId: 'inv-live-refused', messageId: '810000000000000029' }));
+    expect(getLiveBuffer().read('inv-live-refused')).toBeUndefined();
+  });
+
+  it('keeps typing past 180 s when the ceiling setting is higher', async () => {
+    vi.useFakeTimers();
+    try {
+      const sendTyping = vi.fn(async () => undefined);
+      let resolveInvoke!: (value: AssistantInvocationResult) => void;
+      const svc = service(
+        () =>
+          new Promise<AssistantInvocationResult>((resolve) => {
+            resolveInvoke = resolve;
+          }),
+      );
+      const { deps } = baseDeps(svc, pino({ level: 'silent' }));
+      const handler = assistantInvokeHandler({
+        ...deps,
+        sendTyping,
+        typingIntervalMs: 1000,
+        progressCeilingMs: () => 300_000,
+      });
+      const runPromise = handler.run(
+        handler.payload.parse({ ...payload, channelId: '555555555555555555' }),
+        context({ attempts: 1 }),
+      );
+      await vi.advanceTimersByTimeAsync(190_000);
+      // Past the old 180 s cap: still typing because the ceiling is 300 s.
+      expect(sendTyping.mock.calls.length).toBeGreaterThan(180);
+      resolveInvoke({
+        ok: true,
+        content: 'done',
+        detail: {
+          sections: [],
+          attempts: [],
+          toolCalls: [],
+          usage: {},
+          guard: { removed: [] },
+          history: [],
+        },
+      });
+      await runPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a retry from an invoke-done cursor keeps the saved included', async () => {
     const h = harness(() => ({
       ok: true,
@@ -2653,20 +2796,35 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
     nowMs = NOW;
   });
-  afterEach(() => t.close());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    t.close();
+  });
   const scope = () => t.scopes.forGuild(GUILD_ID);
 
   const harness = (
     answer: (
       input: AssistantInvocation,
     ) => AssistantInvocationResult | Promise<AssistantInvocationResult>,
-    opts: { readonly behaviours?: readonly AssistantBehaviour[] } = {},
+    opts: {
+      readonly noConversations?: boolean;
+      readonly behaviours?: readonly AssistantBehaviour[];
+      readonly logChannelId?: string;
+    } = {},
   ) => {
     const inputs: AssistantInvocation[] = [];
+    const completionEvents: string[] = [];
     const svc: AssistantCommandService = {
       behavioursForGuild: async () => opts.behaviours ?? [behaviour],
       invoke: async (input) => {
         inputs.push(input);
+        if (input.recorder !== undefined) {
+          const event = input.recorder.event.bind(input.recorder);
+          vi.spyOn(input.recorder, 'event').mockImplementation((e) => {
+            if (e.kind === 'finished') completionEvents.push(e.kind);
+            event(e);
+          });
+        }
         return await answer(input);
       },
     };
@@ -2684,9 +2842,11 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       respond: async () => undefined,
       send,
       logger: pino({ level: 'silent' }),
-      logChannelId: () => undefined,
+      logChannelId: () => opts.logChannelId,
       now: () => nowMs,
-      conversations: { scope: scope(), botUserId: BOT, botDisplayName: 'bananasaurs' },
+      ...(opts.noConversations
+        ? {}
+        : { conversations: { scope: scope(), botUserId: BOT, botDisplayName: 'bananasaurs' } }),
       sendTyping: async () => undefined,
       fetchMessageContent: async () => undefined,
       fetchChannelMessages: async () => undefined,
@@ -2695,17 +2855,26 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     return {
       inputs,
       sent,
-      run: async (input: Record<string, unknown>, attempts = 1) => {
+      send,
+      completionEvents,
+      run: async (
+        input: Record<string, unknown>,
+        attempts = 1,
+        cursor: string | null = null,
+        jobId = 1,
+      ) => {
         try {
           await handler.run(handler.payload.parse(input), {
-            jobId: 1,
+            jobId,
             attempts,
-            cursor: null,
-            saveCursor: () => undefined,
+            cursor,
+            saveCursor: (value) => {
+              cursor = value;
+            },
           });
-          return { error: undefined as unknown };
+          return { error: undefined as unknown, cursor };
         } catch (error) {
-          return { error };
+          return { error, cursor };
         }
       },
     };
@@ -2726,6 +2895,712 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
 
   const kindsOf = (runId: string): string[] =>
     runRepo.listRunEvents(scope(), runId, 0, 50).map((r) => r.event.kind);
+
+  const finishedOutcomes = (runId: string): string[] =>
+    runRepo
+      .listRunEvents(scope(), runId, 0, 50)
+      .flatMap((row) => (row.event.kind === 'finished' ? [row.event.outcome] : []));
+
+  let lastStreamRequest: GenerateTextRequest | undefined;
+  // Exercise the actual streaming loop, not a pre-seeded shared map.
+  const streamed = async (input: AssistantInvocation, failure?: Error) => {
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (request) => {
+        lastStreamRequest = request;
+        request.onChunk?.({ text: 'partial answer', reasoning: 'private thought' });
+        if (failure) throw failure;
+        return { text: 'answer', model: 'fixture-model' };
+      },
+    };
+    const loop = await runToolLoop({
+      chain: [
+        {
+          provider,
+          providerId: 'gemini',
+          model: 'fixture-model',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+          pool: 'key',
+          tier: 'standard',
+          selectedKeyId: 'key_a',
+        },
+      ],
+      systemInstruction: 'Be helpful.',
+      protectedText: 'prompt',
+      history: [],
+      userText: 'hi',
+      initialHandles: [],
+      now: () => NOW,
+      recorder: input.recorder,
+      runId: input.invocationId,
+      live: getLiveBuffer(),
+    });
+    if (failure) throw failure;
+    return { ok: true as const, content: loop.text };
+  };
+
+  const observe = (runId: string) => {
+    const order: string[] = [];
+    const append = getLiveBuffer().append.bind(getLiveBuffer());
+    const drop = getLiveBuffer().drop.bind(getLiveBuffer());
+    const event = runRepo.appendRunEvent;
+    vi.spyOn(getLiveBuffer(), 'append').mockImplementation((id, answer, thought) => {
+      if (id === runId) order.push('chunk');
+      append(id, answer, thought);
+    });
+    vi.spyOn(getLiveBuffer(), 'drop').mockImplementation((id) => {
+      if (id === runId) order.push('drop');
+      drop(id);
+    });
+    vi.spyOn(runRepo, 'appendRunEvent').mockImplementation((...args) => {
+      if (args[1] === runId && args[3].kind === 'finished') order.push('finished');
+      return event(...args);
+    });
+    return order;
+  };
+
+  it.each(['success', 'provider-failure', 'idle-timeout', 'ceiling-timeout', 'escalation'])(
+    'T12c real stream terminal %s finishes once and drops last',
+    async (path) => {
+      const id = `terminal-${path}`;
+      const order = observe(id);
+      const error = path.includes('timeout')
+        ? new ProviderError('timeout', path, true)
+        : path === 'provider-failure'
+          ? new ChainFailedError('invalid-request', 'failed', false, [])
+          : undefined;
+      const h = harness(async (input) => {
+        const result = await streamed(input, error);
+        return path === 'escalation'
+          ? {
+              ...result,
+              escalation: {
+                channelId: '555555555555555555',
+                reviewerRoleIds: [],
+                ticketId: 'fixture-ticket',
+              },
+            }
+          : result;
+      });
+      await h.run(mention(id), 4);
+      lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
+      expect(order).toEqual(['chunk', 'finished', 'drop']);
+      expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+    },
+  );
+
+  it.each(['idle', 'ceiling'] as const)(
+    'T12c real adapter %s timeout after a stream closes exactly once',
+    async (clock) => {
+      vi.useFakeTimers();
+      const id = `terminal-adapter-${clock}`;
+      const order = observe(id);
+      const encoder = new TextEncoder();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(
+                    encoder.encode(
+                      'data: {"choices":[{"delta":{"content":"partial","reasoning":"thought"}}]}\n\n',
+                    ),
+                  );
+                },
+              }),
+              { headers: { 'content-type': 'text/event-stream' } },
+            ),
+        ),
+      );
+      try {
+        const provider = makeProvider('openrouter', 'fixture-key', 'free', {
+          timeoutMs: 1000,
+          idleTimeoutMs: clock === 'idle' ? 50 : 1000,
+          maxCallMs: clock === 'ceiling' ? 50 : 1000,
+        });
+        const h = harness(async (input) => {
+          const loop = await runToolLoop({
+            chain: [
+              {
+                provider,
+                providerId: 'openrouter',
+                model: 'fixture-model',
+                keyId: 'key_a',
+                keyLabel: 'Key A',
+                mayTrain: false,
+                rpmLimit: null,
+                rpdLimit: null,
+                pool: 'key',
+                tier: 'standard',
+                selectedKeyId: 'key_a',
+              },
+            ],
+            systemInstruction: 'Be helpful.',
+            protectedText: 'prompt',
+            history: [],
+            userText: 'hi',
+            initialHandles: [],
+            now: () => Date.now(),
+            recorder: input.recorder,
+            runId: input.invocationId,
+            live: getLiveBuffer(),
+          });
+          expect(loop.lastError).toBeInstanceOf(ProviderError);
+          if (loop.lastError === undefined) throw new Error('fixture expected timeout');
+          throw loop.lastError;
+        });
+        const running = h.run(mention(id), 4);
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await running).error).toBeUndefined();
+        expect(order).toEqual(['chunk', 'finished', 'drop']);
+        expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+        expect(getLiveBuffer().read(id)).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('T12c real light-to-standard hand-over stops both streams before finish', async () => {
+    const id = 'terminal-handover';
+    const order = observe(id);
+    const requests: GenerateTextRequest[] = [];
+    const provider = (light: boolean): TextProvider => ({
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        requests.push(req);
+        req.onChunk?.({ text: light ? 'light' : 'standard', reasoning: 'thought' });
+        return light
+          ? { text: '', model: 'light', toolCalls: [{ name: 'search_sources', args: {} }] }
+          : { text: 'answer', model: 'standard' };
+      },
+    });
+    const h = harness(async (input) => {
+      const loop = await runToolLoop({
+        chain: [true, false].map((light) => ({
+          provider: provider(light),
+          providerId: 'gemini',
+          model: light ? 'light' : 'standard',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+          pool: 'key',
+          tier: light ? 'light' : 'standard',
+          selectedKeyId: 'key_a',
+        })),
+        systemInstruction: 'Be helpful.',
+        protectedText: 'prompt',
+        history: [],
+        userText: 'hi',
+        initialHandles: [],
+        now: () => NOW,
+        recorder: input.recorder,
+        runId: input.invocationId,
+        live: getLiveBuffer(),
+        tools: {
+          firstRound: [
+            {
+              name: 'search_sources',
+              description: 'Search',
+              parameters: { type: 'object', properties: {} },
+            },
+          ],
+          laterRounds: [],
+          run: async () => ({ name: 'search_sources', ok: true, text: 'result', sources: [] }),
+        },
+        escalateAfterTools: (_entry, remaining) => remaining,
+      });
+      expect(loop.attempts).toHaveLength(2);
+      return { ok: true, content: loop.text };
+    });
+    await h.run(mention(id));
+    for (const req of requests) req.onChunk?.({ text: 'late', reasoning: 'late' });
+    expect(order).toEqual(['chunk', 'chunk', 'finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c delivery retries keep the cursor and buffer until the actual job budget', async () => {
+    const id = 'terminal-delivery';
+    const order = observe(id);
+    const h = harness(streamed);
+    const error = new Error('fixture Discord unavailable');
+    h.send.mockRejectedValue(error);
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(order).toEqual(['chunk']);
+    expect(getLiveBuffer().read(id)?.answer).toBe('partial answer');
+    const last = await h.run(mention(id), 3, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
+    expect(order).toEqual(['chunk', 'finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c actual worker budget ends a retryable provider failure before provider ceiling', async () => {
+    const id = 'terminal-short-budget';
+    const order = observe(id);
+    const h = harness((input) =>
+      streamed(input, new ProviderError('timeout', 'fixture idle timeout', true)),
+    );
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 1,
+      now: NOW,
+    }).jobId!;
+    expect((await h.run(mention(id), 1, null, jobId)).error).toBeInstanceOf(RetryAfterError);
+    expect(order).toEqual(['chunk', 'finished', 'drop']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c optional handler fails safe on delivery rejection without a budget', async () => {
+    const id = 'terminal-no-scope-delivery';
+    const order = observe(id);
+    const h = harness(streamed, { noConversations: true });
+    const error = new Error('fixture Discord unavailable');
+    h.send.mockRejectedValue(error);
+    expect((await h.run(mention(id))).error).toBe(error);
+    expect(order).toEqual(['chunk', 'drop']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c final answerSingle rejection still closes a streamed provider failure', async () => {
+    const id = 'terminal-failure-delivery';
+    const order = observe(id);
+    const h = harness((input) =>
+      streamed(input, new ChainFailedError('invalid-request', 'failed', false, [])),
+    );
+    const error = new Error('fixture Discord unavailable');
+    h.send.mockRejectedValue(error);
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    expect((await h.run(mention(id), 2, null, jobId)).error).toBe(error);
+    expect(order).toEqual(['chunk', 'finished', 'drop']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'T12c retention survives missing ledger (noConversations=%s)',
+    async (noConversations) => {
+      const id = `terminal-missing-ledger-${noConversations}`;
+      const order = observe(id);
+      vi.spyOn(runRepo, 'ensureRun').mockImplementation(() => {
+        throw new Error('fixture ledger unavailable');
+      });
+      const h = harness(streamed, { noConversations });
+      expect((await h.run(mention(id))).error).toBeUndefined();
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+      lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
+      expect(h.completionEvents).toEqual(['finished']);
+      expect(order.at(-1)).toBe('drop');
+    },
+  );
+
+  it('T12c invalid token closes an existing queued row without calling a provider or Discord', async () => {
+    const id = 'terminal-invalid-token';
+    runRepo.ensureRun(scope(), {
+      runId: id,
+      userId: USER_ID,
+      behaviourId: behaviour.id,
+      source: 'slash-command',
+      queuedAt: NOW,
+    });
+    const order = observe(id);
+    const h = harness(streamed);
+    await h.run(
+      mention(id, {
+        source: 'slash-command',
+        interaction: {
+          interactionId: '810000000000000002',
+          sealedToken: 'bad-token',
+        },
+      }),
+    );
+    expect(h.inputs).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+    expect(order).toEqual(['finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('failed');
+  });
+
+  it('T12c throw before a provider has no fabricated stream and closes once', async () => {
+    const id = 'terminal-before-provider';
+    const order = observe(id);
+    const h = harness(async () => {
+      throw new Error('fixture context failure');
+    });
+    await h.run(mention(id));
+    expect(order).toEqual(['finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+  });
+
+  it('T12d an answered run keeps its outcome when the escalation send exhausts the budget', async () => {
+    const id = 'terminal-answered-escalation';
+    const order = observe(id);
+    const h = harness(async (input) => {
+      const result = await streamed(input);
+      return {
+        ...result,
+        escalation: {
+          channelId: '555555555555555555',
+          reviewerRoleIds: [],
+          ticketId: 'fixture-ticket',
+        },
+      };
+    });
+    const error = new Error('fixture escalation channel unavailable');
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '555555555555555555') throw error;
+      return { channelId, messageId: '829000000000000051' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    // Attempt 1: the answer lands and the run finishes answered, then the
+    // escalation send rejects while budget remains.
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    // Attempt 2 from the durable cursor: the escalation send rejects on the
+    // final attempt. The member has their answer, so the ledger must keep
+    // 'answered' - never a second finished, never 'failed' - while the error
+    // still propagates so the worker marks the job failed.
+    const last = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('answered');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
+  });
+
+  it('T12d an answered run keeps its outcome when the log send exhausts the budget', async () => {
+    const id = 'terminal-answered-log';
+    const order = observe(id);
+    const h = harness(streamed, { logChannelId: '666666666666666666' });
+    const error = new Error('fixture log channel unavailable');
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666') throw error;
+      return { channelId, messageId: '829000000000000052' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    const last = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('answered');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
+  });
+
+  it('T12d a refused run keeps its outcome when the log send exhausts the budget', async () => {
+    const id = 'terminal-refused-log';
+    const order = observe(id);
+    const h = harness(
+      async (input) => {
+        await streamed(input);
+        return {
+          ok: false as const,
+          outcome: 'refused' as const,
+          content: 'I cannot help with that.',
+        };
+      },
+      { logChannelId: '666666666666666666' },
+    );
+    const error = new Error('fixture log channel unavailable');
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666') throw error;
+      return { channelId, messageId: '829000000000000053' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(finishedOutcomes(id)).toEqual(['refused']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    const last = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    expect(finishedOutcomes(id)).toEqual(['refused']);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('refused');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
+  });
+
+  it.each([
+    ['answered', undefined],
+    ['refused', 'refused'],
+  ] as const)(
+    'T12e a %s run whose attempt-1 ledger was unavailable finishes with its staged outcome when the final log send fails',
+    async (outcome, refusal) => {
+      const id = `terminal-t12e-ledger-gap-${outcome}`;
+      observe(id);
+      let down = true;
+      const realEnsure = runRepo.ensureRun;
+      vi.spyOn(runRepo, 'ensureRun').mockImplementation((...args) => {
+        if (down) throw new Error('fixture ledger unavailable');
+        return realEnsure(...args);
+      });
+      const h = harness(
+        async (input) => {
+          const result = await streamed(input);
+          return refusal === undefined
+            ? result
+            : { ok: false as const, outcome: 'refused' as const, content: 'I cannot help.' };
+        },
+        { logChannelId: '666666666666666666' },
+      );
+      const error = new Error('fixture log channel unavailable');
+      h.send.mockImplementation(async (channelId: string) => {
+        if (channelId === '666666666666666666') throw error;
+        return { channelId, messageId: '829000000000000061' };
+      });
+      const jobId = jobRepo.enqueue(scope(), {
+        kind: JOB_KINDS.assistantInvoke,
+        payload: JSON.stringify(mention(id)),
+        dedupeKey: id,
+        maxAttempts: 2,
+        now: NOW,
+      }).jobId!;
+      const first = await h.run(mention(id), 1, null, jobId);
+      expect(first.error).toBe(error);
+      expect(first.cursor).not.toBeNull();
+      down = false;
+      const last = await h.run(mention(id), 2, first.cursor, jobId);
+      expect(last.error).toBe(error);
+      expect(finishedOutcomes(id)).toEqual([outcome]);
+      const row = runRepo.getRun(scope(), id);
+      expect(row?.state).toBe(outcome);
+      expect(row?.stage).toBe('done');
+      expect(row?.finishedAt).toBeDefined();
+      expect(row?.finishedAt).not.toBeNull();
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+    },
+  );
+
+  it('T12e a retry past answered that then succeeds closes the run row exactly once', async () => {
+    const id = 'terminal-t12e-retry-success';
+    observe(id);
+    const h = harness(streamed, { logChannelId: '666666666666666666' });
+    const error = new Error('fixture log channel unavailable');
+    let logDown = true;
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666' && logDown) throw error;
+      return { channelId, messageId: '829000000000000062' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    logDown = false;
+    const second = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(second.error).toBeUndefined();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    const row = runRepo.getRun(scope(), id);
+    expect(row?.state).toBe('answered');
+    expect(row?.stage).toBe('done');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it.each([
+    ['answered', undefined],
+    ['refused', 'refused'],
+  ] as const)(
+    'T12f a %s retry that cannot read the ledger adds no second finish',
+    async (outcome, refusal) => {
+      const id = `terminal-t12f-read-failure-${outcome}`;
+      observe(id);
+      const h = harness(
+        async (input) => {
+          const result = await streamed(input);
+          return refusal === undefined
+            ? result
+            : { ok: false as const, outcome: 'refused' as const, content: 'I cannot help.' };
+        },
+        { logChannelId: '666666666666666666' },
+      );
+      const error = new Error('fixture log channel unavailable');
+      let logDown = true;
+      h.send.mockImplementation(async (channelId: string) => {
+        if (channelId === '666666666666666666' && logDown) throw error;
+        return { channelId, messageId: '829000000000000063' };
+      });
+      const jobId = jobRepo.enqueue(scope(), {
+        kind: JOB_KINDS.assistantInvoke,
+        payload: JSON.stringify(mention(id)),
+        dedupeKey: id,
+        maxAttempts: 3,
+        now: NOW,
+      }).jobId!;
+      // Attempt 1: durable finish lands, then the log send rejects.
+      const first = await h.run(mention(id), 1, null, jobId);
+      expect(first.error).toBe(error);
+      expect(finishedOutcomes(id)).toEqual([outcome]);
+      logDown = false;
+      // Attempt 2: the ledger read itself fails. A read failure is not proof
+      // of a missing finish: no second finish may be appended; the row is
+      // still re-closed and the live buffer still dropped.
+      let readDown = true;
+      const realList = runRepo.listRunEvents;
+      vi.spyOn(runRepo, 'listRunEvents').mockImplementation((...args) => {
+        if (readDown) throw new Error('fixture ledger read unavailable');
+        return realList(...args);
+      });
+      const second = await h.run(mention(id), 2, first.cursor, jobId);
+      readDown = false;
+      expect(second.error).toBeUndefined();
+      expect(finishedOutcomes(id)).toEqual([outcome]);
+      const row = runRepo.getRun(scope(), id);
+      expect(row?.state).toBe(outcome);
+      expect(row?.stage).toBe('done');
+      expect(row?.finishedAt).toBeDefined();
+      expect(row?.finishedAt).not.toBeNull();
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+    },
+  );
+
+  it('T12f a finish past the first 1,000 ledger events is still seen on retry', async () => {
+    const id = 'terminal-t12f-long-ledger';
+    observe(id);
+    const h = harness(
+      async (input) => {
+        // 1,000 valid metadata-only events push the finish past the oldest page.
+        for (let i = 0; i < 1_000; i += 1) input.recorder?.event({ kind: 'guard', removed: 0 });
+        return streamed(input);
+      },
+      { logChannelId: '666666666666666666' },
+    );
+    const error = new Error('fixture log channel unavailable');
+    let logDown = true;
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666' && logDown) throw error;
+      return { channelId, messageId: '829000000000000064' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    const allOutcomes = () =>
+      runRepo
+        .listRunEvents(scope(), id, 0, 2_000)
+        .flatMap((row) => (row.event.kind === 'finished' ? [row.event.outcome] : []));
+    expect(allOutcomes()).toEqual(['answered']);
+    logDown = false;
+    const second = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(second.error).toBeUndefined();
+    expect(allOutcomes()).toEqual(['answered']);
+    const row = runRepo.getRun(scope(), id);
+    expect(row?.state).toBe('answered');
+    expect(row?.stage).toBe('done');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12g hitting the ledger page bound without reaching the end adds no second finish', async () => {
+    const id = 'terminal-t12g-page-bound';
+    observe(id);
+    const h = harness(async (input) => streamed(input), { logChannelId: '666666666666666666' });
+    const error = new Error('fixture log channel unavailable');
+    let logDown = true;
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666' && logDown) throw error;
+      return { channelId, messageId: '829000000000000065' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    logDown = false;
+    // The ledger never ends: every page is full and holds no finish. The scan
+    // bound is reached, which is "unknown", not "none": no second finish.
+    const realList = runRepo.listRunEvents;
+    let seq = 0;
+    let fake = true;
+    vi.spyOn(runRepo, 'listRunEvents').mockImplementation((...args) => {
+      if (!fake) return realList(...args);
+      const rows = Array.from({ length: 1_000 }, () => {
+        seq += 1;
+        return {
+          seq,
+          at: NOW,
+          event: { kind: 'guard' as const, removed: 0 },
+        };
+      });
+      return rows;
+    });
+    const second = await h.run(mention(id), 2, first.cursor, jobId);
+    fake = false;
+    expect(second.error).toBeUndefined();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
 
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
     const h = harness(async () => ({ ok: true, content: 'answer' }));
@@ -2811,5 +3686,79 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       .all(GUILD_ID) as { dataJson: string }[];
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.dataJson).not.toContain('zebracorn');
+  });
+
+  it('drops the live buffer when the chain fails on every entry', async () => {
+    const h = harness(async () => {
+      throw new ChainFailedError('invalid-request', 'chain failed', false, [
+        { provider: 'openrouter', model: 'm', outcome: 'error', code: 'provider-bad-model', ms: 5 },
+      ]);
+    });
+    getLiveBuffer().append('rec-chain', 'partial', 'thought');
+    await h.run(mention('rec-chain'), 1);
+    expect(getLiveBuffer().read('rec-chain')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-chain', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('drops the live buffer when the run is aborted', async () => {
+    const h = harness(async () => {
+      throw new DOMException('The operation was aborted', 'AbortError');
+    });
+    getLiveBuffer().append('rec-abort', 'partial', 'thought');
+    await h.run(mention('rec-abort'), 1);
+    expect(getLiveBuffer().read('rec-abort')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-abort', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('drops the live buffer when a provider timeout exhausts the retries', async () => {
+    const h = harness(async () => {
+      throw new ProviderError('timeout', 'idle timeout waiting for the provider', true);
+    });
+    getLiveBuffer().append('rec-timeout', 'partial', 'thought');
+    // Attempts at the retry ceiling: the timeout is terminal for this run.
+    await h.run(mention('rec-timeout'), 4);
+    expect(getLiveBuffer().read('rec-timeout')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-timeout', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('drops the live buffer when the run escalates to reviewers', async () => {
+    const h = harness(async () => ({
+      ok: true as const,
+      content: 'escalated summary',
+      escalation: {
+        channelId: '555555555555555555',
+        reviewerRoleIds: ['666666666666666666'],
+        ticketId: 'ticket-1',
+      },
+    }));
+    getLiveBuffer().append('rec-escalation', 'partial', 'thought');
+    await h.run(mention('rec-escalation'), 1);
+    expect(getLiveBuffer().read('rec-escalation')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-escalation', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'answered' });
+  });
+
+  it('drops the live buffer when the invoke throws before any provider call', async () => {
+    const h = harness(async () => {
+      throw new Error('context build exploded');
+    });
+    getLiveBuffer().append('rec-pre', 'partial', 'thought');
+    await h.run(mention('rec-pre'), 1);
+    expect(getLiveBuffer().read('rec-pre')).toBeUndefined();
+    const finished = runRepo
+      .listRunEvents(scope(), 'rec-pre', 0, 50)
+      .find((r) => r.event.kind === 'finished')?.event;
+    expect(finished).toMatchObject({ outcome: 'failed' });
   });
 });

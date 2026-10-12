@@ -225,6 +225,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           undefined,
           {
             providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs'),
+            providerIdleTimeoutMs: () => instanceSettings.get('assistant.providerIdleTimeoutMs'),
+            providerMaxCallMs: () => instanceSettings.get('assistant.providerMaxCallMs'),
             logger,
             modelCatalogue,
           },

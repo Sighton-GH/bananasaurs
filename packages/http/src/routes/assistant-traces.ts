@@ -11,10 +11,10 @@ import { canReadConfig, requireCapability } from './capability.js';
  * 14-day usage strip.
  *
  * Read-only, like `cases.ts` — no audit row, no re-auth, every handler goes
- * through `guard.require` plus `audit.read`. The prompt sections are the one
- * exception: their exact text needs `config.read`, checked with the
- * non-replying `authorize` so a viewer without it still gets the run with the
- * text withheld (empty string), never a 403.
+ * through `guard.require` plus `audit.read`. Prompt sections and saved
+ * reasoning also need `config.read`, checked with `canReadConfig` so a
+ * viewer without it still gets the run with section text withheld (empty
+ * string) and reasoning omitted, never a 403.
  */
 
 const traceListQuerySchema = z.object({
@@ -79,7 +79,32 @@ export const registerAssistantTraceRoutes = (
       const [member] = await ports.fetchGuildMembers([trace.userId]);
       return reply.status(200).send({
         trace: {
-          ...trace,
+          traceId: trace.traceId,
+          runId: trace.runId,
+          at: trace.at,
+          userId: trace.userId,
+          channelId: trace.channelId,
+          behaviourId: trace.behaviourId,
+          command: trace.command,
+          source: trace.source,
+          conversationId: trace.conversationId,
+          turnId: trace.turnId,
+          question: trace.question,
+          answer: trace.answer,
+          outcome: trace.outcome,
+          durationMs: trace.durationMs,
+          finishReason: trace.finishReason,
+          usage: trace.usage,
+          toolCalls: trace.toolCalls,
+          // Undefined is omitted from the serialized body, including the key.
+          reasoning: showText ? trace.reasoning : undefined,
+          guard: trace.guard,
+          included: trace.included,
+          timeline: trace.timeline,
+          error: trace.error,
+          discordMessageIds: trace.discordMessageIds,
+          sources: trace.sources,
+          flags: trace.flags,
           sections: trace.sections.map((s) => ({ ...s, text: showText ? s.text : '' })),
           attempts: trace.attempts.map((a) => {
             // ADR 0129 §3: the provider's short error message is

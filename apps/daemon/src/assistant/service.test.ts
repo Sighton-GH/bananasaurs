@@ -3,6 +3,7 @@ import { ChannelType, type Client } from 'discord.js';
 import type { DiscordPort } from '@bananasaurs/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getLiveBuffer,
   parseConfig,
   parseGuildId,
   ProviderError,
@@ -10,6 +11,7 @@ import {
   type GenerateTextRequest,
   type GenerateTextResponse,
   type RunEvent,
+  type StreamProgress,
   type TextProvider,
 } from '@bananasaurs/core';
 import {
@@ -38,6 +40,7 @@ import { ChainFailedError } from './chain-failed-error.js';
 import { LocalLimitError } from './local-limit.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { createAssistantService } from './service.js';
+import { createLiveRunRecorder } from './run-recorder.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
 import type { AssistantServiceTestPorts } from './service.js';
 import type { AssistantTraceDetail } from './commands.js';
@@ -396,6 +399,86 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       undefined,
       chain,
     );
+
+  it('forwards entry capabilities and input onProgress into provider requests', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req: GenerateTextRequest) => {
+        seen.push(req);
+        req.onProgress?.({
+          round: 0,
+          answerChars: 5,
+          reasoningChars: 0,
+          keepalives: 0,
+          msSinceLastByte: 10,
+        });
+        return { text: 'ok', model: 'm' };
+      },
+    };
+    const progressed: StreamProgress[] = [];
+    const service = serviceWith(() => [
+      usable(provider, {
+        capabilities: { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' },
+      }),
+    ]);
+    const result = await service.invoke({
+      ...ask,
+      invocationId: 'int-progress-1',
+      onProgress: (p: StreamProgress) => {
+        progressed.push(p);
+      },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(seen[0]?.capabilities).toEqual({
+      tools: true,
+      image: false,
+      pdf: false,
+      reasoning: false,
+      thinking: 'none',
+    });
+    expect(progressed).toHaveLength(1);
+    expect(progressed[0]).toMatchObject({ round: 1, answerChars: 5 });
+  });
+
+  it('appends real streamed chunks under an owned run id and closes on finish', async () => {
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        req.onChunk?.({ text: 'hello', reasoning: 'think' });
+        return { text: 'hello', model: 'm' };
+      },
+    };
+    const recorder = createLiveRunRecorder('int-owned-live', getLiveBuffer());
+    const result = await serviceWith(() => [usable(provider)]).invoke({
+      ...ask,
+      invocationId: 'int-owned-live',
+      recorder,
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(getLiveBuffer().read('int-owned-live')).toEqual({ answer: 'hello', thinking: 'think' });
+    recorder.event({ kind: 'finished', outcome: 'answered', durationMs: 0 });
+    expect(getLiveBuffer().read('int-owned-live')).toBeUndefined();
+  });
+
+  it('T12c a direct service call without a lifetime owner does not buffer streamed text', async () => {
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req: GenerateTextRequest) => {
+        req.onChunk?.({ text: 'he', reasoning: 'th' });
+        req.onChunk?.({ text: 'llo', reasoning: 'ink' });
+        return { text: 'hello', model: 'm' };
+      },
+    };
+    const service = serviceWith(() => [usable(provider)]);
+    const result = await service.invoke({ ...ask, invocationId: 'int-live-1' });
+    expect(result).toMatchObject({ ok: true });
+    expect(getLiveBuffer().read('int-live-1')).toBeUndefined();
+    // No recorder means no lifetime owner, so no live sink is supplied.
+  });
 
   it('every entry busy throws retryable so the job retries into BUSY_REPLY', async () => {
     const { provider, calls } = fakeProvider([new ProviderError('rate-limit', 'HTTP 429', true)]);
@@ -1591,6 +1674,34 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     );
     return docId;
   };
+
+  it('T12c Try-it drops real streamed text when ensureRun fails', async () => {
+    const append = vi.spyOn(getLiveBuffer(), 'append');
+    const drop = vi.spyOn(getLiveBuffer(), 'drop');
+    const service = serviceWith({
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        req.onChunk?.({ text: 'answer', reasoning: 'thought' });
+        return { text: 'answer', model: 'model-a' };
+      },
+    });
+    const fault = vi.spyOn(runRepo, 'ensureRun').mockImplementation(() => {
+      throw new Error('fixture ledger failure');
+    });
+    try {
+      await service.tryIt({ behaviourId: 'direct', question: 'hi', accountUsername: 'Alex P' });
+      expect(append).toHaveBeenCalledTimes(1);
+      const id = append.mock.calls[0]![0];
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+      expect(drop).toHaveBeenCalledExactlyOnceWith(id);
+      expect(drop.mock.invocationCallOrder[0]).toBeGreaterThan(append.mock.invocationCallOrder[0]!);
+    } finally {
+      fault.mockRestore();
+      append.mockRestore();
+      drop.mockRestore();
+    }
+  });
 
   it('answers without the caller-role gate and writes dashboard-test rows', async () => {
     const service = serviceWith(answering('Try-it answer.'));

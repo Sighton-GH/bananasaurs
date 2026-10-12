@@ -202,6 +202,36 @@ describe('assistant trace routes', () => {
     expect(withGrant.json<{ trace: AssistantTrace }>().trace.sections[0]?.text).toBe('Be helpful.');
   });
 
+  it('omits saved reasoning without config.read and returns it with config.read', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    const reasoningText = 'Private reasoning for Sam L';
+    traceRepo.insertTrace(
+      t.scopes.forGuild(GUILD),
+      trace({ reasoning: [{ round: 1, text: reasoningText }] }),
+    );
+    const without = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces/trace-1',
+      headers: { cookie },
+    });
+    expect(without.statusCode).toBe(200);
+    expect(without.body).not.toContain(reasoningText);
+    expect(without.json<{ trace: AssistantTrace }>().trace).not.toHaveProperty('reasoning');
+
+    grant('config.read');
+    const withGrant = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces/trace-1',
+      headers: { cookie },
+    });
+    expect(withGrant.statusCode).toBe(200);
+    expect(withGrant.body).toContain(reasoningText);
+    expect(withGrant.json<{ trace: AssistantTrace }>().trace.reasoning).toEqual([
+      { round: 1, text: reasoningText },
+    ]);
+  });
+
   it('answers 404 for an unknown trace id', async () => {
     grant('audit.read');
     const { cookie } = await signIn();

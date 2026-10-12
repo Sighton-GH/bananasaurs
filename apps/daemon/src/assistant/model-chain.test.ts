@@ -3,6 +3,7 @@ import {
   nextProviderDayStart,
   providerDayStart,
   parseConfig,
+  ProviderError,
   type TextProvider,
 } from '@bananasaurs/core';
 import {
@@ -82,6 +83,35 @@ const resolve = (
 };
 
 describe('resolveModelChain', () => {
+  it('forwards idle and ceiling timeouts from resolve readers to makeProvider', () => {
+    const seen: unknown[] = [];
+    const fake = {
+      id: 'gemini',
+      capabilities: new Set(['text']),
+      generateText: async () => ({ text: 'x', model: 'gemini-3.8-flash' }),
+    } as const;
+    const entries = resolveModelChain({
+      instance: t.scopes.instance(),
+      config: {
+        AI_PROVIDER: 'gemini',
+        AI_MODEL: 'gemini-3.8-flash',
+        AI_PROFILE_COST_CLASS: 'free',
+        GEMINI_API_KEY: 'k',
+      },
+      openKey: () => 'k',
+      eligibility: () => eligible(),
+      makeProvider: (_provider, _apiKey, _costClass, options) => {
+        seen.push(options);
+        return fake as never;
+      },
+      providerTimeoutMs: () => 60_000,
+      providerIdleTimeoutMs: () => 45_000,
+      providerMaxCallMs: () => 300_000,
+    });
+    expect(entries.length).toBeGreaterThan(0);
+    expect(seen[0]).toMatchObject({ timeoutMs: 60_000, idleTimeoutMs: 45_000, maxCallMs: 300_000 });
+  });
+
   it('seeds from env when both tables are empty, all fallback models sharing the synthetic env key', () => {
     const config = {
       ...base,
@@ -379,54 +409,118 @@ describe('resolveModelChain', () => {
 
   describe('makeProvider timeout', () => {
     afterEach(() => {
+      vi.useRealTimers();
       vi.restoreAllMocks();
       vi.unstubAllGlobals();
     });
-
-    // Either way no network: the fetch stub rejects at once, so the only
-    // thing under test is which timeout the adapter hands to AbortSignal.
-    const stubFetch = (): void => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (): Promise<Response> => {
-          throw new Error('stub fetch: no network');
-        }),
-      );
-    };
     const textRequest = {
       model: 'm',
       messages: [{ role: 'user' as const, text: 'hi' }],
     };
+    const stalledFetch = (): { signal: () => AbortSignal | undefined } => {
+      let signal: AbortSignal | undefined;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((_url: unknown, init: RequestInit): Promise<Response> => {
+          signal = init.signal ?? undefined;
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          });
+        }),
+      );
+      return { signal: () => signal };
+    };
 
-    it.each([
-      ['openrouter', 7000],
-      ['gemini', 7000],
-    ] as const)(
-      'makeProvider(%s) forwards timeoutMs %i to AbortSignal.timeout',
-      async (providerId, timeoutMs) => {
-        stubFetch();
-        const spy = vi.spyOn(AbortSignal, 'timeout');
-        await makeProvider(providerId, 'k', 'free', { timeoutMs })
+    it.each(['openrouter', 'gemini', 'nvidia-nim'] as const)(
+      'makeProvider(%s) enforces timeoutMs 7000 on its real adapter',
+      async (providerId) => {
+        vi.useFakeTimers();
+        const fetch = stalledFetch();
+        let settled = false;
+        const result = makeProvider(providerId, 'k', 'free', { timeoutMs: 7000 })
           .generateText(textRequest)
-          .then(
-            () => undefined,
-            () => undefined,
-          );
-        expect(spy).toHaveBeenCalledWith(timeoutMs);
+          .catch((error: unknown) => {
+            settled = true;
+            return error;
+          });
+        await vi.advanceTimersByTimeAsync(6999);
+        expect(fetch.signal()?.aborted).toBe(false);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fetch.signal()?.aborted).toBe(true);
+        expect(await result).toBeInstanceOf(ProviderError);
+        expect(await result).toMatchObject({ kind: 'timeout', retryable: true });
+        expect(vi.getTimerCount()).toBe(0);
       },
     );
 
     it('defaults to 30000 without options', async () => {
-      stubFetch();
-      const spy = vi.spyOn(AbortSignal, 'timeout');
-      await makeProvider('openrouter', 'k', 'free')
+      vi.useFakeTimers();
+      const fetch = stalledFetch();
+      const result = makeProvider('openrouter', 'k', 'free')
         .generateText(textRequest)
-        .then(
-          () => undefined,
-          () => undefined,
-        );
-      expect(spy).toHaveBeenCalledWith(30000);
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(29999);
+      expect(fetch.signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetch.signal()?.aborted).toBe(true);
+      expect(await result).toMatchObject({ kind: 'timeout', retryable: true });
+      expect(vi.getTimerCount()).toBe(0);
     });
+
+    it.each(['openrouter', 'gemini', 'nvidia-nim'] as const)(
+      'makeProvider(%s) forwards idle and ceiling timers to the real streaming adapter',
+      async (providerId) => {
+        for (const [idleTimeoutMs, maxCallMs, expected] of [
+          [50, 100, 50],
+          [100, 50, 50],
+        ] as const) {
+          vi.useFakeTimers();
+          let signal: AbortSignal | undefined;
+          vi.stubGlobal(
+            'fetch',
+            vi.fn((_url: unknown, init: RequestInit): Promise<Response> => {
+              signal = init.signal ?? undefined;
+              return Promise.resolve(
+                new Response(
+                  new ReadableStream<Uint8Array>({
+                    start: (controller) => {
+                      controller.enqueue(new TextEncoder().encode(': keepalive\n\n'));
+                    },
+                  }),
+                  {
+                    headers: { 'content-type': 'text/event-stream' },
+                  },
+                ),
+              );
+            }),
+          );
+          let settled = false;
+          const result = makeProvider(providerId, 'k', 'free', {
+            timeoutMs: 1000,
+            idleTimeoutMs,
+            maxCallMs,
+          })
+            .generateText(textRequest)
+            .catch((error: unknown) => {
+              settled = true;
+              return error;
+            });
+          await vi.advanceTimersByTimeAsync(expected - 1);
+          expect(signal?.aborted).toBe(false);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(signal?.aborted).toBe(true);
+          expect(await result).toMatchObject({ kind: 'timeout', retryable: true });
+          expect(vi.getTimerCount()).toBe(0);
+          vi.useRealTimers();
+        }
+      },
+    );
   });
 });
 

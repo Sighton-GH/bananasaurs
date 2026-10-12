@@ -8,11 +8,22 @@ import {
 } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 28 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(28);
+  it('has 30 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(30);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
+  });
+
+  it('streaming timeouts default to 45 s idle and 300 s ceiling', () => {
+    const values = Object.fromEntries(INSTANCE_SETTINGS.map((s) => [s.key, s.defaultValue]));
+    expect(values['assistant.providerIdleTimeoutMs']).toBe(45_000);
+    expect(values['assistant.providerMaxCallMs']).toBe(300_000);
+  });
+
+  it('max output tokens defaults to 4096 for reasoning', () => {
+    const values = Object.fromEntries(INSTANCE_SETTINGS.map((s) => [s.key, s.defaultValue]));
+    expect(values['assistant.maxOutputTokens']).toBe(4_096);
   });
 
   it('registers the Slice 2 reply-ping caps with their bounds (ADR 0145)', () => {
@@ -84,7 +95,7 @@ describe('instance settings registry', () => {
     expect(valueOf('assistant.maxConcurrentRuns')).toBe(4);
     expect(valueOf('assistant.maxToolRounds')).toBe(4);
     expect(valueOf('assistant.maxToolCalls')).toBe(12);
-    expect(valueOf('assistant.maxOutputTokens')).toBe(2048);
+    expect(valueOf('assistant.maxOutputTokens')).toBe(4096);
     expect(valueOf('network.connectFallbackMs')).toBe(1000);
     expect(valueOf('resources.fetchTimeoutMs')).toBe(5000);
     expect(valueOf('resources.refreshIntervalMin')).toBe(60);

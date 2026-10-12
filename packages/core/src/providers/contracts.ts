@@ -1,3 +1,5 @@
+import type { ModelCapabilities } from './model-capabilities.js';
+
 export type ProviderCapability =
   'text' | 'streaming' | 'structured-output' | 'tools' | 'vision' | 'usage';
 
@@ -39,6 +41,21 @@ export interface GenerationMessage {
   readonly providerParts?: unknown;
 }
 
+/** Throttled stream counters: metadata only, safe for the run ledger. */
+export interface StreamProgress {
+  readonly round: number;
+  readonly answerChars: number;
+  readonly reasoningChars: number;
+  readonly keepalives: number;
+  readonly msSinceLastByte: number;
+}
+
+/** Unthrottled text deltas for the live buffer; never stored in the ledger. */
+export interface StreamChunk {
+  readonly text: string;
+  readonly reasoning: string;
+}
+
 export interface GenerateTextRequest {
   readonly model: string;
   readonly messages: readonly GenerationMessage[];
@@ -48,8 +65,24 @@ export interface GenerateTextRequest {
   readonly signal?: AbortSignal;
   /** Hint for providers with a thinking budget (Gemini); ignored elsewhere. */
   readonly thinkingBudget?: number;
+  /**
+   * Explicit thinking level (Gemini 3). Absent means the adapter derives
+   * `low` for tool rounds and `medium` for the answer. Never `minimal`.
+   * Never sent when the entry capabilities forbid thinking.
+   */
+  readonly thinkingLevel?: 'low' | 'medium' | 'high';
+  /**
+   * Per-entry capabilities from daemon `capabilitiesForEntry`. Absent means
+   * the adapter's conservative built-in default (unknown models get no
+   * thinking parameter and no reasoning request).
+   */
+  readonly capabilities?: ModelCapabilities;
   /** Offered only by providers with the `tools` capability. */
   readonly tools?: readonly ToolDeclaration[];
+  /** Throttled progress counters (metadata only, safe for the ledger). */
+  readonly onProgress?: (progress: StreamProgress) => void;
+  /** Unthrottled text deltas for the live buffer; never stored in the ledger. */
+  readonly onChunk?: (chunk: StreamChunk) => void;
 }
 
 export interface ProviderUsage {
@@ -64,6 +97,12 @@ export interface ProviderUsage {
 export interface GenerateTextResponse {
   /** Empty when the model only asked for tools. */
   readonly text: string;
+  /**
+   * Non-answer reasoning (OpenRouter `delta.reasoning`, Gemini thought
+   * summaries). Absent when the model exposed none. Saved per round under
+   * trace `reasoning`, never delivered to members.
+   */
+  readonly reasoning?: string;
   readonly model: string;
   readonly finishReason?: string;
   readonly usage?: ProviderUsage;
