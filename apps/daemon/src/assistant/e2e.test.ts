@@ -147,9 +147,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     const payloads = [
       {
         model: 'fixture-model',
-        choices: [{ message: { content: 'Which task and what changed?' } }],
+        choices: [{ delta: { content: 'Which task and what changed?' }, finish_reason: 'stop' }],
       },
-      { model: 'fixture-model', choices: [{ message: { content: 42 } }] },
+      { model: 'fixture-model', choices: [{ delta: { content: 42 } }] },
     ];
     const api = createServer((request, response) => {
       let body = '';
@@ -158,8 +158,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       });
       request.on('end', () => {
         bodies.push(body);
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify(payloads.shift()));
+        // Slice 3: the adapter streams, so the simulated vendor answers in SSE.
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify(payloads.shift())}\n\ndata: [DONE]\n\n`);
       });
     });
     await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve));
