@@ -459,7 +459,10 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       recorder,
     });
     expect(result).toMatchObject({ ok: true });
-    expect(getLiveBuffer(GUILD).read('int-owned-live')).toEqual({ answer: 'hello', thinking: 'think' });
+    expect(getLiveBuffer(GUILD).read('int-owned-live')).toEqual({
+      answer: 'hello',
+      thinking: 'think',
+    });
     recorder.event({ kind: 'finished', outcome: 'answered', durationMs: 0 });
     expect(getLiveBuffer(GUILD).read('int-owned-live')).toBeUndefined();
   });

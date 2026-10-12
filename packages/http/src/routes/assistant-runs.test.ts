@@ -92,7 +92,8 @@ beforeEach(async () => {
   app = createServer({ deps, registerRoutes: registerAssistantRunRoutes });
 });
 afterEach(async () => {
-  for (const runId of ['run-1', 'run-2', 'run-other', 'no-such-run']) getLiveBuffer(GUILD).drop(runId);
+  for (const runId of ['run-1', 'run-2', 'run-other', 'no-such-run'])
+    getLiveBuffer(GUILD).drop(runId);
   getLiveBuffer(OTHER_GUILD).drop('run-other');
   await app.close();
   t.close();

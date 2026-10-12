@@ -2753,7 +2753,10 @@ describe('Slice 3 streaming edge paths', () => {
     };
     const loop = await runToolLoop(
       baseInput(
-        [entry({ provider: failing, model: 'model-a' }), entry({ provider: answering, model: 'model-b' })],
+        [
+          entry({ provider: failing, model: 'model-a' }),
+          entry({ provider: answering, model: 'model-b' }),
+        ],
         {
           runId: 'r-failover',
           recorder: { runId: 'r-failover', event: () => undefined, update: () => undefined },
