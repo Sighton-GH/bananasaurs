@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
-import { accountRepo, authzRepo, digestRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, authzRepo, digestRepo, guildRepo, sessionRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -10,6 +10,7 @@ import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
 import { registerAssistantDigests } from './assistant-digests.js';
+import * as capabilityRoute from './capability.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const OTHER_GUILD = parseGuildId('222222222222222222');
@@ -74,15 +75,69 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await app.close();
   t.close();
 });
 
 describe('assistant digest routes', () => {
-  it('requires audit.read for the list and one digest', async () => {
+  it.each(['missing', 'bogus', 'expired', 'revoked'] as const)(
+    'rejects a %s session on both endpoints before capability or digest reads',
+    async (state) => {
+      grant('audit.read');
+      let cookie: string | undefined;
+      if (state === 'bogus') cookie = 'bs_session=not-a-session';
+      if (state === 'expired' || state === 'revoked') {
+        ({ cookie } = await signIn());
+        const session = sessionRepo.listSessionsForAccount(t.scopes.forGuild(GUILD), ACCOUNT)[0];
+        expect(session).toBeDefined();
+        if (session === undefined) throw new Error('Expected the sign-in session');
+        if (state === 'expired') clock = session.expiresAt;
+        else
+          sessionRepo.revokeSession(t.scopes.forGuild(GUILD), {
+            sessionIdHash: session.sessionId,
+            now: clock,
+          });
+      }
+      const capability = vi.spyOn(capabilityRoute, 'requireCapability');
+      const list = vi.spyOn(digestRepo, 'listDigests');
+      const detail = vi.spyOn(digestRepo, 'getDigest');
+      for (const url of ['/api/assistant/digests', '/api/assistant/digests/2026-10-09']) {
+        const response = await app.inject({
+          method: 'GET',
+          url,
+          ...(cookie === undefined ? {} : { headers: { cookie } }),
+        });
+        expect(response.statusCode).toBe(401);
+        expect(response.json()).toEqual({
+          error: 'unauthenticated',
+          title: 'You are signed out',
+          message: 'Your session ended.',
+          hint: 'Sign in again.',
+          requestId: expect.any(String),
+        });
+        expect(capability).not.toHaveBeenCalled();
+        expect(list).not.toHaveBeenCalled();
+        expect(detail).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it('requires audit.read for the list and one digest before repository reads', async () => {
     const { cookie } = await signIn();
+    const list = vi.spyOn(digestRepo, 'listDigests');
+    const detail = vi.spyOn(digestRepo, 'getDigest');
     for (const url of ['/api/assistant/digests', '/api/assistant/digests/2026-10-09']) {
-      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(403);
+      const response = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        error: 'no-grant',
+        title: 'Missing permission',
+        message: 'Your account does not hold the permission this action needs.',
+        hint: 'Ask the owner to grant it.',
+        requestId: expect.any(String),
+      });
+      expect(list).not.toHaveBeenCalled();
+      expect(detail).not.toHaveBeenCalled();
     }
   });
   it('lists newest first and reads one digest', async () => {
