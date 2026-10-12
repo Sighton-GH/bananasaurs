@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { assistantSummarisePayload, parseGuildId } from '@bananasaurs/core';
-import { conversationRepo, guildRepo } from '@bananasaurs/storage';
+import { assistantSummarisePayload, parseConfig, parseGuildId } from '@bananasaurs/core';
+import { conversationRepo, guildRepo, instanceSettingsRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -11,6 +11,10 @@ import {
   SUMMARY_SYSTEM_INSTRUCTION,
   type SummariseModelPort,
 } from './assistant-summarise.js';
+
+import { createAssistantService } from '../assistant/service.js';
+import { pickBackgroundEntry } from './assistant-digest.js';
+import type { ChainEntry } from '../assistant/model-chain.js';
 
 const GUILD_ID = parseGuildId('111111111111111111');
 const CHANNEL_ID = '333333333333333333';
@@ -237,4 +241,64 @@ describe('assistantSummariseHandler (ADR 0091)', () => {
     const closers = (req?.text ?? '').split('[/TURNS]').length - 1;
     expect(closers).toBe(1);
   });
+});
+
+describe('summaries run on the summary tier (S5-T14)', () => {
+  let t: MigratedTestDatabase;
+
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+  });
+  afterEach(() => t.close());
+
+  const scope = () => t.scopes.forGuild(GUILD_ID);
+  const tierConfig = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: '111111111111111111',
+    BANANASAURS_OWNER_USER_ID: '123456789012345678',
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'test-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const entryFor = (tier: 'light' | 'standard', keyId: string): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'm',
+    keyId,
+    keyLabel: keyId,
+    provider: {
+      id: keyId,
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => ({ text: 'summary', model: 'm' }),
+    },
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+    pool: 'key',
+    tier,
+    selectedKeyId: keyId,
+  });
+
+  it.each([['standard'], ['light']] as const)(
+    'with routerSummaryTier = %s the summary run tries that tier first',
+    async (tier) => {
+      instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
+        key: 'assistant.routerSummaryTier',
+        valueJson: JSON.stringify(tier),
+        updatedAt: NOW,
+        updatedBy: 'test',
+      });
+      const service = createAssistantService(scope(), t.scopes.instance(), tierConfig, () => NOW);
+      const chain = [entryFor('light', 'key_light'), entryFor('standard', 'key_standard')];
+      expect(pickBackgroundEntry(chain, service.backgroundTier('summary'))?.keyId).toBe(
+        tier === 'standard' ? 'key_standard' : 'key_light',
+      );
+      expect(
+        pickBackgroundEntry([...chain].reverse(), service.backgroundTier('summary'))?.keyId,
+      ).toBe(tier === 'standard' ? 'key_standard' : 'key_light');
+    },
+  );
 });
