@@ -296,6 +296,13 @@ describe('estimateTokens', () => {
 });
 
 describe('capTrace', () => {
+  it('keeps per-round reasoning capped at 8000 chars', () => {
+    const trace = fixtureTrace({ reasoning: [{ round: 1, text: 'x'.repeat(9000) }] });
+    const capped = capTrace({ ...trace, answer: 'a'.repeat(199_000) });
+    expect(capped.reasoning?.[0]?.text.length).toBeLessThanOrEqual(8000);
+    expect(capped.reasoning?.[0]?.text.endsWith('… [truncated]')).toBe(true);
+  });
+
   it('leaves a small trace untouched', () => {
     const trace = fixtureTrace();
     expect(capTrace(trace)).toEqual(trace);
