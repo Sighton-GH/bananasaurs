@@ -24,6 +24,14 @@ export interface ToolCall {
   readonly args: unknown;
 }
 
+/** One attached file travelling to a model that reads it natively (ADR 0149). Base64 bytes: never logged, never scanned, never stored in a trace. */
+export interface GenerationMedia {
+  readonly kind: 'image' | 'pdf';
+  readonly mediaType: string;
+  readonly dataBase64: string;
+  readonly name: string;
+}
+
 export interface GenerationMessage {
   /** `tool` carries one tool result; `text` is that result, already redacted. */
   readonly role: 'user' | 'assistant' | 'tool';
@@ -39,6 +47,12 @@ export interface GenerationMessage {
    * never logged and never scanned as member input.
    */
   readonly providerParts?: unknown;
+  /**
+   * On a user turn: attached image/PDF bytes for a model whose capabilities
+   * allow them (ADR 0149). Stripped per entry before sending; markers replace
+   * what an entry cannot read. Never written to a trace or log.
+   */
+  readonly media?: readonly GenerationMedia[];
 }
 
 /** Throttled stream counters: metadata only, safe for the run ledger. */
