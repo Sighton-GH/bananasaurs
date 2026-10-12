@@ -683,6 +683,12 @@ const outlineForDoc = (
   return { ...evidence(name, lines.join('\n')), handles };
 };
 
+/** First `max` UTF-16 units of `text`, backing off one unit rather than leaving half a surrogate pair. */
+const cutWithoutSplittingPair = (text: string, max: number): string => {
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+};
+
 export const runAssistantTool = async (
   call: ToolCall,
   ports: AssistantToolPorts,
@@ -1694,7 +1700,9 @@ export const runAssistantTool = async (
         const budgetedLines = fits
           ? cleanedLines
           : cleanedLines.map((line) =>
-              line.length <= lineBudget ? line : `${line.slice(0, lineBudget - 1)}…`,
+              line.length <= lineBudget
+                ? line
+                : `${cutWithoutSplittingPair(line, lineBudget - 1)}…`,
             );
         return {
           ...evidence(name, budgetedLines.join('\n')),

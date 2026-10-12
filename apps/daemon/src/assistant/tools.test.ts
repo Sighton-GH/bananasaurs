@@ -2183,6 +2183,30 @@ describe('search_conversations (ADR 0093)', () => {
     ]);
   });
 
+  it('never splits a surrogate pair when it cuts an over-cap line (lead repair)', async () => {
+    for (const pad of ['', 'a']) {
+      const p = ports({
+        searchConversations: vi.fn(async () =>
+          Array.from({ length: 7 }, (_, i) =>
+            hit({
+              conversationId: i < 5 ? `conv-${String(i)}` : `digest:${String(i)}`,
+              topic: `${pad}${'\u{1F600}'.repeat(900)}`,
+              facts: [],
+            }),
+          ),
+        ),
+      });
+      const result = await runAssistantTool(
+        { name: 'search_conversations', args: { query: 'robot arm' } },
+        p,
+      );
+      expect(result.ok).toBe(true);
+      expect(result.text.length).toBeLessThanOrEqual(6_000);
+      expect(result.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+      expect(result.text).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    }
+  });
+
   it('shows digest hits in text but keeps them out of recalled links', async () => {
     const p = ports({
       searchConversations: vi.fn(async () => [
