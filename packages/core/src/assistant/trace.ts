@@ -102,6 +102,15 @@ export const assistantTraceSchema = z.object({
       preview: z.string(),
     }),
   ),
+  /**
+   * Saved thinking per round (Slice 3, ADR 0148): OpenRouter reasoning and
+   * Gemini thought summaries. Capped by `capTrace`; shown collapsed on the
+   * "What the AI saw" page to trace-capable viewers only.
+   */
+  reasoning: z
+    .array(z.object({ round: z.number().int().min(0), text: z.string().max(8000) }))
+    .max(12)
+    .optional(),
   guard: z.object({ removed: z.array(z.string()), blocked: z.string().optional() }),
   /**
    * Which context blocks the reply saw (ADR 0088 decision 2). Optional so
@@ -213,7 +222,11 @@ export const TRUNCATION_SUFFIX = '… [truncated]';
 const truncateTo = (text: string, maxChars: number): string => {
   if (text.length <= maxChars) return text;
   if (maxChars <= TRUNCATION_SUFFIX.length) return TRUNCATION_SUFFIX;
-  return text.slice(0, maxChars - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+  let end = maxChars - TRUNCATION_SUFFIX.length;
+  // Never cut between the halves of a surrogate pair: drop the orphaned high half.
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end) + TRUNCATION_SUFFIX;
 };
 
 const byteSize = (t: AssistantTrace): number => new TextEncoder().encode(JSON.stringify(t)).length;
@@ -227,10 +240,20 @@ const byteSize = (t: AssistantTrace): number => new TextEncoder().encode(JSON.st
  * fixed fields alone exceed the budget comes back unchanged.
  */
 export const capTrace = (t: AssistantTrace, maxBytes = 200_000): AssistantTrace => {
-  if (byteSize(t) <= maxBytes) return t;
+  // Reasoning entries are truncated up front: the schema rejects text over
+  // 8,000 chars, so an untruncated entry could never be stored.
   const sections = t.sections.map((s) => ({ ...s }));
   const toolCalls = t.toolCalls.map((c) => ({ ...c }));
-  const out: AssistantTrace = { ...t, sections, toolCalls };
+  const reasoning = (t.reasoning ?? []).map((r) => ({
+    ...r,
+    text: truncateTo(r.text, 8000),
+  }));
+  const out: AssistantTrace = {
+    ...t,
+    sections,
+    toolCalls,
+    reasoning: reasoning.length > 0 ? reasoning : undefined,
+  };
   const shrink = (fields: { get(): string; set(v: string): void }[]): boolean => {
     let changed = false;
     for (const field of fields) {
@@ -267,6 +290,19 @@ export const capTrace = (t: AssistantTrace, maxBytes = 200_000): AssistantTrace 
     )
   ) {
     // Then previews.
+  }
+  while (
+    byteSize(out) > maxBytes &&
+    shrink(
+      reasoning.map((r, i) => ({
+        get: () => reasoning[i]?.text ?? '',
+        set: (v: string) => {
+          reasoning[i] = { ...r, text: v };
+        },
+      })),
+    )
+  ) {
+    // Then reasoning, before giving up.
   }
   return out;
 };
