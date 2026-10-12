@@ -871,6 +871,27 @@ describe('OpenAI-compatible providers', () => {
       expect(errorOf(err).message).toContain('(redacted)');
     });
 
+    it('redacts standard and URL-safe base64 encodings of the key from an error body', async () => {
+      const key = 'sk-or-base64secret';
+      const std = Buffer.from(key, 'utf8').toString('base64');
+      const url = Buffer.from(key, 'utf8').toString('base64url');
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: { code: 401, message: `bad ${std} or ${url}` } }), {
+            status: 401,
+          }),
+        );
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'authentication', retryable: false });
+      expect(errorOf(err).message).not.toContain(std);
+      expect(errorOf(err).message).not.toContain(url);
+      expect(errorOf(err).message).toContain('(redacted)');
+    });
+
     it('redacts the key from a mid-stream body failure cause', async () => {
       const key = 'sk-or-streambody';
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(

@@ -190,6 +190,8 @@ const readErrorBody = async (response: Response, abortRace: Promise<never>): Pro
 /**
  * Percent-encoded spellings of the key (every character, either hex case, and
  * the usual encodeURIComponent form): a URL inside an upstream message can echo it.
+ * Standard and URL-safe base64 encodings (padded and unpadded): an upstream
+ * body can echo the key in either alphabet.
  */
 const keyForms = (key: string): readonly string[] => {
   const bytes = [...new TextEncoder().encode(key)];
@@ -202,7 +204,18 @@ const keyForms = (key: string): readonly string[] => {
         ),
       )
       .join('');
-  return [key, encodeURIComponent(key), hex(true), hex(false)];
+  const std = Buffer.from(key, 'utf8').toString('base64');
+  const url = Buffer.from(key, 'utf8').toString('base64url');
+  return [
+    key,
+    encodeURIComponent(key),
+    hex(true),
+    hex(false),
+    std,
+    std.replace(/=+$/, ''),
+    url,
+    url.replace(/=+$/, ''),
+  ];
 };
 
 /**
