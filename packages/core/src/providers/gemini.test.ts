@@ -746,6 +746,143 @@ describe('GeminiProvider', () => {
       }
     });
   });
+  describe('hostile inspection shapes (round 3)', () => {
+    const key = 'AIza_FAKE_ONLY_ROUND3_SECRET_424242';
+    const request = { model: 'm', messages: [{ role: 'user' as const, text: 'hi' }] };
+    const safe = () =>
+      new ProviderError('quota', 'safe', false, {
+        quotaScope: 'day',
+        learnedLimit: { perDay: 8 },
+        retryAfterMs: 60,
+        status: 429,
+      });
+    const shapes: Record<string, () => unknown> = {
+      ownKeysProxy: () =>
+        new Proxy(safe(), {
+          ownKeys() {
+            throw new Error(key);
+          },
+        }),
+      descriptorProxy: () =>
+        new Proxy(safe(), {
+          getOwnPropertyDescriptor() {
+            throw new Error(key);
+          },
+        }),
+      protoTrapProxy: () =>
+        new Proxy(safe(), {
+          getPrototypeOf() {
+            throw new Error(key);
+          },
+        }),
+      learnedLimitProxy: () => {
+        const e = safe();
+        e.learnedLimit = new Proxy(
+          { perDay: 8 },
+          {
+            getOwnPropertyDescriptor() {
+              throw new Error(key);
+            },
+            ownKeys() {
+              throw new Error(key);
+            },
+          },
+        );
+        return e;
+      },
+      codeGetter: () => {
+        const e = new Error('safe');
+        Object.defineProperty(e, 'code', {
+          get() {
+            throw new Error(key);
+          },
+        });
+        return e;
+      },
+      causeGetter: () => {
+        const e = new Error('safe');
+        Object.defineProperty(e, 'cause', {
+          get() {
+            throw new Error(key);
+          },
+        });
+        return e;
+      },
+      getTrapProxy: () =>
+        new Proxy(safe(), {
+          get(t, p, r) {
+            if (p === 'message' || p === 'toString') return key;
+            if (p === 'toJSON') return () => ({ secret: key });
+            if (p === Symbol.toPrimitive) return () => key;
+            return Reflect.get(t, p, r) as unknown;
+          },
+        }),
+      ownProtoField: () => {
+        const e = safe();
+        const payload = {};
+        Object.defineProperty(payload, inspect.custom, {
+          value: () => key,
+          enumerable: false,
+        });
+        Object.defineProperty(e, '__proto__', { value: payload, enumerable: true });
+        return e;
+      },
+      nonenumerableInspectHook: () => {
+        const e = safe();
+        Object.defineProperty(e, inspect.custom, { value: () => key, enumerable: false });
+        return e;
+      },
+      nonenumerableString: () => {
+        const e = safe();
+        Object.defineProperty(e, 'secret', { value: key, enumerable: false });
+        return e;
+      },
+      symbolKey: () => {
+        const e = safe();
+        Object.defineProperty(e, Symbol('x'), { value: key, enumerable: false });
+        return e;
+      },
+    };
+    const diag = (e: unknown): string =>
+      [String(e), JSON.stringify(e), inspect(e, { depth: 20, showHidden: true })].join('\n');
+    const run = (error: unknown, where: string) => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+        if (where === 'fetch') throw error;
+        if (where === 'body')
+          return new Response(
+            new ReadableStream({
+              start(c) {
+                c.error(error);
+              },
+            }),
+          );
+        return sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] });
+      });
+      const thrower = () => {
+        throw error;
+      };
+      return new GeminiProvider({ apiKey: key, fetch })
+        .generateText({
+          ...request,
+          ...(where === 'chunk' ? { onChunk: thrower } : {}),
+          ...(where === 'progress' ? { onProgress: thrower } : {}),
+        })
+        .catch((e: unknown) => e);
+    };
+    for (const where of ['fetch', 'body', 'chunk', 'progress']) {
+      for (const [name, make] of Object.entries(shapes)) {
+        it(`${name} fails closed on ${where}`, async () => {
+          const out = await run(make(), where);
+          expect(out).toBeInstanceOf(ProviderError);
+          expect(diag(out)).not.toContain(key);
+        });
+      }
+      it(`ordinary safe ProviderError identity is kept on ${where}`, async () => {
+        const e = safe();
+        expect(await run(e, where)).toBe(e);
+      });
+    }
+  });
   describe('review regressions', () => {
     const request = { model: 'm', messages: [{ role: 'user' as const, text: 'hi' }] };
     const key = 'AIza_FAKE_ONLY_REVIEW_SECRET_123456789';

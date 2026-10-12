@@ -10,6 +10,7 @@ import type {
   TextProvider,
 } from './contracts.js';
 import { ProviderError, type ProviderErrorKind } from './errors.js';
+import { types as utilTypes } from 'node:util';
 import { netCodeOf } from './failure.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
 
@@ -207,32 +208,39 @@ export class GeminiProvider implements TextProvider {
       .strict();
     // Read data descriptors, never accessors or toJSON. Reject subclasses and
     // extra fields rather than trusting their arbitrary reachable diagnostics.
-    const own: Record<string, unknown> = {};
+    if (utilTypes.isProxy(error)) throw new Error('proxy');
+    const own: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    const allowedKeys = new Set<string>(Object.keys(shape.shape));
     let dataOnly = true;
     for (const key of Reflect.ownKeys(error)) {
+      if (typeof key !== 'string' || !allowedKeys.has(key)) {
+        dataOnly = false;
+        continue;
+      }
       const descriptor = Object.getOwnPropertyDescriptor(error, key);
       if (
         key === 'stack' &&
         descriptor?.get === Object.getOwnPropertyDescriptor(new Error(), 'stack')?.get
       ) {
         try {
-          own.stack = error.stack;
+          Object.defineProperty(own, 'stack', { value: error.stack, enumerable: true });
         } catch {
           dataOnly = false;
         }
         continue;
       }
-      if (typeof key !== 'string' || descriptor === undefined || !('value' in descriptor)) {
+      if (descriptor === undefined || !('value' in descriptor)) {
         dataOnly = false;
         continue;
       }
-      own[key] = descriptor.value as unknown;
+      Object.defineProperty(own, key, { value: descriptor.value as unknown, enumerable: true });
     }
     const plainNested = (value: unknown, keys: readonly string[]): boolean => {
       if (value === undefined) return true;
       if (
         typeof value !== 'object' ||
         value === null ||
+        utilTypes.isProxy(value) ||
         Object.getPrototypeOf(value) !== Object.prototype
       )
         return false;
@@ -278,7 +286,7 @@ export class GeminiProvider implements TextProvider {
     if (finishReason !== undefined) evidence.finishReason = finishReason;
     const nested = (object: unknown, keys: readonly string[]): Record<string, unknown> => {
       const result: Record<string, unknown> = {};
-      if (typeof object !== 'object' || object === null) return result;
+      if (typeof object !== 'object' || object === null || utilTypes.isProxy(object)) return result;
       for (const key of keys) {
         const descriptor = Object.getOwnPropertyDescriptor(object, key);
         if (descriptor === undefined || !('value' in descriptor)) continue;
@@ -299,6 +307,39 @@ export class GeminiProvider implements TextProvider {
     ]);
     if (typeof emptyAnswer.reasoningOnly === 'boolean') evidence.emptyAnswer = emptyAnswer;
     return new ProviderError(kind, 'Gemini provider failed', retryable, evidence);
+  }
+
+  private genericFailure(): ProviderError {
+    return new ProviderError('outage', 'Gemini provider failed', true, { host: this.host });
+  }
+
+  /** Fail-closed ProviderError identity check: never throws, never leaks inspection errors. */
+  private retainedProviderError(error: unknown): ProviderError | undefined {
+    try {
+      if (utilTypes.isProxy(error)) return this.genericFailure();
+      if (!(error instanceof ProviderError)) return undefined;
+      return this.safeError(error);
+    } catch {
+      return this.genericFailure();
+    }
+  }
+
+  private safeClassify(error: unknown): { timeout: boolean; netCode?: string } {
+    if (utilTypes.isProxy(error)) return { timeout: false };
+    const timeout = ((): boolean => {
+      try {
+        return isTimeoutError(error);
+      } catch {
+        return false;
+      }
+    })();
+    let netCode: string | undefined;
+    try {
+      netCode = netCodeOf(error);
+    } catch {
+      netCode = undefined;
+    }
+    return { timeout, ...(netCode === undefined ? {} : { netCode }) };
   }
 
   public async generateText(request: GenerateTextRequest): Promise<GenerateTextResponse> {
@@ -420,9 +461,9 @@ export class GeminiProvider implements TextProvider {
           checkAbort();
         }
       } catch (error) {
-        if (error instanceof ProviderError) throw this.safeError(error);
-        const timeoutError = isTimeoutError(error);
-        const netCode = netCodeOf(error);
+        const retained = this.retainedProviderError(error);
+        if (retained !== undefined) throw retained;
+        const { timeout: timeoutError, netCode } = this.safeClassify(error);
         throw new ProviderError(
           timeoutError ? 'timeout' : 'outage',
           timeoutError ? 'Gemini request timed out' : 'Gemini request failed',
@@ -466,7 +507,8 @@ export class GeminiProvider implements TextProvider {
                 body = undefined;
               }
             } catch (error) {
-              if (error instanceof ProviderError) throw this.safeError(error);
+              const retained = this.retainedProviderError(error);
+              if (retained !== undefined) throw retained;
               if (signal.aborted) {
                 throw new ProviderError(
                   isTimeoutError(signal.reason) ? 'timeout' : 'outage',
@@ -618,10 +660,11 @@ export class GeminiProvider implements TextProvider {
         }
         checkAbort();
       } catch (error) {
-        if (error instanceof ProviderError) throw this.safeError(error);
-        if (isTimeoutError(error))
+        const retained = this.retainedProviderError(error);
+        if (retained !== undefined) throw retained;
+        const { timeout: streamTimeout, netCode } = this.safeClassify(error);
+        if (streamTimeout)
           throw new ProviderError('timeout', 'Gemini stream timed out', true, { host: this.host });
-        const netCode = netCodeOf(error);
         throw new ProviderError('outage', 'Gemini stream failed', true, {
           host: this.host,
           ...(netCode === undefined ? {} : { netCode }),
@@ -743,7 +786,12 @@ export const listGeminiModels = async (options: {
         signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
       });
     } catch (error) {
-      const netCode = netCodeOf(error);
+      let netCode: string | undefined;
+      try {
+        netCode = netCodeOf(error);
+      } catch {
+        netCode = undefined;
+      }
       throw new ProviderError('outage', 'Gemini model list request failed', true, {
         cause: error,
         host,
