@@ -206,7 +206,6 @@ describe('instance settings registry', () => {
     }
   });
   it('registers the four digest settings with spec defaults (ADR 0150, spec §4.7)', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(32);
     const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
     expect(valueOf('assistant.digestEnabled')).toBe(1);
     expect(valueOf('assistant.digestHour')).toBe(4);

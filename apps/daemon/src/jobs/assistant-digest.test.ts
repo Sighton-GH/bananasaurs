@@ -900,18 +900,20 @@ describe('independent real-provider probe (review round 2, A)', () => {
     t.raw
       .prepare('UPDATE assistant_conversations SET title = ? WHERE conversation_id = ?')
       .run('Build sk-abcdefghijklmnop', 'conv-1');
+    // Slice 3: the Gemini adapter streams (`alt=sse`), so the probe answers as SSE.
     const fetcher = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       new Response(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           candidates: [
             {
               content: {
                 parts: [{ text: '{"daySummary":"Build night plans.","memoryProposals":[]}' }],
               },
+              finishReason: 'STOP',
             },
           ],
-        }),
-        { status: 200 },
+        })}\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
       ),
     );
     const provider = new GeminiProvider({ apiKey: 'fixture-only', fetch: fetcher });
