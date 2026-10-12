@@ -9,6 +9,7 @@ import {
 import {
   assistantRepo,
   conversationRepo,
+  digestRepo,
   effectRepo,
   guildRepo,
   runRepo,
@@ -95,6 +96,76 @@ beforeEach(() => {
 afterEach(() => t.close());
 
 describe('conversationPruneHandler', () => {
+  it('prunes digest rows older than the retention window with the conversations', async () => {
+    const s = t.scopes.forGuild(GUILD_A);
+    assistantRepo.setConversationRetention(s, 61, 100);
+    seedConversation(GUILD_A, 'conv-old', NOW - 62 * DAY_MS);
+    digestRepo.putDigestOnce(s, {
+      day: '2026-01-01',
+      summary: { daySummary: 'Old.', memoryProposals: [] },
+      conversations: [],
+      now: 100,
+    });
+    digestRepo.putDigestOnce(s, {
+      day: '2026-09-25',
+      summary: { daySummary: 'New.', memoryProposals: [] },
+      conversations: [],
+      now: NOW,
+    });
+    await conversationPruneHandler(s, { now: () => NOW, logger }).run(
+      { day: '2026-09-25' },
+      { ...context },
+    );
+    expect(digestRepo.listDigests(s, 10).map((d) => d.day)).toEqual(['2026-09-25']);
+    const pruned = effectRepo
+      .tailAudit(s, { limit: 10 })
+      .filter((r) => r.action === 'assistant_conversation.pruned');
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]?.after).toBe(JSON.stringify({ count: 1, digests: 1 }));
+  });
+
+  it('audits digest-only pruning and keeps the UTC cutoff day and other guilds', async () => {
+    const s = t.scopes.forGuild(GUILD_A);
+    const other = t.scopes.forGuild(GUILD_B);
+    assistantRepo.setConversationRetention(s, 61, NOW);
+    const cutoff = new Date(NOW - 61 * DAY_MS).toISOString().slice(0, 10);
+    for (const scope of [s, other]) {
+      for (const day of ['2026-01-01', cutoff]) {
+        digestRepo.putDigestOnce(scope, {
+          day,
+          summary: { daySummary: 'Summary.', memoryProposals: [] },
+          conversations: [],
+          now: NOW,
+        });
+      }
+    }
+    await conversationPruneHandler(s, { now: () => NOW, logger }).run(
+      { day: '2026-09-25' },
+      { ...context },
+    );
+    expect(digestRepo.listDigests(s, 10).map((d) => d.day)).toEqual([cutoff]);
+    expect(digestRepo.listDigests(other, 10).map((d) => d.day)).toEqual([cutoff, '2026-01-01']);
+    const pruned = effectRepo
+      .tailAudit(s, { limit: 10 })
+      .filter((r) => r.action === 'assistant_conversation.pruned');
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]?.after).toBe(JSON.stringify({ count: 0, digests: 1 }));
+    expect(
+      effectRepo
+        .tailAudit(other, { limit: 10 })
+        .filter((r) => r.action === 'assistant_conversation.pruned'),
+    ).toEqual([]);
+    await conversationPruneHandler(s, { now: () => NOW, logger }).run(
+      { day: '2026-09-25' },
+      { ...context },
+    );
+    expect(
+      effectRepo
+        .tailAudit(s, { limit: 10 })
+        .filter((r) => r.action === 'assistant_conversation.pruned'),
+    ).toHaveLength(1);
+  });
+
   it('deletes exactly the expired conversations and their traces, and keeps newer ones', async () => {
     const scope = t.scopes.forGuild(GUILD_A);
     assistantRepo.setConversationRetention(scope, 61, nowMs);
@@ -128,7 +199,7 @@ describe('conversationPruneHandler', () => {
     const rows = effectRepo.tailAudit(scope, { limit: 10 });
     const pruned = rows.filter((r) => r.action === 'assistant_conversation.pruned');
     expect(pruned).toHaveLength(1);
-    expect(pruned[0]?.after).toBe(JSON.stringify({ count: 2 }));
+    expect(pruned[0]?.after).toBe(JSON.stringify({ count: 2, digests: 0 }));
     const logged = `${pruned[0]?.before ?? ''}${pruned[0]?.after ?? ''}`;
     expect(logged).not.toContain('old-title-secret-xyz');
     expect(logged).not.toContain('question text for conv-old');
@@ -155,6 +226,12 @@ describe('conversationPruneHandler', () => {
     const scope = t.scopes.forGuild(GUILD_A);
     assistantRepo.setConversationRetention(scope, null, nowMs);
     seedConversation(GUILD_A, 'conv-ancient', NOW - 400 * DAY_MS);
+    digestRepo.putDigestOnce(scope, {
+      day: '2025-01-01',
+      summary: { daySummary: 'Ancient.', memoryProposals: [] },
+      conversations: [],
+      now: 100,
+    });
 
     await conversationPruneHandler(scope, { now: () => nowMs, logger }).run(
       { day: '2026-09-25' },
@@ -162,6 +239,7 @@ describe('conversationPruneHandler', () => {
     );
 
     expect(conversationRepo.getConversation(scope, 'conv-ancient')).toBeDefined();
+    expect(digestRepo.listDigests(scope, 10).map((d) => d.day)).toEqual(['2025-01-01']);
     expect(
       effectRepo
         .tailAudit(scope, { limit: 10 })

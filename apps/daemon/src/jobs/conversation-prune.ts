@@ -9,6 +9,7 @@ import {
 import {
   assistantRepo,
   conversationRepo,
+  digestRepo,
   effectRepo,
   runRepo,
   traceRepo,
@@ -46,7 +47,15 @@ export const conversationPruneHandler = (
     const { conversations, ids } = conversationRepo.pruneOlderThan(scope, now - days * 86_400_000);
     traceRepo.deleteTracesForConversations(scope, ids);
     runRepo.deleteRunsForConversations(scope, ids);
-    if (conversations === 0) return;
+    // ADR 0150 decision 4: digest rows follow the same window, keyed by day.
+    // The cutoff is a UTC day; a digest written near a zone edge can outlive
+    // the conversations by under a day. Keep-forever (`null`) returns above
+    // and keeps digests too.
+    const digests = digestRepo.deleteDigestsOlderThan(
+      scope,
+      new Date(now - days * 86_400_000).toISOString().slice(0, 10),
+    );
+    if (conversations === 0 && digests === 0) return;
     effectRepo.recordAudit(scope, {
       at: now,
       actorType: 'system',
@@ -54,7 +63,7 @@ export const conversationPruneHandler = (
       action: 'assistant_conversation.pruned',
       subjectType: 'assistant_conversation',
       subjectId: undefined,
-      after: { count: conversations },
+      after: { count: conversations, digests },
       dryRun: false,
     });
     deps.logger.info(
