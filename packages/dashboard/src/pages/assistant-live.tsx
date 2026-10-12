@@ -8,6 +8,7 @@ import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { MemberRef } from '../ui/MemberRef.js';
+import { LiveText } from './assistant-live-buffer.js';
 import {
   activeRunsUrl,
   describeRunEvent,
@@ -230,38 +231,41 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
   const maxMs = Math.max(0, ...events.map((e) => timedMs(e) ?? 0));
 
   return (
-    <Card title="Step log">
-      <DataState
-        resource={resource}
-        isEmpty={() => events.length === 0}
-        empty={<p className="text-sm text-ink-muted">No steps recorded for this run.</p>}
-      >
-        {() => (
-          <ol className="grid gap-2">
-            {events.map((row) => {
-              const ms = timedMs(row);
-              return (
-                <li key={row.seq} className="text-sm">
-                  <span className="font-mono text-xs text-ink-muted">
-                    +{((row.at - firstAt) / 1000).toFixed(1)} s
-                  </span>{' '}
-                  <span className="font-mono text-xs">{row.event.kind}</span>{' '}
-                  <span>{describeRunEvent(row.event)}</span>
-                  {ms !== undefined && maxMs > 0 && (
-                    <div className="mt-0.5 h-1 rounded-sm bg-canvas">
-                      <div
-                        className="h-full rounded-sm bg-hold"
-                        style={{ width: `${String(Math.min(100, (ms / maxMs) * 100))}%` }}
-                      />
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </DataState>
-      {live.stale && <p className="mt-2 text-xs text-ink-muted">Reconnecting…</p>}
-    </Card>
+    <>
+      <Card title="Step log">
+        <DataState
+          resource={resource}
+          isEmpty={() => events.length === 0}
+          empty={<p className="text-sm text-ink-muted">No steps recorded for this run.</p>}
+        >
+          {() => (
+            <ol className="grid gap-2">
+              {events.map((row) => {
+                const ms = timedMs(row);
+                return (
+                  <li key={row.seq} className="text-sm">
+                    <span className="font-mono text-xs text-ink-muted">
+                      +{((row.at - firstAt) / 1000).toFixed(1)} s
+                    </span>{' '}
+                    <span className="font-mono text-xs">{row.event.kind}</span>{' '}
+                    <span>{describeRunEvent(row.event)}</span>
+                    {ms !== undefined && maxMs > 0 && (
+                      <div className="mt-0.5 h-1 rounded-sm bg-canvas">
+                        <div
+                          className="h-full rounded-sm bg-hold"
+                          style={{ width: `${String(Math.min(100, (ms / maxMs) * 100))}%` }}
+                        />
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </DataState>
+        {live.stale && <p className="mt-2 text-xs text-ink-muted">Reconnecting…</p>}
+      </Card>
+      <LiveText runId={runId} />
+    </>
   );
 }
