@@ -19,6 +19,7 @@ import {
   assistantRepo,
   computeDocId,
   conversationRepo,
+  digestRepo,
   eligibilityRepo,
   guildRepo,
   instanceSettingsRepo,
@@ -5040,6 +5041,48 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
     expect(toolText).toContain('robot arm gearbox');
     expect(toolText).not.toContain('robot arm gripper');
     expect(result.detail?.recalled).toEqual(['conv-general']);
+  });
+
+  it('surfaces a digest hit in text but never in recalled links', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    digestRepo.putDigestOnce(scope, {
+      day: '2026-10-09',
+      summary: { daySummary: 'Talked about the robot arm gearbox.', memoryProposals: [] },
+      conversations: [{ conversationId: 'conv-general', channelId: GENERAL, title: 'gearbox' }],
+      now: NOW,
+    });
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
+      scriptedRecall(seen, 'Done.'),
+      'int-recall-digest',
+      'conv-current',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).toContain('Daily digest 2026-10-09');
+    expect(result.detail?.recalled).toEqual(['conv-general']);
+  });
+
+  it('keeps a digest out when any covered channel is not searchable (fail-closed)', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    digestRepo.putDigestOnce(scope, {
+      day: '2026-10-09',
+      summary: { daySummary: 'Talked about the robot arm gearbox.', memoryProposals: [] },
+      conversations: [
+        { conversationId: 'conv-general', channelId: GENERAL, title: 'gearbox' },
+        { conversationId: 'conv-private', channelId: PRIVATE, title: 'gripper' },
+      ],
+      now: NOW,
+    });
+    const seen: { role: string; text: string }[][] = [];
+    const result = await ask(
+      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
+      scriptedRecall(seen, 'Done.'),
+      'int-recall-digest-closed',
+      'conv-current',
+    );
+    expect(result.ok).toBe(true);
+    expect(toolTurnOf(seen)).not.toContain('Daily digest');
   });
 
   it('excludes the current conversation', async () => {

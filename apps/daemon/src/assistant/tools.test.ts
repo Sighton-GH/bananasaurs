@@ -2120,9 +2120,9 @@ describe('search_conversations (ADR 0093)', () => {
     expect(result.recalledConversationIds).toEqual(['conv-2', 'conv-3']);
   });
 
-  it('caps at five lines with three facts each', async () => {
+  it('caps at seven lines with three facts each', async () => {
     const searchConversations = vi.fn(async () =>
-      Array.from({ length: 7 }, (_, i) => hit({ conversationId: `conv-${String(i)}` })),
+      Array.from({ length: 9 }, (_, i) => hit({ conversationId: `conv-${String(i)}` })),
     );
     const p = ports({ searchConversations });
     const result = await runAssistantTool(
@@ -2130,9 +2130,29 @@ describe('search_conversations (ADR 0093)', () => {
       p,
     );
     expect(result.ok).toBe(true);
-    expect(result.text.split('\n')).toHaveLength(5);
+    expect(result.text.split('\n')).toHaveLength(7);
     expect(result.text).not.toContain('Extra fact');
-    expect(result.recalledConversationIds).toHaveLength(5);
+    expect(result.recalledConversationIds).toHaveLength(7);
+  });
+
+  it('shows digest hits in text but keeps them out of recalled links', async () => {
+    const p = ports({
+      searchConversations: vi.fn(async () => [
+        hit({
+          conversationId: 'digest:2026-10-09',
+          lastActivityAt: NOW - 86_400_000,
+          topic: 'Daily digest 2026-10-09: the build night',
+          facts: ['Second Friday'],
+        }),
+      ]),
+    });
+    const result = await runAssistantTool(
+      { name: 'search_conversations', args: { query: 'build night' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('Daily digest 2026-10-09');
+    expect(result.recalledConversationIds ?? []).toEqual([]);
   });
 
   it('answers no match with one sentence', async () => {
