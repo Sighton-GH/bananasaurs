@@ -239,7 +239,7 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
   const maxMs = Math.max(0, ...events.map((e) => timedMs(e) ?? 0));
 
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
       <Card title="Step log">
         <DataState
           resource={resource}
