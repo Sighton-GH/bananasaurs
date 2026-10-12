@@ -1200,7 +1200,10 @@ describe('OpenAI-compatible providers', () => {
         }),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-      const res = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      const res = await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+      });
       expect(res.text).toBe('part');
       expect(res).not.toHaveProperty('finishReason');
     });
@@ -1215,7 +1218,10 @@ describe('OpenAI-compatible providers', () => {
           ),
         );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-      const res = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      const res = await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+      });
       expect(res.toolCalls).toEqual([{ id: 'a', name: 'f', args: { x: 1 } }]);
       expect(res).not.toHaveProperty('finishReason');
     });
@@ -2020,9 +2026,11 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
 describe('progress callbacks never fail the call (round 2 item 1)', () => {
   const req: GenerateTextRequest = { model: 'm', messages: [{ role: 'user', text: 'hi' }] };
   const okFetch = () =>
-    vi.fn<typeof fetch>().mockResolvedValue(
-      sse({ choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }),
-    );
+    vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        sse({ choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }),
+      );
 
   it('an onChunk that throws still returns the full answer', async () => {
     const onChunk = vi.fn(() => {
@@ -2047,6 +2055,8 @@ describe('progress callbacks never fail the call (round 2 item 1)', () => {
       const res = await createOpenRouterProvider({
         apiKey: 'secret',
         fetch: okFetch(),
+        // The point of the test: a callback that returns a rejected promise.
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
       }).generateText({ ...req, onProgress });
       expect(onProgress).toHaveBeenCalled();
       expect(res.text).toBe('answer');

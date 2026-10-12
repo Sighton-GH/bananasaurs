@@ -1,6 +1,7 @@
 import {
   conversationPrunePayload,
   JOB_KINDS,
+  localDay,
   safeLogFields,
   type ConversationPrunePayload,
   type JobHandler,
@@ -31,7 +32,12 @@ import {
  */
 export const conversationPruneHandler = (
   scope: GuildScope,
-  deps: { now: () => number; logger: Logger },
+  deps: {
+    now: () => number;
+    logger: Logger;
+    /** The club's zone (`BANANASAURS_TIME_ZONE`); digest days are local days. Absent means UTC. */
+    timeZone?: () => string;
+  },
 ): JobHandler<ConversationPrunePayload> => ({
   kind: JOB_KINDS.conversationPrune,
   payload: conversationPrunePayload,
@@ -55,14 +61,16 @@ export const conversationPruneHandler = (
       traceRepo.deleteTracesForConversations(scope, ids);
       runRepo.deleteRunsForConversations(scope, ids);
       // ADR 0150 decision 4: digest rows follow the same window, keyed by day.
-      // The cutoff is a UTC day, not the club's local day. The exact retention
-      // edge differs from conversations by the local zone and time of day.
-      // Digest days are local days while the cutoff is computed in UTC days,
-      // so a digest can be removed up to one day early or late.
-      // Keep-forever (`null`) returns above and keeps digests too.
+      // Digest days are the club's local days, so the cutoff day is computed
+      // in the same zone. Keep-forever (`null`) returns above and keeps
+      // digests too.
+      const cutoffMs = now - days * 86_400_000;
+      const timeZone = deps.timeZone?.();
       const digests = digestRepo.deleteDigestsOlderThan(
         scope,
-        new Date(now - days * 86_400_000).toISOString().slice(0, 10),
+        timeZone === undefined
+          ? new Date(cutoffMs).toISOString().slice(0, 10)
+          : localDay(timeZone, cutoffMs),
       );
       if (conversations === 0 && digests === 0) return undefined;
       effectRepo.recordAudit(scope, {

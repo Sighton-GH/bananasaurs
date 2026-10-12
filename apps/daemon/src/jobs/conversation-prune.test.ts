@@ -197,6 +197,27 @@ describe('conversationPruneHandler', () => {
     expect(pruned[0]?.after).toBe(JSON.stringify({ count: 0, digests: 1 }));
   });
 
+  it('computes the digest cutoff in the club time zone, not UTC', async () => {
+    const s = t.scopes.forGuild(GUILD_A);
+    assistantRepo.setConversationRetention(s, 61, NOW);
+    // 03:00 UTC is still the previous evening in Vancouver: now - 61 days is
+    // 2026-08-12 in UTC but 2026-08-11 locally, so the 2026-08-11 digest is
+    // exactly at the local edge and stays.
+    const lateEvening = Date.parse('2026-10-12T03:00:00.000Z');
+    digestRepo.putDigestOnce(s, {
+      day: '2026-08-11',
+      summary: { daySummary: 'Edge.', memoryProposals: [] },
+      conversations: [],
+      now: lateEvening,
+    });
+    await conversationPruneHandler(s, {
+      now: () => lateEvening,
+      logger,
+      timeZone: () => 'America/Vancouver',
+    }).run({ day: '2026-10-12' }, { ...context });
+    expect(digestRepo.getDigest(s, '2026-08-11')).toBeDefined();
+  });
+
   it('prunes digest rows older than the retention window with the conversations', async () => {
     const s = t.scopes.forGuild(GUILD_A);
     assistantRepo.setConversationRetention(s, 61, 100);

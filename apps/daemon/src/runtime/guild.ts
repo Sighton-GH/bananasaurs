@@ -1472,7 +1472,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         },
         logger,
       }),
-      conversationPruneHandler(scope, { now, logger }),
+      conversationPruneHandler(scope, {
+        now,
+        logger,
+        timeZone: () => config.BANANASAURS_TIME_ZONE,
+      }),
       // Both enqueued daily by `housekeeping-timer.ts` (ADR 0127).
       pruneJobsHandler(scope, logger),
       sweepEventDedupeHandler(scope, logger),

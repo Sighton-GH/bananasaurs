@@ -1569,29 +1569,32 @@ describe('round 4 sanitizing boundaries', () => {
     expect(result).toMatchObject({ kind: 'invalid-response', retryable: false });
   });
 
-  it.each(['onChunk', 'onProgress'])('an async %s rejection never fails the call', async (callback) => {
-    const unhandled: unknown[] = [];
-    const listener = (reason: unknown): void => {
-      unhandled.push(reason);
-    };
-    process.on('unhandledRejection', listener);
-    try {
-      const result = await new GeminiProvider({
-        apiKey: key,
-        fetch: async () => new Response(frame),
-        timeoutMs: 100,
-        maxCallMs: 200,
-      }).generateText({
-        ...request,
-        [callback]: () => Promise.reject(new Error(key)),
-      });
-      expect(result).toMatchObject({ text: 'ok' });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(unhandled).toEqual([]);
-    } finally {
-      process.off('unhandledRejection', listener);
-    }
-  });
+  it.each(['onChunk', 'onProgress'])(
+    'an async %s rejection never fails the call',
+    async (callback) => {
+      const unhandled: unknown[] = [];
+      const listener = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on('unhandledRejection', listener);
+      try {
+        const result = await new GeminiProvider({
+          apiKey: key,
+          fetch: async () => new Response(frame),
+          timeoutMs: 100,
+          maxCallMs: 200,
+        }).generateText({
+          ...request,
+          [callback]: () => Promise.reject(new Error(key)),
+        });
+        expect(result).toMatchObject({ text: 'ok' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', listener);
+      }
+    },
+  );
 
   it.each(['onChunk', 'onProgress'])(
     'a pending async %s is ignored and a late rejection stays handled',
@@ -1778,6 +1781,8 @@ describe('progress callbacks never fail the call (round 2 item 1)', () => {
       const onProgress = vi.fn(() => Promise.reject(new Error('callback broke')));
       const res = await new GeminiProvider({ apiKey: 'secret', fetch: okFetch() }).generateText({
         ...request,
+        // The point of the test: a callback that returns a rejected promise.
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
         onProgress,
       });
       expect(onProgress).toHaveBeenCalled();
