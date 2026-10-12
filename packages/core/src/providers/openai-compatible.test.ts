@@ -1003,7 +1003,7 @@ describe('OpenAI-compatible providers', () => {
     });
 
     it('aborts the fetch signal on an error exit', async () => {
-      let seenSignal: AbortSignal | null = null;
+      let seenSignal = null as AbortSignal | null;
       const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation((_url, init) => {
         seenSignal = init?.signal ?? null;
         return Promise.resolve(

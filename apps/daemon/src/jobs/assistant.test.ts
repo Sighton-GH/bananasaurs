@@ -1785,7 +1785,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
 
   it('drops the live buffer when the run is refused', async () => {
     const h = harness(() => ({ ok: true, content: 'never used' }), {
-      check: async () => ({ allowed: false, reason: 'no-write' }),
+      check: async () => ({ allowed: false, reason: 'no-access' }),
     });
     getLiveBuffer().append('inv-live-refused', 'partial', 'thought');
     await h.run(mention({ invocationId: 'inv-live-refused', messageId: '810000000000000029' }));

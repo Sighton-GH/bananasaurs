@@ -100,7 +100,7 @@ describe('resolveModelChain', () => {
       },
       openKey: () => 'k',
       eligibility: () => eligible(),
-      makeProvider: (provider, apiKey, costClass, options) => {
+      makeProvider: (_provider, _apiKey, _costClass, options) => {
         seen.push(options);
         return fake as never;
       },

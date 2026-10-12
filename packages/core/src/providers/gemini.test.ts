@@ -777,7 +777,7 @@ describe('GeminiProvider', () => {
         }),
       learnedLimitProxy: () => {
         const e = safe();
-        e.learnedLimit = new Proxy(
+        (e as { learnedLimit: unknown }).learnedLimit = new Proxy(
           { perDay: 8 },
           {
             getOwnPropertyDescriptor() {
@@ -1472,7 +1472,7 @@ describe('round 4 sanitizing boundaries', () => {
             throw new Error(key);
           };
           return reader;
-        }) as typeof response.body.getReader;
+        }) as NonNullable<typeof response.body>['getReader'];
       }
       if (shape === 'locked') {
         const reader = response.body!.getReader();
@@ -1510,7 +1510,7 @@ describe('round 4 sanitizing boundaries', () => {
         throw new Error(key);
       };
       return reader;
-    }) as typeof response.body.getReader;
+    }) as NonNullable<typeof response.body>['getReader'];
     expect(await capture(provider(response).generateText(request))).toBe(primary);
   });
 
