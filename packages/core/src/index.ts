@@ -621,6 +621,7 @@ export * from './channels/access.js';
 export type {
   GenerateTextRequest,
   GenerateTextResponse,
+  GenerationMedia,
   GenerationMessage,
   ProviderCapability,
   ProviderEligibility,
