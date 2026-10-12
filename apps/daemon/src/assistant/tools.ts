@@ -217,7 +217,8 @@ export interface AssistantToolPorts {
    * Summaries of earlier conversations the asker may be shown (ADR 0093).
    * The service scopes it to the answer channel's audience intersected with
    * the asker's channels and excludes the current conversation. Absent, the
-   * tool is not declared.
+   * tool is not declared. Digest hits (ADR 0150) ride along with
+   * `conversationId: "digest:<day>"`: display-only, never a `recalled` link.
    */
   readonly searchConversations?:
     ((query: string) => Promise<readonly ConversationRecallHit[]>) | undefined;
@@ -1666,11 +1667,13 @@ export const runAssistantTool = async (
         const { query: q } = parsed.data as { query: string };
         if (ports.searchConversations === undefined)
           return refused(name, 'Looking back at earlier conversations is not available here.');
-        // At most 5 lines, each `<#channel>, <relative date>: topic — up to
+        // Up to 7 lines (see cap below), each `<#channel>, <relative date>: topic — up to
         // three facts` (ADR 0093 decision 2). The port carries only the
         // aggregated display fields — no participants, no bot claims, no
         // commitment owners — so none can leak through the formatting.
-        const shown = (await ports.searchConversations(q)).slice(0, 5);
+        // At most 7 lines: 5 summary hits plus up to 2 digest hits (ADR
+        // 0150). Every other tool keeps its own cap.
+        const shown = (await ports.searchConversations(q)).slice(0, 7);
         if (shown.length === 0)
           return {
             ...evidence(name, 'No earlier conversations matched.'),
@@ -1683,7 +1686,9 @@ export const runAssistantTool = async (
         });
         return {
           ...evidence(name, lines.join('\n')),
-          recalledConversationIds: shown.map((hit) => hit.conversationId),
+          recalledConversationIds: shown
+            .filter((hit) => !hit.conversationId.startsWith('digest:'))
+            .map((hit) => hit.conversationId),
         };
       }
     }
