@@ -170,6 +170,31 @@ describe('digest store (ADR 0150 decision 4)', () => {
       ).toEqual([]);
     }
   });
+  it('treats LIKE wildcards in the query as literal characters', () => {
+    const s = t.scopes.forGuild(G);
+    putDigestOnce(s, {
+      day: '2026-10-09',
+      summary: { daySummary: 'The laser fund is at 100% and code a_b shipped.', memoryProposals: [] },
+      conversations: BONDS,
+      now: 100,
+    });
+    putDigestOnce(s, {
+      day: '2026-10-08',
+      summary: { daySummary: 'The laser fund is at 1000 and code axb shipped.', memoryProposals: [] },
+      conversations: BONDS,
+      now: 100,
+    });
+    const channels = { channelIds: ['333333333333333333'] };
+    // Unescaped, `%100%%` matches any text containing `100` and `%a_b%`
+    // matches `axb`: both digests would hit. Escaped, only the digest whose
+    // text holds the literal characters matches.
+    expect(searchDigests(s, { query: '100%', ...channels }).map((h) => h.day)).toEqual([
+      '2026-10-09',
+    ]);
+    expect(searchDigests(s, { query: 'a_b', ...channels }).map((h) => h.day)).toEqual([
+      '2026-10-09',
+    ]);
+  });
   it('hasDigests reports guild-scoped digest existence', () => {
     const s = t.scopes.forGuild(G);
     expect(hasDigests(s)).toBe(false);
