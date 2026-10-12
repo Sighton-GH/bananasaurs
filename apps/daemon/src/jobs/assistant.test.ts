@@ -430,7 +430,10 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     // ADR 0149 (S4-T6): the attachment byte fetch and live caps. The
     // refusing default keeps every existing test fetching nothing.
     const fetchAttachmentBytes = vi.fn(
-      async (): Promise<
+      async (
+        _url: string,
+        _maxBytes: number,
+      ): Promise<
         { ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }
       > => ({ ok: false, code: 'unavailable' }),
     );
@@ -493,6 +496,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
           cursor,
           saveCursor: (c) => {
             saved = c;
+            if (c === null) throw new Error('fixture: unexpected null cursor save');
             savedStages.push(c);
           },
         });
@@ -1814,7 +1818,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       const pdf = Buffer.from('%PDF-1.7');
       const byteFetcher = new ReviewedResourceFetcher({
-        resolve: async () => [{ address: '1.1.1.1', family: 4 }],
+        resolve: async () => [{ address: '1.1.1.1', family: 4 as const }],
         request: async (url) => ({
           status: 200,
           headers: { 'content-type': 'application/octet-stream' },
@@ -2021,7 +2025,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
           content: 'question',
           attachments: [],
         });
-      const resolve = vi.fn(async () => [{ address: '1.1.1.1', family: 4 }]);
+      const resolve = vi.fn(async () => [{ address: '1.1.1.1', family: 4 as const }]);
       const request = vi.fn(async () => ({
         status: 200,
         headers: { 'content-type': 'text/plain' },
@@ -2104,7 +2108,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       attachments: [],
       embeds: [{ thumbnailUrl }],
     });
-    const resolve = vi.fn(async () => [{ address: '1.1.1.1', family: 4 }]);
+    const resolve = vi.fn(async () => [{ address: '1.1.1.1', family: 4 as const }]);
     const request = vi.fn(async () => ({
       status: 200,
       headers: {},
