@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createLiveBuffer } from './live-buffer.js';
+import { createLiveBuffer, getLiveBuffer } from './live-buffer.js';
 
 describe('createLiveBuffer', () => {
   it('caps each side at 8000 chars and drops on finish', () => {
@@ -64,5 +64,24 @@ describe('createLiveBuffer', () => {
     buf.append('run-1', 'hello', 'why');
     t += 30 * 60 * 1000;
     expect(buf.read('run-1')).toBeUndefined();
+  });
+});
+
+describe('getLiveBuffer', () => {
+  it('scopes the same run id by guild: each guild reads only its own text', () => {
+    const a = getLiveBuffer('guild-a-scope');
+    const b = getLiveBuffer('guild-b-scope');
+    try {
+      a.append('same-run', 'answer a', 'thinking a');
+      b.append('same-run', 'answer b', 'thinking b');
+      expect(a.read('same-run')).toEqual({ answer: 'answer a', thinking: 'thinking a' });
+      expect(b.read('same-run')).toEqual({ answer: 'answer b', thinking: 'thinking b' });
+      a.drop('same-run');
+      expect(a.read('same-run')).toBeUndefined();
+      expect(b.read('same-run')).toEqual({ answer: 'answer b', thinking: 'thinking b' });
+    } finally {
+      a.drop('same-run');
+      b.drop('same-run');
+    }
   });
 });

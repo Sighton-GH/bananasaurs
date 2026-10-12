@@ -447,7 +447,7 @@ export const assistantInvokeHandler = (deps: {
      */
     const ledgerForRun = (): RunRecorder => {
       if (deps.conversations === undefined)
-        return createLiveRunRecorder(payload.invocationId, getLiveBuffer());
+        return createLiveRunRecorder(payload.invocationId, getLiveBuffer(deps.guildId));
       try {
         runRepo.ensureRun(deps.conversations.scope, {
           runId: payload.invocationId,
@@ -463,7 +463,7 @@ export const assistantInvokeHandler = (deps: {
           runId: payload.invocationId,
           now: deps.now,
           logger: deps.logger,
-          live: getLiveBuffer(),
+          live: getLiveBuffer(deps.guildId),
         });
       } catch (err) {
         deps.logger.warn(
@@ -475,7 +475,7 @@ export const assistantInvokeHandler = (deps: {
           }),
           'assistant run ledger write failed',
         );
-        return createLiveRunRecorder(payload.invocationId, getLiveBuffer());
+        return createLiveRunRecorder(payload.invocationId, getLiveBuffer(deps.guildId));
       }
     };
 
@@ -668,7 +668,7 @@ export const assistantInvokeHandler = (deps: {
             : { traceId: `trace_${payload.invocationId}` }),
         });
       }
-      getLiveBuffer().drop(payload.invocationId);
+      getLiveBuffer(deps.guildId).drop(payload.invocationId);
     };
     try {
       {
