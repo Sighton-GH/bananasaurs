@@ -25,6 +25,7 @@ import {
   type DiscordMessageRef,
   type FetchedAttachment,
   type FetchedEmbed,
+  type GenerationMedia,
   type GenerationMessage,
   type JobHandler,
   type Logger,
@@ -43,6 +44,7 @@ import type {
   AssistantInvocationResult,
   AssistantTraceDetail,
   InvocationTrace,
+  AttachmentSummary,
 } from '../assistant/commands.js';
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
@@ -50,6 +52,7 @@ import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import {
   classifyAttachment,
   fetchAttachment,
+  safeAttachmentLabel,
   textEnvelopeFor,
   type AttachmentCaps,
 } from '../assistant/attachments.js';
@@ -881,6 +884,9 @@ export const assistantInvokeHandler = (deps: {
           const rawQuestion = Object.values(payload.input).join('\n');
           const strippedQuestion = stripNewTopic(rawQuestion);
           let history: readonly GenerationMessage[] = [];
+          // ADR 0149 (S4-T9): fetched image/PDF bytes and the metadata-only summary, both messages.
+          const media: GenerationMedia[] = [];
+          const attachmentSummary: AttachmentSummary[] = [];
           let quoteEnvelope: string | undefined;
           let quoteInHistory = false;
           let channelContext: string | undefined;
@@ -1091,20 +1097,35 @@ export const assistantInvokeHandler = (deps: {
             > =
               deps.fetchAttachmentBytes ??
               (() => Promise.resolve({ ok: false as const, code: 'unavailable' }));
-            // One message's text attachments end to end: markers plus
-            // envelopes for text files, marker-plus-note for anything else.
+            // One message's attachments end to end: markers plus envelopes
+            // for text files; images and PDFs (and embed thumbnails) go to
+            // `media` up to their caps; anything else is marker-plus-note.
             const readTextAttachments = async (
               sources: readonly FetchedAttachment[],
+              embeds: readonly FetchedEmbed[] = [],
             ): Promise<{ markers: string[]; texts: string[] }> => {
               const markers: string[] = [];
               const texts: string[] = [];
-              const textSources = sources.filter((source) => classifyAttachment(source) === 'text');
-              for (const source of sources.filter(
-                (source) => classifyAttachment(source) !== 'text',
-              )) {
+              const refusal = (source: FetchedAttachment, note: string): void => {
+                // The refusal note embeds the raw file name: neutralise the
+                // whole note before it joins either envelope, or a hostile
+                // name could forge a close and promote the rest (ADR 0149).
                 markers.push(
-                  `${attachmentMarker(source)} (not read: this file is not a text file)`,
+                  `${attachmentMarker(source)} (skipped: ${neutraliseMarkers(redactEvidenceText(note).text)})`,
                 );
+              };
+              const textSources: FetchedAttachment[] = [];
+              const imageSources: FetchedAttachment[] = [];
+              const pdfSources: FetchedAttachment[] = [];
+              for (const source of sources) {
+                const kind = classifyAttachment(source);
+                if (kind === 'text') textSources.push(source);
+                else if (kind === 'image') imageSources.push(source);
+                else if (kind === 'pdf') pdfSources.push(source);
+                else
+                  markers.push(
+                    `${attachmentMarker(source)} (not read: this file is not a text, image or PDF file)`,
+                  );
               }
               const readable = textSources.slice(0, attachmentCaps.textMaxCount);
               for (const source of textSources.slice(attachmentCaps.textMaxCount)) {
@@ -1119,27 +1140,104 @@ export const assistantInvokeHandler = (deps: {
                   attachmentCaps,
                 );
                 if (!fetched.ok) {
-                  // The refusal note embeds the raw file name: neutralise the
-                  // whole note before it joins either envelope, or a hostile
-                  // name could forge a close and promote the rest (ADR 0149).
-                  const note = neutraliseMarkers(redactEvidenceText(fetched.note).text);
-                  markers.push(`${attachmentMarker(source)} (skipped: ${note})`);
+                  refusal(source, fetched.note);
                   continue;
                 }
                 // Unreachable for a text-classified source: narrows the union.
                 if (fetched.kind !== 'text') continue;
                 markers.push(attachmentMarker(source));
+                attachmentSummary.push({
+                  name: safeAttachmentLabel(source.fileName),
+                  kind: 'text',
+                  sizeBytes: Buffer.byteLength(fetched.text, 'utf8'),
+                });
                 const cut =
                   fetched.text.length > attachmentCaps.textMaxChars
                     ? `${fetched.text.slice(0, attachmentCaps.textMaxChars)}\n(cut after ${attachmentCaps.textMaxChars.toLocaleString('en-CA')} characters)`
                     : fetched.text;
                 texts.push(textEnvelopeFor(source.fileName, cut));
               }
+              // Embed thumbnails (media.discordapp.net or the CDN) read as images
+              // and share the per-message image cap with real attachments.
+              const thumbnails: FetchedAttachment[] = embeds
+                .filter((e) => e.thumbnailUrl !== undefined && e.thumbnailUrl !== '')
+                .map((e, i) => ({
+                  attachmentId: `embed-${i}`,
+                  fileName: 'embed thumbnail',
+                  sizeBytes: 0,
+                  url: e.thumbnailUrl,
+                }));
+              const readMedia = async (
+                list: readonly FetchedAttachment[],
+                max: number,
+                cap: number,
+                label: string,
+                forceKind?: 'image',
+              ): Promise<void> => {
+                for (const source of list.slice(0, max)) {
+                  const fetched = await fetchAttachment(
+                    { fetchBytes: attachmentFetchBytes },
+                    source,
+                    attachmentCaps,
+                    forceKind,
+                  );
+                  if (!fetched.ok) {
+                    refusal(source, fetched.note);
+                    continue;
+                  }
+                  if (fetched.kind === 'text') continue;
+                  markers.push(attachmentMarker(source));
+                  media.push({
+                    kind: fetched.kind,
+                    mediaType: fetched.mediaType,
+                    dataBase64: fetched.dataBase64,
+                    name: fetched.name,
+                  });
+                  attachmentSummary.push({
+                    name: safeAttachmentLabel(fetched.name),
+                    kind: fetched.kind,
+                    sizeBytes: fetched.sizeBytes,
+                  });
+                }
+                for (const source of list.slice(max)) {
+                  markers.push(
+                    `${attachmentMarker(source)} (skipped: at most ${cap} ${label} per message)`,
+                  );
+                }
+              };
+              const imageList = [...imageSources, ...thumbnails];
+              const thumbSet = new Set(thumbnails);
+              // Real images first, then thumbnails; each fetch forces the image kind
+              // only for thumbnails, which have no usable filename.
+              const realImages = imageList.filter((x) => !thumbSet.has(x));
+              const realMax = Math.min(attachmentCaps.imageMaxCount, realImages.length);
+              await readMedia(
+                realImages,
+                attachmentCaps.imageMaxCount,
+                attachmentCaps.imageMaxCount,
+                'images',
+              );
+              await readMedia(
+                thumbnails,
+                Math.max(0, attachmentCaps.imageMaxCount - realMax),
+                attachmentCaps.imageMaxCount,
+                'images',
+                'image',
+              );
+              await readMedia(
+                pdfSources,
+                attachmentCaps.pdfMaxCount,
+                attachmentCaps.pdfMaxCount,
+                'PDFs',
+              );
               return { markers, texts };
             };
             // The quoted message's files join its envelope as evidence.
             if (quoted !== undefined) {
-              const quotedFiles = await readTextAttachments(quoted.attachments ?? []);
+              const quotedFiles = await readTextAttachments(
+                quoted.attachments ?? [],
+                quoted.embeds ?? [],
+              );
               if (quotedFiles.markers.length > 0 || quotedFiles.texts.length > 0) {
                 quoteEnvelope = [quoteEnvelope, ...quotedFiles.markers, ...quotedFiles.texts]
                   .filter((part) => part !== undefined && part !== '')
@@ -1305,7 +1403,10 @@ export const assistantInvokeHandler = (deps: {
             ) {
               try {
                 const current = await deps.fetchMessageContent(channelId, payload.messageId);
-                const currentFiles = await readTextAttachments(current?.attachments ?? []);
+                const currentFiles = await readTextAttachments(
+                  current?.attachments ?? [],
+                  current?.embeds ?? [],
+                );
                 if (currentFiles.markers.length > 0 || currentFiles.texts.length > 0) {
                   channelContext = [
                     channelContext,
@@ -1348,6 +1449,8 @@ export const assistantInvokeHandler = (deps: {
               source: payload.source,
               invocationId: payload.invocationId,
               history,
+              ...(media.length === 0 ? {} : { media }),
+              ...(attachmentSummary.length === 0 ? {} : { attachmentSummary }),
               ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
               ...(quoteInHistory ? { quoteInHistory: true as const } : {}),
               ...(channelContext === undefined ? {} : { channelContext }),

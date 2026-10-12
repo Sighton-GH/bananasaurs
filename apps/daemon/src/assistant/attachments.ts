@@ -143,8 +143,9 @@ export const fetchAttachment = async (
   },
   source: AttachmentSource,
   caps: AttachmentCaps,
+  forceKind?: AttachmentKind,
 ): Promise<AttachmentFetchResult> => {
-  const kind = classifyAttachment(source);
+  const kind = forceKind ?? classifyAttachment(source);
   if (kind === 'unsupported')
     return {
       ok: false,
@@ -201,4 +202,24 @@ export const fetchAttachment = async (
   }
   const text = Buffer.from(fetched.bytes).toString('utf8').replaceAll('\u0000', '');
   return { ok: true, kind: 'text', name: source.fileName, text };
+};
+
+/* eslint-disable no-control-regex -- deliberately flattening control characters in hostile file names. */
+const LABEL_CONTROL_OR_BRACKET =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\p{Cf}[\]]/gu;
+/* eslint-enable no-control-regex */
+
+/**
+ * ADR 0149: a file name is hostile evidence. Redacted, marker-neutralised,
+ * flattened to one line with no brackets, and bounded, so it can never close
+ * a marker, mint a message envelope or add role-like lines.
+ */
+export const safeAttachmentLabel = (name: string): string => {
+  const cleaned = neutraliseMarkers(redactEvidenceText(name).text)
+    .replace(LABEL_CONTROL_OR_BRACKET, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48)
+    .trim();
+  return cleaned === '' ? 'file' : cleaned;
 };
