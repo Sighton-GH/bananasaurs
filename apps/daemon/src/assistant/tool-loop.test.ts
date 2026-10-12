@@ -2337,6 +2337,188 @@ describe('escalateAfterTools (ADR 0144)', () => {
     expect(onEscalated.mock.calls[0]![1]).toEqual([standardEntry]);
   });
 
+  it('refilters media freshly for the successor after a handoff between partial-capability entries (ADR 0149)', async () => {
+    const media: GenerationMedia = {
+      kind: 'image',
+      mediaType: 'image/png',
+      dataBase64: 'aGk=',
+      name: 'chart.png',
+    };
+    const pdfMedia: GenerationMedia = {
+      kind: 'pdf',
+      mediaType: 'application/pdf',
+      dataBase64: 'amVm',
+      name: 'report.pdf',
+    };
+    const caps = (image: boolean, pdf: boolean) => ({
+      tools: true,
+      image,
+      pdf,
+      reasoning: false,
+      thinking: 'none' as const,
+    });
+    const a = scripted([toolAnswer([{ name: 'current_time', args: {} }])]);
+    const b = scripted([textAnswer('Done.', 'model-b')]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name, 'noon'));
+    const entryA = entry({
+      provider: a.provider,
+      keyId: 'key_a',
+      model: 'img-only',
+      capabilities: caps(true, false),
+    });
+    const entryB = entry({
+      provider: b.provider,
+      keyId: 'key_b',
+      model: 'pdf-only',
+      capabilities: caps(false, true),
+    });
+    const result = await runToolLoop(
+      baseInput([entryA, entryB], {
+        tools: allTools(run),
+        history: [
+          {
+            role: 'user',
+            text: '[attached files: chart.png, report.pdf]',
+            media: [media, pdfMedia],
+          },
+        ],
+        escalateAfterTools: (current, remaining) => (current === entryA ? remaining : undefined),
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    const kinds = (r: GenerateTextRequest | undefined): string[] =>
+      (r?.messages ?? []).flatMap((m) =>
+        m.role === 'user' ? (m.media ?? []).map((x) => x.kind) : [],
+      );
+    // A reads the image only, and is told about the PDF.
+    expect(kinds(a.calls[0])).toEqual(['image']);
+    expect(JSON.stringify(a.calls[0]?.messages)).toContain(
+      "report.pdf attached; you can't read PDFs right now.",
+    );
+    // B reads the PDF only, is told about the image, and inherits none of A's marker.
+    expect(kinds(b.calls[0])).toEqual(['pdf']);
+    const bText = JSON.stringify(b.calls[0]?.messages);
+    expect(bText).not.toContain("can't read PDFs");
+    expect(bText).toContain("chart.png attached; you can't see images right now.");
+    expect(bText).not.toContain('aGk=');
+    expect(bText.match(/amVm/g)).toHaveLength(1);
+    expect(b.calls[0]?.messages.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'tool']);
+  });
+
+  it('does not accumulate stale markers when a successor fails and a third entry continues (ADR 0149)', async () => {
+    const media: GenerationMedia = {
+      kind: 'image',
+      mediaType: 'image/png',
+      dataBase64: 'aGk=',
+      name: 'chart.png',
+    };
+    const pdfMedia: GenerationMedia = {
+      kind: 'pdf',
+      mediaType: 'application/pdf',
+      dataBase64: 'amVm',
+      name: 'report.pdf',
+    };
+    const caps = (image: boolean, pdf: boolean) => ({
+      tools: true,
+      image,
+      pdf,
+      reasoning: false,
+      thinking: 'none' as const,
+    });
+    const a = scripted([
+      toolAnswer([{ name: 'current_time', args: {} }], { providerParts: ['a-private'] }),
+    ]);
+    const bSeen: GenerateTextRequest[] = [];
+    const bProvider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (request: GenerateTextRequest) => {
+        bSeen.push(request);
+        throw new ProviderError('outage', 'HTTP 503', true);
+      },
+    };
+    const c = scripted([textAnswer('Done.', 'model-c')]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name, 'noon'));
+    const entries = [
+      entry({ provider: a.provider, keyId: 'key_a', model: 'a', capabilities: caps(true, false) }),
+      entry({ provider: bProvider, keyId: 'key_b', model: 'b', capabilities: caps(false, true) }),
+      entry({ provider: c.provider, keyId: 'key_c', model: 'c', capabilities: caps(false, false) }),
+    ];
+    const result = await runToolLoop(
+      baseInput(entries, {
+        tools: allTools(run),
+        history: [
+          {
+            role: 'user',
+            text: '[attached files: chart.png, report.pdf]',
+            media: [media, pdfMedia],
+          },
+        ],
+        escalateAfterTools: (current, remaining) =>
+          current === entries[0] ? remaining : undefined,
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    const userText = (r: GenerateTextRequest | undefined): string =>
+      (r?.messages ?? [])
+        .filter((m) => m.role === 'user')
+        .map((m) => m.text)
+        .join('|');
+    expect(bSeen).toHaveLength(1);
+    expect(userText(bSeen[0])).not.toContain("can't read PDFs");
+    expect(userText(bSeen[0])).toContain("chart.png attached; you can't see images right now.");
+    expect(bSeen[0]?.messages.flatMap((m) => (m.media ?? []).map((x) => x.kind))).toEqual(['pdf']);
+    const cText = JSON.stringify(c.calls[0]?.messages);
+    expect(cText).not.toContain('aGk=');
+    expect(cText).not.toContain('amVm');
+    expect(cText).not.toContain('a-private');
+    expect(userText(c.calls[0]).match(/chart\.png attached/g)).toHaveLength(1);
+    expect(userText(c.calls[0]).match(/report\.pdf attached/g)).toHaveLength(1);
+    expect(c.calls[0]?.messages.map((m) => m.role)).toEqual(['user', 'user', 'assistant', 'tool']);
+  });
+
+  it('hands an absent-capability entry to a partial successor with its media intact and no stale marker (ADR 0149)', async () => {
+    const media: GenerationMedia = {
+      kind: 'image',
+      mediaType: 'image/png',
+      dataBase64: 'aGk=',
+      name: 'chart.png',
+    };
+    const pdfMedia: GenerationMedia = {
+      kind: 'pdf',
+      mediaType: 'application/pdf',
+      dataBase64: 'amVm',
+      name: 'report.pdf',
+    };
+    const a = scripted([toolAnswer([{ name: 'current_time', args: {} }])]);
+    const b = scripted([textAnswer('Done.', 'model-b')]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name, 'noon'));
+    const entryA = entry({ provider: a.provider, keyId: 'key_a', model: 'absent' });
+    const entryB = entry({
+      provider: b.provider,
+      keyId: 'key_b',
+      model: 'vision',
+      capabilities: { tools: true, image: true, pdf: false, reasoning: false, thinking: 'none' },
+    });
+    await runToolLoop(
+      baseInput([entryA, entryB], {
+        tools: allTools(run),
+        history: [{ role: 'user', text: 'x', media: [media, pdfMedia] }],
+        escalateAfterTools: (current, remaining) => (current === entryA ? remaining : undefined),
+      }),
+    );
+    const kinds = (r: GenerateTextRequest | undefined): string[] =>
+      (r?.messages ?? []).flatMap((m) => (m.media ?? []).map((x) => x.kind));
+    expect(kinds(a.calls[0])).toEqual([]);
+    expect(JSON.stringify(a.calls[0]?.messages)).not.toContain('aGk=');
+    expect(kinds(b.calls[0])).toEqual(['image']);
+    const bText = JSON.stringify(b.calls[0]?.messages);
+    expect(bText).not.toContain("can't see images");
+    expect(bText).toContain("report.pdf attached; you can't read PDFs right now.");
+    expect(bText).not.toContain('amVm');
+    expect(bText.match(/aGk=/g)).toHaveLength(1);
+  });
+
   it('lets the entry finish when the plan returns nothing', async () => {
     const only = scripted([
       toolAnswer([{ name: 'current_time', args: {} }]),
