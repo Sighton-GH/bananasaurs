@@ -1,12 +1,26 @@
 # Slice 4: attachments — implementation plan
 
 > **Instinct plan.** Read with `2026-10-10-harness-00-instinct-handoff.md` and `2026-10-10-harness-00-shared-contracts.md`.
-> **Status:** DRAFT — refreshed by the controller before round 3 — controller note: add a task wiring fetchAttachmentBytes and the live caps in apps/daemon/src/runtime/guild.ts at the refresh (the draft leaves production wiring out).
+> **Status:** READY — refreshed against harness-round2 (Slices 6, 2, 3, 5 merged)
 
 **Goal:** Members can attach text files, images and PDFs to a question and the bot reads what the answering model natively supports, saying plainly what it cannot see.
 **Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §4 (Slice 4: 4a–4d and the caps table)
 **ADRs:** 0149  **Migration:** none
-**Base:** main @ 0371edc3
+**Base:** harness-round2 @ 3e495a9b
+
+## Refresh notes
+
+- Base is now `harness-round2 @ 3e495a9b`; status is READY. Slices 6, 2, 3 and 5 are merged.
+- Added S4-T13 (production wiring: `guild.ts` builds `fetchAttachmentBytes` and the live caps) and moved state/privacy docs to S4-T14.
+- Slice 3 merged: both adapters stream over SSE only (no non-streaming success path). T7/T8 tests use the `sse()`/`response()` streaming helpers and pin the streaming endpoint/body.
+- Slice 6 merged: `ChainEntry.capabilities` is optional and filled per request by the provider store; adapters gate on `request.capabilities` with conservative defaults. T11 treats absent entry capabilities as text-only.
+- `assertOutboundRequestSafe` reads message text only, so base64 media bytes never reach the scan; ADR 0149 decision 4 is reworded to say exactly that.
+- The router already receives `hasAttachments` (mention flow sets it, `routeRun` keeps attachment runs on standard). No task re-plans it.
+- Instance settings are now 34 (T3 goes 34 → 41 and updates both count pins); migrations end at `drizzle/0109_daily_digests.sql`, next free is 0110; this slice ships no migration.
+- Fixed stale anchors throughout (`toContents`, `toWireMessage`, `fetchMessageContent`, tool-loop chain/messages lines, the job invoke call, the three cursor `included` copies) and the missing `expectTypeOf` import in T2's test.
+- T4 now owns `packages/core/src/discord/port.ts` in the Waves row (it was in Owns but missing from the row).
+- T6/T9 tests are rewritten onto the current harnesses (`h.run(mention(...))`, `setupB2b`, `capture()`); T12 tests use `fixtureTrace` and `result.detail`.
+- T12 updates all three `included` copies in `jobs/assistant.ts` (cursor, failure trace, success trace), not just the cursor.
 
 ## Global Constraints
 
@@ -22,19 +36,27 @@
   chars each, at most 3 per message; images at most 5 MB each, at most 4 per message; PDFs at most 10 MB each, at
   most 2 per message. Only the current message and the replied-to message are read. A count of 0 disables that kind.
 - Attachment fetches go to the Discord CDN only (`cdn.discordapp.com`, `media.discordapp.net`), HTTPS, through the
-  existing fetch security primitives (host allowlist, DNS pinning, public-address check, size caps, magic-byte
-  checks). The ADR records the owner's D7 instruction for this destination (hard rule 8).
+  existing fetch security primitives (host allowlist, DNS pinning, public-address check, per-hop redirect
+  re-check, size caps, magic-byte checks). The ADR records the owner's D7 instruction for this destination (hard rule 8).
 - No PDF parsing, extraction or OCR anywhere in Bananasaurs (D7b). PDFs go to a model only when the model reads them
-  natively (Gemini `inlineData`; OpenRouter models whose metadata lists `file` input, with the file-parser plugin
+  natively (Gemini `inlineData`; OpenRouter models whose catalogue listing has `file` input, with the file-parser plugin
   pinned to `native` so OpenRouter never substitutes `mistral-ocr` or `cloudflare-ai`). Otherwise the bot says
   plainly it cannot read PDFs.
-- The outbound safety scan does not apply to image pixels. That is an accepted gap, written into ADR 0149.
+- The outbound safety scan reads message text only (`requestSections` in `packages/core/src/providers/outbound-safety.ts`):
+  base64 image/PDF bytes in `GenerationMessage.media` never reach it. That is an accepted gap, written into ADR 0149.
 - Attached text is evidence: redacted with `redactEvidenceText`, neutralised, framed as `[UNTRUSTED ATTACHMENT …]`.
   It is never put in the job payload or the run ledger beyond counts. The trace records counts, sizes and types,
   never pixels or file bytes.
-- This slice runs after Slices 6 and 3 merge. It consumes Slice 6's `ModelCapabilities` (`image`, `pdf`) for routing
-  and Slice 3's streaming adapters (contracts §3: `thinkingLevel`, `onProgress`, `reasoning`). Places that depend on
-  merged code are marked "(after Slice 6: …)" or "(after Slice 3: …)".
+- Both provider adapters stream over SSE (`packages/core/src/providers/sse.ts` with `invokeStreamCallback` from
+  `callbacks.ts`); there is no non-streaming success path. Inline media is sent in the streaming request bodies.
+- `ChainEntry.capabilities?: ModelCapabilities` is optional; adapters fall back to `geminiCapabilities(model)` /
+  `TEXT_AND_TOOLS_ONLY`. Media goes only to entries whose capabilities include that media type; a text-only entry
+  gets the plain-text attachment note instead. The router already receives `hasAttachments`; no task changes that.
+- Instance settings are now 34; `packages/core/src/settings/instance-settings.test.ts` and
+  `packages/http/src/routes/assistant-tuning.test.ts` pin the count. S4-T3 updates both.
+- Migrations end at `drizzle/0109_daily_digests.sql`; the next free number is 0110 (generated with
+  `npm run db:generate -- --name <name>`, never hand-numbered). This slice ships no migration.
+- Words such as "fixture", "staged rollout" in production identifiers trip the ADR 0121 vocabulary scan.
 
 ## Plan decisions
 
@@ -42,17 +64,25 @@
 - A count of 0 disables that kind (no boolean display type exists in the registry); each count help text says so.
 - Attachment bytes travel as `GenerationMessage.media` (contracts §3); the trace's `included` gains an optional
   `attachments` summary (counts, sizes, types) so no migration is needed.
-- Binary fetches get a `fetchBytes` method on `ReviewedResourceFetcher` reusing its redirect/host logic, because the
-  existing `fetch()` enforces text-only types and decodes to UTF-8 which corrupts images and PDFs.
+- Binary fetches get a `fetchBytes` method on `ReviewedResourceFetcher` reusing its resolve/pinned-request/redirect
+  logic, because the existing `fetch()` enforces text-only types, decodes to UTF-8 which corrupts images and PDFs,
+  and caches text evidence. `fetchBytes` takes per-call `{ allowedHosts, maxBytes }`, re-checks the allowlist on
+  every redirect hop, never caches, and returns raw bytes plus the media type.
 - The CDN `url` is preferred, `proxy_url` is the fallback; both are Discord-signed and expire in about 24 h, so the
-  job re-reads both messages through REST at job start (never trusts gateway-cached URLs).
+  job re-reads both messages through REST at job start (never trusts gateway-cached URLs — the gateway event
+  carries `MessageAttachment` metadata with no URL at all, so reuse is impossible by construction).
 - Static GIFs only: a GIF carrying a `NETSCAPE2.0` application extension is refused as animated.
 - Text sniffing by extension (`.txt .md .markdown .json .js .ts .tsx .py .rb .go .rs .java .c .h .cpp .css .html .xml
   .yml .yaml .toml .ini .cfg .log .csv .sh`) covers code files Discord serves as `application/octet-stream`.
-- Media preference composes with tier order (after Slice 6): tier order first, then a stable preference for entries
-  whose capabilities cover everything attached.
-- Per-entry media filtering happens in the tool loop: an entry receives only the media its capabilities allow, plus
-  a plain marker line for each file it cannot see.
+- Media preference composes with tier order: the service tiers the chain first (`orderChainByTier`), then the tool
+  loop applies a stable preference for entries whose capabilities cover everything attached.
+- Per-entry media filtering happens in the tool loop's `runEntry`: an entry receives only the media its capabilities
+  allow, plus a plain marker line per stripped file on the last user message. The filter also covers the resume
+  branch (a previously stripped file is already gone from `media`, so no marker repeats).
+- Production wiring lives in `apps/daemon/src/runtime/guild.ts` (S4-T13): one `ReviewedResourceFetcher` plus an
+  `attachmentCaps` closure reading the seven live settings (D7 defaults when settings are absent), passed as the
+  job's `fetchAttachmentBytes` / `attachmentCaps` deps. The per-call settings getters make dashboard changes live
+  without a restart.
 - The tuning page renders registry settings generically, so no new dashboard component is needed; the dashboard task
   only extends the page test with the new keys.
 
@@ -63,7 +93,7 @@
 2. **A `.txt` pasted as an attachment with an empty message body.** Expect the marker plus the framed text, fixing
    "There's no pasted text in your message". Pinned in Task 4 and Task 6.
 3. **A PDF asked of a model without PDF input.** Expect no PDF bytes on the wire and the plain "you can't read PDFs
-   right now" line, never a guess. Pinned in Task 10.
+   right now" line, never a guess. Pinned in Task 11.
 4. **An OpenRouter request carrying a PDF without exactly `plugins: [{ id: "file-parser", pdf: { engine: "native" }
    }]`.** Expect the Task 8 test to fail. Pinned in Task 8.
 5. **An expired CDN URL on a job retry.** Expect the job to re-read the message through REST at start rather than
@@ -75,8 +105,8 @@
 |---|---|---|---|
 | 1 | S4-T1 ADR 0149 | Create: `docs/decisions/0149-attachment-fetch-and-native-media.md` | — |
 | 1 | S4-T2 media types | Modify: `packages/core/src/providers/contracts.ts`; Create: `packages/core/src/providers/generation-media.test.ts` | — |
-| 1 | S4-T3 attachment settings | Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts` | — |
-| 2 | S4-T4 markers everywhere | Modify: `packages/discord/src/rest/port.ts`, `packages/discord/src/rest/port.test.ts`, `apps/daemon/src/assistant/conversation-context.ts`, `apps/daemon/src/assistant/conversation-context.test.ts`, `apps/daemon/src/assistant/channel-context.ts`, `apps/daemon/src/assistant/channel-context.test.ts`, `apps/daemon/src/assistant/user-message.ts`, `apps/daemon/src/assistant/user-message.test.ts` | T2 |
+| 1 | S4-T3 attachment settings | Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`, `packages/http/src/routes/assistant-tuning.test.ts` | — |
+| 2 | S4-T4 markers everywhere | Modify: `packages/core/src/discord/port.ts`, `packages/discord/src/rest/port.ts`, `packages/discord/src/rest/port.test.ts`, `apps/daemon/src/assistant/conversation-context.ts`, `apps/daemon/src/assistant/conversation-context.test.ts`, `apps/daemon/src/assistant/channel-context.ts`, `apps/daemon/src/assistant/channel-context.test.ts`, `apps/daemon/src/assistant/user-message.ts`, `apps/daemon/src/assistant/user-message.test.ts` | T2 |
 | 2 | S4-T5 fetcher and byte checks | Modify: `apps/daemon/src/assistant/resource-fetcher.ts`, `apps/daemon/src/assistant/resource-fetcher.test.ts`; Create: `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts` | T2, T3 |
 | 3 | S4-T6 text files into the turn | Modify: `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts` | T4, T5 |
 | 3 | S4-T7 Gemini sends media | Modify: `packages/core/src/providers/gemini.ts`, `packages/core/src/providers/gemini.test.ts` | T2 |
@@ -85,7 +115,8 @@
 | 4 | S4-T10 tuning page shows the caps | Modify: `packages/dashboard/src/pages/assistant-tuning.test.tsx` | T3 |
 | 5 | S4-T11 capability routing and markers | Create: `apps/daemon/src/assistant/media-routing.ts`, `apps/daemon/src/assistant/media-routing.test.ts`; Modify: `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts` | T2, T9 |
 | 5 | S4-T12 trace attachment summary | Modify: `packages/core/src/assistant/trace.ts`, `packages/core/src/assistant/trace.test.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts` | T9 |
-| 6 | S4-T13 state and privacy | Modify: `docs/STATE.md`, `PRIVACY.md` | T1–T12 |
+| 6 | S4-T13 production attachment wiring | Modify: `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/runtime/guild-ledger.test.ts` | T5, T9 |
+| 7 | S4-T14 state and privacy lines | Modify: `docs/STATE.md`, `PRIVACY.md` | T1–T13 |
 
 ## Tasks
 
@@ -94,7 +125,7 @@
 **Reads (do not edit):** `docs/decisions/0137-read-only-tools-in-later-rounds.md` (ADR style), `docs/decisions/0120-tavily-search-and-search-key-limits.md` (rule-8 destination wording)
 **Interfaces:** Consumes: none · Produces: none (documents)
 
-- [ ] **Step 1: Write the failing test** — no test; this task is documents only. Verify the number is free: `git status --short docs/decisions/0149-*` shows nothing and `ls docs/decisions/ | grep 0149` is empty.
+- [ ] **Step 1: Write the failing test** — no test; this task is documents only. Verify the number is free: `git status --short docs/decisions/0149-*` shows nothing and `ls docs/decisions/ | grep 0149` is empty (neighbours are 0148 and 0150).
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/generation-media.test.ts --maxWorkers=1` · Expected: FAIL with "No test files found" (the contract test lands in S4-T2 against this ADR).
 - [ ] **Step 3: Implement** — write the file below in full, verbatim except the date if today differs:
 
@@ -118,19 +149,21 @@ record of the owner's instruction.
 ## Decision
 
 1. The bot fetches attachment bytes from `cdn.discordapp.com` and `media.discordapp.net` only, over HTTPS,
-   reusing the existing fetch security primitives (DNS pinning, public-address check, redirect handling, size
-   caps) plus magic-byte checks (PNG, JPEG, WebP, static GIF, `%PDF-`). A wrong magic number, an oversize file,
-   or a host outside the allowlist is refused before any provider call. Each refusal has a test, refusal-first.
+   reusing the existing fetch security primitives (DNS pinning, public-address check, per-hop redirect
+   allowlist re-check, size caps) plus magic-byte checks (PNG, JPEG, WebP, static GIF, `%PDF-`). A wrong magic
+   number, an oversize file, a host outside the allowlist, or a redirect to another host is refused before any
+   provider call. Each refusal has a test, refusal-first.
 2. PDFs and images go to the AI provider only when the answering model reads them natively: Gemini as `inlineData`
-   parts, OpenRouter models whose metadata lists `file` input with the file-parser plugin pinned to
+   parts, OpenRouter models whose catalogue listing has `file` input with the file-parser plugin pinned to
    `plugins: [{ id: "file-parser", pdf: { engine: "native" } }]`, so OpenRouter never substitutes `mistral-ocr`
    (paid) or `cloudflare-ai` (a third party). There is no local PDF parsing, extraction, OCR, or parsing service
    anywhere (D7b). A model without the input gets a plain marker instead of the file, and the bot says so.
 3. Attached text is untrusted evidence: redacted, neutralised, capped, framed as `[UNTRUSTED ATTACHMENT …]`, and
    never stored in the job payload or the run ledger beyond counts. The trace records counts, sizes and types,
    never pixels or bytes.
-4. The outbound safety scan does not inspect image pixels. That is an accepted gap: text and PDF bytes pass the
-   existing redaction, pixels cannot be scanned locally, and scanning them would need a service D7b forbids.
+4. The outbound safety scan reads message text only (`requestSections` in `outbound-safety.ts`), so base64
+   image/PDF bytes in `GenerationMessage.media` never reach it. That is an accepted gap: attached text passes
+   `redactEvidenceText`, pixels cannot be scanned locally, and scanning them would need a service D7b forbids.
 
 ## Consequences
 
@@ -145,19 +178,19 @@ record of the owner's instruction.
 - [ ] **Step 6: Format and lint** — `npx prettier --write docs/decisions/0149-attachment-fetch-and-native-media.md` then `npx eslint docs/decisions/0149-attachment-fetch-and-native-media.md` · exit 0
 - [ ] **Step 7: Commit** — `git add docs/decisions/0149-attachment-fetch-and-native-media.md && git commit -m "Slice 4 T1: ADR 0149 attachment fetch destination, native media only"`
 
-**Done when:** the ADR file exists with Context, Decision and Consequences; `PRIVACY.md` wording for S4-T13 is fixed by Decision §2's last line.
+**Done when:** the ADR file exists with Context, Decision and Consequences; `PRIVACY.md` wording for S4-T14 is fixed by Decision §2's last line.
 
 ---
 
 ### S4-T2: media on the provider contract   ·   Wave 1
 **Owns:** Modify: `packages/core/src/providers/contracts.ts`; Create: `packages/core/src/providers/generation-media.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/openai-compatible.ts` (the `toWireMessage` shape the media must survive), `packages/core/src/providers/gemini.ts` (the `toContents` shape)
+**Reads (do not edit):** `packages/core/src/providers/openai-compatible.ts` lines 514–543 (`toWireMessage`, the shape the media must survive), `packages/core/src/providers/gemini.ts` lines 65–94 (`toContents`), `packages/core/src/providers/contracts.ts` lines 59–86 (`GenerateTextRequest.capabilities`: per-entry capabilities ride the request, media rides the messages)
 **Interfaces:** Consumes: none · Produces: `export interface GenerationMedia { readonly kind: 'image' | 'pdf'; readonly mediaType: string; readonly dataBase64: string; readonly name: string }` · `GenerationMessage` gains `readonly media?: readonly GenerationMedia[]` (user turns only; base64 bytes, never logged, never scanned)
 
-- [ ] **Step 1: Write the failing test** — create `packages/core/src/providers/generation-media.test.ts` with the full code below (uses `expectTypeOf`, no new helpers):
+- [ ] **Step 1: Write the failing test** — create `packages/core/src/providers/generation-media.test.ts` with the full code below (note the `expectTypeOf` import; without it the file fails to compile):
 
 ```ts
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { GenerationMedia, GenerationMessage } from './contracts.js';
 
 describe('GenerationMedia (ADR 0149)', () => {
@@ -180,7 +213,7 @@ describe('GenerationMedia (ADR 0149)', () => {
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/generation-media.test.ts --maxWorkers=1` · Expected: FAIL with "GenerationMedia … has no exported member" / type error on `media`
-- [ ] **Step 3: Implement** — in `packages/core/src/providers/contracts.ts`, after the `GenerationMessage` interface (lines 25–40), insert:
+- [ ] **Step 3: Implement** — in `packages/core/src/providers/contracts.ts`, after the `GenerationMessage` interface (lines 27–42), insert:
 
 ```ts
 /** One attached file travelling to a model that reads it natively (ADR 0149). Base64 bytes: never logged, never scanned, never stored in a trace. */
@@ -192,7 +225,7 @@ export interface GenerationMedia {
 }
 ```
 
-and inside `GenerationMessage`, after the `providerParts` field (lines 34–39), add:
+and inside `GenerationMessage`, after the `providerParts` field (lines 36–41), add:
 
 ```ts
   /**
@@ -213,7 +246,7 @@ and inside `GenerationMessage`, after the `providerParts` field (lines 34–39),
 ---
 
 ### S4-T3: attachment caps in the settings registry   ·   Wave 1
-**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`, `packages/core/src/settings/instance-settings.test.ts`, `packages/http/src/routes/assistant-tuning.test.ts`
 **Reads (do not edit):** `packages/dashboard/src/pages/assistant-tuning.tsx` (renders every registry entry generically, so no page change is needed)
 **Interfaces:** Consumes: none · Produces: seven keys `assistant.attachments.textMaxBytes` (default 262144), `assistant.attachments.textMaxChars` (default 24000), `assistant.attachments.textMaxCount` (default 3, min 0, max 10), `assistant.attachments.imageMaxBytes` (default 5242880), `assistant.attachments.imageMaxCount` (default 4, min 0, max 10), `assistant.attachments.pdfMaxBytes` (default 10485760), `assistant.attachments.pdfMaxCount` (default 2, min 0, max 10); group `Assistant attachments` (new additive `SettingGroup` value); a count of 0 disables that kind
 
@@ -221,7 +254,7 @@ and inside `GenerationMessage`, after the `providerParts` field (lines 34–39),
 
 ```ts
 it('attachment caps default to the D7 table and a count of 0 disables that kind', () => {
-  expect(INSTANCE_SETTINGS).toHaveLength(25);
+  expect(INSTANCE_SETTINGS).toHaveLength(41);
   const def = (key: string) => settingDefinition(key);
   expect(def('assistant.attachments.textMaxBytes')?.defaultValue).toBe(262_144);
   expect(def('assistant.attachments.textMaxChars')?.defaultValue).toBe(24_000);
@@ -248,12 +281,12 @@ it('attachment caps default to the D7 table and a count of 0 disables that kind'
 });
 ```
 
-Also update the existing `has 18 definitions` assertion to `toHaveLength(25)`.
+Also update the existing `has 34 definitions` test in the same file: change `expect(INSTANCE_SETTINGS).toHaveLength(34)` to `expect(INSTANCE_SETTINGS).toHaveLength(41)`. (The router/digest tests in that file use `toBeGreaterThanOrEqual` and need no change.)
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with "expected 18 to have length 25" / `settingDefinition('assistant.attachments…')` undefined
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with "expected 34 to have length 41" / `settingDefinition('assistant.attachments…')` undefined
 - [ ] **Step 3: Implement** — in `packages/core/src/settings/instance-settings.ts`:
-  - Add `'Assistant attachments'` to the `SettingGroup` union (line 12–18, after `'Assistant context'`).
-  - Add seven definitions after `channelContextMessages` (lines 118–127), following its exact shape (`key`, `group: 'Assistant attachments'`, `label`, `help`, `display: 'count'`, zod `schema`, `defaultValue`, `bounds`):
+  - Add `'Assistant attachments'` to the `SettingGroup` union (lines 17–26, after `'Assistant context'`).
+  - Add seven definitions after `channelContextMessages` (lines 146+, following its exact shape: `key`, `group: 'Assistant attachments'`, `label`, `help`, `display: 'count'`, zod `schema`, `defaultValue`, `bounds`):
 
 ```ts
 const attachmentTextMaxBytes: SettingDefinition<number> = {
@@ -334,24 +367,25 @@ const attachmentPdfMaxCount: SettingDefinition<number> = {
 };
 ```
 
-  - Append all seven to `INSTANCE_SETTINGS` (lines 257–276) and all seven keys to `InstanceSettingValues` (lines 278–297).
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: PASS
+  - Append all seven to `INSTANCE_SETTINGS` (after `channelContextMessages` in the array near line 478) and all seven keys to `InstanceSettingValues` (after `'assistant.channelContextMessages': number` near line 519).
+  - In `packages/http/src/routes/assistant-tuning.test.ts`, update the pinned count `expect(body.settings).toHaveLength(34)` to `toHaveLength(41)` (the route lists the whole registry).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 4 T3: attachment caps in the settings registry"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts && git commit -m "Slice 4 T3: attachment caps in the settings registry"`
 
-**Done when:** registry holds 25 definitions; every default parses under its own schema; help texts are Canadian English with no tool names.
+**Done when:** registry holds 41 definitions; every default parses under its own schema; both count pins read 41; help texts are Canadian English with no tool names.
 
 ---
 
 ### S4-T4: markers everywhere, no network   ·   Wave 2
 **Owns:** Modify: `packages/core/src/discord/port.ts`, `packages/discord/src/rest/port.ts`, `packages/discord/src/rest/port.test.ts`, `apps/daemon/src/assistant/conversation-context.ts`, `apps/daemon/src/assistant/conversation-context.test.ts`, `apps/daemon/src/assistant/channel-context.ts`, `apps/daemon/src/assistant/channel-context.test.ts`, `apps/daemon/src/assistant/user-message.ts`, `apps/daemon/src/assistant/user-message.test.ts`
-**Reads (do not edit):** `apps/daemon/src/jobs/assistant.ts` (the `quoted` shape S4-T6 threads through; this task does not touch it), `packages/discord/src/events.test.ts` (the event already carries attachments metadata — no change needed)
-**Interfaces:** Consumes: none · Produces: `export interface FetchedAttachment { readonly attachmentId: string; readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number; readonly url?: string | undefined }` and `export interface FetchedEmbed { readonly title?: string | undefined; readonly description?: string | undefined; readonly providerName?: string | undefined; readonly thumbnailUrl?: string | undefined }` in `packages/core/src/discord/port.ts` · `fetchMessageContent` returns them; `RecentMessage` gains `readonly attachments?: readonly FetchedAttachment[] | undefined` · `export const attachmentMarker = (file: { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }): string` in `conversation-context.ts` (S4-T6 reuses it)
+**Reads (do not edit):** `apps/daemon/src/jobs/assistant.ts` (the `quoted` shape S4-T6 threads through; this task does not touch it), `packages/core/src/discord/events.ts` lines 127–138 (`MessageAttachment`: gateway events carry metadata with no URL, so fresh REST URLs are a T6 concern, not this one)
+**Interfaces:** Consumes: none · Produces: `export interface FetchedAttachment { readonly attachmentId: string; readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number; readonly url?: string | undefined }` and `export interface FetchedEmbed { readonly title?: string | undefined; readonly description?: string | undefined; readonly providerName?: string | undefined; readonly thumbnailUrl?: string | undefined }` in `packages/core/src/discord/port.ts` · `fetchMessageContent` returns them as required arrays; `RecentMessage` gains `readonly attachments?: readonly FetchedAttachment[] | undefined` (optional so `FakeDiscord` and other constructors keep compiling) · `export const attachmentMarker = (file: { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }): string` in `conversation-context.ts` (S4-T6 reuses it)
 
-- [ ] **Step 1: Write the failing test** — full test code below, using the real helpers of each file (`messageCreatePacket`/`harness` in `events.test.ts` style for port tests; `message()`/`input()` in `channel-context.test.ts`; `quoteEnvelopeFor` directly; `buildUserMessage` directly).
+- [ ] **Step 1: Write the failing test** — full test code below, using the real helpers of each file.
 
-In `packages/discord/src/rest/port.test.ts`, extend the `fetchMessageContent` test (the "fetches one message's author, content and embeds" test near line 725; read it first) with a body attachment carrying a URL and an embed with a provider:
+In `packages/discord/src/rest/port.test.ts`, add after the "fetches one message's content and author" test (line 672; it uses the `harness`, `MESSAGE`, `CHANNEL`, `GUILD`, `USER` names):
 
 ```ts
 it('keeps attachment urls and embed text on a fetched message (ADR 0149)', async () => {
@@ -407,7 +441,7 @@ it('keeps attachment urls and embed text on a fetched message (ADR 0149)', async
 });
 ```
 
-(`harness`, `MESSAGE`, `CHANNEL`, `GUILD`, `USER` are the existing names in that file; if any differs, use the file's name.)
+The existing "fetches one message's content and author" `toEqual` (line 684) now needs the two new arrays: add `attachments: []` and `embeds: []` to its expected object. The "fetches channel messages oldest first" `toEqual` needs `attachments: []` on the first message and `attachments: [{ attachmentId: '1', fileName: 'notes.txt', sizeBytes: 12 }]` on the second (its fixture attachment has no `content_type`, so that key is omitted). The nickname `toMatchObject` test needs no change.
 
 In `apps/daemon/src/assistant/conversation-context.test.ts`:
 
@@ -426,7 +460,7 @@ it('renders attachment and embed markers inside the quote envelope (ADR 0149)', 
 });
 ```
 
-In `apps/daemon/src/assistant/channel-context.test.ts` (using its `message()` helper):
+In `apps/daemon/src/assistant/channel-context.test.ts` (using its `message()`/`input()` helpers):
 
 ```ts
 it('renders attachment markers even when there is text (ADR 0149)', () => {
@@ -458,16 +492,16 @@ it('tells the model attachments read only through contents below (ADR 0149)', ()
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/discord/src/rest/port.test.ts apps/daemon/src/assistant/conversation-context.test.ts apps/daemon/src/assistant/channel-context.test.ts apps/daemon/src/assistant/user-message.test.ts --maxWorkers=1` · Expected: FAIL (`attachments`/`embeds` undefined on the fetch result; `quoteEnvelopeFor` ignores the new fields; no marker line; prompt line absent)
 - [ ] **Step 3: Implement**
-  - `packages/core/src/discord/port.ts`: add the `FetchedAttachment` and `FetchedEmbed` interfaces above `DiscordPort`; change the `fetchMessageContent` return to `Promise<{ authorId: Snowflake; authorName: string; content: string; attachments: readonly FetchedAttachment[]; embeds: readonly FetchedEmbed[] } | undefined>`; add `readonly attachments?: readonly FetchedAttachment[] | undefined` to `RecentMessage` with the comment "Attachment metadata for marker lines (ADR 0149); absent means unknown, not none".
-  - `packages/discord/src/rest/port.ts` `fetchMessageContent` (lines 361–380): map `message.attachments ?? []` to `{ attachmentId: a.id, fileName: a.filename, contentType: a.content_type ?? undefined, sizeBytes: a.size, url: a.url ?? a.proxy_url ?? undefined }` omitting `contentType`/`url` keys when undefined (the codebase style is `...(x === undefined ? {} : { x })`), and `message.embeds ?? []` to `{ title, description, providerName: provider?.name, thumbnailUrl: thumbnail?.url ?? thumbnail?.proxy_url }` omitting undefined keys. Same mapping for `fetchChannelMessages` (line 446 area): add `attachments:` to the mapped message alongside `hasAttachments`.
-  - `apps/daemon/src/assistant/conversation-context.ts`: add `export const attachmentMarker = (file: { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }): string => \`[attached: ${neutraliseMarkers(file.fileName)}, ${file.contentType ?? 'unknown type'}, ${Math.max(1, Math.round(file.sizeBytes / 1024))} KB]\`;` extend `QuotedMessage` with `readonly attachments?: readonly { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }[] | undefined` and `readonly embeds?: readonly { readonly title?: string | undefined; readonly description?: string | undefined; readonly providerName?: string | undefined }[] | undefined`; extend `quoteEnvelopeFor` to append marker lines then embed lines before the close tag. Embed line: `` `[embed: ${[e.providerName, e.title].filter(Boolean).join(': ')}${e.description === undefined ? '' : ` — ${e.description}`}]` `` skipping embeds with no title and no providerName. Neutralise every interpolated field.
-  - `apps/daemon/src/assistant/channel-context.ts`: import `attachmentMarker`; in both `formatChannelLines` and `buildChannelContext`, replace `const text = message.content.trim() === '' ? '[attachment]' : cleanText(...)` with markers appended: `const markers = (message.attachments ?? []).map(attachmentMarker).join(' '); const body = message.content.trim() === '' ? (markers === '' ? '[attachment]' : markers) : cleanText(message.content) + (markers === '' ? '' : ` ${markers}`);` Apply the same in the starter block only if the starter type carries attachments — it does not, so leave the starter untouched.
-  - `apps/daemon/src/assistant/user-message.ts`: after `parts.push(currentBlock)` insert `parts.push('You can read an attachment only if its contents appear below.');`
-  - Search `rg -n "RecentMessage" packages apps --include="*.ts"` for other constructors; optional field keeps them compiling — verify with typecheck, and update any `toEqual` on `fetchChannelMessages` output (only `port.test.ts`, owned here).
+  - `packages/core/src/discord/port.ts`: add the `FetchedAttachment` and `FetchedEmbed` interfaces above `DiscordPort`; change the `fetchMessageContent` return (lines 336–341) to `Promise<{ authorId: Snowflake; authorName: string; content: string; attachments: readonly FetchedAttachment[]; embeds: readonly FetchedEmbed[] } | undefined>`; add `readonly attachments?: readonly FetchedAttachment[] | undefined` to `RecentMessage` (after `hasAttachments`, line 224) with the comment "Attachment metadata for marker lines (ADR 0149); absent means unknown, not none".
+  - `packages/discord/src/rest/port.ts` `fetchMessageContent` (lines 361–380): return `attachments: (message.attachments ?? []).map((a) => ({ attachmentId: a.id, fileName: a.filename, ...(a.content_type === undefined ? {} : { contentType: a.content_type }), sizeBytes: a.size, url: a.url ?? a.proxy_url ?? undefined }))` and `embeds: (message.embeds ?? []).map((e) => ({ ...(e.title === undefined ? {} : { title: e.title }), ...(e.description === undefined ? {} : { description: e.description }), ...(e.provider?.name === undefined ? {} : { providerName: e.provider.name }), ...(e.thumbnail?.url ?? e.thumbnail?.proxy_url === undefined ? {} : { thumbnailUrl: e.thumbnail?.url ?? e.thumbnail?.proxy_url }) }))` alongside the existing author fields. Same mapping for `fetchChannelMessages` (lines 404–460): add `attachments:` to the mapped message beside `hasAttachments` (line 446, always set, possibly empty).
+  - `apps/daemon/src/assistant/conversation-context.ts`: add `export const attachmentMarker = (file: { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }): string => \`[attached: ${neutraliseMarkers(file.fileName)}, ${file.contentType ?? 'unknown type'}, ${Math.max(1, Math.round(file.sizeBytes / 1024))} KB]\`;` (neutraliseMarkers is already imported at line 4); extend `QuotedMessage` (lines 32–35) with `readonly attachments?: readonly { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number }[] | undefined` and `readonly embeds?: readonly { readonly title?: string | undefined; readonly description?: string | undefined; readonly providerName?: string | undefined }[] | undefined`; extend `quoteEnvelopeFor` (lines 63–64) to append one `attachmentMarker` line per attachment then one embed line per embed before the close tag. Embed line: `` `[embed: ${[e.providerName, e.title].filter(Boolean).join(': ')}${e.description === undefined ? '' : ` — ${e.description}`}]` `` skipping embeds with no title and no providerName. Neutralise every interpolated field.
+  - `apps/daemon/src/assistant/channel-context.ts`: import `attachmentMarker` from `./conversation-context.js`; in both `formatChannelLines` (lines 74–92) and `buildChannelContext` (lines 94+), replace `const text = message.content.trim() === '' ? '[attachment]' : cleanText(...)` with markers appended: `const markers = (message.attachments ?? []).map(attachmentMarker).join(' '); const body = message.content.trim() === '' ? (markers === '' ? '[attachment]' : markers) : cleanText(message.content) + (markers === '' ? '' : ` ${markers}`);` The starter block has no attachments field, so it is untouched.
+  - `apps/daemon/src/assistant/user-message.ts`: after `parts.push(currentBlock)` (line 25) insert `parts.push('You can read an attachment only if its contents appear below.');`
+  - `FakeDiscord` and other `RecentMessage` constructors keep compiling through the optional field — verify with the typecheck, and update only the two `toEqual` expectations named in Step 1.
 - [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write <all eight owned paths>` then `npx eslint <all eight owned paths>` · exit 0
-- [ ] **Step 7: Commit** — `git add <all eight owned paths> && git commit -m "Slice 4 T4: attachment and embed markers in quote, channel lines and prompt"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/discord/port.ts packages/discord/src/rest/port.ts packages/discord/src/rest/port.test.ts apps/daemon/src/assistant/conversation-context.ts apps/daemon/src/assistant/conversation-context.test.ts apps/daemon/src/assistant/channel-context.ts apps/daemon/src/assistant/channel-context.test.ts apps/daemon/src/assistant/user-message.ts apps/daemon/src/assistant/user-message.test.ts` then `npx eslint <the same nine paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <the same nine paths> && git commit -m "Slice 4 T4: attachment and embed markers in quote, channel lines and prompt"`
 
 **Done when:** a `[attached: …]` line renders with text present (the "no pasted text" case); embeds render as `[embed: Tenor: …]`; the prompt line is always present; no bytes travel anywhere yet.
 
@@ -476,9 +510,9 @@ it('tells the model attachments read only through contents below (ADR 0149)', ()
 ### S4-T5: attachment bytes through the existing security primitives   ·   Wave 2
 **Owns:** Modify: `apps/daemon/src/assistant/resource-fetcher.ts`, `apps/daemon/src/assistant/resource-fetcher.test.ts`; Create: `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts`
 **Reads (do not edit):** `packages/core/src/providers/outbound-safety.ts` (`redactEvidenceText`, used for text envelopes)
-**Interfaces:** Consumes: `resolvePublicAddress`, `pinnedHttpsRequest`, `isPublicAddress`, `DEFAULT_RESOURCE_FETCH_LIMITS`, `ResourceFetchFailure` from `resource-fetcher.ts` (same task extends it); `redactEvidenceText` from `@bananasaurs/core` · Produces: `export const ATTACHMENT_HOSTS = ['cdn.discordapp.com', 'media.discordapp.net'] as const` · `export interface AttachmentSource { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number; readonly url?: string | undefined }` · `export type AttachmentKind = 'text' | 'image' | 'pdf' | 'unsupported'` · `export const classifyAttachment = (source: AttachmentSource): AttachmentKind` (pre-fetch, from content type and extension) · `export const sniffMediaKind = (bytes: Uint8Array): 'image' | 'pdf' | 'text' | 'animated-gif' | 'unknown'` (magic bytes) · `export const textEnvelopeFor = (name: string, text: string): string` (redacted, neutralised, framed) · `export const fetchAttachment = (deps: { fetchBytes: (url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }> }, source: AttachmentSource, caps: AttachmentCaps): Promise<AttachmentFetchResult>` enforcing declared-size caps before any fetch
+**Interfaces:** Consumes: `resolvePublicAddress`, `pinnedHttpsRequest`, `isPublicAddress`, `DEFAULT_RESOURCE_FETCH_LIMITS`, `ResourceFetchFailure` from `resource-fetcher.ts` (same task extends it); `redactEvidenceText`, `neutraliseMarkers` from `@bananasaurs/core` · Produces: `export const ATTACHMENT_HOSTS = ['cdn.discordapp.com', 'media.discordapp.net'] as const` · `export interface AttachmentSource { readonly fileName: string; readonly contentType?: string | undefined; readonly sizeBytes: number; readonly url?: string | undefined }` · `export type AttachmentKind = 'text' | 'image' | 'pdf' | 'unsupported'` · `export const classifyAttachment = (source: AttachmentSource): AttachmentKind` (pre-fetch, from content type and extension) · `export const sniffMediaKind = (bytes: Uint8Array): 'image' | 'pdf' | 'text' | 'animated-gif' | 'unknown'` (magic bytes) · `export const textEnvelopeFor = (name: string, text: string): string` (redacted, neutralised, framed) · `export const fetchAttachment = (deps: { fetchBytes: (url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }> }, source: AttachmentSource, caps: AttachmentCaps): Promise<AttachmentFetchResult>` enforcing declared-size caps before any fetch
 
-- [ ] **Step 1: Write the failing test** — create `packages/…` no; create `apps/daemon/src/assistant/attachments.test.ts` with the full code below, plus append the `fetchBytes` tests to `resource-fetcher.test.ts` (reusing its `body`, `response`, `publicDns` helpers):
+- [ ] **Step 1: Write the failing test** — create `apps/daemon/src/assistant/attachments.test.ts` with the full code below, plus append the two `fetchBytes` tests to `resource-fetcher.test.ts` (reusing its `publicDns` helper and `PinnedRequest` type; the binary bodies are built inline so no text-encoding helper is needed):
 
 ```ts
 import { describe, expect, it, vi } from 'vitest';
@@ -560,37 +594,60 @@ describe('attachment classification and sniffing (ADR 0149)', () => {
 });
 ```
 
-In `resource-fetcher.test.ts`, append (reusing `body`, `response`, `publicDns`):
+In `resource-fetcher.test.ts`, append (the file already imports `ReviewedResourceFetcher`, `PinnedRequest`, `publicDns` and `vi`):
 
 ```ts
 it('fetchBytes returns raw bytes for an allowlisted host and refuses anything else', async () => {
-  const fetcher = new ReviewedResourceFetcher({ resolve: publicDns });
-  const okBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
-  const request: PinnedRequest = async () => ({ status: 200, headers: { 'content-type': 'image/png' }, body: (async function* () { yield okBytes; })() });
-  const fetcherWith = new ReviewedResourceFetcher({ resolve: publicDns, request });
-  const good = await fetcherWith.fetchBytes('https://cdn.discordapp.com/attachments/1/2/a.png', {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const bytesBody = async function* (): AsyncIterable<Uint8Array> {
+    yield png;
+  };
+  const request = vi.fn<PinnedRequest>(async () => ({
+    status: 200,
+    headers: { 'content-type': 'image/png' },
+    body: bytesBody(),
+  }));
+  const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+  const good = await fetcher.fetchBytes('https://cdn.discordapp.com/attachments/1/2/a.png', {
     allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
     maxBytes: 5_242_880,
   });
   expect(good).toMatchObject({ ok: true, mediaType: 'image/png' });
-  if (good.ok) expect([...good.bytes]).toEqual([...okBytes]);
+  if (good.ok) expect([...good.bytes]).toEqual([...png]);
   const bad = await fetcher.fetchBytes('https://evil.example/a.png', {
     allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
     maxBytes: 5_242_880,
   });
   expect(bad).toMatchObject({ ok: false, code: 'redirect', host: 'evil.example' });
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it('fetchBytes refuses a redirect to another host without following it', async () => {
+  const emptyBody = async function* (): AsyncIterable<Uint8Array> {};
+  const request = vi.fn<PinnedRequest>(async () => ({
+    status: 302,
+    headers: { location: 'https://evil.example/final.png' },
+    body: emptyBody(),
+  }));
+  const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+  const result = await fetcher.fetchBytes('https://cdn.discordapp.com/attachments/1/2/a.png', {
+    allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
+    maxBytes: 1_024,
+  });
+  expect(result).toMatchObject({ ok: false, code: 'redirect', host: 'evil.example' });
+  expect(request).toHaveBeenCalledTimes(1);
 });
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/attachments.test.ts apps/daemon/src/assistant/resource-fetcher.test.ts --maxWorkers=1` · Expected: FAIL (modules `attachments.ts` and `fetchBytes` missing)
 - [ ] **Step 3: Implement**
-  - `resource-fetcher.ts`: add after the class (or as a method; a method keeps the resolve/request/limits wiring):
+  - `resource-fetcher.ts`: add the option/result types after `ResourceFetchFailureCode` (lines 88–98), reusing the module's `fail` helper:
 
 ```ts
 export interface ByteFetchOptions {
   readonly allowedHosts: readonly string[];
   readonly maxBytes: number;
-  /** Absent means any content type is accepted. */
+  /** Absent means any content type is accepted; magic bytes decide later (ADR 0149). */
   readonly allowedTypes?: readonly string[] | undefined;
 }
 export interface ByteFetchSuccess {
@@ -602,7 +659,140 @@ export interface ByteFetchSuccess {
 export type ByteFetchResult = ByteFetchSuccess | ResourceFetchFailure;
 ```
 
-Method `async fetchBytes(rawUrl: string, options: ByteFetchOptions): Promise<ByteFetchResult>` mirroring `#fetchFrom` exactly (validate URL, allowlist check with `fail('redirect', …)`, resolve, public-address check, pinned request per address, redirect follow up to `maxRedirects` with per-hop allowlist re-check, 304/3xx/4xx-5xx/challenge handling, `allowedTypes` check when set, declared-length pre-check, streamed cap) except it returns `bytes: Buffer.concat(chunks)` and `mediaType`, with no cache and no text decoding. Copy the structure, do not refactor `#fetchFrom`.
+Add the public method plus a private walker inside `ReviewedResourceFetcher` (after the `fetch` overloads, before `#fetchFrom`). It mirrors `#fetchFrom` (lines 342–494) exactly — URL validation, allowlist check with `fail('redirect', …)`, resolve, public-address check, pinned request per address, redirect follow up to `maxRedirects` with the per-hop allowlist re-check, 304/3xx/4xx-5xx/challenge handling, `allowedTypes` check when set, declared-length pre-check, streamed cap — except it returns raw bytes and never touches the cache and never decodes text:
+
+```ts
+async fetchBytes(rawUrl: string, options: ByteFetchOptions): Promise<ByteFetchResult> {
+  let initial: URL;
+  try {
+    initial = validateResourceUrl(rawUrl);
+  } catch {
+    return fail('invalid-url', 'The attachment URL is not an allowed public HTTPS URL.');
+  }
+  if (
+    !options.allowedHosts.some((host) => initial.hostname.toLowerCase() === host.toLowerCase())
+  )
+    return fail('redirect', 'The attachment URL is outside the allowed hosts.', {
+      host: initial.hostname,
+    });
+  const limits: ResourceFetchLimits = {
+    ...DEFAULT_RESOURCE_FETCH_LIMITS,
+    maxBytes: options.maxBytes,
+  };
+  return this.#fetchBytesFrom(initial, new Set(), 0, limits, options);
+}
+
+async #fetchBytesFrom(
+  url: URL,
+  visited: Set<string>,
+  redirects: number,
+  limits: ResourceFetchLimits,
+  options: ByteFetchOptions,
+): Promise<ByteFetchResult> {
+  if (visited.has(url.href))
+    return fail('redirect', 'The attachment redirect looped.', { host: url.hostname });
+  visited.add(url.href);
+  let addresses: readonly ResolvedAddress[];
+  try {
+    addresses = await this.#resolve(url.hostname);
+  } catch {
+    return fail('dns-failed', 'The attachment host could not be resolved.', {
+      host: url.hostname,
+    });
+  }
+  if (addresses.length === 0)
+    return fail('dns-failed', 'The attachment host has no address.', { host: url.hostname });
+  if (addresses.some(({ address }) => !isPublicAddress(address)))
+    return fail('private-address', 'The attachment resolved to a non-public address.', {
+      host: url.hostname,
+    });
+  let response: PinnedResponse | undefined;
+  let lastError: unknown;
+  for (const address of addresses) {
+    try {
+      response = await this.#request(url, address, limits.timeoutMs);
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (response === undefined) {
+    return fail(
+      lastError instanceof Error && /timed out/i.test(lastError.message) ? 'timeout' : 'network',
+      'The attachment could not be retrieved safely.',
+      { host: url.hostname },
+    );
+  }
+  if (response.status >= 300 && response.status < 400) {
+    response.discard?.();
+    if (redirects >= limits.maxRedirects)
+      return fail('redirect', 'The attachment exceeded the redirect limit.', {
+        host: url.hostname,
+      });
+    const location = redirectLocation(response);
+    if (location === undefined)
+      return fail('redirect', 'The attachment redirect had no location.', {
+        host: url.hostname,
+      });
+    let redirected: URL;
+    try {
+      redirected = validateResourceUrl(new URL(location, url).href);
+    } catch {
+      return fail('redirect', 'The attachment redirected outside allowed public HTTPS URLs.', {
+        host: url.hostname,
+      });
+    }
+    if (
+      !options.allowedHosts.some((host) => redirected.hostname.toLowerCase() === host.toLowerCase())
+    )
+      return fail('redirect', 'The attachment redirected outside the allowed hosts.', {
+        host: redirected.hostname,
+      });
+    return this.#fetchBytesFrom(redirected, visited, redirects + 1, limits, options);
+  }
+  if (response.status < 200 || response.status >= 300) {
+    response.discard?.();
+    return fail('http-status', `The attachment returned HTTP ${response.status}.`, {
+      httpStatus: response.status,
+      host: url.hostname,
+    });
+  }
+  const mediaType = mediaTypeOf(response.headers['content-type']);
+  if (options.allowedTypes !== undefined && !options.allowedTypes.includes(mediaType)) {
+    response.discard?.();
+    return fail('content-type', 'The attachment did not return an accepted type.', {
+      host: url.hostname,
+    });
+  }
+  const declaredLength = Number(response.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > limits.maxBytes) {
+    response.discard?.();
+    return fail('too-large', 'The attachment exceeded the size limit.', {
+      host: url.hostname,
+    });
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for await (const chunk of response.body) {
+      size += chunk.byteLength;
+      if (size > limits.maxBytes) {
+        response.discard?.();
+        return fail('too-large', 'The attachment exceeded the size limit.', {
+          host: url.hostname,
+        });
+      }
+      chunks.push(chunk);
+    }
+  } catch {
+    return fail('network', 'The attachment body could not be read.', { host: url.hostname });
+  }
+  return { ok: true, bytes: Buffer.concat(chunks), mediaType, url: url.href };
+}
+```
+
+(`redirectLocation` and `mediaTypeOf` are the existing module-scope helpers `#fetchFrom` uses; `fail`, `ResolvedAddress`, `PinnedResponse`, `ResourceFetchLimits` are already in scope. Copy the structure, do not refactor `#fetchFrom`.)
+
   - `apps/daemon/src/assistant/attachments.ts`: full new module:
 
 ```ts
@@ -707,98 +897,176 @@ export const fetchAttachment = async (
       return { ok: false, code: 'bad-magic', note: `${source.fileName} is not the file type it claims to be.` };
     return { ok: true, kind, name: source.fileName, mediaType: fetched.mediaType, dataBase64: Buffer.from(fetched.bytes).toString('base64'), sizeBytes: fetched.bytes.byteLength };
   }
-  const text = Buffer.from(fetched.bytes).toString('utf8').replaceAll(' ', '');
+  const text = Buffer.from(fetched.bytes).toString('utf8').replaceAll('\u0000', '');
   return { ok: true, kind: 'text', name: source.fileName, text };
 };
 ```
-
-  Note: the `'\u0000'` strip is written as `replaceAll(' ', '')` above — write it as `replaceAll('\u0000', '')` with a real escape in the file.
 - [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write <all four owned paths>` then `npx eslint <all four owned paths>` · exit 0
-- [ ] **Step 7: Commit** — `git add <all four owned paths> && git commit -m "Slice 4 T5: attachment fetch with host, size and magic-byte refusals"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/resource-fetcher.ts apps/daemon/src/assistant/resource-fetcher.test.ts apps/daemon/src/assistant/attachments.ts apps/daemon/src/assistant/attachments.test.ts` then `npx eslint <the same four paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/resource-fetcher.ts apps/daemon/src/assistant/resource-fetcher.test.ts apps/daemon/src/assistant/attachments.ts apps/daemon/src/assistant/attachments.test.ts && git commit -m "Slice 4 T5: attachment fetch with host, size and magic-byte refusals"`
 
-**Done when:** every refusal (off-host, missing URL, oversize, bad magic, animated GIF) is tested before the fetch it guards; text frames as `[UNTRUSTED ATTACHMENT …]` with redaction; no network in tests (injected `fetchBytes`).
-
----
+**Done when:** every refusal (off-host, missing URL, oversize, bad magic, animated GIF, redirect to another host) is tested before the fetch it guards; text frames as `[UNTRUSTED ATTACHMENT …]` with redaction; no network in tests (injected `fetchBytes`/injected `request`).
 
 ### S4-T6: text files into the turn   ·   Wave 3
 **Owns:** Modify: `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`
-**Reads (do not edit):** `apps/daemon/src/assistant/attachments.ts` (S4-T5: `fetchAttachment`, `textEnvelopeFor`, `AttachmentCaps`), `apps/daemon/src/assistant/conversation-context.ts` (S4-T4: `attachmentMarker`, `QuotedMessage` attachments/embeds), `packages/core/src/settings/instance-settings.ts` (S4-T3 cap keys)
-**Interfaces:** Consumes: `fetchAttachment`, `textEnvelopeFor`, `AttachmentCaps`, `attachmentMarker`, the seven `assistant.attachments.*` settings · Produces: job-start re-read of the current and replied-to messages; text blocks appended to the quote envelope and a new `attachmentText` user-message part; per-file `[attached: …]` markers plus refusal notes; embed thumbnails collected as image sources for S4-T9
+**Reads (do not edit):** `apps/daemon/src/assistant/attachments.ts` (S4-T5: `fetchAttachment`, `textEnvelopeFor`, `classifyAttachment`, `AttachmentCaps`), `apps/daemon/src/assistant/conversation-context.ts` (S4-T4: `attachmentMarker`, `QuotedMessage` attachments/embeds), `packages/core/src/settings/instance-settings.ts` (S4-T3 cap keys), `packages/core/src/discord/port.ts` (`FetchedAttachment`, `FetchedEmbed`)
+**Interfaces:** Consumes: `fetchAttachment`, `textEnvelopeFor`, `classifyAttachment`, `AttachmentCaps`, `attachmentMarker`, `FetchedAttachment`, `FetchedEmbed`, the seven `assistant.attachments.*` settings · Produces: optional job deps `fetchAttachmentBytes` and `attachmentCaps`; job-start re-read of the current and replied-to messages; quoted text blocks appended to `quoteEnvelope`, current-message text blocks in an `[UNTRUSTED MESSAGE ATTACHMENTS]` wrapper joined into `channelContext`; per-file `[attached: …]` markers plus refusal notes
 
-- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/jobs/assistant.test.ts`, using its existing harness (`h.fetchMessageContent.mockResolvedValue`, `h.inputs[0]?.quoteEnvelope`; read the quote tests near lines 882–1013 first). Add:
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/jobs/assistant.test.ts`, in the `assistantInvokeHandler (Task 14: …)` describe (it has the `harness`, `mention`, `CHANNEL_ID` helpers; the quote tests near lines 1014–1152 show the `referencedMessageId` pattern). Add after the 'a quoted reply carries the untrusted envelope' test:
 
 ```ts
-it('inlines text attachments from the current and quoted messages with markers (ADR 0149)', async () => {
-  h.fetchMessageContent.mockImplementation(async (channelId: string, messageId: string) => {
-    if (messageId === '840000000000000001')
-      return {
-        authorId: '111111111111111111',
-        authorName: 'Alex P',
-        content: 'the hall opens at seven',
-        attachments: [
-          { attachmentId: '1', fileName: 'message.txt', contentType: 'text/plain', sizeBytes: 12, url: 'https://cdn.discordapp.com/attachments/1/2/message.txt' },
-        ],
-        embeds: [],
-      };
-    return { authorId: '222222222222222222', authorName: 'Sam L', content: 'The one I just pasted:', attachments: [], embeds: [] };
+it('inlines a quoted text attachment with its marker (ADR 0149)', async () => {
+  const h = harness(() => ({ ok: true, content: 'answer' }));
+  h.fetchMessageContent.mockResolvedValue({
+    authorId: '111111111111111111',
+    authorName: 'Alex P',
+    content: 'the hall opens at seven',
+    attachments: [
+      { attachmentId: '1', fileName: 'message.txt', contentType: 'text/plain', sizeBytes: 15, url: 'https://cdn.discordapp.com/attachments/1/2/message.txt' },
+    ],
+    embeds: [],
   });
   h.fetchAttachmentBytes.mockResolvedValue({ ok: true, bytes: Buffer.from('pasted details'), mediaType: 'text/plain' });
-  await h.runMentionWithAttachments();
+  await h.run(mention({ invocationId: 'inv-att-text', referencedMessageId: '840000000000000001' }));
   expect(h.inputs[0]?.quoteEnvelope).toContain('[attached: message.txt, text/plain, 1 KB]');
   expect(h.inputs[0]?.quoteEnvelope).toContain('[UNTRUSTED ATTACHMENT name="message.txt"]');
   expect(h.inputs[0]?.quoteEnvelope).toContain('pasted details');
 });
 
-it('re-reads the message at job start so an expired CDN url never persists (ADR 0149)', async () => {
-  await h.runMentionWithAttachments();
-  expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, expect.any(String));
-  expect(h.fetchAttachmentBytes).not.toHaveBeenCalledWith(expect.stringContaining('expired'), expect.anything());
+it('inlines a current-message text attachment in the message wrapper, never the payload (ADR 0149)', async () => {
+  const h = harness(() => ({ ok: true, content: 'answer' }));
+  h.fetchMessageContent.mockResolvedValue({
+    authorId: '444444444444444444',
+    authorName: 'Ama',
+    content: '',
+    attachments: [
+      { attachmentId: '2', fileName: 'notes.txt', contentType: 'text/plain', sizeBytes: 9, url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt' },
+    ],
+    embeds: [],
+  });
+  h.fetchAttachmentBytes.mockResolvedValue({ ok: true, bytes: Buffer.from('some notes'), mediaType: 'text/plain' });
+  await h.run(mention({ invocationId: 'inv-att-current', messageId: '810000000000000021' }));
+  expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, '810000000000000021');
+  expect(h.fetchAttachmentBytes).toHaveBeenCalledWith('https://cdn.discordapp.com/attachments/1/2/notes.txt', expect.any(Number));
+  expect(h.inputs[0]?.channelContext).toContain('[UNTRUSTED MESSAGE ATTACHMENTS]');
+  expect(h.inputs[0]?.channelContext).toContain('[attached: notes.txt, text/plain, 1 KB]');
+  expect(h.inputs[0]?.channelContext).toContain('some notes');
 });
 
 it('caps text files at three per message and 24,000 chars each (ADR 0149)', async () => {
+  const h = harness(() => ({ ok: true, content: 'answer' }));
   h.fetchMessageContent.mockResolvedValue({
-    authorId: '111', authorName: 'Sam L', content: '', attachments: [1, 2, 3, 4].map((n) => ({ attachmentId: `${n}`, fileName: `f${n}.txt`, contentType: 'text/plain', sizeBytes: 10, url: `https://cdn.discordapp.com/attachments/1/${n}/f${n}.txt` })), embeds: [],
+    authorId: '111111111111111111',
+    authorName: 'Sam L',
+    content: '',
+    attachments: [1, 2, 3, 4].map((n) => ({ attachmentId: `${n}`, fileName: `f${n}.txt`, contentType: 'text/plain', sizeBytes: 10, url: `https://cdn.discordapp.com/attachments/1/${n}/f${n}.txt` })),
+    embeds: [],
   });
   h.fetchAttachmentBytes.mockResolvedValue({ ok: true, bytes: Buffer.from('x'.repeat(30_000)), mediaType: 'text/plain' });
-  await h.runMentionWithAttachments();
-  expect(h.inputs[0]?.quoteEnvelope).toContain('cut after 24,000 characters');
-  expect(h.inputs[0]?.quoteEnvelope?.match(/\[UNTRUSTED ATTACHMENT/g)).toHaveLength(3);
+  await h.run(mention({ invocationId: 'inv-att-caps', messageId: '810000000000000022' }));
+  expect(h.inputs[0]?.channelContext).toContain('cut after 24,000 characters');
+  expect(h.inputs[0]?.channelContext?.match(/\[UNTRUSTED ATTACHMENT/g)).toHaveLength(3);
 });
 ```
 
-The harness needs two additions (write them as part of Step 3, test-first): a `fetchAttachmentBytes` mock dep on the job (`(url: string, maxBytes: number) => …`, defaulting to a failing stub so tests without it fetch nothing) and a `runMentionWithAttachments` helper that enqueues a mention whose `messageId`/`referencedMessageId` resolve through the mocked `fetchMessageContent`. If the harness names differ (`CHANNEL_ID`, input capture `h.inputs`), use the file's names.
+The harness needs three additions (write them as part of Step 3, test-first):
+  - Widen the `fetchMessageContent` mock's return type to include the S4-T4 fields: change `async (): Promise<{ authorId: string; authorName: string; content: string } | undefined>` to also allow `attachments?: readonly FetchedAttachment[]` and `embeds?: readonly FetchedEmbed[]` (import both types from `@bananasaurs/core`).
+  - Add a `fetchAttachmentBytes` mock dep on the handler: `const fetchAttachmentBytes = vi.fn(async (): Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }> => ({ ok: false, code: 'unavailable' }));` passed into `assistantInvokeHandler({…})` and returned on the `h` object. The refusing default keeps every existing test fetching nothing.
+  - Add an `attachmentCaps` mock dep the same way: `const attachmentCaps = vi.fn((): AttachmentCaps => ({ textMaxBytes: 262_144, textMaxChars: 24_000, textMaxCount: 3, imageMaxBytes: 5_242_880, imageMaxCount: 4, pdfMaxBytes: 10_485_760, pdfMaxCount: 2 }));` passed in and returned. (Import `AttachmentCaps` type from `../assistant/attachments.js`.)
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (`runMentionWithAttachments`/`fetchAttachmentBytes` missing; no text blocks)
-- [ ] **Step 3: Implement** — in `apps/daemon/src/jobs/assistant.ts`, after the quote fetch resolves `quoted` (lines 789–816) and inside the same `payload.channelId !== undefined && deps.conversations !== undefined` branch:
-  - Add an optional job dep `fetchAttachmentBytes?: ((url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }>) | undefined`. Production (`runtime/guild.ts`, out of scope) wires it to a `ReviewedResourceFetcher.fetchBytes` bound with the live attachment settings; absent means attachments stay markers-only and every file gets the note "attachments could not be read right now".
-  - Add an optional `attachmentCaps?: (() => AttachmentCaps) | undefined` dep reading the seven live settings; absent means the D7 defaults from S4-T3.
-  - Re-read the current message: `await deps.fetchMessageContent(channelId, payload.messageId)` when `payload.messageId !== undefined` (fresh signed URLs — never trust gateway-cached ones; a retry re-reads too). Its text attachments and the quoted message's text attachments each go through `fetchAttachment({ fetchBytes: deps.fetchAttachmentBytes ?? refusingStub }, source, caps)`, at most `textMaxCount` files per message (extras get a "skipped: at most 3 text files per message" note), each cut to `textMaxChars` with a "cut after 24,000 characters" note (use the live cap values in the notes, not literals).
-  - Text results append `textEnvelopeFor(name, cutText)` to the quote envelope (quoted message) or to a new `attachmentText` string passed to `service.invoke` via the existing `channelContext`? No — new optional `AssistantInvocation` field is S4-T9's. Here: append current-message text blocks to `channelContext`? That mislabels them. Instead pass them inside `quoteEnvelope` only for the quoted message, and for the current message append a second `[UNTRUSTED ATTACHMENT …]` block to the channel-context string? Mislabelling again. Correct: this task extends the job's `quoted` object with `attachments`/`embeds` (S4-T4's `QuotedMessage` fields) so markers render, and appends fetched text blocks to `quoteEnvelope` for the quoted message; for the current message, prepend the text blocks to the question? That pollutes the stored question. Decision: current-message text blocks travel in a new local `attachmentText` variable joined into the `service.invoke` call as `channelContext: [existing, attachmentText].filter(Boolean).join('\n\n')` with a `[UNTRUSTED MESSAGE ATTACHMENTS]` wrapper (not channel messages). Name the wrapper exactly `[UNTRUSTED MESSAGE ATTACHMENTS]\n…\n[/UNTRUSTED MESSAGE ATTACHMENTS]`.
-  - Refusals (`too-large`, `bad-magic`, `fetch-failed`, count cap) become one line each next to the marker: `[attached: big.zip, application/zip, 900 KB] (skipped: over the size limit)`. Unsupported kinds (audio/video/exe) keep the marker with `(not read: audio and video are not supported)`.
-  - Embed thumbnails (`thumbnailUrl` on `media.discordapp.net`) are collected as `{ fileName: 'embed thumbnail', url }` image sources and returned alongside (stored in a local, passed to S4-T9's plumbing; for this task, log their count and include their markers).
-  - Nothing attachment-derived enters the job payload, the conversation turns, or the trace beyond what `quoteEnvelope`/`channelContext` already carry (strings the trace already handles).
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (`fetchAttachmentBytes`/`attachmentCaps` missing on the harness; no text blocks)
+- [ ] **Step 3: Implement** — in `apps/daemon/src/jobs/assistant.ts`:
+  - Add the imports: `import { fetchAttachment, textEnvelopeFor, classifyAttachment, type AttachmentCaps } from '../assistant/attachments.js';` and `import { attachmentMarker } from '../assistant/conversation-context.js';` and `import type { FetchedAttachment, FetchedEmbed } from '@bananasaurs/core';` (beside the existing imports from those modules).
+  - Extend the handler deps interface beside `fetchMessageContent` (near line 372) with:
+
+```ts
+fetchAttachmentBytes?: ((url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }>) | undefined;
+attachmentCaps?: (() => AttachmentCaps) | undefined;
+```
+
+  - Widen the local `quoted` type (near line 890, `let quoted: { authorId: string; authorName: string; content: string } | undefined;`) to carry the S4-T4 fields:
+
+```ts
+let quoted: { authorId: string; authorName: string; content: string; attachments?: readonly FetchedAttachment[]; embeds?: readonly FetchedEmbed[] } | undefined;
+```
+
+and in the quote-fetch branch keep the new fields: `quoted = { authorId: fetched.authorId, authorName: fetched.authorName, content: fetched.content, attachments: fetched.attachments, embeds: fetched.embeds };` so markers render through `buildConversationContext` (S4-T4).
+
+  - After `quoteEnvelope = built.quoteEnvelope;` (near line 1023) and still inside the `payload.channelId !== undefined && deps.conversations !== undefined` branch, insert the attachment block:
+
+```ts
+const attachmentCaps: AttachmentCaps = deps.attachmentCaps?.() ?? {
+  textMaxBytes: 262_144,
+  textMaxChars: 24_000,
+  textMaxCount: 3,
+  imageMaxBytes: 5_242_880,
+  imageMaxCount: 4,
+  pdfMaxBytes: 10_485_760,
+  pdfMaxCount: 2,
+};
+const attachmentFetchBytes: (url: string, maxBytes: number) => Promise<{ ok: true; bytes: Uint8Array; mediaType: string } | { ok: false; code: string }> =
+  deps.fetchAttachmentBytes ?? (async () => ({ ok: false as const, code: 'unavailable' }));
+// One message's text attachments end to end: markers plus envelopes for
+// text files, marker-plus-note for anything else (bytes for images and
+// PDFs land in S4-T9; refusals read as plain notes either way).
+const readTextAttachments = async (
+  sources: readonly FetchedAttachment[],
+): Promise<{ markers: string[]; texts: string[] }> => {
+  const markers: string[] = [];
+  const texts: string[] = [];
+  const textSources = sources.filter(
+    (source) => classifyAttachment(source) === 'text',
+  );
+  for (const source of sources.filter((source) => classifyAttachment(source) !== 'text')) {
+    markers.push(`${attachmentMarker(source)} (not read: this file is not a text file)`);
+  }
+  const readable = textSources.slice(0, attachmentCaps.textMaxCount);
+  for (const source of textSources.slice(attachmentCaps.textMaxCount)) {
+    markers.push(
+      `${attachmentMarker(source)} (skipped: at most ${attachmentCaps.textMaxCount} text files per message)`,
+    );
+  }
+  for (const source of readable) {
+    const fetched = await fetchAttachment({ fetchBytes: attachmentFetchBytes }, source, attachmentCaps);
+    if (!fetched.ok) {
+      markers.push(`${attachmentMarker(source)} (skipped: ${fetched.note})`);
+      continue;
+    }
+    markers.push(attachmentMarker(source));
+    const cut =
+      fetched.text.length > attachmentCaps.textMaxChars
+        ? `${fetched.text.slice(0, attachmentCaps.textMaxChars)}\n(cut after ${attachmentCaps.textMaxChars.toLocaleString('en-CA')} characters)`
+        : fetched.text;
+    texts.push(textEnvelopeFor(source.fileName, cut));
+  }
+  return { markers, texts };
+};
+```
+
+  - Quoted message: after the block above, when `quoted !== undefined`, run `const quotedFiles = await readTextAttachments(quoted.attachments ?? []);` and append: `if (quotedFiles.texts.length > 0 || quotedFiles.markers.length > 0) quoteEnvelope = [quoteEnvelope, ...quotedFiles.markers, ...quotedFiles.texts].filter((part) => part !== undefined && part !== '').join('\n');` (quoteEnvelope is `string | undefined`; the filter keeps the join safe).
+  - Current message: when `payload.messageId !== undefined` and `deps.fetchMessageContent !== undefined`, re-read it fresh (`await deps.fetchMessageContent(channelId, payload.messageId)` inside try/catch; a failure means markers-only silence, never a job failure — gateway-cached URLs are never trusted, and a retry re-reads too). Run the same `readTextAttachments` over its attachments and, when non-empty, join into the local `channelContext`: `channelContext = [channelContext, \`[UNTRUSTED MESSAGE ATTACHMENTS]\n${[...currentFiles.markers, ...currentFiles.texts].join('\n')}\n[/UNTRUSTED MESSAGE ATTACHMENTS]\`].filter((part) => part !== undefined && part !== '').join('\n\n');`
+  - Nothing attachment-derived enters the job payload, the conversation turns, or the trace beyond the `quoteEnvelope`/`channelContext` strings the trace already carries.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts` then `npx eslint apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts && git commit -m "Slice 4 T6: text attachments re-read at job start and inlined as evidence"`
 
-**Done when:** the "no pasted text" case now inlines the file; expired URLs are never reused (re-read proved by test); caps enforced per message with notes; no bytes in payload/turns/trace beyond existing string envelopes.
+**Done when:** the "no pasted text" case now inlines the file; the current message is re-read through REST (proved by the fresh-URL test — gateway events carry no URLs by construction); text caps enforced per message with notes; no bytes in payload/turns/trace beyond existing string envelopes.
 
 ---
 
 ### S4-T7: Gemini sends media as inlineData   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/gemini.ts`, `packages/core/src/providers/gemini.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (S4-T2 `GenerationMedia`)
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (S4-T2 `GenerationMedia`), `packages/core/src/providers/outbound-safety.ts` lines 146–153 (`requestSections` scans `message.text` only, so base64 `media` never reaches the scan — the ADR 0149 accepted gap)
 **Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage.media` (S4-T2) · Produces: wire format below (no new exports)
 
-- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/gemini.test.ts`, using its `ok()` helper and `fetch` mock:
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/gemini.test.ts`, using its `sse()` helper (the adapter streams: `:streamGenerateContent?alt=sse`, there is no non-streaming path). Add after the first endpoint test:
 
 ```ts
 it('sends user-turn media as inlineData parts after the text (ADR 0149)', async () => {
   const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-    ok({
+    sse({
       candidates: [{ content: { parts: [{ text: 'seen' }] }, finishReason: 'STOP' }],
       usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 2, totalTokenCount: 5 },
       modelVersion: 'gemini-test-001',
@@ -818,7 +1086,8 @@ it('sends user-turn media as inlineData parts after the text (ADR 0149)', async 
       },
     ],
   });
-  const [, init] = fetch.mock.calls[0] ?? [];
+  const [url, init] = fetch.mock.calls[0] ?? [];
+  expect(String(url)).toContain(':streamGenerateContent?alt=sse');
   expect(JSON.parse(init?.body as string)).toMatchObject({
     contents: [
       {
@@ -835,7 +1104,7 @@ it('sends user-turn media as inlineData parts after the text (ADR 0149)', async 
 
 it('sends no Discord URL with media (ADR 0149)', async () => {
   const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-    ok({ candidates: [{ content: { parts: [{ text: 'ok' }] } }], modelVersion: 'm' }),
+    sse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }], modelVersion: 'm' }),
   );
   const provider = new GeminiProvider({ apiKey: 'secret', fetch });
   await provider.generateText({
@@ -848,7 +1117,7 @@ it('sends no Discord URL with media (ADR 0149)', async () => {
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL (media dropped on the wire)
-- [ ] **Step 3: Implement** — in `packages/core/src/providers/gemini.ts` `toContents` (lines 59–88): the user branch (lines 82–85) becomes:
+- [ ] **Step 3: Implement** — in `packages/core/src/providers/gemini.ts` `toContents` (lines 65–94): the user branch (lines 88–91) becomes:
 
 ```ts
 contents.push({
@@ -862,26 +1131,26 @@ contents.push({
 });
 ```
 
-Assistant turns (plain or `providerParts`) are unchanged — media on an assistant turn is ignored (never produced). No Discord URL ever leaves the process: only base64 `data` is sent. (After Slice 3: this composes with `:streamGenerateContent?alt=sse` and `thinkingLevel`; the parts shape is unchanged by streaming.)
+Assistant turns (plain or `providerParts`) are unchanged — media on an assistant turn is ignored (never produced). No Discord URL ever leaves the process: only base64 `data` is sent. The parts shape is unchanged by streaming, so this composes with the SSE response path and `thinkingLevel` untouched.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts && git commit -m "Slice 4 T7: Gemini sends attached images and PDFs as inlineData"`
 
-**Done when:** image and PDF media arrive as `inlineData` parts after the text; no URL on the wire; assistant turns unchanged.
+**Done when:** image and PDF media arrive as `inlineData` parts after the text on the streaming request; no URL on the wire; assistant turns unchanged.
 
 ---
 
 ### S4-T8: OpenRouter sends images and PDFs, plugin pinned   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/openai-compatible.ts`, `packages/core/src/providers/openai-compatible.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (S4-T2 `GenerationMedia`)
-**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage.media` (S4-T2) · Produces: wire format below (no new exports). Every request carrying a PDF asserts exactly `plugins: [{ id: "file-parser", pdf: { engine: "native" } }]` so OpenRouter never substitutes `mistral-ocr` or `cloudflare-ai` (D7b)
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (S4-T2 `GenerationMedia`), `apps/daemon/src/assistant/model-capabilities.ts` (`capabilitiesForEntry`: `nvidia-nim` is always `TEXT_AND_TOOLS_ONLY`, so routing never hands a PDF to NIM — the plugin is still OpenRouter-only, see Step 3)
+**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage.media` (S4-T2) · Produces: wire format below (no new exports). Every OpenRouter request carrying a PDF asserts exactly `plugins: [{ id: "file-parser", pdf: { engine: "native" } }]` so OpenRouter never substitutes `mistral-ocr` or `cloudflare-ai` (D7b)
 
-- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/openai-compatible.test.ts`, using its `response`/`fetch` pattern:
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/openai-compatible.test.ts`, using its `sse()`/`response()` streaming helpers (every request sends `stream: true`; there is no non-streaming path). Add inside the `describe('OpenAI-compatible providers', …)` block:
 
 ```ts
 it('sends images as data-url parts and PDFs as file parts with the native plugin (ADR 0149)', async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
   const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
   await provider.generateText({
     model: 'google/gemma-4-31b-it:free',
@@ -898,6 +1167,7 @@ it('sends images as data-url parts and PDFs as file parts with the native plugin
   });
   const [, init] = fetch.mock.calls[0] ?? [];
   const body = JSON.parse(init?.body as string);
+  expect(body.stream).toBe(true);
   expect(body.messages.at(-1)).toEqual({
     role: 'user',
     content: [
@@ -910,23 +1180,31 @@ it('sends images as data-url parts and PDFs as file parts with the native plugin
   expect(init?.body as string).not.toContain('discordapp');
 });
 
-it('sends no plugins and plain string content when there is no PDF (ADR 0149)', async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+it('sends no plugins without a PDF and keeps text-only turns as strings (ADR 0149)', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
   const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
   await provider.generateText({
     model: 'free-model',
     messages: [{ role: 'user', text: 'hello', media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'a.png' }] }],
   });
-  const [, init] = fetch.mock.calls[0] ?? [];
-  const body = JSON.parse(init?.body as string);
-  expect(body.plugins).toBeUndefined();
-  expect(body.messages.at(-1)?.content).toContainEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } });
+  const [, imageInit] = fetch.mock.calls[0] ?? [];
+  const imageBody = JSON.parse(imageInit?.body as string);
+  expect(imageBody.plugins).toBeUndefined();
+  expect(imageBody.messages.at(-1)?.content).toContainEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } });
+
+  const textFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+  const textProvider = createOpenRouterProvider({ apiKey: 'secret', fetch: textFetch });
+  await textProvider.generateText({ model: 'free-model', messages: [{ role: 'user', text: 'hello' }] });
+  const [, textInit] = textFetch.mock.calls[0] ?? [];
+  const textBody = JSON.parse(textInit?.body as string);
+  expect(textBody.plugins).toBeUndefined();
+  expect(textBody.messages.at(-1)).toEqual({ role: 'user', content: 'hello' });
 });
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: FAIL (media dropped; no plugins)
 - [ ] **Step 3: Implement** — in `packages/core/src/providers/openai-compatible.ts`:
-  - `toWireMessage` (lines 239–268): the final user branch (line 267) becomes media-aware:
+  - `toWireMessage` (lines 514–543): the final user branch (line 542, `return { role: message.role, content: message.text };`) becomes media-aware:
 
 ```ts
 const media = message.role === 'user' ? (message.media ?? []) : [];
@@ -944,47 +1222,69 @@ return {
 };
 ```
 
-  - In `generateText`'s body (lines 304–329): compute `const hasPdf = request.messages.some((m) => m.role === 'user' && (m.media ?? []).some((x) => x.kind === 'pdf'));` and add `...(hasPdf ? { plugins: [{ id: 'file-parser', pdf: { engine: 'native' } }] } : {})` to the JSON body. NIM shares the class: the plugin key is added for NIM too when a PDF rides along; NIM models never receive PDFs from routing (S4-T10), and the test pins OpenRouter only.
+  - In `generateText`'s streaming body (lines 635–667): compute `const hasPdf = request.messages.some((m) => m.role === 'user' && (m.media ?? []).some((x) => x.kind === 'pdf'));` just before the `JSON.stringify` and add `...(this.id === 'openrouter' && hasPdf ? { plugins: [{ id: 'file-parser', pdf: { engine: 'native' } }] } : {})` to the body object (beside the `usage`/`reasoning` spreads). The plugin is OpenRouter-only: NIM shares the class but routing never sends it a PDF (`capabilitiesForEntry` pins NIM to text plus tools, and S4-T11 strips per entry), and the test pins OpenRouter only.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts && git commit -m "Slice 4 T8: OpenRouter sends images and PDFs with the native file-parser plugin"`
 
-**Done when:** images go as `image_url` data URLs, PDFs as `file` parts with exactly the native plugin; no PDF means no plugins and unchanged string content for text-only turns; no URL on the wire.
+**Done when:** images go as `image_url` data URLs, PDFs as `file` parts with exactly the native plugin on the streaming request; no PDF means no plugins and unchanged string content for text-only turns; no URL on the wire.
 
 ---
 
 ### S4-T9: media plumbing from the job to the loop   ·   Wave 4
 **Owns:** Modify: `apps/daemon/src/assistant/commands.ts`, `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/jobs/assistant.ts`, `apps/daemon/src/jobs/assistant.test.ts`, `apps/daemon/src/assistant/attachments.ts`, `apps/daemon/src/assistant/attachments.test.ts`
-**Reads (do not edit):** `apps/daemon/src/assistant/tool-loop.ts` (line 590 builds provider messages from history; it already forwards `GenerationMessage.media` on user turns to S4-T7/T8 — this task does not touch it), `packages/core/src/providers/contracts.ts` (S4-T2)
-**Interfaces:** Consumes: `fetchAttachment`, `AttachmentCaps`, `ATTACHMENT_HOSTS` (S4-T5); `GenerationMedia` (S4-T2) · Produces: `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }` in `commands.ts` · `AssistantInvocation` gains `readonly media?: readonly GenerationMedia[] | undefined` and `readonly attachmentSummary?: readonly AttachmentSummary[] | undefined` · `fetchAttachment` gains an optional fourth parameter `forceKind?: AttachmentKind` (for embed thumbnails, which have no filename)
+**Reads (do not edit):** `apps/daemon/src/assistant/tool-loop.ts` (its `runEntry` builds provider messages from history; per-entry filtering is S4-T11 — this task does not touch it), `packages/core/src/providers/contracts.ts` (S4-T2)
+**Interfaces:** Consumes: `fetchAttachment`, `AttachmentCaps`, `ATTACHMENT_HOSTS` (S4-T5); `GenerationMedia` (S4-T2) · Produces: `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }` in `commands.ts` · `AssistantInvocation` gains `readonly media?: readonly GenerationMedia[] | undefined` and `readonly attachmentSummary?: readonly AttachmentSummary[] | undefined` · `fetchAttachment` gains an optional fourth parameter `forceKind?: AttachmentKind` (for embed thumbnails, which have no usable filename)
 
-- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/service.test.ts`, inside the B2b-style capture pattern (Slice 1 Task 6 `capture()`):
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/service.test.ts`, in the `Task 14: conversation history, quoted envelope and trace detail` describe (it has the `capturing`/`ask`/`usable` helpers; read them first). Add a test that builds its own full-capture provider (the describe's `capturing()` strips messages to role/text, so media needs the full request):
 
 ```ts
 it('forwards invocation media on a trailing user message, bytes never in the trace (ADR 0149)', async () => {
-  const { requests, provider } = capture();
-  await h.serviceWith(provider).invoke(
+  const requests: GenerateTextRequest[] = [];
+  const provider: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req) => {
+      requests.push(req);
+      return { text: 'done', model: 'model-a' };
+    },
+  };
+  const service = createAssistantService(
+    t.scopes.forGuild(GUILD),
+    t.scopes.instance(),
+    config,
+    () => NOW,
+    {},
+    undefined,
+    undefined,
+    undefined,
+    () => [usable(provider)],
+  );
+  const result = await service.invoke(
     ask({
-      userId: OWNER, callerRoleIds: [], invocationId: 'int-media-1',
-      input: { question: 'what is this chart?' },
+      invocationId: 'int-media-1',
       media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' }],
       attachmentSummary: [{ name: 'chart.png', kind: 'image', sizeBytes: 3 }],
     }),
   );
-  const lastHistory = requests[0]?.messages.at(-1);
-  expect(lastHistory?.role).toBe('user');
-  expect(lastHistory?.text).toBe('[attached files: chart.png]');
-  expect(lastHistory?.media).toHaveLength(1);
+  expect(result.ok).toBe(true);
+  const messages = requests[0]?.messages ?? [];
+  const note = messages.find((m) => m.role === 'user' && (m.media ?? []).length > 0);
+  expect(note?.role).toBe('user');
+  expect(note?.text).toBe('[attached files: chart.png]');
+  expect(note?.media).toHaveLength(1);
+  expect(JSON.stringify(result.detail ?? {})).not.toContain('aGk=');
 });
 ```
 
-If `media`/`attachmentSummary` are not on the invocation input type the harness accepts, read `rg -n "quoteEnvelope|channelContext" apps/daemon/src/assistant/commands.ts` and pass them where the type expects them. In `apps/daemon/src/jobs/assistant.test.ts`, extend the S4-T6 harness:
+(`GenerateTextRequest`, `TextProvider` and `createAssistantService` are already imported in that file; `t`, `config`, `NOW`, `GUILD`, `usable`, `ask` are the describe's own names — if any differs, use the file's name.) In `apps/daemon/src/jobs/assistant.test.ts`, extend the S4-T6 harness (its `fetchMessageContent`/`fetchAttachmentBytes` mocks):
 
 ```ts
 it('fetches images and PDFs up to their caps and passes bytes with a summary (ADR 0149)', async () => {
+  const h = harness(() => ({ ok: true, content: 'answer' }));
   h.fetchMessageContent.mockResolvedValue({
-    authorId: '111', authorName: 'Sam L', content: 'look', attachments: [
+    authorId: '111111111111111111', authorName: 'Sam L', content: 'look', attachments: [
       { attachmentId: '1', fileName: 'chart.png', contentType: 'image/png', sizeBytes: 100, url: 'https://cdn.discordapp.com/attachments/1/2/chart.png' },
       { attachmentId: '2', fileName: 'report.pdf', contentType: 'application/pdf', sizeBytes: 200, url: 'https://cdn.discordapp.com/attachments/1/2/report.pdf' },
     ], embeds: [],
@@ -994,32 +1294,31 @@ it('fetches images and PDFs up to their caps and passes bytes with a summary (AD
     bytes: url.endsWith('.png') ? new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) : new Uint8Array([...Buffer.from('%PDF-1.7', 'utf8')]),
     mediaType: url.endsWith('.png') ? 'image/png' : 'application/pdf',
   }));
-  await h.runMentionWithAttachments();
-  expect(h.invokeMedia()?.map((m) => m.name)).toEqual(['chart.png', 'report.pdf']);
-  expect(h.invokeSummary()).toEqual([
+  await h.run(mention({ invocationId: 'inv-att-media', messageId: '810000000000000023' }));
+  expect(h.inputs[0]?.media?.map((m) => m.name)).toEqual(['chart.png', 'report.pdf']);
+  expect(h.inputs[0]?.attachmentSummary).toEqual([
     { name: 'chart.png', kind: 'image', sizeBytes: 8 },
     { name: 'report.pdf', kind: 'pdf', sizeBytes: 8 },
   ]);
 });
 ```
 
-(`h.invokeMedia`/`h.invokeSummary` capture the `service.invoke` input; add them to the harness in Step 3.) In `attachments.test.ts`:
+In `apps/daemon/src/assistant/attachments.test.ts`:
 
 ```ts
 it('forceKind reads an embed thumbnail with no usable filename (ADR 0149)', async () => {
   const fetchBytes = vi.fn(async () => ({ ok: true as const, bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), mediaType: 'image/png' }));
-  const result = await fetchAttachment({ fetchBytes }, { fileName: 'embed thumbnail', sizeBytes: 8, url: 'https://media.discordapp.net/thumb.png' }, caps(), 'image');
+  const caps = { textMaxBytes: 262_144, textMaxChars: 24_000, textMaxCount: 3, imageMaxBytes: 5_242_880, imageMaxCount: 4, pdfMaxBytes: 10_485_760, pdfMaxCount: 2 };
+  const result = await fetchAttachment({ fetchBytes }, { fileName: 'embed thumbnail', sizeBytes: 8, url: 'https://media.discordapp.net/thumb.png' }, caps, 'image');
   expect(result).toMatchObject({ ok: true, kind: 'image' });
 });
 ```
 
-(`caps()` returns the D7 defaults object from the S4-T5 tests; factor it into a helper in that file.)
-
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.test.ts apps/daemon/src/assistant/attachments.test.ts --maxWorkers=1` · Expected: FAIL (`media` unknown on the input; no trailing media message; no `invokeMedia`; no `forceKind`)
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.test.ts apps/daemon/src/assistant/attachments.test.ts --maxWorkers=1` · Expected: FAIL (`media`/`attachmentSummary` unknown on the invocation; no trailing media message; no `forceKind`)
 - [ ] **Step 3: Implement**
   - `attachments.ts`: `fetchAttachment(deps, source, caps, forceKind?: AttachmentKind)` — when `forceKind` is set, skip `classifyAttachment` and use it for the byte cap, the magic expectation and the result kind. Nothing else changes.
-  - `commands.ts`: import `GenerationMedia` type from `@bananasaurs/core` (next to `GenerationMessage`); add `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }`; add the two optional fields to `AssistantInvocation` with the comment "ADR 0149: fetched attachment bytes for models that read them natively, and the metadata-only summary the trace keeps".
-  - `service.ts`: replace `const historyForLoop: readonly GenerationMessage[] = input.history ?? [];` (near line 1240) with:
+  - `commands.ts`: import the `GenerationMedia` type from `@bananasaurs/core` (next to the existing `GenerationMessage` import, line 12); add `export interface AttachmentSummary { readonly name: string; readonly kind: 'text' | 'image' | 'pdf'; readonly sizeBytes: number }`; add the two optional fields to `AssistantInvocation` after `summaryVersion` (lines 102–106) with the comment "ADR 0149: fetched attachment bytes for models that read them natively, and the metadata-only summary the trace keeps".
+  - `service.ts`: replace `const historyForLoop: readonly GenerationMessage[] = input.history ?? [];` (line 1339) with:
 
 ```ts
 const mediaForLoop: readonly GenerationMedia[] = input.media ?? [];
@@ -1036,42 +1335,139 @@ const historyForLoop: readonly GenerationMessage[] =
       ];
 ```
 
-The note text (names only, never bytes) flows into the trace history section like any user text; the bytes ride `media`, which no trace writer reads. The note counts as one user turn in `historyTurns`; that is intended and the test pins it.
-  - `jobs/assistant.ts`: extend the S4-T6 per-message processing to image and PDF kinds: per message, the first `imageMaxCount` image-kind attachments and first `pdfMaxCount` PDF-kind attachments (extras get "(skipped: at most 4 images per message)" / "(skipped: at most 2 PDFs per message)" notes with the live values) go through `fetchAttachment`; embed thumbnails on `media.discordapp.net` go through with `forceKind: 'image'` and fileName `'embed thumbnail'`. Collect `media: GenerationMedia[]` (image/pdf successes) and `attachmentSummary: AttachmentSummary[]` (every fetched file of every kind, using the fetched byte length as `sizeBytes`). Pass both into the existing `deps.service.invoke({…})` call (near line 1067). Refusals become marker-side notes exactly like S4-T6's text refusals.
+(`GenerationMedia` type is already imported at line 30.) The note text (names only, never bytes) flows into the trace history section like any user text; the bytes ride `media`, which no trace writer reads. The note counts as one user turn in `historyTurns`; that is intended and the test pins the note, not the count.
+  - `jobs/assistant.ts`: extend the S4-T6 `readTextAttachments` processing to image and PDF kinds: per message, the first `imageMaxCount` image-kind attachments and first `pdfMaxCount` PDF-kind attachments (extras get "(skipped: at most 4 images per message)" / "(skipped: at most 2 PDFs per message)" notes with the live values) go through `fetchAttachment`; embed thumbnails on `media.discordapp.net` go through with `forceKind: 'image'` and fileName `'embed thumbnail'`. Collect `media: GenerationMedia[]` (image/pdf successes, `{ kind, mediaType, dataBase64, name }`) and `attachmentSummary: AttachmentSummary[]` (every fetched file of every kind, using the fetched byte length as `sizeBytes`). Pass both into the existing `deps.service.invoke({…})` call (near line 1169): `...(media.length === 0 ? {} : { media }), ...(attachmentSummary.length === 0 ? {} : { attachmentSummary }),`. Refusals become marker-side notes exactly like S4-T6's text refusals. Import the `GenerationMedia` type from `@bananasaurs/core` and `AttachmentSummary` from `../assistant/commands.js` (check the existing commands import in that file and extend it).
 - [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write <all seven owned paths>` then `npx eslint <all seven owned paths>` · exit 0
-- [ ] **Step 7: Commit** — `git add <all seven owned paths> && git commit -m "Slice 4 T9: attachment bytes and summary from the job to the loop"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts apps/daemon/src/assistant/attachments.ts apps/daemon/src/assistant/attachments.test.ts` then `npx eslint <the same seven paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <the same seven paths> && git commit -m "Slice 4 T9: attachment bytes and summary from the job to the loop"`
 
 **Done when:** images/PDFs/thumbnails fetch under their caps with magic checks; bytes reach the loop only on the trailing user message; the summary carries names/kinds/sizes and no bytes; refusals read as plain notes.
-
----
 
 ### S4-T10: tuning page shows the attachment caps   ·   Wave 4
 **Owns:** Modify: `packages/dashboard/src/pages/assistant-tuning.test.tsx`
 **Reads (do not edit):** `packages/dashboard/src/pages/assistant-tuning.tsx` (generic registry rendering — no change), `packages/dashboard/src/test-support.tsx` (`renderWithSession`, `stubFetch`, `bodyOf`)
 **Interfaces:** Consumes: the seven `assistant.attachments.*` keys (S4-T3) · Produces: none (test only)
 
-- [ ] **Step 1: Write the failing test** — append to the `describe('AssistantTuningPage', …)` block (read from line 115 first for the existing render/save pattern). Add the seven attachment settings to the `SETTINGS` fixture (same shape: key, group `'Assistant attachments'`, label, help, display `'count'`, bounds, value, defaultValue, isDefault), then:
+- [ ] **Step 1: Write the failing test** — in `packages/dashboard/src/pages/assistant-tuning.test.tsx`, extend the `SETTINGS` fixture (same shape as the `assistant.channelContextMessages` entry: key, group `'Assistant attachments'`, label, help, display `'count'`, bounds, value, defaultValue, isDefault) with all seven attachment settings:
+
+```tsx
+{
+  key: 'assistant.attachments.textMaxBytes',
+  group: 'Assistant attachments',
+  label: 'Text attachment size limit',
+  help: 'The largest text file read from a message, in bytes. Larger files are skipped with a note.',
+  display: 'count',
+  bounds: { min: 1024, max: 1048576 },
+  value: 262144,
+  defaultValue: 262144,
+  isDefault: true,
+},
+{
+  key: 'assistant.attachments.textMaxChars',
+  group: 'Assistant attachments',
+  label: 'Text attachment characters sent',
+  help: 'How many characters of each text file are sent to the AI. Longer files are cut with a note.',
+  display: 'count',
+  bounds: { min: 1000, max: 100000 },
+  value: 24000,
+  defaultValue: 24000,
+  isDefault: true,
+},
+{
+  key: 'assistant.attachments.textMaxCount',
+  group: 'Assistant attachments',
+  label: 'Text files read per message',
+  help: 'How many text files are read from one message. 0 turns text attachments off.',
+  display: 'count',
+  bounds: { min: 0, max: 10 },
+  value: 3,
+  defaultValue: 3,
+  isDefault: true,
+},
+{
+  key: 'assistant.attachments.imageMaxBytes',
+  group: 'Assistant attachments',
+  label: 'Image size limit',
+  help: 'The largest image sent to the AI, in bytes. Larger images are skipped with a note.',
+  display: 'count',
+  bounds: { min: 1024, max: 20971520 },
+  value: 5242880,
+  defaultValue: 5242880,
+  isDefault: true,
+},
+{
+  key: 'assistant.attachments.imageMaxCount',
+  group: 'Assistant attachments',
+  label: 'Images read per message',
+  help: 'How many images are sent to the AI from one message. 0 turns image attachments off.',
+  display: 'count',
+  bounds: { min: 0, max: 10 },
+  value: 4,
+  defaultValue: 4,
+  isDefault: true,
+},
+{
+  key: 'assistant.attachments.pdfMaxBytes',
+  group: 'Assistant attachments',
+  label: 'PDF size limit',
+  help: 'The largest PDF sent to the AI, in bytes. Larger PDFs are skipped with a note.',
+  display: 'count',
+  bounds: { min: 1024, max: 31457280 },
+  value: 10485760,
+  defaultValue: 10485760,
+  isDefault: true,
+},
+{
+  key: 'assistant.attachments.pdfMaxCount',
+  group: 'Assistant attachments',
+  label: 'PDFs read per message',
+  help: 'How many PDFs are sent to the AI from one message. 0 turns PDF attachments off.',
+  display: 'count',
+  bounds: { min: 0, max: 10 },
+  value: 2,
+  defaultValue: 2,
+  isDefault: true,
+},
+```
+
+then add the test (following the 'saves a ping cap as a plain count' test's exact pattern — `findByLabelText`, `rowOf`, `button { name: 'Save' }`, `bodyOf`):
 
 ```tsx
 it('renders the attachment caps under Assistant attachments and saves one', async () => {
-  stubFetch(SETTINGS);
+  const updated = {
+    ...SETTINGS.find((s) => s.key === 'assistant.attachments.imageMaxCount')!,
+    value: 2,
+  };
+  const mock = stubFetch([
+    { url: TUNING_URL, body: { settings: SETTINGS } },
+    {
+      method: 'PUT',
+      url: tuningKeyUrl('assistant.attachments.imageMaxCount'),
+      body: { setting: updated },
+    },
+  ]);
   renderPage();
-  const row = await screen.findByTestId('tuning-row-assistant.attachments.imageMaxCount');
-  expect(within(row).getByText('Images read per message')).toBeTruthy();
-  expect(within(row).getByText(/0 turns image attachments off/)).toBeTruthy();
-  const save = within(row).getByRole('button', { name: /save/i });
-  fireEvent.change(within(row).getByRole('spinbutton'), { target: { value: '2' } });
-  await act(async () => { fireEvent.click(save); });
-  expect(bodyOf()).toMatchObject({ key: 'assistant.attachments.imageMaxCount', value: 2 });
+  expect(await screen.findByRole('heading', { name: 'Assistant attachments' })).toBeTruthy();
+  const input = await screen.findByLabelText('Images read per message');
+  expect(input).toHaveProperty('value', '4');
+  fireEvent.change(input, { target: { value: '2' } });
+  await act(async () => {
+    fireEvent.click(
+      within(rowOf('assistant.attachments.imageMaxCount')).getByRole('button', { name: 'Save' }),
+    );
+  });
+  const put = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
+  expect(put?.[1]).toMatchObject({ method: 'PUT' });
+  expect(bodyOf(put!)).toEqual({ value: 2 });
+  expect(await screen.findByText('Saved')).toBeTruthy();
 });
 ```
 
-(If the row's input role or save-button name differs, use the names the existing save test in the same file uses.)
+(`TUNING_URL`, `tuningKeyUrl`, `fireEvent`, `act`, `within`, `screen`, `cleanup` are the existing names in that file; if any differs, use the file's name.) Also add `'Assistant attachments'` to the group list in the 'renders the five group headings and every label' test so the new heading is pinned alongside the labels.
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL (fixture lacks the keys; row missing)
-- [ ] **Step 3: Implement** — test only: extend the `SETTINGS` fixture and add the test above. No page change: the tuning page renders every registry entry generically (§4.7). If the page does not render the new group, that is a page bug — fix it in this task only if the test proves it, keeping the change to mounting (contracts §4).
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL (fixture lacks the keys; heading and row missing)
+- [ ] **Step 3: Implement** — test only: extend the `SETTINGS` fixture, extend the group list, and add the test above. No page change: the tuning page renders every registry entry generically (§4.7). If the page does not render the new group, that is a page bug — fix it in this task only if the test proves it, keeping the change to mounting (contracts §4).
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/dashboard/src/pages/assistant-tuning.test.tsx` then `npx eslint packages/dashboard/src/pages/assistant-tuning.test.tsx` · exit 0
@@ -1083,8 +1479,8 @@ it('renders the attachment caps under Assistant attachments and saves one', asyn
 
 ### S4-T11: capability routing and per-entry markers   ·   Wave 5
 **Owns:** Create: `apps/daemon/src/assistant/media-routing.ts`, `apps/daemon/src/assistant/media-routing.test.ts`; Modify: `apps/daemon/src/assistant/tool-loop.ts`, `apps/daemon/src/assistant/tool-loop.test.ts`
-**Reads (do not edit):** `apps/daemon/src/assistant/model-chain.ts` (the `ChainEntry` shape S4-T9 extended? No — capabilities come from Slice 6), `packages/core/src/providers/contracts.ts` (S4-T2)
-**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage` (S4-T2) · (after Slice 6: `ChainEntry` carries `readonly capabilities: ModelCapabilities` with `image`/`pdf` booleans from `packages/core/src/providers/model-capabilities.ts`; `capabilitiesForEntry` in `apps/daemon/src/assistant/model-capabilities.ts`. Verify both paths in the merged code before writing — if the controller renamed them, use the merged names and note the change in the commit message.) · Produces: `export const entryCanRead = (caps: { readonly image: boolean; readonly pdf: boolean } | undefined, media: readonly GenerationMedia[]): boolean` (absent caps means text-only: false when media is present) · `export const orderEntriesForMedia = <T extends { readonly capabilities?: { readonly image: boolean; readonly pdf: boolean } | undefined }>(entries: readonly T[], media: readonly GenerationMedia[]): readonly T[]` (stable: entries that can read everything attached first; no media means unchanged order) · `export const messagesForEntry = (messages: readonly GenerationMessage[], caps: { readonly image: boolean; readonly pdf: boolean } | undefined): GenerationMessage[]` (strips disallowed media from every user message; appends one plain line per stripped file to the last user message: `${name} attached; you can't see images right now.` / `${name} attached; you can't read PDFs right now.`)
+**Reads (do not edit):** `apps/daemon/src/assistant/model-chain.ts` lines 43–63 (`ChainEntry.capabilities?: ModelCapabilities`, optional), `apps/daemon/src/assistant/provider-config.ts` line 555 (`capabilitiesForEntry` fills it per request), `packages/core/src/providers/contracts.ts` (S4-T2), `packages/core/src/providers/model-capabilities.ts` (`ModelCapabilities`: `tools`, `image`, `pdf`, `reasoning`, `thinking`)
+**Interfaces:** Consumes: `GenerationMedia`, `GenerationMessage` (S4-T2); `ChainEntry.capabilities`, `ModelCapabilities` (Slice 6, merged) · Produces: `export const entryCanRead = (caps: ModelCapabilities | undefined, media: readonly GenerationMedia[]): boolean` (absent caps means text-only: false when media is present) · `export const orderEntriesForMedia = <T extends { readonly capabilities?: ModelCapabilities | undefined }>(entries: readonly T[], media: readonly GenerationMedia[]): readonly T[]` (stable: entries that can read everything attached first; no media means unchanged order) · `export const messagesForEntry = (messages: readonly GenerationMessage[], caps: ModelCapabilities | undefined): GenerationMessage[]` (strips disallowed media from every user message; appends one plain line per stripped file to the last user message: `${name} attached; you can't see images right now.` / `${name} attached; you can't read PDFs right now.`)
 
 - [ ] **Step 1: Write the failing test** — create `apps/daemon/src/assistant/media-routing.test.ts`:
 
@@ -1095,9 +1491,9 @@ import type { GenerationMedia } from '@bananasaurs/core';
 
 const image: GenerationMedia = { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' };
 const pdf: GenerationMedia = { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' };
-const none = { image: false, pdf: false };
-const seeImage = { image: true, pdf: false };
-const seeAll = { image: true, pdf: true };
+const none = { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' as const };
+const seeImage = { tools: true, image: true, pdf: false, reasoning: false, thinking: 'none' as const };
+const seeAll = { tools: true, image: true, pdf: true, reasoning: false, thinking: 'none' as const };
 
 describe('media routing (ADR 0149)', () => {
   it('prefers the first entry that can read everything, stably', () => {
@@ -1121,30 +1517,126 @@ describe('media routing (ADR 0149)', () => {
       seeImage,
     );
     expect(out[0]?.media).toHaveLength(1);
-    expect(out[0]?.text).toContain('report.pdf attached; you can\'t read PDFs right now.');
+    expect(out[0]?.text).toContain("report.pdf attached; you can't read PDFs right now.");
     expect(out[0]?.text).not.toContain('chart.png attached');
   });
 });
 ```
 
-In `tool-loop.test.ts`, using its `scripted`/`entry`/`baseInput` helpers (Slice 1 Task 7), add a test with two fake providers capturing their requests: chain order [text-only, image-capable], user history carrying one image — the image-capable entry is called first and its request carries the media, while a run where no entry can read sends stripped messages with the plain marker. (Read the current `entry()` helper first; after Slice 6 it carries `capabilities` — set them per entry in the test.)
+In `tool-loop.test.ts` (it has the `scripted`/`entry`/`baseInput`/`runToolLoop`/`textAnswer` helpers; `entry()` takes `Partial<ChainEntry> & { provider }` and leaves `capabilities` absent unless set), add:
+
+```ts
+it('runs the first media-capable entry first and strips media for text-only entries (ADR 0149)', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const providerFor = (): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (request: GenerateTextRequest) => {
+      seen.push(request);
+      return textAnswer('done');
+    },
+  });
+  const textOnly = entry({ provider: providerFor(), model: 'text-a' });
+  const vision = entry({
+    provider: providerFor(),
+    model: 'vision-b',
+    capabilities: { tools: true, image: true, pdf: false, reasoning: false, thinking: 'none' },
+  });
+  const media: GenerationMedia = { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' };
+  await runToolLoop(
+    baseInput([textOnly, vision], {
+      history: [{ role: 'user', text: '[attached files: chart.png]', media: [media] }],
+    }),
+  );
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.model).toBe('vision-b');
+  expect(seen[0]?.messages.flatMap((m) => (m.role === 'user' ? (m.media ?? []) : []))).toHaveLength(1);
+});
+```
+
+(Add `GenerateTextRequest` to the existing type import from `@bananasaurs/core` in that file, and `GenerationMedia` beside it. If `baseInput`'s second parameter name differs, use the file's name — it takes `(chain, over)` where `over` is a partial loop input.)
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/media-routing.test.ts apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: FAIL (module missing; chain order never changes)
 - [ ] **Step 3: Implement**
-  - `media-routing.ts`: the three functions exactly as specified. `messagesForEntry` keeps message identity for untouched messages (map, only rebuilding user messages that lose media); the marker lines append to the last message with `role === 'user'` (which is always the current question or the S4-T9 media note). Neutralise file names in markers via the existing `neutraliseMarkers` in `../assistant/untrusted.js`? That path is `./untrusted.js` (same directory) — import from there.
-  - `tool-loop.ts`: after the recorder setup and before the entry loop (line 317 `for (let position …`), insert:
+  - `media-routing.ts`: the three functions exactly as specified:
+
+```ts
+import { neutraliseMarkers, type GenerationMessage, type GenerationMedia, type ModelCapabilities } from '@bananasaurs/core';
+
+/** Absent capabilities mean text-only (ADR 0149): safe for chains built before Slice 6. */
+export const entryCanRead = (
+  caps: ModelCapabilities | undefined,
+  media: readonly GenerationMedia[],
+): boolean => {
+  if (media.length === 0) return true;
+  if (caps === undefined) return false;
+  return media.every((m) => (m.kind === 'image' ? caps.image : caps.pdf));
+};
+
+/** Stable preference for entries that can read everything attached (spec 4c). No media means unchanged order. */
+export const orderEntriesForMedia = <T extends { readonly capabilities?: ModelCapabilities | undefined }>(
+  entries: readonly T[],
+  media: readonly GenerationMedia[],
+): readonly T[] => {
+  if (media.length === 0) return entries;
+  return [...entries.filter((e) => entryCanRead(e.capabilities, media)), ...entries.filter((e) => !entryCanRead(e.capabilities, media))];
+};
+
+/** Strips what the entry cannot read; one plain line per stripped file on the last user message. */
+export const messagesForEntry = (
+  messages: readonly GenerationMessage[],
+  caps: ModelCapabilities | undefined,
+): GenerationMessage[] => {
+  const stripped: string[] = [];
+  const kept = messages.map((message) => {
+    if (message.role !== 'user') return message;
+    const media = message.media ?? [];
+    const readable = media.filter((m) => entryCanRead(caps, [m]));
+    if (readable.length === media.length) return message;
+    for (const m of media.filter((m) => !entryCanRead(caps, [m]))) {
+      const name = neutraliseMarkers(m.name);
+      stripped.push(
+        m.kind === 'image'
+          ? `${name} attached; you can't see images right now.`
+          : `${name} attached; you can't read PDFs right now.`,
+      );
+    }
+    return { role: message.role, text: message.text, media: readable };
+  });
+  if (stripped.length === 0) return [...kept];
+  const lastUser = kept.map((m) => m.role).lastIndexOf('user');
+  if (lastUser === -1) return [...kept];
+  return kept.map((message, index) =>
+    index === lastUser && message.role === 'user'
+      ? { role: message.role, text: `${message.text}\n${stripped.join('\n')}`, media: message.media }
+      : message,
+  );
+};
+```
+
+(Verify `ModelCapabilities`, `GenerationMedia`, `GenerationMessage` and `neutraliseMarkers` are all exported from `@bananasaurs/core` — `contracts.ts` and `model-capabilities.ts` are core modules and `neutraliseMarkers` is already imported from core in `conversation-context.ts`. If any export name differs, use the file's name.)
+  - `tool-loop.ts`: import the two functions (`import { messagesForEntry, orderEntriesForMedia } from './media-routing.js';`). Replace `let chain: readonly ChainEntry[] = input.chain;` (line 412) with:
 
 ```ts
 const runMedia: readonly GenerationMedia[] = input.history.flatMap((m) => (m.role === 'user' ? (m.media ?? []) : []));
-const chain = orderEntriesForMedia(input.chain, runMedia);
+let chain: readonly ChainEntry[] = orderEntriesForMedia(input.chain, runMedia);
 ```
 
-and change the loop header to iterate `chain` (`chain.length`, `chain[position]!`). In `runEntry` (line ~590), replace `const messages: GenerationMessage[] = [...deps.history, { role: 'user', text: deps.userText }];` with `const messages: GenerationMessage[] = messagesForEntry([...deps.history, { role: 'user', text: deps.userText }], deps.entry.capabilities);` importing `GenerationMedia` type and the two functions. If `deps.entry.capabilities` does not exist in the merged code, use the merged Slice 6 path and note it in the commit message.
+(import the `GenerationMedia` type from `@bananasaurs/core` beside the existing `GenerationMessage` import, line 11). In `runEntry`, replace `const messages: GenerationMessage[] = deps.resume ? [...deps.resume.messages] : [...deps.history, { role: 'user', text: deps.userText }];` (near line 769) with:
+
+```ts
+const messages: GenerationMessage[] = messagesForEntry(
+  deps.resume ? [...deps.resume.messages] : [...deps.history, { role: 'user', text: deps.userText }],
+  deps.entry.capabilities,
+);
+```
+
+A file stripped by a previous entry is already gone from `media`, so the resume branch adds no repeat markers. The answer-retry path builds on these filtered messages, so it inherits the filter with no second change.
   - No new ledger events: a media fallback rides the normal attempt order (spec: "If none can, it uses the normal order"). The stripped marker is the model's explanation, so it never guesses.
 - [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write <all four owned paths>` then `npx eslint <all four owned paths>` · exit 0
-- [ ] **Step 7: Commit** — `git add <all four owned paths> && git commit -m "Slice 4 T11: media capability routing with plain unreadable markers"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/media-routing.ts apps/daemon/src/assistant/media-routing.test.ts apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` then `npx eslint <the same four paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <the same four paths> && git commit -m "Slice 4 T11: media capability routing with plain unreadable markers"`
 
 **Done when:** an image run prefers the first image-capable entry; a PDF asked of models without PDF input sends no bytes and the model is told plainly; absent capabilities behave as text-only.
 
@@ -1155,73 +1647,272 @@ and change the loop header to iterate `chain` (`chain.length`, `chain[position]!
 **Reads (do not edit):** `apps/daemon/src/assistant/commands.ts` (S4-T9 `AttachmentSummary`)
 **Interfaces:** Consumes: `AttachmentSummary` / `AssistantInvocation.attachmentSummary` (S4-T9) · Produces: `assistantTraceIncludedSchema` gains `attachments: z.array(z.object({ name: z.string().max(120), kind: z.enum(['text', 'image', 'pdf']), sizeBytes: z.number().int().nonnegative() })).max(10).optional()` ("ADR 0149: what rode along; metadata only, never bytes")
 
-- [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/trace.test.ts` (read its schema round-trip pattern first):
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/trace.test.ts` (it uses the `fixtureTrace(overrides)` helper; follow the 'round-trips included channelMessages' test pattern):
 
 ```ts
-it('keeps an attachment summary and drops rows that predate it (ADR 0149)', () => {
-  const withAttachments = assistantTraceSchema.safeParse({ ...minimalTrace(), included: { toolsOffered: [], snippetChunkIds: [], quote: false, historyTurns: 0, attachments: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }] } });
-  expect(withAttachments.success).toBe(true);
-  const legacy = assistantTraceSchema.safeParse({ ...minimalTrace(), included: { toolsOffered: [], snippetChunkIds: [], quote: false, historyTurns: 0 } });
-  expect(legacy.success).toBe(true);
+it('round-trips an attachment summary and still parses included without it (ADR 0149)', () => {
+  const withAttachments = fixtureTrace({
+    included: {
+      toolsOffered: ['search_sources'],
+      snippetChunkIds: ['chunk-1'],
+      quote: false,
+      historyTurns: 0,
+      attachments: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }],
+    },
+  });
+  expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withAttachments)))).toEqual(withAttachments);
+  const withoutAttachments = fixtureTrace({
+    included: { toolsOffered: ['search_sources'], snippetChunkIds: ['chunk-1'], quote: false, historyTurns: 0 },
+  });
+  expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withoutAttachments)))).toEqual(withoutAttachments);
 });
 ```
 
-(If the file has no `minimalTrace` helper, inline the smallest object its existing tests parse.) In `service.test.ts`:
+In `service.test.ts`, in the same `Task 14` describe as the S4-T9 media test (same `createAssistantService`/`usable`/`ask` construction):
 
 ```ts
 it('records the attachment summary in included and no bytes anywhere (ADR 0149)', async () => {
-  const { requests, provider, trace } = captureWithTrace();
-  await h.serviceWith(provider).invoke(
-    ask({ userId: OWNER, callerRoleIds: [], invocationId: 'int-trace-1', input: { question: 'hi' }, attachmentSummary: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }] }),
+  const requests: GenerateTextRequest[] = [];
+  const provider: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req) => {
+      requests.push(req);
+      return { text: 'done', model: 'model-a' };
+    },
+  };
+  const service = createAssistantService(
+    t.scopes.forGuild(GUILD),
+    t.scopes.instance(),
+    config,
+    () => NOW,
+    {},
+    undefined,
+    undefined,
+    undefined,
+    () => [usable(provider)],
   );
-  expect(trace().included?.attachments).toEqual([{ name: 'chart.png', kind: 'image', sizeBytes: 8 }]);
-  expect(JSON.stringify(trace())).not.toContain('aGk=');
+  const result = await service.invoke(
+    ask({
+      invocationId: 'int-trace-1',
+      attachmentSummary: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }],
+    }),
+  );
+  expect(result.ok).toBe(true);
+  expect(result.detail?.included?.attachments).toEqual([{ name: 'chart.png', kind: 'image', sizeBytes: 8 }]);
+  expect(JSON.stringify(result.detail ?? {})).not.toContain('aGk=');
 });
 ```
 
-(If `captureWithTrace` does not exist, capture the trace the way the existing trace-assertion tests in that file do.) In `jobs/assistant.test.ts`: extend the S4-T9 media test to assert the stored trace's `included.attachments` equals the summary.
+In `jobs/assistant.test.ts`: extend the S4-T9 media test (`inv-att-media`) to also assert the stored trace's summary: after `h.run`, read `traceRepo.getTrace(scope(), 'trace_inv-att-media')` (the file already imports `traceRepo` and uses this pattern in the crash test) and expect its `included.attachments` to equal `[{ name: 'chart.png', kind: 'image', sizeBytes: 8 }, { name: 'report.pdf', kind: 'pdf', sizeBytes: 8 }]`. (If the trace id for an invocation id differs — check the crash test's `'trace_inv-crash'` naming — use the file's naming.)
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.test.ts --maxWorkers=1` · Expected: FAIL (`attachments` stripped as unknown; `included` lacks it)
 - [ ] **Step 3: Implement**
-  - `trace.ts`: add the optional `attachments` field to `assistantTraceIncludedSchema` with the ADR 0149 comment. No migration: optional, old rows still parse.
-  - `service.ts`: find every `included: {` literal (`rg -n "summaryVersion: input.summaryVersion" apps/daemon/src/assistant/service.ts`) and add `...(input.attachmentSummary === undefined ? {} : { attachments: input.attachmentSummary.slice(0, 10).map((a) => ({ name: a.name.slice(0, 120), kind: a.kind, sizeBytes: a.sizeBytes })) }),` after the `summaryVersion` spread.
-  - `jobs/assistant.ts`: extend the cursor `included` copy (lines 214–229) with `...(detail.included.attachments === undefined ? {} : { attachments: detail.included.attachments }),` after the `summaryVersion` spread, so a retry keeps the summary.
+  - `trace.ts`: add the optional `attachments` field to `assistantTraceIncludedSchema` (lines 7–16) with the ADR 0149 comment. No migration: optional, old rows still parse.
+  - `service.ts`: in both `included:` literals (the `mapLoopFailure` one near line 1208 and the `sink.detail` one near line 1587 — both end with `...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),`), add after the `summaryVersion` spread: `...(input.attachmentSummary === undefined ? {} : { attachments: input.attachmentSummary.slice(0, 10).map((a) => ({ name: a.name.slice(0, 120), kind: a.kind, sizeBytes: a.sizeBytes })) }),`
+  - `jobs/assistant.ts`: all three `included` copies — the staged-cursor copy (near lines 223–233), the failure-trace copy (near lines 1295–1310) and the success-trace copy (near lines 1666–1680) — each ends with the `summaryVersion` spread; add after it: `...(detail.included.attachments === undefined ? {} : { attachments: detail.included.attachments }),` for the cursor copy (it reads `detail.included`), and `...(included.attachments === undefined ? {} : { attachments: included.attachments }),` / `...(detail.included.attachments === undefined ? {} : { attachments: detail.included.attachments }),` for the failure/success copies (matching each block's local name: the failure block reads `included`, the success block reads `detail.included` — use the name the block already uses). A retry from an invoke-done cursor keeps the summary.
 - [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write <all six owned paths>` then `npx eslint <all six owned paths>` · exit 0
-- [ ] **Step 7: Commit** — `git add <all six owned paths> && git commit -m "Slice 4 T12: trace included gains the attachment summary, never bytes"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts` then `npx eslint <the same six paths>` · exit 0
+- [ ] **Step 7: Commit** — `git add <the same six paths> && git commit -m "Slice 4 T12: trace included gains the attachment summary, never bytes"`
 
-**Done when:** the summary round-trips through the schema, the service writes it, the cursor keeps it, legacy rows still parse, and no base64 appears in any trace.
+**Done when:** the summary round-trips through the schema, the service writes it, the cursor and both trace writers keep it, legacy rows still parse, and no base64 appears in any trace.
 
 ---
 
-### S4-T13: state and privacy lines   ·   Wave 6
-**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`
-**Reads (do not edit):** `docs/decisions/0149-attachment-fetch-and-native-media.md` (S4-T1 wording to mirror)
-**Interfaces:** Consumes: none · Produces: none (documents)
+### S4-T13: production attachment fetch and caps wiring   ·   Wave 6
+**Owns:** Modify: `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/runtime/guild-ledger.test.ts`
+**Reads (do not edit):** `apps/daemon/src/jobs/assistant.ts` (S4-T6/T9: the optional `fetchAttachmentBytes` and `attachmentCaps` deps); `apps/daemon/src/assistant/attachments.ts` (S4-T5: `ATTACHMENT_HOSTS`, `AttachmentCaps`); `apps/daemon/src/assistant/resource-fetcher.ts` (S4-T5: `ReviewedResourceFetcher.fetchBytes(url, { allowedHosts, maxBytes })`); `apps/daemon/src/runtime/guild.ts` lines 1424–1441 (`resourceRefreshHandler`: the existing live-fetcher construction pattern to mirror)
+**Interfaces:** Consumes: `ATTACHMENT_HOSTS: readonly ['cdn.discordapp.com', 'media.discordapp.net']`; `AttachmentCaps`; `ByteFetchOptions`/`ByteFetchResult` (S4-T5); `settings.get` for the seven `assistant.attachments.*` keys (S4-T3) · Produces: production `assistantInvokeHandler` receives live fetch and cap closures; the runtime test pins the wiring, the exact hosts, and the off-host refusal
 
-- [ ] **Step 1: Write the failing test** — no test; documents only. Confirm scope: `git status --short` shows only this plan file plus `docs/STATE.md` and `PRIVACY.md` modified.
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: PASS (nothing code-related changes in this task; the run proves the tree is still green)
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/runtime/guild-ledger.test.ts` (it builds real runtimes with `buildGuildRuntime`, `FakeDiscord`, `parseConfig` and `createInteractionTokenSealer`; mirror the existing test's construction). Add the module mock beside the existing `service.js` mock, capturing the invoke handler's deps:
+
+```ts
+const invokeDeps = vi.hoisted(() => ({ seen: [] as unknown[] }));
+
+vi.mock('../jobs/assistant.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof assistantJobModule>();
+  return {
+    ...actual,
+    assistantInvokeHandler: (deps: Parameters<typeof actual.assistantInvokeHandler>[0]) => {
+      invokeDeps.seen.push(deps);
+      return actual.assistantInvokeHandler(deps);
+    },
+  };
+});
+```
+
+(Add `import type * as assistantJobModule from '../jobs/assistant.js';` and `import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';` to the imports.) Then add the test:
+
+```ts
+describe('guild runtime wires attachment fetching (ADR 0149)', () => {
+  it('passes a CDN-pinned byte fetcher and live caps to the invoke handler', async () => {
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    guildRepo.upsertGuild(scopeA, { name: 'guild a', now: NOW });
+    const requested: string[] = [];
+    const values: Record<string, number> = {
+      'assistant.attachments.textMaxBytes': 262_144,
+      'assistant.attachments.textMaxChars': 24_000,
+      'assistant.attachments.textMaxCount': 3,
+      'assistant.attachments.imageMaxBytes': 5_242_880,
+      'assistant.attachments.imageMaxCount': 4,
+      'assistant.attachments.pdfMaxBytes': 10_485_760,
+      'assistant.attachments.pdfMaxCount': 2,
+      'resources.fetchTimeoutMs': 5_000,
+    };
+    const settings = {
+      get: ((key: string) => {
+        requested.push(key);
+        return (values as Record<string, number | undefined>)[key];
+      }) as InstanceSettingsStore['get'],
+      set: () => {
+        throw new Error('not used in this test');
+      },
+      reset: () => {
+        throw new Error('not used in this test');
+      },
+    } as InstanceSettingsStore;
+    const config = parseConfig({
+      DISCORD_BOT_TOKEN: 'NOT.A.REALTOKEN',
+      DISCORD_APPLICATION_ID: BOT,
+      BANANASAURS_GUILD_ALLOWLIST: `${GUILD_A}`,
+      BANANASAURS_OWNER_USER_ID: OWNER,
+      DASHBOARD_SESSION_SECRET: 'b'.repeat(32),
+    });
+    invokeDeps.seen.length = 0;
+    buildGuildRuntime({
+      scope: scopeA,
+      instance: t.scopes.instance(),
+      config,
+      discord: new FakeDiscord({ guildId: GUILD_A, botHighestRolePosition: 100 }),
+      client,
+      logger,
+      now: () => NOW,
+      interactionTokenSealer: createInteractionTokenSealer(),
+      instanceSettings: settings,
+    });
+    const deps = invokeDeps.seen[0] as {
+      fetchAttachmentBytes?: (url: string, maxBytes: number) => Promise<{ ok: boolean; code?: string }>;
+      attachmentCaps?: () => Record<string, number>;
+    };
+    expect(typeof deps.fetchAttachmentBytes).toBe('function');
+    expect(typeof deps.attachmentCaps).toBe('function');
+    expect(deps.attachmentCaps?.()).toEqual({
+      textMaxBytes: 262_144,
+      textMaxChars: 24_000,
+      textMaxCount: 3,
+      imageMaxBytes: 5_242_880,
+      imageMaxCount: 4,
+      pdfMaxBytes: 10_485_760,
+      pdfMaxCount: 2,
+    });
+    for (const key of [
+      'assistant.attachments.textMaxBytes',
+      'assistant.attachments.textMaxChars',
+      'assistant.attachments.textMaxCount',
+      'assistant.attachments.imageMaxBytes',
+      'assistant.attachments.imageMaxCount',
+      'assistant.attachments.pdfMaxBytes',
+      'assistant.attachments.pdfMaxCount',
+    ]) {
+      expect(requested).toContain(key);
+    }
+    const refused = await deps.fetchAttachmentBytes?.('https://evil.example/x.png', 1_024);
+    expect(refused?.ok).toBe(false);
+  });
+});
+```
+
+Notes for the implementer: `buildGuildRuntime` reads every other setting through lazy closures, so the stub only needs the eight keys above; the off-host call fails on the allowlist before any DNS, so the test makes no network request. The redirect-to-another-host refusal is covered by S4-T5's injected-`request` unit test, not here. (`t`, `client`, `logger`, `GUILD_A`, `BOT`, `OWNER`, `NOW`, `FakeDiscord`, `guildRepo`, `parseConfig`, `createInteractionTokenSealer`, `buildGuildRuntime` are the existing names in that file; if any differs, use the file's name.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/runtime/guild-ledger.test.ts --maxWorkers=1` · Expected: FAIL (production passes neither attachment dependency into the handler)
+- [ ] **Step 3: Implement** — in `apps/daemon/src/runtime/guild.ts`: import `ATTACHMENT_HOSTS` and the `AttachmentCaps` type (`import { ATTACHMENT_HOSTS, type AttachmentCaps } from '../assistant/attachments.js';` beside the other assistant imports). Immediately before `const worker = new JobWorker({` (line 1327), add:
+
+```ts
+// ADR 0149: attachment bytes come only from Discord's CDN hosts, through
+// the reviewed fetcher (DNS pinning, public-address check, per-hop
+// allowlist re-check, byte cap). Caps are read live per call, so
+// dashboard changes apply without a restart; absent settings mean the
+// D7 defaults.
+const attachmentFetcher =
+  settings === undefined
+    ? new ReviewedResourceFetcher({ now })
+    : new ReviewedResourceFetcher({
+        now,
+        limits: () => ({ timeoutMs: settings.get('resources.fetchTimeoutMs') }),
+      });
+const attachmentCaps = (): AttachmentCaps => ({
+  textMaxBytes: settings?.get('assistant.attachments.textMaxBytes') ?? 262_144,
+  textMaxChars: settings?.get('assistant.attachments.textMaxChars') ?? 24_000,
+  textMaxCount: settings?.get('assistant.attachments.textMaxCount') ?? 3,
+  imageMaxBytes: settings?.get('assistant.attachments.imageMaxBytes') ?? 5_242_880,
+  imageMaxCount: settings?.get('assistant.attachments.imageMaxCount') ?? 4,
+  pdfMaxBytes: settings?.get('assistant.attachments.pdfMaxBytes') ?? 10_485_760,
+  pdfMaxCount: settings?.get('assistant.attachments.pdfMaxCount') ?? 2,
+});
+```
+
+(`ReviewedResourceFetcher` is already imported at line 99; `now` is the destructured clock.) In the `assistantInvokeHandler({ … })` object (lines 1349–1388), after the `fetchChannelMessages` closure (lines 1376–1377), add:
+
+```ts
+// ADR 0149: live attachment bytes and caps (S4-T5/S4-T9 deps).
+fetchAttachmentBytes: async (url, maxBytes) => {
+  const fetched = await attachmentFetcher.fetchBytes(url, {
+    allowedHosts: ATTACHMENT_HOSTS,
+    maxBytes,
+  });
+  return fetched.ok
+    ? { ok: true as const, bytes: fetched.bytes, mediaType: fetched.mediaType }
+    : { ok: false as const, code: fetched.code };
+},
+attachmentCaps,
+```
+
+No `hasAttachments` changes: mention enqueue and `routeRun` already carry that flag.
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/runtime/guild-ledger.test.ts --maxWorkers=1` · Expected: PASS, no network requests
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/runtime/guild.ts apps/daemon/src/runtime/guild-ledger.test.ts` then `npx eslint apps/daemon/src/runtime/guild.ts apps/daemon/src/runtime/guild-ledger.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/runtime/guild.ts apps/daemon/src/runtime/guild-ledger.test.ts && git commit -m "Slice 4 T13: wire secure attachment fetch and live caps"`
+
+**Done when:** production invocation jobs get a fetcher pinned to exactly the two Discord CDN hosts and the seven live caps; the test proves an off-host request is refused without network and every cap key is read live.
+
+---
+
+### S4-T14: state and privacy lines   ·   Wave 7
+**Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`
+**Reads (do not edit):** `docs/decisions/0149-attachment-fetch-and-native-media.md` (S4-T1 wording to mirror); `apps/daemon/src/runtime/guild.ts` (S4-T13 production wiring)
+**Interfaces:** Consumes: delivered attachment behaviour and allowed hosts from ADR 0149 · Produces: accurate state and privacy disclosure (documents only)
+
+- [ ] **Step 1: Write the failing test** — documents only. Confirm scope with `rg -n "Assistant conversations and resources|Attachments on archived messages|replied-to message is sent" PRIVACY.md` and check the top of `docs/STATE.md` (the first `---`, then the current top entry to mirror).
+- [ ] **Step 2: Run it and watch it fail** — no automated test applies to documentation; do not claim a test failure. Validate only after editing with `git diff --check`.
 - [ ] **Step 3: Implement**
-  - `docs/STATE.md`: insert after the first `---` (same style as the Slice 1 entry at the top):
+  - `docs/STATE.md`: insert after the first `---` (above the Assistant streaming entry, same bullet style):
 
 ```markdown
 **Attachments (Slice 4 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `<branch>`, not yet merged (ADR 0149, no migration).**
 
 - **Markers (4a):** the quote envelope, channel lines and current message render `[attached: name, type, size]` even with text; embeds render `[embed: Provider: title]`; the prompt says contents below the marker are the only readable form.
-- **Text (4b):** the job re-reads both messages through REST at start and inlines at most 3 files, 256 KB / 24,000 chars each, redacted and framed.
-- **Images and PDFs (4c, 4d):** fetched from the Discord CDN only, magic-checked, sent base64 to models that read them natively (Gemini inlineData; OpenRouter file input with the parser pinned to native). No PDF parsing or OCR anywhere. Capability routing prefers entries that can read everything; otherwise plain markers.
-- **Caps** are instance settings (`assistant.attachments.*`); traces keep names, kinds and sizes, never bytes.
+- **Text (4b):** the job re-reads the current and replied-to messages through REST at start and inlines at most 3 files, 256 KB / 24,000 chars each, redacted and framed as untrusted evidence. Attached text is evidence, never instructions.
+- **Images and PDFs (4c, 4d):** fetched from the Discord CDN hosts only (`cdn.discordapp.com`, `media.discordapp.net`), magic-checked, sent base64 to models that read them natively (Gemini inlineData; OpenRouter file input with the parser pinned to native). No PDF parsing or OCR anywhere. Capability routing prefers entries that can read everything; otherwise plain markers, and no bytes for what an entry cannot read.
+- **Caps** are instance settings (`assistant.attachments.*`); mention jobs already carry `hasAttachments` for routing; traces keep names, kinds and sizes, never bytes.
 ```
 
-(Replace `<branch>` with the real branch name.)
-  - `PRIVACY.md`: under "Assistant conversations and resources", add after the replied-to-message bullet: "- When a message tagged to Bananasaurs carries attached text files, images or PDFs, the bot downloads them from Discord and sends them to the AI provider that answers, and to no one else. Text is sent as redacted text; images and PDFs are sent only to models that read them directly. No file contents are stored: the bot keeps file name, type and size only." In the retention table, change the "Attachments on archived messages" row's meaning stays, and add a row: `| Attached file contents sent to the AI | Never stored; only the name, type and size travel with the conversation's trace |`. Update the "Last updated" date.
-- [ ] **Step 4: Run it and watch it pass** — same command as Step 2 · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md` then `npx eslint docs/STATE.md PRIVACY.md` · exit 0
-- [ ] **Step 7: Commit** — `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 4 T13: state and privacy lines for attachments"`
+(Replace `<branch>` with the real branch name from `git branch --show-current`; do not leave the placeholder.)
 
-**Done when:** STATE names the branch, ADR and caps; PRIVACY says where attachments go and that contents are never stored.
+  - `PRIVACY.md`: under "Assistant conversations and resources", after the "that replied-to message is sent to the AI provider" bullet, add:
+
+```markdown
+- When a message tagged to Bananasaurs carries attached text files, images or PDFs, the bot downloads the current and replied-to message attachments from Discord (`cdn.discordapp.com` and `media.discordapp.net` only) and sends them to the AI provider that answers, and to no one else. Attached text is sent as redacted text; images and PDFs are sent only to models that read them directly, and a model that cannot read a file is told so instead of guessing. No file contents are stored: the bot keeps file name, type and size only.
+```
+
+In the retention table keep the "Attachments on archived messages" row and add a row: `| Attached file contents sent to the AI | Never stored; only the name, type and size travel with the conversation's trace |`. Update the "Last updated" date.
+
+- [ ] **Step 4: Run it and watch it pass** — `git diff --check` · Expected: exit 0
+- [ ] **Step 5: Typecheck** — documents only; no typecheck applies. Run `git diff --stat` and confirm only `docs/STATE.md` and `PRIVACY.md` changed.
+- [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md` · Expected: exit 0. Do not run ESLint on Markdown.
+- [ ] **Step 7: Commit** — `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 4 T14: state and privacy lines for attachments"`
+
+**Done when:** STATE names the branch, ADR and caps; PRIVACY says where attachments go, names both CDN hosts, and says contents are never stored; no placeholder branch remains.
 
 ## Slice gate (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
