@@ -12,8 +12,8 @@
 | Round | Slices | Starts from | Plans |
 |---|---|---|---|
 | 1 | **6** key pools, cooldowns, Gemini chain, routing · **2** new abilities | `harness-slices-plan` tip | built and merged (`harness-round1`, migrations 0107–0108) |
-| 2 | **3** streaming · **5** daily digest | `main` after round 1 merges (`harness-round2-plan` tip) | refreshed 2026-10-11, ready |
-| 3 | **4** attachments | `main` after round 2 merges | refreshed by the controller first |
+| 2 | **3** streaming · **5** daily digest | `harness-round2-plan` tip | built and merged (`harness-round2`, migration 0109) |
+| 3 | **4** attachments | `harness-round3-plan` tip (round 2 merged) | refreshed 2026-10-12, ready |
 
 Slices in one round run at the same time on separate branches. Each produces its own bundle. The controller
 merges them and resolves conflicts between them.

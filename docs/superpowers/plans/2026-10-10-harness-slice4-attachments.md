@@ -175,7 +175,7 @@ record of the owner's instruction.
 
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: PASS (untouched suite still green)
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write docs/decisions/0149-attachment-fetch-and-native-media.md` then `npx eslint docs/decisions/0149-attachment-fetch-and-native-media.md` · exit 0
+- [ ] **Step 6: Format** — `npx prettier --write docs/decisions/0149-attachment-fetch-and-native-media.md` · exit 0 (Markdown is not linted)
 - [ ] **Step 7: Commit** — `git add docs/decisions/0149-attachment-fetch-and-native-media.md && git commit -m "Slice 4 T1: ADR 0149 attachment fetch destination, native media only"`
 
 **Done when:** the ADR file exists with Context, Decision and Consequences; `PRIVACY.md` wording for S4-T14 is fixed by Decision §2's last line.
