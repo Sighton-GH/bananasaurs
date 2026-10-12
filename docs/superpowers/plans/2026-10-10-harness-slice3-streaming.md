@@ -250,7 +250,7 @@ Keep every existing ProviderError quota field (`quotaScope`, `retryAfterMs`, `le
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` then `npx eslint packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts && git commit -m "Slice 3 T2: stream contracts and model-progress event"`
 
-**Done when:** `runEventSchema` parses `model-progress` and rejects one carrying `text`; `StreamProgress`, `thinkingLevel`, `onProgress`, `reasoning` exist in contracts.
+**Done when:** `runEventSchema` parses `model-progress` and rejects one carrying `text`; `StreamProgress`, `StreamChunk`, `thinkingLevel`, `capabilities`, `onProgress`, `onChunk`, `reasoning` exist in contracts.
 
 ### S3-T3: Shared SSE parser   ·   Wave 2
 **Owns:** Create: `packages/core/src/providers/sse.ts`; Test: `packages/core/src/providers/sse.test.ts`
@@ -355,11 +355,11 @@ Ship the normalised version below: it reassembles chunks split mid-line because 
 **Done when:** keepalive comments, split chunks, multi-line data and `[DONE]` all parse per the four tests.
 
 ### S3-T4: Timeout and token settings   ·   Wave 2
-**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`; Test: `packages/core/src/settings/instance-settings.test.ts`
+**Owns:** Modify: `packages/core/src/settings/instance-settings.ts`; Test: `packages/core/src/settings/instance-settings.test.ts`; Test: `packages/dashboard/src/pages/assistant-tuning.test.tsx`
 **Reads (do not edit):** `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md`
-**Interfaces:** Consumes: ADR 0148 numbers · Produces: settings `assistant.providerIdleTimeoutMs` (45,000), `assistant.providerMaxCallMs` (300,000), `assistant.maxOutputTokens` default 4,096
+**Interfaces:** Consumes: ADR 0148 numbers · Produces: settings `assistant.providerIdleTimeoutMs` (45,000), `assistant.providerMaxCallMs` (300,000), `assistant.maxOutputTokens` default 4,096; registry grows 28 → 30 entries
 
-- [ ] **Step 1: Write the failing test** — in `packages/core/src/settings/instance-settings.test.ts`, after the existing `channel context defaults` test (line 38), add:
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/settings/instance-settings.test.ts`, after the count test at lines 11–12 (`expect(INSTANCE_SETTINGS).toHaveLength(28)`), add:
 
 ```ts
 it('streaming timeouts default to 45 s idle and 300 s ceiling', () => {
@@ -374,12 +374,69 @@ it('max output tokens defaults to 4096 for reasoning', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with `providerIdleTimeoutMs` undefined and maxOutputTokens 2048
-- [ ] **Step 3: Implement** — anchor: `packages/core/src/settings/instance-settings.ts` the `providerTimeout` const (lines 63–72) and the `maxOutputTokens` const (lines 107–115, `defaultValue: 2048`). Replacement: append after `providerTimeout` two new consts in the same shape, group `'Assistant retries'`, display `'seconds'`, labels `Provider idle timeout` / `Provider max call time`, help `How long one AI answer may go without any data before it is abandoned. Keepalive messages count as data.` / `The longest one AI answer may take in total, even when data keeps arriving.`, schemas `z.number().int().min(5000).max(120000)` / `z.number().int().min(60000).max(600000)`, defaults `45000` / `300000`, matching bounds; add both to `INSTANCE_SETTINGS` right after `providerTimeout` and to `InstanceSettingValues`; change `maxOutputTokens` defaultValue to `4096` (bounds unchanged).
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: PASS
+and change the count pin to `expect(INSTANCE_SETTINGS).toHaveLength(30);`. In `packages/dashboard/src/pages/assistant-tuning.test.tsx`, extend the `SETTINGS` fixture (lines 8–128) with two rows after the `assistant.providerTimeoutMs` row (lines 20–30), in the same shape:
+
+```ts
+{
+  key: 'assistant.providerIdleTimeoutMs',
+  group: 'Assistant retries',
+  label: 'Provider idle timeout',
+  help: 'How long one AI answer may go without any data before it is abandoned. Keepalive messages count as data.',
+  display: 'seconds',
+  bounds: { min: 5000, max: 120000 },
+  value: 45000,
+  defaultValue: 45000,
+  isDefault: true,
+},
+{
+  key: 'assistant.providerMaxCallMs',
+  group: 'Assistant retries',
+  label: 'Provider max call time',
+  help: 'The longest one AI answer may take in total, even when data keeps arriving.',
+  display: 'seconds',
+  bounds: { min: 60000, max: 600000 },
+  value: 300000,
+  defaultValue: 300000,
+  isDefault: true,
+},
+```
+
+The tuning page renders rows generically from `data.settings` (`TuningCards`, `assistant-tuning.tsx` lines 336–355), so no page change is needed; the `renders the five group headings` test (line 138) still passes because both rows join the existing `Assistant retries` group.
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts --maxWorkers=1` · Expected: FAIL with `providerIdleTimeoutMs` undefined, maxOutputTokens 2048, and length 28; plus `npx vitest run packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: FAIL with the two rows missing
+- [ ] **Step 3: Implement** — anchor: `packages/core/src/settings/instance-settings.ts` the `providerTimeout` const (lines 64–73) and the `maxOutputTokens` const (lines 108–117, `defaultValue: 2048`). Add after `providerTimeout`:
+
+```ts
+const providerIdleTimeout: SettingDefinition<number> = {
+  key: 'assistant.providerIdleTimeoutMs',
+  group: 'Assistant retries',
+  label: 'Provider idle timeout',
+  help: 'How long one AI answer may go without any data before it is abandoned. Keepalive messages count as data.',
+  display: 'seconds',
+  schema: z.number().int().min(5000).max(120000),
+  defaultValue: 45000,
+  bounds: { min: 5000, max: 120000 },
+};
+
+const providerMaxCall: SettingDefinition<number> = {
+  key: 'assistant.providerMaxCallMs',
+  group: 'Assistant retries',
+  label: 'Provider max call time',
+  help: 'The longest one AI answer may take in total, even when data keeps arriving.',
+  display: 'seconds',
+  schema: z.number().int().min(60000).max(600000),
+  defaultValue: 300000,
+  bounds: { min: 60000, max: 600000 },
+};
+```
+
+Register both in `INSTANCE_SETTINGS` (lines 398–427) directly after `providerTimeout`, and add both keys to `InstanceSettingValues` (lines 429–458) directly after `'assistant.providerTimeoutMs': number;`. Change `maxOutputTokens` `defaultValue: 2048` to `defaultValue: 4096` (bounds unchanged).
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts && git commit -m "Slice 3 T4: streaming timeout and token settings"`
+- [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx` then `npx eslint packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx` · exit 0
+- [ ] **Step 7: Commit** — `git add packages/core/src/settings/instance-settings.ts packages/core/src/settings/instance-settings.test.ts packages/dashboard/src/pages/assistant-tuning.test.tsx && git commit -m "Slice 3 T4: streaming timeout and token settings"`
+
+**Done when:** the two new keys exist with the ADR defaults and bounds; maxOutputTokens defaults to 4,096; the registry holds 30 entries; the tuning page renders both rows with no page change; every existing test still passes.
 
 ### S3-T5: Trace reasoning field   ·   Wave 2
 **Owns:** Modify: `packages/core/src/assistant/trace.ts`; Test: `packages/core/src/assistant/trace.test.ts`
@@ -400,17 +457,94 @@ it('keeps per-round reasoning capped at 8000 chars', () => {
 using that file's existing exported `fixtureTrace` helper (top of file; builds a valid `AssistantTrace` with overrides).
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: FAIL with `reasoning` unknown key or `capTrace` not capping it
-- [ ] **Step 3: Implement** — anchor: `packages/core/src/assistant/trace.ts` the `assistantTraceSchema` `toolCalls` array (ends line ~108) and `capTrace` (line 229). Replacement: add after `toolCalls` an optional `reasoning` array field with the shape in Interfaces; extend `capTrace` so each `reasoning` entry over 8,000 chars is cut with the existing `truncateTo` helper (same `… [truncated]` suffix) and `capTrace` also shrinks `reasoning` entries when the 200 KB budget is exceeded (after tool previews, before giving up).
+- [ ] **Step 3: Implement** — anchor: `packages/core/src/assistant/trace.ts` the `toolCalls` array (lines 89–104), the `guard` field (line 105), and `capTrace` (lines 229–272 with `truncateTo` at 213–217 and `TRUNCATION_SUFFIX` at 211). Replacement has two parts. First, add after the `toolCalls` array, before `guard`:
+
+```ts
+  /**
+   * Saved thinking per round (Slice 3, ADR 0148): OpenRouter reasoning and
+   * Gemini thought summaries. Capped by `capTrace`; shown collapsed on the
+   * "What the AI saw" page to trace-capable viewers only.
+   */
+  reasoning: z
+    .array(z.object({ round: z.number().int().min(0), text: z.string().max(8000) }))
+    .max(12)
+    .optional(),
+```
+
+Note the schema caps text at 8,000 chars, so `assistantTraceSchema.parse` rejects longer entries — `capTrace` must truncate *before* validation. Second, replace `capTrace` with:
+
+```ts
+export const capTrace = (t: AssistantTrace, maxBytes = 200_000): AssistantTrace => {
+  // Reasoning entries are truncated up front: the schema rejects text over
+  // 8,000 chars, so an untruncated entry could never be stored.
+  const sections = t.sections.map((s) => ({ ...s }));
+  const toolCalls = t.toolCalls.map((c) => ({ ...c }));
+  const reasoning = (t.reasoning ?? []).map((r) => ({
+    ...r,
+    text: truncateTo(r.text, 8000),
+  }));
+  const out: AssistantTrace = { ...t, sections, toolCalls, reasoning: reasoning.length > 0 ? reasoning : undefined };
+  const shrink = (fields: { get(): string; set(v: string): void }[]): boolean => {
+    let changed = false;
+    for (const field of fields) {
+      const current = field.get();
+      if (current.length > TRUNCATION_SUFFIX.length) {
+        field.set(truncateTo(current, Math.ceil(current.length / 2)));
+        changed = true;
+      }
+    }
+    return changed;
+  };
+  while (
+    byteSize(out) > maxBytes &&
+    shrink(
+      sections.map((s, i) => ({
+        get: () => sections[i]?.text ?? '',
+        set: (v: string) => {
+          sections[i] = { ...s, text: v, chars: v.length, estTokens: estimateTokens(v) };
+        },
+      })),
+    )
+  ) {
+    // Sections first, per the interface contract.
+  }
+  while (
+    byteSize(out) > maxBytes &&
+    shrink(
+      toolCalls.map((c, i) => ({
+        get: () => toolCalls[i]?.preview ?? '',
+        set: (v: string) => {
+          toolCalls[i] = { ...c, preview: v };
+        },
+      })),
+    )
+  ) {
+    // Then previews.
+  }
+  while (
+    byteSize(out) > maxBytes &&
+    shrink(
+      reasoning.map((r, i) => ({
+        get: () => reasoning[i]?.text ?? '',
+        set: (v: string) => {
+          reasoning[i] = { ...r, text: v };
+        },
+      })),
+    )
+  ) {
+    // Then reasoning, before giving up.
+  }
+  return out;
+};
+```
+
+Keep `byteSize`, `truncateTo`, `estimateTokens` and the fixed-fields-never-touched rule unchanged. `reasoning` stays `undefined` when the run produced none, so old rows still parse.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/trace.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts` then `npx eslint packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add packages/core/src/assistant/trace.ts packages/core/src/assistant/trace.test.ts && git commit -m "Slice 3 T5: trace reasoning field"`
 
 **Done when:** a trace round-trips `reasoning` entries; entries over 8,000 chars are truncated with the standard suffix.
-
-
-**Done when:** the two new keys exist with the ADR defaults and bounds; maxOutputTokens defaults to 4,096; every existing test still passes.
-
 
 ### S3-T6: OpenAI-compatible streaming   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/openai-compatible.ts`; Test: `packages/core/src/providers/openai-compatible.test.ts`
