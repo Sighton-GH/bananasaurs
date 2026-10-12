@@ -82,6 +82,7 @@ export const createRunRecorder: (deps: {
   // once (`assistant run ledger write failed`, with the run id) and every
   // later failure stays silent while the run continues.
   let warned = false;
+  let finished = false;
   const warnOnce = (err: unknown): void => {
     if (warned) return;
     warned = true;
@@ -98,6 +99,8 @@ export const createRunRecorder: (deps: {
   return {
     runId: deps.runId,
     event: (e) => {
+      if (finished) return;
+      if (e.kind === 'finished') finished = true;
       try {
         runRepo.appendRunEvent(deps.scope, deps.runId, deps.now(), e);
         const patch = patchFor(e, deps.now());
@@ -116,6 +119,7 @@ export const createRunRecorder: (deps: {
       }
     },
     update: (patch) => {
+      if (finished) return;
       try {
         runRepo.updateRun(deps.scope, deps.runId, { ...patch, updatedAt: deps.now() });
       } catch (err) {
@@ -129,4 +133,21 @@ export const NOOP_RUN_RECORDER: RunRecorder = {
   runId: '',
   event: () => undefined,
   update: () => undefined,
+};
+
+/** Storage-free recorder: live retention still ends when ledger creation fails. */
+export const createLiveRunRecorder = (
+  runId: string,
+  live: { drop(runId: string): void },
+): RunRecorder => {
+  let finished = false;
+  return {
+    runId,
+    event: (e) => {
+      if (finished || e.kind !== 'finished') return;
+      finished = true;
+      live.drop(runId);
+    },
+    update: () => undefined,
+  };
 };

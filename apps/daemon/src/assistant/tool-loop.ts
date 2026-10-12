@@ -282,8 +282,15 @@ export const runToolLoop = async (input: {
   const recorder = input.recorder ?? NOOP_RUN_RECORDER;
   const reasoning: { round: number; text: string }[] = [];
   const collectReasoning = (round: number, text: string | undefined): void => {
-    if (text !== undefined && text !== '' && reasoning.length < 12)
-      reasoning.push({ round, text: text.slice(0, 8000) });
+    if (text !== undefined && text !== '' && reasoning.length < 12) {
+      let end = 8000 - TRUNCATION_SUFFIX.length;
+      const last = text.charCodeAt(end - 1);
+      if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+      reasoning.push({
+        round,
+        text: text.length <= 8000 ? text : text.slice(0, end) + TRUNCATION_SUFFIX,
+      });
+    }
   };
   // One throttle for the whole run, including failover and escalation.
   // Undefined is distinct from a legitimate clock value of zero.

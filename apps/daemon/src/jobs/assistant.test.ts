@@ -30,6 +30,9 @@ import type {
   AssistantTraceDetail,
 } from '../assistant/commands.js';
 import { assistantInvokeHandler } from './assistant.js';
+import { runToolLoop } from '../assistant/tool-loop.js';
+import { makeProvider } from '../assistant/model-chain.js';
+import type { GenerateTextRequest, TextProvider } from '@bananasaurs/core';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { dailyQuotaReply } from '../assistant/fallback-replies.js';
@@ -422,14 +425,25 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       ...(channelAccess === undefined ? {} : { channelAccess }),
       ...(guildReady === undefined ? {} : { guildReady }),
     });
+    const fixtureJobs = new Map<string, number>();
     const run = async (
       input: Record<string, unknown>,
       cursor: string | null = null,
     ): Promise<{ cursor: string | null; error?: unknown }> => {
       let saved: string | null = cursor;
+      const key = String(input.invocationId);
+      const enqueued = jobRepo.enqueue(scope(), {
+        kind: JOB_KINDS.assistantInvoke,
+        payload: JSON.stringify(input),
+        dedupeKey: key,
+        now: nowMs,
+      });
+      const jobId = enqueued.jobId ?? fixtureJobs.get(key);
+      if (enqueued.jobId !== undefined) fixtureJobs.set(key, enqueued.jobId);
+      if (jobId === undefined) throw new Error('fixture job missing');
       try {
         await handler.run(handler.payload.parse(input), {
-          jobId: 1,
+          jobId,
           attempts: cursor === null ? 1 : 2,
           cursor,
           saveCursor: (c) => {
@@ -2782,20 +2796,34 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
     nowMs = NOW;
   });
-  afterEach(() => t.close());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    t.close();
+  });
   const scope = () => t.scopes.forGuild(GUILD_ID);
 
   const harness = (
     answer: (
       input: AssistantInvocation,
     ) => AssistantInvocationResult | Promise<AssistantInvocationResult>,
-    opts: { readonly behaviours?: readonly AssistantBehaviour[] } = {},
+    opts: {
+      readonly noConversations?: boolean;
+      readonly behaviours?: readonly AssistantBehaviour[];
+    } = {},
   ) => {
     const inputs: AssistantInvocation[] = [];
+    const completionEvents: string[] = [];
     const svc: AssistantCommandService = {
       behavioursForGuild: async () => opts.behaviours ?? [behaviour],
       invoke: async (input) => {
         inputs.push(input);
+        if (input.recorder !== undefined) {
+          const event = input.recorder.event.bind(input.recorder);
+          vi.spyOn(input.recorder, 'event').mockImplementation((e) => {
+            if (e.kind === 'finished') completionEvents.push(e.kind);
+            event(e);
+          });
+        }
         return await answer(input);
       },
     };
@@ -2815,7 +2843,9 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       logger: pino({ level: 'silent' }),
       logChannelId: () => undefined,
       now: () => nowMs,
-      conversations: { scope: scope(), botUserId: BOT, botDisplayName: 'bananasaurs' },
+      ...(opts.noConversations
+        ? {}
+        : { conversations: { scope: scope(), botUserId: BOT, botDisplayName: 'bananasaurs' } }),
       sendTyping: async () => undefined,
       fetchMessageContent: async () => undefined,
       fetchChannelMessages: async () => undefined,
@@ -2824,17 +2854,26 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     return {
       inputs,
       sent,
-      run: async (input: Record<string, unknown>, attempts = 1) => {
+      send,
+      completionEvents,
+      run: async (
+        input: Record<string, unknown>,
+        attempts = 1,
+        cursor: string | null = null,
+        jobId = 1,
+      ) => {
         try {
           await handler.run(handler.payload.parse(input), {
-            jobId: 1,
+            jobId,
             attempts,
-            cursor: null,
-            saveCursor: () => undefined,
+            cursor,
+            saveCursor: (value) => {
+              cursor = value;
+            },
           });
-          return { error: undefined as unknown };
+          return { error: undefined as unknown, cursor };
         } catch (error) {
-          return { error };
+          return { error, cursor };
         }
       },
     };
@@ -2855,6 +2894,368 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
 
   const kindsOf = (runId: string): string[] =>
     runRepo.listRunEvents(scope(), runId, 0, 50).map((r) => r.event.kind);
+
+  let lastStreamRequest: GenerateTextRequest | undefined;
+  // Exercise the actual streaming loop, not a pre-seeded shared map.
+  const streamed = async (input: AssistantInvocation, failure?: Error) => {
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (request) => {
+        lastStreamRequest = request;
+        request.onChunk?.({ text: 'partial answer', reasoning: 'private thought' });
+        if (failure) throw failure;
+        return { text: 'answer', model: 'fixture-model' };
+      },
+    };
+    const loop = await runToolLoop({
+      chain: [
+        {
+          provider,
+          providerId: 'gemini',
+          model: 'fixture-model',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+          pool: 'key',
+          tier: 'standard',
+          selectedKeyId: 'key_a',
+        },
+      ],
+      systemInstruction: 'Be helpful.',
+      protectedText: 'prompt',
+      history: [],
+      userText: 'hi',
+      initialHandles: [],
+      now: () => NOW,
+      recorder: input.recorder,
+      runId: input.invocationId,
+      live: getLiveBuffer(),
+    });
+    if (failure) throw failure;
+    return { ok: true as const, content: loop.text };
+  };
+
+  const observe = (runId: string) => {
+    const order: string[] = [];
+    const append = getLiveBuffer().append.bind(getLiveBuffer());
+    const drop = getLiveBuffer().drop.bind(getLiveBuffer());
+    const event = runRepo.appendRunEvent;
+    vi.spyOn(getLiveBuffer(), 'append').mockImplementation((id, answer, thought) => {
+      if (id === runId) order.push('chunk');
+      append(id, answer, thought);
+    });
+    vi.spyOn(getLiveBuffer(), 'drop').mockImplementation((id) => {
+      if (id === runId) order.push('drop');
+      drop(id);
+    });
+    vi.spyOn(runRepo, 'appendRunEvent').mockImplementation((...args) => {
+      if (args[1] === runId && args[3].kind === 'finished') order.push('finished');
+      return event(...args);
+    });
+    return order;
+  };
+
+  it.each(['success', 'provider-failure', 'idle-timeout', 'ceiling-timeout', 'escalation'])(
+    'T12c real stream terminal %s finishes once and drops last',
+    async (path) => {
+      const id = `terminal-${path}`;
+      const order = observe(id);
+      const error = path.includes('timeout')
+        ? new ProviderError('timeout', path, true)
+        : path === 'provider-failure'
+          ? new ChainFailedError('invalid-request', 'failed', false, [])
+          : undefined;
+      const h = harness(async (input) => {
+        const result = await streamed(input, error);
+        return path === 'escalation'
+          ? {
+              ...result,
+              escalation: {
+                channelId: '555555555555555555',
+                reviewerRoleIds: [],
+                ticketId: 'fixture-ticket',
+              },
+            }
+          : result;
+      });
+      await h.run(mention(id), 4);
+      lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
+      expect(order).toEqual(['chunk', 'finished', 'drop']);
+      expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+    },
+  );
+
+  it.each(['idle', 'ceiling'] as const)(
+    'T12c real adapter %s timeout after a stream closes exactly once',
+    async (clock) => {
+      vi.useFakeTimers();
+      const id = `terminal-adapter-${clock}`;
+      const order = observe(id);
+      const encoder = new TextEncoder();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(
+                    encoder.encode(
+                      'data: {"choices":[{"delta":{"content":"partial","reasoning":"thought"}}]}\n\n',
+                    ),
+                  );
+                },
+              }),
+              { headers: { 'content-type': 'text/event-stream' } },
+            ),
+        ),
+      );
+      try {
+        const provider = makeProvider('openrouter', 'fixture-key', 'free', {
+          timeoutMs: 1000,
+          idleTimeoutMs: clock === 'idle' ? 50 : 1000,
+          maxCallMs: clock === 'ceiling' ? 50 : 1000,
+        });
+        const h = harness(async (input) => {
+          const loop = await runToolLoop({
+            chain: [
+              {
+                provider,
+                providerId: 'openrouter',
+                model: 'fixture-model',
+                keyId: 'key_a',
+                keyLabel: 'Key A',
+                mayTrain: false,
+                rpmLimit: null,
+                rpdLimit: null,
+                pool: 'key',
+                tier: 'standard',
+                selectedKeyId: 'key_a',
+              },
+            ],
+            systemInstruction: 'Be helpful.',
+            protectedText: 'prompt',
+            history: [],
+            userText: 'hi',
+            initialHandles: [],
+            now: () => Date.now(),
+            recorder: input.recorder,
+            runId: input.invocationId,
+            live: getLiveBuffer(),
+          });
+          expect(loop.lastError).toBeInstanceOf(ProviderError);
+          if (loop.lastError === undefined) throw new Error('fixture expected timeout');
+          throw loop.lastError;
+        });
+        const running = h.run(mention(id), 4);
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await running).error).toBeUndefined();
+        expect(order).toEqual(['chunk', 'finished', 'drop']);
+        expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+        expect(getLiveBuffer().read(id)).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('T12c real light-to-standard hand-over stops both streams before finish', async () => {
+    const id = 'terminal-handover';
+    const order = observe(id);
+    const requests: GenerateTextRequest[] = [];
+    const provider = (light: boolean): TextProvider => ({
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        requests.push(req);
+        req.onChunk?.({ text: light ? 'light' : 'standard', reasoning: 'thought' });
+        return light
+          ? { text: '', model: 'light', toolCalls: [{ name: 'search_sources', args: {} }] }
+          : { text: 'answer', model: 'standard' };
+      },
+    });
+    const h = harness(async (input) => {
+      const loop = await runToolLoop({
+        chain: [true, false].map((light) => ({
+          provider: provider(light),
+          providerId: 'gemini',
+          model: light ? 'light' : 'standard',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+          pool: 'key',
+          tier: light ? 'light' : 'standard',
+          selectedKeyId: 'key_a',
+        })),
+        systemInstruction: 'Be helpful.',
+        protectedText: 'prompt',
+        history: [],
+        userText: 'hi',
+        initialHandles: [],
+        now: () => NOW,
+        recorder: input.recorder,
+        runId: input.invocationId,
+        live: getLiveBuffer(),
+        tools: {
+          firstRound: [
+            {
+              name: 'search_sources',
+              description: 'Search',
+              parameters: { type: 'object', properties: {} },
+            },
+          ],
+          laterRounds: [],
+          run: async () => ({ name: 'search_sources', ok: true, text: 'result', sources: [] }),
+        },
+        escalateAfterTools: (_entry, remaining) => remaining,
+      });
+      expect(loop.attempts).toHaveLength(2);
+      return { ok: true, content: loop.text };
+    });
+    await h.run(mention(id));
+    for (const req of requests) req.onChunk?.({ text: 'late', reasoning: 'late' });
+    expect(order).toEqual(['chunk', 'chunk', 'finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c delivery retries keep the cursor and buffer until the actual job budget', async () => {
+    const id = 'terminal-delivery';
+    const order = observe(id);
+    const h = harness(streamed);
+    const error = new Error('fixture Discord unavailable');
+    h.send.mockRejectedValue(error);
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(order).toEqual(['chunk']);
+    expect(getLiveBuffer().read(id)?.answer).toBe('partial answer');
+    const last = await h.run(mention(id), 3, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
+    expect(order).toEqual(['chunk', 'finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c actual worker budget ends a retryable provider failure before provider ceiling', async () => {
+    const id = 'terminal-short-budget';
+    const order = observe(id);
+    const h = harness((input) =>
+      streamed(input, new ProviderError('timeout', 'fixture idle timeout', true)),
+    );
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 1,
+      now: NOW,
+    }).jobId!;
+    expect((await h.run(mention(id), 1, null, jobId)).error).toBeInstanceOf(RetryAfterError);
+    expect(order).toEqual(['chunk', 'finished', 'drop']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c optional handler fails safe on delivery rejection without a budget', async () => {
+    const id = 'terminal-no-scope-delivery';
+    const order = observe(id);
+    const h = harness(streamed, { noConversations: true });
+    const error = new Error('fixture Discord unavailable');
+    h.send.mockRejectedValue(error);
+    expect((await h.run(mention(id))).error).toBe(error);
+    expect(order).toEqual(['chunk', 'drop']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it('T12c final answerSingle rejection still closes a streamed provider failure', async () => {
+    const id = 'terminal-failure-delivery';
+    const order = observe(id);
+    const h = harness((input) =>
+      streamed(input, new ChainFailedError('invalid-request', 'failed', false, [])),
+    );
+    const error = new Error('fixture Discord unavailable');
+    h.send.mockRejectedValue(error);
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    expect((await h.run(mention(id), 2, null, jobId)).error).toBe(error);
+    expect(order).toEqual(['chunk', 'finished', 'drop']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'T12c retention survives missing ledger (noConversations=%s)',
+    async (noConversations) => {
+      const id = `terminal-missing-ledger-${noConversations}`;
+      const order = observe(id);
+      vi.spyOn(runRepo, 'ensureRun').mockImplementation(() => {
+        throw new Error('fixture ledger unavailable');
+      });
+      const h = harness(streamed, { noConversations });
+      expect((await h.run(mention(id))).error).toBeUndefined();
+      expect(getLiveBuffer().read(id)).toBeUndefined();
+      lastStreamRequest?.onChunk?.({ text: 'late answer', reasoning: 'late thought' });
+      expect(h.completionEvents).toEqual(['finished']);
+      expect(order.at(-1)).toBe('drop');
+    },
+  );
+
+  it('T12c invalid token closes an existing queued row without calling a provider or Discord', async () => {
+    const id = 'terminal-invalid-token';
+    runRepo.ensureRun(scope(), {
+      runId: id,
+      userId: USER_ID,
+      behaviourId: behaviour.id,
+      source: 'slash-command',
+      queuedAt: NOW,
+    });
+    const order = observe(id);
+    const h = harness(streamed);
+    await h.run(
+      mention(id, {
+        source: 'slash-command',
+        interaction: {
+          interactionId: '810000000000000002',
+          sealedToken: 'bad-token',
+        },
+      }),
+    );
+    expect(h.inputs).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+    expect(order).toEqual(['finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('failed');
+  });
+
+  it('T12c throw before a provider has no fabricated stream and closes once', async () => {
+    const id = 'terminal-before-provider';
+    const order = observe(id);
+    const h = harness(async () => {
+      throw new Error('fixture context failure');
+    });
+    await h.run(mention(id));
+    expect(order).toEqual(['finished', 'drop']);
+    expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+  });
 
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
     const h = harness(async () => ({ ok: true, content: 'answer' }));
