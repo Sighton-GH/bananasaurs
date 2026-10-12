@@ -180,7 +180,7 @@ const digestInputChars: SettingDefinition<number> = {
   key: 'assistant.digestInputChars',
   group: 'Assistant context',
   label: 'Daily digest input cap',
-  help: 'How many characters of that day\u2019s conversations the digest may send to the AI, newest first. Larger days are split into chunks of this size.',
+  help: 'How many characters of that day\u2019s conversations the digest may send to the AI, newest first. Larger days are trimmed to fit, newest kept, in one AI call.',
   display: 'count',
   schema: z.number().int().min(4_000).max(200_000),
   defaultValue: DIGEST_DEFAULT_INPUT_CHARS,

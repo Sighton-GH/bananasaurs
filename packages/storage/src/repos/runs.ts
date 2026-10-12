@@ -70,24 +70,31 @@ export const ensureRun = (
       .run();
   });
 
-/** The fields `updateRun` may change, plus the new `updatedAt`. Absent means untouched. */
-export type RunPatch = Partial<
-  Pick<
-    RunRow,
-    | 'state'
-    | 'stage'
-    | 'attempt'
-    | 'startedAt'
-    | 'finishedAt'
-    | 'retryAt'
-    | 'model'
-    | 'keyLabel'
-    | 'errorCode'
-    | 'totalTokens'
-    | 'conversationId'
-    | 'traceId'
-  >
-> & { readonly updatedAt: number };
+/**
+ * The fields `updateRun` may change, plus the new `updatedAt`. Absent means
+ * untouched. `errorCode: null` clears a previous error code (an answered run
+ * must not carry a stale failure code).
+ */
+export type RunPatch = Omit<
+  Partial<
+    Pick<
+      RunRow,
+      | 'state'
+      | 'stage'
+      | 'attempt'
+      | 'startedAt'
+      | 'finishedAt'
+      | 'retryAt'
+      | 'model'
+      | 'keyLabel'
+      | 'errorCode'
+      | 'totalTokens'
+      | 'conversationId'
+      | 'traceId'
+    >
+  >,
+  'errorCode'
+> & { readonly errorCode?: string | null; readonly updatedAt: number };
 
 /** Moves a run in place (ADR 0129 §6): only the given fields. A missing run is a no-op. */
 export const updateRun = (scope: GuildScope, runId: string, patch: RunPatch): void =>

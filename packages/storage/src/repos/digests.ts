@@ -1,4 +1,4 @@
-import { asc, desc, gte, lt, like, sql } from 'drizzle-orm';
+import { asc, desc, gte, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { digestOutputSchema, type DigestOutput } from '@bananasaurs/core';
 import {
@@ -149,6 +149,23 @@ export const deleteDigestsOlderThan = (scope: GuildScope, cutoffDay: string): nu
         .run().changes,
   );
 
+/**
+ * Whether the guild has any digest at all — a cheap `LIMIT 1` existence
+ * check for the daily prune timer's enqueue gate, so a guild whose
+ * conversations all aged out still gets its digests pruned (the same reason
+ * `conversationRepo.hasConversations` exists).
+ */
+export const hasDigests = (scope: GuildScope): boolean =>
+  read(scope, (db) => {
+    const row = db
+      .select({ day: assistantDailyDigests.day })
+      .from(assistantDailyDigests)
+      .where(scope.only(assistantDailyDigests))
+      .limit(1)
+      .get();
+    return row !== undefined;
+  });
+
 const TURN_PAGE_LIMIT = 2_000;
 
 export interface DigestDayGroup {
@@ -220,6 +237,15 @@ export interface DigestSearchHit {
 }
 
 /**
+ * Query words are literal text, not LIKE patterns: escape the LIKE
+ * metacharacters (`\` first so the escape itself survives) and match with an
+ * explicit `ESCAPE '\'`. Otherwise a query like `100%` matches every digest
+ * containing `100`, leaking other days' summaries past the channel check.
+ */
+const escapeLikeWord = (word: string): string =>
+  word.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+
+/**
  * Digests whose text matches, returned only when every covered conversation
  * is in the asker's searchable channels. The summary spans the whole day, so
  * one allowed channel cannot authorise other channels' content. Missing or
@@ -251,7 +277,10 @@ export const searchDigests = (
         scope.only(
           assistantDailyDigests,
           sql.join(
-            words.map((w) => like(assistantDailyDigests.summaryText, `%${w}%`)),
+            words.map(
+              (w) =>
+                sql`${assistantDailyDigests.summaryText} LIKE ${`%${escapeLikeWord(w)}%`} ESCAPE '\\'`,
+            ),
             sql` AND `,
           ),
         ),

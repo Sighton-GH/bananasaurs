@@ -15,9 +15,10 @@ import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
 import { HISTORY_CHARS, HISTORY_TURNS } from '../assistant/conversation-context.js';
 
 /**
- * The model call the summary job runs on the answering entry (ADR 0091
- * decision 4). `{ ok: false }` is a skip, never a retry: the raw turns are
- * kept, so the next answer re-enqueues with a larger range.
+ * The model call the summary job runs on the entry picked by
+ * `backgroundTier('summary')` (S5-T14), not the answering entry. `{ ok: false }`
+ * is a skip, never a retry: the raw turns are kept, so the next answer
+ * re-enqueues with a larger range.
  */
 export type SummariseModelPort = (req: {
   readonly providerId: string;
