@@ -583,6 +583,155 @@ describe('GeminiProvider', () => {
       thinkingTokens: 4,
     });
   });
+  describe('review regressions', () => {
+    const request = { model: 'm', messages: [{ role: 'user' as const, text: 'hi' }] };
+    const key = 'AIza_FAKE_ONLY_REVIEW_SECRET_123456789';
+    it.each(['body', 'chunk', 'progress', 'fetch'] as const)(
+      'sanitizes key-bearing ProviderError from %s while keeping evidence',
+      async (where) => {
+        const sourceError = new ProviderError('quota', key, false, {
+          cause: new Error(key),
+          host: 'safe.test',
+          status: 429,
+          netCode: 'ECONNRESET',
+          quotaScope: 'minute',
+          retryAfterMs: 23_000,
+          learnedLimit: { perMinute: 8 },
+        });
+        const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+          if (where === 'fetch') throw sourceError;
+          if (where === 'body')
+            return new Response(
+              new ReadableStream({
+                start(c) {
+                  c.error(sourceError);
+                },
+              }),
+            );
+          return sse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+        });
+        const throwError = () => {
+          throw sourceError;
+        };
+        const error = await new GeminiProvider({ apiKey: key, fetch })
+          .generateText({
+            ...request,
+            ...(where === 'chunk' ? { onChunk: throwError } : {}),
+            ...(where === 'progress' ? { onProgress: throwError } : {}),
+          })
+          .catch((e: unknown) => e);
+        expect(error).toMatchObject({
+          kind: 'quota',
+          retryable: false,
+          host: 'safe.test',
+          status: 429,
+          netCode: 'ECONNRESET',
+          quotaScope: 'minute',
+          retryAfterMs: 23_000,
+          learnedLimit: { perMinute: 8 },
+        });
+        expect(String(error) + JSON.stringify(error) + (error as Error).stack).not.toContain(key);
+        expect((error as Error).cause).toBeUndefined();
+      },
+    );
+    it('preserves a safe fetch ProviderError identity and evidence', async () => {
+      const error = new ProviderError('quota', 'quota reached', false, {
+        host: 'safe.test',
+        status: 429,
+        netCode: 'ECONNRESET',
+        quotaScope: 'minute',
+        retryAfterMs: 23_000,
+        learnedLimit: { perMinute: 8 },
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(error);
+      await expect(new GeminiProvider({ apiKey: key, fetch }).generateText(request)).rejects.toBe(
+        error,
+      );
+    });
+    it('does not fetch for a pre-aborted caller', async () => {
+      const controller = new AbortController();
+      controller.abort(new Error(key));
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }));
+      await expect(
+        new GeminiProvider({ apiKey: key, fetch }).generateText({
+          ...request,
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({ kind: 'outage' });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+    it('does not accept a response when caller abort happens while fetch resolves', async () => {
+      const controller = new AbortController();
+      const cancel = vi.fn();
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+        controller.abort();
+        return new Response(new ReadableStream({ cancel }));
+      });
+      await expect(
+        new GeminiProvider({ apiKey: key, fetch }).generateText({
+          ...request,
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({ kind: 'outage' });
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+    it('does not accept an answer when its chunk callback aborts the caller', async () => {
+      const controller = new AbortController();
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }));
+      await expect(
+        new GeminiProvider({ apiKey: key, fetch }).generateText({
+          ...request,
+          signal: controller.signal,
+          onChunk: () => controller.abort(),
+        }),
+      ).rejects.toMatchObject({ kind: 'outage' });
+    });
+    it('does not put arbitrary finish reasons in error evidence', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(sse({ candidates: [{ finishReason: key }] }));
+      const error = await new GeminiProvider({ apiKey: key, fetch })
+        .generateText(request)
+        .catch((e: unknown) => e);
+      expect(JSON.stringify(error)).not.toContain(key);
+      expect((error as ProviderError).finishReason).toBeUndefined();
+    });
+    it.each([401, 403, 500, 429])('cancels and unlocks a stalled HTTP %s body', async (status) => {
+      const cancel = vi.fn();
+      const body = new ReadableStream<Uint8Array>({ cancel });
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(body, { status }));
+      const error = await new GeminiProvider({ apiKey: key, fetch, timeoutMs: 10 })
+        .generateText(request)
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        kind: status === 429 ? 'timeout' : status === 500 ? 'outage' : 'authentication',
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+    });
+    it('cancels a response arriving after a non-cooperative fetch times out', async () => {
+      let resolve!: (r: Response) => void;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+        () =>
+          new Promise<Response>((r) => {
+            resolve = r;
+          }),
+      );
+      await expect(
+        new GeminiProvider({ apiKey: key, fetch, timeoutMs: 10 }).generateText(request),
+      ).rejects.toMatchObject({ kind: 'timeout' });
+      const cancel = vi.fn();
+      resolve(new Response(new ReadableStream({ cancel })));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+  });
   describe('stream lifecycle', () => {
     const setup = (
       options: { timeoutMs?: number; idleTimeoutMs?: number; maxCallMs?: number } = {},
