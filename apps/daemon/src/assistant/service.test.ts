@@ -1399,7 +1399,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(lastText).toContain('[CURRENT MESSAGE from="Ama"]\nsecond question\n[/CURRENT MESSAGE]');
     expect(
       lastText.endsWith(
-        "[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama's current message.",
+        "[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents are included here.\n\nAnswer Ama's current message.",
       ),
     ).toBe(true);
   });
