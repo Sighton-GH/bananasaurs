@@ -19,6 +19,7 @@ export const JOB_LANES = {
   [JOB_KINDS.modPurge]: 'default',
   [JOB_KINDS.deliverReminders]: 'default',
   [JOB_KINDS.mcpBulkRole]: 'default',
+  [JOB_KINDS.assistantDailyDigest]: 'assistant',
 } as const satisfies Record<JobKind, JobLane>;
 
 /** An unmapped kind (a string not in JOB_KINDS) is 'default'. */
