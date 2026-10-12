@@ -1,8 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 import { parseGuildId } from '@bananasaurs/core';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
+import * as schema from '../schema.js';
+import { runMigrations } from '../db.js';
+import {
+  MIGRATIONS_FOLDER,
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '../test-support.js';
+import { createScopeFactory } from '../scope.js';
 import { guildRepo } from '../index.js';
 import { appendTurn, createConversation } from './conversations.js';
+import { ensureRun, getRun } from './runs.js';
 import {
   deleteDigestsOlderThan,
   getDigest,
@@ -217,5 +229,78 @@ describe('digest store (ADR 0150 decision 4)', () => {
     );
     expect(deleteDigestsOlderThan(s, '2026-10-09')).toBe(0);
     expect(getDigest(o, '2026-10-01')).toBeDefined();
+  });
+});
+
+describe('migration 0109 keeps every run and run event', () => {
+  it('rebuilds assistant_runs for the daily-digest source without losing rows', () => {
+    // Filtered migrations folder, copied from search-keys.test.ts, except it
+    // lives inside the repo (never /tmp) and is always removed afterwards.
+    const dir = path.join(MIGRATIONS_FOLDER, '..', '.tmp-migrations-0109');
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(dir, 'meta'), { recursive: true });
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+    const entries = journal.entries.filter((entry) => entry.idx <= 108);
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries)
+      fs.copyFileSync(
+        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+        path.join(dir, `${entry.tag}.sql`),
+      );
+
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    try {
+      runMigrations(raw, db, dir);
+      raw
+        .prepare('INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, ?, ?, ?)')
+        .run(G, 'guild', 1, 1);
+      raw
+        .prepare(
+          `INSERT INTO assistant_runs
+             (guild_id, run_id, user_id, behaviour_id, source, state, stage, attempt, queued_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(G, 'run-1', '100000000000000001', 'club', 'slash-command', 'answered', 'done', 1, 100, 100);
+      const insertEvent = raw.prepare(
+        `INSERT INTO assistant_run_events (guild_id, run_id, seq, at, kind, data_json)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      insertEvent.run(G, 'run-1', 0, 100, 'queued', '{}');
+      insertEvent.run(G, 'run-1', 1, 101, 'finished', '{}');
+
+      runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+      const scope = createScopeFactory(db, { readonly: false }).forGuild(G);
+      expect(getRun(scope, 'run-1')).toMatchObject({ runId: 'run-1', state: 'answered' });
+      expect(
+        raw
+          .prepare(
+            'SELECT seq, kind FROM assistant_run_events WHERE guild_id = ? AND run_id = ? ORDER BY seq',
+          )
+          .all(G, 'run-1'),
+      ).toEqual([
+        { seq: 0, kind: 'queued' },
+        { seq: 1, kind: 'finished' },
+      ]);
+      // The rebuilt source check now admits the digest job's runs.
+      ensureRun(scope, {
+        runId: 'digest-2026-10-09',
+        userId: '100000000000000001',
+        behaviourId: 'default',
+        source: 'daily-digest',
+        queuedAt: 200,
+      });
+      expect(getRun(scope, 'digest-2026-10-09')).toMatchObject({ source: 'daily-digest' });
+    } finally {
+      raw.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
