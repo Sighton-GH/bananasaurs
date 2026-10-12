@@ -370,4 +370,14 @@ describe('capTrace', () => {
     expect(capped.sections[0]?.text.endsWith('… [truncated]')).toBe(true);
     expect(capped.toolCalls.every((call) => call.preview === big)).toBe(true);
   });
+
+  it('caps reasoning at its first 12 entries', () => {
+    const trace = fixtureTrace({
+      reasoning: Array.from({ length: 15 }, (_, index) => ({ round: index + 1, text: `t${index}` })),
+    });
+    const capped = capTrace(trace);
+    expect(capped.reasoning).toHaveLength(12);
+    expect(capped.reasoning?.[0]).toMatchObject({ round: 1, text: 't0' });
+    expect(capped.reasoning?.[11]).toMatchObject({ round: 12, text: 't11' });
+  });
 });
