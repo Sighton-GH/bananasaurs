@@ -9,48 +9,66 @@ import type {
 } from './contracts.js';
 import { ProviderError, type ProviderErrorKind } from './errors.js';
 import { netCodeOf } from './failure.js';
+import { TEXT_AND_TOOLS_ONLY, type ModelCapabilities } from './model-capabilities.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
-
-const toolCallSchema = z.object({
-  id: z.string().optional(),
-  type: z.string().optional(),
-  function: z.object({
-    name: z.string().min(1),
-    arguments: z.string().optional(),
-  }),
-});
+import { parseSseStream } from './sse.js';
 
 /** OpenRouter-only: non-answer reasoning for Responses-API-style providers (ADR 0129 §4). */
 const reasoningTextSchema = z.string().nullable().optional();
 
-const responseSchema = z.object({
+const usageSchema = z.object({
+  prompt_tokens: z.number().int().nonnegative().optional(),
+  completion_tokens: z.number().int().nonnegative().optional(),
+  total_tokens: z.number().int().nonnegative().optional(),
+  completion_tokens_details: z
+    .object({ reasoning_tokens: z.number().int().nonnegative().optional() })
+    .partial()
+    .optional(),
+  /** ADR 0129 §8: OpenRouter's per-call cost, only when `usage.include` was requested. */
+  cost: z.number().nonnegative().optional(),
+});
+
+const streamErrorSchema = z.object({
+  message: z.string().optional(),
+  code: z.union([z.number(), z.string()]).optional(),
+});
+
+/**
+ * One streamed chunk. Deltas replace the old `message` shape; tool-call
+ * arguments arrive fragmented per `index` and are concatenated before they
+ * are parsed once at the end.
+ */
+const streamChunkSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   choices: z
     .array(
       z.object({
-        message: z.object({
-          content: z.string().nullable(),
-          reasoning: reasoningTextSchema,
-          tool_calls: z.array(toolCallSchema).optional(),
-        }),
+        delta: z
+          .object({
+            content: z.string().nullable().optional(),
+            reasoning: reasoningTextSchema,
+            tool_calls: z
+              .array(
+                z.object({
+                  index: z.number().int().nonnegative().optional(),
+                  id: z.string().optional(),
+                  type: z.string().optional(),
+                  function: z.object({
+                    name: z.string().min(1).optional(),
+                    arguments: z.string().optional(),
+                  }),
+                }),
+              )
+              .optional(),
+          })
+          .optional(),
         finish_reason: z.string().nullable().optional(),
+        error: streamErrorSchema.optional(),
       }),
     )
     .default([]),
-  usage: z
-    .object({
-      prompt_tokens: z.number().int().nonnegative().optional(),
-      completion_tokens: z.number().int().nonnegative().optional(),
-      total_tokens: z.number().int().nonnegative().optional(),
-      completion_tokens_details: z
-        .object({ reasoning_tokens: z.number().int().nonnegative().optional() })
-        .partial()
-        .optional(),
-      /** ADR 0129 §8: OpenRouter's per-call cost, only when `usage.include` was requested. */
-      cost: z.number().nonnegative().optional(),
-    })
-    .optional(),
+  usage: usageSchema.optional(),
 });
 
 export interface OpenAiCompatibleProviderOptions {
@@ -59,6 +77,8 @@ export interface OpenAiCompatibleProviderOptions {
   readonly baseUrl: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
+  readonly idleTimeoutMs?: number;
+  readonly maxCallMs?: number;
   readonly extraHeaders?: Readonly<Record<string, string>>;
 }
 
@@ -288,6 +308,8 @@ export class OpenAiCompatibleProvider implements TextProvider {
   private readonly host: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
+  private readonly idleTimeoutMs: number;
+  private readonly maxCallMs: number;
   private readonly extraHeaders: Readonly<Record<string, string>>;
 
   public constructor(options: OpenAiCompatibleProviderOptions) {
@@ -298,6 +320,8 @@ export class OpenAiCompatibleProvider implements TextProvider {
     this.host = new URL(this.baseUrl).host;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 45_000;
+    this.maxCallMs = options.maxCallMs ?? 300_000;
     this.extraHeaders = options.extraHeaders ?? {};
   }
 
@@ -305,187 +329,349 @@ export class OpenAiCompatibleProvider implements TextProvider {
     assertOutboundRequestSafe(request);
     if (request.messages.length === 0)
       throw new ProviderError('invalid-request', 'at least one message is required', false);
-    const signal = request.signal
-      ? AbortSignal.any([request.signal, AbortSignal.timeout(this.timeoutMs)])
-      : AbortSignal.timeout(this.timeoutMs);
-    // Built before the fetch try block so a malformed tool turn keeps its
-    // own error kind instead of being re-wrapped as an outage.
-    const body = JSON.stringify({
-      model: request.model,
-      messages: [
-        ...(request.systemInstruction
-          ? [{ role: 'system', content: request.systemInstruction }]
-          : []),
-        ...request.messages.map((message) => toWireMessage(message, this.id)),
-      ],
-      ...(request.tools !== undefined && request.tools.length > 0
-        ? {
-            tools: request.tools.map((tool) => ({
-              type: 'function',
-              function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.parameters,
-              },
-            })),
-          }
-        : {}),
-      ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
-      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-      // ADR 0129 §8: OpenRouter reports per-call cost only when asked; NIM
-      // has no such field, so its body stays unchanged.
-      ...(this.id === 'openrouter' ? { usage: { include: true } } : {}),
-    });
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.apiKey}`,
-          ...this.extraHeaders,
+    // Capability gate: a thinking/reasoning parameter is never sent to a
+    // model whose capabilities do not support it. Unknown model (no
+    // catalogue) falls back to text + tools only, so nothing is sent.
+    const capabilities: ModelCapabilities = request.capabilities ?? TEXT_AND_TOOLS_ONLY;
+    // Three timers (time-to-first-byte, idle re-armed per byte, absolute
+    // ceiling) plus the caller's signal compose through one controller;
+    // AbortSignal.timeout alone cannot express that.
+    const controller = new AbortController();
+    const abortTimeout = (): void => {
+      controller.abort(new DOMException(`${this.id} stream timed out`, 'TimeoutError'));
+    };
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimers = (): void => {
+      while (timers.length > 0) clearTimeout(timers.pop());
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+    };
+    const rearmIdle = (): void => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      idleTimer = setTimeout(abortTimeout, this.idleTimeoutMs);
+    };
+    // One shared rejection raced against the fetch and against every stream
+    // read, so a timer (or caller abort) unblocks a fetch or a mocked stream
+    // that never settles. The extra catch marks a losing race as handled.
+    const abortRace: Promise<never> = new Promise((_resolve, reject) => {
+      controller.signal.addEventListener(
+        'abort',
+        () => {
+          const reason: unknown = controller.signal.reason;
+          reject(reason instanceof Error ? reason : new DOMException('aborted', 'AbortError'));
         },
-        body,
-        signal,
-      });
-    } catch (error) {
-      const timeout = isTimeoutError(error);
-      const netCode = netCodeOf(error);
-      throw new ProviderError(
-        timeout ? 'timeout' : 'outage',
-        `${this.id} request ${timeout ? 'timed out' : 'failed'}`,
-        true,
-        { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
+        { once: true },
       );
-    }
-    if (!response.ok) {
-      const parsedBody = errorBodySchema.safeParse(await readErrorBody(response));
-      const detail = parsedBody.success ? parsedBody.data : undefined;
-      const metadata = detail?.error.metadata;
-      const reason = shortReason(detail);
-      const retryAfterMs =
-        response.status === 429
-          ? parseRetryAfterMs(response.headers.get('retry-after'))
-          : undefined;
-      if (
-        response.status === 429 &&
-        isDailyFreeQuota(request.model, detail?.error.message, metadata)
-      ) {
-        const resetAt = resolveResetAt(response, metadata, Date.now());
+    });
+    abortRace.catch(() => undefined);
+    request.signal?.addEventListener('abort', () => controller.abort(request.signal?.reason), {
+      once: true,
+    });
+    try {
+      timers.push(setTimeout(abortTimeout, this.maxCallMs)); // hard ceiling
+      const firstByteTimer = setTimeout(abortTimeout, this.timeoutMs); // time to first byte
+      timers.push(firstByteTimer);
+      // Built before the fetch try block so a malformed tool turn keeps its
+      // own error kind instead of being re-wrapped as an outage.
+      const body = JSON.stringify({
+        model: request.model,
+        messages: [
+          ...(request.systemInstruction
+            ? [{ role: 'system', content: request.systemInstruction }]
+            : []),
+          ...request.messages.map((message) => toWireMessage(message, this.id)),
+        ],
+        ...(request.tools !== undefined && request.tools.length > 0
+          ? {
+              tools: request.tools.map((tool) => ({
+                type: 'function',
+                function: {
+                  name: tool.name,
+                  description: tool.description,
+                  parameters: tool.parameters,
+                },
+              })),
+            }
+          : {}),
+        ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
+        ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+        // ADR 0129 §8: OpenRouter reports per-call cost only when asked; NIM
+        // has no such field, so its body stays unchanged.
+        ...(this.id === 'openrouter' ? { usage: { include: true } } : {}),
+        stream: true,
+        // Usage arrives in the final chunk. NIM has no usage-include field
+        // (see above), so it gets neither streaming-usage option.
+        ...(this.id === 'openrouter' ? { stream_options: { include_usage: true } } : {}),
+        ...(this.id === 'openrouter' && capabilities.reasoning
+          ? { reasoning: { exclude: false } }
+          : {}),
+      });
+      let response: Response;
+      try {
+        const fetchPromise = this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.apiKey}`,
+            ...this.extraHeaders,
+          },
+          body,
+          signal: controller.signal,
+        });
+        fetchPromise.catch(() => undefined);
+        response = await Promise.race([fetchPromise, abortRace]);
+      } catch (error) {
+        // Unchanged mapping: TimeoutError (ours or the caller's deadline) →
+        // retryable timeout; anything else → outage. A caller abort surfaces
+        // as an AbortError (not TimeoutError) and keeps today's outage mapping.
+        const timeout = isTimeoutError(error);
+        const netCode = netCodeOf(error);
+        throw new ProviderError(
+          timeout ? 'timeout' : 'outage',
+          `${this.id} request ${timeout ? 'timed out' : 'failed'}`,
+          true,
+          { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
+        );
+      }
+      if (!response.ok) {
+        const parsedBody = errorBodySchema.safeParse(await readErrorBody(response));
+        const detail = parsedBody.success ? parsedBody.data : undefined;
+        const metadata = detail?.error.metadata;
+        const reason = shortReason(detail);
+        const retryAfterMs =
+          response.status === 429
+            ? parseRetryAfterMs(response.headers.get('retry-after'))
+            : undefined;
+        if (
+          response.status === 429 &&
+          isDailyFreeQuota(request.model, detail?.error.message, metadata)
+        ) {
+          const resetAt = resolveResetAt(response, metadata, Date.now());
+          const upstream = upstreamFromError(metadata);
+          throw new ProviderError(
+            'quota',
+            reason === undefined
+              ? `${this.id} free-model daily limit reached`
+              : `${this.id} free-model daily limit reached (${reason})`,
+            false,
+            {
+              quotaScope: 'daily-free',
+              status: response.status,
+              host: this.host,
+              ...(upstream === undefined ? {} : { upstream }),
+              ...(resetAt === undefined ? {} : { resetAt }),
+              ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+            },
+          );
+        }
+        const kind = statusKind(response.status);
         const upstream = upstreamFromError(metadata);
         throw new ProviderError(
-          'quota',
+          kind,
           reason === undefined
-            ? `${this.id} free-model daily limit reached`
-            : `${this.id} free-model daily limit reached (${reason})`,
-          false,
+            ? `${this.id} request failed with HTTP ${response.status}`
+            : `${this.id} request failed with HTTP ${response.status} (${reason})`,
+          kind === 'rate-limit' || kind === 'outage',
           {
-            quotaScope: 'daily-free',
             status: response.status,
             host: this.host,
             ...(upstream === undefined ? {} : { upstream }),
-            ...(resetAt === undefined ? {} : { resetAt }),
             ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
           },
         );
       }
-      const kind = statusKind(response.status);
-      const upstream = upstreamFromError(metadata);
-      throw new ProviderError(
-        kind,
-        reason === undefined
-          ? `${this.id} request failed with HTTP ${response.status}`
-          : `${this.id} request failed with HTTP ${response.status} (${reason})`,
-        kind === 'rate-limit' || kind === 'outage',
-        {
-          status: response.status,
+      if (response.body === null)
+        throw new ProviderError('invalid-response', `${this.id} returned no body`, false, {
           host: this.host,
-          ...(upstream === undefined ? {} : { upstream }),
-          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-        },
-      );
-    }
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch (error) {
-      if (isTimeoutError(error))
-        throw new ProviderError('timeout', `${this.id} request timed out`, true, {
+        });
+      clearTimeout(firstByteTimer); // headers arrived: the call has started
+      rearmIdle(); // the idle timer owns the body from here; keepalives count as bytes
+      let text = '';
+      let reasoning = '';
+      let model: string | undefined;
+      let upstream: string | undefined;
+      let finishReason: string | undefined;
+      let usage: z.infer<typeof usageSchema> | undefined;
+      const toolFragments = new Map<
+        number,
+        { id: string | undefined; name: string | undefined; argsText: string }
+      >();
+      let answerChars = 0;
+      let reasoningChars = 0;
+      let keepalives = 0;
+      let lastByteAt = Date.now();
+      let lastEmitAt = 0;
+      const emitProgress = (): void => {
+        if (request.onProgress === undefined) return;
+        const now = Date.now();
+        if (lastEmitAt !== 0 && now - lastEmitAt < 3_000) return; // at most every 3 s
+        lastEmitAt = now;
+        request.onProgress({
+          round: 0, // the tool loop stamps the real round
+          answerChars,
+          reasoningChars,
+          keepalives,
+          msSinceLastByte: Math.max(0, now - lastByteAt),
+        });
+      };
+      const events = parseSseStream(response.body);
+      try {
+        for (;;) {
+          const next = events.next();
+          next.catch(() => undefined); // a read that loses to the abort race
+          const result = await Promise.race([next, abortRace]);
+          if (result.done === true) break;
+          const event = result.value;
+          lastByteAt = Date.now();
+          rearmIdle();
+          if (event.keepalive) {
+            keepalives += 1;
+            emitProgress();
+            continue;
+          }
+          if (event.data === '') continue; // bare empty-data event: bytes, not a chunk
+          let rawChunk: unknown;
+          try {
+            rawChunk = JSON.parse(event.data);
+          } catch (error) {
+            throw new ProviderError(
+              'invalid-response',
+              `${this.id} returned an invalid chunk`,
+              false,
+              {
+                cause: error,
+              },
+            );
+          }
+          const parsed = streamChunkSchema.safeParse(rawChunk);
+          if (!parsed.success)
+            throw new ProviderError(
+              'invalid-response',
+              `${this.id} returned an invalid chunk`,
+              false,
+              {
+                cause: parsed.error,
+              },
+            );
+          const chunk = parsed.data;
+          if (chunk.model !== undefined) model = chunk.model;
+          if (chunk.provider !== undefined) upstream = chunk.provider;
+          if (chunk.usage !== undefined) usage = chunk.usage;
+          let deltaText = '';
+          let deltaReasoning = '';
+          for (const choice of chunk.choices) {
+            if (choice.error !== undefined || choice.finish_reason === 'error') {
+              // Mid-stream failure inside a 200: retryable, partial text
+              // discarded — never delivered, never stored.
+              throw new ProviderError('outage', `${this.id} stream failed mid-response`, true, {
+                host: this.host,
+                finishReason: 'error',
+                ...(upstream === undefined ? {} : { upstream }),
+              });
+            }
+            if (
+              choice.finish_reason !== undefined &&
+              choice.finish_reason !== null &&
+              choice.finish_reason !== ''
+            )
+              finishReason = choice.finish_reason;
+            const delta = choice.delta;
+            if (delta === undefined) continue;
+            if (delta.content !== undefined && delta.content !== null) {
+              text += delta.content;
+              deltaText += delta.content;
+              answerChars += delta.content.length;
+            }
+            if (delta.reasoning !== undefined && delta.reasoning !== null) {
+              reasoning += delta.reasoning;
+              deltaReasoning += delta.reasoning;
+              reasoningChars += delta.reasoning.length;
+            }
+            for (const call of delta.tool_calls ?? []) {
+              const index = call.index ?? 0;
+              const frag = toolFragments.get(index);
+              // First-seen id/name win; a name arriving only in a later
+              // fragment is still picked up; args concatenate per index and
+              // parse once at the end.
+              toolFragments.set(index, {
+                id: frag?.id ?? call.id,
+                name: frag?.name ?? call.function.name,
+                argsText: (frag?.argsText ?? '') + (call.function.arguments ?? ''),
+              });
+            }
+          }
+          if (deltaText !== '' || deltaReasoning !== '')
+            request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
+          emitProgress();
+        }
+      } catch (error) {
+        // Our first-byte/idle/ceiling timers abort with TimeoutError →
+        // retryable timeout (same mapping as the fetch catch). Errors thrown
+        // above (mid-stream outage, invalid chunk) pass through unchanged.
+        if (error instanceof ProviderError) throw error;
+        if (isTimeoutError(error))
+          throw new ProviderError('timeout', `${this.id} stream timed out`, true, {
+            cause: error,
+            host: this.host,
+          });
+        throw new ProviderError('outage', `${this.id} stream failed`, true, {
           cause: error,
           host: this.host,
         });
-      if (error instanceof SyntaxError)
-        throw new ProviderError(
-          'invalid-response',
-          `${this.id} returned an invalid response`,
-          false,
-          {
-            cause: error,
-          },
+      }
+      const toolCalls: ToolCall[] = [...toolFragments.entries()]
+        .sort(([a], [b]) => a - b)
+        .flatMap(([, frag]) =>
+          frag.name === undefined
+            ? []
+            : [
+                {
+                  ...(frag.id === undefined ? {} : { id: frag.id }),
+                  name: frag.name,
+                  args: parseToolArguments(frag.argsText),
+                },
+              ],
         );
-      throw new ProviderError('outage', `${this.id} request failed`, true, {
-        cause: error,
-        host: this.host,
-      });
+      const finish = finishReason === '' || finishReason === undefined ? undefined : finishReason;
+      const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
+      const reasoningOnly = reasoning !== '';
+      if (text === '' && toolCalls.length === 0)
+        throw new ProviderError('invalid-response', `${this.id} returned no text`, false, {
+          host: this.host,
+          ...(finish === undefined ? {} : { finishReason: finish }),
+          ...(upstream === undefined ? {} : { upstream }),
+          emptyAnswer: {
+            ...(usage?.completion_tokens !== undefined
+              ? { completionTokens: usage.completion_tokens }
+              : {}),
+            ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+            reasoningOnly,
+          },
+        });
+      return {
+        text,
+        model: model ?? request.model,
+        ...(finish ? { finishReason: finish.slice(0, 40) } : {}),
+        ...(toolCalls.length === 0 ? {} : { toolCalls }),
+        ...(reasoning === '' ? {} : { reasoning }),
+        ...(upstream === undefined ? {} : { upstream: upstream.slice(0, 60) }),
+        ...(usage
+          ? {
+              usage: {
+                ...(usage.prompt_tokens !== undefined ? { promptTokens: usage.prompt_tokens } : {}),
+                ...(usage.completion_tokens !== undefined
+                  ? { completionTokens: usage.completion_tokens }
+                  : {}),
+                ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
+                ...(reasoningTokens !== undefined ? { thinkingTokens: reasoningTokens } : {}),
+                ...(usage.cost !== undefined ? { costUsd: usage.cost } : {}),
+              },
+            }
+          : {}),
+      };
+    } finally {
+      clearTimers();
     }
-    const parsed = responseSchema.safeParse(raw);
-    if (!parsed.success)
-      throw new ProviderError(
-        'invalid-response',
-        `${this.id} returned an invalid response`,
-        false,
-        { cause: parsed.error },
-      );
-    const choice = parsed.data.choices[0];
-    const text = choice?.message.content ?? '';
-    const toolCalls: ToolCall[] = (choice?.message.tool_calls ?? []).map((call) => ({
-      ...(call.id === undefined ? {} : { id: call.id }),
-      name: call.function.name,
-      args: parseToolArguments(call.function.arguments),
-    }));
-    const finishReason =
-      choice?.finish_reason === null ||
-      choice?.finish_reason === '' ||
-      choice?.finish_reason === undefined
-        ? undefined
-        : choice.finish_reason;
-    const upstream = parsed.data.provider;
-    const usage = parsed.data.usage;
-    const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
-    const reasoningOnly = (choice?.message.reasoning ?? '') !== '';
-    if (text === '' && toolCalls.length === 0)
-      throw new ProviderError('invalid-response', `${this.id} returned no text`, false, {
-        host: this.host,
-        ...(finishReason === undefined ? {} : { finishReason }),
-        ...(upstream === undefined ? {} : { upstream }),
-        emptyAnswer: {
-          ...(usage?.completion_tokens !== undefined
-            ? { completionTokens: usage.completion_tokens }
-            : {}),
-          ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
-          reasoningOnly,
-        },
-      });
-    return {
-      text,
-      model: parsed.data.model ?? request.model,
-      ...(finishReason ? { finishReason: finishReason.slice(0, 40) } : {}),
-      ...(toolCalls.length === 0 ? {} : { toolCalls }),
-      ...(upstream === undefined ? {} : { upstream: upstream.slice(0, 60) }),
-      ...(usage
-        ? {
-            usage: {
-              ...(usage.prompt_tokens !== undefined ? { promptTokens: usage.prompt_tokens } : {}),
-              ...(usage.completion_tokens !== undefined
-                ? { completionTokens: usage.completion_tokens }
-                : {}),
-              ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
-              ...(reasoningTokens !== undefined ? { thinkingTokens: reasoningTokens } : {}),
-              ...(usage.cost !== undefined ? { costUsd: usage.cost } : {}),
-            },
-          }
-        : {}),
-    };
   }
 }
 
