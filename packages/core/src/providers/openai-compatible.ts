@@ -10,6 +10,7 @@ import type {
 } from './contracts.js';
 import { ProviderError, type ProviderErrorKind } from './errors.js';
 import { netCodeOf } from './failure.js';
+import { invokeStreamCallback } from './callbacks.js';
 import { TEXT_AND_TOOLS_ONLY, type ModelCapabilities } from './model-capabilities.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
 import { parseSseStream } from './sse.js';
@@ -189,6 +190,8 @@ const readErrorBody = async (response: Response, abortRace: Promise<never>): Pro
 /**
  * Percent-encoded spellings of the key (every character, either hex case, and
  * the usual encodeURIComponent form): a URL inside an upstream message can echo it.
+ * Standard and URL-safe base64 encodings (padded and unpadded): an upstream
+ * body can echo the key in either alphabet.
  */
 const keyForms = (key: string): readonly string[] => {
   const bytes = [...new TextEncoder().encode(key)];
@@ -201,7 +204,18 @@ const keyForms = (key: string): readonly string[] => {
         ),
       )
       .join('');
-  return [key, encodeURIComponent(key), hex(true), hex(false)];
+  const std = Buffer.from(key, 'utf8').toString('base64');
+  const url = Buffer.from(key, 'utf8').toString('base64url');
+  return [
+    key,
+    encodeURIComponent(key),
+    hex(true),
+    hex(false),
+    std,
+    std.replace(/=+$/, ''),
+    url,
+    url.replace(/=+$/, ''),
+  ];
 };
 
 /**
@@ -794,34 +808,17 @@ export class OpenAiCompatibleProvider implements TextProvider {
           closeBody();
         }
       };
-      /**
-       * Typed void callbacks can still return promises (same as Gemini): observe them, race
-       * them against the abort so a slow callback stays inside the ceiling, and sanitise
-       * any rejection so it can neither reach the key nor become an unhandled rejection.
-       */
-      const runCallback = async (call: () => unknown): Promise<void> => {
-        let pending: Promise<unknown>;
-        try {
-          pending = Promise.resolve(call());
-        } catch (error) {
-          throw sanitizeCause(error, this.apiKey);
-        }
-        const guarded = pending.then(
-          () => undefined,
-          (error: unknown) => {
-            throw sanitizeCause(error, this.apiKey);
-          },
-        );
-        await Promise.race([guarded, abortRace]);
-      };
+      // Progress callbacks can never fail the call: fire-and-forget and
+      // synchronous, with sync throws and async rejections swallowed, so a
+      // broken callback neither aborts the stream nor becomes a ProviderError.
       let lastEmitAt = 0;
-      const emitProgress = async (): Promise<void> => {
+      const emitProgress = (): void => {
         const onProgress = request.onProgress;
         if (onProgress === undefined) return;
         const now = Date.now();
         if (lastEmitAt !== 0 && now - lastEmitAt < 3_000) return; // at most every 3 s
         lastEmitAt = now;
-        await runCallback(() =>
+        invokeStreamCallback(() =>
           onProgress({
             round: 0, // the tool loop stamps the real round
             answerChars,
@@ -846,7 +843,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           const event = result.value;
           if (event.keepalive) {
             keepalives += 1;
-            await emitProgress();
+            emitProgress();
             continue;
           }
           if (event.data === '') continue; // bare empty-data event: bytes, not a chunk
@@ -946,9 +943,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
           if (deltaText !== '' || deltaReasoning !== '') {
             const onChunk = request.onChunk;
             if (onChunk !== undefined)
-              await runCallback(() => onChunk({ text: deltaText, reasoning: deltaReasoning }));
+              invokeStreamCallback(() => onChunk({ text: deltaText, reasoning: deltaReasoning }));
           }
-          await emitProgress();
+          emitProgress();
         }
       } catch (error) {
         closeBody();
@@ -992,14 +989,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
                 },
               ],
         );
-      // A stream that ends cleanly without any finish_reason is truncated,
-      // not complete: never return the partial as a success. Detectable
-      // here without touching sse.ts.
-      if (finishReason === undefined && (text !== '' || reasoning !== '' || toolCalls.length > 0))
-        throw trusted('outage', `${this.id} stream ended without a finish reason`, true, {
-          host: this.host,
-          ...(upstream === undefined ? {} : { upstream }),
-        });
+      // A stream that ends cleanly without any finish_reason still returns
+      // its answer or tool calls (same as Gemini), with `finishReason`
+      // undefined. Only a stream with no text and no tool call throws below.
       const finish = finishReason === '' || finishReason === undefined ? undefined : finishReason;
       const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
       const reasoningOnly = reasoning !== '';

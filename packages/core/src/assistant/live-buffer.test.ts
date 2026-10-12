@@ -47,4 +47,22 @@ describe('createLiveBuffer', () => {
     buf.drop('missing');
     expect(buf.read('run-2')).toEqual({ answer: 'other', thinking: 'thought' });
   });
+
+  it('keeps at most 50 runs, evicting the least recently written', () => {
+    const buf = createLiveBuffer();
+    for (let i = 0; i < 50; i++) buf.append(`run-${i}`, `a${i}`, '');
+    buf.append('run-0', '+', ''); // run-0 is now the most recently written
+    buf.append('run-50', 'new', ''); // 51st distinct run
+    expect(buf.read('run-1')).toBeUndefined();
+    expect(buf.read('run-0')?.answer).toBe('a0+');
+    expect(buf.read('run-50')?.answer).toBe('new');
+  });
+
+  it('drops a run idle for 30 minutes on read', () => {
+    let t = 1_000_000;
+    const buf = createLiveBuffer({ now: () => t });
+    buf.append('run-1', 'hello', 'why');
+    t += 30 * 60 * 1000;
+    expect(buf.read('run-1')).toBeUndefined();
+  });
 });

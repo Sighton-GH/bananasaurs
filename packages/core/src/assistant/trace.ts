@@ -244,7 +244,7 @@ export const capTrace = (t: AssistantTrace, maxBytes = 200_000): AssistantTrace 
   // 8,000 chars, so an untruncated entry could never be stored.
   const sections = t.sections.map((s) => ({ ...s }));
   const toolCalls = t.toolCalls.map((c) => ({ ...c }));
-  const reasoning = (t.reasoning ?? []).map((r) => ({
+  const reasoning = (t.reasoning ?? []).slice(0, 12).map((r) => ({
     ...r,
     text: truncateTo(r.text, 8000),
   }));

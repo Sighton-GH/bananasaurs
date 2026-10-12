@@ -100,9 +100,11 @@ export const createRunRecorder: (deps: {
     runId: deps.runId,
     event: (e) => {
       if (finished) return;
-      if (e.kind === 'finished') finished = true;
       try {
         runRepo.appendRunEvent(deps.scope, deps.runId, deps.now(), e);
+        // Latch only after the finished append succeeds, so a failed write
+        // lets the next finish attempt append it.
+        if (e.kind === 'finished') finished = true;
         const patch = patchFor(e, deps.now());
         if (patch !== undefined) runRepo.updateRun(deps.scope, deps.runId, patch);
       } catch (err) {

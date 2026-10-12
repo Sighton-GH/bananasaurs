@@ -612,13 +612,18 @@ describe('GeminiProvider', () => {
         const throwError = () => {
           throw error;
         };
-        const caught = await new GeminiProvider({ apiKey: key, fetch })
-          .generateText({
-            ...request,
-            ...(where === 'chunk' ? { onChunk: throwError } : {}),
-            ...(where === 'progress' ? { onProgress: throwError } : {}),
-          })
-          .catch((e: unknown) => e);
+        const provider = new GeminiProvider({ apiKey: key, fetch });
+        const args = {
+          ...request,
+          ...(where === 'chunk' ? { onChunk: throwError } : {}),
+          ...(where === 'progress' ? { onProgress: throwError } : {}),
+        };
+        if (where === 'chunk' || where === 'progress') {
+          // A throwing progress callback never fails the call.
+          await expect(provider.generateText(args)).resolves.toMatchObject({ text: 'hi' });
+          return;
+        }
+        const caught = await provider.generateText(args).catch((e: unknown) => e);
         expect(caught).not.toBe(error);
         expect(caught).toMatchObject({
           kind: 'quota',
@@ -873,13 +878,24 @@ describe('GeminiProvider', () => {
       for (const [name, make] of Object.entries(shapes)) {
         it(`${name} fails closed on ${where}`, async () => {
           const out = await run(make(), where);
+          if (where === 'chunk' || where === 'progress') {
+            // A throwing progress callback never fails the call.
+            expect(out).toMatchObject({ text: 'hi' });
+            return;
+          }
           expect(out).toBeInstanceOf(ProviderError);
           expect(diag(out)).not.toContain(key);
         });
       }
       it(`ordinary safe ProviderError identity is kept on ${where}`, async () => {
         const e = safe();
-        expect(await run(e, where)).toBe(e);
+        const out = await run(e, where);
+        if (where === 'chunk' || where === 'progress') {
+          // A throwing progress callback never fails the call.
+          expect(out).toMatchObject({ text: 'hi' });
+          return;
+        }
+        expect(out).toBe(e);
       });
     }
   });
@@ -913,12 +929,20 @@ describe('GeminiProvider', () => {
         const throwError = () => {
           throw sourceError;
         };
+        const args = {
+          ...request,
+          ...(where === 'chunk' ? { onChunk: throwError } : {}),
+          ...(where === 'progress' ? { onProgress: throwError } : {}),
+        };
+        if (where === 'chunk' || where === 'progress') {
+          // A throwing progress callback never fails the call.
+          await expect(
+            new GeminiProvider({ apiKey: key, fetch }).generateText(args),
+          ).resolves.toMatchObject({ text: 'ok' });
+          return;
+        }
         const error = await new GeminiProvider({ apiKey: key, fetch })
-          .generateText({
-            ...request,
-            ...(where === 'chunk' ? { onChunk: throwError } : {}),
-            ...(where === 'progress' ? { onProgress: throwError } : {}),
-          })
+          .generateText(args)
           .catch((e: unknown) => e);
         expect(error).toMatchObject({
           kind: 'quota',
@@ -1200,7 +1224,7 @@ describe('GeminiProvider', () => {
         vi.useRealTimers();
       }
     });
-    it('preserves ProviderError evidence raised during stream consumption', async () => {
+    it('a throwing chunk callback never fails the call', async () => {
       const error = new ProviderError('quota', 'quota reached', false, {
         quotaScope: 'minute',
         retryAfterMs: 37_000,
@@ -1216,7 +1240,7 @@ describe('GeminiProvider', () => {
             throw error;
           },
         }),
-      ).rejects.toBe(error);
+      ).resolves.toMatchObject({ text: 'hi' });
     });
     it.each(['none', 'budget'] as const)(
       'respects explicit %s capabilities for known models without a budget',
@@ -1340,6 +1364,18 @@ describe('listGeminiModels (ADR 0068)', () => {
       kind: 'invalid-response',
       retryable: false,
     });
+  });
+
+  it('warns when it stops at the 10-page bound with pages still left', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(ok({ models: [], nextPageToken: 'more' })));
+    const warn = vi.fn();
+    await expect(listGeminiModels({ apiKey: 'secret', fetch, logger: { warn } })).resolves.toEqual(
+      [],
+    );
+    expect(fetch).toHaveBeenCalledTimes(10);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('turns a rejected key into an authentication error', async () => {
@@ -1533,37 +1569,57 @@ describe('round 4 sanitizing boundaries', () => {
     expect(result).toMatchObject({ kind: 'invalid-response', retryable: false });
   });
 
-  it.each(['onChunk', 'onProgress'])('observes async %s rejection', async (callback) => {
-    const result = await capture(
-      provider(new Response(frame)).generateText({
+  it.each(['onChunk', 'onProgress'])('an async %s rejection never fails the call', async (callback) => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', listener);
+    try {
+      const result = await new GeminiProvider({
+        apiKey: key,
+        fetch: async () => new Response(frame),
+        timeoutMs: 100,
+        maxCallMs: 200,
+      }).generateText({
         ...request,
-        [callback]: async () => {
-          throw new Error(key);
-        },
-      }),
-    );
-    safe(result);
+        [callback]: () => Promise.reject(new Error(key)),
+      });
+      expect(result).toMatchObject({ text: 'ok' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listener);
+    }
   });
 
   it.each(['onChunk', 'onProgress'])(
-    'bounds a pending async %s and observes a late rejection',
+    'a pending async %s is ignored and a late rejection stays handled',
     async (callback) => {
-      let reject!: (error: Error) => void;
-      const pending = new Promise<void>((_, fail) => {
-        reject = fail;
-      });
-      const p = new GeminiProvider({
-        apiKey: key,
-        fetch: async () => new Response(frame),
-        timeoutMs: 10,
-        idleTimeoutMs: 10,
-        maxCallMs: 20,
-      });
-      const result = await capture(p.generateText({ ...request, [callback]: () => pending }));
-      safe(result);
-      expect(result).toMatchObject({ kind: 'timeout' });
-      reject(new Error(key));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const unhandled: unknown[] = [];
+      const listener = (reason: unknown): void => {
+        unhandled.push(reason);
+      };
+      process.on('unhandledRejection', listener);
+      try {
+        let reject!: (error: Error) => void;
+        const pending = new Promise<void>((_, fail) => {
+          reject = fail;
+        });
+        const p = new GeminiProvider({
+          apiKey: key,
+          fetch: async () => new Response(frame),
+          timeoutMs: 100,
+          maxCallMs: 200,
+        });
+        const result = await p.generateText({ ...request, [callback]: () => pending });
+        expect(result).toMatchObject({ text: 'ok' });
+        reject(new Error(key));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', listener);
+      }
     },
   );
 
@@ -1683,4 +1739,54 @@ describe('round 4 sanitizing boundaries', () => {
       expect(result).toMatchObject({ kind: shape === 'stalled' ? 'timeout' : 'invalid-response' });
     },
   );
+});
+
+describe('progress callbacks never fail the call (round 2 item 1)', () => {
+  const sse = (...payloads: unknown[]): Response =>
+    new Response(
+      `${payloads.map((p) => `data: ${JSON.stringify(p)}\n\n`).join('')}data: [DONE]\n\n`,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+  const request = { model: 'm', messages: [{ role: 'user' as const, text: 'hi' }] };
+  const okFetch = () =>
+    vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      sse({
+        candidates: [{ content: { parts: [{ text: 'answer' }] }, finishReason: 'STOP' }],
+      }),
+    );
+
+  it('an onChunk that throws still returns the full answer', async () => {
+    const onChunk = vi.fn(() => {
+      throw new Error('callback broke');
+    });
+    const res = await new GeminiProvider({ apiKey: 'secret', fetch: okFetch() }).generateText({
+      ...request,
+      onChunk,
+    });
+    expect(onChunk).toHaveBeenCalled();
+    expect(res.text).toBe('answer');
+    expect(res.finishReason).toBe('STOP');
+  });
+
+  it('an onProgress returning a rejected promise still returns the full answer', async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', listener);
+    try {
+      const onProgress = vi.fn(() => Promise.reject(new Error('callback broke')));
+      const res = await new GeminiProvider({ apiKey: 'secret', fetch: okFetch() }).generateText({
+        ...request,
+        onProgress,
+      });
+      expect(onProgress).toHaveBeenCalled();
+      expect(res.text).toBe('answer');
+      expect(res.finishReason).toBe('STOP');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listener);
+    }
+  });
 });

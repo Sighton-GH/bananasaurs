@@ -871,6 +871,25 @@ describe('OpenAI-compatible providers', () => {
       expect(errorOf(err).message).toContain('(redacted)');
     });
 
+    it('redacts standard and URL-safe base64 encodings of the key from an error body', async () => {
+      const key = 'sk-or-base64secret';
+      const std = Buffer.from(key, 'utf8').toString('base64');
+      const url = Buffer.from(key, 'utf8').toString('base64url');
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code: 401, message: `bad ${std} or ${url}` } }), {
+          status: 401,
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'authentication', retryable: false });
+      expect(errorOf(err).message).not.toContain(std);
+      expect(errorOf(err).message).not.toContain(url);
+      expect(errorOf(err).message).toContain('(redacted)');
+    });
+
     it('redacts the key from a mid-stream body failure cause', async () => {
       const key = 'sk-or-streambody';
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
@@ -1173,7 +1192,7 @@ describe('OpenAI-compatible providers', () => {
       ]);
     });
 
-    it('a clean EOF without finish_reason and partial text throws a retryable outage', async () => {
+    it('a clean EOF without finish_reason but with text returns the answer', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
         new Response('data: {"choices":[{"delta":{"content":"part"}}]}\n\n', {
           status: 200,
@@ -1181,13 +1200,12 @@ describe('OpenAI-compatible providers', () => {
         }),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-      const err = await provider
-        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
-        .catch((e: unknown) => e);
-      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      const res = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      expect(res.text).toBe('part');
+      expect(res).not.toHaveProperty('finishReason');
     });
 
-    it('a clean EOF without finish_reason and a partial tool call throws a retryable outage', async () => {
+    it('a clean EOF without finish_reason but with a tool call returns the call', async () => {
       const fetch = vi
         .fn<typeof globalThis.fetch>()
         .mockResolvedValue(
@@ -1197,10 +1215,23 @@ describe('OpenAI-compatible providers', () => {
           ),
         );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const res = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      expect(res.toolCalls).toEqual([{ id: 'a', name: 'f', args: { x: 1 } }]);
+      expect(res).not.toHaveProperty('finishReason');
+    });
+
+    it('a clean EOF without finish_reason, text or tool call still throws', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response('data: {"choices":[{"delta":{}}]}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       const err = await provider
         .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
         .catch((e: unknown) => e);
-      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      expect(err).toMatchObject({ kind: 'invalid-response' });
     });
   });
 });
@@ -1313,30 +1344,24 @@ describe('round 2 adversarial regressions', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(body.locked).toBe(false);
   });
-  it('sanitizes callback ProviderError and preserves classification', async () => {
+  it('a throwing callback never fails the call and leaves the error untouched', async () => {
     const original = new ProviderError('outage', key, true, {
       cause: new Error(key),
       upstream: key,
       finishReason: key,
     });
     void original.stack;
-    const e = (await createOpenRouterProvider({
+    const res = await createOpenRouterProvider({
       apiKey: key,
       fetch: vi.fn<typeof fetch>().mockResolvedValue(response()),
-    })
-      .generateText({
-        ...req,
-        onChunk() {
-          throw original;
-        },
-      })
-      .catch((e: unknown) => e)) as ProviderError;
-    expect(e).not.toBe(original);
-    expect(e.kind).toBe('outage');
-    expect(e.retryable).toBe(true);
-    expect(e.message).toBe('(redacted)');
-    expect(e.stack).not.toContain(key);
-    expect(JSON.stringify(e)).not.toContain(key);
+    }).generateText({
+      ...req,
+      onChunk() {
+        throw original;
+      },
+    });
+    expect(res.text).toBe('answer');
+    expect(res.finishReason).toBe('stop');
     expect(original.message).toBe(key);
   });
   it('idle timeout cancels and unlocks a never-yielding body and aborts fetch', async () => {
@@ -1656,7 +1681,7 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
     }
   });
 
-  it('copies only typed diagnostics from a callback ProviderError', async () => {
+  it('a callback ProviderError never fails the call', async () => {
     const original = new ProviderError('outage', 'safe', true);
     const loose = original as unknown as Record<string, unknown>;
     loose['quotaScope'] = key;
@@ -1665,21 +1690,14 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
     loose['kind'] = key;
     const fetch = async (): Promise<Response> =>
       sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
-    let err: Error | undefined;
-    try {
-      await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
-        ...req,
-        onChunk: () => {
-          throw original;
-        },
-      });
-    } catch (error) {
-      err = error as Error;
-    }
-    expect(err).toBeDefined();
-    expect(observable(err)).not.toContain(key);
-    expect(JSON.stringify(Object.entries(err as object))).not.toContain(key);
-    expect(err).toMatchObject({ kind: 'outage' });
+    const res = await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
+      ...req,
+      onChunk: () => {
+        throw original;
+      },
+    });
+    expect(res.text).toBe('a');
+    expect(res.finishReason).toBe('stop');
   });
 
   it('redacts percent-encoded copies of the key', async () => {
@@ -1702,7 +1720,7 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
   });
 
   it.each(['onChunk', 'onProgress'] as const)(
-    'sanitises an async %s rejection and raises no unhandled rejection',
+    'an async %s rejection never fails the call and raises no unhandled rejection',
     async (name) => {
       const unhandled: unknown[] = [];
       const listener = (reason: unknown): void => {
@@ -1712,19 +1730,13 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
       try {
         const fetch = async (): Promise<Response> =>
           sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
-        let err: Error | undefined;
-        try {
-          await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
-            ...req,
-            [name]: () => Promise.reject(new Error(key)),
-          });
-        } catch (error) {
-          err = error as Error;
-        }
+        const res = await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
+          ...req,
+          [name]: () => Promise.reject(new Error(key)),
+        });
+        expect(res.text).toBe('a');
+        expect(res.finishReason).toBe('stop');
         await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(err).toBeDefined();
-        expect(observable(err)).not.toContain(key);
-        expect(err).toMatchObject({ kind: 'outage', retryable: true });
         expect(unhandled).toEqual([]);
       } finally {
         process.off('unhandledRejection', listener);
@@ -1732,18 +1744,19 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
     },
   );
 
-  it('sanitises a synchronous onProgress throw', async () => {
+  it('a synchronous onProgress throw never fails the call', async () => {
     const fetch = async (): Promise<Response> =>
       sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
-    const err = await createOpenRouterProvider({ apiKey: key, fetch })
-      .generateText({
-        ...req,
-        onProgress: () => {
-          throw new Error(key);
-        },
-      })
-      .catch((error: unknown) => error as Error);
-    expect(observable(err)).not.toContain(key);
+    const onProgress = vi.fn(() => {
+      throw new Error(key);
+    });
+    const res = await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
+      ...req,
+      onProgress,
+    });
+    expect(onProgress).toHaveBeenCalled();
+    expect(res.text).toBe('a');
+    expect(res.finishReason).toBe('stop');
   });
 
   it('stops a never-ending byte trickle at the absolute maxCallMs ceiling', async () => {
@@ -1873,18 +1886,17 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
   });
 
   it.each(['onChunk', 'onProgress'] as const)(
-    'a never-settling %s still ends at the call ceiling',
+    'a never-settling %s is ignored and the call still succeeds',
     async (name) => {
-      const err = await createOpenRouterProvider({
+      const res = await createOpenRouterProvider({
         apiKey: key,
         maxCallMs: 60,
         idleTimeoutMs: 10_000,
         timeoutMs: 10_000,
         fetch: async () => sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] }),
-      })
-        .generateText({ ...req, [name]: () => new Promise<void>(() => undefined) })
-        .catch((error: unknown) => error as Error);
-      expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+      }).generateText({ ...req, [name]: () => new Promise<void>(() => undefined) });
+      expect(res.text).toBe('a');
+      expect(res.finishReason).toBe('stop');
     },
   );
 
@@ -1928,18 +1940,17 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
     }
   });
 
-  it('keeps a validated netCode when cloning a callback ProviderError', async () => {
+  it('a callback ProviderError with a valid netCode never fails the call', async () => {
     const fetch = async (): Promise<Response> =>
       sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
-    const err = await createOpenRouterProvider({ apiKey: key, fetch })
-      .generateText({
-        ...req,
-        onChunk: () => {
-          throw new ProviderError('outage', 'reset', true, { netCode: 'ECONNRESET' });
-        },
-      })
-      .catch((error: unknown) => error as Error);
-    expect(err).toMatchObject({ kind: 'outage', netCode: 'ECONNRESET' });
+    const res = await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
+      ...req,
+      onChunk: () => {
+        throw new ProviderError('outage', 'reset', true, { netCode: 'ECONNRESET' });
+      },
+    });
+    expect(res.text).toBe('a');
+    expect(res.finishReason).toBe('stop');
   });
 
   it('survives an object that inherits a trapping Proxy prototype and a descriptor-trapping Proxy', async () => {
@@ -2003,5 +2014,47 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
     );
     expect(err).toMatchObject({ kind: 'outage' });
     expect((err as ProviderError).netCode).toBeUndefined();
+  });
+});
+
+describe('progress callbacks never fail the call (round 2 item 1)', () => {
+  const req: GenerateTextRequest = { model: 'm', messages: [{ role: 'user', text: 'hi' }] };
+  const okFetch = () =>
+    vi.fn<typeof fetch>().mockResolvedValue(
+      sse({ choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }),
+    );
+
+  it('an onChunk that throws still returns the full answer', async () => {
+    const onChunk = vi.fn(() => {
+      throw new Error('callback broke');
+    });
+    const res = await createOpenRouterProvider({ apiKey: 'secret', fetch: okFetch() }).generateText(
+      { ...req, onChunk },
+    );
+    expect(onChunk).toHaveBeenCalled();
+    expect(res.text).toBe('answer');
+    expect(res.finishReason).toBe('stop');
+  });
+
+  it('an onProgress returning a rejected promise still returns the full answer', async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', listener);
+    try {
+      const onProgress = vi.fn(() => Promise.reject(new Error('callback broke')));
+      const res = await createOpenRouterProvider({
+        apiKey: 'secret',
+        fetch: okFetch(),
+      }).generateText({ ...req, onProgress });
+      expect(onProgress).toHaveBeenCalled();
+      expect(res.text).toBe('answer');
+      expect(res.finishReason).toBe('stop');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listener);
+    }
   });
 });
