@@ -11,6 +11,7 @@ import {
   type GenerationMessage,
   type Logger,
   type TextProvider,
+  type StreamProgress,
   type ToolCall,
   type ToolDeclaration,
   RETURNED_ID_ARGS,
@@ -54,6 +55,8 @@ export interface LoopResult {
   readonly toolCalls: AssistantTrace['toolCalls'];
   readonly usage: AssistantTrace['usage'];
   readonly finishReason?: string;
+  /** Saved thinking in call order, capped for trace storage (ADR 0148). */
+  readonly reasoning: readonly { readonly round: number; readonly text: string }[];
   readonly guard: AssistantTrace['guard'];
   readonly sources: readonly ToolSource[];
   readonly web: boolean;
@@ -238,6 +241,11 @@ export const runToolLoop = async (input: {
     | undefined;
   /** Called once when a hand-over happens, with the entry and its successors. */
   readonly onEscalated?: ((entry: ChainEntry, next: readonly ChainEntry[]) => void) | undefined;
+  /** Per-run throttled fan-out; metadata-only ledger recording always runs. */
+  readonly onProgress?: ((progress: StreamProgress) => void) | undefined;
+  /** Unthrottled deltas; service/job completion owns finished and buffer drop. */
+  readonly live?:
+    { append(runId: string, answerDelta: string, reasoningDelta: string): void } | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -272,6 +280,44 @@ export const runToolLoop = async (input: {
   // ADR 0129 §6: every provider call, skip, tool call and guard step lands in
   // the run ledger; absent means nothing is recorded.
   const recorder = input.recorder ?? NOOP_RUN_RECORDER;
+  const reasoning: { round: number; text: string }[] = [];
+  const collectReasoning = (round: number, text: string | undefined): void => {
+    if (text !== undefined && text !== '' && reasoning.length < 12)
+      reasoning.push({ round, text: text.slice(0, 8000) });
+  };
+  // One throttle for the whole run, including failover and escalation.
+  // Undefined is distinct from a legitimate clock value of zero.
+  let lastProgressEmit: number | undefined;
+  const streamCallbacks = (round: number): StreamCallbacks => {
+    let open = true;
+    return {
+      close: () => {
+        open = false;
+      },
+      onProgress: (progress) => {
+        if (!open) return;
+        const nowMs = input.now();
+        if (lastProgressEmit !== undefined && nowMs - lastProgressEmit < 3000) return;
+        lastProgressEmit = nowMs;
+        // Explicit fields keep the ledger metadata-only even if an injected
+        // provider adds answer or thinking text to its progress object.
+        const stamped: StreamProgress = {
+          round,
+          answerChars: progress.answerChars,
+          reasoningChars: progress.reasoningChars,
+          keepalives: progress.keepalives,
+          msSinceLastByte: progress.msSinceLastByte,
+        };
+        recorder.event({ kind: 'model-progress', ...stamped });
+        input.onProgress?.(stamped);
+      },
+      onChunk: (chunk) => {
+        // A settled or failed call must never resurrect a dropped buffer.
+        const runId = input.runId ?? input.recorder?.runId;
+        if (open && runId !== undefined) input.live?.append(runId, chunk.text, chunk.reasoning);
+      },
+    };
+  };
 
   const recordUsage = (usage: GenerateTextResponse['usage']): void => {
     if (usage?.promptTokens !== undefined) {
@@ -483,6 +529,8 @@ export const runToolLoop = async (input: {
       actionSummaries,
       budgets,
       recordUsage,
+      streamCallbacks,
+      collectReasoning,
       noteError: (err) => {
         lastError = err;
       },
@@ -541,6 +589,7 @@ export const runToolLoop = async (input: {
         web,
         webSources: [...webSources],
         toolsOffered: [...toolsOffered],
+        reasoning: [...reasoning],
         ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
         ...(answered.outcome === 'failed' && sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
@@ -561,6 +610,7 @@ export const runToolLoop = async (input: {
     web,
     webSources: [...webSources],
     toolsOffered: [...toolsOffered],
+    reasoning: [...reasoning],
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
     ...(localLimit === undefined ? {} : { localLimit }),
@@ -640,6 +690,12 @@ const cleanCitationTitle = (title: string): string =>
     .slice(0, 120)
     .trim();
 
+interface StreamCallbacks {
+  readonly onProgress: NonNullable<GenerateTextRequest['onProgress']>;
+  readonly onChunk: NonNullable<GenerateTextRequest['onChunk']>;
+  readonly close: () => void;
+}
+
 const runEntry = async (deps: {
   readonly entry: ChainEntry;
   readonly systemInstruction: string;
@@ -658,6 +714,8 @@ const runEntry = async (deps: {
   /** Per-request budgets, shared across entries so failover never resets them. */
   readonly budgets: { callsUsed: number; resultChars: number };
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
+  readonly streamCallbacks: (round: number) => StreamCallbacks;
+  readonly collectReasoning: (round: number, text: string | undefined) => void;
   readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: (source: 'brave' | 'tavily' | 'parallel') => void;
   /** Task G3: round-1 declaration names actually sent, in first-sent order. */
@@ -893,6 +951,7 @@ const runEntry = async (deps: {
     if (round === 1) {
       deps.recordOffered(declarations.map((declaration) => declaration.name));
     }
+    const stream = deps.streamCallbacks(round);
     const request: GenerateTextRequest = {
       model: entry.model,
       systemInstruction: deps.systemInstruction,
@@ -900,6 +959,9 @@ const runEntry = async (deps: {
       maxOutputTokens: limits.maxOutputTokens,
       thinkingBudget: declarations.length > 0 ? limits.toolThinking : limits.answerThinking,
       ...(declarations.length === 0 ? {} : { tools: declarations }),
+      ...(entry.capabilities === undefined ? {} : { capabilities: entry.capabilities }),
+      onProgress: stream.onProgress,
+      onChunk: stream.onChunk,
     };
     const callStarted = deps.now();
     try {
@@ -920,6 +982,7 @@ const runEntry = async (deps: {
       if (!response || typeof response.text !== 'string' || typeof response.model !== 'string') {
         throw new ProviderError('invalid-response', 'Provider returned an invalid response', false);
       }
+      deps.collectReasoning(round, response.reasoning);
       deps.recordUsage(response.usage);
       deps.recorder.event({
         kind: 'model-result',
@@ -946,6 +1009,8 @@ const runEntry = async (deps: {
     } catch (err) {
       failAttempt(err, Math.max(0, deps.now() - callStarted));
       return undefined;
+    } finally {
+      stream.close();
     }
   };
 
@@ -1216,6 +1281,11 @@ const runEntry = async (deps: {
   return finishEntry({ entry, provider, response: final, messages: [...messages, extra], deps });
 };
 
+const markCutShort = (text: string, finishReason: string | undefined): string =>
+  text !== '' && (finishReason === 'length' || finishReason === 'MAX_TOKENS')
+    ? text + '\n\n-# (cut short)'
+    : text;
+
 const finishEntry = async (deps: {
   readonly entry: ChainEntry;
   readonly provider: TextProvider;
@@ -1229,6 +1299,9 @@ const finishEntry = async (deps: {
     readonly attempts: Attempt[];
     readonly entryMs: () => number;
     readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
+    readonly noteError: (err: ProviderError) => void;
+    readonly streamCallbacks: (round: number) => StreamCallbacks;
+    readonly collectReasoning: (round: number, text: string | undefined) => void;
     readonly reserveCall?: ReserveCall | undefined;
     readonly logger?: Pick<Logger, 'warn' | 'info'> | undefined;
     readonly guildId?: string | undefined;
@@ -1288,7 +1361,7 @@ const finishEntry = async (deps: {
     okAttempt();
     return {
       outcome: 'answered',
-      text: guarded.text,
+      text: markCutShort(guarded.text, deps.response.finishReason),
       model: deps.response.model,
       provider: deps.entry.providerId,
       answeredBy: {
@@ -1338,6 +1411,7 @@ const finishEntry = async (deps: {
   } else {
     // Hoisted so the catch below records the retry call's own duration.
     const retryStarted = outer.now();
+    const stream = outer.streamCallbacks(0);
     try {
       // ADR 0129 §6: the guard retry is its own ledger call, like any other.
       outer.recorder.event({
@@ -1356,7 +1430,11 @@ const finishEntry = async (deps: {
         messages: [...deps.messages, { role: 'user', text: ANSWER_INSTRUCTION }],
         maxOutputTokens: outer.limits.maxOutputTokens,
         thinkingBudget: outer.limits.answerThinking,
+        ...(deps.entry.capabilities === undefined ? {} : { capabilities: deps.entry.capabilities }),
+        onProgress: stream.onProgress,
+        onChunk: stream.onChunk,
       });
+      outer.collectReasoning(0, retry.reasoning);
       outer.recordUsage(retry.usage);
       const second = guardAnswer({
         text: retry.text,
@@ -1397,7 +1475,7 @@ const finishEntry = async (deps: {
         recordGuard(second.removed);
         return {
           outcome: 'answered',
-          text: second.text,
+          text: markCutShort(second.text, retry.finishReason),
           model: retry.model,
           provider: deps.entry.providerId,
           answeredBy: {
@@ -1427,6 +1505,7 @@ const finishEntry = async (deps: {
         };
       }
     } catch (err) {
+      if (err instanceof ProviderError) outer.noteError(err);
       // A failed retry is still a failed answer, not a chain error — but the
       // failure is a journal line (ADR 0129 §5), never a bare `catch {}`.
       // ADR 0129 §6: and a ledger step, like any other failed call.
@@ -1467,6 +1546,8 @@ const finishEntry = async (deps: {
           'provider attempt failed',
         );
       }
+    } finally {
+      stream.close();
     }
   }
   outer.attempts.push({

@@ -7,6 +7,7 @@ import {
   providerDayStart,
   SafeProvider,
   type Config,
+  type ModelCapabilities,
   type ProviderCostClass,
   type TextProvider,
 } from '@bananasaurs/core';
@@ -58,6 +59,7 @@ export interface ChainEntry {
   readonly tier: 'standard' | 'light';
   /** The key actually constructed, equal to keyId for a one-key entry. */
   readonly selectedKeyId: string;
+  readonly capabilities?: ModelCapabilities;
 }
 
 export const ENV_KEY_ID = 'key_env';
@@ -71,15 +73,23 @@ export const makeProvider = (
   provider: ProviderId,
   apiKey: string,
   costClass: ProviderCostClass,
-  options?: { readonly timeoutMs?: number },
+  options?: {
+    readonly timeoutMs?: number;
+    readonly idleTimeoutMs?: number;
+    readonly maxCallMs?: number;
+  },
 ): TextProvider => {
-  const timeoutMs = options?.timeoutMs;
+  const timeouts = {
+    ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options?.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
+    ...(options?.maxCallMs === undefined ? {} : { maxCallMs: options.maxCallMs }),
+  };
   const inner =
     provider === 'gemini'
-      ? new GeminiProvider({ apiKey, ...(timeoutMs === undefined ? {} : { timeoutMs }) })
+      ? new GeminiProvider({ apiKey, ...timeouts })
       : provider === 'openrouter'
-        ? createOpenRouterProvider({ apiKey, ...(timeoutMs === undefined ? {} : { timeoutMs }) })
-        : createNvidiaNimProvider({ apiKey, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+        ? createOpenRouterProvider({ apiKey, ...timeouts })
+        : createNvidiaNimProvider({ apiKey, ...timeouts });
   return new SafeProvider(inner, costClass, { monthlyCapUsdMicros: 0 });
 };
 
@@ -169,10 +179,16 @@ export const resolveModelChain = (deps: {
     provider: ProviderId,
     apiKey: string,
     costClass: ProviderCostClass,
-    options?: { readonly timeoutMs?: number },
+    options?: {
+      readonly timeoutMs?: number;
+      readonly idleTimeoutMs?: number;
+      readonly maxCallMs?: number;
+    },
   ) => TextProvider;
   /** Read once per resolve and passed to `makeProvider`. Absent means the provider default. */
   readonly providerTimeoutMs?: () => number;
+  readonly providerIdleTimeoutMs?: () => number;
+  readonly providerMaxCallMs?: () => number;
 }): readonly ChainEntry[] => {
   const storedKeys = assistantProvidersRepo.listKeys(deps.instance);
   const keysById = new Map(storedKeys.map((k) => [k.keyId, k] as const));
@@ -206,6 +222,8 @@ export const resolveModelChain = (deps: {
   // Entries sharing a key share one constructed provider instance.
   const providerCache = new Map<string, TextProvider | undefined>();
   const timeoutMs = deps.providerTimeoutMs?.();
+  const idleTimeoutMs = deps.providerIdleTimeoutMs?.();
+  const maxCallMs = deps.providerMaxCallMs?.();
   const providerFor = (candidate: Candidate): TextProvider | undefined => {
     if (providerCache.has(candidate.keyId)) return providerCache.get(candidate.keyId);
     // The only stored-secret opening boundary. Nothing opened is carried on a candidate or entry.
@@ -216,9 +234,13 @@ export const resolveModelChain = (deps: {
       return undefined;
     }
     const built =
-      timeoutMs === undefined
+      timeoutMs === undefined && idleTimeoutMs === undefined && maxCallMs === undefined
         ? deps.makeProvider(candidate.provider, apiKey, candidate.costClass)
-        : deps.makeProvider(candidate.provider, apiKey, candidate.costClass, { timeoutMs });
+        : deps.makeProvider(candidate.provider, apiKey, candidate.costClass, {
+            ...(timeoutMs === undefined ? {} : { timeoutMs }),
+            ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+            ...(maxCallMs === undefined ? {} : { maxCallMs }),
+          });
     providerCache.set(candidate.keyId, built);
     return built;
   };
