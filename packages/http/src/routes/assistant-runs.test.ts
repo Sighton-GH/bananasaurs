@@ -109,10 +109,11 @@ describe('assistant run routes', () => {
     }
   });
 
-  it('serves live text for an in-guild run', async () => {
+  it('serves live answer and thinking with config.read for an in-guild run', async () => {
     const { cookie } = await signIn();
     grant('audit.read');
     seedRun('run-1');
+    grant('config.read');
     getLiveBuffer().append('run-1', 'hello Sam L', 'why this answer');
     const ok = await app.inject({
       method: 'GET',
@@ -121,6 +122,32 @@ describe('assistant run routes', () => {
     });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toEqual({ answer: 'hello Sam L', thinking: 'why this answer' });
+  });
+
+  it('withholds live thinking without config.read while returning the answer', async () => {
+    grant('audit.read');
+    const { cookie } = await signIn();
+    seedRun('run-1');
+    const thinkingText = 'Private thinking for Sam L';
+    getLiveBuffer().append('run-1', 'hello Sam L', thinkingText);
+    const without = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-1/live',
+      headers: { cookie },
+    });
+    expect(without.statusCode).toBe(200);
+    expect(without.body).not.toContain(thinkingText);
+    expect(without.json()).toEqual({ answer: 'hello Sam L', thinking: '' });
+
+    grant('config.read');
+    const withGrant = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-1/live',
+      headers: { cookie },
+    });
+    expect(withGrant.statusCode).toBe(200);
+    expect(withGrant.body).toContain(thinkingText);
+    expect(withGrant.json()).toEqual({ answer: 'hello Sam L', thinking: thinkingText });
   });
 
   it('live text needs audit.read before checking whether the run exists', async () => {
