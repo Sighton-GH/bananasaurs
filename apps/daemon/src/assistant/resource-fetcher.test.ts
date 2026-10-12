@@ -421,3 +421,44 @@ describe('reviewed resource fetcher', () => {
     });
   });
 });
+
+it('fetchBytes returns raw bytes for an allowlisted host and refuses anything else', async () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const bytesBody = async function* (): AsyncIterable<Uint8Array> {
+    yield png;
+  };
+  const request = vi.fn<PinnedRequest>(async () => ({
+    status: 200,
+    headers: { 'content-type': 'image/png' },
+    body: bytesBody(),
+  }));
+  const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+  const good = await fetcher.fetchBytes('https://cdn.discordapp.com/attachments/1/2/a.png', {
+    allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
+    maxBytes: 5_242_880,
+  });
+  expect(good).toMatchObject({ ok: true, mediaType: 'image/png' });
+  if (good.ok) expect([...good.bytes]).toEqual([...png]);
+  const bad = await fetcher.fetchBytes('https://evil.example/a.png', {
+    allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
+    maxBytes: 5_242_880,
+  });
+  expect(bad).toMatchObject({ ok: false, code: 'redirect', host: 'evil.example' });
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it('fetchBytes refuses a redirect to another host without following it', async () => {
+  const emptyBody = async function* (): AsyncIterable<Uint8Array> {};
+  const request = vi.fn<PinnedRequest>(async () => ({
+    status: 302,
+    headers: { location: 'https://evil.example/final.png' },
+    body: emptyBody(),
+  }));
+  const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+  const result = await fetcher.fetchBytes('https://cdn.discordapp.com/attachments/1/2/a.png', {
+    allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'],
+    maxBytes: 1_024,
+  });
+  expect(result).toMatchObject({ ok: false, code: 'redirect', host: 'evil.example' });
+  expect(request).toHaveBeenCalledTimes(1);
+});
