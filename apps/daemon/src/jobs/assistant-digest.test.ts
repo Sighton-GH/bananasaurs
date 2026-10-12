@@ -210,9 +210,7 @@ describe('assistantDailyDigestHandler (ADR 0150)', () => {
     ).toBe('duplicate');
     expect(digestRepo.listDigests(s, 10)).toHaveLength(1);
     expect(digestRepo.getDigest(s, '2026-10-09')?.summary.daySummary).toBe('First summary.');
-    const drafts = assistantRepo
-      .listDecisions(s)
-      .filter((d) => d.provenance === 'daily-digest');
+    const drafts = assistantRepo.listDecisions(s).filter((d) => d.provenance === 'daily-digest');
     expect(drafts).toHaveLength(1);
     expect(drafts[0]?.summary).toContain('laser cutter');
   });

@@ -186,13 +186,19 @@ describe('digest store (ADR 0150 decision 4)', () => {
     const s = t.scopes.forGuild(G);
     putDigestOnce(s, {
       day: '2026-10-09',
-      summary: { daySummary: 'The laser fund is at 100% and code a_b shipped.', memoryProposals: [] },
+      summary: {
+        daySummary: 'The laser fund is at 100% and code a_b shipped.',
+        memoryProposals: [],
+      },
       conversations: BONDS,
       now: 100,
     });
     putDigestOnce(s, {
       day: '2026-10-08',
-      summary: { daySummary: 'The laser fund is at 1000 and code axb shipped.', memoryProposals: [] },
+      summary: {
+        daySummary: 'The laser fund is at 1000 and code axb shipped.',
+        memoryProposals: [],
+      },
       conversations: BONDS,
       now: 100,
     });
@@ -267,7 +273,18 @@ describe('migration 0109 keeps every run and run event', () => {
              (guild_id, run_id, user_id, behaviour_id, source, state, stage, attempt, queued_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(G, 'run-1', '100000000000000001', 'club', 'slash-command', 'answered', 'done', 1, 100, 100);
+        .run(
+          G,
+          'run-1',
+          '100000000000000001',
+          'club',
+          'slash-command',
+          'answered',
+          'done',
+          1,
+          100,
+          100,
+        );
       const insertEvent = raw.prepare(
         `INSERT INTO assistant_run_events (guild_id, run_id, seq, at, kind, data_json)
          VALUES (?, ?, ?, ?, ?, ?)`,
