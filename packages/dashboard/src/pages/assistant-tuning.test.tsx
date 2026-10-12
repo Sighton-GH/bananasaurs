@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { TUNING_URL, tuningKeyUrl } from '../api/tuning.js';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { TUNING_URL, tuningKeyUrl, type TuningGroup } from '../api/tuning.js';
 import { renderWithSession, stubFetch, bodyOf } from '../test-support.js';
 import { AssistantTuningPage } from './assistant-tuning.js';
 
@@ -234,6 +234,10 @@ afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AssistantTuningPage', () => {
+  it('accepts Assistant attachments as a tuning group', () => {
+    expectTypeOf<'Assistant attachments'>().toExtend<TuningGroup>();
+  });
+
   it('renders the five group headings and every label', async () => {
     stubFetch([{ url: TUNING_URL, body: { settings: SETTINGS } }]);
     renderPage();
