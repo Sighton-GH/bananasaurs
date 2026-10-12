@@ -176,6 +176,27 @@ describe('conversationPruneHandler', () => {
     expect(pruned[0]?.after).toBe(JSON.stringify({ count: 0, digests: 1 }));
   });
 
+  it('deletes an old digest in a guild with no conversations at all', async () => {
+    const s = t.scopes.forGuild(GUILD_A);
+    assistantRepo.setConversationRetention(s, 61, NOW);
+    digestRepo.putDigestOnce(s, {
+      day: '2026-01-01',
+      summary: { daySummary: 'Old.', memoryProposals: [] },
+      conversations: [],
+      now: NOW,
+    });
+    await conversationPruneHandler(s, { now: () => NOW, logger }).run(
+      { day: '2026-09-25' },
+      { ...context },
+    );
+    expect(digestRepo.getDigest(s, '2026-01-01')).toBeUndefined();
+    const pruned = effectRepo
+      .tailAudit(s, { limit: 10 })
+      .filter((r) => r.action === 'assistant_conversation.pruned');
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]?.after).toBe(JSON.stringify({ count: 0, digests: 1 }));
+  });
+
   it('prunes digest rows older than the retention window with the conversations', async () => {
     const s = t.scopes.forGuild(GUILD_A);
     assistantRepo.setConversationRetention(s, 61, 100);

@@ -149,6 +149,23 @@ export const deleteDigestsOlderThan = (scope: GuildScope, cutoffDay: string): nu
         .run().changes,
   );
 
+/**
+ * Whether the guild has any digest at all — a cheap `LIMIT 1` existence
+ * check for the daily prune timer's enqueue gate, so a guild whose
+ * conversations all aged out still gets its digests pruned (the same reason
+ * `conversationRepo.hasConversations` exists).
+ */
+export const hasDigests = (scope: GuildScope): boolean =>
+  read(scope, (db) => {
+    const row = db
+      .select({ day: assistantDailyDigests.day })
+      .from(assistantDailyDigests)
+      .where(scope.only(assistantDailyDigests))
+      .limit(1)
+      .get();
+    return row !== undefined;
+  });
+
 const TURN_PAGE_LIMIT = 2_000;
 
 export interface DigestDayGroup {

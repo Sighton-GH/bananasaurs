@@ -4,14 +4,14 @@ import {
   safeLogFields,
   type Logger,
 } from '@bananasaurs/core';
-import { conversationRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage';
+import { conversationRepo, digestRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage';
 
 /**
  * The daily conversation-prune timer (Task 19).
  *
  * The job table has no scheduler, so this is the producer: at startup and
  * every hour it enqueues one `conversation_prune` job per guild that
- * actually has a conversation for the current UTC day. The dedupe key is
+ * still has conversations or digests. The dedupe key is
  * the day, so a second `runOnce` on the same day enqueues nothing: the
  * `(guild_id, dedupe_key)` partial unique index refuses it per guild while
  * the job is still pending (ADR 0016), and `oncePerBucket` (ADR 0127)
@@ -56,6 +56,12 @@ export interface ConversationPruneTimerDeps {
    * free; tests can inject a stub.
    */
   readonly hasConversations?: (scope: GuildScope) => boolean;
+  /**
+   * Same peek for digests: a guild whose conversations all aged out keeps its
+   * daily digests until this is true, so the gate is conversations OR
+   * digests. Optional, defaulting to the real `digestRepo.hasDigests(scope)`.
+   */
+  readonly hasDigests?: (scope: GuildScope) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
 }
@@ -68,13 +74,14 @@ export function createConversationPruneTimer(
   let timer: NodeJS.Timeout | undefined;
   const hasConversations =
     deps.hasConversations ?? ((scope) => conversationRepo.hasConversations(scope));
+  const hasDigests = deps.hasDigests ?? ((scope) => digestRepo.hasDigests(scope));
 
   const runOnce = (): void => {
     const now = deps.now();
     const day = utcDay(now);
     let enqueued = 0;
     for (const { scope } of deps.guilds()) {
-      if (!hasConversations(scope)) continue;
+      if (!hasConversations(scope) && !hasDigests(scope)) continue;
       // Hourly ticks after the day's first are no-ops (`oncePerBucket`, ADR
       // 0127): count only what this tick actually enqueued, so the log below
       // stays quiet on no-op ticks.

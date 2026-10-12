@@ -187,7 +187,7 @@ Nothing a member says can cause the bot to post one of these.
 | The bot's background job records | Eligible for daily cleanup once the job has finished, failed or been cancelled and has gone 14 days without an update. Some hold a working copy of a deleted message or of what the AI was given |
 | Moderation records | Kept as long as the server needs them for consistent moderation |
 | Bot conversations and answers | Eligible for deletion after the owner's chosen period (default 6 months, or keep forever), then removed by the daily clean-up job; deleted on request |
-| Daily digests of assistant conversations | Eligible for cleanup after the same period (keep forever keeps them) and removed by the same job, which skips servers with no conversations. Not deleted when a single conversation is deleted or a member is forgotten |
+| Daily digests of assistant conversations | Eligible for cleanup after the same period (keep forever keeps them) and removed by the same job. Not deleted when a single conversation is deleted or a member is forgotten |
 | Task progress updates | Kept until the owner deletes the update or the task |
 | Attachments | Same as the messages they belong to |
 | Archived messages from channels the owner enabled | Kept until the owner deletes them; turning recording off stops new messages being kept but deletes nothing already stored |

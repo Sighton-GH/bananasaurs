@@ -6,6 +6,7 @@ import { appendTurn, createConversation } from './conversations.js';
 import {
   deleteDigestsOlderThan,
   getDigest,
+  hasDigests,
   listDigests,
   putDigestOnce,
   searchDigests,
@@ -168,6 +169,15 @@ describe('digest store (ADR 0150 decision 4)', () => {
         searchDigests(s, { query: 'build night', channelIds: ['333333333333333333'] }),
       ).toEqual([]);
     }
+  });
+  it('hasDigests reports guild-scoped digest existence', () => {
+    const s = t.scopes.forGuild(G);
+    expect(hasDigests(s)).toBe(false);
+    putDigestOnce(s, { day: '2026-10-09', summary: SUMMARY, conversations: BONDS, now: 100 });
+    expect(hasDigests(s)).toBe(true);
+    const other = parseGuildId('222222222222222222');
+    guildRepo.upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 1 });
+    expect(hasDigests(t.scopes.forGuild(other))).toBe(false);
   });
   it('keeps reads, search and retention within the caller guild', () => {
     const other = parseGuildId('222222222222222222');

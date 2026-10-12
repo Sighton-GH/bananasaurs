@@ -6,7 +6,7 @@ import {
   parseGuildId,
   type Logger,
 } from '@bananasaurs/core';
-import { conversationRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
+import { conversationRepo, digestRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   createConversationPruneTimer,
@@ -141,6 +141,20 @@ describe('conversation prune timer', () => {
     expect(jobsFor(b)).toHaveLength(0);
   });
 
+  it('enqueues for a guild with only digests, through the real repos', () => {
+    // `b` has no conversations left, only a digest: retention must still run.
+    digestRepo.putDigestOnce(b, {
+      day: '2026-01-01',
+      summary: { daySummary: 'Old.', memoryProposals: [] },
+      conversations: [],
+      now: 0,
+    });
+    createConversationPruneTimer(depsFor()).runOnce();
+
+    expect(jobsFor(a)).toHaveLength(0);
+    expect(jobsFor(b)).toHaveLength(1);
+  });
+
   it('enqueues nothing when no guild has conversations', () => {
     createConversationPruneTimer(depsFor()).runOnce();
 
@@ -154,6 +168,14 @@ describe('conversation prune timer', () => {
     expect(jobsFor(b)).toHaveLength(0);
 
     createConversationPruneTimer(depsFor({ hasConversations: () => true })).runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(jobsFor(b)).toHaveLength(1);
+  });
+
+  it('accepts an injected hasDigests gate alongside hasConversations', () => {
+    createConversationPruneTimer(
+      depsFor({ hasConversations: () => false, hasDigests: () => true }),
+    ).runOnce();
     expect(jobsFor(a)).toHaveLength(1);
     expect(jobsFor(b)).toHaveLength(1);
   });
