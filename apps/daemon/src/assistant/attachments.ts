@@ -143,8 +143,9 @@ export const fetchAttachment = async (
   },
   source: AttachmentSource,
   caps: AttachmentCaps,
+  forceKind?: AttachmentKind,
 ): Promise<AttachmentFetchResult> => {
-  const kind = classifyAttachment(source);
+  const kind = forceKind ?? classifyAttachment(source);
   if (kind === 'unsupported')
     return {
       ok: false,

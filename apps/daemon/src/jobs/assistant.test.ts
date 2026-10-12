@@ -1228,6 +1228,111 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     );
   });
 
+  const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const PDF_BYTES = new Uint8Array([...Buffer.from('%PDF-1.7', 'utf8')]);
+  const mediaBytes = async (url: string) => ({
+    ok: true as const,
+    bytes: url.endsWith('.pdf') ? PDF_BYTES : PNG_BYTES,
+    mediaType: url.endsWith('.pdf') ? 'application/pdf' : 'image/png',
+  });
+
+  it('fetches images and PDFs up to their caps and passes bytes with a summary (ADR 0149)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '111111111111111111',
+      authorName: 'Sam L',
+      content: 'look',
+      attachments: [
+        {
+          attachmentId: '1',
+          fileName: 'chart.png',
+          contentType: 'image/png',
+          sizeBytes: 100,
+          url: 'https://cdn.discordapp.com/attachments/1/2/chart.png',
+        },
+        {
+          attachmentId: '2',
+          fileName: 'report.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 200,
+          url: 'https://cdn.discordapp.com/attachments/1/2/report.pdf',
+        },
+      ],
+      embeds: [],
+    });
+    h.fetchAttachmentBytes.mockImplementation(mediaBytes);
+    const r = await h.run(
+      mention({ invocationId: 'inv-att-media', messageId: '810000000000000023' }),
+    );
+    expect(h.inputs[0]?.media?.map((m) => m.name)).toEqual(['chart.png', 'report.pdf']);
+    expect(h.inputs[0]?.attachmentSummary).toEqual([
+      { name: 'chart.png', kind: 'image', sizeBytes: 8 },
+      { name: 'report.pdf', kind: 'pdf', sizeBytes: 8 },
+    ]);
+    // The byte payload never reaches the durable cursor.
+    expect(r.cursor ?? '').not.toContain(Buffer.from(PNG_BYTES).toString('base64'));
+  });
+
+  it('skips images past the per-message cap with a plain note (ADR 0149)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
+    h.attachmentCaps.mockReturnValue({
+      textMaxBytes: 262_144,
+      textMaxChars: 24_000,
+      textMaxCount: 3,
+      imageMaxBytes: 5_242_880,
+      imageMaxCount: 1,
+      pdfMaxBytes: 10_485_760,
+      pdfMaxCount: 2,
+    });
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '111111111111111111',
+      authorName: 'Sam L',
+      content: 'two pictures',
+      attachments: ['a.png', 'b.png'].map((fileName, i) => ({
+        attachmentId: String(i + 1),
+        fileName,
+        contentType: 'image/png',
+        sizeBytes: 100,
+        url: `https://cdn.discordapp.com/attachments/1/2/${fileName}`,
+      })),
+      embeds: [],
+    });
+    h.fetchAttachmentBytes.mockImplementation(mediaBytes);
+    await h.run(mention({ invocationId: 'inv-att-cap', messageId: '810000000000000025' }));
+    expect(h.inputs[0]?.media?.map((m) => m.name)).toEqual(['a.png']);
+    expect(h.inputs[0]?.channelContext).toContain('(skipped: at most 1 images per message)');
+  });
+
+  it('reads the replied-to message image and an embed thumbnail (ADR 0149)', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '111111111111111111',
+      authorName: 'Alex P',
+      content: 'see this',
+      attachments: [
+        {
+          attachmentId: '1',
+          fileName: 'map.png',
+          contentType: 'image/png',
+          sizeBytes: 100,
+          url: 'https://cdn.discordapp.com/attachments/1/2/map.png',
+        },
+      ],
+      embeds: [{ thumbnailUrl: 'https://media.discordapp.net/thumb.png' }],
+    });
+    h.fetchAttachmentBytes.mockImplementation(mediaBytes);
+    await h.run(
+      mention({
+        invocationId: 'inv-att-quoted',
+        messageId: '810000000000000026',
+        referencedMessageId: '840000000000000002',
+      }),
+    );
+    const names = h.inputs[0]?.media?.map((m) => m.name) ?? [];
+    expect(names).toContain('map.png');
+    expect(names).toContain('embed thumbnail');
+  });
+
   it('neutralises refusal notes so a hostile file name cannot forge a close (ADR 0149)', async () => {
     const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
     h.fetchMessageContent.mockResolvedValue({

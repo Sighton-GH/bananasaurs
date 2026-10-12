@@ -9,6 +9,7 @@ import {
   type AssistantTraceIncluded,
   type ChannelAccess,
   type DomainEvent,
+  type GenerationMedia,
   type GenerationMessage,
   type KnownMessage,
   type Logger,
@@ -32,6 +33,13 @@ export type AssistantCommand =
   | 'announce'
   | 'checklist'
   | 'handoff';
+
+/** ADR 0149: one fetched attachment's name, kind and size; never its bytes. */
+export interface AttachmentSummary {
+  readonly name: string;
+  readonly kind: 'text' | 'image' | 'pdf';
+  readonly sizeBytes: number;
+}
 
 export interface AssistantInvocation {
   readonly guildId: string;
@@ -103,6 +111,12 @@ export interface AssistantInvocation {
    * trace's `included.summaryVersion`. Absent means no summary was injected.
    */
   readonly summaryVersion?: number | undefined;
+  /**
+   * ADR 0149: fetched attachment bytes for models that read them natively, and
+   * the metadata-only summary the trace keeps.
+   */
+  readonly media?: readonly GenerationMedia[] | undefined;
+  readonly attachmentSummary?: readonly AttachmentSummary[] | undefined;
   /** ADR 0129 §6: the run's step log; absent means nothing is recorded. */
   readonly recorder?: RunRecorder | undefined;
   /**

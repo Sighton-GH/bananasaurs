@@ -1499,6 +1499,70 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(userMessage?.text).toContain('[message attachments: not kept in the trace]');
   });
 
+  const mediaService = (provider: TextProvider) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [usable(provider)],
+    );
+  const mediaInput = {
+    media: [
+      { kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' },
+    ],
+    attachmentSummary: [{ name: 'chart.png', kind: 'image' as const, sizeBytes: 3 }],
+  };
+
+  it('forwards invocation media on a trailing user message, bytes never in the trace (ADR 0149)', async () => {
+    const requests: GenerateTextRequest[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        requests.push(req);
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const result = await mediaService(provider).invoke(
+      ask({ invocationId: 'int-media-1', ...mediaInput }),
+    );
+    expect(result.ok).toBe(true);
+    const messages = requests[0]?.messages ?? [];
+    const note = messages.find((m) => m.role === 'user' && (m.media ?? []).length > 0);
+    expect(note?.role).toBe('user');
+    expect(note?.text).toBe('[attached files: chart.png]');
+    expect(note?.media).toHaveLength(1);
+    expect(note?.media?.[0]?.dataBase64).toBe('aGk=');
+    expect(JSON.stringify(result.detail ?? {})).not.toContain('aGk=');
+    expect(JSON.stringify(result.detail ?? {})).not.toContain('"media"');
+    expect(JSON.stringify(result.detail?.history ?? [])).toContain('[attached files: chart.png]');
+  });
+
+  it('keeps media bytes out of the failure detail while the provider still gets them (ADR 0149)', async () => {
+    const requests: GenerateTextRequest[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        requests.push(req);
+        throw new ProviderError('outage', 'connect timeout', true);
+      },
+    };
+    const failed: unknown = await mediaService(provider)
+      .invoke(ask({ invocationId: 'int-media-2', ...mediaInput }))
+      .catch((err: unknown) => err);
+    expect(JSON.stringify(requests[0]?.messages ?? [])).toContain('aGk=');
+    expect(failed).toBeInstanceOf(ChainFailedError);
+    const detail = (failed as ChainFailedError).detail;
+    expect(JSON.stringify(detail ?? {})).not.toContain('aGk=');
+    expect(JSON.stringify(detail ?? {})).not.toContain('"media"');
+  });
+
   it('keeps current-message attachments out of the failure detail (ADR 0149)', async () => {
     const seen: string[] = [];
     const provider: TextProvider = {

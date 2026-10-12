@@ -229,3 +229,29 @@ describe('attachment classification and sniffing (ADR 0149)', () => {
     }
   });
 });
+
+describe('fetchAttachment forceKind (ADR 0149)', () => {
+  it('forceKind reads an embed thumbnail with no usable filename (ADR 0149)', async () => {
+    const fetchBytes = vi.fn(async () => ({
+      ok: true as const,
+      bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      mediaType: 'image/png',
+    }));
+    const caps = {
+      textMaxBytes: 262_144,
+      textMaxChars: 24_000,
+      textMaxCount: 3,
+      imageMaxBytes: 5_242_880,
+      imageMaxCount: 4,
+      pdfMaxBytes: 10_485_760,
+      pdfMaxCount: 2,
+    };
+    const result = await fetchAttachment(
+      { fetchBytes },
+      { fileName: 'embed thumbnail', sizeBytes: 8, url: 'https://media.discordapp.net/thumb.png' },
+      caps,
+      'image',
+    );
+    expect(result).toMatchObject({ ok: true, kind: 'image' });
+  });
+});
