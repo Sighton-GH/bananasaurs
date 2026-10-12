@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunEvent } from '@bananasaurs/core';
@@ -267,5 +268,45 @@ describe('LiveText run switch', () => {
     });
     expect(screen.queryByText('A text')).toBeNull();
     expect(screen.getByText('B text')).toBeDefined();
+  });
+});
+
+describe('LiveText under StrictMode', () => {
+  it('live then finish: text survives the dropped buffer and no request follows finish', async () => {
+    vi.useFakeTimers();
+    let dropped = false;
+    const mock = seqFetch(() => ({
+      status: 200,
+      body: dropped ? { answer: '', thinking: '' } : { answer: 'streamed text', thinking: 'why' },
+    }));
+    const view = renderWithSession(
+      <StrictMode>
+        <LiveText runId="run-1" />
+      </StrictMode>,
+    );
+    await act(async () => {});
+    expect(screen.getByText('streamed text')).toBeTruthy();
+    dropped = true;
+    const before = mock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(mock.mock.calls.length).toBeGreaterThan(before);
+    // The daemon dropped the buffer at finish: an empty reply must not erase the text.
+    expect(screen.getByText('streamed text')).toBeTruthy();
+    view.rerender(
+      <SessionProvider session={TEST_SESSION} onLoggedOut={() => undefined}>
+        <StrictMode>
+          <LiveText runId="run-1" finished />
+        </StrictMode>
+      </SessionProvider>,
+    );
+    await act(async () => {});
+    const callsAtFinish = mock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(mock.mock.calls.length).toBe(callsAtFinish);
+    expect(screen.getByText('streamed text')).toBeTruthy();
   });
 });
