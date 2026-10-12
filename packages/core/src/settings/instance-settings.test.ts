@@ -8,8 +8,8 @@ import {
 } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 28 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(28);
+  it('has 32 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(32);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
@@ -193,5 +193,26 @@ describe('instance settings registry', () => {
       expect(def.help.length, def.key).toBeGreaterThan(0);
       expect(isInstanceSettingKey(def.key), def.key).toBe(true);
     }
+  });
+  it('registers the four digest settings with spec defaults (ADR 0150, spec §4.7)', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(32);
+    const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
+    expect(valueOf('assistant.digestEnabled')).toBe(1);
+    expect(valueOf('assistant.digestHour')).toBe(4);
+    expect(valueOf('assistant.digestInputChars')).toBe(40_000);
+    expect(valueOf('assistant.digestMaxProposals')).toBe(10);
+    // The tier is Slice 6's key, not a digest key: the digest reads it through
+    // backgroundTier('daily-digest').
+    expect(valueOf('assistant.routerDailyDigestTier')).toBe('light');
+    const enabled = settingDefinition('assistant.digestEnabled');
+    expect(enabled?.group).toBe('Assistant context');
+    expect(enabled?.display).toBe('count');
+    expect(enabled?.schema.safeParse(0).success).toBe(true);
+    expect(enabled?.schema.safeParse(1).success).toBe(true);
+    expect(enabled?.schema.safeParse(2).success).toBe(false);
+    const hour = settingDefinition('assistant.digestHour');
+    expect(hour?.schema.safeParse(4).success).toBe(true);
+    expect(hour?.schema.safeParse(24).success).toBe(false);
+    expect(isInstanceSettingKey('assistant.digestEnabled')).toBe(true);
   });
 });

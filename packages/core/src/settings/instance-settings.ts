@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  DIGEST_DEFAULT_HOUR,
+  DIGEST_DEFAULT_INPUT_CHARS,
+  DIGEST_DEFAULT_MAX_PROPOSALS,
+} from '../assistant/digest.js';
 
 export type SettingDisplay =
   | 'seconds'
@@ -125,6 +130,50 @@ const channelContextMessages: SettingDefinition<number> = {
   schema: z.number().int().min(0).max(50),
   defaultValue: 15,
   bounds: { min: 0, max: 50 },
+};
+
+const digestEnabled: SettingDefinition<number> = {
+  key: 'assistant.digestEnabled',
+  group: 'Assistant context',
+  label: 'Daily digest on or off',
+  help: '1 runs the daily digest every morning at the hour below; 0 turns it off. The digest summarises that day\u2019s conversations and drafts memory proposals for owner review.',
+  display: 'count',
+  schema: z.number().int().min(0).max(1),
+  defaultValue: 1,
+  bounds: { min: 0, max: 1 },
+};
+
+const digestHour: SettingDefinition<number> = {
+  key: 'assistant.digestHour',
+  group: 'Assistant context',
+  label: 'Daily digest hour',
+  help: 'The local hour (0\u201323) in the club\u2019s time zone when the daily digest may first run. The hourly tick enqueues it the first time it runs at or past this hour.',
+  display: 'count',
+  schema: z.number().int().min(0).max(23),
+  defaultValue: DIGEST_DEFAULT_HOUR,
+  bounds: { min: 0, max: 23 },
+};
+
+const digestInputChars: SettingDefinition<number> = {
+  key: 'assistant.digestInputChars',
+  group: 'Assistant context',
+  label: 'Daily digest input cap',
+  help: 'How many characters of that day\u2019s conversations the digest may send to the AI, newest first. Larger days are split into chunks of this size.',
+  display: 'count',
+  schema: z.number().int().min(4_000).max(200_000),
+  defaultValue: DIGEST_DEFAULT_INPUT_CHARS,
+  bounds: { min: 4_000, max: 200_000 },
+};
+
+const digestMaxProposals: SettingDefinition<number> = {
+  key: 'assistant.digestMaxProposals',
+  group: 'Assistant context',
+  label: 'Daily digest max proposals',
+  help: 'How many memory proposals one digest may file for owner review. Duplicates of existing memory or pending drafts are dropped first.',
+  display: 'count',
+  schema: z.number().int().min(1).max(10),
+  defaultValue: DIGEST_DEFAULT_MAX_PROPOSALS,
+  bounds: { min: 1, max: 10 },
 };
 
 /** ADR 0144 defaults, mirroring DEFAULT_ROUTER_RULES so registry and router agree. */
@@ -424,9 +473,17 @@ export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [
   mcpCapPinReact,
   pingMaxMembers,
   pingMaxRoles,
+  digestEnabled,
+  digestHour,
+  digestInputChars,
+  digestMaxProposals,
 ];
 
 export interface InstanceSettingValues {
+  readonly 'assistant.digestEnabled': number;
+  readonly 'assistant.digestHour': number;
+  readonly 'assistant.digestInputChars': number;
+  readonly 'assistant.digestMaxProposals': number;
   readonly 'assistant.retryDelaysMs': number[];
   readonly 'assistant.providerTimeoutMs': number;
   readonly 'assistant.maxConcurrentRuns': number;
