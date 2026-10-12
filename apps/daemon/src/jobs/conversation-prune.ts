@@ -57,6 +57,8 @@ export const conversationPruneHandler = (
       // ADR 0150 decision 4: digest rows follow the same window, keyed by day.
       // The cutoff is a UTC day, not the club's local day. The exact retention
       // edge differs from conversations by the local zone and time of day.
+      // Digest days are local days while the cutoff is computed in UTC days,
+      // so a digest can be removed up to one day early or late.
       // Keep-forever (`null`) returns above and keeps digests too.
       const digests = digestRepo.deleteDigestsOlderThan(
         scope,
