@@ -97,8 +97,29 @@ const statusKind = (status: number): ProviderErrorKind => {
 };
 
 /** Shared by the fetch catch and the success-body catch: the timeout signal fires in either place. */
-const isTimeoutError = (error: unknown): boolean =>
-  error instanceof DOMException && error.name === 'TimeoutError';
+const isTimeoutError = (error: unknown): boolean => {
+  // Untrusted input: a Proxy trap or a throwing `name` accessor must read as "not a timeout".
+  try {
+    return (
+      !utilTypes.isProxy(error) && error instanceof DOMException && error.name === 'TimeoutError'
+    );
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * An abort reason is untrusted too. Keep a real Error (so a TimeoutError stays classifiable)
+ * and replace anything hostile with a plain AbortError without touching it further.
+ */
+const normalizeAbortReason = (reason: unknown): Error => {
+  try {
+    if (!utilTypes.isProxy(reason) && reason instanceof Error) return reason;
+  } catch {
+    // fall through to the plain AbortError
+  }
+  return new DOMException('aborted', 'AbortError');
+};
 
 /** ADR 0077: the OpenRouter (and NVIDIA NIM) error body shape. */
 const errorBodySchema = z.object({
@@ -192,14 +213,24 @@ const keyForms = (key: string): readonly string[] => {
  */
 const redactKey = (text: string, key: string): string => {
   if (key === '') return text;
+  const keys = [...new Set([key, key.trim()])].filter((candidate) => candidate !== '');
   let out = text;
-  for (const form of keyForms(key)) if (form !== '') out = out.split(form).join('(redacted)');
+  for (const candidate of keys)
+    for (const form of keyForms(candidate))
+      if (form !== '') out = out.split(form).join('(redacted)');
+  const hasKey = (value: string): boolean => keys.some((candidate) => value.includes(candidate));
   try {
-    if (decodeURIComponent(out).includes(key)) return '(redacted)';
+    if (hasKey(decodeURIComponent(out))) return '(redacted)';
   } catch {
-    // Not valid percent-encoding: the literal checks above already ran.
+    // Malformed percent-encoding somewhere: check each valid run on its own below.
   }
-  return out;
+  return out.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+    try {
+      return hasKey(decodeURIComponent(run)) ? '(redacted)' : run;
+    } catch {
+      return run;
+    }
+  });
 };
 
 /** Errors this adapter built itself. Anything else that reaches a catch is untrusted input. */
@@ -548,7 +579,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         'abort',
         () => {
           const reason: unknown = controller.signal.reason;
-          reject(reason instanceof Error ? reason : new DOMException('aborted', 'AbortError'));
+          reject(normalizeAbortReason(reason));
         },
         { once: true },
       );
@@ -567,10 +598,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
       if (callerSignal?.aborted === true) {
         const reason: unknown = callerSignal.reason;
         throw trusted('outage', `${this.id} request failed`, true, {
-          cause: sanitizeCause(
-            reason instanceof Error ? reason : new DOMException('aborted', 'AbortError'),
-            this.apiKey,
-          ),
+          cause: sanitizeCause(normalizeAbortReason(reason), this.apiKey),
           host: this.host,
         });
       }

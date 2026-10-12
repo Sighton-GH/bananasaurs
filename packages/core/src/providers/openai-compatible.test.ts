@@ -1774,4 +1774,136 @@ describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', 
     clearInterval(timer);
     expect(err).toMatchObject({ kind: 'timeout', retryable: true });
   });
+
+  describe('hostile abort reasons and error shapes', () => {
+    const trap = (): Error =>
+      new Proxy(new Error('x'), {
+        getPrototypeOf() {
+          throw new Error(key);
+        },
+        get() {
+          throw new Error(key);
+        },
+      });
+    const okFetch = async (): Promise<Response> =>
+      sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
+
+    it('survives a trapping Proxy as a fetch rejection', async () => {
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: key,
+          fetch: async () => {
+            throw trap();
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+    });
+
+    it('survives a trapping Proxy as the reason of an already-aborted signal', async () => {
+      const controller = new AbortController();
+      controller.abort(trap());
+      const err = await createOpenRouterProvider({ apiKey: key, fetch: okFetch })
+        .generateText({ ...req, signal: controller.signal })
+        .catch((error: unknown) => error as Error);
+      expect(observable(err)).not.toContain(key);
+      expect(err).toMatchObject({ kind: 'outage' });
+    });
+
+    it('survives a DOMException lookalike whose name getter throws', async () => {
+      const lookalike = Object.create(DOMException.prototype) as Error;
+      Object.defineProperty(lookalike, 'name', {
+        get() {
+          throw new Error(key);
+        },
+      });
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: key,
+          fetch: async () => {
+            throw lookalike;
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+      expect(err).toMatchObject({ kind: 'outage' });
+    });
+
+    it('survives a trapping Proxy that errors the body mid-stream', async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(trap());
+        },
+      });
+      const err = await failure(
+        createOpenRouterProvider({ apiKey: key, fetch: async () => new Response(body) }),
+      );
+      expect(observable(err)).not.toContain(key);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+    });
+
+    it('does not hang or throw from the abort listener when a caller aborts with a Proxy', async () => {
+      const uncaught: unknown[] = [];
+      const listener = (reason: unknown): void => {
+        uncaught.push(reason);
+      };
+      process.on('uncaughtException', listener);
+      try {
+        const controller = new AbortController();
+        const pending = createOpenRouterProvider({
+          apiKey: key,
+          maxCallMs: 500,
+          fetch: () => new Promise<Response>(() => undefined),
+        })
+          .generateText({ ...req, signal: controller.signal })
+          .catch((error: unknown) => error as Error);
+        setTimeout(() => {
+          controller.abort(trap());
+        }, 10);
+        const started = Date.now();
+        const err = await pending;
+        expect(Date.now() - started).toBeLessThan(400);
+        expect(observable(err)).not.toContain(key);
+        expect(uncaught).toEqual([]);
+      } finally {
+        process.off('uncaughtException', listener);
+      }
+    });
+  });
+
+  it.each(['onChunk', 'onProgress'] as const)(
+    'a never-settling %s still ends at the call ceiling',
+    async (name) => {
+      const err = await createOpenRouterProvider({
+        apiKey: key,
+        maxCallMs: 60,
+        idleTimeoutMs: 10_000,
+        timeoutMs: 10_000,
+        fetch: async () => sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] }),
+      })
+        .generateText({ ...req, [name]: () => new Promise<void>(() => undefined) })
+        .catch((error: unknown) => error as Error);
+      expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+    },
+  );
+
+  it('redacts an encoded key even when another part of the text is malformed', async () => {
+    const mixed = [...key].map((c) => `%${c.charCodeAt(0).toString(16)}`).join('');
+    const spaced = ` ${key} `;
+    for (const [useKey, echoed] of [
+      [key, `https://x.invalid/?t=${mixed.toUpperCase()}&bad=%zz`],
+      [spaced, `https://x.invalid/?t=${key}`],
+    ] as const) {
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: useKey,
+          fetch: async () => {
+            throw new TypeError(echoed);
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+    }
+  });
 });
