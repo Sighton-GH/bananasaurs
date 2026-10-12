@@ -2,7 +2,8 @@
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunEvent } from '@bananasaurs/core';
-import { renderWithSession, stubFetch } from '../test-support.js';
+import { SessionProvider } from '../app/session.js';
+import { renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { describeRunEvent, runLiveUrl } from '../api/runs.js';
 import { LiveText } from './assistant-live-buffer.js';
 
@@ -59,6 +60,119 @@ describe('LiveText details', () => {
     });
     expect(mock).toHaveBeenCalledTimes(1);
     expect(screen.getByText('done')).toBeTruthy();
+  });
+});
+
+function seqFetch(live: (n: number) => { status: number; body: unknown }) {
+  let n = 0;
+  const mock = vi.fn(() => {
+    n += 1;
+    const r = live(n);
+    return Promise.resolve(
+      new Response(JSON.stringify(r.body), {
+        status: r.status,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+  });
+  vi.stubGlobal('fetch', mock);
+  return mock;
+}
+
+describe('LiveText finish and failure handling', () => {
+  it('keeps the last text when a later poll returns empty (buffer dropped at finish)', async () => {
+    vi.useFakeTimers();
+    seqFetch((n) => ({
+      status: 200,
+      body: n === 1 ? { answer: 'final words', thinking: 'why' } : { answer: '', thinking: '' },
+    }));
+    renderWithSession(<LiveText runId="run-1" />);
+    await act(async () => {});
+    expect(screen.getByText('final words')).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(screen.getByText('final words')).toBeTruthy();
+    expect(screen.queryByText(/Waiting for the first streamed text/)).toBeNull();
+  });
+
+  it('renders nothing for a finished run whose live data is empty', async () => {
+    seqFetch(() => ({ status: 200, body: { answer: '', thinking: '' } }));
+    const { container } = renderWithSession(<LiveText runId="run-1" finished />);
+    await act(async () => {});
+    expect(container.textContent).toBe('');
+  });
+
+  it('does not fetch again after finished is set, and keeps the text', async () => {
+    vi.useFakeTimers();
+    const mock = seqFetch(() => ({ status: 200, body: { answer: 'kept', thinking: '' } }));
+    const view = renderWithSession(<LiveText runId="run-1" />);
+    await act(async () => {});
+    expect(mock).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <SessionProvider session={TEST_SESSION} onLoggedOut={() => undefined}>
+        <LiveText runId="run-1" finished />
+      </SessionProvider>,
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('kept')).toBeTruthy();
+  });
+
+  it.each([401, 403, 404])('renders nothing and does not retry on HTTP %i', async (status) => {
+    vi.useFakeTimers();
+    const mock = seqFetch(() => ({
+      status,
+      body: { error: status === 401 ? 'unauthenticated' : 'nope', message: 'no' },
+    }));
+    const { container } = renderWithSession(<LiveText runId="run-1" />);
+    await act(async () => {});
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toBe('');
+  });
+
+  it('shows a calm error and retries on a transient failure', async () => {
+    vi.useFakeTimers();
+    const mock = seqFetch((n) =>
+      n === 1
+        ? { status: 500, body: { error: 'boom', message: 'boom' } }
+        : { status: 200, body: { answer: 'back', thinking: '' } },
+    );
+    renderWithSession(<LiveText runId="run-1" />);
+    await act(async () => {});
+    expect(screen.getByText(/Could not load live text/)).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(15000);
+    });
+    expect(mock.mock.calls.length).toBeGreaterThan(1);
+    expect(screen.getByText('back')).toBeTruthy();
+  });
+
+  it('keeps the thinking details open across polls', async () => {
+    vi.useFakeTimers();
+    stubFetch([{ url: runLiveUrl('run-1'), body: { answer: 'a', thinking: 'deep' } }]);
+    renderWithSession(<LiveText runId="run-1" />);
+    await act(async () => {});
+    fireEvent.click(screen.getByText('Thinking'));
+    await act(async () => {
+      vi.advanceTimersByTime(4100);
+    });
+    expect(screen.getByText('Thinking').closest('details')?.open).toBe(true);
+  });
+
+  it('bounds and wraps long text', async () => {
+    stubFetch([{ url: runLiveUrl('run-1'), body: { answer: 'x'.repeat(8000), thinking: '' } }]);
+    renderWithSession(<LiveText runId="run-1" />);
+    const p = await screen.findByText(/^x{8000}$/);
+    expect(p.className).toContain('whitespace-pre-wrap');
+    expect(p.className).toContain('break-words');
+    expect(p.className).toContain('max-h-64');
+    expect(p.className).toContain('overflow-y-auto');
   });
 });
 

@@ -196,7 +196,7 @@ function stubRunsOnce() {
   const calls: string[] = [];
   const mock = vi.fn((input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    if (!url.endsWith('/live')) calls.push(url);
+    calls.push(url);
     const body = calls.length === 1 ? { runs: [RUN] } : { runs: [] };
     return Promise.resolve(
       new Response(JSON.stringify(body), {
@@ -343,7 +343,7 @@ describe('PendingTurn', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (!url.endsWith('/live')) calls.push(url);
+        calls.push(url);
         const body = calls.length === 1 ? { runs: [runA] } : { runs: [runB] };
         return Promise.resolve(
           new Response(JSON.stringify(body), {
@@ -399,7 +399,71 @@ const E3 = {
   event: { kind: 'finished', outcome: 'answered', durationMs: 1200 },
 };
 
-describe('StepLog', () => {
+describe('StepLog and LiveText', () => {
+  function stubRun(opts: { readonly finishedAtOpen: boolean; readonly finishAt2s?: boolean }) {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        urls.push(url);
+        let body: unknown;
+        if (url === runLiveUrl('run-1')) body = { answer: 'streaming Sam L', thinking: '' };
+        else if (url.includes('after=0'))
+          body = { events: opts.finishedAtOpen ? [E1, E2, E3] : [E1, E2] };
+        else body = { events: opts.finishAt2s === true ? [E3] : [] };
+        return Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }),
+    );
+    return urls;
+  }
+  const live = (urls: string[]) => urls.filter((u) => u === runLiveUrl('run-1')).length;
+
+  it('never mounts or fetches LiveText for a trace that is finished at open', async () => {
+    vi.useFakeTimers();
+    const urls = stubRun({ finishedAtOpen: true });
+    renderWithSession(
+      <Router>
+        <StepLog runId="run-1" />
+      </Router>,
+    );
+    await act(async () => {});
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(live(urls)).toBe(0);
+    expect(screen.queryByText('Live answer')).toBeNull();
+  });
+
+  it('stops fetching /live once the finished event is seen, keeping the text', async () => {
+    vi.useFakeTimers();
+    const urls = stubRun({ finishedAtOpen: false, finishAt2s: true });
+    renderWithSession(
+      <Router>
+        <StepLog runId="run-1" />
+      </Router>,
+    );
+    await act(async () => {});
+    expect(live(urls)).toBe(1);
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    const after = live(urls);
+    expect(screen.getAllByText('finished')).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(live(urls)).toBe(after);
+    expect(after).toBeLessThanOrEqual(2);
+    expect(screen.getByText('streaming Sam L')).toBeTruthy();
+  });
+
   it('mounts LiveText, which fetches the gated /live route for the same run', async () => {
     const mock = stubFetch([
       { url: runEventsUrl('run-1', 0), body: { events: [E1, E2] } },
@@ -424,7 +488,7 @@ describe('StepLog', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (!url.endsWith('/live')) calls.push(url);
+        if (url !== runLiveUrl('run-1')) calls.push(url);
         const body = url.includes('after=2') ? { events: [E3] } : { events: [E1, E2] };
         return Promise.resolve(
           new Response(JSON.stringify(body), {
@@ -464,7 +528,7 @@ describe('StepLog', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (!url.endsWith('/live')) calls.push(url);
+        if (url !== runLiveUrl('run-1')) calls.push(url);
         const body = url.includes('after=2') ? { events: [E3] } : { events: [E1, E2] };
         return Promise.resolve(
           new Response(JSON.stringify(body), {
@@ -517,7 +581,7 @@ describe('StepLog', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (!url.endsWith('/live')) calls.push(url);
+        if (url !== runLiveUrl('run-a') && url !== runLiveUrl('run-b')) calls.push(url);
         const events = url.includes('after=0')
           ? url.includes('/run-a/')
             ? [aQueued, aDone]
