@@ -1,15 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { GenerateTextRequest } from './contracts.js';
 import { ProviderError } from './errors.js';
 import { createNvidiaNimProvider, createOpenRouterProvider } from './openai-compatible.js';
 
-const response = new Response(
-  JSON.stringify({
+const sse = (...payloads: unknown[]): Response =>
+  new Response(
+    `${payloads.map((p) => `data: ${JSON.stringify(p)}\n\n`).join('')}data: [DONE]\n\n`,
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+
+const response = (): Response =>
+  sse({
     model: 'served',
-    choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+    choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
-  }),
-  { status: 200 },
-);
+  });
 
 describe('OpenAI-compatible providers', () => {
   it.each([
@@ -18,7 +23,7 @@ describe('OpenAI-compatible providers', () => {
   ] as const)(
     'adapts %s without putting the key in the URL',
     async (_name, factory, expectedUrl) => {
-      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
       const provider = factory({ apiKey: 'secret', fetch });
       await expect(
         provider.generateText({
@@ -63,13 +68,10 @@ describe('OpenAI-compatible providers', () => {
 
   it('maps tool declarations to function tools', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: 'served',
-          choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
-        }),
-        { status: 200 },
-      ),
+      sse({
+        model: 'served',
+        choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }],
+      }),
     );
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await provider.generateText({
@@ -93,27 +95,24 @@ describe('OpenAI-compatible providers', () => {
 
   it('returns native tool calls from the response', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: 'served',
-          choices: [
-            {
-              message: {
-                content: null,
-                tool_calls: [
-                  {
-                    id: 'c1',
-                    type: 'function',
-                    function: { name: 'search_sources', arguments: '{"query":"x"}' },
-                  },
-                ],
-              },
-              finish_reason: 'tool_calls',
+      sse({
+        model: 'served',
+        choices: [
+          {
+            delta: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'c1',
+                  type: 'function',
+                  function: { name: 'search_sources', arguments: '{"query":"x"}' },
+                },
+              ],
             },
-          ],
-        }),
-        { status: 200 },
-      ),
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
     );
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await expect(
@@ -128,26 +127,23 @@ describe('OpenAI-compatible providers', () => {
 
   it('keeps a call with malformed arguments as empty args', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: null,
-                tool_calls: [
-                  {
-                    id: 'c1',
-                    type: 'function',
-                    function: { name: 'search_sources', arguments: 'not-json{' },
-                  },
-                ],
-              },
-              finish_reason: 'tool_calls',
+      sse({
+        choices: [
+          {
+            delta: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'c1',
+                  type: 'function',
+                  function: { name: 'search_sources', arguments: 'not-json{' },
+                },
+              ],
             },
-          ],
-        }),
-        { status: 200 },
-      ),
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
     );
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await expect(
@@ -158,7 +154,7 @@ describe('OpenAI-compatible providers', () => {
   });
 
   it('sends assistant tool turns and tool results in wire format', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await provider.generateText({
       model: 'free-model',
@@ -208,7 +204,7 @@ describe('OpenAI-compatible providers', () => {
   });
 
   it('ADR 0129 §8: the OpenRouter request asks for usage, NIM does not', async () => {
-    const openRouterFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+    const openRouterFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
     await createOpenRouterProvider({ apiKey: 'secret', fetch: openRouterFetch }).generateText({
       model: 'free-model',
       messages: [{ role: 'user', text: 'q' }],
@@ -216,7 +212,7 @@ describe('OpenAI-compatible providers', () => {
     expect(JSON.parse(openRouterFetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({
       usage: { include: true },
     });
-    const nimFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+    const nimFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
     await createNvidiaNimProvider({ apiKey: 'secret', fetch: nimFetch }).generateText({
       model: 'free-model',
       messages: [{ role: 'user', text: 'q' }],
@@ -226,19 +222,160 @@ describe('OpenAI-compatible providers', () => {
 
   it('ADR 0129 §8: a response usage.cost maps to usage.costUsd', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: 'served',
-          choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3, cost: 0.0012 },
-        }),
-        { status: 200 },
-      ),
+      sse({
+        model: 'served',
+        choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3, cost: 0.0012 },
+      }),
     );
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await expect(
       provider.generateText({ model: 'free-model', messages: [{ role: 'user', text: 'q' }] }),
     ).resolves.toMatchObject({ usage: { costUsd: 0.0012 } });
+  });
+
+  it('streams deltas, ignores keepalives, and joins fragmented tool args', async () => {
+    const body =
+      ': OPENROUTER PROCESSING\n\n' +
+      'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n' +
+      'data: {"choices":[{"delta":{"content":"lo","reasoning":"why","tool_calls":[{"index":0,"id":"c1","function":{"name":"search_sources","arguments":"{\\"q"}}]}}]}\n\n' +
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ue\\":1}"}}]}}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n' +
+      'data: [DONE]\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    const seen: Array<{ answerChars: number; keepalives: number }> = [];
+    const chunks: Array<{ text: string; reasoning: string }> = [];
+    const res = await provider.generateText({
+      model: 'm',
+      messages: [{ role: 'user', text: 'hi Sam L' }],
+      capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'budget' },
+      onProgress: (p) => {
+        seen.push({ answerChars: p.answerChars, keepalives: p.keepalives });
+      },
+      onChunk: (c) => {
+        chunks.push({ ...c });
+      },
+    });
+    expect(res.text).toBe('hello');
+    expect(res.reasoning).toBe('why');
+    expect(res.toolCalls).toEqual([{ id: 'c1', name: 'search_sources', args: { que: 1 } }]);
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(seen.some((s) => s.keepalives >= 1)).toBe(true);
+    expect(chunks.map((c) => c.text).join('')).toBe('hello');
+    expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+      reasoning: { exclude: false },
+    });
+  });
+
+  it('omits the reasoning request without capabilities or without reasoning support', async () => {
+    const payload = { choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] };
+    const fetchNoCaps = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse(payload));
+    await createOpenRouterProvider({ apiKey: 'secret', fetch: fetchNoCaps }).generateText({
+      model: 'm',
+      messages: [{ role: 'user', text: 'hi' }],
+    });
+    expect(
+      'reasoning' in
+        (JSON.parse(fetchNoCaps.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>),
+    ).toBe(false);
+    const fetchDenied = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse(payload));
+    await createOpenRouterProvider({ apiKey: 'secret', fetch: fetchDenied }).generateText({
+      model: 'm',
+      messages: [{ role: 'user', text: 'hi' }],
+      capabilities: { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' },
+    });
+    expect(
+      'reasoning' in
+        (JSON.parse(fetchDenied.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>),
+    ).toBe(false);
+  });
+
+  it('nim never sends a reasoning request field', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(sse({ choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] }));
+    const provider = createNvidiaNimProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'm',
+      messages: [{ role: 'user', text: 'hi' }],
+      capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'budget' },
+    });
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
+    expect('reasoning' in body).toBe(false);
+    expect(body).toMatchObject({ stream: true });
+    expect('stream_options' in body).toBe(false);
+  });
+
+  it('turns mid-stream finish_reason error into a retryable ProviderError', async () => {
+    const body =
+      'data: {"choices":[{"delta":{"content":"part"},"finish_reason":"error","error":{"message":"upstream broke"}}]}\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    const err = await provider
+      .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err).toMatchObject({ kind: 'outage', retryable: true, finishReason: 'error' });
+  });
+
+  it('delivers length text with reasoning and usage', async () => {
+    const body =
+      'data: {"choices":[{"delta":{"content":"half","reasoning":"why"}}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":9,"total_tokens":11}}\n\n' +
+      'data: [DONE]\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    const res = await provider.generateText({
+      model: 'm',
+      messages: [{ role: 'user', text: 'hi Sam L' }],
+      capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'budget' },
+    });
+    expect(res.text).toBe('half');
+    expect(res.reasoning).toBe('why');
+    expect(res.finishReason).toBe('length');
+    expect(res.usage).toMatchObject({ promptTokens: 2, completionTokens: 9, totalTokens: 11 });
+  });
+
+  it('an idle stream throws a retryable timeout', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => new Promise(() => {}));
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
+    const err = await provider
+      .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi Car Team A' }] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+  });
+
+  it('a stalled mid-stream body hits the idle timer', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() =>
+      Promise.resolve(
+        new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ),
+    );
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, idleTimeoutMs: 50 });
+    const err = await provider
+      .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err).toMatchObject({ kind: 'timeout', retryable: true });
   });
 
   describe('success body reads', () => {
@@ -254,7 +391,7 @@ describe('OpenAI-compatible providers', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       });
-      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, timeoutMs: 20 });
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, idleTimeoutMs: 20 });
       const err = await provider
         .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
         .catch((e: unknown) => e);
@@ -529,7 +666,7 @@ describe('OpenAI-compatible providers', () => {
   });
 
   it('ignores thinkingBudget instead of sending it', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await provider.generateText({
       model: 'free-model',
@@ -546,19 +683,14 @@ describe('OpenAI-compatible providers', () => {
   describe('empty-answer evidence (ADR 0129 §4)', () => {
     it('throws an empty answer with finishReason, upstream and emptyAnswer', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            provider: 'Nebius',
-            choices: [
-              { message: { content: null, reasoning: 'thinking…' }, finish_reason: 'length' },
-            ],
-            usage: {
-              completion_tokens: 2048,
-              completion_tokens_details: { reasoning_tokens: 2048 },
-            },
-          }),
-          { status: 200 },
-        ),
+        sse({
+          provider: 'Nebius',
+          choices: [{ delta: { content: null, reasoning: 'thinking…' }, finish_reason: 'length' }],
+          usage: {
+            completion_tokens: 2048,
+            completion_tokens_details: { reasoning_tokens: 2048 },
+          },
+        }),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       const err = await provider
@@ -594,13 +726,10 @@ describe('OpenAI-compatible providers', () => {
 
     it('caps success metadata fields', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            provider: 'p'.repeat(100),
-            choices: [{ message: { content: 'answer' }, finish_reason: 'f'.repeat(100) }],
-          }),
-          { status: 200 },
-        ),
+        sse({
+          provider: 'p'.repeat(100),
+          choices: [{ delta: { content: 'answer' }, finish_reason: 'f'.repeat(100) }],
+        }),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       const result = await provider.generateText({
@@ -613,19 +742,16 @@ describe('OpenAI-compatible providers', () => {
 
     it('reports upstream and thinkingTokens on success', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            provider: 'Nebius',
-            choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
-            usage: {
-              prompt_tokens: 2,
-              completion_tokens: 3,
-              total_tokens: 5,
-              completion_tokens_details: { reasoning_tokens: 12 },
-            },
-          }),
-          { status: 200 },
-        ),
+        sse({
+          provider: 'Nebius',
+          choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 2,
+            completion_tokens: 3,
+            total_tokens: 5,
+            completion_tokens_details: { reasoning_tokens: 12 },
+          },
+        }),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       await expect(
@@ -661,5 +787,770 @@ describe('OpenAI-compatible providers', () => {
         .catch((e: unknown) => e);
       expect(err).toMatchObject({ status, host: 'openrouter.ai' });
     });
+  });
+
+  describe('S3 review fix round 1', () => {
+    const errorOf = (err: unknown): { message: string; cause?: unknown } =>
+      err as { message: string; cause?: unknown };
+
+    it('redacts the API key from a fetch failure cause that echoes a URL', async () => {
+      const key = 'sk-or-testkey123';
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockRejectedValue(
+          new TypeError(`fetch failed: https://openrouter.ai/api/v1/chat/completions?key=${key}`),
+        );
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      expect(JSON.stringify(err)).not.toContain(key);
+      const cause = errorOf(err).cause as Error;
+      expect(cause.message).not.toContain(key);
+      expect(cause.message).toContain('(redacted)');
+    });
+
+    it('discards the original nested cause and preserves the outer diagnostic code', async () => {
+      const key = 'sk-or-nested';
+      const inner = Object.assign(new Error(`invalid token Bearer ${key}`), { code: 'EAUTH' });
+      const outer = Object.assign(new Error('request failed', { cause: inner }), {
+        code: 'EOUTER',
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(outer);
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      const cause = errorOf(err).cause as Error & { code?: string };
+      expect(cause.message).toBe('request failed');
+      expect(cause.code).toBe('EOUTER');
+      expect(cause.cause).toBeUndefined();
+      expect(inner.message).toContain(key);
+    });
+
+    it('redacts a short key from a stream SyntaxError cause', async () => {
+      const key = 'sk-x9';
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(`data: ${key}\n\n`, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'invalid-response', retryable: false });
+      const cause = errorOf(err).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as Error).message).not.toContain(key);
+    });
+
+    it('redacts a key echoed in a 401 error body without changing the mapping', async () => {
+      const key = 'sk-or-401echo';
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify({ error: { code: 401, message: `invalid credentials Bearer ${key}` } }),
+            { status: 401 },
+          ),
+        );
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        kind: 'authentication',
+        retryable: false,
+        status: 401,
+        host: 'openrouter.ai',
+      });
+      expect(errorOf(err).message).not.toContain(key);
+      expect(errorOf(err).message).toContain('(redacted)');
+    });
+
+    it('redacts the key from a mid-stream body failure cause', async () => {
+      const key = 'sk-or-streambody';
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error(`upstream reset for Bearer ${key}`));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      );
+      const provider = createOpenRouterProvider({ apiKey: key, fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      const cause = errorOf(err).cause as Error;
+      expect(cause.message).not.toContain(key);
+      expect(cause.message).toContain('(redacted)');
+    });
+
+    it('a top-level stream error after partial text throws a retryable outage', async () => {
+      const body =
+        'data: {"choices":[{"delta":{"content":"part"}}]}\n\n' +
+        'data: {"error":{"message":"upstream broke","code":502}}\n\n' +
+        'data: [DONE]\n\n';
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+        );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProviderError);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true, finishReason: 'error' });
+    });
+
+    it('an abort during a non-cooperative error-body read keeps the status mapping and frees the reader', async () => {
+      const cancelSpy = vi.fn();
+      const body = new ReadableStream<Uint8Array>({
+        start() {},
+        cancel(reason) {
+          cancelSpy(reason);
+        },
+      });
+      const httpResponse = new Response(body, { status: 429, headers: { 'retry-after': '1' } });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(httpResponse);
+      // timeoutMs (not idleTimeoutMs): the first-byte timer is still armed
+      // during the error-body read. The abort unblocks the read; the 429
+      // mapping is byte-identical to a complete body read.
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, timeoutMs: 30 });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        kind: 'rate-limit',
+        retryable: true,
+        status: 429,
+        retryAfterMs: 1000,
+      });
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+      expect(httpResponse.body?.locked).toBe(false);
+    });
+
+    it('a 429 error body keeps its exact mapping when read through the raced reader', async () => {
+      const httpResponse = new Response(
+        JSON.stringify({ error: { code: 429, message: 'slow down' } }),
+        { status: 429, headers: { 'retry-after': '1' } },
+      );
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(httpResponse);
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        kind: 'rate-limit',
+        retryable: true,
+        status: 429,
+        retryAfterMs: 1000,
+      });
+      expect(httpResponse.body?.locked).toBe(false);
+    });
+
+    it('accepts a usage: null chunk', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          sse(
+            { model: 'served', choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] },
+            { usage: null },
+          ),
+        );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] }),
+      ).resolves.toEqual({ text: 'answer', model: 'served', finishReason: 'stop' });
+    });
+
+    it('a pre-aborted caller signal never reaches fetch and forwards the reason', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const caller = new AbortController();
+      caller.abort(new Error('caller gave up'));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({
+          model: 'm',
+          messages: [{ role: 'user', text: 'q' }],
+          signal: caller.signal,
+        })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      expect(fetch).not.toHaveBeenCalled();
+      expect((errorOf(err).cause as Error).message).toBe('caller gave up');
+    });
+
+    it('removes the caller abort listener once the call settles', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+      const caller = new AbortController();
+      const removeSpy = vi.spyOn(caller.signal, 'removeEventListener');
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+        signal: caller.signal,
+      });
+      expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+    });
+
+    it('aborts the fetch signal on an error exit', async () => {
+      let seenSignal: AbortSignal | null = null;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation((_url, init) => {
+        seenSignal = init?.signal ?? null;
+        return Promise.resolve(
+          new Response('data: {bad json\n\n', {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+        );
+      });
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch(() => undefined);
+      expect(seenSignal?.aborted).toBe(true);
+    });
+
+    it('cancels a late fetch response body after a timeout', async () => {
+      const cancelSpy = vi.fn();
+      let resolveFetch: ((value: Response) => void) | undefined;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch, timeoutMs: 30 });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+      resolveFetch?.(
+        new Response(new ReadableStream({ start() {}, cancel: cancelSpy }), { status: 200 }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels the stream reader and releases the lock on a mid-stream error exit', async () => {
+      const cancelSpy = vi.fn();
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"choices":[{"delta":{"content":"part"},"finish_reason":"error"}]}\n\n',
+            ),
+          );
+        },
+        cancel(reason) {
+          cancelSpy(reason);
+        },
+      });
+      const httpResponse = new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(httpResponse);
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true, finishReason: 'error' });
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+      expect(httpResponse.body?.locked).toBe(false);
+    });
+
+    it('opens a new slot when index 0 is reused with a different id', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        sse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'a',
+                    type: 'function',
+                    function: { name: 'f', arguments: '{"x"' },
+                  },
+                ],
+              },
+            },
+            { delta: { tool_calls: [{ index: 0, function: { arguments: ':1}' } }] } },
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'b',
+                    type: 'function',
+                    function: { name: 'g', arguments: '{"y":2}' },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const res = await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+      });
+      expect(res.toolCalls).toEqual([
+        { id: 'a', name: 'f', args: { x: 1 } },
+        { id: 'b', name: 'g', args: { y: 2 } },
+      ]);
+    });
+
+    it('opens a new slot for no-index calls when a second name arrives', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        sse({
+          choices: [
+            { delta: { tool_calls: [{ function: { name: 'f', arguments: '{"x"' } }] } },
+            { delta: { tool_calls: [{ function: { arguments: ':1}' } }] } },
+            {
+              delta: { tool_calls: [{ function: { name: 'g', arguments: '{"y":2}' } }] },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const res = await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+      });
+      expect(res.toolCalls).toEqual([
+        { name: 'f', args: { x: 1 } },
+        { name: 'g', args: { y: 2 } },
+      ]);
+    });
+
+    it('joins interleaved indexed fragments across parallel calls', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        sse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, id: 'a', function: { name: 'f', arguments: '{"x"' } },
+                  { index: 1, id: 'b', function: { name: 'g', arguments: '{"y"' } },
+                ],
+              },
+            },
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, function: { arguments: ':1}' } },
+                  { index: 1, function: { arguments: ':2}' } },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const res = await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+      });
+      expect(res.toolCalls).toEqual([
+        { id: 'a', name: 'f', args: { x: 1 } },
+        { id: 'b', name: 'g', args: { y: 2 } },
+      ]);
+    });
+
+    it('a clean EOF without finish_reason and partial text throws a retryable outage', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response('data: {"choices":[{"delta":{"content":"part"}}]}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+    });
+
+    it('a clean EOF without finish_reason and a partial tool call throws a retryable outage', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(
+            'data: {"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{\\"x\\":1}"}}]}}]}\n\n',
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          ),
+        );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+    });
+  });
+});
+
+describe('round 2 adversarial regressions', () => {
+  const key = 'sk-hostile-key123';
+  const req = { model: 'm', messages: [{ role: 'user' as const, text: 'q' }] };
+  const generate = (res: Response) =>
+    createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(res),
+    }).generateText(req);
+  it.each(['string', 'stack', 'frozen', 'object', 'getter'])(
+    'copies and sanitizes %s rejection without mutating the original',
+    async (kind) => {
+      const hostileGetter = vi.fn(() => {
+        throw new Error(key);
+      });
+      const original =
+        kind === 'string'
+          ? key
+          : kind === 'object'
+            ? { message: key, cause: key }
+            : kind === 'getter'
+              ? Object.defineProperty({}, 'message', {
+                  get: hostileGetter,
+                })
+              : new Error(key, { cause: new Error(key) });
+      if (original instanceof Error) {
+        void original.stack;
+        if (kind === 'frozen') Object.freeze(original);
+      }
+      const error = await createOpenRouterProvider({
+        apiKey: key,
+        fetch: vi.fn<typeof fetch>().mockRejectedValue(original),
+      })
+        .generateText(req)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProviderError);
+      const cause = (error as Error).cause as Error;
+      expect(cause).toBeInstanceOf(Error);
+      expect(cause).not.toBe(original);
+      expect(String(cause)).not.toContain(key);
+      expect(cause.stack).not.toContain(key);
+      expect(JSON.stringify(error)).not.toContain(key);
+      expect(cause.cause).toBeUndefined();
+      if (original instanceof Error) expect(original.message).toBe(key);
+      if (kind === 'string' || kind === 'object') expect(cause.message).toBe('(redacted)');
+      if (kind === 'getter') {
+        expect(cause.message).toBe('request failed');
+        expect(hostileGetter).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it('sanitizes Zod diagnostics before exposing their message or stack', async () => {
+    const diagnosticKey = 'Expected number';
+    const e = (await createOpenRouterProvider({
+      apiKey: diagnosticKey,
+      fetch: vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(sse({ choices: [{ delta: { tool_calls: [{ index: 'bad' }] } }] })),
+    })
+      .generateText(req)
+      .catch((e: unknown) => e)) as Error;
+    expect(e).toBeInstanceOf(ProviderError);
+    expect(e.cause).toBeInstanceOf(Error);
+    expect(String(e.cause)).not.toContain(diagnosticKey);
+    expect((e.cause as Error).stack).not.toContain(diagnosticKey);
+    expect(JSON.stringify(e.cause)).not.toContain(diagnosticKey);
+  });
+  it('redacts success model, upstream and finish metadata at ingestion', async () => {
+    const res = await generate(
+      sse({
+        model: key,
+        provider: key,
+        choices: [{ delta: { content: 'ok' }, finish_reason: key }],
+      }),
+    );
+    expect(res.model).toBe('(redacted)');
+    expect(res.upstream).toBe('(redacted)');
+    expect(res.finishReason).toBe('(redacted)');
+  });
+  it.each(['error', 'empty'])('redacts %s-path upstream and finish metadata', async (path) => {
+    const e = await generate(
+      sse({
+        provider: key,
+        model: key,
+        ...(path === 'error'
+          ? { error: { message: 'bad' } }
+          : { choices: [{ finish_reason: key }] }),
+      }),
+    ).catch((e: unknown) => e);
+    expect(JSON.stringify(e)).not.toContain(key);
+    expect(e).toMatchObject({ upstream: '(redacted)' });
+    if (path === 'empty') expect(e).toMatchObject({ finishReason: '(redacted)' });
+  });
+  it('sanitizes caller TimeoutError and cancels a non-cooperative body', async () => {
+    const abort = new AbortController();
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const pending = createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+    }).generateText({ ...req, signal: abort.signal });
+    setTimeout(() => abort.abort(new DOMException(key, 'TimeoutError')), 5);
+    const e = (await pending.catch((e: unknown) => e)) as ProviderError;
+    expect(e.kind).toBe('timeout');
+    expect(String(e.cause)).not.toContain(key);
+    expect((e.cause as Error).stack).not.toContain(key);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+  it('sanitizes callback ProviderError and preserves classification', async () => {
+    const original = new ProviderError('outage', key, true, {
+      cause: new Error(key),
+      upstream: key,
+      finishReason: key,
+    });
+    void original.stack;
+    const e = (await createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(response()),
+    })
+      .generateText({
+        ...req,
+        onChunk() {
+          throw original;
+        },
+      })
+      .catch((e: unknown) => e)) as ProviderError;
+    expect(e).not.toBe(original);
+    expect(e.kind).toBe('outage');
+    expect(e.retryable).toBe(true);
+    expect(e.message).toBe('(redacted)');
+    expect(e.stack).not.toContain(key);
+    expect(JSON.stringify(e)).not.toContain(key);
+    expect(original.message).toBe(key);
+  });
+  it('idle timeout cancels and unlocks a never-yielding body and aborts fetch', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    let signal: AbortSignal | null | undefined;
+    const e = await createOpenRouterProvider({
+      apiKey: key,
+      idleTimeoutMs: 15,
+      fetch: vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+        signal = init?.signal;
+        return new Response(body);
+      }),
+    })
+      .generateText(req)
+      .catch((e: unknown) => e);
+    expect(e).toMatchObject({ kind: 'timeout' });
+    expect(signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+  it('fragmented bytes rearm idle before a complete event exists', async () => {
+    const frame =
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+    let timer: ReturnType<typeof setInterval>;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        let i = 0;
+        timer = setInterval(() => {
+          c.enqueue(new TextEncoder().encode(frame.slice(i, i + 10)));
+          i += 10;
+          if (i >= frame.length) {
+            clearInterval(timer);
+            c.close();
+          }
+        }, 10);
+      },
+      cancel() {
+        clearInterval(timer);
+      },
+    });
+    await expect(
+      createOpenRouterProvider({
+        apiKey: key,
+        timeoutMs: 20,
+        idleTimeoutMs: 25,
+        maxCallMs: 500,
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+      }).generateText(req),
+    ).resolves.toMatchObject({ text: 'ok' });
+  });
+  it('first-byte deadline remains active after headers and ignores empty chunks', async () => {
+    const started = Date.now();
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array());
+      },
+      cancel,
+    });
+    const e = await createOpenRouterProvider({
+      apiKey: key,
+      timeoutMs: 10,
+      idleTimeoutMs: 100,
+      maxCallMs: 150,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+    })
+      .generateText(req)
+      .catch((e: unknown) => e);
+    expect(e).toMatchObject({ kind: 'timeout' });
+    expect(Date.now() - started).toBeLessThan(80);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+  it('accepts null errors and missing tool function fragments', async () => {
+    const res = await generate(
+      sse({
+        error: null,
+        choices: [
+          {
+            error: null,
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'a' },
+                { index: 0, function: { name: 'f', arguments: '{}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([{ id: 'a', name: 'f', args: {} }]);
+  });
+  it('joins repeated no-index id/name continuations even when interleaved', async () => {
+    const res = await generate(
+      sse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { id: 'a', function: { name: 'f', arguments: '{"x"' } },
+                { id: 'b', function: { name: 'f', arguments: '{"y":2}' } },
+                { id: 'a', function: { name: 'f', arguments: ':1}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([
+      { id: 'a', name: 'f', args: { x: 1 } },
+      { id: 'b', name: 'f', args: { y: 2 } },
+    ]);
+  });
+  it('keeps reused indexed same-name calls with different ids distinct', async () => {
+    const res = await generate(
+      sse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'a', function: { name: 'f', arguments: '{"x":1}' } },
+                { index: 0, id: 'b', function: { name: 'f', arguments: '{"x":2}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([
+      { id: 'a', name: 'f', args: { x: 1 } },
+      { id: 'b', name: 'f', args: { x: 2 } },
+    ]);
+  });
+  it('keeps two no-index same-name calls without ids distinct', async () => {
+    const res = await generate(
+      sse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { function: { name: 'f', arguments: '{"x":1}' } },
+                { function: { name: 'f', arguments: '{"x":2}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([
+      { name: 'f', args: { x: 1 } },
+      { name: 'f', args: { x: 2 } },
+    ]);
+  });
+  it('redacts before shortReason truncation', async () => {
+    const prefix = 'x'.repeat(155);
+    const e = (await generate(
+      new Response(JSON.stringify({ error: { message: prefix + key } }), { status: 401 }),
+    ).catch((e: unknown) => e)) as Error;
+    expect(e.message).toContain(prefix + '(reda');
+    expect(e.message).not.toContain('sk-ho');
+  });
+  it('does not abort the fetch signal on success and releases the body', async () => {
+    let signal: AbortSignal | null | undefined;
+    const res = response();
+    await createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+        signal = init?.signal;
+        return res;
+      }),
+    }).generateText(req);
+    expect(signal?.aborted).toBe(false);
+    expect(res.body?.locked).toBe(false);
+  });
+  it('throttles ten one-second chunks to four progress emissions', async () => {
+    vi.useFakeTimers();
+    try {
+      const onProgress = vi.fn<NonNullable<GenerateTextRequest['onProgress']>>();
+      let timer: ReturnType<typeof setInterval>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          let i = 0;
+          timer = setInterval(() => {
+            i++;
+            c.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: 'x' }, ...(i === 10 ? { finish_reason: 'stop' } : {}) }] })}\n\n`,
+              ),
+            );
+            if (i === 10) {
+              clearInterval(timer);
+              c.close();
+            }
+          }, 1000);
+        },
+        cancel() {
+          clearInterval(timer);
+        },
+      });
+      const pending = createOpenRouterProvider({
+        apiKey: key,
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+      }).generateText({ ...req, onProgress });
+      await vi.advanceTimersByTimeAsync(10000);
+      await pending;
+      expect(onProgress).toHaveBeenCalledTimes(4);
+      expect(onProgress.mock.calls.map(([p]) => p.msSinceLastByte)).toEqual([0, 0, 0, 0]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
