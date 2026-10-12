@@ -68,8 +68,8 @@
 | 5 | S5-T10: digests in conversation recall | Modify: `apps/daemon/src/assistant/service.ts`, `apps/daemon/src/assistant/service.test.ts`, `apps/daemon/src/assistant/tools.ts`, `apps/daemon/src/assistant/tools.test.ts` | S5-T4, S5-T7 |
 | 5 | S5-T11: digest dashboard API | Create: `packages/http/src/routes/assistant-digests.ts`, `packages/http/src/routes/assistant-digests.test.ts` · Modify: `packages/http/src/index.ts`, `apps/daemon/src/http/wiring.ts` | S5-T4 |
 | 5 | S5-T12: digest dashboard UI | Create: `packages/dashboard/src/components/assistant-digest-list.tsx`, `packages/dashboard/src/components/assistant-digest-settings.tsx`, `packages/dashboard/src/pages/assistant-memory.test.tsx` · Modify: `packages/dashboard/src/pages/assistant-conversations.tsx`, `packages/dashboard/src/pages/assistant-conversations.test.tsx`, `packages/dashboard/src/pages/assistant-memory.tsx` | S5-T5, S5-T11 |
+| 5 | S5-T14: summaries run on the summary tier | Modify: `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant-summarise.test.ts`, `apps/daemon/src/jobs/assistant.ts` (comment only) | S5-T7 |
 | 6 | S5-T13: STATE.md and PRIVACY.md | Modify: `docs/STATE.md`, `PRIVACY.md` | S5-T1–S5-T12, S5-T14 |
-| 6 | S5-T14: summaries run on the summary tier | Modify: `apps/daemon/src/runtime/guild.ts`, `apps/daemon/src/jobs/assistant-summarise.test.ts`, `apps/daemon/src/jobs/assistant.ts` (comment only) | S5-T7 |
 
 ## Tasks
 
@@ -828,7 +828,7 @@ export const searchDigests = (
   });
 ```
 
-(Notes: `scope.only` takes the table plus conditions — verify against `conversations.ts` usage; `sql.join` exists in drizzle-orm. If either differs, use the file's own idiom. The `like` value interpolation builds `%word%` patterns; words come from the query after lowercasing and length filtering, and `%`/`_` in them are matched literally enough for a prefilter — the JS `toRow` parse is the real gate. Keep it.)
+(`scope.only(table, ...conditions)` is the guild-scope idiom used throughout `conversations.ts`; `sql.join(chunks, separator)` exists in drizzle-orm — see `repos/archive.ts` lines 1296–1300. The `like` value interpolation builds `%word%` patterns; words come from the query after lowercasing and length filtering, and `%`/`_` in them are matched literally enough for a prefilter — the JS `toRow` parse is the real gate. Keep it.)
 
   5. In `packages/storage/src/index.ts`, append after the `conversationRepo` line (line 67): `export * as digestRepo from './repos/digests.js';`
 
@@ -875,7 +875,7 @@ it('registers the four digest settings with spec defaults (ADR 0150, spec §4.7)
 Also update the existing `has 28 definitions` test to `toHaveLength(32)` (28 + 4), and in `packages/http/src/routes/assistant-tuning.test.ts` update `lists the 28 settings for the owner` to expect 32 and add `expect(body.settings.map((s) => s.key)).toContain('assistant.digestEnabled');` beside the other `toContain` lines.
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/settings/instance-settings.test.ts packages/http/src/routes/assistant-tuning.test.ts --maxWorkers=1` · Expected: FAIL with `expected 28 to have length 32` (and unknown keys)
-- [ ] **Step 3: Implement** — in `packages/core/src/settings/instance-settings.ts`, add four definitions after `channelContextMessages` (same shape), all in group `'Assistant context'` (no new group: the generic tuning page renders them as-is):
+- [ ] **Step 3: Implement** — in `packages/core/src/settings/instance-settings.ts`, add four definitions in the `channelContextMessages` shape, all in group `'Assistant context'` (no new group: the generic tuning page renders them as-is):
 
 ```ts
 const digestEnabled: SettingDefinition<number> = {
@@ -1046,7 +1046,7 @@ const deps = (over: Partial<DigestDeps> = {}): DigestDeps => ({
   logger: pino({ level: 'silent' }),
   timeZone: () => 'America/Vancouver',
   botUserId: BOT,
-  digestTier: () => 'light',
+  forcedTier: () => 'light',
   digestModel: async () => ({
     ok: true as const,
     text: '{"daySummary": "Talked about the build night.", "memoryProposals": []}',
@@ -1287,7 +1287,7 @@ export interface DigestDeps {
   readonly timeZone: () => string;
   readonly botUserId: string;
   /** Slice 6's forced tier for this job — wired to `backgroundTier('daily-digest')` in guild.ts. */
-  readonly digestTier: () => ChainTier;
+  readonly forcedTier: () => ChainTier;
   readonly digestModel: DigestModelPort;
   readonly digestEnabled: () => boolean;
   readonly digestInputChars: () => number;
@@ -1340,7 +1340,7 @@ export const assistantDailyDigestHandler = (
     runRepo.appendRunEvent(scope, runId, startedAt, { kind: 'started', attempt: 1, queueWaitMs: 0 });
     runRepo.appendRunEvent(scope, runId, deps.now(), {
       kind: 'routed',
-      tier: deps.digestTier(),
+      tier: deps.forcedTier(),
       reason: 'background-tier',
     });
     const fail = (code: string): void => {
@@ -1527,7 +1527,7 @@ Then in `apps/daemon/src/runtime/guild.ts`: beside the `summariseModel` closure 
         timeZone: () => config.BANANASAURS_TIME_ZONE,
         botUserId,
         digestModel,
-        digestTier: () => assistantService.backgroundTier('daily-digest'),
+        forcedTier: () => assistantService.backgroundTier('daily-digest'),
         digestEnabled: () =>
           settings === undefined ? true : settings.get('assistant.digestEnabled') === 1,
         digestInputChars: () =>
@@ -2150,7 +2150,7 @@ export const registerAssistantDigests = (
 };
 ```
 
-(Check `assistant-conversations.ts` for whether `deps` is used; `void deps` only if unused. `RouteGuard`/`HttpDeps` import paths are the same as that file: `../server.js` for both, `badRequest` from `../errors/reply.js`, `requireCapability` from `./capability.js`.)
+(`RouteGuard`/`HttpDeps` import paths are the same as that file: `../server.js` for both, `badRequest` from `../errors/reply.js`, `requireCapability` from `./capability.js`. These two routes read only through `digestRepo` and `session.scope`, so `deps` is unused — keep the `void deps;` line.)
 
 Then in `packages/http/src/index.ts`, add beside line 49 (`export { registerAssistantConversationRoutes } from './routes/assistant-conversations.js';`): `export { registerAssistantDigests } from './routes/assistant-digests.js';`. Then in `apps/daemon/src/http/wiring.ts`, extend the `@bananasaurs/http` import (lines 18–47) with `registerAssistantDigests` in the same position as the conversations entry, and register beside line 319 (`registerAssistantConversationRoutes(instance, guard, routeDeps);`) with `registerAssistantDigests(instance, guard, routeDeps);` on the next line.
 
@@ -2482,27 +2482,157 @@ with `import { AssistantDigestList } from '../components/assistant-digest-list.j
 
 **Done when:** the digest list renders under Conversations with an Open detail; the four digest controls render on Memory and save through the tuning API.
 
+---
+
+### S5-T14: summaries run on the summary tier   ·   Wave 5
+**Owns:** Modify: `apps/daemon/src/runtime/guild.ts` (the `summariseModel` closure + its comment), `apps/daemon/src/jobs/assistant-summarise.test.ts` (append one `describe`), `apps/daemon/src/jobs/assistant.ts` (the ADR 0091 enqueue comment only)
+**Reads (do not edit):** `apps/daemon/src/jobs/assistant-summarise.ts` (the handler — unchanged by this task), `apps/daemon/src/runtime/guild.ts` lines 1259–1293 (the closure to change), `apps/daemon/src/jobs/assistant.ts` lines 1641–1643 (the enqueue comment to change), `apps/daemon/src/assistant/service.test.ts` lines 5858–5874 (the `runWithSummaryTier` settings-row idiom) and 70–82 (the `parseConfig` shape)
+**Interfaces:** Consumes: `pickBackgroundEntry` (S5-T7); `backgroundTier('summary')` + `assistant.routerSummaryTier` (Slice 6); `assistantSummarisePayload` shape (unchanged — `providerId`/`model`/`keyId` stay as provenance) · Produces: tier-ordered summary entry selection
+
+- [ ] **Step 1: Write the failing test** — append to `apps/daemon/src/jobs/assistant-summarise.test.ts` (it already has `GUILD_ID`, `NOW`, `scope()`, the migrated database and `guildRepo.upsertGuild` in `beforeEach`). Add imports: `parseConfig` from `@bananasaurs/core`; `instanceSettingsRepo` from `@bananasaurs/storage`; `createAssistantService` from `../assistant/service.js`; `pickBackgroundEntry` from `./assistant-digest.js`; `type ChainEntry` from `../assistant/model-chain.js`:
+
+```ts
+describe('summaries run on the summary tier (S5-T14)', () => {
+  const tierConfig = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: '111111111111111111',
+    BANANASAURS_OWNER_USER_ID: '123456789012345678',
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'test-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const entryFor = (tier: 'light' | 'standard', keyId: string): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'm',
+    keyId,
+    keyLabel: keyId,
+    provider: {
+      id: keyId,
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => ({ text: 'summary', model: 'm' }),
+    },
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+    pool: 'key',
+    tier,
+    selectedKeyId: keyId,
+  });
+
+  it.each([['standard'], ['light']] as const)(
+    'with routerSummaryTier = %s the summary run tries that tier first',
+    async (tier) => {
+      instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
+        key: 'assistant.routerSummaryTier',
+        valueJson: JSON.stringify(tier),
+        updatedAt: NOW,
+        updatedBy: 'test',
+      });
+      const service = createAssistantService(scope(), t.scopes.instance(), tierConfig, () => NOW);
+      const chain = [entryFor('light', 'key_light'), entryFor('standard', 'key_standard')];
+      expect(pickBackgroundEntry(chain, service.backgroundTier('summary'))?.keyId).toBe(
+        tier === 'standard' ? 'key_standard' : 'key_light',
+      );
+      expect(
+        pickBackgroundEntry([...chain].reverse(), service.backgroundTier('summary'))?.keyId,
+      ).toBe(tier === 'standard' ? 'key_standard' : 'key_light');
+    },
+  );
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/assistant-summarise.test.ts --maxWorkers=1` · Expected: FAIL with `Failed to resolve import "./assistant-digest.js"` when run before S5-T7 merges. Wave 5 runs after wave 4, so on the real base this passes — that is expected: the test pins the tier-first contract the Step 3 wiring relies on. Break-it (do it, watch it fail, then revert): hardcode `'standard'` as the tier inside `pickBackgroundEntry` and watch the `light` case fail; restore and record it in the commit message.
+- [ ] **Step 3: Implement** —
+  1. In `apps/daemon/src/runtime/guild.ts`, exact anchor (lines 1259–1275):
+
+```ts
+  // ADR 0091 decision 4: the summary job re-resolves the chain entry that
+  // answered and reserves one call against its local limits. A missing or
+  // skipped entry, a refused reservation and a failed call are all skips,
+  // never retries — the raw turns are kept for the next run.
+  const summariseModel: SummariseModelPort = async ({
+    providerId,
+    model,
+    keyId,
+    systemInstruction,
+    text,
+  }) => {
+    const entry = (deps.assistantChain ?? (() => []))().find(
+      (candidate) =>
+        candidate.providerId === providerId &&
+        candidate.model === model &&
+        candidate.keyId === keyId,
+    );
+```
+
+exact replacement:
+
+```ts
+  // ADR 0091 decision 4 as amended by S5-T14: the summary job answers on the
+  // forced summary tier from `backgroundTier('summary')` (Slice 6, setting
+  // `assistant.routerSummaryTier`, default light), never the entry that
+  // answered — background jobs never run the router. The payload keeps the
+  // answering entry as provenance. A missing or skipped entry, a refused
+  // reservation and a failed call are all skips, never retries — the raw
+  // turns are kept for the next run.
+  const summariseModel: SummariseModelPort = async ({ systemInstruction, text }) => {
+    const entry = pickBackgroundEntry(
+      (deps.assistantChain ?? (() => []))(),
+      assistantService.backgroundTier('summary'),
+    );
+```
+
+(The rest of the closure — `entry === undefined` check, `reserveEntryCall`, `generateText`, `ProviderError` catch — is unchanged. Extend the S5-T7 `assistant-digest.js` import with `pickBackgroundEntry`.)
+  2. In `apps/daemon/src/jobs/assistant.ts`, exact anchor (lines 1641–1643):
+
+```ts
+      // ADR 0091 decision 3: turns that fell out of the history window get
+      // one summary job on the entry that answered. An enqueue failure is
+      // logged and never fails the answer.
+```
+
+exact replacement:
+
+```ts
+      // ADR 0091 decision 3 (tier: S5-T14): turns that fell out of the
+      // history window get one summary job on the forced summary tier, not
+      // the entry that answered. An enqueue failure is logged and never
+      // fails the answer.
+```
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/jobs/assistant-summarise.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant-summarise.test.ts apps/daemon/src/jobs/assistant.ts` then `npx eslint apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant-summarise.test.ts apps/daemon/src/jobs/assistant.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/runtime/guild.ts apps/daemon/src/jobs/assistant-summarise.test.ts apps/daemon/src/jobs/assistant.ts && git commit -m "Slice 5 T14: conversation summaries run on the summary tier"`
+
+**Done when:** with `routerSummaryTier` = `standard` the picked entry is the standard one first (and light untouched by position), and vice versa for `light`; the payload shape and handler are untouched.
+
+---
+
 ### S5-T13: STATE.md entry and PRIVACY.md lines   ·   Wave 6
 **Owns:** Modify: `docs/STATE.md`, `PRIVACY.md`
-**Reads (do not edit):** `docs/STATE.md` lines 1–16 (the living-document header and the Slice 1 entry style), `PRIVACY.md` lines 101–106 (the summary/lookback lines)
+**Reads (do not edit):** `docs/STATE.md` lines 1–16 (the living-document header; the Slice 6 entry sits directly after the first `---`, followed by the Slice 2 entry — same bullet style), `PRIVACY.md` line 117 (the summary/lookback line)
 **Interfaces:** Consumes: everything above · Produces: none (docs)
 
-- [ ] **Step 1: Write the failing test** — not applicable (docs). Verify placement first: `sed -n '1,16p' docs/STATE.md` must still show the Slice 1 entry directly after the first `---`; the new entry goes between that `---` and the Slice 1 entry, same bullet style.
+- [ ] **Step 1: Write the failing test** — not applicable (docs). Verify placement first: `sed -n '1,16p' docs/STATE.md` must still show the Slice 6 entry directly after the first `---`; the new entry goes between that `---` and the Slice 6 entry, same bullet style.
 - [ ] **Step 2: Run it and watch it fail** — not applicable (docs).
 - [ ] **Step 3: Implement** —
-  1. In `docs/STATE.md`, insert after the first `---` (line 5) and before the Slice 1 entry:
+  1. In `docs/STATE.md`, insert after the first `---` (line 5) and before the Slice 6 entry:
 
 ```markdown
 **Daily digest and automatic memory proposals (Slice 5 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on this branch, not yet merged (ADR 0150, migration `daily_digests`).**
 
 - **Job (5a):** `assistant_daily_digest` runs once per guild per local day (04:00 in the club's time zone, hourly tick, `oncePerBucket` bucket key), so restarts and replays cannot run it twice. A day with no turns still records an empty digest.
-- **Input (5b, D10a):** that day's turns from `assistant_conversation_turns` grouped by conversation with rolling summaries, capped at 40,000 chars (`assistant.digestInputChars`), same redaction and outbound scan as any provider call. Runs on the guild chain in order; the `assistant.digestTier` setting (default `light`) takes effect with Slice 6's `orderChainByTier` (`orderChainForDigest` passthrough marks the spot).
+- **Input (5b, D10a):** that day's turns from `assistant_conversation_turns` grouped by conversation with rolling summaries, capped at 40,000 chars (`assistant.digestInputChars`), same redaction and outbound scan as any provider call. Runs on the guild chain ordered by `backgroundTier('daily-digest')` (setting `assistant.routerDailyDigestTier`, default `light`); the rolling summaries now use `backgroundTier('summary')` the same way.
 - **Output (5c):** Zod-validated `daySummary` (300 words) plus at most 10 proposals (`assistant.digestMaxProposals`) into the existing memory-proposal queue with provenance `daily-digest`; code drops duplicates of memory or pending drafts. Nothing becomes memory without owner approval.
-- **Stored (5d):** `assistant_daily_digests` keyed by guild and day; retention follows the conversation setting; `search_conversations` also searches digests through the asker's channels; dashboard "Daily digests" list under Conversations, controls on Memory.
-- **Observed (5e):** run-ledger entries with source `daily-digest`; model failures complete without retrying.
+- **Stored (5d):** `assistant_daily_digests` keyed by guild and day; retention follows the conversation setting; `search_conversations` also searches digests through the asker's channels; dashboard "Daily digests" list under Conversations, four digest controls on Memory.
+- **Observed (5e):** run-ledger entries with source `daily-digest`, each with a `routed` event (reason `background-tier`); model failures complete without retrying.
 ```
 
-  2. In `PRIVACY.md`, exact anchor (line 105):
+  2. In `PRIVACY.md`, exact anchor (line 117):
 
 ```markdown
 - The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Conversations from channels the owner has marked as no-access are never used. Names are left out of what it sees. There is no opt-out.
@@ -2527,7 +2657,7 @@ npm run typecheck        (≈1.7 GB peak — run alone)
 npm run lint
 npx vitest run --maxWorkers=1
 ## After merge (owner)
-Deploy order: stop → `db:migrate` (migration `daily_digests`) → build → start. On the dashboard: Assistant → Memory holds the five digest controls (on, 04:00, 40,000 chars, 10 proposals, light tier) with defaults already set — change nothing to start. In Discord: talk to the bot one day, and the next morning check Assistant → Conversations → Daily digests for the summary and the assistant page for the drafted memory proposals; approve or dismiss one to confirm the queue path. (After Slice 6 merges first per the build order, the digest answers on the light tier with no further setup.)
+Deploy order: stop → `db:migrate` (migration `daily_digests`) → build → start. On the dashboard: Assistant → Memory holds the four digest controls (on, 04:00, 40,000 chars, 10 proposals) with defaults already set — change nothing to start; AI setup → Routing holds the digest and summary tiers (both light). In Discord: talk to the bot one day, and the next morning check Assistant → Conversations → Daily digests for the summary and the assistant page for the drafted memory proposals; approve or dismiss one to confirm the queue path.
 
 
 
