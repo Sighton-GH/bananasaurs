@@ -28,8 +28,8 @@ export const orderEntriesForMedia = <
 /**
  * Strips what the entry cannot read; one plain line per stripped file on the
  * last user message. Media only travels on user turns, so any on another role
- * is dropped. The marker uses the safe label (the raw name stays on the media
- * that is kept, for the provider file name only). Never mutates its input.
+ * is dropped. The raw name stays in transient media metadata, but adapters do not
+ * use it as a vendor filename; text markers use safe labels. Never mutates its input.
  */
 export const messagesForEntry = (
   messages: readonly GenerationMessage[],
