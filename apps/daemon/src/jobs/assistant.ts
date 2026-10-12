@@ -245,6 +245,9 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
           ...(detail.included.summaryVersion === undefined
             ? {}
             : { summaryVersion: detail.included.summaryVersion }),
+          ...(detail.included.attachments === undefined
+            ? {}
+            : { attachments: detail.included.attachments }),
         },
       }),
 });
@@ -1577,6 +1580,9 @@ export const assistantInvokeHandler = (deps: {
                       ...(included.summaryVersion === undefined
                         ? {}
                         : { summaryVersion: included.summaryVersion }),
+                      ...(included.attachments === undefined
+                        ? {}
+                        : { attachments: included.attachments }),
                     },
                   }),
               timeline: [
@@ -1948,6 +1954,9 @@ export const assistantInvokeHandler = (deps: {
                       ...(detail.included.summaryVersion === undefined
                         ? {}
                         : { summaryVersion: detail.included.summaryVersion }),
+                      ...(detail.included.attachments === undefined
+                        ? {}
+                        : { attachments: detail.included.attachments }),
                     },
                   }),
               timeline: [

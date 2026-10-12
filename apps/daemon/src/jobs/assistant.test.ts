@@ -1758,6 +1758,13 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
             pool: 'key',
             tier: 'standard',
             selectedKeyId: 'key_a',
+            capabilities: {
+              tools: true,
+              image: true,
+              pdf: true,
+              reasoning: false,
+              thinking: 'none',
+            },
           },
         ],
       );
@@ -1852,6 +1859,25 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
         fail === false ? `trace_${key}` : `trace_${key}_a${fail === 'terminal' ? 4 : 1}`,
       );
       expect(trace).toBeDefined();
+      const expectedAttachments = h.inputs[0]?.attachmentSummary;
+      expect(expectedAttachments).toHaveLength(3);
+      expect(trace?.included?.attachments).toEqual(expectedAttachments);
+      expect((detail as AssistantTraceDetail).included?.attachments).toEqual(expectedAttachments);
+      if (fail === false) {
+        const invokeDone = r.savedStages.find(
+          (stage) => (JSON.parse(stage) as { stage?: string }).stage === 'invoke-done',
+        );
+        expect(invokeDone).toBeDefined();
+        const resumed = await h.run(
+          mention({ invocationId: key, messageId: '810000000000000027' }),
+          invokeDone,
+        );
+        expect(resumed.error).toBeUndefined();
+        expect(h.inputs).toHaveLength(1);
+        expect(traceRepo.getTrace(scope(), `trace_${key}`)?.included?.attachments).toEqual(
+          expectedAttachments,
+        );
+      }
       for (const stored of [
         JSON.stringify(detail),
         JSON.stringify(trace),
@@ -2698,6 +2724,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
           snippetChunkIds: ['c_1'],
           quote: false,
           historyTurns: 1,
+          attachments: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }],
         },
       },
     }));
@@ -2719,6 +2746,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       snippetChunkIds: ['c_1'],
       quote: false,
       historyTurns: 1,
+      attachments: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }],
     });
   });
 

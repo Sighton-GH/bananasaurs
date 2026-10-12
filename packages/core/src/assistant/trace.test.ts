@@ -127,6 +127,50 @@ describe('assistantTraceSchema', () => {
     ).toThrow();
   });
 
+  it('round-trips attachment metadata and keeps legacy included valid (ADR 0149)', () => {
+    const included = {
+      toolsOffered: ['search_sources'],
+      snippetChunkIds: ['chunk-1'],
+      quote: false,
+      historyTurns: 0,
+    };
+    const withAttachments = fixtureTrace({
+      included: { ...included, attachments: [{ name: 'chart.png', kind: 'image', sizeBytes: 8 }] },
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(withAttachments)))).toEqual(
+      withAttachments,
+    );
+    const legacy = fixtureTrace({ included });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy);
+  });
+
+  it('bounds attachment metadata and strips unrecognised payload fields (ADR 0149)', () => {
+    const included = { toolsOffered: [], snippetChunkIds: [], quote: false, historyTurns: 0 };
+    const attachment = { name: 'chart.png', kind: 'image' as const, sizeBytes: 8 };
+    const parsed = assistantTraceSchema.parse(
+      fixtureTrace({
+        included: {
+          ...included,
+          attachments: [
+            { ...attachment, dataBase64: 'aGk=', text: 'SECRET_BODY' } as typeof attachment,
+          ],
+        },
+      }),
+    );
+    expect(parsed.included?.attachments).toEqual([attachment]);
+    for (const attachments of [
+      Array.from({ length: 11 }, () => attachment),
+      [{ ...attachment, name: 'x'.repeat(121) }],
+      [{ ...attachment, sizeBytes: -1 }],
+      [{ ...attachment, sizeBytes: 0.5 }],
+      [{ ...attachment, kind: 'audio' }],
+    ]) {
+      expect(() =>
+        assistantTraceSchema.parse({ ...fixtureTrace(), included: { ...included, attachments } }),
+      ).toThrow();
+    }
+  });
+
   it('round-trips included summaryVersion and still parses included without it', () => {
     const withVersion = fixtureTrace({
       included: {

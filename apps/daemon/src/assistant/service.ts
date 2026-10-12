@@ -1229,6 +1229,15 @@ export const createAssistantService = (
               ? {}
               : { channelMessages: input.channelMessages }),
             ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+            ...(input.attachmentSummary === undefined
+              ? {}
+              : {
+                  attachments: input.attachmentSummary.slice(0, 10).map((a) => ({
+                    name: safeAttachmentLabel(a.name),
+                    kind: a.kind,
+                    sizeBytes: a.sizeBytes,
+                  })),
+                }),
           },
           // ADR 0093: hits gathered before the failure still link.
           ...(recalled.length === 0 ? {} : { recalled: [...new Set(recalled)] }),
@@ -1625,6 +1634,15 @@ export const createAssistantService = (
             ? {}
             : { channelMessages: input.channelMessages }),
           ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+          ...(input.attachmentSummary === undefined
+            ? {}
+            : {
+                attachments: input.attachmentSummary.slice(0, 10).map((a) => ({
+                  name: safeAttachmentLabel(a.name),
+                  kind: a.kind,
+                  sizeBytes: a.sizeBytes,
+                })),
+              }),
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
