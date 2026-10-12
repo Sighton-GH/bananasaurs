@@ -43,6 +43,7 @@ import {
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createConversationPruneTimer } from './conversation-prune-timer.js';
+import { createDailyDigestTimer } from './digest-timer.js';
 import { createHousekeepingTimer } from './housekeeping-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
@@ -391,6 +392,18 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const conversationPruneTimer = createConversationPruneTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
+  // ADR 0150: the daily digest producer, once per guild per local day.
+  const dailyDigestTimer = createDailyDigestTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    timeZone: () => config.BANANASAURS_TIME_ZONE,
+    // Live reads so dashboard edits apply without a restart.
+    digestEnabled: () => instanceSettings.get('assistant.digestEnabled') === 1,
+    digestHour: () => instanceSettings.get('assistant.digestHour'),
     now,
     logger,
   });
@@ -816,6 +829,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       backupTimer.start();
       archiveExpiryTimer.start();
       conversationPruneTimer.start();
+      dailyDigestTimer.start();
       reminderDeliveryTimer.start();
       resourceRefreshTimer.start();
       housekeepingTimer.start();
@@ -829,6 +843,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       backupTimer.stop();
       archiveExpiryTimer.stop();
       conversationPruneTimer.stop();
+      dailyDigestTimer.stop();
       reminderDeliveryTimer.stop();
       resourceRefreshTimer.stop();
       housekeepingTimer.stop();
