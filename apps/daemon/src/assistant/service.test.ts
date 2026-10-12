@@ -1499,7 +1499,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(userMessage?.text).toContain('[message attachments: not kept in the trace]');
   });
 
-  const mediaService = (provider: TextProvider) =>
+  const mediaService = (provider: TextProvider, readsMedia = false) =>
     createAssistantService(
       t.scopes.forGuild(GUILD),
       t.scopes.instance(),
@@ -1509,7 +1509,22 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
       undefined,
       undefined,
       undefined,
-      () => [usable(provider)],
+      () => [
+        {
+          ...usable(provider),
+          ...(readsMedia
+            ? {
+                capabilities: {
+                  tools: true,
+                  image: true,
+                  pdf: true,
+                  reasoning: false,
+                  thinking: 'none' as const,
+                },
+              }
+            : {}),
+        },
+      ],
     );
   const mediaInput = {
     media: [
@@ -1517,6 +1532,48 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     ],
     attachmentSummary: [{ name: 'chart.png', kind: 'image' as const, sizeBytes: 3 }],
   };
+
+  it('records bounded safe attachment metadata on success and failure (ADR 0149)', async () => {
+    for (const fail of [false, true]) {
+      const provider: TextProvider = {
+        id: 'fake',
+        capabilities: new Set(['text']),
+        generateText: async () => {
+          if (fail) throw new ProviderError('outage', 'connect timeout', true);
+          return { text: 'done', model: 'model-a' };
+        },
+      };
+      const input = ask({
+        invocationId: `int-trace-${String(fail)}`,
+        ...mediaInput,
+        attachmentSummary: Array.from({ length: 11 }, () => ({
+          name: '\u202e[chart]\n\u0000' + 'x'.repeat(100),
+          kind: 'image' as const,
+          sizeBytes: 8,
+        })),
+      });
+      let detail: AssistantTraceDetail | undefined;
+      if (fail) {
+        const error: unknown = await mediaService(provider)
+          .invoke(input)
+          .catch((err: unknown) => err);
+        expect(error).toBeInstanceOf(ChainFailedError);
+        detail = (error as ChainFailedError).detail;
+      } else {
+        const result = await mediaService(provider).invoke(input);
+        expect(result.ok).toBe(true);
+        detail = result.detail;
+      }
+      expect(detail?.included?.attachments).toEqual(
+        Array.from({ length: 10 }, () => ({
+          name: 'chart ' + 'x'.repeat(42),
+          kind: 'image',
+          sizeBytes: 8,
+        })),
+      );
+      expect(JSON.stringify(detail)).not.toContain('aGk=');
+    }
+  });
 
   it('forwards invocation media on a trailing user message, bytes never in the trace (ADR 0149)', async () => {
     const requests: GenerateTextRequest[] = [];
@@ -1528,7 +1585,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
         return { text: 'done', model: 'model-a' };
       },
     };
-    const result = await mediaService(provider).invoke(
+    const result = await mediaService(provider, true).invoke(
       ask({ invocationId: 'int-media-1', ...mediaInput }),
     );
     expect(result.ok).toBe(true);
@@ -1538,6 +1595,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(note?.text).toBe('[attached files: chart.png]');
     expect(note?.media).toHaveLength(1);
     expect(note?.media?.[0]?.dataBase64).toBe('aGk=');
+    expect(result.detail?.included?.attachments).toEqual(mediaInput.attachmentSummary);
     expect(JSON.stringify(result.detail ?? {})).not.toContain('aGk=');
     expect(JSON.stringify(result.detail ?? {})).not.toContain('"media"');
     expect(JSON.stringify(result.detail?.history ?? [])).toContain('[attached files: chart.png]');
@@ -1573,9 +1631,9 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
       });
       let detail: AssistantTraceDetail | undefined;
       if (mode === 'ok') {
-        detail = (await mediaService(provider).invoke(input)).detail;
+        detail = (await mediaService(provider, true).invoke(input)).detail;
       } else {
-        const failed: unknown = await mediaService(provider)
+        const failed: unknown = await mediaService(provider, true)
           .invoke(input)
           .catch((err: unknown) => err);
         expect(failed).toBeInstanceOf(ChainFailedError);
@@ -1607,7 +1665,7 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
         throw new ProviderError('outage', 'connect timeout', true);
       },
     };
-    const failed: unknown = await mediaService(provider)
+    const failed: unknown = await mediaService(provider, true)
       .invoke(ask({ invocationId: 'int-media-2', ...mediaInput }))
       .catch((err: unknown) => err);
     expect(JSON.stringify(requests[0]?.messages ?? [])).toContain('aGk=');
