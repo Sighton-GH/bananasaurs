@@ -68,7 +68,9 @@ const streamChunkSchema = z.object({
       }),
     )
     .default([]),
-  usage: usageSchema.optional(),
+  /** Top-level error object: some providers fail a 200 stream without any choice. */
+  error: streamErrorSchema.optional(),
+  usage: usageSchema.nullish(),
 });
 
 export interface OpenAiCompatibleProviderOptions {
@@ -110,28 +112,89 @@ const errorBodySchema = z.object({
  * crashes on an unexpected metadata entry, and caps the length so a hostile upstream cannot
  * grow the stored trace.
  */
-const upstreamFromError = (metadata: Record<string, unknown> | undefined): string | undefined => {
+const upstreamFromError = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined => {
   const providerName = metadata?.['provider_name'];
   return typeof providerName === 'string' && providerName !== ''
-    ? providerName.slice(0, 60)
+    ? redactKey(providerName, key).slice(0, 60)
     : undefined;
 };
 
 /** Never trust an upstream error body: bounded before it is even parsed. */
 const MAX_ERROR_BODY_CHARS = 4_096;
 
-const readErrorBody = async (response: Response): Promise<unknown> => {
-  let text: string;
+const readErrorBody = async (response: Response, abortRace: Promise<never>): Promise<unknown> => {
+  if (response.body === null) return undefined;
+  // undici-types declares `body: ReadableStream` (implicit any payload);
+  // the runtime payload is always bytes.
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  let text = '';
   try {
-    text = await response.text();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const next = reader.read();
+      next.catch(() => undefined); // a read that loses to the abort race
+      const { done, value } = await Promise.race([next, abortRace]);
+      if (done === true) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.length >= MAX_ERROR_BODY_CHARS) break; // bounded: enough to parse
+    }
+    text += decoder.decode();
   } catch {
+    // Any read failure - including the abort race unblocking a
+    // non-cooperative body - maps to "no usable body", exactly as a
+    // response.text() failure did before; the status mapping below is
+    // byte-identical either way.
     return undefined;
+  } finally {
+    // Never awaited: a non-cooperative body can leave cancel() pending and
+    // the abort path must still settle.
+    const cancelled = reader.cancel();
+    cancelled.catch(() => undefined);
+    reader.releaseLock();
   }
   try {
     return JSON.parse(text.slice(0, MAX_ERROR_BODY_CHARS)) as unknown;
   } catch {
     return undefined;
   }
+};
+
+/**
+ * CLAUDE.md rule 4: the key must never appear in an error message, log, or
+ * stored trace. Anything upstream-derived can echo it back: a URL inside a
+ * fetch TypeError, a nested `Bearer <key>` cause, a short key inside a
+ * SyntaxError snippet, a 401 body quoting the authorization header.
+ */
+const redactKey = (text: string, key: string): string =>
+  key === '' ? text : text.split(key).join('(redacted)');
+
+/**
+ * Walks up to 8 levels of `cause`, rewriting only message text - the class,
+ * name, and any `code` of each error are preserved, and retry/quota
+ * metadata on the wrapping ProviderError is untouched.
+ */
+const sanitizeCause = (error: unknown, key: string): unknown => {
+  if (key === '') return error;
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+    if (current.message.includes(key)) {
+      try {
+        current.message = redactKey(current.message, key);
+      } catch {
+        // A read-only message (some DOMExceptions) cannot be assigned;
+        // shadow it with an own redacted property instead.
+        Object.defineProperty(current, 'message', {
+          value: redactKey(current.message, key),
+          configurable: true,
+        });
+      }
+    }
+    current = current.cause;
+  }
+  return error;
 };
 
 // eslint-disable-next-line no-control-regex -- deliberately stripping control characters, not matching them by accident.
@@ -142,11 +205,17 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
  * up to 160 characters of its message, control characters stripped. Never
  * the request, headers, or key (CLAUDE.md rule 4).
  */
-const shortReason = (detail: z.infer<typeof errorBodySchema> | undefined): string | undefined => {
+const shortReason = (
+  detail: z.infer<typeof errorBodySchema> | undefined,
+  key: string,
+): string | undefined => {
   if (detail === undefined) return undefined;
   const { code, message } = detail.error;
+  // Redact BEFORE slicing so a key straddling the 160-char cut cannot leak a fragment.
   const cleanMessage =
-    message === undefined ? undefined : message.replace(CONTROL_CHARS, '').slice(0, 160);
+    message === undefined
+      ? undefined
+      : redactKey(message.replace(CONTROL_CHARS, ''), key).slice(0, 160);
   const parts = [
     code === undefined ? undefined : `code ${code}`,
     cleanMessage === undefined || cleanMessage === '' ? undefined : cleanMessage,
@@ -364,10 +433,26 @@ export class OpenAiCompatibleProvider implements TextProvider {
       );
     });
     abortRace.catch(() => undefined);
-    request.signal?.addEventListener('abort', () => controller.abort(request.signal?.reason), {
-      once: true,
-    });
+    const callerSignal = request.signal;
+    const onCallerAbort = (): void => {
+      controller.abort(callerSignal?.reason);
+    };
+    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+    // Set only on the success return: error exits abort the controller in
+    // the finally so an in-flight fetch or unread body is torn down.
+    let completed = false;
     try {
+      // A caller signal that is already aborted must never reach fetch.
+      if (callerSignal?.aborted === true) {
+        const reason: unknown = callerSignal.reason;
+        throw new ProviderError('outage', `${this.id} request failed`, true, {
+          cause: sanitizeCause(
+            reason instanceof Error ? reason : new DOMException('aborted', 'AbortError'),
+            this.apiKey,
+          ),
+          host: this.host,
+        });
+      }
       timers.push(setTimeout(abortTimeout, this.maxCallMs)); // hard ceiling
       const firstByteTimer = setTimeout(abortTimeout, this.timeoutMs); // time to first byte
       timers.push(firstByteTimer);
@@ -419,6 +504,16 @@ export class OpenAiCompatibleProvider implements TextProvider {
           signal: controller.signal,
         });
         fetchPromise.catch(() => undefined);
+        // A fetch that loses the race to a timer still resolves later; its
+        // unread body must be cancelled or the connection lingers.
+        fetchPromise
+          .then((lateResponse) => {
+            if (controller.signal.aborted) {
+              const cancelledBody = lateResponse.body?.cancel();
+              cancelledBody?.catch(() => undefined);
+            }
+          })
+          .catch(() => undefined);
         response = await Promise.race([fetchPromise, abortRace]);
       } catch (error) {
         // Unchanged mapping: TimeoutError (ours or the caller's deadline) →
@@ -430,14 +525,18 @@ export class OpenAiCompatibleProvider implements TextProvider {
           timeout ? 'timeout' : 'outage',
           `${this.id} request ${timeout ? 'timed out' : 'failed'}`,
           true,
-          { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
+          {
+            cause: sanitizeCause(error, this.apiKey),
+            host: this.host,
+            ...(netCode === undefined ? {} : { netCode }),
+          },
         );
       }
       if (!response.ok) {
-        const parsedBody = errorBodySchema.safeParse(await readErrorBody(response));
+        const parsedBody = errorBodySchema.safeParse(await readErrorBody(response, abortRace));
         const detail = parsedBody.success ? parsedBody.data : undefined;
         const metadata = detail?.error.metadata;
-        const reason = shortReason(detail);
+        const reason = shortReason(detail, this.apiKey);
         const retryAfterMs =
           response.status === 429
             ? parseRetryAfterMs(response.headers.get('retry-after'))
@@ -447,7 +546,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           isDailyFreeQuota(request.model, detail?.error.message, metadata)
         ) {
           const resetAt = resolveResetAt(response, metadata, Date.now());
-          const upstream = upstreamFromError(metadata);
+          const upstream = upstreamFromError(metadata, this.apiKey);
           throw new ProviderError(
             'quota',
             reason === undefined
@@ -465,7 +564,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           );
         }
         const kind = statusKind(response.status);
-        const upstream = upstreamFromError(metadata);
+        const upstream = upstreamFromError(metadata, this.apiKey);
         throw new ProviderError(
           kind,
           reason === undefined
@@ -492,10 +591,15 @@ export class OpenAiCompatibleProvider implements TextProvider {
       let upstream: string | undefined;
       let finishReason: string | undefined;
       let usage: z.infer<typeof usageSchema> | undefined;
-      const toolFragments = new Map<
-        number,
-        { id: string | undefined; name: string | undefined; argsText: string }
-      >();
+      type ToolFragment = {
+        index: number;
+        seq: number;
+        id?: string;
+        name?: string;
+        argsText: string;
+      };
+      const toolFragments: ToolFragment[] = [];
+      let toolSeq = 0;
       let answerChars = 0;
       let reasoningChars = 0;
       let keepalives = 0;
@@ -515,11 +619,16 @@ export class OpenAiCompatibleProvider implements TextProvider {
         });
       };
       const events = parseSseStream(response.body);
+      // Tracks whether the generator is parked at a yield: only then can
+      // events.return() settle (see the catch below).
+      let eventsAtYield = false;
       try {
         for (;;) {
+          eventsAtYield = false;
           const next = events.next();
           next.catch(() => undefined); // a read that loses to the abort race
           const result = await Promise.race([next, abortRace]);
+          eventsAtYield = true;
           if (result.done === true) break;
           const event = result.value;
           lastByteAt = Date.now();
@@ -539,7 +648,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
               `${this.id} returned an invalid chunk`,
               false,
               {
-                cause: error,
+                cause: sanitizeCause(error, this.apiKey),
               },
             );
           }
@@ -550,13 +659,23 @@ export class OpenAiCompatibleProvider implements TextProvider {
               `${this.id} returned an invalid chunk`,
               false,
               {
-                cause: parsed.error,
+                cause: sanitizeCause(parsed.error, this.apiKey),
               },
             );
           const chunk = parsed.data;
           if (chunk.model !== undefined) model = chunk.model;
           if (chunk.provider !== undefined) upstream = chunk.provider;
-          if (chunk.usage !== undefined) usage = chunk.usage;
+          if (chunk.usage !== undefined && chunk.usage !== null) usage = chunk.usage;
+          if (chunk.error !== undefined) {
+            // Top-level error object (no choice carries it): the same
+            // mid-stream failure as a choice error - retryable, partial
+            // text discarded, never delivered, never stored.
+            throw new ProviderError('outage', `${this.id} stream failed mid-response`, true, {
+              host: this.host,
+              finishReason: 'error',
+              ...(upstream === undefined ? {} : { upstream }),
+            });
+          }
           let deltaText = '';
           let deltaReasoning = '';
           for (const choice of chunk.choices) {
@@ -589,15 +708,33 @@ export class OpenAiCompatibleProvider implements TextProvider {
             }
             for (const call of delta.tool_calls ?? []) {
               const index = call.index ?? 0;
-              const frag = toolFragments.get(index);
-              // First-seen id/name win; a name arriving only in a later
-              // fragment is still picked up; args concatenate per index and
-              // parse once at the end.
-              toolFragments.set(index, {
-                id: frag?.id ?? call.id,
-                name: frag?.name ?? call.function.name,
-                argsText: (frag?.argsText ?? '') + (call.function.arguments ?? ''),
-              });
+              const open = toolFragments.findLast((frag) => frag.index === index);
+              // A reused index with a different id - or, for calls that
+              // never send an index, any second name - starts a NEW
+              // parallel call rather than continuing the open one:
+              // providers may reuse index 0 for every call. Otherwise
+              // first-seen id/name win; args concatenate per slot.
+              const opensNew =
+                open !== undefined &&
+                ((call.id !== undefined && open.id !== undefined && call.id !== open.id) ||
+                  (call.function.name !== undefined &&
+                    open.name !== undefined &&
+                    (call.function.name !== open.name || call.index === undefined)));
+              if (open === undefined || opensNew) {
+                toolFragments.push({
+                  index,
+                  seq: toolSeq,
+                  ...(call.id === undefined ? {} : { id: call.id }),
+                  ...(call.function.name === undefined ? {} : { name: call.function.name }),
+                  argsText: call.function.arguments ?? '',
+                });
+                toolSeq += 1;
+              } else {
+                if (open.id === undefined && call.id !== undefined) open.id = call.id;
+                if (open.name === undefined && call.function.name !== undefined)
+                  open.name = call.function.name;
+                open.argsText += call.function.arguments ?? '';
+              }
             }
           }
           if (deltaText !== '' || deltaReasoning !== '')
@@ -605,6 +742,17 @@ export class OpenAiCompatibleProvider implements TextProvider {
           emitProgress();
         }
       } catch (error) {
+        // Tidy the generator on error exits, but only when it is parked at
+        // a yield: return() against a generator stuck inside a pending read
+        // queues behind that read and never settles (see sse.ts), so that
+        // case skips it and the finally's controller.abort() tears the body
+        // down instead. Bounded to one macrotask even when at a yield.
+        if (eventsAtYield) {
+          eventsAtYield = false;
+          const returned = events.return(undefined);
+          returned.catch(() => undefined);
+          await Promise.race([returned, new Promise<void>((resolve) => setTimeout(resolve, 0))]);
+        }
         // Our first-byte/idle/ceiling timers abort with TimeoutError →
         // retryable timeout (same mapping as the fetch catch). Errors thrown
         // above (mid-stream outage, invalid chunk) pass through unchanged.
@@ -615,13 +763,13 @@ export class OpenAiCompatibleProvider implements TextProvider {
             host: this.host,
           });
         throw new ProviderError('outage', `${this.id} stream failed`, true, {
-          cause: error,
+          cause: sanitizeCause(error, this.apiKey),
           host: this.host,
         });
       }
-      const toolCalls: ToolCall[] = [...toolFragments.entries()]
-        .sort(([a], [b]) => a - b)
-        .flatMap(([, frag]) =>
+      const toolCalls: ToolCall[] = [...toolFragments]
+        .sort((a, b) => a.index - b.index || a.seq - b.seq)
+        .flatMap((frag) =>
           frag.name === undefined
             ? []
             : [
@@ -632,6 +780,14 @@ export class OpenAiCompatibleProvider implements TextProvider {
                 },
               ],
         );
+      // A stream that ends cleanly without any finish_reason is truncated,
+      // not complete: never return the partial as a success. Detectable
+      // here without touching sse.ts.
+      if (finishReason === undefined && (text !== '' || reasoning !== '' || toolCalls.length > 0))
+        throw new ProviderError('outage', `${this.id} stream ended without a finish reason`, true, {
+          host: this.host,
+          ...(upstream === undefined ? {} : { upstream }),
+        });
       const finish = finishReason === '' || finishReason === undefined ? undefined : finishReason;
       const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
       const reasoningOnly = reasoning !== '';
@@ -648,6 +804,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
             reasoningOnly,
           },
         });
+      completed = true;
       return {
         text,
         model: model ?? request.model,
@@ -671,6 +828,11 @@ export class OpenAiCompatibleProvider implements TextProvider {
       };
     } finally {
       clearTimers();
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+      // Error exits only: cancel any in-flight fetch or unread body so a
+      // late or non-cooperative response cannot linger. A success leaves
+      // the (consumed) stream alone.
+      if (!completed) controller.abort();
     }
   }
 }
