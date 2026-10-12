@@ -30,8 +30,10 @@ async function* textChunks(
     }
     yield decoder.decode();
   } finally {
+    // Never awaited: a non-cooperative body can leave cancel() pending and
+    // the parser must still settle, as the adapters do.
     try {
-      if (!exhausted) await reader.cancel();
+      if (!exhausted) void reader.cancel().catch(() => {});
     } catch {
       // Cleanup must not replace a parser, source or consumer error.
     } finally {

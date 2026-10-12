@@ -321,4 +321,25 @@ describe('parseSseStream', () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(body.locked).toBe(false);
   });
+
+  it('never blocks when reader.cancel() never settles', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"a":1}\n\n'));
+      },
+      cancel: () => new Promise<void>(() => {}),
+    });
+    const consume = (async () => {
+      for await (const event of parseSseStream(body)) {
+        expect(event).toEqual({ data: '{"a":1}', keepalive: false });
+        break;
+      }
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('SSE parser hung on cancel()')), 1000);
+    });
+    await expect(Promise.race([consume, timeout])).resolves.toBeUndefined();
+    clearTimeout(timer);
+  });
 });
