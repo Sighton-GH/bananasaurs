@@ -1366,6 +1366,18 @@ describe('listGeminiModels (ADR 0068)', () => {
     });
   });
 
+  it('warns when it stops at the 10-page bound with pages still left', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(ok({ models: [], nextPageToken: 'more' })));
+    const warn = vi.fn();
+    await expect(
+      listGeminiModels({ apiKey: 'secret', fetch, logger: { warn } }),
+    ).resolves.toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(10);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it('turns a rejected key into an authentication error', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

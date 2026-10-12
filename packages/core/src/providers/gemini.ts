@@ -14,6 +14,7 @@ import { ProviderError, type ProviderErrorKind } from './errors.js';
 import { types as utilTypes } from 'node:util';
 import { netCodeOf } from './failure.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
+import type { Logger } from '../obs/logger.js';
 
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -838,6 +839,7 @@ export const listGeminiModels = async (options: {
   readonly baseUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
+  readonly logger?: Pick<Logger, 'warn'>;
 }): Promise<readonly GeminiModelInfo[]> => {
   const base = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const host = new URL(base).host;
@@ -958,5 +960,7 @@ export const listGeminiModels = async (options: {
     pageToken = parsed.data.nextPageToken;
     if (pageToken === undefined || pageToken === '') break;
   }
+  if (pageToken !== undefined && pageToken !== '')
+    options.logger?.warn({ host }, 'Gemini model list stopped at the 10-page bound');
   return found;
 };
