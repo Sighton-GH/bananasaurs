@@ -336,3 +336,24 @@ describe('modelResultsSince (ADR 0129 §8)', () => {
     expect(modelResultsSince(t.scopes.forGuild(GUILD_A), 0)).toEqual([]);
   });
 });
+
+it('stores a daily-digest run and still refuses an unknown source', () => {
+  const scope = t.scopes.forGuild(GUILD_A);
+  ensureRun(scope, {
+    runId: 'digest-2026-10-09',
+    userId: USER,
+    behaviourId: 'default',
+    source: 'daily-digest',
+    queuedAt: 1_790_000_000_000,
+  });
+  expect(getRun(scope, 'digest-2026-10-09')?.source).toBe('daily-digest');
+  expect(() =>
+    ensureRun(scope, {
+      runId: 'digest-bogus',
+      userId: USER,
+      behaviourId: 'default',
+      source: 'nope' as 'mention',
+      queuedAt: 1_790_000_000_000,
+    }),
+  ).toThrow();
+});
