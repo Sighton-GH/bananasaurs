@@ -63,12 +63,21 @@ const luhnValid = (digits: string): boolean => {
   }
   return digits.length > 0 && sum % 10 === 0;
 };
-/** Card candidates must also pass Luhn; arbitrary 13-19 digit runs do not. */
+/**
+ * Card candidates must start in an issuer range (2 Mastercard, 3 Amex/Diners/
+ * JCB, 4 Visa, 5 Mastercard, 6 Discover/UnionPay) and pass Luhn. About one
+ * digit run in ten passes Luhn by chance; the issuer check is what keeps
+ * binary out - a pair of 8-bit bytes ("01110111 00100000") is 16 digits that
+ * can pass Luhn, but always starts with 0 or 1.
+ */
+const isCardNumber = (candidate: string): boolean => {
+  const digits = candidate.replace(/[ -]/gu, '');
+  return digits.length >= 13 && digits.length <= 19 && /^[2-6]/u.test(digits) && luhnValid(digits);
+};
 const matchesCardNumber = (text: string): boolean => {
   CARD_CANDIDATE_PATTERN.lastIndex = 0;
   for (let match = CARD_CANDIDATE_PATTERN.exec(text); match !== null;) {
-    const digits = match[0].replace(/[ -]/gu, '');
-    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) return true;
+    if (isCardNumber(match[0])) return true;
     match = CARD_CANDIDATE_PATTERN.exec(text);
   }
   return false;
@@ -208,12 +217,11 @@ export function redactEvidenceText(text: string): { text: string; detectors: rea
   redact('ipv4-address', /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu);
   redact('canadian-sin', /\b\d{3}[ -]?\d{3}[ -]?\d{3}\b/gu);
 
-  // Card numbers keep their Luhn check: candidates are replaced one at a
-  // time, and only the Luhn-valid ones count as redactions.
+  // Card numbers keep their issuer and Luhn checks: candidates are replaced
+  // one at a time, and only the ones that pass count as redactions.
   CARD_CANDIDATE_PATTERN.lastIndex = 0;
   out = out.replace(CARD_CANDIDATE_PATTERN, (candidate: string) => {
-    const digits = candidate.replace(/[ -]/gu, '');
-    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
+    if (isCardNumber(candidate)) {
       detectors.add('credit-card-number');
       return EVIDENCE_REDACTION;
     }
