@@ -5098,7 +5098,8 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
       conversations: [
         { conversationId: 'conv-general', channelId: GENERAL, title: 'gearbox' },
         { conversationId: 'conv-private', channelId: PRIVATE, title: 'gripper' },
-      ], now: NOW,
+      ],
+      now: NOW,
     });
     const seen: { role: string; text: string }[][] = [];
     const access: ChannelAccess = {
@@ -5107,8 +5108,14 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
       isNoAccess: async (id) => id === PRIVATE,
     };
     const result = await ask(
-      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL, PRIVATE]) },
-      scriptedRecall(seen, 'Done.'), 'int-digest-noaccess', 'conv-current', access,
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL, PRIVATE]),
+      },
+      scriptedRecall(seen, 'Done.'),
+      'int-digest-noaccess',
+      'conv-current',
+      access,
     );
     expect(result.ok).toBe(true);
     expect(toolTurnOf(seen)).toContain('robot arm gearbox');
@@ -5131,7 +5138,9 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
     const seen: { role: string; text: string }[][] = [];
     const result = await ask(
       { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
-      scriptedRecall(seen, 'Done.'), 'int-digest-hostile', 'conv-current',
+      scriptedRecall(seen, 'Done.'),
+      'int-digest-hostile',
+      'conv-current',
     );
     expect(result.ok).toBe(true);
     const text = toolTurnOf(seen);
@@ -5154,7 +5163,8 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
   it('caps matching digest days at two newest days', async () => {
     for (const day of ['2026-10-07', '2026-10-09', '2026-10-08', '2026-10-06']) {
       digestRepo.putDigestOnce(t.scopes.forGuild(GUILD), {
-        day, summary: { daySummary: `robot arm digest ${day}`, memoryProposals: [] },
+        day,
+        summary: { daySummary: `robot arm digest ${day}`, memoryProposals: [] },
         conversations: [{ conversationId: 'conv-general', channelId: GENERAL, title: 'gearbox' }],
         now: NOW,
       });
@@ -5162,7 +5172,9 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
     const seen: { role: string; text: string }[][] = [];
     const result = await ask(
       { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL]) },
-      scriptedRecall(seen, 'Done.'), 'int-digest-limit', 'conv-current',
+      scriptedRecall(seen, 'Done.'),
+      'int-digest-limit',
+      'conv-current',
     );
     expect(result.ok).toBe(true);
     const text = toolTurnOf(seen);
@@ -5171,20 +5183,29 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
     expect(text).toContain('Daily digest 2026-10-08');
     expect(text).not.toContain('Daily digest 2026-10-07');
     expect(text).not.toContain('Daily digest 2026-10-06');
-    expect(text.indexOf('Daily digest 2026-10-09')).toBeLessThan(text.indexOf('Daily digest 2026-10-08'));
+    expect(text.indexOf('Daily digest 2026-10-09')).toBeLessThan(
+      text.indexOf('Daily digest 2026-10-08'),
+    );
     expect(result.detail?.recalled).toEqual(['conv-general']);
   });
 
   it('recalls audience-visible digests when channelAccess is undefined', async () => {
     digestRepo.putDigestOnce(t.scopes.forGuild(GUILD), {
-      day: '2026-10-09', summary: { daySummary: 'robot arm legacy digest', memoryProposals: [] },
+      day: '2026-10-09',
+      summary: { daySummary: 'robot arm legacy digest', memoryProposals: [] },
       conversations: [{ conversationId: 'conv-private', channelId: PRIVATE, title: 'gripper' }],
       now: NOW,
     });
     const seen: { role: string; text: string }[][] = [];
     const result = await ask(
-      { memberChannels: memberChannelsBoth, audienceChannels: async () => new Set([GENERAL, PRIVATE]) },
-      scriptedRecall(seen, 'Done.'), 'int-digest-undefined', 'conv-current', undefined,
+      {
+        memberChannels: memberChannelsBoth,
+        audienceChannels: async () => new Set([GENERAL, PRIVATE]),
+      },
+      scriptedRecall(seen, 'Done.'),
+      'int-digest-undefined',
+      'conv-current',
+      undefined,
     );
     expect(result.ok).toBe(true);
     expect(toolTurnOf(seen)).toContain('Daily digest 2026-10-09: robot arm legacy digest');

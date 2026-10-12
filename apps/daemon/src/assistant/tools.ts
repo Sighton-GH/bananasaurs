@@ -1684,8 +1684,20 @@ export const runAssistantTool = async (
           const head = `<#${hit.channelId}>, ${relativeAgo(hit.lastActivityAt, ports.now())}: ${hit.topic}`;
           return facts === '' ? head : `${head} — ${facts}`;
         });
+        // Budget each hit before the shared evidence cap: five maximum-sized
+        // summaries must not consume the two digest lines on a busy day.
+        // Redact first so replacement text is included in the budget. Leave
+        // normal-sized results unchanged, and keep an ellipsis on cut lines.
+        const cleanedLines = lines.map((line) => redactEvidenceText(line).text);
+        const lineBudget = Math.floor((MAX_RESULT_CHARS - (shown.length - 1)) / shown.length);
+        const fits = cleanedLines.join('\n').length <= MAX_RESULT_CHARS;
+        const budgetedLines = fits
+          ? cleanedLines
+          : cleanedLines.map((line) =>
+              line.length <= lineBudget ? line : `${line.slice(0, lineBudget - 1)}…`,
+            );
         return {
-          ...evidence(name, lines.join('\n')),
+          ...evidence(name, budgetedLines.join('\n')),
           recalledConversationIds: shown
             .filter((hit) => !hit.conversationId.startsWith('digest:'))
             .map((hit) => hit.conversationId),
