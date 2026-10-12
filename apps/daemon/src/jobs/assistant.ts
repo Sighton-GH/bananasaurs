@@ -8,6 +8,8 @@ import {
   SAME_CHANNEL_LINK_WINDOW_MS,
   ProviderError,
   getLiveBuffer,
+  neutraliseMarkers,
+  redactEvidenceText,
   resolveConversation,
   RetryAfterError,
   safeLogFields,
@@ -1117,7 +1119,11 @@ export const assistantInvokeHandler = (deps: {
                   attachmentCaps,
                 );
                 if (!fetched.ok) {
-                  markers.push(`${attachmentMarker(source)} (skipped: ${fetched.note})`);
+                  // The refusal note embeds the raw file name: neutralise the
+                  // whole note before it joins either envelope, or a hostile
+                  // name could forge a close and promote the rest (ADR 0149).
+                  const note = neutraliseMarkers(redactEvidenceText(fetched.note).text);
+                  markers.push(`${attachmentMarker(source)} (skipped: ${note})`);
                   continue;
                 }
                 // Unreachable for a text-classified source: narrows the union.
