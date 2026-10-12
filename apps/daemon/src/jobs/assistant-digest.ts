@@ -1,6 +1,7 @@
 import {
   assistantDailyDigestPayload,
   buildDigestInput,
+  DIGEST_DEFAULT_MAX_PROPOSALS,
   DIGEST_SYSTEM_INSTRUCTION,
   digestOutputSchema,
   JOB_KINDS,
@@ -20,7 +21,14 @@ import {
   type JobHandler,
   type Logger,
 } from '@bananasaurs/core';
-import { assistantRepo, digestRepo, runRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  assistantRepo,
+  digestRepo,
+  runRepo,
+  schema,
+  write,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import type { ChainEntry } from '../assistant/model-chain.js';
 
 /**
@@ -71,13 +79,115 @@ const speakerOf = (authorName: string, role: string): string => {
 };
 
 /**
+ * Deviation (review round 1, HIGH 2): the digest row and its full draft set
+ * land in ONE storage transaction. `digestRepo.putDigestOnce` and
+ * `assistantRepo.insertDecisionDraftOnce` each open their own transaction and
+ * this task owns no storage file, so the insert shapes are replicated here
+ * field for field (envelope, `summaryText` render, conflict targets). A throw
+ * on any insert rolls the whole set back, so a replay can never find the
+ * digest row without its proposals.
+ */
+const renderDigestText = (
+  summary: DigestOutput,
+  conversations: readonly { readonly title: string }[],
+): string =>
+  [
+    summary.daySummary,
+    ...summary.memoryProposals.map((p) => `${p.text} ${p.why}`),
+    ...conversations.map((c) => c.title),
+  ].join('\n');
+
+const putDigestWithDrafts = (
+  scope: GuildScope,
+  input: {
+    readonly day: string;
+    readonly summary: DigestOutput;
+    readonly conversations: readonly {
+      readonly conversationId: string;
+      readonly channelId: string;
+      readonly title: string;
+    }[];
+    readonly botUserId: string;
+    readonly now: number;
+  },
+): void =>
+  write(scope, ({ db }) => {
+    const parsed = digestOutputSchema.parse(input.summary);
+    const stored = { summary: parsed, conversations: [...input.conversations] };
+    db.insert(schema.assistantDailyDigests)
+      .values({
+        guildId: scope.guildId,
+        day: input.day,
+        summaryJson: JSON.stringify(stored),
+        summaryText: renderDigestText(parsed, input.conversations),
+        proposalsJson: JSON.stringify(parsed.memoryProposals),
+        createdAt: input.now,
+        updatedAt: input.now,
+      })
+      .onConflictDoNothing({
+        target: [schema.assistantDailyDigests.guildId, schema.assistantDailyDigests.day],
+      })
+      .run();
+    parsed.memoryProposals.forEach((p, index) => {
+      db.insert(schema.assistantDecisions)
+        .values({
+          guildId: scope.guildId,
+          decisionId: `digest:${input.day}:${index}`,
+          kind: 'memory',
+          summary: `${p.text}\nWhy: ${p.why}`,
+          status: 'draft',
+          requesterId: input.botUserId,
+          provenance: 'daily-digest',
+          createdAt: input.now,
+        })
+        .onConflictDoNothing({
+          target: [schema.assistantDecisions.guildId, schema.assistantDecisions.decisionId],
+        })
+        .run();
+    });
+  });
+
+/**
+ * A fenced reply (```json ... ```) is the same payload in a wrapper; strip
+ * one fence pair so a chatty model does not lose the whole day to ADR 0150's
+ * single attempt. Zod still validates what is inside.
+ */
+const stripCodeFence = (text: string): string => {
+  const match = /^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/i.exec(text.trim());
+  return match?.[1] ?? text;
+};
+
+/**
+ * Over-producing proposals must not fail the day: the schema caps the array
+ * at `DIGEST_DEFAULT_MAX_PROPOSALS`, so slice extras away before validation.
+ * The owner cap (`digestMaxProposals`, at most the schema max) applies later.
+ */
+const capProposalsForValidation = (cleaned: unknown): unknown => {
+  if (typeof cleaned !== 'object' || cleaned === null) return cleaned;
+  const o = cleaned as { readonly memoryProposals?: unknown };
+  if (!Array.isArray(o.memoryProposals)) return cleaned;
+  if (o.memoryProposals.length <= DIGEST_DEFAULT_MAX_PROPOSALS) return cleaned;
+  return { ...o, memoryProposals: o.memoryProposals.slice(0, DIGEST_DEFAULT_MAX_PROPOSALS) };
+};
+
+/**
+ * Containment below this length lets a very short existing memory or draft
+ * ("Tiles") swallow any proposal that mentions it. Equality always matches;
+ * containment only when the shorter key carries enough text to mean something.
+ */
+const MIN_CONTAINMENT_CHARS = 20;
+
+/**
  * One daily digest (ADR 0150).
  *
  * Idempotent two ways: the timer's `oncePerBucket` bucket key refuses a
  * second enqueue even after this job finished, and this handler returns
  * early when the digest row already exists — so a replayed or retried run
  * can never file proposals twice. The tier never comes from `routeRun`:
- * the `routed` event below carries reason `background-tier`.
+ * the `routed` event below carries reason `background-tier`. Model and parse
+ * failures are completed failures (`failed` run, no retry); anything
+ * unexpected is caught, marked `digest-error`, and also never retried — a
+ * bad day waits for the next local day either way.
  */
 export const assistantDailyDigestHandler = (
   scope: GuildScope,
@@ -143,136 +253,150 @@ export const assistantDailyDigestHandler = (
         durationMs: Math.max(0, deps.now() - startedAt),
       });
     };
-    if (digestRepo.getDigest(scope, payload.day) !== undefined) {
-      answer('answered');
-      return;
-    }
-    const { start, end } = localDayBounds(payload.day, tz);
-    const groups = digestRepo.turnsForDay(scope, start, end);
-    if (groups.length === 0) {
-      digestRepo.putDigestOnce(scope, {
+    try {
+      if (digestRepo.getDigest(scope, payload.day) !== undefined) {
+        answer('answered');
+        return;
+      }
+      const { start, end } = localDayBounds(payload.day, tz);
+      const groups = digestRepo.turnsForDay(scope, start, end);
+      if (groups.length === 0) {
+        digestRepo.putDigestOnce(scope, {
+          day: payload.day,
+          summary: { daySummary: EMPTY_SUMMARY, memoryProposals: [] },
+          conversations: [],
+          now: deps.now(),
+        });
+        answer('answered');
+        return;
+      }
+      const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
+      const input = buildDigestInput(
+        groups.map((g) => ({
+          conversationId: g.conversationId,
+          title: g.title,
+          summaryText: g.summaryText,
+          lines: g.turns.map(
+            (turn) =>
+              `[${speakerOf(turn.authorName, turn.role)}, ${turn.role === 'assistant' ? 'bot' : 'member'}] ${clean(turn.text)}`,
+          ),
+        })),
+        deps.digestInputChars(),
+      );
+      const outputs: DigestOutput[] = [];
+      for (const chunk of splitDigestInput(input, deps.digestInputChars())) {
+        const result = await deps.digestModel({
+          systemInstruction: DIGEST_SYSTEM_INSTRUCTION,
+          text: chunk,
+        });
+        if (!result.ok) {
+          deps.logger.info(
+            safeLogFields({
+              component: 'assistant-digest',
+              guildId: scope.guildId,
+              day: payload.day,
+              reason: result.reason,
+            }),
+            'daily digest model call failed; writing nothing',
+          );
+          fail('digest-model-unavailable');
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(stripCodeFence(result.text));
+        } catch {
+          parsed = undefined;
+        }
+        const cleaned = parsed === undefined ? undefined : cleanDigestJson(parsed);
+        const valid =
+          cleaned === undefined
+            ? undefined
+            : digestOutputSchema.safeParse(capProposalsForValidation(cleaned));
+        if (valid === undefined || !valid.success) {
+          deps.logger.info(
+            safeLogFields({
+              component: 'assistant-digest',
+              guildId: scope.guildId,
+              day: payload.day,
+              reason: 'invalid-json',
+            }),
+            'daily digest model reply failed to parse; writing nothing',
+          );
+          fail('digest-invalid-json');
+          return;
+        }
+        outputs.push(valid.data);
+      }
+      const merged: DigestOutput = {
+        daySummary: truncateWords(
+          outputs.map((o) => o.daySummary).join('\n\n'),
+          MAX_DIGEST_SUMMARY_WORDS,
+        ),
+        memoryProposals: outputs.flatMap((o) => o.memoryProposals),
+      };
+      // A proposal's sources must be conversations of this very day: an
+      // invented id would point the reviewer at the wrong conversation, so
+      // unknown ids are dropped and a proposal with none left is dropped.
+      const knownIds = new Set(groups.map((g) => g.conversationId));
+      const sourced = merged.memoryProposals.flatMap((p) => {
+        const ids = p.sourceConversationIds.filter((id) => knownIds.has(id));
+        return ids.length === 0 ? [] : [{ ...p, sourceConversationIds: ids }];
+      });
+      // Dedupe (plan decision: duplicates by normalised-text match). Memories
+      // are keyed on content only — a section prefix would stop every match —
+      // and drafts on their summary; either-way containment (above
+      // MIN_CONTAINMENT_CHARS) catches `propose_memory` drafts (`content`,
+      // `section: content`) and our own (`text` plus a `Why:` line) alike.
+      const seen = new Set<string>();
+      for (const m of assistantRepo.listMemories(scope)) {
+        const key = normalizeProposalText(m.content);
+        if (key !== '') seen.add(key);
+      }
+      for (const d of assistantRepo.listDecisions(scope)) {
+        if (d.kind === 'memory' && (d.status === 'draft' || d.status === 'reviewed')) {
+          const key = normalizeProposalText(d.summary);
+          if (key !== '') seen.add(key);
+        }
+      }
+      const isDuplicate = (text: string): boolean => {
+        const key = normalizeProposalText(text);
+        if (key === '') return true;
+        for (const s of seen) {
+          if (s === key) return true;
+          const shorter = s.length < key.length ? s : key;
+          if (shorter.length >= MIN_CONTAINMENT_CHARS && (s.includes(key) || key.includes(s))) {
+            return true;
+          }
+        }
+        return false;
+      };
+      const kept = sourced
+        .filter((p) => {
+          if (isDuplicate(p.text)) return false;
+          seen.add(normalizeProposalText(p.text));
+          return true;
+        })
+        .slice(0, deps.digestMaxProposals());
+      putDigestWithDrafts(scope, {
         day: payload.day,
-        summary: { daySummary: EMPTY_SUMMARY, memoryProposals: [] },
-        conversations: [],
+        summary: { daySummary: merged.daySummary, memoryProposals: kept },
+        conversations: groups.map((g) => ({
+          conversationId: g.conversationId,
+          channelId: g.channelId,
+          title: g.title,
+        })),
+        botUserId: deps.botUserId,
         now: deps.now(),
       });
       answer('answered');
-      return;
+    } catch {
+      deps.logger.warn(
+        safeLogFields({ component: 'assistant-digest', guildId: scope.guildId, day: payload.day }),
+        'daily digest failed unexpectedly; run marked failed',
+      );
+      fail('digest-error');
     }
-    const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
-    const input = buildDigestInput(
-      groups.map((g) => ({
-        conversationId: g.conversationId,
-        title: g.title,
-        summaryText: g.summaryText,
-        lines: g.turns.map(
-          (turn) =>
-            `[${speakerOf(turn.authorName, turn.role)}, ${turn.role === 'assistant' ? 'bot' : 'member'}] ${clean(turn.text)}`,
-        ),
-      })),
-      deps.digestInputChars(),
-    );
-    const outputs: DigestOutput[] = [];
-    for (const chunk of splitDigestInput(input, deps.digestInputChars())) {
-      const result = await deps.digestModel({
-        systemInstruction: DIGEST_SYSTEM_INSTRUCTION,
-        text: chunk,
-      });
-      if (!result.ok) {
-        deps.logger.info(
-          safeLogFields({
-            component: 'assistant-digest',
-            guildId: scope.guildId,
-            day: payload.day,
-            reason: result.reason,
-          }),
-          'daily digest model call failed; writing nothing',
-        );
-        fail('digest-model-unavailable');
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(result.text);
-      } catch {
-        parsed = undefined;
-      }
-      const valid =
-        parsed === undefined ? undefined : digestOutputSchema.safeParse(cleanDigestJson(parsed));
-      if (valid === undefined || !valid.success) {
-        deps.logger.info(
-          safeLogFields({
-            component: 'assistant-digest',
-            guildId: scope.guildId,
-            day: payload.day,
-            reason: 'invalid-json',
-          }),
-          'daily digest model reply failed to parse; writing nothing',
-        );
-        fail('digest-invalid-json');
-        return;
-      }
-      outputs.push(valid.data);
-    }
-    const merged: DigestOutput = {
-      daySummary: truncateWords(
-        outputs.map((o) => o.daySummary).join('\n\n'),
-        MAX_DIGEST_SUMMARY_WORDS,
-      ),
-      memoryProposals: outputs.flatMap((o) => o.memoryProposals),
-    };
-    // Dedupe (plan decision: duplicates by normalised-text match). Memories
-    // are keyed on content only — a section prefix would stop every match —
-    // and drafts on their summary; either-way containment catches
-    // `propose_memory` drafts (`content`, `section: content`) and our own
-    // (`text` plus a `Why:` line) alike.
-    const seen = new Set<string>();
-    for (const m of assistantRepo.listMemories(scope)) {
-      const key = normalizeProposalText(m.content);
-      if (key !== '') seen.add(key);
-    }
-    for (const d of assistantRepo.listDecisions(scope)) {
-      if (d.kind === 'memory' && (d.status === 'draft' || d.status === 'reviewed')) {
-        const key = normalizeProposalText(d.summary);
-        if (key !== '') seen.add(key);
-      }
-    }
-    const isDuplicate = (text: string): boolean => {
-      const key = normalizeProposalText(text);
-      if (key === '') return true;
-      for (const s of seen) {
-        if (s.includes(key) || key.includes(s)) return true;
-      }
-      return false;
-    };
-    const kept = merged.memoryProposals
-      .filter((p) => {
-        if (isDuplicate(p.text)) return false;
-        seen.add(normalizeProposalText(p.text));
-        return true;
-      })
-      .slice(0, deps.digestMaxProposals());
-    digestRepo.putDigestOnce(scope, {
-      day: payload.day,
-      summary: { daySummary: merged.daySummary, memoryProposals: kept },
-      conversations: groups.map((g) => ({
-        conversationId: g.conversationId,
-        channelId: g.channelId,
-        title: g.title,
-      })),
-      now: deps.now(),
-    });
-    kept.forEach((p, index) => {
-      assistantRepo.insertDecisionDraftOnce(scope, {
-        id: `digest:${payload.day}:${index}`,
-        kind: 'memory',
-        summary: `${p.text}\nWhy: ${p.why}`,
-        requesterId: deps.botUserId,
-        provenance: 'daily-digest',
-        at: deps.now(),
-      });
-    });
-    answer('answered');
   },
 });
 
@@ -285,7 +409,10 @@ const cleanDigestJson = (parsed: unknown): unknown => {
     ...(typeof o.daySummary === 'string' ? { daySummary: clean(o.daySummary) } : {}),
     ...(Array.isArray(o.memoryProposals)
       ? {
-          memoryProposals: o.memoryProposals.map((p) => {
+          memoryProposals: (o.memoryProposals as unknown[]).map((p: unknown) => {
+            // Not an object (null, a number, a string): keep it exactly so
+            // Zod rejects it — never dereference a non-object element.
+            if (typeof p !== 'object' || p === null) return p;
             const q = p as {
               text?: unknown;
               why?: unknown;
