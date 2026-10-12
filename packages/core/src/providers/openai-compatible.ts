@@ -1,3 +1,4 @@
+import { types as utilTypes } from 'node:util';
 import { z } from 'zod';
 import type {
   GenerateTextRequest,
@@ -165,67 +166,155 @@ const readErrorBody = async (response: Response, abortRace: Promise<never>): Pro
 };
 
 /**
+ * Percent-encoded spellings of the key (every character, either hex case, and
+ * the usual encodeURIComponent form): a URL inside an upstream message can echo it.
+ */
+const keyForms = (key: string): readonly string[] => {
+  const bytes = [...new TextEncoder().encode(key)];
+  const hex = (upper: boolean): string =>
+    bytes
+      .map((byte) =>
+        `%${upper ? byte.toString(16).toUpperCase() : byte.toString(16)}`.replace(
+          /^%(\d|[a-fA-F])$/,
+          '%0$1',
+        ),
+      )
+      .join('');
+  return [key, encodeURIComponent(key), hex(true), hex(false)];
+};
+
+/**
  * CLAUDE.md rule 4: the key must never appear in an error message, log, or
  * stored trace. Anything upstream-derived can echo it back: a URL inside a
  * fetch TypeError, a nested `Bearer <key>` cause, a short key inside a
- * SyntaxError snippet, a 401 body quoting the authorization header.
+ * SyntaxError snippet, a 401 body quoting the authorization header, a
+ * percent-encoded copy of the key in a URL.
  */
-const redactKey = (text: string, key: string): string =>
-  key === '' ? text : text.split(key).join('(redacted)');
+const redactKey = (text: string, key: string): string => {
+  if (key === '') return text;
+  let out = text;
+  for (const form of keyForms(key)) if (form !== '') out = out.split(form).join('(redacted)');
+  try {
+    if (decodeURIComponent(out).includes(key)) return '(redacted)';
+  } catch {
+    // Not valid percent-encoding: the literal checks above already ran.
+  }
+  return out;
+};
+
+/** Errors this adapter built itself. Anything else that reaches a catch is untrusted input. */
+const trustedErrors = new WeakSet<ProviderError>();
+const trusted = (...args: ConstructorParameters<typeof ProviderError>): ProviderError => {
+  const error = new ProviderError(...args);
+  trustedErrors.add(error);
+  return error;
+};
+const isTrusted = (error: unknown): error is ProviderError =>
+  typeof error === 'object' && error !== null && trustedErrors.has(error as ProviderError);
+
+const PROVIDER_KINDS: ReadonlySet<string> = new Set<string>([
+  'authentication',
+  'quota',
+  'rate-limit',
+  'timeout',
+  'safety-refusal',
+  'invalid-request',
+  'outage',
+  'capability-mismatch',
+  'invalid-response',
+]);
+const QUOTA_SCOPES: ReadonlySet<string> = new Set<string>(['daily-free', 'day', 'minute']);
+
+/**
+ * Reads an own DATA property of an untrusted value without running getters,
+ * proxy traps or toJSON. Any failure reads as "absent".
+ */
+const readOwn = (target: unknown, name: string): unknown => {
+  try {
+    if ((typeof target !== 'object' || target === null) && typeof target !== 'function')
+      return undefined;
+    if (utilTypes.isProxy(target)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(target, name);
+    return descriptor !== undefined && 'value' in descriptor
+      ? (descriptor.value as unknown)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Network code from the untrusted error or its cause chain, read without executing anything. */
+const safeNetCode = (error: unknown): string | undefined => {
+  let current: unknown = error;
+  for (let depth = 0; depth <= 5; depth += 1) {
+    const code = netCodeOf({ code: readOwn(current, 'code') });
+    if (code !== undefined) return code;
+    current = readOwn(current, 'cause');
+  }
+  return undefined;
+};
 
 /** Copy only safe diagnostics. Never mutate or retain an untrusted cause graph. */
 const sanitizeCause = (error: unknown, key: string): Error => {
-  // Own data descriptors avoid executing message/code accessors during cleanup.
-  const own = (name: string): unknown => {
-    if ((typeof error !== 'object' || error === null) && typeof error !== 'function')
-      return undefined;
-    try {
-      const descriptor = Object.getOwnPropertyDescriptor(error, name);
-      return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
-    } catch {
-      return undefined;
-    }
+  const messageOf = (target: unknown): string => {
+    const raw = typeof target === 'string' ? target : readOwn(target, 'message');
+    return redactKey(typeof raw === 'string' ? raw : 'request failed', key);
   };
-  const message = typeof error === 'string' ? error : own('message');
-  const safeMessage = redactKey(typeof message === 'string' ? message : 'request failed', key);
-  if (error instanceof ProviderError) {
-    const safeString = (name: string): string | undefined => {
-      const value = own(name);
-      return typeof value === 'string' ? redactKey(value, key) : undefined;
-    };
-    const host = safeString('host');
-    const netCode = safeString('netCode');
-    const upstream = safeString('upstream');
-    const finishReason = safeString('finishReason');
-    const cause = own('cause');
-    return new ProviderError(error.kind, safeMessage, error.retryable, {
-      ...(cause === undefined
-        ? {}
-        : {
-            cause: new Error(
-              redactKey(
-                cause instanceof Error &&
-                  typeof Object.getOwnPropertyDescriptor(cause, 'message')?.value === 'string'
-                  ? (Object.getOwnPropertyDescriptor(cause, 'message')?.value as string)
-                  : 'request failed',
-                key,
-              ),
-            ),
-          }),
-      ...(error.status === undefined ? {} : { status: error.status }),
-      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-      ...(error.resetAt === undefined ? {} : { resetAt: error.resetAt }),
-      ...(error.quotaScope === undefined ? {} : { quotaScope: error.quotaScope }),
-      ...(host === undefined ? {} : { host }),
-      ...(netCode === undefined ? {} : { netCode }),
-      ...(upstream === undefined ? {} : { upstream }),
-      ...(finishReason === undefined ? {} : { finishReason }),
-    });
+  const safeString = (name: string, max: number): string | undefined => {
+    const value = readOwn(error, name);
+    return typeof value === 'string' ? redactKey(value, key).slice(0, max) : undefined;
+  };
+  const safeNumber = (name: string): number | undefined => {
+    const value = readOwn(error, name);
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  };
+  let providerShaped: boolean;
+  try {
+    providerShaped = !utilTypes.isProxy(error) && error instanceof ProviderError;
+  } catch {
+    providerShaped = false;
   }
-  const safe = new Error(safeMessage);
-  const code = own('code');
+  if (providerShaped) {
+    const kindRaw = readOwn(error, 'kind');
+    const kind: ProviderErrorKind =
+      typeof kindRaw === 'string' && PROVIDER_KINDS.has(kindRaw)
+        ? (kindRaw as ProviderErrorKind)
+        : 'outage';
+    const retryableRaw = readOwn(error, 'retryable');
+    const quotaRaw = readOwn(error, 'quotaScope');
+    const cause = readOwn(error, 'cause');
+    const status = safeNumber('status');
+    const retryAfterMs = safeNumber('retryAfterMs');
+    const resetAt = safeNumber('resetAt');
+    const host = safeString('host', 253);
+    const netCode = safeNetCode(error);
+    const upstream = safeString('upstream', 60);
+    const finishReason = safeString('finishReason', 60);
+    const safe = new ProviderError(
+      kind,
+      messageOf(error),
+      typeof retryableRaw === 'boolean' ? retryableRaw : true,
+      {
+        ...(cause === undefined ? {} : { cause: new Error(messageOf(cause)) }),
+        ...(status === undefined ? {} : { status }),
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        ...(resetAt === undefined ? {} : { resetAt }),
+        ...(typeof quotaRaw === 'string' && QUOTA_SCOPES.has(quotaRaw)
+          ? { quotaScope: quotaRaw as 'daily-free' | 'day' | 'minute' }
+          : {}),
+        ...(host === undefined ? {} : { host }),
+        ...(netCode === undefined ? {} : { netCode }),
+        ...(upstream === undefined ? {} : { upstream }),
+        ...(finishReason === undefined ? {} : { finishReason }),
+      },
+    );
+    trustedErrors.add(safe);
+    return safe;
+  }
+  const safe = new Error(messageOf(error));
+  const code = readOwn(error, 'code');
   if (typeof code === 'string')
-    Object.defineProperty(safe, 'code', { value: redactKey(code, key) });
+    Object.defineProperty(safe, 'code', { value: redactKey(code, key).slice(0, 64) });
   return safe;
 };
 
@@ -372,7 +461,7 @@ const toWireMessage = (
 ): unknown => {
   if (message.role === 'tool') {
     if (message.toolCallId === undefined)
-      throw new ProviderError(
+      throw trusted(
         'invalid-request',
         `${providerId} tool result is missing its tool call id`,
         false,
@@ -429,7 +518,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
   public async generateText(request: GenerateTextRequest): Promise<GenerateTextResponse> {
     assertOutboundRequestSafe(request);
     if (request.messages.length === 0)
-      throw new ProviderError('invalid-request', 'at least one message is required', false);
+      throw trusted('invalid-request', 'at least one message is required', false);
     // Capability gate: a thinking/reasoning parameter is never sent to a
     // model whose capabilities do not support it. Unknown model (no
     // catalogue) falls back to text + tools only, so nothing is sent.
@@ -477,7 +566,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
       // A caller signal that is already aborted must never reach fetch.
       if (callerSignal?.aborted === true) {
         const reason: unknown = callerSignal.reason;
-        throw new ProviderError('outage', `${this.id} request failed`, true, {
+        throw trusted('outage', `${this.id} request failed`, true, {
           cause: sanitizeCause(
             reason instanceof Error ? reason : new DOMException('aborted', 'AbortError'),
             this.apiKey,
@@ -552,8 +641,8 @@ export class OpenAiCompatibleProvider implements TextProvider {
         // retryable timeout; anything else → outage. A caller abort surfaces
         // as an AbortError (not TimeoutError) and keeps today's outage mapping.
         const timeout = isTimeoutError(error);
-        const netCode = netCodeOf(error);
-        throw new ProviderError(
+        const netCode = safeNetCode(error);
+        throw trusted(
           timeout ? 'timeout' : 'outage',
           `${this.id} request ${timeout ? 'timed out' : 'failed'}`,
           true,
@@ -579,7 +668,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         ) {
           const resetAt = resolveResetAt(response, metadata, Date.now());
           const upstream = upstreamFromError(metadata, this.apiKey);
-          throw new ProviderError(
+          throw trusted(
             'quota',
             reason === undefined
               ? `${this.id} free-model daily limit reached`
@@ -597,7 +686,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         }
         const kind = statusKind(response.status);
         const upstream = upstreamFromError(metadata, this.apiKey);
-        throw new ProviderError(
+        throw trusted(
           kind,
           reason === undefined
             ? `${this.id} request failed with HTTP ${response.status}`
@@ -612,7 +701,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         );
       }
       if (response.body === null)
-        throw new ProviderError('invalid-response', `${this.id} returned no body`, false, {
+        throw trusted('invalid-response', `${this.id} returned no body`, false, {
           host: this.host,
         });
       rearmIdle(); // the idle timer owns the body from here; keepalives count as bytes
@@ -707,25 +796,15 @@ export class OpenAiCompatibleProvider implements TextProvider {
           try {
             rawChunk = JSON.parse(event.data);
           } catch (error) {
-            throw new ProviderError(
-              'invalid-response',
-              `${this.id} returned an invalid chunk`,
-              false,
-              {
-                cause: sanitizeCause(error, this.apiKey),
-              },
-            );
+            throw trusted('invalid-response', `${this.id} returned an invalid chunk`, false, {
+              cause: sanitizeCause(error, this.apiKey),
+            });
           }
           const parsed = streamChunkSchema.safeParse(rawChunk);
           if (!parsed.success)
-            throw new ProviderError(
-              'invalid-response',
-              `${this.id} returned an invalid chunk`,
-              false,
-              {
-                cause: sanitizeCause(parsed.error, this.apiKey),
-              },
-            );
+            throw trusted('invalid-response', `${this.id} returned an invalid chunk`, false, {
+              cause: sanitizeCause(parsed.error, this.apiKey),
+            });
           const chunk = parsed.data;
           if (chunk.model !== undefined) model = redactKey(chunk.model, this.apiKey);
           if (chunk.provider !== undefined) upstream = redactKey(chunk.provider, this.apiKey);
@@ -734,7 +813,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
             // Top-level error object (no choice carries it): the same
             // mid-stream failure as a choice error - retryable, partial
             // text discarded, never delivered, never stored.
-            throw new ProviderError('outage', `${this.id} stream failed mid-response`, true, {
+            throw trusted('outage', `${this.id} stream failed mid-response`, true, {
               host: this.host,
               finishReason: 'error',
               ...(upstream === undefined ? {} : { upstream }),
@@ -746,7 +825,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
             if (choice.error != null || choice.finish_reason === 'error') {
               // Mid-stream failure inside a 200: retryable, partial text
               // discarded — never delivered, never stored.
-              throw new ProviderError('outage', `${this.id} stream failed mid-response`, true, {
+              throw trusted('outage', `${this.id} stream failed mid-response`, true, {
                 host: this.host,
                 finishReason: 'error',
                 ...(upstream === undefined ? {} : { upstream }),
@@ -831,13 +910,13 @@ export class OpenAiCompatibleProvider implements TextProvider {
         // Our first-byte/idle/ceiling timers abort with TimeoutError →
         // retryable timeout (same mapping as the fetch catch). Errors thrown
         // above (mid-stream outage, invalid chunk) pass through unchanged.
-        if (error instanceof ProviderError) throw error;
+        if (isTrusted(error)) throw error;
         if (isTimeoutError(error))
-          throw new ProviderError('timeout', `${this.id} stream timed out`, true, {
+          throw trusted('timeout', `${this.id} stream timed out`, true, {
             cause: sanitizeCause(error, this.apiKey),
             host: this.host,
           });
-        throw new ProviderError('outage', `${this.id} stream failed`, true, {
+        throw trusted('outage', `${this.id} stream failed`, true, {
           cause: sanitizeCause(error, this.apiKey),
           host: this.host,
         });
@@ -861,7 +940,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
       // not complete: never return the partial as a success. Detectable
       // here without touching sse.ts.
       if (finishReason === undefined && (text !== '' || reasoning !== '' || toolCalls.length > 0))
-        throw new ProviderError('outage', `${this.id} stream ended without a finish reason`, true, {
+        throw trusted('outage', `${this.id} stream ended without a finish reason`, true, {
           host: this.host,
           ...(upstream === undefined ? {} : { upstream }),
         });
@@ -869,7 +948,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
       const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
       const reasoningOnly = reasoning !== '';
       if (text === '' && toolCalls.length === 0)
-        throw new ProviderError('invalid-response', `${this.id} returned no text`, false, {
+        throw trusted('invalid-response', `${this.id} returned no text`, false, {
           host: this.host,
           ...(finish === undefined ? {} : { finishReason: finish }),
           ...(upstream === undefined ? {} : { upstream }),

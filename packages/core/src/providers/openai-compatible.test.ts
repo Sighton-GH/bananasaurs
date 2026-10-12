@@ -1554,3 +1554,150 @@ describe('round 2 adversarial regressions', () => {
     }
   });
 });
+
+describe('hostile error inputs never leak the key (S3-T6 round 2 lead repair)', () => {
+  const key = 'sk-hostile-key123';
+  const req: GenerateTextRequest = { model: 'm', messages: [{ role: 'user', text: 'hi' }] };
+
+  /** Everything observable on an error and its cause chain, decoded as well as raw. */
+  const observable = (error: unknown): string => {
+    const seen: string[] = [];
+    let current: unknown = error;
+    for (let depth = 0; depth < 6 && current instanceof Error; depth += 1) {
+      seen.push(
+        current.message,
+        current.stack ?? '',
+        JSON.stringify(Object.fromEntries(Object.entries(current))),
+      );
+      current = current.cause;
+    }
+    const joined = seen.join('\n');
+    let decoded = joined;
+    try {
+      decoded = decodeURIComponent(joined);
+    } catch {
+      // keep raw
+    }
+    return `${joined}\n${decoded}`;
+  };
+  const failure = async (provider: ReturnType<typeof createOpenRouterProvider>): Promise<Error> => {
+    try {
+      await provider.generateText(req);
+    } catch (error) {
+      return error as Error;
+    }
+    throw new Error('expected a failure');
+  };
+
+  it('does not pass a ProviderError from the body reader through unchanged', async () => {
+    const original = new ProviderError('outage', key, true, {
+      cause: new Error(key),
+      upstream: key,
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(original);
+      },
+    });
+    const err = await failure(
+      createOpenRouterProvider({ apiKey: key, fetch: async () => new Response(body) }),
+    );
+    expect(err).not.toBe(original);
+    expect(observable(err)).not.toContain(key);
+    expect(err).toMatchObject({ kind: 'outage', retryable: true });
+  });
+
+  it('does not let a throwing code or cause getter escape raw', async () => {
+    for (const name of ['code', 'cause'] as const) {
+      const hostile = new Error('network down');
+      Object.defineProperty(hostile, name, {
+        get() {
+          throw new Error(key);
+        },
+      });
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: key,
+          fetch: async () => {
+            throw hostile;
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+    }
+  });
+
+  it('does not let throwing ProviderError field getters or a trapping cause proxy escape', async () => {
+    const getterError = new ProviderError('outage', 'safe', true);
+    for (const name of ['kind', 'retryable', 'status', 'quotaScope'])
+      Object.defineProperty(getterError, name, {
+        get() {
+          throw new Error(key);
+        },
+      });
+    const trapped = new ProviderError('outage', 'safe', true, {
+      cause: new Proxy(new Error('x'), {
+        getOwnPropertyDescriptor() {
+          throw new Error(key);
+        },
+      }),
+    });
+    for (const hostile of [getterError, trapped]) {
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: key,
+          fetch: async () => {
+            throw hostile;
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(key);
+    }
+  });
+
+  it('copies only typed diagnostics from a callback ProviderError', async () => {
+    const original = new ProviderError('outage', 'safe', true);
+    const loose = original as unknown as Record<string, unknown>;
+    loose['quotaScope'] = key;
+    loose['status'] = key;
+    loose['retryAfterMs'] = key;
+    loose['kind'] = key;
+    const fetch = async (): Promise<Response> =>
+      sse({ choices: [{ delta: { content: 'a' }, finish_reason: 'stop' }] });
+    let err: Error | undefined;
+    try {
+      await createOpenRouterProvider({ apiKey: key, fetch }).generateText({
+        ...req,
+        onChunk: () => {
+          throw original;
+        },
+      });
+    } catch (error) {
+      err = error as Error;
+    }
+    expect(err).toBeDefined();
+    expect(observable(err)).not.toContain(key);
+    expect(JSON.stringify(Object.entries(err as object))).not.toContain(key);
+    expect(err).toMatchObject({ kind: 'outage' });
+  });
+
+  it('redacts percent-encoded copies of the key', async () => {
+    const allEncoded = [...key]
+      .map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+      .join('');
+    for (const echoed of [allEncoded, allEncoded.toUpperCase(), encodeURIComponent('sk/key+123')]) {
+      const useKey = echoed === encodeURIComponent('sk/key+123') ? 'sk/key+123' : key;
+      const err = await failure(
+        createOpenRouterProvider({
+          apiKey: useKey,
+          fetch: async () => {
+            throw new TypeError(`https://example.invalid/?token=${echoed}`);
+          },
+        }),
+      );
+      expect(observable(err)).not.toContain(useKey);
+      expect(observable(err).toLowerCase()).not.toContain(echoed.toLowerCase());
+    }
+  });
+});
