@@ -89,9 +89,11 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   omit the reminder heading and "Set by" line. Any configured member or role
   pings still follow the reminder ping rules.
 - Conversations with the assistant — the questions asked, the answers given,
-  who asked, and in which channel — are stored on the club's server. They are
-  deleted automatically after the owner's chosen period (2 months, 6 months,
-  12 months, or keep forever; the default is 6 months).
+  who asked, and in which channel — are stored on the club's server. They
+  become eligible for automatic deletion once the owner's chosen period (2
+  months, 6 months, 12 months, or keep forever; the default is 6 months) has
+  passed since the conversation's last activity. The daily clean-up job then
+  removes them; it is not a precise deadline.
 - When someone tags Bananasaurs in a reply to another person's message, that
   replied-to message is sent to the AI provider as context for the answer.
 - When someone tags Bananasaurs, the last messages in that channel (15 by default; the owner can set 0–50) are sent to the AI provider with the question, so it can follow the conversation — but only in channels where the owner has left reading on. These can be from any member, including members who never used the bot. There is no opt-out where reading is on. If the provider may train on what it receives, that includes these messages.
@@ -115,7 +117,7 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   test and are never posted to Discord.
 - Long conversations keep a short AI-written summary of their earlier part. The summary prefers the owner-chosen routing tier (light by default) and falls back to the other tier when no usable entry exists in the preferred one, so it may be made by a different AI provider than the one that answered. It is deleted with the conversation.
 - The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Conversations from channels the owner has marked as no-access are never used. Names are left out of what it sees. There is no opt-out.
-- Once a day the assistant summarises that day's assistant conversations and drafts memory proposals for the owner to review. It is on by default and the owner can turn it off. The summary is stored on the club's server and becomes eligible for cleanup after the chosen conversation retention period (keep forever keeps it); cleanup relies on the daily prune job. The day's assistant conversations are sent to the AI provider to make the summary, including conversations from private channels, because the digest input is not filtered by channel. Names that look like an email address, phone number or key are replaced before sending; ordinary display names are sent. A proposal is never saved as memory automatically: it needs the owner's review and an explicit save by an account allowed to change settings. Asking the assistant to look back can also search digests, and shows a digest only when every conversation it covers is in a channel the asker may search.
+- Once a day the assistant summarises that day's assistant conversations and drafts memory proposals for the owner to review. It is on by default and the owner can turn it off. The summary is stored on the club's server and becomes eligible for cleanup after the chosen conversation retention period (keep forever keeps it); cleanup relies on the daily prune job, which skips servers that have no conversations left, so a digest can outlast the conversations it covers. Deleting a conversation or forgetting a member does not delete digests already written. The day's assistant conversations are sent to the AI provider to make the summary, including conversations from private channels, because the digest input is not filtered by channel. Names that look like an email address, phone number or key are replaced before sending; ordinary display names are sent. A proposal is never saved as memory automatically: it needs review and an explicit save by an account allowed to change settings. Asking the assistant to look back can also search digests, and shows a digest only when every conversation it covers is in a channel the asker may search.
 - The rolling summaries and the daily digest prefer a routing tier (light by default) and use the other tier when the preferred one has no usable entry. They do not check whether the selected provider may train on what it receives, so conversation content, including from private channels, can reach a provider that trains on input. The provider-training disclosure above covers whichever provider is selected.
 
 ## Task tracking
@@ -183,7 +185,8 @@ Nothing a member says can cause the bot to post one of these.
 | Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case. Exception: when a deletion is logged (a log route covers deleted messages, whether or not it shows their content) or a moderator purges messages, the deleted message's text, if the bot has it, is copied into the moderation audit log, and that copy is kept with no time limit |
 | The bot's background job records | Deleted 14 days after the job finishes or fails. Some hold a working copy of a deleted message or of what the AI was given |
 | Moderation records | Kept as long as the server needs them for consistent moderation |
-| Bot conversations and answers, and their daily digests | Kept for the owner's chosen period (default 6 months, or keep forever); deleted on request. The daily prune job removes them after that period |
+| Bot conversations and answers | Eligible for deletion after the owner's chosen period (default 6 months, or keep forever), then removed by the daily clean-up job; deleted on request |
+| Daily digests of assistant conversations | Eligible for cleanup after the same period (keep forever keeps them) and removed by the same job, which skips servers with no conversations. Not deleted when a single conversation is deleted or a member is forgotten |
 | Task progress updates | Kept until the owner deletes the update or the task |
 | Attachments | Same as the messages they belong to |
 | Archived messages from channels the owner enabled | Kept until the owner deletes them; turning recording off stops new messages being kept but deletes nothing already stored |
