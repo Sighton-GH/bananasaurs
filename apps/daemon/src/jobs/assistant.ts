@@ -1746,9 +1746,10 @@ export const assistantInvokeHandler = (deps: {
             }
           }
         }
-        // ADR 0091 decision 3: turns that fell out of the history window get
-        // one summary job on the entry that answered. An enqueue failure is
-        // logged and never fails the answer.
+        // ADR 0091 decision 3 (tier: S5-T14): turns that fell out of the
+        // history window get one summary job on the forced summary tier, not
+        // the entry that answered. An enqueue failure is logged and never
+        // fails the answer.
         if (conversationId !== undefined && deps.conversations !== undefined) {
           try {
             const answeredBy = result.detail?.answeredBy;

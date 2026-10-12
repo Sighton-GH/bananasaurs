@@ -1,6 +1,6 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-11 (provider key pools and routing, ADRs 0143–0144; assistant new abilities, ADRs 0145–0147; assistant capability truth, ADRs 0136–0137).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-12 (assistant streaming, ADR 0148; daily digest, ADR 0150; provider key pools and routing, ADRs 0143–0144; assistant new abilities, ADRs 0145–0147; assistant capability truth, ADRs 0136–0137).
 
 ---
 
@@ -11,7 +11,19 @@
 - **Finish reasons:** mid-stream `error` is retryable and its partial text is discarded; `length`/`MAX_TOKENS` with text adds a code-built cut-short marker after the guard; `length` empty keeps the empty-answer path.
 - **Live dashboard:** per-run buffer (8,000 chars answer plus 8,000 thinking, dropped at finish), `GET /api/assistant/runs/:runId/live`, `model-progress` steps at most every 3 s on one run-shared throttle, thinking saved per round under trace `reasoning` (8,000 chars each; the 12-round limit is a schema contract that the T12 writer must enforce, not yet enforced by `capTrace`). On Discord only the typing indicator changes (kept alive to the ceiling).
 - **Thinking gate:** a thinking parameter never goes out when the entry capabilities forbid it (unknown models get none); `ChainEntry.capabilities` is optional and store-populated (contracts §3 deviation noted).
-- **Integration status:** the bullets above describe the Slice 3 contract, not a completed rollout. At base `59fe3e9e`, the shared SSE parser, settings, trace schema, Gemini adapter and live-buffer route are merged. OpenAI-compatible streaming (T6), tool-loop wiring (T8), dashboard live text (T10) and daemon wiring (T12) remain pending. In particular, live-buffer appends, saved trace reasoning, store-populated capabilities and the raised typing ceiling are not yet wired end to end. T12 is planned to persist reasoning with the existing trace retention rules; its implementation has not been verified here.
+- **Integration status:** all Slice 3 tasks (T1–T12g) merged 2026-10-12 (round 2, with Slice 5); streaming adapters, live buffer and route, saved reasoning (needs `config.read`), store-populated capabilities and the typing ceiling are wired end to end.
+
+---
+
+**Daily digest and automatic memory proposals (Slice 5 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) (ADR 0150, migration `drizzle/0109_daily_digests.sql`).**
+
+- **Job (5a):** `assistant_daily_digest` runs once per guild per local day. It is on by default (`assistant.digestEnabled` defaults to 1), and the hourly tick enqueues it the first time the local hour reaches `assistant.digestHour` (default 04:00 in the club's time zone); the day-bucket key plus `oncePerBucket` allows one enqueue per day bucket and one stored digest and proposal set per day. A crash before the digest is stored, or a storage error, can repeat the model call within the job's retry cap. The timer only enqueues for guilds that already have conversations, and the job covers the day captured at enqueue (`payload.day`), using the turns present when it reads them, so a 04:00 run is not a completed previous-day digest. For a guild with conversations, a captured day with no turns still records an empty digest with no model call.
+- **Input (5b, D10a):** that day's turns from `assistant_conversation_turns` grouped by conversation with their rolling summaries, trimmed to the cap of 40,000 chars (`assistant.digestInputChars`): leading conversation blocks (in query order: conversation id, then turn time, not age), then leading lines, are dropped to fit, so there is no chunking in practice. The source query is bounded (2,000 turns). Conversation titles, rolling summaries and turn text are redacted and block markers neutralised before the model sees them; a speaker name that trips the redaction filter is sent as "a member" (ordinary display names are kept), and every provider runs behind the same pre-API scan. The digest prefers the tier from `backgroundTier('daily-digest')` (setting `assistant.routerDailyDigestTier`, default `light`); the rolling summaries pick their entry through `backgroundTier('summary')` (setting `assistant.routerSummaryTier`, default `light`) the same way, not the entry that answered. Both use the other tier when the preferred tier has no usable entry, and neither retries on another entry after a reservation or model failure. Neither call checks the entry's may-train flag.
+- **Output (5c):** Zod-validated `daySummary` (at most 300 words) plus at most 10 memory proposals (`assistant.digestMaxProposals`) into the existing memory-proposal queue with provenance `daily-digest`; code drops duplicates of existing memory or pending drafts by normalised-text match. Proposals are drafts and are never saved automatically: saving needs dashboard review and an explicit save by an account with config.write (not an isOwner check).
+- **Stored (5d):** `assistant_daily_digests` keyed by guild and day; rows become eligible for cleanup after the conversation retention period (keep forever keeps them); cleanup runs in the prune job, which skips guilds with no conversations, and its cutoff is a UTC date while a digest day is a local day. `search_conversations` also searches digests, fail-closed: a digest summary is shown only when every conversation it covers is in the asker's searchable channels. Recall shows up to 7 lines (5 summaries plus 2 digests), each budgeted under the 6,000-char evidence cap. Dashboard "Daily digests" list under Conversations, four digest controls on Memory.
+- **Observed (5e):** run-ledger entries with source `daily-digest`, each with a `routed` event (reason `background-tier`). A model or parse failure completes the run as failed with no retry that day; unexpected storage errors retry up to the job cap.
+
+---
 
 **Slice 6 — provider key pools, cooldowns, Gemini chain and routing (ADRs 0143–0144, migration `key_pools_routing`).**
 
@@ -20,7 +32,7 @@
 - **Chain:** `gemini-3.8-flash` (5 RPM / 20 RPD) → `gemini-3.6-flash` (5 / 20) → `gemini-3.5-flash-lite` (15 / 500), each over the whole Gemini pool, then the owner's OpenRouter entries.
 - **Routing:** short simple messages try the light tier first; attachments, quotes, long threads and full-model keywords use standard. It is one tool-loop run: a light entry's round-1 tool calls hand the same loop to standard entries from round 2 (`escalateAfterTools`, setting `routerEscalateOnTool`), so no acting tool runs twice. Every decision is a `routed` run event; a second `routed` event with reason `escalated-after-tool` marks the hand-over. The router sees only fixed reasons, never message text.
 - **Check models:** capability fixtures run against one entry with stubbed tools on a reserved budget, recorded as `dashboard-test`. **Gemini may-train line (D12):** free keys may train on submitted input, paid keys are recorded no-training; both stay usable with warnings in logs, dashboard and doctor.
-- **Known gaps:** the background-tier consumer (summaries, daily digest) is not wired yet (Slice 5 wires the digest). The Gemini free/paid eligibility rows follow decision D12 in the approved spec.
+- **Known gaps:** the background-tier consumers (summaries and the daily digest) are wired by Slice 5 (merged 2026-10-12). The Gemini free/paid eligibility rows follow decision D12 in the approved spec.
 
 **Assistant new abilities (Slice 2 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) (ADRs 0145–0147, migration `drizzle/0108_parallel_search_source.sql`).**
 
@@ -34,7 +46,7 @@
 
 ---
 
-**Assistant capability truth (Slice 1 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) — built on `worktree-assistant-harness-capability-plan`, not yet merged (ADRs 0136–0137, no migration).**
+**Assistant capability truth (Slice 1 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) (merged and deployed; ADRs 0136–0137, no migration).**
 
 - **One capability block (ADR 0136):** the prompt ends with WHAT YOU CAN DO RIGHT NOW, built from the exact tools declared on that turn, grouped (reminders, club knowledge, channel, web, server, time, proposals), then prose skills, then what is not available to this member and why. A NOW line gives the date and time. When history holds earlier bot replies, the user message says the listed abilities are exact for this member.
 - **Later rounds (ADR 0137):** read-only tools run in any round, web search included; `read_chunk`, `open_resource`, `channel_history`, `edit_reminder` and `cancel_reminder` need an id an earlier result returned; acting tools run in round 1 only. Hard rule 3 reworded to match.

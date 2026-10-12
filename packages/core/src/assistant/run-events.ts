@@ -31,7 +31,10 @@ export type RunStage = (typeof RUN_STAGES)[number];
  */
 export const runEventSchema = z.discriminatedUnion('kind', [
   z
-    .object({ kind: z.literal('queued'), via: z.enum(['mention', 'reply', 'slash', 'dashboard']) })
+    .object({
+      kind: z.literal('queued'),
+      via: z.enum(['mention', 'reply', 'slash', 'dashboard', 'schedule']),
+    })
     .strict(),
   z
     .object({
@@ -189,7 +192,7 @@ export interface RunRow {
   readonly userId: string;
   readonly channelId?: string;
   readonly behaviourId: string;
-  readonly source: 'mention' | 'slash-command' | 'dashboard-test';
+  readonly source: 'mention' | 'slash-command' | 'dashboard-test' | 'daily-digest';
   readonly state: RunState;
   readonly stage: RunStage;
   readonly attempt: number;

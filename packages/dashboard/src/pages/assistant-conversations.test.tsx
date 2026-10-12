@@ -174,3 +174,109 @@ describe('AssistantConversationsPage', () => {
     ).toBeTruthy();
   });
 });
+
+it('shows the daily digests list under the conversations', async () => {
+  stubFetch([
+    ...stubs({ conversations: [ROW_NEW] }),
+    {
+      url: '/api/assistant/digests',
+      body: {
+        digests: [
+          {
+            day: '2026-10-09',
+            createdAt: 1_790_000_000_000,
+            updatedAt: 1_790_000_000_000,
+            topics: 'Talked about the build night.',
+          },
+        ],
+      },
+    },
+  ]);
+  renderWithSession(<AssistantConversationsPage />);
+  expect(await screen.findByRole('heading', { name: 'Daily digests' })).toBeTruthy();
+  expect(await screen.findByText('2026-10-09')).toBeTruthy();
+});
+
+const DIGEST_ROWS = ['2026-10-09', '2026-10-10'].map((day) => ({
+  day,
+  createdAt: 1_790_000_000_000,
+  updatedAt: 1_790_000_000_000,
+  topics: `Topics for ${day}`,
+}));
+const digestStubs = () => [
+  ...stubs({ conversations: [] }),
+  { url: '/api/assistant/digests', body: { digests: DIGEST_ROWS } },
+];
+const digestDetail = (day: string, summary: string) => ({
+  digest: { day, daySummary: summary, proposals: [], conversations: [] },
+});
+
+it('opens the selected daily summary', async () => {
+  stubFetch([
+    ...digestStubs(),
+    {
+      url: '/api/assistant/digests/2026-10-09',
+      body: digestDetail('2026-10-09', 'Build night summary.'),
+    },
+  ]);
+  renderWithSession(<AssistantConversationsPage />);
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Open' }))[0]!);
+  expect(await screen.findByText('Build night summary.')).toBeTruthy();
+});
+
+it('shows a detail error and allows retry', async () => {
+  stubFetch([
+    ...digestStubs(),
+    { url: '/api/assistant/digests/2026-10-09', status: 404, body: { error: 'not-found' } },
+  ]);
+  renderWithSession(<AssistantConversationsPage />);
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Open' }))[0]!);
+  expect(await screen.findByText('Could not load daily digest detail.')).toBeTruthy();
+  const mock = stubFetch([
+    ...digestStubs(),
+    {
+      url: '/api/assistant/digests/2026-10-09',
+      body: digestDetail('2026-10-09', 'Recovered summary.'),
+    },
+  ]);
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  expect(await screen.findByText('Recovered summary.')).toBeTruthy();
+  expect(mock.mock.calls.some((c) => c[0] === '/api/assistant/digests/2026-10-09')).toBe(true);
+});
+
+it('clears the previous detail and ignores a late response for another day', async () => {
+  const mock = stubFetch(digestStubs());
+  let finishFirst!: (response: Response) => void;
+  let finishSecond!: (response: Response) => void;
+  const fallback = mock.getMockImplementation()!;
+  mock.mockImplementation((input, init) => {
+    if (input === '/api/assistant/digests/2026-10-09')
+      return new Promise((resolve) => {
+        finishFirst = resolve;
+      });
+    if (input === '/api/assistant/digests/2026-10-10')
+      return new Promise((resolve) => {
+        finishSecond = resolve;
+      });
+    return fallback(input, init);
+  });
+  renderWithSession(<AssistantConversationsPage />);
+  const buttons = await screen.findAllByRole('button', { name: 'Open' });
+  await act(async () => {
+    fireEvent.click(buttons[0]!);
+  });
+  await act(async () => {
+    fireEvent.click(buttons[1]!);
+  });
+  expect(screen.queryByText('First summary.')).toBeNull();
+  expect(screen.getByText('Loading…')).toBeTruthy();
+  await act(async () => {
+    finishSecond(new Response(JSON.stringify(digestDetail('2026-10-10', 'Second summary.'))));
+  });
+  expect(await screen.findByText('Second summary.')).toBeTruthy();
+  await act(async () => {
+    finishFirst(new Response(JSON.stringify(digestDetail('2026-10-09', 'First summary.'))));
+  });
+  expect(screen.queryByText('First summary.')).toBeNull();
+  expect(screen.getByText('Second summary.')).toBeTruthy();
+});

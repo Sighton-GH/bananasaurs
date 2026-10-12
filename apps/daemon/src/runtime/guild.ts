@@ -20,6 +20,8 @@ import {
   createNativeAutomodSubscriber,
   createReactionSubscriber,
   formatWarn,
+  DIGEST_DEFAULT_INPUT_CHARS,
+  DIGEST_DEFAULT_MAX_PROPOSALS,
   DiscordApiError,
   EffectGateway,
   JobWorker,
@@ -111,6 +113,11 @@ import { resolveReplyPings } from '../assistant/reply-ping-policy.js';
 import { createRunRecorder } from '../assistant/run-recorder.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { assistantSummariseHandler, type SummariseModelPort } from '../jobs/assistant-summarise.js';
+import {
+  assistantDailyDigestHandler,
+  pickBackgroundEntry,
+  type DigestModelPort,
+} from '../jobs/assistant-digest.js';
 import { reserveEntryCall } from '../assistant/local-limit.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
@@ -1256,22 +1263,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }),
   ];
 
-  // ADR 0091 decision 4: the summary job re-resolves the chain entry that
-  // answered and reserves one call against its local limits. A missing or
-  // skipped entry, a refused reservation and a failed call are all skips,
-  // never retries — the raw turns are kept for the next run.
-  const summariseModel: SummariseModelPort = async ({
-    providerId,
-    model,
-    keyId,
-    systemInstruction,
-    text,
-  }) => {
-    const entry = (deps.assistantChain ?? (() => []))().find(
-      (candidate) =>
-        candidate.providerId === providerId &&
-        candidate.model === model &&
-        candidate.keyId === keyId,
+  // ADR 0091 decision 4 as amended by S5-T14: the summary job answers on the
+  // forced summary tier from `backgroundTier('summary')` (Slice 6, setting
+  // `assistant.routerSummaryTier`, default light), never the entry that
+  // answered - background jobs never run the router. The payload keeps the
+  // answering entry as provenance. A missing or skipped entry, a refused
+  // reservation and a failed call are all skips, never retries - the raw
+  // turns are kept for the next run.
+  const summariseModel: SummariseModelPort = async ({ systemInstruction, text }) => {
+    const entry = pickBackgroundEntry(
+      (deps.assistantChain ?? (() => []))(),
+      assistantService.backgroundTier('summary'),
     );
     if (entry === undefined || entry.provider === undefined || entry.skip !== undefined) {
       return { ok: false, reason: 'entry-unavailable' };
@@ -1280,7 +1282,37 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     if (!reserved.ok) return { ok: false, reason: 'rate-limited' };
     try {
       const response = await entry.provider.generateText({
-        model,
+        model: entry.model,
+        systemInstruction,
+        messages: [{ role: 'user', text }],
+        maxOutputTokens: 2_000,
+        temperature: 0,
+      });
+      return { ok: true, text: response.text };
+    } catch (err) {
+      return { ok: false, reason: err instanceof ProviderError ? err.kind : 'error' };
+    }
+  };
+
+  // ADR 0150 decision 2: the digest never runs the router. Its tier is the
+  // owner-set forced tier from `backgroundTier('daily-digest')` (Slice 6,
+  // setting `assistant.routerDailyDigestTier`, default light); the handler
+  // records it as a `routed` event with reason `background-tier`. The first
+  // usable entry in that tier's order answers; a missing entry, a refused
+  // reservation and a failed call are completed failures, never retries.
+  const digestModel: DigestModelPort = async ({ systemInstruction, text }) => {
+    const entry = pickBackgroundEntry(
+      (deps.assistantChain ?? (() => []))(),
+      assistantService.backgroundTier('daily-digest'),
+    );
+    if (entry === undefined || entry.provider === undefined) {
+      return { ok: false, reason: 'entry-unavailable' };
+    }
+    const reserved = reserveEntryCall(instance, entry, guildId, now());
+    if (!reserved.ok) return { ok: false, reason: 'rate-limited' };
+    try {
+      const response = await entry.provider.generateText({
+        model: entry.model,
         systemInstruction,
         messages: [{ role: 'user', text }],
         maxOutputTokens: 2_000,
@@ -1296,6 +1328,24 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     store: jobStoreFor(scope),
     handlers: [
       assistantSummariseHandler(scope, { summariseModel, now, logger }),
+      assistantDailyDigestHandler(scope, {
+        now,
+        logger,
+        timeZone: () => config.BANANASAURS_TIME_ZONE,
+        botUserId,
+        digestModel,
+        forcedTier: () => assistantService.backgroundTier('daily-digest'),
+        digestEnabled: () =>
+          settings === undefined ? true : settings.get('assistant.digestEnabled') === 1,
+        digestInputChars: () =>
+          settings === undefined
+            ? DIGEST_DEFAULT_INPUT_CHARS
+            : settings.get('assistant.digestInputChars'),
+        digestMaxProposals: () =>
+          settings === undefined
+            ? DIGEST_DEFAULT_MAX_PROPOSALS
+            : settings.get('assistant.digestMaxProposals'),
+      }),
       assistantInvokeHandler({
         guildId,
         service: assistantService,

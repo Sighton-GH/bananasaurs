@@ -47,6 +47,7 @@ export { registerAssistantModelCheckRoutes } from './routes/assistant-model-chec
 export { registerAssistantRunRoutes } from './routes/assistant-runs.js';
 export { registerAssistantResourceCacheRoutes } from './routes/assistant-resources-cache.js';
 export { registerAssistantConversationRoutes } from './routes/assistant-conversations.js';
+export { registerAssistantDigests } from './routes/assistant-digests.js';
 export {
   registerAssistantGithubRoutes,
   type GithubRouteClient,

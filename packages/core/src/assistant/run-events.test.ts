@@ -115,3 +115,13 @@ describe('routed event (ADR 0144)', () => {
     ).toBe(false);
   });
 });
+
+it('accepts a scheduled digest run (ADR 0150 decision 5)', () => {
+  expect(runEventSchema.safeParse({ kind: 'queued', via: 'schedule' }).success).toBe(true);
+});
+
+it('accepts the background-tier routed reason the digest and summaries record', () => {
+  expect(
+    runEventSchema.safeParse({ kind: 'routed', tier: 'light', reason: 'background-tier' }).success,
+  ).toBe(true);
+});

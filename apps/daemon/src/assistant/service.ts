@@ -38,6 +38,7 @@ import {
   archiveSearchRepo,
   assistantRepo,
   conversationRepo,
+  digestRepo,
   eligibilityRepo,
   instanceSettingsRepo,
   jobRepo,
@@ -1036,7 +1037,7 @@ export const createAssistantService = (
           const searchable = await dropNoAccessIds(visible);
           if (searchable.size === 0) return [];
           const clean = (text: string): string => neutraliseMarkers(redactEvidenceText(text).text);
-          return conversationRepo
+          const summaries = conversationRepo
             .searchSummaries(scope, {
               query,
               channelIds: [...searchable],
@@ -1052,6 +1053,21 @@ export const createAssistantService = (
               topic: clean(hit.summary.topic),
               facts: hit.summary.facts.map((fact) => clean(fact.text)),
             }));
+          // ADR 0150 decision 4: digests answer "what did we talk about last
+          // Tuesday". searchDigests fails closed: a digest surfaces only when
+          // every conversation it covers is in the asker's searchable
+          // channels. `digest:` ids are display-only: tools.ts keeps them out
+          // of `recalledConversationIds` (no such conversation row).
+          const digests = digestRepo
+            .searchDigests(scope, { query, channelIds: [...searchable], limit: 2 })
+            .map((hit) => ({
+              conversationId: `digest:${hit.day}`,
+              channelId: hit.channelId,
+              lastActivityAt: Date.parse(`${hit.day}T12:00:00Z`),
+              topic: `Daily digest ${hit.day}: ${clean(hit.topics)}`,
+              facts: [] as string[],
+            }));
+          return [...summaries, ...digests];
         },
         resources: () => resources,
         fetchResource,

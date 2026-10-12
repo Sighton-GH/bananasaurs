@@ -19,6 +19,7 @@ describe('job lanes', () => {
       JOB_KINDS.conversationPrune,
       JOB_KINDS.assistantSummarise,
       JOB_KINDS.assistantInvoke,
+      JOB_KINDS.assistantDailyDigest,
     ]);
     expect(kindsInLane('background')).toEqual([
       JOB_KINDS.sweepEventDedupe,
