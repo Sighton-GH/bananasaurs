@@ -54,22 +54,24 @@ const streamChunkSchema = z.object({
                   index: z.number().int().nonnegative().optional(),
                   id: z.string().optional(),
                   type: z.string().optional(),
-                  function: z.object({
-                    name: z.string().min(1).optional(),
-                    arguments: z.string().optional(),
-                  }),
+                  function: z
+                    .object({
+                      name: z.string().min(1).optional(),
+                      arguments: z.string().optional(),
+                    })
+                    .default({}),
                 }),
               )
               .optional(),
           })
           .optional(),
         finish_reason: z.string().nullable().optional(),
-        error: streamErrorSchema.optional(),
+        error: streamErrorSchema.nullish(),
       }),
     )
     .default([]),
   /** Top-level error object: some providers fail a 200 stream without any choice. */
-  error: streamErrorSchema.optional(),
+  error: streamErrorSchema.nullish(),
   usage: usageSchema.nullish(),
 });
 
@@ -171,30 +173,60 @@ const readErrorBody = async (response: Response, abortRace: Promise<never>): Pro
 const redactKey = (text: string, key: string): string =>
   key === '' ? text : text.split(key).join('(redacted)');
 
-/**
- * Walks up to 8 levels of `cause`, rewriting only message text - the class,
- * name, and any `code` of each error are preserved, and retry/quota
- * metadata on the wrapping ProviderError is untouched.
- */
-const sanitizeCause = (error: unknown, key: string): unknown => {
-  if (key === '') return error;
-  let current = error;
-  for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
-    if (current.message.includes(key)) {
-      try {
-        current.message = redactKey(current.message, key);
-      } catch {
-        // A read-only message (some DOMExceptions) cannot be assigned;
-        // shadow it with an own redacted property instead.
-        Object.defineProperty(current, 'message', {
-          value: redactKey(current.message, key),
-          configurable: true,
-        });
-      }
+/** Copy only safe diagnostics. Never mutate or retain an untrusted cause graph. */
+const sanitizeCause = (error: unknown, key: string): Error => {
+  // Own data descriptors avoid executing message/code accessors during cleanup.
+  const own = (name: string): unknown => {
+    if ((typeof error !== 'object' || error === null) && typeof error !== 'function')
+      return undefined;
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(error, name);
+      return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
+    } catch {
+      return undefined;
     }
-    current = current.cause;
+  };
+  const message = typeof error === 'string' ? error : own('message');
+  const safeMessage = redactKey(typeof message === 'string' ? message : 'request failed', key);
+  if (error instanceof ProviderError) {
+    const safeString = (name: string): string | undefined => {
+      const value = own(name);
+      return typeof value === 'string' ? redactKey(value, key) : undefined;
+    };
+    const host = safeString('host');
+    const netCode = safeString('netCode');
+    const upstream = safeString('upstream');
+    const finishReason = safeString('finishReason');
+    const cause = own('cause');
+    return new ProviderError(error.kind, safeMessage, error.retryable, {
+      ...(cause === undefined
+        ? {}
+        : {
+            cause: new Error(
+              redactKey(
+                cause instanceof Error &&
+                  typeof Object.getOwnPropertyDescriptor(cause, 'message')?.value === 'string'
+                  ? (Object.getOwnPropertyDescriptor(cause, 'message')?.value as string)
+                  : 'request failed',
+                key,
+              ),
+            ),
+          }),
+      ...(error.status === undefined ? {} : { status: error.status }),
+      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
+      ...(error.resetAt === undefined ? {} : { resetAt: error.resetAt }),
+      ...(error.quotaScope === undefined ? {} : { quotaScope: error.quotaScope }),
+      ...(host === undefined ? {} : { host }),
+      ...(netCode === undefined ? {} : { netCode }),
+      ...(upstream === undefined ? {} : { upstream }),
+      ...(finishReason === undefined ? {} : { finishReason }),
+    });
   }
-  return error;
+  const safe = new Error(safeMessage);
+  const code = own('code');
+  if (typeof code === 'string')
+    Object.defineProperty(safe, 'code', { value: redactKey(code, key) });
+  return safe;
 };
 
 // eslint-disable-next-line no-control-regex -- deliberately stripping control characters, not matching them by accident.
@@ -583,7 +615,6 @@ export class OpenAiCompatibleProvider implements TextProvider {
         throw new ProviderError('invalid-response', `${this.id} returned no body`, false, {
           host: this.host,
         });
-      clearTimeout(firstByteTimer); // headers arrived: the call has started
       rearmIdle(); // the idle timer owns the body from here; keepalives count as bytes
       let text = '';
       let reasoning = '';
@@ -604,6 +635,37 @@ export class OpenAiCompatibleProvider implements TextProvider {
       let reasoningChars = 0;
       let keepalives = 0;
       let lastByteAt = Date.now();
+      // Own the actual body reader outside the parser so timeout cleanup can
+      // cancel a read even if the SSE generator is waiting for another byte.
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+      let released = false;
+      const closeBody = (): void => {
+        if (released) return;
+        released = true;
+        const cancelled = reader.cancel();
+        cancelled.catch(() => undefined);
+        reader.releaseLock();
+      };
+      const byteChunks = async function* (): AsyncGenerator<string> {
+        const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+        try {
+          for (;;) {
+            const next = reader.read();
+            next.catch(() => undefined);
+            const { done, value } = await Promise.race([next, abortRace]);
+            if (done) break;
+            if (value.byteLength > 0) {
+              clearTimeout(firstByteTimer);
+              lastByteAt = Date.now();
+              rearmIdle();
+            }
+            yield decoder.decode(value, { stream: true });
+          }
+          yield decoder.decode();
+        } finally {
+          closeBody();
+        }
+      };
       let lastEmitAt = 0;
       const emitProgress = (): void => {
         if (request.onProgress === undefined) return;
@@ -618,7 +680,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           msSinceLastByte: Math.max(0, now - lastByteAt),
         });
       };
-      const events = parseSseStream(response.body);
+      const events = parseSseStream(byteChunks());
       // Tracks whether the generator is parked at a yield: only then can
       // events.return() settle (see the catch below).
       let eventsAtYield = false;
@@ -631,8 +693,6 @@ export class OpenAiCompatibleProvider implements TextProvider {
           eventsAtYield = true;
           if (result.done === true) break;
           const event = result.value;
-          lastByteAt = Date.now();
-          rearmIdle();
           if (event.keepalive) {
             keepalives += 1;
             emitProgress();
@@ -663,10 +723,10 @@ export class OpenAiCompatibleProvider implements TextProvider {
               },
             );
           const chunk = parsed.data;
-          if (chunk.model !== undefined) model = chunk.model;
-          if (chunk.provider !== undefined) upstream = chunk.provider;
+          if (chunk.model !== undefined) model = redactKey(chunk.model, this.apiKey);
+          if (chunk.provider !== undefined) upstream = redactKey(chunk.provider, this.apiKey);
           if (chunk.usage !== undefined && chunk.usage !== null) usage = chunk.usage;
-          if (chunk.error !== undefined) {
+          if (chunk.error != null) {
             // Top-level error object (no choice carries it): the same
             // mid-stream failure as a choice error - retryable, partial
             // text discarded, never delivered, never stored.
@@ -679,7 +739,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           let deltaText = '';
           let deltaReasoning = '';
           for (const choice of chunk.choices) {
-            if (choice.error !== undefined || choice.finish_reason === 'error') {
+            if (choice.error != null || choice.finish_reason === 'error') {
               // Mid-stream failure inside a 200: retryable, partial text
               // discarded — never delivered, never stored.
               throw new ProviderError('outage', `${this.id} stream failed mid-response`, true, {
@@ -693,7 +753,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
               choice.finish_reason !== null &&
               choice.finish_reason !== ''
             )
-              finishReason = choice.finish_reason;
+              finishReason = redactKey(choice.finish_reason, this.apiKey);
             const delta = choice.delta;
             if (delta === undefined) continue;
             if (delta.content !== undefined && delta.content !== null) {
@@ -708,7 +768,11 @@ export class OpenAiCompatibleProvider implements TextProvider {
             }
             for (const call of delta.tool_calls ?? []) {
               const index = call.index ?? 0;
-              const open = toolFragments.findLast((frag) => frag.index === index);
+              const sameId =
+                call.id === undefined
+                  ? undefined
+                  : toolFragments.findLast((frag) => frag.id === call.id);
+              const open = sameId ?? toolFragments.findLast((frag) => frag.index === index);
               // A reused index with a different id - or, for calls that
               // never send an index, any second name - starts a NEW
               // parallel call rather than continuing the open one:
@@ -716,6 +780,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
               // first-seen id/name win; args concatenate per slot.
               const opensNew =
                 open !== undefined &&
+                sameId === undefined &&
                 ((call.id !== undefined && open.id !== undefined && call.id !== open.id) ||
                   (call.function.name !== undefined &&
                     open.name !== undefined &&
@@ -742,6 +807,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           emitProgress();
         }
       } catch (error) {
+        closeBody();
         // Tidy the generator on error exits, but only when it is parked at
         // a yield: return() against a generator stuck inside a pending read
         // queues behind that read and never settles (see sse.ts), so that
@@ -756,16 +822,18 @@ export class OpenAiCompatibleProvider implements TextProvider {
         // Our first-byte/idle/ceiling timers abort with TimeoutError →
         // retryable timeout (same mapping as the fetch catch). Errors thrown
         // above (mid-stream outage, invalid chunk) pass through unchanged.
-        if (error instanceof ProviderError) throw error;
+        if (error instanceof ProviderError) throw sanitizeCause(error, this.apiKey);
         if (isTimeoutError(error))
           throw new ProviderError('timeout', `${this.id} stream timed out`, true, {
-            cause: error,
+            cause: sanitizeCause(error, this.apiKey),
             host: this.host,
           });
         throw new ProviderError('outage', `${this.id} stream failed`, true, {
           cause: sanitizeCause(error, this.apiKey),
           host: this.host,
         });
+      } finally {
+        closeBody();
       }
       const toolCalls: ToolCall[] = [...toolFragments]
         .sort((a, b) => a.index - b.index || a.seq - b.seq)

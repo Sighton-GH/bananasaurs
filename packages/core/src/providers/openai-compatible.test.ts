@@ -824,11 +824,8 @@ describe('OpenAI-compatible providers', () => {
       const cause = errorOf(err).cause as Error & { code?: string };
       expect(cause.message).toBe('request failed');
       expect(cause.code).toBe('EOUTER');
-      const nested = cause.cause as Error & { code?: string };
-      expect(nested.message).not.toContain(key);
-      expect(nested.message).toContain('Bearer (redacted)');
-      expect(nested.name).toBe('Error');
-      expect(nested.code).toBe('EAUTH');
+      expect(cause.cause).toBeUndefined();
+      expect(inner.message).toContain(key);
     });
 
     it('redacts a short key from a stream SyntaxError cause', async () => {
@@ -1204,5 +1201,326 @@ describe('OpenAI-compatible providers', () => {
         .catch((e: unknown) => e);
       expect(err).toMatchObject({ kind: 'outage', retryable: true });
     });
+  });
+});
+
+describe('round 2 adversarial regressions', () => {
+  const key = 'sk-hostile-key123';
+  const req = { model: 'm', messages: [{ role: 'user' as const, text: 'q' }] };
+  const generate = (res: Response) =>
+    createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(res),
+    }).generateText(req);
+  it.each(['string', 'stack', 'frozen', 'object', 'getter'])(
+    'copies and sanitizes %s rejection without mutating the original',
+    async (kind) => {
+      const original =
+        kind === 'string'
+          ? key
+          : kind === 'object'
+            ? { message: key, cause: key }
+            : kind === 'getter'
+              ? Object.defineProperty({}, 'message', {
+                  get() {
+                    throw new Error(key);
+                  },
+                })
+              : new Error(key, { cause: new Error(key) });
+      if (original instanceof Error) {
+        void original.stack;
+        if (kind === 'frozen') Object.freeze(original);
+      }
+      const error = await createOpenRouterProvider({
+        apiKey: key,
+        fetch: vi.fn<typeof fetch>().mockRejectedValue(original),
+      })
+        .generateText(req)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProviderError);
+      const cause = (error as Error).cause as Error;
+      expect(cause).toBeInstanceOf(Error);
+      expect(cause).not.toBe(original);
+      expect(String(cause)).not.toContain(key);
+      expect(cause.stack).not.toContain(key);
+      expect(JSON.stringify(error)).not.toContain(key);
+      expect(cause.cause).toBeUndefined();
+      if (original instanceof Error) expect(original.message).toBe(key);
+    },
+  );
+  it('sanitizes Zod diagnostics before exposing their message or stack', async () => {
+    const diagnosticKey = 'Expected number';
+    const e = (await createOpenRouterProvider({
+      apiKey: diagnosticKey,
+      fetch: vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(sse({ choices: [{ delta: { tool_calls: [{ index: 'bad' }] } }] })),
+    })
+      .generateText(req)
+      .catch((e: unknown) => e)) as Error;
+    expect(e).toBeInstanceOf(ProviderError);
+    expect(e.cause).toBeInstanceOf(Error);
+    expect(String(e.cause)).not.toContain(diagnosticKey);
+    expect((e.cause as Error).stack).not.toContain(diagnosticKey);
+    expect(JSON.stringify(e.cause)).not.toContain(diagnosticKey);
+  });
+  it('redacts success model, upstream and finish metadata at ingestion', async () => {
+    const res = await generate(
+      sse({
+        model: key,
+        provider: key,
+        choices: [{ delta: { content: 'ok' }, finish_reason: key }],
+      }),
+    );
+    expect(res.model).toBe('(redacted)');
+    expect(res.upstream).toBe('(redacted)');
+    expect(res.finishReason).toBe('(redacted)');
+  });
+  it.each(['error', 'empty'])('redacts %s-path upstream and finish metadata', async (path) => {
+    const e = await generate(
+      sse({
+        provider: key,
+        model: key,
+        ...(path === 'error'
+          ? { error: { message: 'bad' } }
+          : { choices: [{ finish_reason: key }] }),
+      }),
+    ).catch((e: unknown) => e);
+    expect(JSON.stringify(e)).not.toContain(key);
+    expect(e).toMatchObject({ upstream: '(redacted)' });
+    if (path === 'empty') expect(e).toMatchObject({ finishReason: '(redacted)' });
+  });
+  it('sanitizes caller TimeoutError and cancels a non-cooperative body', async () => {
+    const abort = new AbortController();
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const pending = createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+    }).generateText({ ...req, signal: abort.signal });
+    setTimeout(() => abort.abort(new DOMException(key, 'TimeoutError')), 5);
+    const e = (await pending.catch((e: unknown) => e)) as ProviderError;
+    expect(e.kind).toBe('timeout');
+    expect(String(e.cause)).not.toContain(key);
+    expect((e.cause as Error).stack).not.toContain(key);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+  it('sanitizes callback ProviderError and preserves classification', async () => {
+    const original = new ProviderError('outage', key, true, {
+      cause: new Error(key),
+      upstream: key,
+      finishReason: key,
+    });
+    void original.stack;
+    const e = (await createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(response()),
+    })
+      .generateText({
+        ...req,
+        onChunk() {
+          throw original;
+        },
+      })
+      .catch((e: unknown) => e)) as ProviderError;
+    expect(e).not.toBe(original);
+    expect(e.kind).toBe('outage');
+    expect(e.retryable).toBe(true);
+    expect(e.message).toBe('(redacted)');
+    expect(e.stack).not.toContain(key);
+    expect(JSON.stringify(e)).not.toContain(key);
+    expect(original.message).toBe(key);
+  });
+  it('idle timeout cancels and unlocks a never-yielding body and aborts fetch', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    let signal: AbortSignal | null | undefined;
+    const e = await createOpenRouterProvider({
+      apiKey: key,
+      idleTimeoutMs: 15,
+      fetch: vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+        signal = init?.signal;
+        return new Response(body);
+      }),
+    })
+      .generateText(req)
+      .catch((e: unknown) => e);
+    expect(e).toMatchObject({ kind: 'timeout' });
+    expect(signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+  it('fragmented bytes rearm idle before a complete event exists', async () => {
+    const frame =
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+    let timer: ReturnType<typeof setInterval>;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        let i = 0;
+        timer = setInterval(() => {
+          c.enqueue(new TextEncoder().encode(frame.slice(i, i + 10)));
+          i += 10;
+          if (i >= frame.length) {
+            clearInterval(timer);
+            c.close();
+          }
+        }, 10);
+      },
+      cancel() {
+        clearInterval(timer);
+      },
+    });
+    await expect(
+      createOpenRouterProvider({
+        apiKey: key,
+        timeoutMs: 20,
+        idleTimeoutMs: 25,
+        maxCallMs: 500,
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+      }).generateText(req),
+    ).resolves.toMatchObject({ text: 'ok' });
+  });
+  it('first-byte deadline remains active after headers and ignores empty chunks', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array());
+      },
+      cancel,
+    });
+    const e = await createOpenRouterProvider({
+      apiKey: key,
+      timeoutMs: 10,
+      idleTimeoutMs: 100,
+      maxCallMs: 150,
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+    })
+      .generateText(req)
+      .catch((e: unknown) => e);
+    expect(e).toMatchObject({ kind: 'timeout' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+  it('accepts null errors and missing tool function fragments', async () => {
+    const res = await generate(
+      sse({
+        error: null,
+        choices: [
+          {
+            error: null,
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'a' },
+                { index: 0, function: { name: 'f', arguments: '{}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([{ id: 'a', name: 'f', args: {} }]);
+  });
+  it('joins repeated no-index id/name continuations even when interleaved', async () => {
+    const res = await generate(
+      sse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { id: 'a', function: { name: 'f', arguments: '{"x"' } },
+                { id: 'b', function: { name: 'f', arguments: '{"y":2}' } },
+                { id: 'a', function: { name: 'f', arguments: ':1}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([
+      { id: 'a', name: 'f', args: { x: 1 } },
+      { id: 'b', name: 'f', args: { y: 2 } },
+    ]);
+  });
+  it('keeps two no-index same-name calls without ids distinct', async () => {
+    const res = await generate(
+      sse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { function: { name: 'f', arguments: '{"x":1}' } },
+                { function: { name: 'f', arguments: '{"x":2}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([
+      { name: 'f', args: { x: 1 } },
+      { name: 'f', args: { x: 2 } },
+    ]);
+  });
+  it('redacts before shortReason truncation', async () => {
+    const prefix = 'x'.repeat(155);
+    const e = (await generate(
+      new Response(JSON.stringify({ error: { message: prefix + key } }), { status: 401 }),
+    ).catch((e: unknown) => e)) as Error;
+    expect(e.message).toContain(prefix + '(reda');
+    expect(e.message).not.toContain('sk-ho');
+  });
+  it('does not abort the fetch signal on success and releases the body', async () => {
+    let signal: AbortSignal | null | undefined;
+    const res = response();
+    await createOpenRouterProvider({
+      apiKey: key,
+      fetch: vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+        signal = init?.signal;
+        return res;
+      }),
+    }).generateText(req);
+    expect(signal?.aborted).toBe(false);
+    expect(res.body?.locked).toBe(false);
+  });
+  it('throttles ten one-second chunks to four progress emissions', async () => {
+    vi.useFakeTimers();
+    try {
+      const onProgress = vi.fn();
+      let timer: ReturnType<typeof setInterval>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          let i = 0;
+          timer = setInterval(() => {
+            i++;
+            c.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: 'x' }, ...(i === 10 ? { finish_reason: 'stop' } : {}) }] })}\n\n`,
+              ),
+            );
+            if (i === 10) {
+              clearInterval(timer);
+              c.close();
+            }
+          }, 1000);
+        },
+        cancel() {
+          clearInterval(timer);
+        },
+      });
+      const pending = createOpenRouterProvider({
+        apiKey: key,
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+      }).generateText({ ...req, onProgress });
+      await vi.advanceTimersByTimeAsync(10000);
+      await pending;
+      expect(onProgress).toHaveBeenCalledTimes(4);
+      expect(onProgress.mock.calls.map(([p]) => p.msSinceLastByte)).toEqual([0, 0, 0, 0]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
