@@ -113,8 +113,10 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 - Test chats typed into the dashboard ("Try it") are sent to the AI provider
   like any other question. They are saved as conversations marked Dashboard
   test and are never posted to Discord.
-- Long conversations keep a short AI-written summary of their earlier part, made by the same AI provider that answered. It is deleted with the conversation.
+- Long conversations keep a short AI-written summary of their earlier part. The summary runs on the owner-chosen routing tier (light by default), not necessarily on the same AI provider that answered. It is deleted with the conversation.
 - The assistant can look back at the summaries of earlier conversations held in channels that everyone in the current channel can read. Conversations from channels the owner has marked as no-access are never used. Names are left out of what it sees. There is no opt-out.
+- Once a day the assistant summarises that day's conversations and drafts memory proposals for the owner to review; the owner can turn this off. The summary is stored on the club's server and deleted with the conversation setting's window. A proposal becomes memory only when the owner approves it. The day's conversations are sent to the AI provider to make the summary; the provider-training disclosure above applies to them too.
+- The rolling summaries and the daily digest run on a fixed routing tier (light by default) and do not check whether that tier's provider may train on what it receives. Conversation content, including from private channels, can reach a provider that trains on input.
 
 ## Task tracking
 
