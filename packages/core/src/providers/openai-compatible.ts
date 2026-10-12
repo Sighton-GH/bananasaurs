@@ -539,7 +539,22 @@ const toWireMessage = (
       })),
     };
   }
-  return { role: message.role, content: message.text };
+  const media = message.role === 'user' ? (message.media ?? []) : [];
+  if (media.length === 0) return { role: message.role, content: message.text };
+  return {
+    role: message.role,
+    content: [
+      { type: 'text', text: message.text },
+      ...media.map((m) =>
+        m.kind === 'image'
+          ? { type: 'image_url', image_url: { url: `data:${m.mediaType};base64,${m.dataBase64}` } }
+          : {
+              type: 'file',
+              file: { filename: m.name, file_data: `data:${m.mediaType};base64,${m.dataBase64}` },
+            },
+      ),
+    ],
+  };
 };
 
 export class OpenAiCompatibleProvider implements TextProvider {
@@ -632,6 +647,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
       timers.push(firstByteTimer);
       // Built before the fetch try block so a malformed tool turn keeps its
       // own error kind instead of being re-wrapped as an outage.
+      const hasPdf = request.messages.some(
+        (m) => m.role === 'user' && (m.media ?? []).some((x) => x.kind === 'pdf'),
+      );
       const body = JSON.stringify({
         model: request.model,
         messages: [
@@ -657,6 +675,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
         // ADR 0129 §8: OpenRouter reports per-call cost only when asked; NIM
         // has no such field, so its body stays unchanged.
         ...(this.id === 'openrouter' ? { usage: { include: true } } : {}),
+        ...(this.id === 'openrouter' && hasPdf
+          ? { plugins: [{ id: 'file-parser', pdf: { engine: 'native' } }] }
+          : {}),
         stream: true,
         // Usage arrives in the final chunk. NIM has no usage-include field
         // (see above), so it gets neither streaming-usage option.
