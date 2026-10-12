@@ -374,6 +374,8 @@ describe('fetchMessageContent and sendTyping (ADR 0072)', () => {
       authorId: USER,
       authorName: 'someone',
       content: 'the handbook is pinned in #welcome',
+      attachments: [],
+      embeds: [],
     });
   });
 

@@ -274,6 +274,19 @@ describe('buildConversationContext', () => {
     );
   });
 
+  it('renders attachment and embed markers inside the quote envelope (ADR 0149)', () => {
+    expect(
+      quoteEnvelopeFor({
+        authorName: 'Sam L',
+        content: 'see attached',
+        attachments: [{ fileName: 'notes.txt', contentType: 'text/plain', sizeBytes: 12_288 }],
+        embeds: [{ providerName: 'Tenor', title: 'Top Gear loser dance' }],
+      }),
+    ).toBe(
+      '[UNTRUSTED QUOTED MESSAGE author="Sam L"]\nsee attached\n[attached: notes.txt, text/plain, 12 KB]\n[embed: Tenor: Top Gear loser dance]\n[/UNTRUSTED QUOTED MESSAGE]',
+    );
+  });
+
   it('neutralises block markers in quoted content', () => {
     const envelope = quoteEnvelopeFor({
       authorName: 'Alex',

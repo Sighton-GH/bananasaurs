@@ -29,6 +29,8 @@ export type {
   DiscordRole,
   DiscordThread,
   EmojiKey,
+  FetchedAttachment,
+  FetchedEmbed,
   FetchedMessage,
   InteractionRef,
   OutgoingMessage,

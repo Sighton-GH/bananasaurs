@@ -28,6 +28,31 @@ const input = (
 });
 
 describe('buildChannelContext', () => {
+  it('renders attachment markers even when there is text (ADR 0149)', () => {
+    const { block } = buildChannelContext(
+      input({
+        messages: [
+          message({
+            messageId: '9',
+            authorName: 'Sam L',
+            content: 'The one I just pasted:',
+            attachments: [
+              {
+                attachmentId: '1',
+                fileName: 'message.txt',
+                contentType: 'text/plain',
+                sizeBytes: 1024,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(block).toContain(
+      '[Sam L, 3 min ago] The one I just pasted: [attached: message.txt, text/plain, 1 KB]',
+    );
+  });
+
   it('lists messages oldest first with speaker and age labels', () => {
     const { block, count } = buildChannelContext(
       input({
