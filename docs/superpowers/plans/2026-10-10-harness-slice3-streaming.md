@@ -84,7 +84,7 @@
 | 4 | S3-T9 Live buffer, route and progress events | Create: `packages/core/src/assistant/live-buffer.ts`; Test: `packages/core/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts` | S3-T2 |
 | 5 | S3-T10 Dashboard live text and progress | Modify: `packages/dashboard/src/api/runs.ts`; Create: `packages/dashboard/src/pages/assistant-live-buffer.tsx`; Test: `packages/dashboard/src/pages/assistant-live-buffer.test.tsx`; Modify: `packages/dashboard/src/pages/assistant-live.tsx` | S3-T9 |
 | 5 | S3-T11 State and privacy paperwork | Modify: `docs/STATE.md`; Modify: `PRIVACY.md` | S3-T1 |
-| 5 | S3-T12 Discord progress notice and daemon wiring | Modify: `apps/daemon/src/jobs/assistant.ts`; Test: `apps/daemon/src/jobs/assistant.test.ts`; Modify: `packages/core/src/jobs/kinds.ts`; Modify: `apps/daemon/src/assistant/commands.ts`; Modify: `apps/daemon/src/assistant/service.ts`; Test: `apps/daemon/src/assistant/service.test.ts`; Modify: `apps/daemon/src/runtime/guild.ts`; Modify: `apps/daemon/src/runtime/daemon.ts` | S3-T2, S3-T8 |
+| 5 | S3-T12 Discord progress notice and daemon wiring | Modify: `apps/daemon/src/jobs/assistant.ts`; Test: `apps/daemon/src/jobs/assistant.test.ts`; Modify: `packages/core/src/jobs/kinds.ts`; Modify: `apps/daemon/src/assistant/commands.ts`; Modify: `apps/daemon/src/assistant/service.ts`; Test: `apps/daemon/src/assistant/service.test.ts`; Modify: `apps/daemon/src/assistant/provider-config.ts`; Test: `apps/daemon/src/assistant/provider-config.test.ts`; Modify: `apps/daemon/src/runtime/guild.ts` | S3-T2, S3-T8 |
 
 ### S3-T1: ADR 0148   ·   Wave 1
 **Owns:** Create: `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md`
@@ -1831,30 +1831,397 @@ Anchor: `assistant-live.tsx` `StepLog`'s `<Card title="Step log">` return (lines
 **Reads (do not edit):** `docs/decisions/0148-assistant-streaming-timeouts-live-progress.md`
 **Interfaces:** Consumes: ADR 0148 numbers · Produces: `docs/STATE.md` entry after the first `---` in Slice 1 style; PRIVACY.md thinking line
 
-- [ ] **Step 1: Write the failing test** — no code test; the check is `grep -c "streaming" docs/STATE.md` returns 0 before the edit.
-- [ ] **Step 2: Run it and watch it fail** — `grep -c "streaming" docs/STATE.md` · Expected: FAIL with count 0
-- [ ] **Step 3: Implement** — anchor: `docs/STATE.md` top of file, after the first `---`, same bullet style as the Slice 1 entry (line 7). Insert:
+- [ ] **Step 1: Write the failing test** — no code test; the check is `grep -c "0148" docs/STATE.md` returns 0 before the edit.
+- [ ] **Step 2: Run it and watch it fail** — `grep -c "0148" docs/STATE.md` · Expected: FAIL with count 0
+- [ ] **Step 3: Implement** — anchor: `docs/STATE.md` top of file, after the first `---` (line 5), same bullet style as the Slice 6 entry (starts line 7). Insert before that entry:
 
 ```md
 **Assistant streaming (Slice 3, ADR 0148, no migration).**
 
 - **Streaming:** OpenRouter/NIM send `stream: true` with usage; Gemini uses `:streamGenerateContent?alt=sse`. SSE comments ignored, tool args joined per index, thought parts kept apart, raw parts echoed for signatures.
 - **Timeouts:** idle 45 s (`assistant.providerIdleTimeoutMs`) re-armed per byte, ceiling 300 s (`assistant.providerMaxCallMs`), first byte 60 s (`assistant.providerTimeoutMs`). `assistant.maxOutputTokens` default 4,096.
-- **Finish reasons:** mid-stream `error` is retryable and never delivered; `length` with text adds `-# (cut short)`; `length` empty keeps the empty-answer path.
-- **Live dashboard:** per-run buffer (8,000 chars answer plus 8,000 thinking, dropped at finish), `GET /api/assistant/runs/:runId/live`, `model-progress` steps at most every 3 s, thinking saved per round under trace `reasoning`.
+- **Finish reasons:** mid-stream `error` is retryable and its partial text is discarded; `length`/`MAX_TOKENS` with text adds a code-built cut-short marker after the guard; `length` empty keeps the empty-answer path.
+- **Live dashboard:** per-run buffer (8,000 chars answer plus 8,000 thinking, dropped at finish), `GET /api/assistant/runs/:runId/live`, `model-progress` steps at most every 3 s on one run-shared throttle, thinking saved per round under trace `reasoning`. Discord shows one code-built progress notice per run (posted, edited, deleted; cursor-idempotent).
+- **Thinking gate:** a thinking parameter never goes out when the entry capabilities forbid it (unknown models get none); `ChainEntry.capabilities` is optional and store-populated (contracts §3 deviation noted).
 ```
 
-Anchor: `PRIVACY.md` the step-log bullet (the `- The bot also keeps a step log…` line). Append after it: `- The model's thinking text is shown live on the dashboard while it answers and is saved with the trace, capped at 8,000 characters per run. It can echo member messages. It is shown only to accounts that can read traces and is deleted with the conversation.`
-- [ ] **Step 4: Run it and watch it pass** — `grep -c "streaming" docs/STATE.md` · Expected: PASS with count ≥ 1
+Anchor: `PRIVACY.md` (repo root) the step-log bullet (line 103, the `- The bot also keeps a step log…` line). Append after it: `- The model's thinking text is shown live on the dashboard while it answers and is saved with the trace, capped at 8,000 characters per run. It can echo member messages. It is shown only to accounts that can read traces and is deleted with the conversation. A Discord progress notice ("Working on it…") carries no message text and cannot ping.`
+- [ ] **Step 4: Run it and watch it pass** — `grep -c "0148" docs/STATE.md` · Expected: PASS with count ≥ 1
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write docs/STATE.md PRIVACY.md` then `npx eslint docs/STATE.md PRIVACY.md` · exit 0
 - [ ] **Step 7: Commit** — `git add docs/STATE.md PRIVACY.md && git commit -m "Slice 3 T11: state and privacy paperwork"`
 
 **Done when:** STATE.md carries the Slice 3 entry in Slice 1 style; PRIVACY.md carries the thinking line.
 
+### S3-T12: Discord progress notice and daemon wiring   ·   Wave 5
+**Owns:** Modify: `apps/daemon/src/jobs/assistant.ts`; Test: `apps/daemon/src/jobs/assistant.test.ts`; Modify: `packages/core/src/jobs/kinds.ts`; Modify: `apps/daemon/src/assistant/commands.ts`; Modify: `apps/daemon/src/assistant/service.ts`; Test: `apps/daemon/src/assistant/service.test.ts`; Modify: `apps/daemon/src/assistant/provider-config.ts`; Test: `apps/daemon/src/assistant/provider-config.test.ts`; Modify: `apps/daemon/src/runtime/guild.ts`
+**Reads (do not edit):** `packages/core/src/discord/port.ts` (lines 99–127 `OutgoingMessage`, line 327 `editMessage`, line 367 `deleteMessage`), `apps/daemon/src/assistant/model-capabilities.ts`, `apps/daemon/src/assistant/openrouter-models.ts` (lines 19–23 `OpenRouterModelCatalogue`)
+**Interfaces:** Consumes: `StreamProgress` from S3-T2; run-shared `onProgress` from S3-T8 · Produces: one code-built Discord progress notice per channel run (post → edit at most every 10 s → best-effort delete), idempotent on the staged cursor; store-populated `ChainEntry.capabilities`; service `onProgress` passthrough; typing ceiling from settings; trace `reasoning` persistence
+
+Design (why this shape): the brief's design check needs progress to survive the escalation hand-over as one edited message, never a second, with a durable idempotency key and ping-free text. The loop already emits one run-shared throttled stream (S3-T8); the job turns it into Discord edits. Posting lazily on the first progress callback means cooled/skipped runs (no provider bytes, no callbacks) never post. The notice lives inside the run's existing reply scope — not an autonomous write — and every post/edit carries `allowedMentions: { parse: [] }` with text built only from the elapsed clock, never model or member text.
+
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/jobs/assistant.test.ts`, using `baseDeps` (lines 103–121), `payload` (lines 60–65, mention source), `context()` (lines 84–90) and `service()` (lines 92–101). The handler deps gain three optional fields (absent keeps every existing test compiling and typing-only): `editMessage`, `deleteMessage`, `progressCeilingMs`. Add:
+
+```ts
+it('posts one progress notice and edits it, never posting twice', async () => {
+  const svc = service(async (input) => {
+    input.onProgress?.({ round: 1, answerChars: 100, reasoningChars: 0, keepalives: 0, msSinceLastByte: 50 });
+    input.onProgress?.({ round: 2, answerChars: 200, reasoningChars: 10, keepalives: 1, msSinceLastByte: 60 });
+    return {
+      ok: true as const,
+      outcome: 'answered' as const,
+      content: 'done',
+      model: 'm',
+      attempts: [],
+      toolCalls: [],
+      usage: {},
+      guard: { removed: [] },
+      sources: [],
+      flags: [],
+    };
+  });
+  const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+  const noticePosts: { channelId: string; message: OutgoingMessage }[] = [];
+  const send = deps.send;
+  const edits: { channelId: string; messageId: string; message: OutgoingMessage }[] = [];
+  const deleted: { channelId: string; messageId: string }[] = [];
+  const handler = assistantInvokeHandler({
+    ...deps,
+    send: async (channelId: string, message: OutgoingMessage) => {
+      if (message.content.startsWith('Working on it')) {
+        noticePosts.push({ channelId, message });
+        return { channelId, messageId: '777777777777777777' };
+      }
+      return send(channelId, message);
+    },
+    editMessage: async (channelId, messageId, message) => {
+      edits.push({ channelId, messageId, message });
+    },
+    deleteMessage: async (channelId, messageId) => {
+      deleted.push({ channelId, messageId });
+    },
+  });
+  await handler.run(
+    { ...payload, channelId: '555555555555555555', messageId: '666666666666666666' },
+    context({ attempts: 1 }),
+  );
+  expect(noticePosts).toHaveLength(1);
+  expect(noticePosts[0]?.message.content).toMatch(/^Working on it… \d+s$/);
+  expect(noticePosts[0]?.message.allowedMentions).toEqual({ parse: [] });
+  expect(edits.length).toBeGreaterThanOrEqual(1);
+  expect(edits.every((e) => e.messageId === '777777777777777777')).toBe(true);
+  for (const e of edits) {
+    expect(e.message.content).toMatch(/^Working on it… \d+s$/);
+    expect(e.message.allowedMentions).toEqual({ parse: [] });
+  }
+  expect(JSON.stringify({ noticePosts, edits })).not.toContain('model text');
+  expect(deleted).toEqual([{ channelId: '555555555555555555', messageId: '777777777777777777' }]);
+});
+```
+
+(check `AssistantInvocationResult`'s exact success shape in the file before shipping — use the shape the existing success-path tests build.)
+
+```ts
+it('a retry carrying progressMessageId edits instead of posting again', async () => {
+  // First attempt posts the notice and stages invoke-done; second attempt
+  // reuses the cursor id. Drive handler.run twice: once with cursor null
+  // (service stub fires onProgress), capturing saveCursor; once with the
+  // saved cursor (service stub must NOT be called again for invoke — assert
+  // via the service calls array — but delivery re-runs and edits).
+});
+```
+
+(write it with two explicit `handler.run` calls sharing one `saveCursor` capture: after run 1, parse the saved cursor JSON and assert it carries `progressMessageId`; run 2 passes `cursor` back in and asserts `sent` gained no second `Working on it` post while `edits` grew. If run 1's invoke succeeds, run 2 skips invoke by stage rank as today — the test then pins delivery-phase reuse. Also add: without `editMessage`/`deleteMessage` deps (plain `baseDeps`), the same invoke posts no notice and still answers — the typing-only fallback.)
+
+```ts
+it('no channel means no progress notice', async () => {
+  // payload without channelId (slash-style): service fires onProgress, but
+  // nothing is posted or edited; the answer path is unchanged.
+});
+```
+
+Break-it step (idempotency/pings are permission-adjacent): temporarily change the notice builder to include the model text, watch the `not.toContain('model text')` assertion fail, restore. Record this in the commit message.
+
+In `apps/daemon/src/assistant/service.test.ts`, using `serviceWith` (lines 385–398), `usable` (line ~322), `ask` (line ~298) and `fakeProvider` (line 301), add:
+
+```ts
+it('forwards entry capabilities and input onProgress into provider requests', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const provider: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      seen.push(req);
+      req.onProgress?.({ round: 0, answerChars: 5, reasoningChars: 0, keepalives: 0, msSinceLastByte: 10 });
+      return { text: 'ok', model: 'm' };
+    },
+  };
+  const progressed: StreamProgress[] = [];
+  const service = serviceWith(() => [
+    usable(provider, {
+      capabilities: { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' },
+    }),
+  ]);
+  const result = await service.invoke({
+    ...ask,
+    invocationId: 'int-progress-1',
+    onProgress: (p: StreamProgress) => { progressed.push(p); },
+  });
+  expect(result).toMatchObject({ ok: true });
+  expect(seen[0]?.capabilities).toEqual({ tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' });
+  expect(progressed).toHaveLength(1);
+  expect(progressed[0]).toMatchObject({ round: 1, answerChars: 5 });
+});
+```
+
+(add `GenerateTextRequest`, `StreamProgress`, `TextProvider` to that file's existing type imports from `@bananasaurs/core`.) In `apps/daemon/src/assistant/provider-config.test.ts`, in the `describe('chain pool and tier settings (ADR 0143)')` block (line 709) style, add: a store built with `modelCatalogue: { peek: () => undefined, refresh: async () => undefined }` resolves a gemini env-seed entry whose `capabilities` equal `geminiCapabilities('gemini-3.8-flash')` (thinking `levels`), and an openrouter entry for an unlisted model whose `capabilities` equal `TEXT_AND_TOOLS_ONLY` (use that file's existing store-construction helper and `openMigratedTestDatabase` pattern).
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/provider-config.test.ts --maxWorkers=1` · Expected: FAIL with unknown `onProgress` input, unknown `editMessage` dep, missing `progressMessageId`, and entries without `capabilities`
+- [ ] **Step 3: Implement** — six small additive edits, in file order:
+
+(a) `packages/core/src/jobs/kinds.ts`: extend `assistantInvokeCursor` (lines 604–620) after `postedMessageIds` (lines 611–613):
+
+```ts
+  /**
+   * Slice 3: the Discord progress notice for this run, so a retry edits
+   * instead of posting a second one (hard rule 6). Absent on pre-Slice-3
+   * rows and on runs that never streamed progress.
+   */
+  progressMessageId: z.string().min(1).optional(),
+```
+
+(b) `apps/daemon/src/assistant/commands.ts`: extend `AssistantInvocation` (lines 35–107) after `recorder` (lines 105–106):
+
+```ts
+  /**
+   * Slice 3: throttled stream progress for the Discord notice. Absent means
+   * no notice. Metadata only — never model or member text.
+   */
+  readonly onProgress?: ((progress: StreamProgress) => void) | undefined;
+```
+
+(import `type StreamProgress` from `@bananasaurs/core` alongside the existing core type imports). Extend `AssistantTraceDetail` (lines 164–192) after `guard` (line 170):
+
+```ts
+  /**
+   * Slice 3: saved thinking per round (OpenRouter reasoning, Gemini thought
+   * summaries), each capped at 8,000 chars, at most 12. Written to the stored
+   * trace; shown collapsed to trace-capable viewers only.
+   */
+  readonly reasoning?: readonly { readonly round: number; readonly text: string }[] | undefined;
+```
+
+(c) `apps/daemon/src/assistant/service.ts`: add a trailing optional factory parameter after `webSearch` (lines 337–342):
+
+```ts
+  webSearch: (guildId: string) => WebSearchRun | undefined = () => undefined,
+  /**
+   * Slice 3: the OpenRouter model catalogue for per-entry capabilities.
+   * Absent (tests, seed paths) means non-Gemini entries resolve to
+   * text-plus-tools-only and Gemini entries to their table row.
+   */
+  modelCatalogue?: OpenRouterModelCatalogue | undefined,
+```
+
+(import `type OpenRouterModelCatalogue` from `./openrouter-models.js` and `capabilitiesForEntry` from `./model-capabilities.js`, `getLiveBuffer` from `@bananasaurs/core`). In `loopArgs` (lines 1412–1460), add:
+
+```ts
+        recorder,
+        ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
+        live: getLiveBuffer(),
+        now,
+```
+
+In `sink.detail` (lines 1556+), where `finishReason` is spread (line 1576), add:
+
+```ts
+        ...(loop.reasoning.length === 0
+          ? {}
+          : {
+              reasoning: loop.reasoning
+                .slice(0, 12)
+                .map((r) => ({ round: r.round, text: r.text.slice(0, 8000) })),
+            }),
+```
+
+(d) `apps/daemon/src/assistant/provider-config.ts`: import `capabilitiesForEntry` plus `type ModelCapabilities`/`GeminiModelProfile` as needed, and in `chain()` (lines 527–538) populate capabilities on every resolved entry:
+
+```ts
+    chain() {
+      const catalogue = options.modelCatalogue;
+      const emptyCatalogue: OpenRouterModelCatalogue =
+        catalogue ?? { peek: () => undefined, refresh: async () => undefined };
+      return resolveModelChain({
+        instance,
+        config: envBase ?? { AI_PROVIDER: 'off', AI_PROFILE_COST_CLASS: 'unknown' },
+        openKey: (sealed) => open(key, sealed),
+        eligibility: (providerId) => eligibilityRepo.findEligibility(instance, providerId),
+        makeProvider,
+        ...(options.providerTimeoutMs === undefined
+          ? {}
+          : { providerTimeoutMs: options.providerTimeoutMs }),
+      }).map((entry) => ({
+        ...entry,
+        capabilities: capabilitiesForEntry(
+          { providerId: entry.providerId, model: entry.model },
+          emptyCatalogue,
+        ),
+      }));
+    },
+```
+
+`capabilitiesForEntry` never returns undefined (unlisted → `TEXT_AND_TOOLS_ONLY`), so the spread always sets the optional field. Extend the store options type (lines 284–289) with `readonly providerIdleTimeoutMs?: () => number; readonly providerMaxCallMs?: () => number;` and forward both into `resolveModelChain` beside `providerTimeoutMs` (lines 534–536) — S3-T8 added the resolve readers; this wires the live settings. The daemon composition root already passes `providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs')` (`daemon.ts` lines 226–230): extend that call with `providerIdleTimeoutMs: () => instanceSettings.get('assistant.providerIdleTimeoutMs')` and `providerMaxCallMs: () => instanceSettings.get('assistant.providerMaxCallMs')`. daemon.ts itself needs no other change (no new threading: the catalogue was already there).
+
+(e) `apps/daemon/src/jobs/assistant.ts`, in order:
+
+1. Handler deps (lines 330–410): add after `send` (line 339):
+
+```ts
+  /**
+   * Slice 3: edit and delete for the one progress notice. Optional so
+   * existing callers keep compiling; absent means the typing-only fallback
+   * (no notice is posted).
+   */
+  editMessage?:
+    | ((channelId: string, messageId: string, message: OutgoingMessage) => Promise<void>)
+    | undefined;
+  deleteMessage?: ((channelId: string, messageId: string) => Promise<void>) | undefined;
+  /** Slice 3: typing ceiling; absent means 300,000 (the hard ceiling). */
+  progressCeilingMs?: (() => number) | undefined;
+```
+
+2. Typing call (lines 725–739): add `maxMs: deps.progressCeilingMs?.() ?? 300_000` to the `startTyping` options. The existing `finally { stopTyping(); }` after invoke (lines 1099–1101) plus the run-end backstop (line 1381) already stop it — no stop-call move needed.
+
+3. `StagedCursor` (lines 94–102): add `readonly progressMessageId?: string | undefined;`. `saveStaged` (lines 649–661): add `...(progressMessageId === undefined ? {} : { progressMessageId })` to the saved object. Restore beside lines 665–669: `let progressMessageId: string | undefined = prior?.progressMessageId;`.
+
+4. Before `result = await deps.service.invoke({` (line 1067), add the progress manager (after the `recorder` is built, so edits and ledger share one clock):
+
+```ts
+        // Slice 3: one code-built progress notice per channel run. Posted
+        // lazily on the first progress callback, so cooled or skipped runs
+        // (no bytes, no callbacks) never post. Edited at most every 10 s;
+        // the text is clock-built and never carries model or member text.
+        let lastProgressEdit = 0;
+        const progressText = (): string =>
+          `Working on it… ${String(Math.max(0, Math.floor((deps.now() - startedAt) / 1000)))}s`;
+        const onProgress = async (progress: StreamProgress): Promise<void> => {
+          void progress;
+          if (
+            payload.source !== 'mention' ||
+            payload.channelId === undefined ||
+            deps.editMessage === undefined
+          )
+            return;
+          try {
+            if (!(await writeAllowedNow())) return;
+          } catch {
+            return; // guild-not-ready retry: skip this edit, keep streaming
+          }
+          try {
+            if (progressMessageId === undefined) {
+              const ref = await deps.send(payload.channelId, {
+                content: progressText(),
+                allowedMentions: { parse: [] },
+              });
+              if (ref?.messageId !== undefined) progressMessageId = ref.messageId;
+              lastProgressEdit = deps.now();
+            } else if (deps.now() - lastProgressEdit >= 10_000) {
+              lastProgressEdit = deps.now();
+              await deps.editMessage(payload.channelId, progressMessageId, {
+                content: progressText(),
+                allowedMentions: { parse: [] },
+              });
+            }
+          } catch (err) {
+            deps.logger.warn(
+              safeLogFields({
+                component: 'assistant-job',
+                guildId: deps.guildId,
+                runId: payload.invocationId,
+                err,
+              }),
+              'assistant progress notice failed; continuing',
+            );
+          }
+        };
+```
+
+(`StreamProgress` type imported from core; the first post sets `lastProgressEdit`? Set `lastProgressEdit = deps.now()` on post too, so the first edit waits a full 10 s — add that line. The callback is async but the loop calls it synchronously: `input.onProgress?.(...)` in the loop ignores the promise — floating promises must not crash: the body catches everything, and `await` inside try/catch never rejects out. State that in a comment.)
+
+Pass `...(payload.channelId === undefined ? {} : { onProgress })` — no: pass unconditionally? The callback self-guards on source/channel. Pass `onProgress` in the `service.invoke` object after `recorder` (lines 1096–1097):
+
+```ts
+            // ADR 0129 §6: the service records its context and model steps.
+            recorder,
+            // Slice 3: throttled stream progress for the Discord notice.
+            onProgress: (p) => { void onProgress(p); },
+```
+
+5. After delivery (`saveStaged('answered', result)` at line 1596), delete the notice best-effort when both id and channel exist:
+
+```ts
+      if (progressMessageId !== undefined && payload.channelId !== undefined && deps.deleteMessage !== undefined) {
+        try {
+          await deps.deleteMessage(payload.channelId, progressMessageId);
+        } catch (err) {
+          deps.logger.warn(
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              runId: payload.invocationId,
+              err,
+            }),
+            'assistant progress notice delete failed; continuing',
+          );
+        }
+      }
+```
+
+A retry with `prior.progressMessageId` reuses the id (edits, never a second post); a retry without prior (invoke threw mid-stream) may leave one stale static notice — documented edge, ping-free. A delete failure never fails the job.
+
+6. `rebuildDetail` (lines 132–230): after the `guard` mapping (lines 195–199), add:
+
+```ts
+  ...(detail.reasoning === undefined
+    ? {}
+    : {
+        reasoning: detail.reasoning
+          .slice(0, 12)
+          .map((r) => ({ round: r.round, text: r.text.slice(0, 8000) })),
+      }),
+```
+
+At each `traceRepo.insertTrace` call in this file (the refused path around line 683 and the invoke path), the trace literal gains `...(rebuilt.reasoning === undefined ? {} : { reasoning: rebuilt.reasoning })` from the rebuilt detail — find each call site and extend it; the trace schema (S3-T5) accepts at most 12 entries of at most 8,000 chars.
+
+7. `ledgerForRun` (lines 440–470): pass the live buffer into the recorder: add `live: getLiveBuffer()` to the `createRunRecorder` call (import from `@bananasaurs/core`) — S3-T9 added the optional dep; the `finished` event now drops the run id.
+
+(f) `apps/daemon/src/runtime/guild.ts`: in the `assistantInvokeHandler({...})` call (lines 1299–1334), add after `send` (line 1304):
+
+```ts
+        editMessage: (channelId, messageId, message) =>
+          discord.editMessage(guildId, { channelId, messageId }, message),
+        deleteMessage: (channelId, messageId) =>
+          discord.deleteMessage(guildId, { channelId, messageId }, 'assistant progress notice done'),
+```
+
+(the `discord` port object is the same one line 1204 uses for `editMessage`; `deleteMessage` takes a reason per the port type). Add beside the `retryDelaysMs` settings spread (lines 1308–1312):
+
+```ts
+        ...(settings === undefined
+          ? {}
+          : { progressCeilingMs: () => settings.get('assistant.providerMaxCallMs') }),
+```
+
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/jobs/assistant.test.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/assistant/commands.test.ts --maxWorkers=1` · Expected: PASS (commands.test.ts guards the `AssistantInvocation`/`AssistantTraceDetail` shapes)
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/runtime/guild.ts` then `npx eslint apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/runtime/guild.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/jobs/assistant.ts apps/daemon/src/jobs/assistant.test.ts packages/core/src/jobs/kinds.ts apps/daemon/src/assistant/commands.ts apps/daemon/src/assistant/service.ts apps/daemon/src/assistant/service.test.ts apps/daemon/src/assistant/provider-config.ts apps/daemon/src/assistant/provider-config.test.ts apps/daemon/src/runtime/guild.ts && git commit -m "Slice 3 T12: Discord progress notice and daemon wiring (break-it: notice text assertion)"`
+
+**Done when:** one `Working on it… Ns` notice is posted per channel run, edited at most every 10 s with `allowedMentions: { parse: [] }`, deleted after delivery, and never contains model or member text (break-it test pins it); a staged `progressMessageId` makes retries edit instead of posting; no-channel and no-wiring runs stay typing-only; cooled/skipped runs post nothing; entries carry store-resolved capabilities; typing survives to the ceiling; trace `reasoning` persists capped.
+
 ## Slice gate (orchestrator only, after the last wave)
 npm run typecheck        (≈1.7 GB peak — run alone)
 npm run lint
 npx vitest run --maxWorkers=1
 ## After merge (owner)
-Deploy order: stop → build → start (no migration). On the dashboard Tuning page, check the idle timeout (45 s), max call time (300 s) and max answer length (4,096 tokens); leave the rest as is. In Discord, ask a long question and watch the run's Step log show `Receiving…` lines, then open the trace and check the saved thinking under `reasoning`.
+Deploy order: stop → build → start (no migration). On the dashboard Tuning page, check the idle timeout (45 s), max call time (300 s) and max answer length (4,096 tokens); leave the rest as is. In Discord, ask a long question and watch for one `Working on it…` notice that edits in place and disappears when the answer lands, then open the run's Step log for the `Receiving…` lines and the trace for the saved thinking under `reasoning`.
