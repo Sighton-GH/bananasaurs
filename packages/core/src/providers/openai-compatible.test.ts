@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { GenerateTextRequest } from './contracts.js';
 import { ProviderError } from './errors.js';
 import { createNvidiaNimProvider, createOpenRouterProvider } from './openai-compatible.js';
 
@@ -810,7 +811,7 @@ describe('OpenAI-compatible providers', () => {
       expect(cause.message).toContain('(redacted)');
     });
 
-    it('redacts a nested Bearer cause and preserves name and code', async () => {
+    it('discards the original nested cause and preserves the outer diagnostic code', async () => {
       const key = 'sk-or-nested';
       const inner = Object.assign(new Error(`invalid token Bearer ${key}`), { code: 'EAUTH' });
       const outer = Object.assign(new Error('request failed', { cause: inner }), {
@@ -1215,6 +1216,9 @@ describe('round 2 adversarial regressions', () => {
   it.each(['string', 'stack', 'frozen', 'object', 'getter'])(
     'copies and sanitizes %s rejection without mutating the original',
     async (kind) => {
+      const hostileGetter = vi.fn(() => {
+        throw new Error(key);
+      });
       const original =
         kind === 'string'
           ? key
@@ -1222,9 +1226,7 @@ describe('round 2 adversarial regressions', () => {
             ? { message: key, cause: key }
             : kind === 'getter'
               ? Object.defineProperty({}, 'message', {
-                  get() {
-                    throw new Error(key);
-                  },
+                  get: hostileGetter,
                 })
               : new Error(key, { cause: new Error(key) });
       if (original instanceof Error) {
@@ -1246,6 +1248,11 @@ describe('round 2 adversarial regressions', () => {
       expect(JSON.stringify(error)).not.toContain(key);
       expect(cause.cause).toBeUndefined();
       if (original instanceof Error) expect(original.message).toBe(key);
+      if (kind === 'string' || kind === 'object') expect(cause.message).toBe('(redacted)');
+      if (kind === 'getter') {
+        expect(cause.message).toBe('request failed');
+        expect(hostileGetter).not.toHaveBeenCalled();
+      }
     },
   );
   it('sanitizes Zod diagnostics before exposing their message or stack', async () => {
@@ -1382,6 +1389,7 @@ describe('round 2 adversarial regressions', () => {
     ).resolves.toMatchObject({ text: 'ok' });
   });
   it('first-byte deadline remains active after headers and ignores empty chunks', async () => {
+    const started = Date.now();
     const cancel = vi.fn();
     const body = new ReadableStream<Uint8Array>({
       start(c) {
@@ -1399,6 +1407,7 @@ describe('round 2 adversarial regressions', () => {
       .generateText(req)
       .catch((e: unknown) => e);
     expect(e).toMatchObject({ kind: 'timeout' });
+    expect(Date.now() - started).toBeLessThan(80);
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(body.locked).toBe(false);
   });
@@ -1442,6 +1451,27 @@ describe('round 2 adversarial regressions', () => {
     expect(res.toolCalls).toEqual([
       { id: 'a', name: 'f', args: { x: 1 } },
       { id: 'b', name: 'f', args: { y: 2 } },
+    ]);
+  });
+  it('keeps reused indexed same-name calls with different ids distinct', async () => {
+    const res = await generate(
+      sse({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'a', function: { name: 'f', arguments: '{"x":1}' } },
+                { index: 0, id: 'b', function: { name: 'f', arguments: '{"x":2}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    );
+    expect(res.toolCalls).toEqual([
+      { id: 'a', name: 'f', args: { x: 1 } },
+      { id: 'b', name: 'f', args: { x: 2 } },
     ]);
   });
   it('keeps two no-index same-name calls without ids distinct', async () => {
@@ -1489,7 +1519,7 @@ describe('round 2 adversarial regressions', () => {
   it('throttles ten one-second chunks to four progress emissions', async () => {
     vi.useFakeTimers();
     try {
-      const onProgress = vi.fn();
+      const onProgress = vi.fn<NonNullable<GenerateTextRequest['onProgress']>>();
       let timer: ReturnType<typeof setInterval>;
       const body = new ReadableStream<Uint8Array>({
         start(c) {

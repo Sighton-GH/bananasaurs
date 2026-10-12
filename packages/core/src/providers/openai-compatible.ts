@@ -672,13 +672,17 @@ export class OpenAiCompatibleProvider implements TextProvider {
         const now = Date.now();
         if (lastEmitAt !== 0 && now - lastEmitAt < 3_000) return; // at most every 3 s
         lastEmitAt = now;
-        request.onProgress({
-          round: 0, // the tool loop stamps the real round
-          answerChars,
-          reasoningChars,
-          keepalives,
-          msSinceLastByte: Math.max(0, now - lastByteAt),
-        });
+        try {
+          request.onProgress({
+            round: 0, // the tool loop stamps the real round
+            answerChars,
+            reasoningChars,
+            keepalives,
+            msSinceLastByte: Math.max(0, now - lastByteAt),
+          });
+        } catch (error) {
+          throw sanitizeCause(error, this.apiKey);
+        }
       };
       const events = parseSseStream(byteChunks());
       // Tracks whether the generator is parked at a yield: only then can
@@ -769,7 +773,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
             for (const call of delta.tool_calls ?? []) {
               const index = call.index ?? 0;
               const sameId =
-                call.id === undefined
+                call.id === undefined || call.index !== undefined
                   ? undefined
                   : toolFragments.findLast((frag) => frag.id === call.id);
               const open = sameId ?? toolFragments.findLast((frag) => frag.index === index);
@@ -802,8 +806,13 @@ export class OpenAiCompatibleProvider implements TextProvider {
               }
             }
           }
-          if (deltaText !== '' || deltaReasoning !== '')
-            request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
+          if (deltaText !== '' || deltaReasoning !== '') {
+            try {
+              request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
+            } catch (error) {
+              throw sanitizeCause(error, this.apiKey);
+            }
+          }
           emitProgress();
         }
       } catch (error) {
@@ -822,7 +831,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
         // Our first-byte/idle/ceiling timers abort with TimeoutError →
         // retryable timeout (same mapping as the fetch catch). Errors thrown
         // above (mid-stream outage, invalid chunk) pass through unchanged.
-        if (error instanceof ProviderError) throw sanitizeCause(error, this.apiKey);
+        if (error instanceof ProviderError) throw error;
         if (isTimeoutError(error))
           throw new ProviderError('timeout', `${this.id} stream timed out`, true, {
             cause: sanitizeCause(error, this.apiKey),
