@@ -600,21 +600,24 @@ it('streams deltas, ignores keepalives, and joins fragmented tool args', async (
 
 it('omits the reasoning request without capabilities or without reasoning support', async () => {
   const payload = { choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }] };
-  const mk = () => vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse(payload));
-  const noCaps = createOpenRouterProvider({ apiKey: 'secret', fetch: mk() });
-  await noCaps.generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] });
-  expect('reasoning' in JSON.parse(noCapsFetchBody())).toBe(false);
-  const denied = createOpenRouterProvider({ apiKey: 'secret', fetch: mk() });
-  await denied.generateText({
+  const fetchNoCaps = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse(payload));
+  await createOpenRouterProvider({ apiKey: 'secret', fetch: fetchNoCaps }).generateText({
+    model: 'm',
+    messages: [{ role: 'user', text: 'hi' }],
+  });
+  expect(
+    'reasoning' in (JSON.parse(fetchNoCaps.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>),
+  ).toBe(false);
+  const fetchDenied = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse(payload));
+  await createOpenRouterProvider({ apiKey: 'secret', fetch: fetchDenied }).generateText({
     model: 'm',
     messages: [{ role: 'user', text: 'hi' }],
     capabilities: { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' },
   });
-  expect('reasoning' in JSON.parse(deniedFetchBody())).toBe(false);
+  expect(
+    'reasoning' in (JSON.parse(fetchDenied.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>),
+  ).toBe(false);
 });
-```
-
-(write it with two explicit fetch mocks and read each body from its own mock — the sketch above abbreviates; the real test asserts on `fetch.mock.calls[0][1].body` per provider). Also: NIM never sends `reasoning` even with reasoning capabilities (it has no such field):
 
 ```ts
 it('nim never sends a reasoning request field', async () => {
@@ -973,7 +976,7 @@ After the stream ends, assemble in index order and finish with the existing mapp
 }
 ```
 
-Keep every existing error-mapping branch and every ProviderError field (no `quotaScope`/`retryAfterMs`/`learnedLimit` on these paths today — the non-ok path already sets them where it did). `length` passes through as `finishReason` with text, reasoning and usage intact so S3-T8 can append `-# (cut short)`. Delete the old `response.json()` success path (lines 408–430) and the old non-streaming assembly (lines 431–488), replaced by the above.
+Keep every existing error-mapping branch and every ProviderError field (no `quotaScope`/`retryAfterMs`/`learnedLimit` on these paths today — the non-ok path already sets them where it did). `length` passes through as `finishReason` with text, reasoning and usage intact so S3-T8 can append `\n\n-# (cut short)`. Delete the old `response.json()` success path (lines 408–430) and the old non-streaming assembly (lines 431–488), replaced by the above.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/openai-compatible.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` then `npx eslint packages/core/src/providers/openai-compatible.ts packages/core/src/providers/openai-compatible.test.ts` · exit 0
@@ -1263,7 +1266,7 @@ return {
 };
 ```
 
-`MAX_TOKENS` with text returns with text, reasoning and usage intact so S3-T8 can append `-# (cut short)`. Keep every ProviderError field on every path.
+`MAX_TOKENS` with text returns with text, reasoning and usage intact so S3-T8 can append `\n\n-# (cut short)`. Keep every ProviderError field on every path.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
@@ -1274,7 +1277,7 @@ return {
 ### S3-T8: Tool loop wiring, finish reasons, chain timeouts   ·   Wave 4
 **Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/assistant/model-chain.ts`; Test: `apps/daemon/src/assistant/model-chain.test.ts`
 **Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`StreamProgress`, `StreamChunk`, `onProgress`, `onChunk`), `apps/daemon/src/assistant/run-recorder.ts`
-**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: `runToolLoop` input gains `onProgress`, `live`; requests carry `entry.capabilities`; one shared per-run progress throttle across entries and the escalation hand-over; `LoopResult.reasoning` per round; `-# (cut short)` on `length`/`MAX_TOKENS`; `ChainEntry` gains optional `capabilities`; `makeProvider`/`resolveModelChain` forward idle/ceiling timeouts
+**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: `runToolLoop` input gains `onProgress`, `live`; requests carry `entry.capabilities`; one shared per-run progress throttle across entries and the escalation hand-over; `LoopResult.reasoning` per round; cut-short marker on `length`/`MAX_TOKENS`; `ChainEntry` gains optional `capabilities`; `makeProvider`/`resolveModelChain` forward idle/ceiling timeouts
 
 - [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/tool-loop.test.ts`, using its `scripted` provider helper, `entry()` (lines 57–69), `loopTools` (lines 77–81), `okResult` and `NOW` (top of file, lines 27–100). Note the required `runToolLoop` inputs (`chain`, `systemInstruction`, `protectedText`, `history`, `userText`, `initialHandles`, `now`): every test below passes all of them explicitly.
 
@@ -1503,8 +1506,8 @@ Thread `reasoning: [...reasoning]` into both `runToolLoop` return sites (the ans
       ...(entry.capabilities === undefined ? {} : { capabilities: entry.capabilities }),
       onProgress: (progress) => deps.emitProgress(round, progress),
       onChunk: (chunk) => {
-        if (input.runId !== undefined && input.live !== undefined)
-          input.live.append(input.runId, chunk.text, chunk.reasoning);
+        if (deps.runId !== undefined && deps.live !== undefined)
+          deps.live.append(deps.runId, chunk.text, chunk.reasoning);
       },
     };
 ```
@@ -1738,7 +1741,7 @@ describe('LiveText', () => {
 });
 ```
 
-and in `packages/dashboard/src/pages/assistant-tuning.test.tsx` extend the `renders the five group headings` test style: the idle-timeout and max-call rows render with defaults 45 s and 300 s, and saving the idle timeout converts seconds to milliseconds. (Moved to S3-T4: that task owns the tuning test and makes exactly this fixture change. This task touches no tuning file.)
+(Tuning rows for the two new timeouts are S3-T4's fixture change; this task touches no tuning file.)
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/dashboard/src/pages/assistant-live-buffer.test.tsx --maxWorkers=1` · Expected: FAIL with cannot find module `./assistant-live-buffer.js`
 - [ ] **Step 3: Implement** — anchor: `packages/dashboard/src/api/runs.ts` `runEventsUrl` (lines 13–14) and `describeRunEvent` (line 36; `model-call` case at line 53, `model-result` at 55–75, `routed` at 114–117, and the `default` exhaustiveness guard at 118–124 — a new event kind without a case fails typecheck because of the `never` assignment). Add after `runEventsUrl`:
