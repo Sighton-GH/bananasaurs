@@ -8,8 +8,8 @@ import {
 } from './instance-settings.js';
 
 describe('instance settings registry', () => {
-  it('has 34 definitions and every default parses under its own schema', () => {
-    expect(INSTANCE_SETTINGS).toHaveLength(34);
+  it('has 41 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(41);
     for (const def of INSTANCE_SETTINGS) {
       expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
     }
@@ -225,4 +225,31 @@ describe('instance settings registry', () => {
     expect(hour?.schema.safeParse(24).success).toBe(false);
     expect(isInstanceSettingKey('assistant.digestEnabled')).toBe(true);
   });
+});
+
+it('attachment caps default to the D7 table and a count of 0 disables that kind', () => {
+  expect(INSTANCE_SETTINGS).toHaveLength(41);
+  const def = (key: string) => settingDefinition(key);
+  expect(def('assistant.attachments.textMaxBytes')?.defaultValue).toBe(262_144);
+  expect(def('assistant.attachments.textMaxChars')?.defaultValue).toBe(24_000);
+  expect(def('assistant.attachments.textMaxCount')?.defaultValue).toBe(3);
+  expect(def('assistant.attachments.imageMaxBytes')?.defaultValue).toBe(5_242_880);
+  expect(def('assistant.attachments.imageMaxCount')?.defaultValue).toBe(4);
+  expect(def('assistant.attachments.pdfMaxBytes')?.defaultValue).toBe(10_485_760);
+  expect(def('assistant.attachments.pdfMaxCount')?.defaultValue).toBe(2);
+  for (const key of [
+    'assistant.attachments.textMaxBytes',
+    'assistant.attachments.textMaxChars',
+    'assistant.attachments.textMaxCount',
+    'assistant.attachments.imageMaxBytes',
+    'assistant.attachments.imageMaxCount',
+    'assistant.attachments.pdfMaxBytes',
+    'assistant.attachments.pdfMaxCount',
+  ]) {
+    expect(def(key)?.group).toBe('Assistant attachments');
+    expect(def(key)?.schema.safeParse(def(key)?.defaultValue).success, key).toBe(true);
+  }
+  expect(def('assistant.attachments.textMaxCount')?.schema.safeParse(0).success).toBe(true);
+  expect(def('assistant.attachments.imageMaxCount')?.schema.safeParse(11).success).toBe(false);
+  expect(def('assistant.attachments.pdfMaxBytes')?.schema.safeParse(0).success).toBe(false);
 });
