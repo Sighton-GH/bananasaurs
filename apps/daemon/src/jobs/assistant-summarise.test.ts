@@ -302,3 +302,161 @@ describe('summaries run on the summary tier (S5-T14)', () => {
     },
   );
 });
+
+// Independent review only: build the real runtime and execute the real queued job.
+describe('review: real guild summary wiring', () => {
+  it.each([
+    ['standard', false, 'standard'],
+    ['standard', true, 'standard'],
+    ['light', false, 'light'],
+    ['light', true, 'light'],
+    ['empty-light', false, 'standard'],
+    ['skipped-light', false, 'standard'],
+    ['unavailable-light', false, 'standard'],
+    ['pool', false, 'light'],
+    ['empty', false, 'none'],
+    ['limited', false, 'none'],
+    ['provider-error', false, 'none'],
+    ['generic-error', false, 'none'],
+  ])(
+    '%s reverse=%s selects %s and accounts for the actual model/key',
+    async (mode, reverse, expected) => {
+      const { Client } = await import('discord.js');
+      const { buildClientOptions } = await import('@bananasaurs/discord');
+      const { FakeDiscord } = await import('@bananasaurs/testkit');
+      const { buildGuildRuntime } = await import('../runtime/guild.js');
+      const { createInteractionTokenSealer } = await import('../assistant/interaction-token.js');
+      const { assistantProvidersRepo, jobRepo, modelCallsRepo } =
+        await import('@bananasaurs/storage');
+      const { JOB_KINDS, ProviderError } = await import('@bananasaurs/core');
+      const db = openMigratedTestDatabase();
+      try {
+        const scope = db.scopes.forGuild(GUILD_ID);
+        const instance = db.scopes.instance();
+        guildRepo.upsertGuild(scope, { name: 'review fixture', now: NOW });
+        const calls: { name: string; request: unknown }[] = [];
+        const entry = (tier: 'light' | 'standard'): ChainEntry => ({
+          providerId: tier === 'light' ? 'openrouter' : 'gemini',
+          model: `${tier}-model`,
+          keyId: `key_${tier}`,
+          keyLabel: tier,
+          pool: 'key',
+          tier,
+          selectedKeyId: `key_${tier}`,
+          mayTrain: false,
+          rpmLimit: mode === 'limited' && tier === 'light' ? 0 : null,
+          rpdLimit: null,
+          provider: {
+            id: tier,
+            capabilities: new Set(['text']),
+            generateText: async (request) => {
+              calls.push({ name: tier, request });
+              if (mode === 'provider-error')
+                throw new ProviderError('timeout', 'review error', true);
+              if (mode === 'generic-error') throw new Error('review error');
+              return { text: SUMMARY_JSON, model: request.model };
+            },
+          },
+        });
+        let light = entry('light');
+        const standard = entry('standard');
+        if (mode === 'skipped-light') light = { ...light, skip: 'disabled' };
+        if (mode === 'unavailable-light') light = { ...light, provider: undefined };
+        if (mode === 'pool') light = { ...light, pool: 'provider', selectedKeyId: 'key_pool' };
+        let chain: ChainEntry[] =
+          mode === 'empty' ? [] : mode === 'empty-light' ? [standard] : [standard, light];
+        if (reverse) chain = chain.reverse();
+        for (const e of [...chain, { ...light, keyId: 'key_pool', selectedKeyId: 'key_pool' }]) {
+          assistantProvidersRepo.addKey(instance, {
+            keyId: e.keyId,
+            provider: e.providerId,
+            label: e.keyLabel,
+            apiKeyEnc: 'invented-ciphertext',
+            costClass: 'free',
+            now: NOW,
+          });
+        }
+        instanceSettingsRepo.upsertSetting(instance, {
+          key: 'assistant.routerSummaryTier',
+          valueJson: JSON.stringify(mode === 'standard' ? 'standard' : 'light'),
+          updatedAt: NOW,
+          updatedBy: 'review',
+        });
+        conversationRepo.createConversation(scope, {
+          conversationId: 'conv_review',
+          channelId: CHANNEL_ID,
+          behaviourId: 'behaviour-review',
+          startedBy: '444444444444444444',
+          title: 'review',
+          source: 'discord',
+          at: 999,
+        });
+        for (let i = 0; i < 13; i++)
+          conversationRepo.appendTurn(scope, {
+            conversationId: 'conv_review',
+            turnId: `turn_review_${i}`,
+            at: 1000 + i,
+            role: i % 2 ? 'assistant' : 'user',
+            authorId: '444444444444444444',
+            authorName: 'Sam L',
+            text: `private fixture ${i}`,
+          });
+        const runtime = buildGuildRuntime({
+          scope,
+          instance,
+          config: parseConfig({
+            DISCORD_BOT_TOKEN: 'test-token',
+            DISCORD_APPLICATION_ID: '123456789012345678',
+            BANANASAURS_GUILD_ALLOWLIST: GUILD_ID,
+            BANANASAURS_OWNER_USER_ID: '123456789012345678',
+            AI_PROVIDER: 'off',
+          }),
+          discord: new FakeDiscord({ guildId: GUILD_ID, botHighestRolePosition: 100 }),
+          client: new Client(buildClientOptions(() => '123456789012345678')),
+          logger: pino({ level: 'silent' }),
+          now: () => NOW,
+          interactionTokenSealer: createInteractionTokenSealer(),
+          assistantChain: () => chain,
+        });
+        jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.assistantSummarise,
+          payload: JSON.stringify({
+            conversationId: 'conv_review',
+            throughAt: 1000,
+            providerId: 'gemini',
+            model: 'standard-model',
+            keyId: 'key_standard',
+          }),
+          dedupeKey: 'review-summary',
+          now: NOW,
+        });
+        expect((await runtime.worker.runOnce()).status).toBe('completed');
+        expect((await runtime.worker.runOnce()).status).toBe('idle');
+        const success = expected !== 'none';
+        expect(conversationRepo.getSummary(scope, 'conv_review')?.version).toBe(
+          success ? 1 : undefined,
+        );
+        const called = mode.endsWith('error') ? 'light' : expected;
+        expect(calls.map((c) => c.name)).toEqual(called === 'none' ? [] : [called]);
+        if (called !== 'none') {
+          expect(calls[0]?.request).toMatchObject({
+            model: `${called}-model`,
+            maxOutputTokens: 2000,
+            temperature: 0,
+          });
+          const keyId = mode === 'pool' ? 'key_pool' : `key_${called}`;
+          expect(
+            modelCallsRepo.modelUsage(instance, {
+              keyId,
+              model: `${called}-model`,
+              now: NOW,
+              dayStart: 0,
+            }).today,
+          ).toBe(1);
+        }
+      } finally {
+        db.close();
+      }
+    },
+  );
+});
