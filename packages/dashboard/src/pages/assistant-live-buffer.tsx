@@ -33,24 +33,33 @@ export function LiveText(props: {
   finishedRef.current = finished;
   const last = useRef<LiveState | null>(null);
   const lastRun = useRef(runId);
+  const attempted = useRef(false);
   if (lastRun.current !== runId) {
     lastRun.current = runId;
     last.current = null;
+    attempted.current = false;
   }
 
   const load = useCallback(async (): Promise<LiveState> => {
     const cached = last.current;
-    if (finishedRef.current && cached !== null) return cached;
+    if (finishedRef.current && (cached !== null || attempted.current)) {
+      // Finished: no more fetches. With no cache (an earlier load failed) there
+      // is no text to keep, so answer empty and let render show nothing.
+      return cached ?? { answer: '', thinking: '', unavailable: false };
+    }
+    attempted.current = true;
+    // A fetch started for an old run must not write the new run's cache.
+    const current = (): boolean => lastRun.current === runId;
     try {
       const data = await session.read<LiveTextResponse>(runLiveUrl(runId));
       if (isEmptyText(data) && cached !== null && !cached.unavailable) return cached;
       const next = { ...data, unavailable: false };
-      last.current = next;
+      if (current()) last.current = next;
       return next;
     } catch (err) {
       if (err instanceof ApiError && UNAVAILABLE_STATUSES.includes(err.status)) {
         const next = { answer: '', thinking: '', unavailable: true };
-        last.current = next;
+        if (current()) last.current = next;
         return next;
       }
       throw err;
@@ -66,6 +75,8 @@ export function LiveText(props: {
 
   const data = live.resource.state === 'ready' ? live.resource.data : null;
   if (data !== null && (data.unavailable || (finished && isEmptyText(data)))) return null;
+  // Finished with nothing to show: no obsolete error or loading card.
+  if (finished && data === null) return null;
 
   return (
     <Card title="Live answer">

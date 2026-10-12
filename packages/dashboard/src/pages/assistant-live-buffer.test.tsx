@@ -6,6 +6,7 @@ import { SessionProvider } from '../app/session.js';
 import { renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { describeRunEvent, runLiveUrl } from '../api/runs.js';
 import { LiveText } from './assistant-live-buffer.js';
+import { StepLog } from './assistant-live.js';
 
 afterEach(cleanup);
 afterEach(() => {
@@ -192,5 +193,79 @@ describe('describeRunEvent model-progress', () => {
   });
   it('omits a zero thinking side', () => {
     expect(describeRunEvent(progress(12, 0))).toBe('Receiving… 12 chars of answer');
+  });
+});
+
+const json = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+describe('LiveText failure then finish', () => {
+  it('StepLog: a failing first /live then finish renders no card and makes no more requests', async () => {
+    vi.useFakeTimers();
+    const queued = { runId: 'run-1', seq: 1, at: 1000, event: { kind: 'queued', via: 'mention' } };
+    const done = {
+      runId: 'run-1',
+      seq: 2,
+      at: 3000,
+      event: { kind: 'finished', outcome: 'answered', durationMs: 2000 },
+    };
+    let liveCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url === runLiveUrl('run-1')) {
+          liveCalls += 1;
+          return Promise.resolve(json({ error: 'boom' }, 500));
+        }
+        return Promise.resolve(json({ events: url.includes('after=0') ? [queued] : [done] }));
+      }),
+    );
+    renderWithSession(<StepLog runId="run-1" />);
+    await act(async () => {});
+    expect(liveCalls).toBe(1);
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(screen.getByText('finished')).toBeDefined();
+    expect(screen.queryByText('Live answer')).toBeNull();
+    expect(screen.queryByText(/Could not load live text/)).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(liveCalls).toBe(1);
+    expect(screen.queryByText('Live answer')).toBeNull();
+  });
+});
+
+describe('LiveText run switch', () => {
+  it('a late fetch from the old run cannot overwrite the new run cache', async () => {
+    vi.useFakeTimers();
+    let resolveA: ((r: Response) => void) | undefined;
+    let bCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url === runLiveUrl('run-a')) return new Promise<Response>((r) => (resolveA = r));
+        bCalls += 1;
+        return Promise.resolve(json({ answer: bCalls === 1 ? 'B text' : '', thinking: '' }));
+      }),
+    );
+    const view = renderWithSession(<LiveText runId="run-a" />);
+    await act(async () => {});
+    view.rerender(
+      <SessionProvider session={TEST_SESSION} onLoggedOut={() => undefined}>
+        <LiveText runId="run-b" />
+      </SessionProvider>,
+    );
+    await act(async () => {});
+    expect(screen.getByText('B text')).toBeDefined();
+    await act(async () => {
+      resolveA?.(json({ answer: 'A text', thinking: '' }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(screen.queryByText('A text')).toBeNull();
+    expect(screen.getByText('B text')).toBeDefined();
   });
 });
