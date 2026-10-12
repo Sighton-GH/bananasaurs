@@ -10,6 +10,7 @@ import type {
 } from './contracts.js';
 import { ProviderError, type ProviderErrorKind } from './errors.js';
 import { netCodeOf } from './failure.js';
+import { invokeStreamCallback } from './callbacks.js';
 import { TEXT_AND_TOOLS_ONLY, type ModelCapabilities } from './model-capabilities.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
 import { parseSseStream } from './sse.js';
@@ -794,34 +795,17 @@ export class OpenAiCompatibleProvider implements TextProvider {
           closeBody();
         }
       };
-      /**
-       * Typed void callbacks can still return promises (same as Gemini): observe them, race
-       * them against the abort so a slow callback stays inside the ceiling, and sanitise
-       * any rejection so it can neither reach the key nor become an unhandled rejection.
-       */
-      const runCallback = async (call: () => unknown): Promise<void> => {
-        let pending: Promise<unknown>;
-        try {
-          pending = Promise.resolve(call());
-        } catch (error) {
-          throw sanitizeCause(error, this.apiKey);
-        }
-        const guarded = pending.then(
-          () => undefined,
-          (error: unknown) => {
-            throw sanitizeCause(error, this.apiKey);
-          },
-        );
-        await Promise.race([guarded, abortRace]);
-      };
+      // Progress callbacks can never fail the call: fire-and-forget and
+      // synchronous, with sync throws and async rejections swallowed, so a
+      // broken callback neither aborts the stream nor becomes a ProviderError.
       let lastEmitAt = 0;
-      const emitProgress = async (): Promise<void> => {
+      const emitProgress = (): void => {
         const onProgress = request.onProgress;
         if (onProgress === undefined) return;
         const now = Date.now();
         if (lastEmitAt !== 0 && now - lastEmitAt < 3_000) return; // at most every 3 s
         lastEmitAt = now;
-        await runCallback(() =>
+        invokeStreamCallback(() =>
           onProgress({
             round: 0, // the tool loop stamps the real round
             answerChars,
@@ -846,7 +830,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           const event = result.value;
           if (event.keepalive) {
             keepalives += 1;
-            await emitProgress();
+            emitProgress();
             continue;
           }
           if (event.data === '') continue; // bare empty-data event: bytes, not a chunk
@@ -946,9 +930,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
           if (deltaText !== '' || deltaReasoning !== '') {
             const onChunk = request.onChunk;
             if (onChunk !== undefined)
-              await runCallback(() => onChunk({ text: deltaText, reasoning: deltaReasoning }));
+              invokeStreamCallback(() => onChunk({ text: deltaText, reasoning: deltaReasoning }));
           }
-          await emitProgress();
+          emitProgress();
         }
       } catch (error) {
         closeBody();

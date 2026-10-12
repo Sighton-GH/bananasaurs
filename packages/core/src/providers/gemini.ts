@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { parseSseStream } from './sse.js';
+import { invokeStreamCallback } from './callbacks.js';
 import { geminiCapabilities, type ModelCapabilities } from './model-capabilities.js';
 import { parseGeminiQuotaError } from './gemini-quota.js';
 import type {
@@ -590,22 +591,24 @@ export class GeminiProvider implements TextProvider {
       let keepalives = 0;
       let lastByteAt = Date.now();
       let lastEmitAt: number | undefined;
-      const emitProgress = async (): Promise<void> => {
+      const emitProgress = (): void => {
         const now = Date.now();
         if (lastEmitAt !== undefined && now - lastEmitAt < 3_000) return;
         lastEmitAt = now;
-        await Promise.race([
-          Promise.resolve(
-            request.onProgress?.({
+        // Progress callbacks can never fail the call: fire-and-forget and
+        // synchronous, with sync throws and async rejections swallowed, so a
+        // broken callback neither aborts the stream nor becomes a ProviderError.
+        const onProgress = request.onProgress;
+        if (onProgress !== undefined)
+          invokeStreamCallback(() =>
+            onProgress({
               round: 0,
               answerChars: text.length,
               reasoningChars: reasoning.length,
               keepalives,
               msSinceLastByte: now - lastByteAt,
             }),
-          ),
-          aborted,
-        ]);
+          );
       };
       // Observe raw byte arrivals before parsing: fragmented SSE lines count as
       // activity too. The wrapper makes abort independent of source cooperation.
@@ -662,11 +665,11 @@ export class GeminiProvider implements TextProvider {
           checkAbort();
           if (event.keepalive) {
             keepalives += 1;
-            await emitProgress();
+            emitProgress();
             continue;
           }
           if (event.data === '') {
-            await emitProgress();
+            emitProgress();
             continue;
           }
           let rawJson: unknown;
@@ -702,14 +705,13 @@ export class GeminiProvider implements TextProvider {
           const raw = (rawJson as { candidates?: { content?: { parts?: unknown } }[] })
             .candidates?.[0]?.content?.parts;
           if (Array.isArray(raw)) rawParts.push(...(raw as unknown[]));
-          if (deltaText !== '' || deltaReasoning !== '')
-            // Typed void callbacks can still return promises. Observe them and
-            // keep slow callbacks inside the existing cancellation ceiling.
-            await Promise.race([
-              Promise.resolve(request.onChunk?.({ text: deltaText, reasoning: deltaReasoning })),
-              aborted,
-            ]);
-          await emitProgress();
+          if (deltaText !== '' || deltaReasoning !== '') {
+            // Progress callbacks can never fail the call (see callbacks.ts).
+            const onChunk = request.onChunk;
+            if (onChunk !== undefined)
+              invokeStreamCallback(() => onChunk({ text: deltaText, reasoning: deltaReasoning }));
+          }
+          emitProgress();
           checkAbort();
         }
         checkAbort();

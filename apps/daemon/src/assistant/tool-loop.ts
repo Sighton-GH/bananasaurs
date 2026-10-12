@@ -301,8 +301,9 @@ export const runToolLoop = async (input: {
       close: () => {
         open = false;
       },
-      // The public provider contract says void, but both streaming adapters
-      // await the runtime return value and abort-race callback settlement.
+      // The public provider contract says void, and the streaming adapters
+      // invoke progress callbacks fire-and-forget: a returned promise is
+      // observed but never awaited, so it cannot hold the call open.
       // eslint-disable-next-line @typescript-eslint/no-misused-promises
       onProgress: (progress) => {
         if (!open) return;
