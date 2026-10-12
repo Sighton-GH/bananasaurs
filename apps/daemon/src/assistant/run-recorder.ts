@@ -38,6 +38,7 @@ const patchFor = (e: RunEvent, now: number): runRepo.RunPatch | undefined => {
         ...(e.keyLabel === undefined ? {} : { keyLabel: e.keyLabel }),
         updatedAt: now,
       };
+    case 'model-progress':
     case 'model-result':
     case 'model-skipped':
     case 'tool-result':
@@ -75,6 +76,7 @@ export const createRunRecorder: (deps: {
   readonly runId: string;
   readonly now: () => number;
   readonly logger: Pick<Logger, 'warn'>;
+  readonly live?: { drop(runId: string): void } | undefined;
 }) => RunRecorder = (deps) => {
   // Observability never changes behaviour: the first write failure warns
   // once (`assistant run ledger write failed`, with the run id) and every
@@ -102,6 +104,15 @@ export const createRunRecorder: (deps: {
         if (patch !== undefined) runRepo.updateRun(deps.scope, deps.runId, patch);
       } catch (err) {
         warnOnce(err);
+      }
+      // Retention must not depend on a successful ledger write. Keep cleanup
+      // inside its own catch so observability still never changes behaviour.
+      if (e.kind === 'finished') {
+        try {
+          deps.live?.drop(deps.runId);
+        } catch (err) {
+          warnOnce(err);
+        }
       }
     },
     update: (patch) => {

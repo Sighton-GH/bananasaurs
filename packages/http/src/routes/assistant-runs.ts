@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { describeRun, type RunEvent, type RunRow } from '@bananasaurs/core';
+import { describeRun, getLiveBuffer, type RunEvent, type RunRow } from '@bananasaurs/core';
 import { runRepo, type GuildScope } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
@@ -152,5 +152,16 @@ export const registerAssistantRunRoutes = (
       }
     }
     return reply.status(200).send({ events });
+  });
+
+  app.get<{ Params: { runId: string } }>('/api/assistant/runs/:runId/live', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+    const run = runRepo.getRun(session.scope, request.params.runId);
+    if (run === undefined) return reply.status(404).send({ error: 'not-found' });
+    const live = getLiveBuffer().read(request.params.runId);
+    return reply.status(200).send({ answer: live?.answer ?? '', thinking: live?.thinking ?? '' });
   });
 };
