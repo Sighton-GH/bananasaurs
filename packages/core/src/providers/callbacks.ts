@@ -21,10 +21,7 @@ export const invokeStreamCallback = (call: () => unknown): void => {
     // A hostile `then` getter throws here and is swallowed below; a genuine
     // promise is assimilated without awaiting so a slow or never-settling
     // callback cannot hold the stream open.
-    if (
-      (typeof returned === 'object' && returned !== null) ||
-      typeof returned === 'function'
-    ) {
+    if ((typeof returned === 'object' && returned !== null) || typeof returned === 'function') {
       const then = (returned as { then?: unknown }).then;
       if (typeof then === 'function')
         void Promise.resolve(returned as Promise<unknown>).catch(() => undefined);

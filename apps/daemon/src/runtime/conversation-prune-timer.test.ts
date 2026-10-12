@@ -6,7 +6,13 @@ import {
   parseGuildId,
   type Logger,
 } from '@bananasaurs/core';
-import { conversationRepo, digestRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  conversationRepo,
+  digestRepo,
+  guildRepo,
+  jobRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   createConversationPruneTimer,
