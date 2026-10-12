@@ -17,14 +17,14 @@
 - S3-T5: Step 3 is now the complete new `capTrace`, not prose.
 - S3-T6/S3-T7: Step 3 is now complete adapter code (timers, SSE assembly, capability gating with conservative defaults); capability tables are real (`model-capabilities.ts`, daemon `capabilitiesForEntry`).
 - S3-T8: typing-keepalive job edit moved out (it does not own `jobs/assistant.ts`); progress throttle is per-run and shared across the escalation hand-over; `model-chain.ts` timeout wiring added here.
-- New S3-T12: the brief's Discord progress design check (one code-built notice per run, posted/edited/deleted, durable cursor id, Write-gated) plus service/daemon wiring, typing ceiling and trace-`reasoning` persistence.
-- Deviation from contracts §3 for the controller: `ChainEntry` has NO `capabilities` field in the merged code, so capabilities resolve per request via daemon `capabilitiesForEntry`, not from the entry.
+- New S3-T12: the brief's Discord progress design check (one code-built notice per run, posted/edited/deleted, durable cursor id, Write-gated) plus provider-store capability population, service `onProgress` passthrough, typing ceiling and trace-`reasoning` persistence.
+- Deviation from contracts §3 for the controller: `ChainEntry` has NO `capabilities` field in the merged code, so this slice adds it as an *optional* field populated by the provider store per request (required would break every literal entry in tests); adapters still fall back to conservative built-ins when it is absent.
 
 ## Merged-code notes (verified, not assumed)
 
 - `ProviderError` already carries `quotaScope 'daily-free' | 'day' | 'minute'`, `retryAfterMs`, `learnedLimit` (`packages/core/src/providers/errors.ts` lines 26–30). Adapter rewrites keep every field.
 - `packages/core/src/providers/model-capabilities.ts` is real: `ThinkingControl`, `ModelCapabilities`, `GeminiModelProfile`, `GEMINI_MODEL_TABLE` (3 rows), `geminiCapabilities` (unknown → `TEXT_AND_TOOLS_ONLY`), `TEXT_AND_TOOLS_ONLY`.
-- Daemon `capabilitiesForEntry(entry, catalogue)` is real (`apps/daemon/src/assistant/model-capabilities.ts` lines 10–25); the OpenRouter catalogue lives at the composition root (`apps/daemon/src/runtime/daemon.ts` lines 210, 229) and reaches guilds via `buildGuildRuntime` (`daemon.ts` line 316).
+- Daemon `capabilitiesForEntry(entry, catalogue)` is real (`apps/daemon/src/assistant/model-capabilities.ts` lines 10–25); the OpenRouter catalogue is already wired into the provider store options (`apps/daemon/src/runtime/daemon.ts` lines 210, 229; `provider-config.ts` lines 284–289), so S3-T12 populates entry capabilities there — no new threading.
 - Escalation hand-over is real: `escalateAfterTools` / `onEscalated` / `Resume` (`apps/daemon/src/assistant/tool-loop.ts` lines 230–241, 466–531, 1184–1208); service orders by tier and records `routed` + `escalated-after-tool` (`apps/daemon/src/assistant/service.ts` lines 1370–1486).
 - `ChainEntry` has `pool`, `tier`, `selectedKeyId` but no `capabilities` (`apps/daemon/src/assistant/model-chain.ts` lines 42–61).
 - `SafeProvider.generateText` forwards the whole request untouched (`packages/core/src/providers/safe-provider.ts` lines 22–26), so `thinkingLevel`, `capabilities`, `onProgress`, `onChunk` pass through.
@@ -54,7 +54,7 @@
 - The `model-progress` throttle lives per `runToolLoop` call and is shared across entries and the escalation hand-over. Reason: one progress stream per run across light round 1 → standard round 2.
 - Live text flows through unthrottled `onChunk` deltas into a module-singleton buffer the routes read; the run recorder drops the run id on `finished`. Reason: routes cannot take new deps without touching `HttpDeps`, and the buffer must die with the run.
 - The Discord progress notice is posted, edited and deleted inside the run's existing reply scope — not an autonomous write. Retry safety comes from the staged cursor's `progressMessageId`, not a new table. Reason: hard rule 6 with no migration.
-- `ChainEntry` carries no `capabilities` (merged code deviates from contracts §3); the service resolves per request with daemon `capabilitiesForEntry`. The controller owns updating the contracts file.
+- `ChainEntry` carries no `capabilities` (merged code deviates from contracts §3); this slice adds it optional, populated per request by the provider store from daemon `capabilitiesForEntry`. The controller owns updating the contracts file.
 - Dashboard tuning rows render generically from settings, so new settings need fixture rows but no page change. Reason: `TuningCards` maps `data.settings`.
 - Live buffer is a daemon in-memory map by run id (`apps/daemon/src/assistant/live-buffer.ts`), deleted on `finished`; keeps the ledger metadata-only with no storage change.
 - `describeRunEvent` for `model-progress` renders `Receiving… 1,240 chars of answer, 3,100 chars of thinking`, omitting a side with 0 chars.
@@ -1273,8 +1273,8 @@ return {
 
 ### S3-T8: Tool loop wiring, finish reasons, chain timeouts   ·   Wave 4
 **Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/assistant/model-chain.ts`; Test: `apps/daemon/src/assistant/model-chain.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`StreamProgress`, `StreamChunk`, `onProgress`, `onChunk`), `apps/daemon/src/assistant/run-recorder.ts`, `apps/daemon/src/assistant/model-capabilities.ts` (`capabilitiesForEntry` signature)
-**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: `runToolLoop` input gains `capabilitiesFor`, `onProgress`, `live`; one shared per-run progress throttle across entries and the escalation hand-over; `LoopResult.reasoning` per round; `-# (cut short)` on `length`/`MAX_TOKENS`; `makeProvider`/`resolveModelChain` forward idle/ceiling timeouts
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`StreamProgress`, `StreamChunk`, `onProgress`, `onChunk`), `apps/daemon/src/assistant/run-recorder.ts`
+**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: `runToolLoop` input gains `onProgress`, `live`; requests carry `entry.capabilities`; one shared per-run progress throttle across entries and the escalation hand-over; `LoopResult.reasoning` per round; `-# (cut short)` on `length`/`MAX_TOKENS`; `ChainEntry` gains optional `capabilities`; `makeProvider`/`resolveModelChain` forward idle/ceiling timeouts
 
 - [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/tool-loop.test.ts`, using its `scripted` provider helper, `entry()` (lines 57–69), `loopTools` (lines 77–81), `okResult` and `NOW` (top of file, lines 27–100). Note the required `runToolLoop` inputs (`chain`, `systemInstruction`, `protectedText`, `history`, `userText`, `initialHandles`, `now`): every test below passes all of them explicitly.
 
@@ -1311,13 +1311,12 @@ it('throttles model-progress to one stream per run and passes capabilities throu
   };
   const events: RunEvent[] = [];
   const loop = await runToolLoop({
-    chain: [entry({ provider: streaming })],
+    chain: [entry({ provider: streaming, capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'levels' } })],
     systemInstruction: 'Be concise.',
     protectedText: '',
     history: [],
     userText: 'Hi.',
     initialHandles: [],
-    capabilitiesFor: () => ({ tools: true, image: false, pdf: false, reasoning: true, thinking: 'levels' }),
     recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
     now: () => NOW,
   });
@@ -1393,7 +1392,7 @@ it('progress survives the escalation hand-over on one shared throttle', async ()
 });
 ```
 
-(`textAnswer`/`toolAnswer` are the file's helpers at lines 71–75; `toolAnswer([{ name, args }])` builds `{ text: '', model: 'model-a', toolCalls }`. `entry()` defaults `keyId: 'key_a'`/`selectedKeyId`; the `providerId`/`model`/`tier` overrides above are all `ChainEntry` fields.)
+(`textAnswer`/`toolAnswer` are the file's helpers at lines 71–75; `toolAnswer([{ name, args }])` builds `{ text: '', model: 'model-a', toolCalls }`. `entry()` defaults `keyId: 'key_a'`/`selectedKeyId`; the `providerId`/`model`/`tier`/`capabilities` overrides above are all `ChainEntry` fields after this task.)
 
 In `apps/daemon/src/assistant/model-chain.test.ts`, using its `openMigratedTestDatabase` (line 22) and the file's `eligible()` row (used at line 373), add inside the top-level `describe('resolveModelChain')` (line 84):
 
@@ -1435,10 +1434,10 @@ it('forwards idle and ceiling timeouts from resolve readers to makeProvider', ()
 
 (check that file's `beforeEach`/`afterEach` DB handling: if the file already opens one DB per test, reuse its scope instead of opening a second; keep the `try/finally` close only when this test opened it.)
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` marker, no `model-progress` event, unknown `capabilitiesFor`/`live` inputs, and unknown resolve readers
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` marker, no `model-progress` event, unknown `onProgress`/`live` inputs and `capabilities` field, and unknown resolve readers
 - [ ] **Step 3: Implement** — in `apps/daemon/src/assistant/tool-loop.ts`, against the current code:
 
-(a) Imports: extend the `@bananasaurs/core` import (lines 1–19) with `type ModelCapabilities` and `type StreamProgress`. `ChainEntry` is already imported (line 22).
+(a) Imports: extend the `@bananasaurs/core` import (lines 1–19) with `type StreamProgress`. `ChainEntry` is already imported (line 22).
 
 (b) `LoopResult` (lines 37–96): add after the `finishReason` field:
 
@@ -1453,12 +1452,6 @@ it('forwards idle and ceiling timeouts from resolve readers to makeProvider', ()
 (c) `runToolLoop` input (lines 199–242): add before `readonly now: () => number;`:
 
 ```ts
-  /**
-   * Per-entry capabilities for the adapters' thinking/reasoning gate
-   * (daemon `capabilitiesForEntry`). Absent means the adapters' built-in
-   * conservative defaults.
-   */
-  readonly capabilitiesFor?: ((entry: ChainEntry) => ModelCapabilities) | undefined;
   /**
    * Throttled per-run progress fan-out (the Discord notice in S3-T12 reads
    * it). The ledger event is recorded regardless.
@@ -1505,8 +1498,10 @@ Thread `reasoning: [...reasoning]` into both `runToolLoop` return sites (the ans
       maxOutputTokens: limits.maxOutputTokens,
       thinkingBudget: declarations.length > 0 ? limits.toolThinking : limits.answerThinking,
       ...(declarations.length === 0 ? {} : { tools: declarations }),
-      ...(input.capabilitiesFor === undefined ? {} : { capabilities: input.capabilitiesFor(entry) }),
-      onProgress: (progress) => emitProgress(round, progress),
+      // Capabilities ride the entry (populated by the provider store in
+      // S3-T12); absent means the adapters' built-in conservative defaults.
+      ...(entry.capabilities === undefined ? {} : { capabilities: entry.capabilities }),
+      onProgress: (progress) => deps.emitProgress(round, progress),
       onChunk: (chunk) => {
         if (input.runId !== undefined && input.live !== undefined)
           input.live.append(input.runId, chunk.text, chunk.reasoning);
@@ -1514,14 +1509,16 @@ Thread `reasoning: [...reasoning]` into both `runToolLoop` return sites (the ans
     };
 ```
 
-`runEntry` receives `input` today only as destructured fields — it reads `input.tools`, `input.escalateAfterTools` etc. via the outer `input`? No: `runEntry` is called with an explicit deps object (lines 470–522). Add `capabilitiesFor: input.capabilitiesFor, onProgressEmit: emitProgress, live: input.live, runId: input.runId, collectReasoning: (round, text) => { reasoning.push({ round, text: text.slice(0, 8000) }); }` to that call, extend `runEntry`'s deps type (lines 643–683) with the same four fields, and use them in `callProvider` (which lives inside `runEntry`). After a successful `provider.generateText` (line 917), add:
+`runEntry` is called with an explicit deps object (lines 470–522). Add `emitProgress, live: input.live, runId: input.runId, collectReasoning: (round, text) => { reasoning.push({ round, text: text.slice(0, 8000) }); }` to that call, extend `runEntry`'s deps type (lines 643–683) with the same four fields, and use them in `callProvider` (which lives inside `runEntry`). After a successful `provider.generateText` (line 917), add:
 
 ```ts
       if (response.reasoning !== undefined && response.reasoning !== '')
         deps.collectReasoning(round, response.reasoning);
 ```
 
-Keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools; explicit levels arrive via service input in S3-T12 only when the owner sets them — no new setting in this slice).
+Keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools).
+
+(h) In `apps/daemon/src/assistant/model-chain.ts`: add `readonly capabilities?: ModelCapabilities;` to `ChainEntry` (lines 42–61, beside `selectedKeyId`), importing `type ModelCapabilities` from `@bananasaurs/core` alongside the existing core imports (lines 1–12). Optional — not contracts §3's required field — so the literal `ChainEntry` constructions in `service.test.ts`/`tool-loop.test.ts` keep compiling; the provider store populates it in S3-T12, and `callProvider` above reads it when present.
 
 (f) `finishEntry` cut-short (anchor: `guarded.ok` branch, lines 1287–1304, and the guard-retry `second.ok` branch around lines 1395–1410): add at the top of `finishEntry`:
 
