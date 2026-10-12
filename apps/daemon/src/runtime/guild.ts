@@ -1263,22 +1263,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }),
   ];
 
-  // ADR 0091 decision 4: the summary job re-resolves the chain entry that
-  // answered and reserves one call against its local limits. A missing or
-  // skipped entry, a refused reservation and a failed call are all skips,
-  // never retries — the raw turns are kept for the next run.
-  const summariseModel: SummariseModelPort = async ({
-    providerId,
-    model,
-    keyId,
-    systemInstruction,
-    text,
-  }) => {
-    const entry = (deps.assistantChain ?? (() => []))().find(
-      (candidate) =>
-        candidate.providerId === providerId &&
-        candidate.model === model &&
-        candidate.keyId === keyId,
+  // ADR 0091 decision 4 as amended by S5-T14: the summary job answers on the
+  // forced summary tier from `backgroundTier('summary')` (Slice 6, setting
+  // `assistant.routerSummaryTier`, default light), never the entry that
+  // answered - background jobs never run the router. The payload keeps the
+  // answering entry as provenance. A missing or skipped entry, a refused
+  // reservation and a failed call are all skips, never retries - the raw
+  // turns are kept for the next run.
+  const summariseModel: SummariseModelPort = async ({ systemInstruction, text }) => {
+    const entry = pickBackgroundEntry(
+      (deps.assistantChain ?? (() => []))(),
+      assistantService.backgroundTier('summary'),
     );
     if (entry === undefined || entry.provider === undefined || entry.skip !== undefined) {
       return { ok: false, reason: 'entry-unavailable' };
@@ -1287,7 +1282,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     if (!reserved.ok) return { ok: false, reason: 'rate-limited' };
     try {
       const response = await entry.provider.generateText({
-        model,
+        model: entry.model,
         systemInstruction,
         messages: [{ role: 'user', text }],
         maxOutputTokens: 2_000,
