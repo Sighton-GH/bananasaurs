@@ -10,6 +10,7 @@ import {
   TOOL_CATALOGUE,
   type GenerateTextRequest,
   type GenerateTextResponse,
+  type GenerationMedia,
   type GenerationMessage,
   type RunEvent,
   type StreamProgress,
@@ -2999,5 +3000,155 @@ describe('async downstream progress through the real adapter', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(loop.outcome).toBe('answered');
     expect(loop.text).toBe('done');
+  });
+});
+
+describe('media capability routing (ADR 0149)', () => {
+  const media: GenerationMedia = {
+    kind: 'image',
+    mediaType: 'image/png',
+    dataBase64: 'aGk=',
+    name: 'chart.png',
+  };
+  const pdfMedia: GenerationMedia = {
+    kind: 'pdf',
+    mediaType: 'application/pdf',
+    dataBase64: 'amVm',
+    name: 'report.pdf',
+  };
+  const mediaOf = (r: GenerateTextRequest | undefined): GenerationMedia[] =>
+    (r?.messages ?? []).flatMap((m) => (m.role === 'user' ? [...(m.media ?? [])] : []));
+  const providerFor = (
+    seen: GenerateTextRequest[],
+    reply: () => GenerateTextResponse = () => textAnswer('done'),
+  ): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (request: GenerateTextRequest) => {
+      seen.push(request);
+      return reply();
+    },
+  });
+  const seeImage = {
+    tools: true,
+    image: true,
+    pdf: false,
+    reasoning: false,
+    thinking: 'none' as const,
+  };
+
+  it('runs the first media-capable entry first and strips media for text-only entries', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const textOnly = entry({ provider: providerFor(seen), model: 'text-a' });
+    const vision = entry({
+      provider: providerFor(seen),
+      model: 'vision-b',
+      capabilities: seeImage,
+    });
+    await runToolLoop(
+      baseInput([textOnly, vision], {
+        history: [{ role: 'user', text: '[attached files: chart.png]', media: [media] }],
+      }),
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.model).toBe('vision-b');
+    expect(mediaOf(seen[0])).toHaveLength(1);
+  });
+
+  it('falls back to a text-only entry with no bytes and a plain marker when the capable entry fails', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const failing: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (request: GenerateTextRequest) => {
+        seen.push(request);
+        throw new ProviderError('outage', 'HTTP 503', true);
+      },
+    };
+    const textOnly = entry({ provider: providerFor(seen), model: 'text-a' });
+    const vision = entry({ provider: failing, model: 'vision-b', capabilities: seeImage });
+    await runToolLoop(
+      baseInput([textOnly, vision], {
+        history: [{ role: 'user', text: '[attached files: chart.png]', media: [media] }],
+      }),
+    );
+    expect(seen.map((r) => r.model)).toEqual(['vision-b', 'text-a']);
+    expect(mediaOf(seen[0]).map((m) => m.kind)).toEqual(['image']);
+    expect(mediaOf(seen[1])).toHaveLength(0);
+    expect(JSON.stringify(seen[1])).not.toContain('aGk=');
+    expect(seen[1]?.messages.at(-1)?.text).toContain(
+      "chart.png attached; you can't see images right now.",
+    );
+  });
+
+  it('when no entry reads everything, keeps tier order, sends the readable part and warns about the rest', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const textOnly = entry({ provider: providerFor(seen), model: 'text-a' });
+    const vision = entry({
+      provider: providerFor(seen),
+      model: 'vision-b',
+      capabilities: seeImage,
+    });
+    await runToolLoop(
+      baseInput([textOnly, vision], {
+        history: [
+          {
+            role: 'user',
+            text: '[attached files: chart.png, report.pdf]',
+            media: [media, pdfMedia],
+          },
+        ],
+      }),
+    );
+    expect(seen.map((r) => r.model)).toEqual(['text-a']);
+    expect(JSON.stringify(seen[0])).not.toContain('aGk=');
+    expect(JSON.stringify(seen[0])).not.toContain('amVm');
+    const last = seen[0]?.messages.at(-1)?.text ?? '';
+    expect(last).toContain("chart.png attached; you can't see images right now.");
+    expect(last).toContain("report.pdf attached; you can't read PDFs right now.");
+    const seen2: GenerateTextRequest[] = [];
+    await runToolLoop(
+      baseInput(
+        [entry({ provider: providerFor(seen2), model: 'vision-b', capabilities: seeImage })],
+        {
+          history: [
+            {
+              role: 'user',
+              text: '[attached files: chart.png, report.pdf]',
+              media: [media, pdfMedia],
+            },
+          ],
+        },
+      ),
+    );
+    expect(mediaOf(seen2[0]).map((m) => m.kind)).toEqual(['image']);
+    expect(seen2[0]?.messages.at(-1)?.text).toContain(
+      "report.pdf attached; you can't read PDFs right now.",
+    );
+    expect(seen2[0]?.messages.at(-1)?.text).not.toContain('chart.png attached');
+  });
+
+  it('never gives bytes to an entry with absent capabilities and leaves no-media order alone', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const absent = entry({ provider: providerFor(seen), model: 'absent-a' });
+    await runToolLoop(
+      baseInput([absent], { history: [{ role: 'user', text: 'x', media: [media] }] }),
+    );
+    expect(mediaOf(seen[0])).toHaveLength(0);
+    const seen2: GenerateTextRequest[] = [];
+    const a = entry({ provider: providerFor(seen2), model: 'first' });
+    const b = entry({ provider: providerFor(seen2), model: 'second', capabilities: seeImage });
+    await runToolLoop(baseInput([a, b]));
+    expect(seen2.map((r) => r.model)).toEqual(['first']);
+  });
+
+  it('does not mutate the caller history', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const history: GenerationMessage[] = [{ role: 'user', text: 'x', media: [media] }];
+    await runToolLoop(
+      baseInput([entry({ provider: providerFor(seen), model: 'text-a' })], { history }),
+    );
+    expect(history[0]?.media).toHaveLength(1);
+    expect(history[0]?.text).toBe('x');
   });
 });
