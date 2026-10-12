@@ -1,7 +1,7 @@
 /** Code spans never ping, the ADR 0128 parser (`apps/daemon/src/mcp/targets.ts:418`). */
 export const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g;
-/** `@` then one word and up to three more; `@` and most punctuation end it. */
-const AT = /@([\p{L}\p{N}][\p{L}\p{N}.'-]*(?: [\p{L}\p{N}.'-]+){0,3})/gu;
+/** `@` then one word and up to three more; `@` and most punctuation end it (`_` does not). */
+const AT = /@([\p{L}\p{N}_][\p{L}\p{N}_.'-]*(?: [\p{L}\p{N}_.'-]+){0,3})/gu;
 
 /**
  * For each `@` outside code: the 1–4 word phrases after it, longest first
@@ -60,7 +60,7 @@ export const matchPingNames = (
 
 /** True when `name` appears in `text` as whole words, case-insensitively. */
 export const namedIn = (text: string, name: string): boolean =>
-  new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, 'iu').test(text);
+  new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(name)}(?![\\p{L}\\p{N}_])`, 'iu').test(text);
 
 /** Rewrites `@Name` → id token in prose segments only. */
 export const replacePingTokens = (
@@ -82,7 +82,7 @@ const replaceInProse = (prose: string, replacements: ReadonlyMap<string, string>
   // Longest name first so `@Sam L` wins over `@Sam` in the same text.
   const entries = [...replacements.entries()].sort((a, b) => b[0].length - a[0].length);
   for (const [name, token] of entries) {
-    const pattern = new RegExp(`@${escapeRegExp(name)}(?![\\p{L}\\p{N}'\\-])`, 'giu');
+    const pattern = new RegExp(`@${escapeRegExp(name)}(?![\\p{L}\\p{N}_'\\-])`, 'giu');
     out = out.replace(pattern, token);
   }
   return out;

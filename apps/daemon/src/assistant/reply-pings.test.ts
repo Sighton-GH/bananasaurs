@@ -37,4 +37,14 @@ describe('reply-ping text helpers (ADR 0145)', () => {
     const out = replacePingTokens('ping @Sam L and `@Sam L`', new Map([['Sam L', '<@1>']]));
     expect(out).toBe('ping <@1> and `@Sam L`');
   });
+
+  it('keeps underscores inside a name', () => {
+    expect(extractPingPhrases('hi @sam_l')).toEqual([['sam_l']]);
+    expect(extractPingPhrases('hi @_sam')).toEqual([['_sam']]);
+    const map = new Map([['sam_l', '<@1>']]);
+    expect(replacePingTokens('hi @sam_l and @sam_lx', map)).toBe('hi <@1> and @sam_lx');
+    // Naming "sam_l" is not naming "sam".
+    expect(namedIn('ask sam_l please', 'sam')).toBe(false);
+    expect(namedIn('ask sam_l please', 'sam_l')).toBe(true);
+  });
 });
