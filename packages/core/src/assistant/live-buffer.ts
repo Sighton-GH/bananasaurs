@@ -12,6 +12,8 @@ export interface LiveBuffer {
   append(runId: string, answerDelta: string, reasoningDelta: string): void;
   read(runId: string): LiveText | undefined;
   drop(runId: string): void;
+  /** Empties one run's answer and thinking, keeping the entry. */
+  reset(runId: string): void;
 }
 
 export const createLiveBuffer = (deps?: { readonly now?: () => number }): LiveBuffer => {
@@ -54,6 +56,13 @@ export const createLiveBuffer = (deps?: { readonly now?: () => number }): LiveBu
     drop(runId) {
       runs.delete(runId);
     },
+    reset(runId) {
+      const current = runs.get(runId);
+      if (current === undefined) return;
+      // Re-insert so map order tracks write recency for eviction.
+      runs.delete(runId);
+      runs.set(runId, { answer: '', thinking: '', lastWrite: now() });
+    },
   };
 };
 
@@ -82,6 +91,9 @@ export const getLiveBuffer = (guildId: string): LiveBuffer => {
     },
     drop(runId) {
       store.drop(`${guildId}\u0000${runId}`);
+    },
+    reset(runId) {
+      store.reset(`${guildId}\u0000${runId}`);
     },
   };
   views.set(guildId, view);

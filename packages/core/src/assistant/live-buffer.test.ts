@@ -65,6 +65,23 @@ describe('createLiveBuffer', () => {
     t += 30 * 60 * 1000;
     expect(buf.read('run-1')).toBeUndefined();
   });
+
+  it('resets one run to empty text while keeping the entry', () => {
+    const buf = createLiveBuffer();
+    buf.append('run-1', 'partial', 'thought');
+    buf.reset('run-1');
+    expect(buf.read('run-1')).toEqual({ answer: '', thinking: '' });
+    buf.append('run-1', 'final', '');
+    expect(buf.read('run-1')).toEqual({ answer: 'final', thinking: '' });
+  });
+
+  it('reset on an unknown run leaves other runs alone', () => {
+    const buf = createLiveBuffer();
+    buf.append('run-1', 'hello', 'why');
+    buf.reset('missing');
+    expect(buf.read('missing')).toBeUndefined();
+    expect(buf.read('run-1')).toEqual({ answer: 'hello', thinking: 'why' });
+  });
 });
 
 describe('getLiveBuffer', () => {
