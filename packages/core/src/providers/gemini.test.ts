@@ -10,9 +10,15 @@ const ok = (value: unknown): Response =>
   });
 
 describe('GeminiProvider', () => {
+  const sse = (...payloads: unknown[]): Response =>
+    new Response(
+      `${payloads.map((p) => `data: ${JSON.stringify(p)}\n\n`).join('')}data: [DONE]\n\n`,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+
   it('uses the native Gemini endpoint without putting the key in the URL', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      ok({
+      sse({
         candidates: [
           { content: { parts: [{ text: 'first' }, { text: ' answer' }] }, finishReason: 'STOP' },
         ],
@@ -35,6 +41,7 @@ describe('GeminiProvider', () => {
       }),
     ).resolves.toEqual({
       text: 'first answer',
+      providerParts: [{ text: 'first' }, { text: ' answer' }],
       model: 'gemini-test-001',
       finishReason: 'STOP',
       usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
@@ -42,7 +49,7 @@ describe('GeminiProvider', () => {
 
     const [url, init] = fetch.mock.calls[0] ?? [];
     expect(url).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini%20test%2Fmodel:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini%20test%2Fmodel:streamGenerateContent?alt=sse',
     );
     expect(url).toBeDefined();
     const requestedUrl =
@@ -176,7 +183,7 @@ describe('GeminiProvider', () => {
       apiKey: 'secret',
       fetch: vi
         .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(ok({ candidates: [{ finishReason: 'SAFETY' }] })),
+        .mockResolvedValue(sse({ candidates: [{ finishReason: 'SAFETY' }] })),
     });
     await expect(
       provider.generateText({ model: 'gemini-test', messages: [{ role: 'user', text: 'hi' }] }),
@@ -187,7 +194,7 @@ describe('GeminiProvider', () => {
     const provider = new GeminiProvider({
       apiKey: 'secret',
       fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        ok({
+        sse({
           candidates: [{ finishReason: 'MAX_TOKENS' }],
           usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 },
         }),
@@ -205,7 +212,7 @@ describe('GeminiProvider', () => {
       apiKey: 'secret',
       fetch: vi
         .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(ok({ candidates: [{ finishReason: 'SAFETY' }] })),
+        .mockResolvedValue(sse({ candidates: [{ finishReason: 'SAFETY' }] })),
     });
     const error = await provider
       .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
@@ -228,7 +235,7 @@ describe('GeminiProvider', () => {
       ];
       const fetch = vi
         .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(ok({ candidates: [{ content: { role: 'model', parts } }] }));
+        .mockResolvedValue(sse({ candidates: [{ content: { role: 'model', parts } }] }));
       const provider = new GeminiProvider({ apiKey: 'secret', fetch });
 
       const response = await provider.generateText({
@@ -256,7 +263,9 @@ describe('GeminiProvider', () => {
       ];
       const fetch = vi
         .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(ok({ candidates: [{ content: { parts: [{ text: 'It is noon.' }] } }] }));
+        .mockResolvedValue(
+          sse({ candidates: [{ content: { parts: [{ text: 'It is noon.' }] } }] }),
+        );
       const provider = new GeminiProvider({ apiKey: 'secret', fetch });
 
       await provider.generateText({
@@ -297,7 +306,7 @@ describe('GeminiProvider', () => {
 
     it('leaves thought parts out of the answer text', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        ok({
+        sse({
           candidates: [
             { content: { parts: [{ text: 'thinking...', thought: true }, { text: 'Answer.' }] } },
           ],
@@ -312,22 +321,25 @@ describe('GeminiProvider', () => {
     it('sends thinkingConfig when thinkingBudget is set', async () => {
       const fetch = vi
         .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(ok({ candidates: [{ content: { parts: [{ text: 'Answer.' }] } }] }));
+        .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'Answer.' }] } }] }));
       const provider = new GeminiProvider({ apiKey: 'secret', fetch });
 
       await provider.generateText({
         model: 'm',
         messages: [{ role: 'user', text: 'q' }],
         thinkingBudget: 512,
+        capabilities: { tools: true, image: true, pdf: true, reasoning: true, thinking: 'budget' },
       });
 
       const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
-      expect(body.generationConfig).toEqual({ thinkingConfig: { thinkingBudget: 512 } });
+      expect(body.generationConfig).toEqual({
+        thinkingConfig: { thinkingBudget: 512, includeThoughts: true },
+      });
     });
 
     it('reports thinking tokens from usageMetadata', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        ok({
+        sse({
           candidates: [{ content: { parts: [{ text: 'Answer.' }] } }],
           usageMetadata: {
             promptTokenCount: 1,
@@ -349,7 +361,7 @@ describe('GeminiProvider', () => {
         apiKey: 'secret',
         fetch: vi
           .fn<typeof globalThis.fetch>()
-          .mockResolvedValue(ok({ candidates: [{ finishReason: 'MAX_TOKENS' }] })),
+          .mockResolvedValue(sse({ candidates: [{ finishReason: 'MAX_TOKENS' }] })),
       });
       const error = await provider
         .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
@@ -402,7 +414,7 @@ describe('GeminiProvider', () => {
 
     it('malformed JSON becomes a non-retryable invalid-response', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        new Response('{not json', {
+        new Response('data: {not json\n\n', {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -413,6 +425,388 @@ describe('GeminiProvider', () => {
         .catch((value: unknown) => value);
       expect(error).toBeInstanceOf(ProviderError);
       expect(error).toMatchObject({ kind: 'invalid-response', retryable: false });
+    });
+  });
+  it('streams text, thought and functionCall parts with thinkingLevel low for tool rounds', async () => {
+    const body =
+      'data: {"candidates":[{"content":{"parts":[{"text":"hel"}]}}]}\n\n' +
+      'data: {"candidates":[{"content":{"parts":[{"text":"背景","thought":true}]}}]}\n\n' +
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"search_sources","args":{"que":1}}}],"finishReason":"STOP"}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5,"thoughtsTokenCount":4}}\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    const chunks: Array<{ text: string; reasoning: string }> = [];
+    const res = await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [{ role: 'user', text: 'hi Sam L' }],
+      tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+      onChunk: (c) => {
+        chunks.push({ ...c });
+      },
+    });
+    expect(res.text).toBe('hel');
+    expect(res.reasoning).toBe('背景');
+    expect(res.toolCalls).toEqual([{ name: 'search_sources', args: { que: 1 } }]);
+    expect(res.providerParts).toBeDefined();
+    expect(chunks.map((c) => c.text).join('')).toBe('hel');
+    expect(chunks.map((c) => c.reasoning).join('')).toBe('背景');
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    expect(url).toEqual(expect.stringContaining(':streamGenerateContent?alt=sse'));
+    expect(
+      (JSON.parse(init?.body as string) as { generationConfig: { thinkingConfig: unknown } })
+        .generationConfig.thinkingConfig,
+    ).toEqual({
+      thinkingLevel: 'low',
+      includeThoughts: true,
+    });
+  });
+
+  it('uses thinkingLevel medium for the answer call and echoes providerParts', async () => {
+    const body =
+      'data: {"candidates":[{"content":{"parts":[{"text":"done"}]}}]}\n\n' +
+      'data: {"candidates":[{"content":{"parts":[{"text":"thought sum","thought":true}]}}]}\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    const res = await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [{ role: 'user', text: 'hi Alex P' }],
+    });
+    expect(res.text).toBe('done');
+    expect(res.reasoning).toBe('thought sum');
+    expect(res.providerParts).toBeDefined();
+    const [, init] = fetch.mock.calls[0] ?? [];
+    expect(
+      (JSON.parse(init?.body as string) as { generationConfig: { thinkingConfig: unknown } })
+        .generationConfig.thinkingConfig,
+    ).toEqual({
+      thinkingLevel: 'medium',
+      includeThoughts: true,
+    });
+  });
+
+  it('an explicit thinkingLevel wins over the tools derivation', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }));
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [{ role: 'user', text: 'hi' }],
+      tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+      thinkingLevel: 'high',
+    });
+    const [, init] = fetch.mock.calls[0] ?? [];
+    expect(
+      (JSON.parse(init?.body as string) as { generationConfig: { thinkingConfig: unknown } })
+        .generationConfig.thinkingConfig,
+    ).toEqual({
+      thinkingLevel: 'high',
+      includeThoughts: true,
+    });
+  });
+
+  it('sends no thinking parameter for a model without thinking support', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }));
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'gemini-9.9-ultra',
+      messages: [{ role: 'user', text: 'hi' }],
+      thinkingLevel: 'low',
+      thinkingBudget: 512,
+    });
+    const sent = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
+    expect(sent['generationConfig']).toBeUndefined();
+  });
+
+  it('keeps the legacy thinkingBudget only for budget-family models', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }));
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [{ role: 'user', text: 'hi' }],
+      thinkingBudget: 512,
+      capabilities: { tools: true, image: true, pdf: true, reasoning: true, thinking: 'budget' },
+    });
+    expect(
+      (
+        JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {
+          generationConfig: { thinkingConfig: unknown };
+        }
+      ).generationConfig.thinkingConfig,
+    ).toEqual({
+      thinkingBudget: 512,
+      includeThoughts: true,
+    });
+  });
+
+  it('an idle stream throws a retryable timeout', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => new Promise(() => {}));
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
+    const err = await provider
+      .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err).toMatchObject({ kind: 'timeout', retryable: true });
+  });
+
+  it('surfaces MAX_TOKENS with text, usage and thinking tokens', async () => {
+    const body =
+      'data: {"candidates":[{"content":{"parts":[{"text":"half"}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":9,"totalTokenCount":11,"thoughtsTokenCount":4}}\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    const res = await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [{ role: 'user', text: 'hi' }],
+      tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+    });
+    expect(res.text).toBe('half');
+    expect(res.finishReason).toBe('MAX_TOKENS');
+    expect(res.usage).toMatchObject({
+      promptTokens: 2,
+      completionTokens: 9,
+      totalTokens: 11,
+      thinkingTokens: 4,
+    });
+  });
+  describe('stream lifecycle', () => {
+    const setup = (
+      options: { timeoutMs?: number; idleTimeoutMs?: number; maxCallMs?: number } = {},
+    ) => {
+      let source!: ReadableStreamDefaultController<Uint8Array>;
+      const cancel = vi.fn();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          source = c;
+        },
+        cancel,
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(body));
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch, ...options });
+      return { provider, source, cancel, body, fetch };
+    };
+    const request = { model: 'm', messages: [{ role: 'user' as const, text: 'hi Sam L' }] };
+    it('ignores empty-data events without counting them as comments', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(
+            ': working\ndata:\n\ndata\n\ndata: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}\n\ndata: [DONE]\n\n',
+          ),
+        );
+      const onProgress = vi.fn();
+      const result = await new GeminiProvider({ apiKey: 'secret', fetch }).generateText({
+        ...request,
+        onProgress,
+      });
+      expect(result.text).toBe('hi');
+      expect(onProgress.mock.calls[0]?.[0]).toMatchObject({ keepalives: 1, round: 0 });
+    });
+    it('re-arms idle on partial bytes, not only complete SSE events', async () => {
+      vi.useFakeTimers();
+      try {
+        const { provider, source } = setup({ timeoutMs: 10, idleTimeoutMs: 45, maxCallMs: 300 });
+        const pending = provider.generateText(request);
+        source.enqueue(new TextEncoder().encode('data: {"candidates":'));
+        await vi.advanceTimersByTimeAsync(40);
+        source.enqueue(new TextEncoder().encode('[{"content":{"parts":'));
+        await vi.advanceTimersByTimeAsync(40);
+        source.enqueue(new TextEncoder().encode('[{"text":"hi"}]}}]}\n\ndata: [DONE]\n\n'));
+        expect((await pending).text).toBe('hi');
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it.each(['idle', 'ceiling'] as const)(
+      'times out at the %s even with a non-cooperative stream',
+      async (mode) => {
+        vi.useFakeTimers();
+        try {
+          const { provider, source, body, cancel } = setup({
+            timeoutMs: 10,
+            idleTimeoutMs: 45,
+            maxCallMs: 90,
+          });
+          const pending = provider.generateText(request).catch((e: unknown) => e);
+          source.enqueue(new TextEncoder().encode(': working\n'));
+          await vi.advanceTimersByTimeAsync(40);
+          if (mode === 'ceiling') {
+            source.enqueue(new TextEncoder().encode(': working\n'));
+            await vi.advanceTimersByTimeAsync(40);
+            source.enqueue(new TextEncoder().encode(': working\n'));
+          }
+          await vi.advanceTimersByTimeAsync(11);
+          expect(await pending).toMatchObject({ kind: 'timeout', retryable: true });
+          expect(body.locked).toBe(false);
+          expect(cancel).toHaveBeenCalledOnce();
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+    it('caller abort cancels the reader and removes timers', async () => {
+      vi.useFakeTimers();
+      try {
+        const { provider, body, cancel } = setup();
+        const controller = new AbortController();
+        const pending = provider
+          .generateText({ ...request, signal: controller.signal })
+          .catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(0);
+        controller.abort(new Error('private caller secret'));
+        expect(await pending).toMatchObject({ kind: 'outage', retryable: true });
+        expect(body.locked).toBe(false);
+        expect(cancel).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('rejects a missing response body and malformed chunks', async () => {
+      for (const response of [
+        new Response(null),
+        new Response('data: {bad\n\n'),
+        sse({ candidates: 'wrong' }),
+      ]) {
+        const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+        await expect(
+          new GeminiProvider({ apiKey: 'secret', fetch }).generateText(request),
+        ).rejects.toMatchObject({ kind: 'invalid-response', retryable: false });
+      }
+    });
+    it('does not return thought-only text as the answer', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        sse({
+          candidates: [
+            {
+              content: { parts: [{ text: 'thought', thought: true }] },
+              finishReason: 'MAX_TOKENS',
+            },
+          ],
+          usageMetadata: { thoughtsTokenCount: 4 },
+        }),
+      );
+      await expect(
+        new GeminiProvider({ apiKey: 'secret', fetch }).generateText(request),
+      ).rejects.toMatchObject({
+        kind: 'invalid-response',
+        finishReason: 'MAX_TOKENS',
+        emptyAnswer: { reasoningTokens: 4 },
+      });
+    });
+    it('emits text before EOF and throttles progress to three seconds', async () => {
+      vi.useFakeTimers();
+      try {
+        const { provider, source, body, cancel } = setup();
+        const onChunk = vi.fn();
+        const onProgress = vi.fn();
+        const pending = provider.generateText({ ...request, onChunk, onProgress });
+        const send = (text: string) =>
+          source.enqueue(
+            new TextEncoder().encode(
+              `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}\n\n`,
+            ),
+          );
+        send('one');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onChunk).toHaveBeenCalledWith({ text: 'one', reasoning: '' });
+        expect(onProgress).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(2_999);
+        send('two');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onProgress).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        source.enqueue(new TextEncoder().encode(': working\n'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onProgress).toHaveBeenCalledTimes(2);
+        expect(onProgress.mock.calls[1]?.[0]).toEqual({
+          round: 0,
+          answerChars: 6,
+          reasoningChars: 0,
+          keepalives: 1,
+          msSinceLastByte: 0,
+        });
+        source.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        expect((await pending).text).toBe('onetwo');
+        expect(cancel).toHaveBeenCalledOnce();
+        expect(body.locked).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('preserves ProviderError evidence raised during stream consumption', async () => {
+      const error = new ProviderError('quota', 'quota reached', false, {
+        quotaScope: 'minute',
+        retryAfterMs: 37_000,
+        learnedLimit: { perMinute: 5 },
+      });
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }));
+      await expect(
+        new GeminiProvider({ apiKey: 'secret', fetch }).generateText({
+          ...request,
+          onChunk: () => {
+            throw error;
+          },
+        }),
+      ).rejects.toBe(error);
+    });
+    it.each(['none', 'budget'] as const)(
+      'respects explicit %s capabilities for known models without a budget',
+      async (thinking) => {
+        const fetch = vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }));
+        await new GeminiProvider({ apiKey: 'secret', fetch }).generateText({
+          ...request,
+          model: 'gemini-3.8-flash',
+          thinkingLevel: 'high',
+          capabilities: { tools: true, image: true, pdf: true, reasoning: true, thinking },
+        });
+        const sent = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<
+          string,
+          unknown
+        >;
+        expect(sent.generationConfig).toBeUndefined();
+      },
+    );
+    it('never includes key-bearing fetch or stream errors in diagnostics', async () => {
+      for (const fetch of [
+        vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('secret')),
+        vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.error(new Error('secret'));
+              },
+            }),
+          ),
+        ),
+      ]) {
+        const error = await new GeminiProvider({ apiKey: 'secret', fetch })
+          .generateText(request)
+          .catch((e: unknown) => e);
+        expect(String(error)).not.toContain('secret');
+        expect((error as Error).cause).toBeUndefined();
+      }
     });
   });
 });

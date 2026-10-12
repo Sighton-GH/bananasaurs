@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { parseSseStream } from './sse.js';
+import { geminiCapabilities, type ModelCapabilities } from './model-capabilities.js';
 import { parseGeminiQuotaError } from './gemini-quota.js';
 import type {
   GenerateTextRequest,
@@ -93,6 +95,8 @@ export interface GeminiProviderOptions {
   readonly baseUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
+  readonly idleTimeoutMs?: number;
+  readonly maxCallMs?: number;
 }
 
 const statusKind = (status: number): ProviderErrorKind => {
@@ -111,6 +115,7 @@ export class GeminiProvider implements TextProvider {
   public readonly id = 'gemini';
   public readonly capabilities: ReadonlySet<ProviderCapability> = new Set([
     'text',
+    'streaming',
     'vision',
     'structured-output',
     'tools',
@@ -122,6 +127,8 @@ export class GeminiProvider implements TextProvider {
   private readonly host: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
+  private readonly idleTimeoutMs: number;
+  private readonly maxCallMs: number;
 
   public constructor(options: GeminiProviderOptions) {
     if (options.apiKey.trim() === '') throw new Error('Gemini API key must not be empty');
@@ -130,6 +137,8 @@ export class GeminiProvider implements TextProvider {
     this.host = new URL(this.baseUrl).host;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 45_000;
+    this.maxCallMs = options.maxCallMs ?? 300_000;
   }
 
   public async generateText(request: GenerateTextRequest): Promise<GenerateTextResponse> {
@@ -138,199 +147,325 @@ export class GeminiProvider implements TextProvider {
       throw new ProviderError('invalid-request', 'at least one message is required', false);
     }
 
-    const timeout = AbortSignal.timeout(this.timeoutMs);
-    const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
-    const body = {
-      contents: toContents(request.messages),
-      ...(request.tools !== undefined && request.tools.length > 0
-        ? { tools: [{ functionDeclarations: request.tools }] }
-        : {}),
-      ...(request.systemInstruction
-        ? { system_instruction: { parts: [{ text: request.systemInstruction }] } }
-        : {}),
-      ...(request.maxOutputTokens !== undefined ||
-      request.temperature !== undefined ||
-      request.thinkingBudget !== undefined
-        ? {
-            generationConfig: {
-              ...(request.maxOutputTokens !== undefined
-                ? { maxOutputTokens: request.maxOutputTokens }
-                : {}),
-              ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-              ...(request.thinkingBudget !== undefined
-                ? { thinkingConfig: { thinkingBudget: request.thinkingBudget } }
-                : {}),
-            },
-          }
-        : {}),
+    const controller = new AbortController();
+    const signal = controller.signal;
+    // Abort must also settle injected fetches and streams that ignore the signal.
+    let rejectAbort!: (reason: unknown) => void;
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAbort = reject;
+    });
+    // A pre-aborted caller can reject before the first race is attached.
+    void aborted.catch(() => {});
+    const onAbort = (): void => {
+      rejectAbort(
+        isTimeoutError(signal.reason)
+          ? new DOMException('Gemini request timed out', 'TimeoutError')
+          : new DOMException('Gemini request aborted', 'AbortError'),
+      );
     };
-
-    let response: Response;
+    signal.addEventListener('abort', onAbort, { once: true });
+    const callerAbort = (): void => {
+      controller.abort(request.signal?.reason);
+    };
+    request.signal?.addEventListener('abort', callerAbort, { once: true });
+    if (request.signal?.aborted) callerAbort();
+    const expire = (): void => {
+      controller.abort(new DOMException('Gemini request timed out', 'TimeoutError'));
+    };
+    let firstByteTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+      expire,
+      this.timeoutMs,
+    );
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const ceilingTimer = setTimeout(expire, this.maxCallMs);
+    const noteByte = (): void => {
+      clearTimeout(firstByteTimer);
+      firstByteTimer = undefined;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(expire, this.idleTimeoutMs);
+    };
+    const clearTimers = (): void => {
+      clearTimeout(firstByteTimer);
+      clearTimeout(idleTimer);
+      clearTimeout(ceilingTimer);
+      request.signal?.removeEventListener('abort', callerAbort);
+      signal.removeEventListener('abort', onAbort);
+    };
     try {
-      response = await this.fetchImpl(
-        `${this.baseUrl}/models/${encodeURIComponent(request.model)}:generateContent`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': this.apiKey },
-          body: JSON.stringify(body),
-          signal,
-        },
-      );
-    } catch (error) {
-      const timeoutError = isTimeoutError(error);
-      const netCode = netCodeOf(error);
-      throw new ProviderError(
-        timeoutError ? 'timeout' : 'outage',
-        timeoutError ? 'Gemini request timed out' : 'Gemini request failed',
-        true,
-        { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
-      );
-    }
+      const capabilities: ModelCapabilities =
+        request.capabilities ?? geminiCapabilities(request.model);
+      const wantsTools = request.tools !== undefined && request.tools.length > 0;
+      const thinkingLevel = request.thinkingLevel ?? (wantsTools ? 'low' : 'medium');
+      const thinkingConfig =
+        capabilities.thinking === 'levels'
+          ? { thinkingLevel, includeThoughts: true }
+          : capabilities.thinking === 'budget' && request.thinkingBudget !== undefined
+            ? { thinkingBudget: request.thinkingBudget, includeThoughts: true }
+            : undefined;
+      const body = {
+        contents: toContents(request.messages),
+        ...(request.tools !== undefined && request.tools.length > 0
+          ? { tools: [{ functionDeclarations: request.tools }] }
+          : {}),
+        ...(request.systemInstruction
+          ? { system_instruction: { parts: [{ text: request.systemInstruction }] } }
+          : {}),
+        ...(request.maxOutputTokens !== undefined ||
+        request.temperature !== undefined ||
+        thinkingConfig !== undefined
+          ? {
+              generationConfig: {
+                ...(request.maxOutputTokens !== undefined
+                  ? { maxOutputTokens: request.maxOutputTokens }
+                  : {}),
+                ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+                ...(thinkingConfig === undefined ? {} : { thinkingConfig }),
+              },
+            }
+          : {}),
+      };
 
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
+      let response: Response;
+      try {
+        response = await Promise.race([
+          this.fetchImpl(
+            `${this.baseUrl}/models/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-goog-api-key': this.apiKey },
+              body: JSON.stringify(body),
+              signal,
+            },
+          ),
+          aborted,
+        ]);
+      } catch (error) {
+        const timeoutError = isTimeoutError(error);
+        const netCode = netCodeOf(error);
         throw new ProviderError(
-          'authentication',
+          timeoutError ? 'timeout' : 'outage',
+          timeoutError ? 'Gemini request timed out' : 'Gemini request failed',
+          true,
+          { host: this.host, ...(netCode === undefined ? {} : { netCode }) },
+        );
+      }
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new ProviderError(
+            'authentication',
+            `Gemini request failed with HTTP ${response.status}`,
+            false,
+            { status: response.status, host: this.host },
+          );
+        }
+        if (response.status === 429) {
+          let body: unknown;
+          try {
+            const text = await Promise.race([response.text(), aborted]);
+            body = JSON.parse(text.slice(0, 16_384)) as unknown;
+          } catch {
+            body = undefined;
+          }
+          const quota = parseGeminiQuotaError(body);
+          if (quota.scope !== undefined) {
+            throw new ProviderError(
+              'quota',
+              'Gemini request failed with HTTP 429',
+              quota.scope !== 'day',
+              {
+                status: 429,
+                host: this.host,
+                quotaScope: quota.scope,
+                ...(quota.retryAfterMs === undefined ? {} : { retryAfterMs: quota.retryAfterMs }),
+                ...(quota.learnedLimit === undefined ? {} : { learnedLimit: quota.learnedLimit }),
+              },
+            );
+          }
+          throw new ProviderError('rate-limit', 'Gemini request failed with HTTP 429', true, {
+            status: 429,
+            host: this.host,
+          });
+        }
+        const kind = statusKind(response.status);
+        throw new ProviderError(
+          kind,
           `Gemini request failed with HTTP ${response.status}`,
-          false,
+          kind === 'rate-limit' || kind === 'outage',
           { status: response.status, host: this.host },
         );
       }
-      if (response.status === 429) {
-        let body: unknown;
-        try {
-          const text = await response.text();
-          body = JSON.parse(text.slice(0, 16_384)) as unknown;
-        } catch {
-          body = undefined;
+
+      if (response.body === null) {
+        throw new ProviderError('invalid-response', 'Gemini returned no response body', false);
+      }
+      let text = '';
+      let reasoning = '';
+      let finishReason: string | undefined;
+      let usage: z.infer<typeof geminiResponseSchema>['usageMetadata'];
+      let modelVersion: string | undefined;
+      const toolCalls: { id?: string; name: string; args: unknown }[] = [];
+      const rawParts: unknown[] = [];
+      let keepalives = 0;
+      let lastByteAt = Date.now();
+      let lastEmitAt: number | undefined;
+      const emitProgress = (): void => {
+        const now = Date.now();
+        if (lastEmitAt !== undefined && now - lastEmitAt < 3_000) return;
+        lastEmitAt = now;
+        request.onProgress?.({
+          round: 0,
+          answerChars: text.length,
+          reasoningChars: reasoning.length,
+          keepalives,
+          msSinceLastByte: now - lastByteAt,
+        });
+      };
+      // Observe raw byte arrivals before parsing: fragmented SSE lines count as
+      // activity too. The wrapper makes abort independent of source cooperation.
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+      let exhausted = false;
+      const releaseReader = (): void => {
+        if (!exhausted) void reader.cancel().catch(() => {});
+        reader.releaseLock();
+      };
+      const bytes = new ReadableStream<Uint8Array>({
+        async pull(output) {
+          try {
+            const chunk = await Promise.race([reader.read(), aborted]);
+            if (chunk.done) {
+              exhausted = true;
+              output.close();
+              return;
+            }
+            if (chunk.value.byteLength > 0) {
+              lastByteAt = Date.now();
+              noteByte();
+            }
+            output.enqueue(chunk.value);
+          } catch (error) {
+            output.error(error);
+          }
+        },
+      });
+      try {
+        for await (const event of parseSseStream(bytes)) {
+          if (event.keepalive) {
+            keepalives += 1;
+            emitProgress();
+            continue;
+          }
+          if (event.data === '') {
+            emitProgress();
+            continue;
+          }
+          let rawJson: unknown;
+          try {
+            rawJson = JSON.parse(event.data) as unknown;
+          } catch {
+            throw new ProviderError('invalid-response', 'Gemini returned an invalid chunk', false);
+          }
+          const parsed = geminiResponseSchema.safeParse(rawJson);
+          if (!parsed.success)
+            throw new ProviderError('invalid-response', 'Gemini returned an invalid chunk', false);
+          const candidate = parsed.data.candidates[0];
+          if (parsed.data.modelVersion !== undefined) modelVersion = parsed.data.modelVersion;
+          if (parsed.data.usageMetadata !== undefined) usage = parsed.data.usageMetadata;
+          if (candidate?.finishReason !== undefined) finishReason = candidate.finishReason;
+          let deltaText = '';
+          let deltaReasoning = '';
+          for (const part of candidate?.content?.parts ?? []) {
+            if (part.functionCall !== undefined) {
+              toolCalls.push({
+                ...(part.functionCall.id === undefined ? {} : { id: part.functionCall.id }),
+                name: part.functionCall.name,
+                args: part.functionCall.args ?? {},
+              });
+            } else if (part.thought === true) {
+              deltaReasoning += part.text ?? '';
+            } else if (part.text !== undefined) deltaText += part.text;
+          }
+          text += deltaText;
+          reasoning += deltaReasoning;
+          // Keep signatures and other opaque provider fields unchanged for tool turns.
+          const raw = (rawJson as { candidates?: { content?: { parts?: unknown } }[] })
+            .candidates?.[0]?.content?.parts;
+          if (Array.isArray(raw)) rawParts.push(...(raw as unknown[]));
+          if (deltaText !== '' || deltaReasoning !== '')
+            request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
+          emitProgress();
         }
-        const quota = parseGeminiQuotaError(body);
-        if (quota.scope !== undefined) {
+      } catch (error) {
+        if (error instanceof ProviderError) throw error;
+        if (isTimeoutError(error))
+          throw new ProviderError('timeout', 'Gemini stream timed out', true, { host: this.host });
+        const netCode = netCodeOf(error);
+        throw new ProviderError('outage', 'Gemini stream failed', true, {
+          host: this.host,
+          ...(netCode === undefined ? {} : { netCode }),
+        });
+      } finally {
+        releaseReader();
+      }
+      if (text === '' && toolCalls.length === 0) {
+        const emptyUsage = usage;
+        const emptyEvidence = {
+          ...(emptyUsage?.candidatesTokenCount !== undefined
+            ? { completionTokens: emptyUsage.candidatesTokenCount }
+            : {}),
+          ...(emptyUsage?.thoughtsTokenCount !== undefined
+            ? { reasoningTokens: emptyUsage.thoughtsTokenCount }
+            : {}),
+          reasoningOnly: false,
+        };
+        if (finishReason === 'MAX_TOKENS') {
           throw new ProviderError(
-            'quota',
-            'Gemini request failed with HTTP 429',
-            quota.scope !== 'day',
-            {
-              status: 429,
-              host: this.host,
-              quotaScope: quota.scope,
-              ...(quota.retryAfterMs === undefined ? {} : { retryAfterMs: quota.retryAfterMs }),
-              ...(quota.learnedLimit === undefined ? {} : { learnedLimit: quota.learnedLimit }),
-            },
+            'invalid-response',
+            'Gemini stopped at MAX_TOKENS before answering',
+            false,
+            { finishReason, emptyAnswer: emptyEvidence },
           );
         }
-        throw new ProviderError('rate-limit', 'Gemini request failed with HTTP 429', true, {
-          status: 429,
-          host: this.host,
+        if (finishReason === 'SAFETY') {
+          throw new ProviderError('safety-refusal', 'Gemini returned no text', false, {
+            finishReason,
+          });
+        }
+        throw new ProviderError('invalid-response', 'Gemini returned no text', false, {
+          ...(finishReason === undefined ? {} : { finishReason }),
+          emptyAnswer: emptyEvidence,
         });
       }
-      const kind = statusKind(response.status);
-      throw new ProviderError(
-        kind,
-        `Gemini request failed with HTTP ${response.status}`,
-        kind === 'rate-limit' || kind === 'outage',
-        { status: response.status, host: this.host },
-      );
-    }
 
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch (error) {
-      if (isTimeoutError(error))
-        throw new ProviderError('timeout', 'Gemini request timed out', true, {
-          cause: error,
-          host: this.host,
-        });
-      if (error instanceof SyntaxError)
-        throw new ProviderError('invalid-response', 'Gemini returned an invalid response', false, {
-          cause: error,
-        });
-      throw new ProviderError('outage', 'Gemini request failed', true, {
-        cause: error,
-        host: this.host,
-      });
-    }
-    const parsed = geminiResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new ProviderError('invalid-response', 'Gemini returned an invalid response', false, {
-        cause: parsed.error,
-      });
-    }
-    const candidate = parsed.data.candidates[0];
-    const parts = candidate?.content?.parts ?? [];
-    const text = parts.flatMap((part) => (part.thought === true ? [] : (part.text ?? []))).join('');
-    const toolCalls = parts.flatMap((part) =>
-      part.functionCall === undefined
-        ? []
-        : [
-            {
-              ...(part.functionCall.id === undefined ? {} : { id: part.functionCall.id }),
-              name: part.functionCall.name,
-              args: part.functionCall.args ?? {},
-            },
-          ],
-    );
-    // The raw parts, not the parsed ones: Zod drops fields it does not know
-    // (thoughtSignature), and Gemini rejects a tool turn echoed without them.
-    const rawParts = (raw as { candidates?: { content?: { parts?: unknown } }[] }).candidates?.[0]
-      ?.content?.parts;
-    if (text === '' && toolCalls.length === 0) {
-      const finishReason = candidate?.finishReason;
-      const emptyUsage = parsed.data.usageMetadata;
-      const emptyEvidence = {
-        ...(emptyUsage?.candidatesTokenCount !== undefined
-          ? { completionTokens: emptyUsage.candidatesTokenCount }
+      return {
+        text,
+        model: modelVersion ?? request.model,
+        ...(finishReason ? { finishReason } : {}),
+        ...(toolCalls.length === 0 ? {} : { toolCalls }),
+        ...(rawParts.length === 0 ? {} : { providerParts: rawParts }),
+        ...(reasoning === '' ? {} : { reasoning }),
+        ...(usage
+          ? {
+              usage: {
+                ...(usage.promptTokenCount !== undefined
+                  ? { promptTokens: usage.promptTokenCount }
+                  : {}),
+                ...(usage.candidatesTokenCount !== undefined
+                  ? { completionTokens: usage.candidatesTokenCount }
+                  : {}),
+                ...(usage.totalTokenCount !== undefined
+                  ? { totalTokens: usage.totalTokenCount }
+                  : {}),
+                ...(usage.thoughtsTokenCount !== undefined
+                  ? { thinkingTokens: usage.thoughtsTokenCount }
+                  : {}),
+              },
+            }
           : {}),
-        ...(emptyUsage?.thoughtsTokenCount !== undefined
-          ? { reasoningTokens: emptyUsage.thoughtsTokenCount }
-          : {}),
-        reasoningOnly: false,
       };
-      if (finishReason === 'MAX_TOKENS') {
-        throw new ProviderError(
-          'invalid-response',
-          'Gemini stopped at MAX_TOKENS before answering',
-          false,
-          { finishReason, emptyAnswer: emptyEvidence },
-        );
-      }
-      if (finishReason === 'SAFETY') {
-        throw new ProviderError('safety-refusal', 'Gemini returned no text', false, {
-          finishReason,
-        });
-      }
-      throw new ProviderError('invalid-response', 'Gemini returned no text', false, {
-        ...(finishReason === undefined ? {} : { finishReason }),
-        emptyAnswer: emptyEvidence,
-      });
+    } finally {
+      clearTimers();
     }
-
-    const usage = parsed.data.usageMetadata;
-    return {
-      text,
-      model: parsed.data.modelVersion ?? request.model,
-      ...(candidate?.finishReason ? { finishReason: candidate.finishReason } : {}),
-      ...(toolCalls.length === 0 ? {} : { toolCalls, providerParts: rawParts }),
-      ...(usage
-        ? {
-            usage: {
-              ...(usage.promptTokenCount !== undefined
-                ? { promptTokens: usage.promptTokenCount }
-                : {}),
-              ...(usage.candidatesTokenCount !== undefined
-                ? { completionTokens: usage.candidatesTokenCount }
-                : {}),
-              ...(usage.totalTokenCount !== undefined
-                ? { totalTokens: usage.totalTokenCount }
-                : {}),
-              ...(usage.thoughtsTokenCount !== undefined
-                ? { thinkingTokens: usage.thoughtsTokenCount }
-                : {}),
-            },
-          }
-        : {}),
-    };
   }
 }
 
