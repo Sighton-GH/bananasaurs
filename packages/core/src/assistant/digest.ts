@@ -124,7 +124,8 @@ const blockOf = (conv: DigestConversationInput): string =>
 
 /**
  * The whole model input, oldest blocks dropped first until it fits. A single
- * block larger than the cap keeps its newest lines.
+ * block larger than the cap keeps its newest lines, and the header is cut
+ * last. The result never exceeds `maxChars`.
  */
 export const buildDigestInput = (
   convs: readonly DigestConversationInput[],
@@ -135,19 +136,30 @@ export const buildDigestInput = (
   if (blocks.length === 1 && (blocks[0]?.length ?? 0) > maxChars) {
     const kept = (blocks[0] ?? '').split('\n');
     while (kept.length > 2 && kept.join('\n').length > maxChars) kept.splice(1, 1);
-    return kept.join('\n');
+    if (kept.join('\n').length > maxChars) {
+      const closing = kept[kept.length - 1] ?? '';
+      const budget = maxChars - closing.length - 1;
+      kept[0] = budget >= 2 ? `${(kept[0] ?? '').slice(0, budget - 1)}]` : '';
+    }
+    return kept.join('\n').slice(0, Math.max(0, maxChars));
   }
-  return blocks.join('\n');
+  return blocks.join('\n').slice(0, Math.max(0, maxChars));
 };
 
-/** Split built input into `maxChars` chunks on line edges. */
+/** Split built input into chunks of at most `maxChars`, on line edges where possible. */
 export const splitDigestInput = (text: string, maxChars: number): readonly string[] => {
   if (text.length <= maxChars) return [text];
+  const limit = Math.max(1, maxChars);
+  const lines: string[] = [];
+  for (const line of text.split('\n')) {
+    if (line.length <= limit) lines.push(line);
+    else for (let i = 0; i < line.length; i += limit) lines.push(line.slice(i, i + limit));
+  }
   const chunks: string[] = [];
   let current: string[] = [];
   let size = 0;
-  for (const line of text.split('\n')) {
-    if (size + line.length + 1 > maxChars && current.length > 0) {
+  for (const line of lines) {
+    if (size + line.length + 1 > limit && current.length > 0) {
       chunks.push(current.join('\n'));
       current = [];
       size = 0;
