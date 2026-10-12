@@ -367,8 +367,13 @@ export class ReviewedResourceFetcher {
       return fail('redirect', 'The attachment URL is outside the allowed hosts.', {
         host: initial.hostname,
       });
+    // Only the timeout is live from the configured limits (a getter is
+    // re-read per call); size and redirect limits stay the per-call
+    // maxBytes and the defaults.
+    const configured = typeof this.#limitsOpt === 'function' ? this.#limitsOpt() : this.#limitsOpt;
     const limits: ResourceFetchLimits = {
       ...DEFAULT_RESOURCE_FETCH_LIMITS,
+      timeoutMs: configured.timeoutMs ?? DEFAULT_RESOURCE_FETCH_LIMITS.timeoutMs,
       maxBytes: options.maxBytes,
     };
     return this.#fetchBytesFrom(initial, new Set(), 0, limits, options);

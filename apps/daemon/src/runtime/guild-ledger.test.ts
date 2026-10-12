@@ -51,6 +51,7 @@ vi.mock('../jobs/assistant.js', async (importOriginal) => {
 const net = vi.hoisted(() => ({
   resolved: [] as string[],
   requested: [] as string[],
+  timeouts: [] as number[],
   respond: undefined as
     | undefined
     | ((url: URL) => {
@@ -70,8 +71,9 @@ vi.mock('../assistant/resource-fetcher.js', async (importOriginal) => {
           net.resolved.push(host);
           return Promise.resolve([{ address: '93.184.216.34', family: 4 }]);
         },
-        request: (url) => {
+        request: (url, _address, timeoutMs) => {
           net.requested.push(url.href);
+          net.timeouts.push(timeoutMs);
           const r = net.respond?.(url) ?? { status: 404, headers: {}, chunks: [] };
           return Promise.resolve({
             status: r.status,
@@ -116,6 +118,7 @@ beforeEach(() => {
   invokeDeps.seen.length = 0;
   net.resolved.length = 0;
   net.requested.length = 0;
+  net.timeouts.length = 0;
   net.respond = undefined;
   client = new Client(buildClientOptions(() => BOT));
 });
@@ -328,5 +331,21 @@ describe('guild runtime wires attachment fetching (ADR 0149)', () => {
     expect(other?.ok).toBe(false);
     expect(net.resolved).toEqual([]);
     expect(net.requested).toEqual([]);
+  });
+});
+
+describe('attachment fetch timeout is live through the runtime', () => {
+  it('passes the current resources.fetchTimeoutMs to the transport on each call', async () => {
+    const values = { ...DEFAULT_VALUES };
+    const deps = buildWithSettings(values);
+    net.respond = () => ({
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+      chunks: [new Uint8Array([1])],
+    });
+    await deps.fetchAttachmentBytes?.('https://cdn.discordapp.com/a/1/x.png', 100);
+    values['resources.fetchTimeoutMs'] = 12_000;
+    await deps.fetchAttachmentBytes?.('https://cdn.discordapp.com/a/1/x.png', 100);
+    expect(net.timeouts).toEqual([5_000, 12_000]);
   });
 });
