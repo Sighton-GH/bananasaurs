@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { TUNING_URL, tuningKeyUrl } from '../api/tuning.js';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { TUNING_URL, tuningKeyUrl, type TuningGroup } from '../api/tuning.js';
 import { renderWithSession, stubFetch, bodyOf } from '../test-support.js';
 import { AssistantTuningPage } from './assistant-tuning.js';
 
@@ -147,6 +147,83 @@ const SETTINGS = [
     defaultValue: 3,
     isDefault: true,
   },
+  {
+    key: 'assistant.attachments.textMaxBytes',
+    group: 'Assistant attachments',
+    label: 'Text attachment size limit',
+    help: 'The largest text file read from a message, in bytes. Larger files are skipped with a note.',
+    display: 'count',
+    bounds: { min: 1024, max: 1048576 },
+    value: 262144,
+    defaultValue: 262144,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.attachments.textMaxChars',
+    group: 'Assistant attachments',
+    label: 'Text attachment characters sent',
+    help: 'How many characters of each text file are sent to the AI. Longer files are cut with a note.',
+    display: 'count',
+    bounds: { min: 1000, max: 100000 },
+    value: 24000,
+    defaultValue: 24000,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.attachments.textMaxCount',
+    group: 'Assistant attachments',
+    label: 'Text files read per message',
+    help: 'How many text files are read from one message. 0 turns text attachments off.',
+    display: 'count',
+    bounds: { min: 0, max: 10 },
+    value: 3,
+    defaultValue: 3,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.attachments.imageMaxBytes',
+    group: 'Assistant attachments',
+    label: 'Image size limit',
+    help: 'The largest image sent to the AI, in bytes. Larger images are skipped with a note.',
+    display: 'count',
+    bounds: { min: 1024, max: 20971520 },
+    value: 5242880,
+    defaultValue: 5242880,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.attachments.imageMaxCount',
+    group: 'Assistant attachments',
+    label: 'Images read per message',
+    help: 'How many images are sent to the AI from one message. 0 turns image attachments off.',
+    display: 'count',
+    bounds: { min: 0, max: 10 },
+    value: 4,
+    defaultValue: 4,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.attachments.pdfMaxBytes',
+    group: 'Assistant attachments',
+    label: 'PDF size limit',
+    help: 'The largest PDF sent to the AI, in bytes. Larger PDFs are skipped with a note.',
+    display: 'count',
+    bounds: { min: 1024, max: 31457280 },
+    value: 10485760,
+    defaultValue: 10485760,
+    isDefault: true,
+  },
+  {
+    key: 'assistant.attachments.pdfMaxCount',
+    group: 'Assistant attachments',
+    label: 'PDFs read per message',
+    help: 'How many PDFs are sent to the AI from one message. 0 turns PDF attachments off.',
+    display: 'count',
+    bounds: { min: 0, max: 10 },
+    value: 2,
+    defaultValue: 2,
+    isDefault: true,
+  },
 ];
 
 const rowOf = (key: string) => screen.getByTestId(`tuning-row-${key}`);
@@ -157,6 +234,10 @@ afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AssistantTuningPage', () => {
+  it('accepts Assistant attachments as a tuning group', () => {
+    expectTypeOf<'Assistant attachments'>().toExtend<TuningGroup>();
+  });
+
   it('renders the five group headings and every label', async () => {
     stubFetch([{ url: TUNING_URL, body: { settings: SETTINGS } }]);
     renderPage();
@@ -165,6 +246,7 @@ describe('AssistantTuningPage', () => {
       'Assistant tool loop',
       'Assistant context',
       'Assistant replies',
+      'Assistant attachments',
       'Network',
       'Resources',
     ]) {
@@ -173,6 +255,35 @@ describe('AssistantTuningPage', () => {
     for (const setting of SETTINGS) {
       expect(screen.getByLabelText(setting.label)).toBeTruthy();
     }
+  });
+
+  it('renders the attachment caps under Assistant attachments and saves one', async () => {
+    const updated = {
+      ...SETTINGS.find((s) => s.key === 'assistant.attachments.imageMaxCount')!,
+      value: 2,
+    };
+    const mock = stubFetch([
+      { url: TUNING_URL, body: { settings: SETTINGS } },
+      {
+        method: 'PUT',
+        url: tuningKeyUrl('assistant.attachments.imageMaxCount'),
+        body: { setting: updated },
+      },
+    ]);
+    renderPage();
+    expect(await screen.findByRole('heading', { name: 'Assistant attachments' })).toBeTruthy();
+    const input = await screen.findByLabelText('Images read per message');
+    expect(input).toHaveProperty('value', '4');
+    fireEvent.change(input, { target: { value: '2' } });
+    await act(async () => {
+      fireEvent.click(
+        within(rowOf('assistant.attachments.imageMaxCount')).getByRole('button', { name: 'Save' }),
+      );
+    });
+    const put = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
+    expect(put?.[1]).toMatchObject({ method: 'PUT' });
+    expect(bodyOf(put!)).toEqual({ value: 2 });
+    expect(await screen.findByText('Saved')).toBeTruthy();
   });
 
   it('saves a ping cap as a plain count', async () => {

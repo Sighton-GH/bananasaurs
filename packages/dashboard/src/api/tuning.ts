@@ -25,6 +25,7 @@ export type TuningGroup =
   | 'Assistant retries'
   | 'Assistant tool loop'
   | 'Assistant context'
+  | 'Assistant attachments'
   | 'Network'
   | 'Resources'
   | 'MCP connector';
