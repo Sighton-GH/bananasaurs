@@ -685,9 +685,63 @@ describe('messages and reactions', () => {
       authorId: USER,
       authorName: 'Member Name',
       content: 'the handbook is pinned in #welcome',
+      attachments: [],
+      embeds: [],
     });
     expect(last(requests).method).toBe('GET');
     expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
+  });
+
+  it('keeps attachment urls and embed text on a fetched message (ADR 0149)', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'sam' },
+          content: 'notes attached',
+          attachments: [
+            {
+              id: '1',
+              filename: 'notes.txt',
+              content_type: 'text/plain',
+              size: 12_288,
+              url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+              proxy_url: 'https://media.discordapp.net/attachments/1/2/notes.txt',
+            },
+            { id: '2', filename: 'no-url.bin', size: 4 },
+          ],
+          embeds: [
+            {
+              title: 'Top Gear loser dance',
+              description: 'a clip',
+              provider: { name: 'Tenor' },
+              thumbnail: { url: 'https://media.discordapp.net/thumb.gif' },
+            },
+          ],
+        },
+      },
+    ]);
+    const fetched = await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE);
+    expect(fetched?.attachments).toEqual([
+      {
+        attachmentId: '1',
+        fileName: 'notes.txt',
+        contentType: 'text/plain',
+        sizeBytes: 12_288,
+        url: 'https://cdn.discordapp.com/attachments/1/2/notes.txt',
+      },
+      { attachmentId: '2', fileName: 'no-url.bin', sizeBytes: 4, url: undefined },
+    ]);
+    expect(fetched?.embeds).toEqual([
+      {
+        title: 'Top Gear loser dance',
+        description: 'a clip',
+        providerName: 'Tenor',
+        thumbnailUrl: 'https://media.discordapp.net/thumb.gif',
+      },
+    ]);
   });
 
   it('prefers the guild nickname over the global name for the quoted author', async () => {
@@ -818,6 +872,7 @@ describe('messages and reactions', () => {
         content: 'first',
         at: Date.parse('2026-09-20T12:00:00.000Z'),
         hasAttachments: false,
+        attachments: [],
       },
       {
         messageId: '444444444444444446',
@@ -828,6 +883,7 @@ describe('messages and reactions', () => {
         at: Date.parse('2026-09-20T12:01:00.000Z'),
         referencedAuthorName: 'ana',
         hasAttachments: true,
+        attachments: [{ attachmentId: '1', fileName: 'notes.txt', sizeBytes: 12 }],
       },
     ]);
     expect(last(requests).method).toBe('GET');

@@ -5,6 +5,7 @@ import {
   safeDisplayName,
   type RecentMessage,
 } from '@bananasaurs/core';
+import { attachmentMarker } from './conversation-context.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
 
 /**
@@ -80,7 +81,13 @@ export const formatChannelLines = (
       message.authorId === opts.botUserId && opts.botDisplayName !== undefined
         ? opts.botDisplayName
         : speakerOf(message.authorName);
-    const text = message.content.trim() === '' ? '[attachment]' : cleanText(message.content);
+    const markers = (message.attachments ?? []).map(attachmentMarker).join(' ');
+    const text =
+      message.content.trim() === ''
+        ? markers === ''
+          ? '[attachment]'
+          : markers
+        : cleanText(message.content) + (markers === '' ? '' : ` ${markers}`);
     const suffix =
       message.referencedAuthorName === undefined
         ? ''
@@ -112,7 +119,13 @@ export const buildChannelContext = (
     if (message.content.trim() === '' && !message.hasAttachments) continue;
     const name =
       message.authorId === input.botUserId ? input.botDisplayName : speakerOf(message.authorName);
-    const text = message.content.trim() === '' ? '[attachment]' : cleanText(message.content);
+    const markers = (message.attachments ?? []).map(attachmentMarker).join(' ');
+    const text =
+      message.content.trim() === ''
+        ? markers === ''
+          ? '[attachment]'
+          : markers
+        : cleanText(message.content) + (markers === '' ? '' : ` ${markers}`);
     const suffix =
       message.referencedAuthorName === undefined
         ? ''

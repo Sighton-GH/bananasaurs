@@ -32,7 +32,42 @@ export const HISTORY_CHARS = 6_000;
 export interface QuotedMessage {
   readonly authorName: string;
   readonly content: string;
+  readonly attachments?:
+    | readonly {
+        readonly fileName: string;
+        readonly contentType?: string | undefined;
+        readonly sizeBytes: number;
+      }[]
+    | undefined;
+  readonly embeds?:
+    | readonly {
+        readonly title?: string | undefined;
+        readonly description?: string | undefined;
+        readonly providerName?: string | undefined;
+      }[]
+    | undefined;
 }
+
+/** ADR 0149: one plain marker line per attached file, so the model knows a file was there. */
+export const attachmentMarker = (file: {
+  readonly fileName: string;
+  readonly contentType?: string | undefined;
+  readonly sizeBytes: number;
+}): string =>
+  `[attached: ${neutraliseMarkers(file.fileName)}, ${neutraliseMarkers(file.contentType ?? 'unknown type')}, ${Math.max(1, Math.round(file.sizeBytes / 1024))} KB]`;
+
+const embedMarker = (embed: {
+  readonly title?: string | undefined;
+  readonly description?: string | undefined;
+  readonly providerName?: string | undefined;
+}): string | undefined => {
+  const head = [embed.providerName, embed.title]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .map(neutraliseMarkers)
+    .join(': ');
+  if (head === '') return undefined;
+  return `[embed: ${head}${embed.description === undefined ? '' : ` — ${neutraliseMarkers(embed.description)}`}]`;
+};
 
 export interface ConversationContextInput {
   readonly scope: GuildScope;
@@ -60,8 +95,13 @@ export interface ConversationContext {
 }
 
 /** A quoted message as untrusted evidence inside the user turn. */
-export const quoteEnvelopeFor = (quoted: QuotedMessage): string =>
-  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(safeDisplayName(quoted.authorName) ?? 'a member')}]\n${neutraliseMarkers(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
+export const quoteEnvelopeFor = (quoted: QuotedMessage): string => {
+  const markers = [
+    ...(quoted.attachments ?? []).map(attachmentMarker),
+    ...(quoted.embeds ?? []).flatMap((e) => embedMarker(e) ?? []),
+  ];
+  return `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(safeDisplayName(quoted.authorName) ?? 'a member')}]\n${[neutraliseMarkers(quoted.content), ...markers].join('\n')}\n[/UNTRUSTED QUOTED MESSAGE]`;
+};
 
 /** ADR 0085: every earlier user turn reads `[Name, 3 min ago] …`. */
 export const labelUserTurn = (
