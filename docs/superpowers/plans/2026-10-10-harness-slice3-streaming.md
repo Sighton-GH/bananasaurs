@@ -1271,67 +1271,287 @@ return {
 
 **Done when:** the SSE endpoint assembles text, thought and function calls; `thinkingLevel` is `low` with tools and `medium` without and explicit levels win; no thinking parameter goes out for `none` models (unknown models included); thought signatures survive via raw `providerParts`; keepalives re-arm the idle timer; `MAX_TOKENS` keeps text plus usage; idle streams time out retryably; every pre-existing JSON mock is converted to SSE.
 
-### S3-T8: Tool loop wiring and finish reasons   ·   Wave 4
-**Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`StreamProgress`, `onProgress`), `apps/daemon/src/assistant/run-recorder.ts`, `apps/daemon/src/assistant/typing.ts`, `apps/daemon/src/jobs/assistant.ts` (lines 726–734 `startTyping`)
-**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: tool loop passes `onProgress` per round, records throttled `model-progress`, appends `-# (cut short)` on `length`, saves `reasoning` per round for the trace
+### S3-T8: Tool loop wiring, finish reasons, chain timeouts   ·   Wave 4
+**Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`; Modify: `apps/daemon/src/assistant/model-chain.ts`; Test: `apps/daemon/src/assistant/model-chain.test.ts`
+**Reads (do not edit):** `packages/core/src/providers/contracts.ts` (`StreamProgress`, `StreamChunk`, `onProgress`, `onChunk`), `apps/daemon/src/assistant/run-recorder.ts`, `apps/daemon/src/assistant/model-capabilities.ts` (`capabilitiesForEntry` signature)
+**Interfaces:** Consumes: streamed `GenerateTextResponse.reasoning` from S3-T6/S3-T7; `model-progress` event from S3-T2 · Produces: `runToolLoop` input gains `capabilitiesFor`, `onProgress`, `live`; one shared per-run progress throttle across entries and the escalation hand-over; `LoopResult.reasoning` per round; `-# (cut short)` on `length`/`MAX_TOKENS`; `makeProvider`/`resolveModelChain` forward idle/ceiling timeouts
 
-- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/tool-loop.test.ts`, using its `scripted` provider helper and `entry()` (top of file, lines 29–60), add:
+- [ ] **Step 1: Write the failing test** — in `apps/daemon/src/assistant/tool-loop.test.ts`, using its `scripted` provider helper, `entry()` (lines 57–69), `loopTools` (lines 77–81), `okResult` and `NOW` (top of file, lines 27–100). Note the required `runToolLoop` inputs (`chain`, `systemInstruction`, `protectedText`, `history`, `userText`, `initialHandles`, `now`): every test below passes all of them explicitly.
 
 ```ts
-it('appends a cut-short line when finishReason is length with text', async () => {
+it('appends a cut-short marker when finishReason is length with text', async () => {
   const { provider } = scripted([
     { text: 'long answer', model: 'model-a', finishReason: 'length' },
   ]);
   const loop = await runToolLoop({
-    provider,
     chain: [entry({ provider })],
     systemInstruction: 'Be concise.',
     protectedText: '',
-    toolsOffered: [],
-    runTools: async () => ({ ok: true, name: 'x', text: 'done', sources: [] }),
+    history: [],
+    userText: 'Summarise this for Sam L.',
+    initialHandles: [],
     recorder: { runId: 'r1', event: () => undefined, update: () => undefined },
     now: () => NOW,
   });
-  expect(loop.text).toContain('long answer');
-  expect(loop.text).toContain('-# (cut short)');
+  expect(loop.text).toBe('long answer\n\n-# (cut short)');
 });
 
-it('emits model-progress at most every 3 s through onProgress', async () => {
-  const seen: Array<{ msSinceLastByte: number }> = [];
-  const streaming = {
+it('throttles model-progress to one stream per run and passes capabilities through', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const streaming: TextProvider = {
     id: 'fake',
-    capabilities: new Set(['text', 'tools'] as const),
+    capabilities: new Set(['text', 'tools']),
     generateText: async (req: GenerateTextRequest) => {
-      req.onProgress?.({ round: 1, answerChars: 10, reasoningChars: 0, keepalives: 0, msSinceLastByte: 100 });
-      req.onProgress?.({ round: 1, answerChars: 20, reasoningChars: 0, keepalives: 0, msSinceLastByte: 200 });
-      return { text: 'done', model: 'model-a' };
+      seen.push(req);
+      req.onProgress?.({ round: 0, answerChars: 10, reasoningChars: 0, keepalives: 0, msSinceLastByte: 100 });
+      req.onProgress?.({ round: 0, answerChars: 20, reasoningChars: 5, keepalives: 1, msSinceLastByte: 200 });
+      req.onProgress?.({ round: 0, answerChars: 30, reasoningChars: 9, keepalives: 1, msSinceLastByte: 300 });
+      return { text: 'done', model: 'model-a', reasoning: 'why' };
     },
   };
   const events: RunEvent[] = [];
-  await runToolLoop({
-    provider: streaming,
+  const loop = await runToolLoop({
     chain: [entry({ provider: streaming })],
     systemInstruction: 'Be concise.',
     protectedText: '',
-    toolsOffered: [],
-    runTools: async () => ({ ok: true, name: 'x', text: 'done', sources: [] }),
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    capabilitiesFor: () => ({ tools: true, image: false, pdf: false, reasoning: true, thinking: 'levels' }),
     recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
     now: () => NOW,
   });
-  expect(events.filter((e) => e.kind === 'model-progress').length).toBeLessThanOrEqual(1);
-  expect(seen.length).toBeGreaterThanOrEqual(0);
+  // One shared throttle on a fixed clock: three rapid callbacks, one event.
+  expect(events.filter((e) => e.kind === 'model-progress')).toHaveLength(1);
+  expect(seen[0]?.capabilities).toEqual({ tools: true, image: false, pdf: false, reasoning: true, thinking: 'levels' });
+  expect(loop.reasoning).toEqual([{ round: 1, text: 'why' }]);
+});
+
+it('a skipped entry emits no progress', async () => {
+  const { provider } = scripted([textAnswer('unreached')]);
+  const events: RunEvent[] = [];
+  await runToolLoop({
+    chain: [entry({ provider: undefined, skip: 'disabled' }), entry({ provider })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  const progress = events.filter((e) => e.kind === 'model-progress');
+  expect(progress).toHaveLength(0);
+  expect(events.filter((e) => e.kind === 'model-skipped')).toHaveLength(1);
+});
+
+it('progress survives the escalation hand-over on one shared throttle', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const fire = (req: GenerateTextRequest): void => {
+    seen.push(req);
+    req.onProgress?.({ round: 0, answerChars: 10, reasoningChars: 0, keepalives: 0, msSinceLastByte: 50 });
+    req.onProgress?.({ round: 0, answerChars: 20, reasoningChars: 0, keepalives: 0, msSinceLastByte: 60 });
+  };
+  const light: TextProvider = {
+    id: 'fake-light',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      fire(req);
+      return toolAnswer([{ name: 'search_sources', args: {} }]);
+    },
+  };
+  const standard: TextProvider = {
+    id: 'fake-standard',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      fire(req);
+      return textAnswer('standard answer', 'model-s');
+    },
+  };
+  const events: RunEvent[] = [];
+  const loop = await runToolLoop({
+    chain: [
+      entry({ provider: light, providerId: 'openrouter', model: 'model-light', tier: 'light' }),
+      entry({ provider: standard, providerId: 'gemini', model: 'model-s', tier: 'standard' }),
+    ],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    tools: loopTools(async () => okResult('search_sources')),
+    escalateAfterTools: (_entry, remaining) => remaining,
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(loop.text).toBe('standard answer');
+  // Both entries were wired (round-1 light plus round-2 standard)…
+  expect(seen).toHaveLength(2);
+  expect(seen.every((r) => r.onProgress !== undefined)).toBe(true);
+  // …but the fixed clock means one throttled event, never a second stream.
+  expect(events.filter((e) => e.kind === 'model-progress')).toHaveLength(1);
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` line and no `model-progress` event
-- [ ] **Step 3: Implement** — anchor: `callProvider` in `apps/daemon/src/assistant/tool-loop.ts` (around lines 740–810: `thinkingBudget`, `maxOutputTokens`, `model-call`/`model-result` events). Replacement: pass `onProgress` that throttles to one `model-progress` event per 3 s per call (track last emit per round; carry `{ round, answerChars, reasoningChars, keepalives, msSinceLastByte }` straight into the event, which bumps `updatedAt` via the recorder); keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools); in `finishEntry`, when `finishReason` is `length` (or Gemini `MAX_TOKENS`) and guarded text is non-empty, append `\n\n-# (cut short)` after the guard; when `length` with empty text, keep today's empty-answer path; thread `response.reasoning` per round into the trace payload the service writes (S3-T9 reads it there). Keep typing alive: in `apps/daemon/src/jobs/assistant.ts` the `startTyping` call (lines 726–734) is restarted per provider call with `maxMs` set to `assistant.providerMaxCallMs` and stopped only at run end — implement by moving the stop call to the run-end backstop (line 1371) and passing the ceiling as `maxMs`. (after Slice 6: pass entry `capabilities` into the request so adapters can gate reasoning/thinking.)
-- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts --maxWorkers=1` · Expected: PASS
-- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
-- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` then `npx eslint apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts` · exit 0
-- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts && git commit -m "Slice 3 T8: tool loop progress and finish reasons"`
+(`textAnswer`/`toolAnswer` are the file's helpers at lines 71–75; `toolAnswer([{ name, args }])` builds `{ text: '', model: 'model-a', toolCalls }`. `entry()` defaults `keyId: 'key_a'`/`selectedKeyId`; the `providerId`/`model`/`tier` overrides above are all `ChainEntry` fields.)
 
-**Done when:** `length` with text delivers the answer plus `-# (cut short)`; `model-progress` fires at most every 3 s; `reasoning` travels per round to the trace writer; typing survives a long stream.
+In `apps/daemon/src/assistant/model-chain.test.ts`, using its `openMigratedTestDatabase` (line 22) and the file's `eligible()` row (used at line 373), add inside the top-level `describe('resolveModelChain')` (line 84):
+
+```ts
+it('forwards idle and ceiling timeouts from resolve readers to makeProvider', () => {
+  const db = openMigratedTestDatabase();
+  const seen: unknown[] = [];
+  const fake = {
+    id: 'gemini',
+    capabilities: new Set(['text']),
+    generateText: async () => ({ text: 'x', model: 'gemini-3.8-flash' }),
+  } as const;
+  const entries = resolveModelChain({
+    instance: db.scopes.instance(),
+    config: {
+      AI_PROVIDER: 'gemini',
+      AI_MODEL: 'gemini-3.8-flash',
+      AI_PROFILE_COST_CLASS: 'free',
+      GEMINI_API_KEY: 'k',
+    },
+    openKey: () => 'k',
+    eligibility: () => eligible(),
+    makeProvider: (provider, apiKey, costClass, options) => {
+      seen.push(options);
+      return fake as never;
+    },
+    providerTimeoutMs: () => 60_000,
+    providerIdleTimeoutMs: () => 45_000,
+    providerMaxCallMs: () => 300_000,
+  });
+  try {
+    expect(entries.length).toBeGreaterThan(0);
+    expect(seen[0]).toMatchObject({ timeoutMs: 60_000, idleTimeoutMs: 45_000, maxCallMs: 300_000 });
+  } finally {
+    db.close();
+  }
+});
+```
+
+(check that file's `beforeEach`/`afterEach` DB handling: if the file already opens one DB per test, reuse its scope instead of opening a second; keep the `try/finally` close only when this test opened it.)
+
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.test.ts --maxWorkers=1` · Expected: FAIL with no `-# (cut short)` marker, no `model-progress` event, unknown `capabilitiesFor`/`live` inputs, and unknown resolve readers
+- [ ] **Step 3: Implement** — in `apps/daemon/src/assistant/tool-loop.ts`, against the current code:
+
+(a) Imports: extend the `@bananasaurs/core` import (lines 1–19) with `type ModelCapabilities` and `type StreamProgress`. `ChainEntry` is already imported (line 22).
+
+(b) `LoopResult` (lines 37–96): add after the `finishReason` field:
+
+```ts
+  /**
+   * Saved thinking per provider round, in call order (Slice 3, ADR 0148).
+   * The service stores these on the trace detail under `reasoning`.
+   */
+  readonly reasoning: readonly { readonly round: number; readonly text: string }[];
+```
+
+(c) `runToolLoop` input (lines 199–242): add before `readonly now: () => number;`:
+
+```ts
+  /**
+   * Per-entry capabilities for the adapters' thinking/reasoning gate
+   * (daemon `capabilitiesForEntry`). Absent means the adapters' built-in
+   * conservative defaults.
+   */
+  readonly capabilitiesFor?: ((entry: ChainEntry) => ModelCapabilities) | undefined;
+  /**
+   * Throttled per-run progress fan-out (the Discord notice in S3-T12 reads
+   * it). The ledger event is recorded regardless.
+   */
+  readonly onProgress?: ((progress: StreamProgress) => void) | undefined;
+  /** Live-text sink (S3-T9's buffer); absent means no live text. */
+  readonly live?: { append(runId: string, answerDelta: string, reasoningDelta: string): void } | undefined;
+```
+
+(d) Run scope (near `offeredSeen`, lines 269–274): add the collection plus the single shared throttle:
+
+```ts
+  const reasoning: { round: number; text: string }[] = [];
+  // One progress stream per run: a single throttle shared by every entry
+  // and across the escalation hand-over, on the loop clock so tests are
+  // deterministic. Skipped and cooled entries return before any provider
+  // call, so they are never wired and emit nothing.
+  let lastProgressEmit = 0;
+  const emitProgress = (round: number, progress: StreamProgress): void => {
+    const nowMs = input.now();
+    if (lastProgressEmit !== 0 && nowMs - lastProgressEmit < 3_000) return;
+    lastProgressEmit = nowMs;
+    recorder.event({
+      kind: 'model-progress',
+      round,
+      answerChars: progress.answerChars,
+      reasoningChars: progress.reasoningChars,
+      keepalives: progress.keepalives,
+      msSinceLastByte: progress.msSinceLastByte,
+    });
+    input.onProgress?.({ ...progress, round });
+  };
+```
+
+Thread `reasoning: [...reasoning]` into both `runToolLoop` return sites (the answered return around lines 534–548 and the failed return around lines 552–567).
+
+(e) `callProvider` request (lines 896–903): extend with capabilities, progress and live text:
+
+```ts
+    const request: GenerateTextRequest = {
+      model: entry.model,
+      systemInstruction: deps.systemInstruction,
+      messages: [...messages, ...extra],
+      maxOutputTokens: limits.maxOutputTokens,
+      thinkingBudget: declarations.length > 0 ? limits.toolThinking : limits.answerThinking,
+      ...(declarations.length === 0 ? {} : { tools: declarations }),
+      ...(input.capabilitiesFor === undefined ? {} : { capabilities: input.capabilitiesFor(entry) }),
+      onProgress: (progress) => emitProgress(round, progress),
+      onChunk: (chunk) => {
+        if (input.runId !== undefined && input.live !== undefined)
+          input.live.append(input.runId, chunk.text, chunk.reasoning);
+      },
+    };
+```
+
+`runEntry` receives `input` today only as destructured fields — it reads `input.tools`, `input.escalateAfterTools` etc. via the outer `input`? No: `runEntry` is called with an explicit deps object (lines 470–522). Add `capabilitiesFor: input.capabilitiesFor, onProgressEmit: emitProgress, live: input.live, runId: input.runId, collectReasoning: (round, text) => { reasoning.push({ round, text: text.slice(0, 8000) }); }` to that call, extend `runEntry`'s deps type (lines 643–683) with the same four fields, and use them in `callProvider` (which lives inside `runEntry`). After a successful `provider.generateText` (line 917), add:
+
+```ts
+      if (response.reasoning !== undefined && response.reasoning !== '')
+        deps.collectReasoning(round, response.reasoning);
+```
+
+Keep `thinkingBudget` mapping as is (adapters derive `thinkingLevel` from tools; explicit levels arrive via service input in S3-T12 only when the owner sets them — no new setting in this slice).
+
+(f) `finishEntry` cut-short (anchor: `guarded.ok` branch, lines 1287–1304, and the guard-retry `second.ok` branch around lines 1395–1410): add at the top of `finishEntry`:
+
+```ts
+  const CUT_SHORT = '\n\n-# (cut short)';
+  const cutShort =
+    (deps.response.finishReason === 'length' || deps.response.finishReason === 'MAX_TOKENS') &&
+    guarded.text !== '';
+```
+
+and return `text: cutShort ? guarded.text + CUT_SHORT : guarded.text` in the `guarded.ok` branch (marker appended after the guard so it is never stripped), and the same `cutShort`-style append for `second.text` in the retry `second.ok` branch. `length`/`MAX_TOKENS` with empty text keeps today's empty-answer path (falls through to the retry, then the fixed failure text).
+
+(g) In `apps/daemon/src/assistant/model-chain.ts`: extend `makeProvider` options (lines 70–84) to `{ readonly timeoutMs?: number; readonly idleTimeoutMs?: number; readonly maxCallMs?: number }` and spread all three into each provider constructor (`GeminiProvider`, `createOpenRouterProvider`, `createNvidiaNimProvider`) in the existing `...(x === undefined ? {} : { x })` style. Extend `resolveModelChain` deps (lines 171–175) with `readonly providerIdleTimeoutMs?: () => number; readonly providerMaxCallMs?: () => number;`; beside line 208 (`const timeoutMs = deps.providerTimeoutMs?.();`) add `const idleTimeoutMs = deps.providerIdleTimeoutMs?.();` and `const maxCallMs = deps.providerMaxCallMs?.();`; extend the `makeProvider` call (lines 218–221) so a defined reader forwards its value:
+
+```ts
+    const built =
+      timeoutMs === undefined && idleTimeoutMs === undefined && maxCallMs === undefined
+        ? deps.makeProvider(candidate.provider, apiKey, candidate.costClass)
+        : deps.makeProvider(candidate.provider, apiKey, candidate.costClass, {
+            ...(timeoutMs === undefined ? {} : { timeoutMs }),
+            ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+            ...(maxCallMs === undefined ? {} : { maxCallMs }),
+          });
+```
+- [ ] **Step 4: Run it and watch it pass** — `npx vitest run apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.test.ts --maxWorkers=1` · Expected: PASS
+- [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
+- [ ] **Step 6: Format and lint** — `npx prettier --write apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.ts apps/daemon/src/assistant/model-chain.test.ts` then `npx eslint apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.ts apps/daemon/src/assistant/model-chain.test.ts` · exit 0
+- [ ] **Step 7: Commit** — `git add apps/daemon/src/assistant/tool-loop.ts apps/daemon/src/assistant/tool-loop.test.ts apps/daemon/src/assistant/model-chain.ts apps/daemon/src/assistant/model-chain.test.ts && git commit -m "Slice 3 T8: tool loop progress and finish reasons"`
+
+**Done when:** `length`/`MAX_TOKENS` with text delivers the answer plus `\n\n-# (cut short)`; `model-progress` fires at most every 3 s on one run-shared throttle that survives the escalation hand-over; skipped/cooled entries emit nothing; `reasoning` travels per round on `LoopResult`; chain entries forward idle/ceiling timeouts to the adapters.
 
 ### S3-T9: Live buffer, route and progress events   ·   Wave 4
 **Owns:** Create: `apps/daemon/src/assistant/live-buffer.ts`; Test: `apps/daemon/src/assistant/live-buffer.test.ts`; Modify: `packages/http/src/routes/assistant-runs.ts`; Test: `packages/http/src/routes/assistant-runs.test.ts`; Modify: `apps/daemon/src/assistant/run-recorder.ts`
