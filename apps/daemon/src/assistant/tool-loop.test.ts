@@ -2429,3 +2429,182 @@ it('records Parallel web use in first-seen order without duplicates', async () =
   expect(result.web).toBe(true);
   expect(result.webSources).toEqual(['parallel', 'brave']);
 });
+
+it('appends a cut-short marker when finishReason is length with text', async () => {
+  const { provider } = scripted([
+    { text: 'long answer', model: 'model-a', finishReason: 'length' },
+  ]);
+  const loop = await runToolLoop({
+    chain: [entry({ provider })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Summarise this for Sam L.',
+    initialHandles: [],
+    recorder: { runId: 'r1', event: () => undefined, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(loop.text).toBe('long answer\n\n-# (cut short)');
+});
+
+it('throttles model-progress to one stream per run and passes capabilities through', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const streaming: TextProvider = {
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      seen.push(req);
+      req.onProgress?.({ round: 0, answerChars: 10, reasoningChars: 0, keepalives: 0, msSinceLastByte: 100 });
+      req.onProgress?.({ round: 0, answerChars: 20, reasoningChars: 5, keepalives: 1, msSinceLastByte: 200 });
+      req.onProgress?.({ round: 0, answerChars: 30, reasoningChars: 9, keepalives: 1, msSinceLastByte: 300 });
+      return { text: 'done', model: 'model-a', reasoning: 'why' };
+    },
+  };
+  const events: RunEvent[] = [];
+  const loop = await runToolLoop({
+    chain: [entry({ provider: streaming, capabilities: { tools: true, image: false, pdf: false, reasoning: true, thinking: 'levels' } })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  // One shared throttle on a fixed clock: three rapid callbacks, one event.
+  expect(events.filter((e) => e.kind === 'model-progress')).toHaveLength(1);
+  expect(seen[0]?.capabilities).toEqual({ tools: true, image: false, pdf: false, reasoning: true, thinking: 'levels' });
+  expect(loop.reasoning).toEqual([{ round: 1, text: 'why' }]);
+});
+
+it('a skipped entry emits no progress', async () => {
+  const { provider } = scripted([textAnswer('unreached')]);
+  const events: RunEvent[] = [];
+  await runToolLoop({
+    chain: [entry({ provider: undefined, skip: 'disabled' }), entry({ provider })],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  const progress = events.filter((e) => e.kind === 'model-progress');
+  expect(progress).toHaveLength(0);
+  expect(events.filter((e) => e.kind === 'model-skipped')).toHaveLength(1);
+});
+
+it('progress survives the escalation hand-over on one shared throttle', async () => {
+  const seen: GenerateTextRequest[] = [];
+  const fire = (req: GenerateTextRequest): void => {
+    seen.push(req);
+    req.onProgress?.({ round: 0, answerChars: 10, reasoningChars: 0, keepalives: 0, msSinceLastByte: 50 });
+    req.onProgress?.({ round: 0, answerChars: 20, reasoningChars: 0, keepalives: 0, msSinceLastByte: 60 });
+  };
+  const light: TextProvider = {
+    id: 'fake-light',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      fire(req);
+      return toolAnswer([{ name: 'search_sources', args: {} }]);
+    },
+  };
+  const standard: TextProvider = {
+    id: 'fake-standard',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async (req: GenerateTextRequest) => {
+      fire(req);
+      return textAnswer('standard answer', 'model-s');
+    },
+  };
+  const events: RunEvent[] = [];
+  const loop = await runToolLoop({
+    chain: [
+      entry({ provider: light, providerId: 'openrouter', model: 'model-light', tier: 'light' }),
+      entry({ provider: standard, providerId: 'gemini', model: 'model-s', tier: 'standard' }),
+    ],
+    systemInstruction: 'Be concise.',
+    protectedText: '',
+    history: [],
+    userText: 'Hi.',
+    initialHandles: [],
+    tools: loopTools(async () => okResult('search_sources')),
+    escalateAfterTools: (_entry, remaining) => remaining,
+    recorder: { runId: 'r1', event: (e) => { events.push(e); }, update: () => undefined },
+    now: () => NOW,
+  });
+  expect(loop.text).toBe('standard answer');
+  // Both entries were wired (round-1 light plus round-2 standard)…
+  expect(seen).toHaveLength(2);
+  expect(seen.every((r) => r.onProgress !== undefined)).toBe(true);
+  // …but the fixed clock means one throttled event, never a second stream.
+  expect(events.filter((e) => e.kind === 'model-progress')).toHaveLength(1);
+});
+
+describe('Slice 3 streaming edge paths', () => {
+  it.each(['length', 'MAX_TOKENS'])('marks a %s guard-retry answer, but not an empty answer', async (finishReason) => {
+    const { provider } = scripted([
+      { text: '', model: 'model-a', finishReason },
+      { text: 'retry answer', model: 'model-a', finishReason, reasoning: 'retry thought' },
+    ]);
+    const loop = await runToolLoop(baseInput([entry({ provider })]));
+    expect(loop.text).toBe('retry answer\n\n-# (cut short)');
+    expect(loop.reasoning).toEqual([{ round: 0, text: 'retry thought' }]);
+  });
+
+  it('throttles on a zero clock and reopens only at three seconds', async () => {
+    let clock = 0;
+    const events: RunEvent[] = [];
+    const fanout = vi.fn();
+    const provider: TextProvider = {
+      id: 'fake', capabilities: new Set(['text']),
+      generateText: async (request) => {
+        for (const ms of [0, 0, 2999, 3000, 3001, 6000]) {
+          clock = ms;
+          await request.onProgress?.({ round: 0, answerChars: ms, reasoningChars: 0, keepalives: 1, msSinceLastByte: 0 });
+        }
+        return textAnswer('done');
+      },
+    };
+    await runToolLoop(baseInput([entry({ provider })], {
+      now: () => clock, onProgress: fanout,
+      recorder: { runId: 'r-zero', event: (e) => { events.push(e); }, update: () => undefined },
+    }));
+    expect(events.filter((e) => e.kind === 'model-progress').map((e) => e.answerChars)).toEqual([0, 3000, 6000]);
+    expect(fanout).toHaveBeenCalledTimes(3);
+    expect(fanout.mock.calls[0]?.[0].round).toBe(1);
+  });
+
+  it.each([false, true])('closes live and progress callbacks after a provider settles (failed=%s)', async (failed) => {
+    let saved: GenerateTextRequest | undefined;
+    const append = vi.fn();
+    const fanout = vi.fn();
+    const error = new ProviderError('quota', 'invented quota', false, {
+      quotaScope: 'minute', retryAfterMs: 9000, learnedLimit: { perMinute: 3 },
+    });
+    const provider: TextProvider = {
+      id: 'fake', capabilities: new Set(['text']),
+      generateText: async (request) => {
+        saved = request;
+        await request.onChunk?.({ text: 'answer delta', reasoning: 'thought delta' });
+        if (failed) throw error;
+        return { ...textAnswer('done'), reasoning: 'x'.repeat(9000) };
+      },
+    };
+    const loop = await runToolLoop(baseInput([entry({ provider })], {
+      recorder: { runId: 'r-live', event: () => undefined, update: () => undefined },
+      live: { append }, onProgress: fanout,
+    }));
+    expect(append).toHaveBeenCalledExactlyOnceWith('r-live', 'answer delta', 'thought delta');
+    await saved?.onChunk?.({ text: 'late', reasoning: 'late' });
+    await saved?.onProgress?.({ round: 0, answerChars: 999, reasoningChars: 0, keepalives: 0, msSinceLastByte: 0 });
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(fanout).not.toHaveBeenCalled();
+    if (failed) {
+      expect(loop.lastError).toBe(error);
+      expect(loop.lastError).toMatchObject({ quotaScope: 'minute', retryAfterMs: 9000, learnedLimit: { perMinute: 3 } });
+      expect(loop.reasoning).toEqual([]);
+    } else expect(loop.reasoning).toEqual([{ round: 1, text: 'x'.repeat(8000) }]);
+  });
+});

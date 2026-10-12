@@ -82,6 +82,35 @@ const resolve = (
 };
 
 describe('resolveModelChain', () => {
+it('forwards idle and ceiling timeouts from resolve readers to makeProvider', () => {
+  const seen: unknown[] = [];
+  const fake = {
+    id: 'gemini',
+    capabilities: new Set(['text']),
+    generateText: async () => ({ text: 'x', model: 'gemini-3.8-flash' }),
+  } as const;
+  const entries = resolveModelChain({
+    instance: t.scopes.instance(),
+    config: {
+      AI_PROVIDER: 'gemini',
+      AI_MODEL: 'gemini-3.8-flash',
+      AI_PROFILE_COST_CLASS: 'free',
+      GEMINI_API_KEY: 'k',
+    },
+    openKey: () => 'k',
+    eligibility: () => eligible(),
+    makeProvider: (provider, apiKey, costClass, options) => {
+      seen.push(options);
+      return fake as never;
+    },
+    providerTimeoutMs: () => 60_000,
+    providerIdleTimeoutMs: () => 45_000,
+    providerMaxCallMs: () => 300_000,
+  });
+    expect(entries.length).toBeGreaterThan(0);
+    expect(seen[0]).toMatchObject({ timeoutMs: 60_000, idleTimeoutMs: 45_000, maxCallMs: 300_000 });
+});
+
   it('seeds from env when both tables are empty, all fallback models sharing the synthetic env key', () => {
     const config = {
       ...base,
