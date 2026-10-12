@@ -59,6 +59,12 @@ export const JOB_KINDS = {
    * member set from a persisted cursor through the MCP role gateway.
    */
   mcpBulkRole: 'mcp.bulk_role',
+  /**
+   * One daily digest over the guild's local day (ADR 0150). Enqueued with
+   * `oncePerBucket` (ADR 0127) under the local-day key below, so a restart
+   * or a replay cannot run it twice.
+   */
+  assistantDailyDigest: 'assistant_daily_digest',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -352,6 +358,23 @@ export type ConversationPrunePayload = z.infer<typeof conversationPrunePayload>;
  */
 export const conversationPruneDedupeKey = (day: string): string =>
   `${JOB_KINDS.conversationPrune}:${day}`;
+
+export const assistantDailyDigestPayload = z.object({
+  /** The local day (`BANANASAURS_TIME_ZONE`) this run covers. */
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+export type AssistantDailyDigestPayload = z.infer<typeof assistantDailyDigestPayload>;
+
+/**
+ * One pending digest per local day, across the process.
+ *
+ * Deliberately guild-free like `conversationPruneDedupeKey`: the timer
+ * enqueues one job per guild per day under the same key, and the
+ * `(guild_id, dedupe_key)` index collapses per guild - a second `runOnce`
+ * on the same day enqueues nothing anywhere.
+ */
+export const assistantDailyDigestDedupeKey = (day: string): string =>
+  `${JOB_KINDS.assistantDailyDigest}:${day}`;
 
 /**
  * One conversation summary over evicted turns (ADR 0091 decision 3).

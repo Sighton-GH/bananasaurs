@@ -7,6 +7,8 @@ import {
   type NewRule,
 } from '../assistant/conversation.js';
 import {
+  assistantDailyDigestDedupeKey,
+  assistantDailyDigestPayload,
   assistantInvokeCursor,
   assistantInvokePayload,
   pruneJobsDedupeKey,
@@ -186,5 +188,19 @@ describe('housekeeping dedupe keys and payload (ADR 0127)', () => {
   it('pruneJobsPayload rejects a negative olderThanMs', () => {
     expect(pruneJobsPayload.safeParse({ olderThanMs: -1 }).success).toBe(false);
     expect(pruneJobsPayload.safeParse({ olderThanMs: 0 }).success).toBe(true);
+  });
+});
+
+describe('assistantDailyDigest payload and dedupe key (ADR 0150 decision 1)', () => {
+  it('accepts a local day and refuses anything else', () => {
+    expect(assistantDailyDigestPayload.safeParse({ day: '2026-10-09' }).success).toBe(true);
+    expect(assistantDailyDigestPayload.safeParse({ day: '2026-10-09T04:00' }).success).toBe(false);
+    expect(assistantDailyDigestPayload.safeParse({}).success).toBe(false);
+  });
+  it('keys one bucket per local day', () => {
+    expect(assistantDailyDigestDedupeKey('2026-10-09')).toBe('assistant_daily_digest:2026-10-09');
+    expect(assistantDailyDigestDedupeKey('2026-10-10')).not.toBe(
+      assistantDailyDigestDedupeKey('2026-10-09'),
+    );
   });
 });
