@@ -1173,7 +1173,7 @@ describe('OpenAI-compatible providers', () => {
       ]);
     });
 
-    it('a clean EOF without finish_reason and partial text throws a retryable outage', async () => {
+    it('a clean EOF without finish_reason but with text returns the answer', async () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
         new Response('data: {"choices":[{"delta":{"content":"part"}}]}\n\n', {
           status: 200,
@@ -1181,13 +1181,12 @@ describe('OpenAI-compatible providers', () => {
         }),
       );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
-      const err = await provider
-        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
-        .catch((e: unknown) => e);
-      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      const res = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      expect(res.text).toBe('part');
+      expect(res).not.toHaveProperty('finishReason');
     });
 
-    it('a clean EOF without finish_reason and a partial tool call throws a retryable outage', async () => {
+    it('a clean EOF without finish_reason but with a tool call returns the call', async () => {
       const fetch = vi
         .fn<typeof globalThis.fetch>()
         .mockResolvedValue(
@@ -1197,10 +1196,23 @@ describe('OpenAI-compatible providers', () => {
           ),
         );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const res = await provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] });
+      expect(res.toolCalls).toEqual([{ id: 'a', name: 'f', args: { x: 1 } }]);
+      expect(res).not.toHaveProperty('finishReason');
+    });
+
+    it('a clean EOF without finish_reason, text or tool call still throws', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response('data: {"choices":[{"delta":{}}]}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       const err = await provider
         .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
         .catch((e: unknown) => e);
-      expect(err).toMatchObject({ kind: 'outage', retryable: true });
+      expect(err).toMatchObject({ kind: 'invalid-response' });
     });
   });
 });

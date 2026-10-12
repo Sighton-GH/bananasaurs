@@ -976,14 +976,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
                 },
               ],
         );
-      // A stream that ends cleanly without any finish_reason is truncated,
-      // not complete: never return the partial as a success. Detectable
-      // here without touching sse.ts.
-      if (finishReason === undefined && (text !== '' || reasoning !== '' || toolCalls.length > 0))
-        throw trusted('outage', `${this.id} stream ended without a finish reason`, true, {
-          host: this.host,
-          ...(upstream === undefined ? {} : { upstream }),
-        });
+      // A stream that ends cleanly without any finish_reason still returns
+      // its answer or tool calls (same as Gemini), with `finishReason`
+      // undefined. Only a stream with no text and no tool call throws below.
       const finish = finishReason === '' || finishReason === undefined ? undefined : finishReason;
       const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens;
       const reasoningOnly = reasoning !== '';
