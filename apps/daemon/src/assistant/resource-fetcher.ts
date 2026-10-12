@@ -97,6 +97,19 @@ export type ResourceFetchFailureCode =
   | 'timeout'
   | 'network';
 
+export interface ByteFetchOptions {
+  readonly allowedHosts: readonly string[];
+  readonly maxBytes: number;
+  /** Absent means any content type is accepted; magic bytes decide later (ADR 0149). */
+  readonly allowedTypes?: readonly string[] | undefined;
+}
+export interface ByteFetchSuccess {
+  readonly ok: true;
+  readonly bytes: Uint8Array;
+  readonly mediaType: string;
+}
+export type ByteFetchResult = ByteFetchSuccess | ResourceFetchFailure;
+
 const fail = (
   code: ResourceFetchFailureCode,
   message: string,
@@ -337,6 +350,140 @@ export class ReviewedResourceFetcher {
     if (conditional === undefined && result.ok && result.notModified !== true)
       this.#cache.set(initial.href, result.evidence);
     return result;
+  }
+
+  async fetchBytes(rawUrl: string, options: ByteFetchOptions): Promise<ByteFetchResult> {
+    let initial: URL;
+    try {
+      initial = validateResourceUrl(rawUrl);
+    } catch {
+      return fail('invalid-url', 'The attachment URL is not an allowed public HTTPS URL.');
+    }
+    if (initial.port !== '' && initial.port !== '443')
+      return fail('invalid-url', 'The attachment URL must use the standard HTTPS port.', {
+        host: initial.hostname,
+      });
+    if (!options.allowedHosts.some((host) => initial.hostname.toLowerCase() === host.toLowerCase()))
+      return fail('redirect', 'The attachment URL is outside the allowed hosts.', {
+        host: initial.hostname,
+      });
+    const limits: ResourceFetchLimits = {
+      ...DEFAULT_RESOURCE_FETCH_LIMITS,
+      maxBytes: options.maxBytes,
+    };
+    return this.#fetchBytesFrom(initial, new Set(), 0, limits, options);
+  }
+
+  async #fetchBytesFrom(
+    url: URL,
+    visited: Set<string>,
+    redirects: number,
+    limits: ResourceFetchLimits,
+    options: ByteFetchOptions,
+  ): Promise<ByteFetchResult> {
+    if (visited.has(url.href))
+      return fail('redirect', 'The attachment redirect looped.', { host: url.hostname });
+    visited.add(url.href);
+    let addresses: readonly ResolvedAddress[];
+    try {
+      addresses = await this.#resolve(url.hostname);
+    } catch {
+      return fail('dns-failed', 'The attachment host could not be resolved.', {
+        host: url.hostname,
+      });
+    }
+    if (addresses.length === 0)
+      return fail('dns-failed', 'The attachment host has no address.', { host: url.hostname });
+    if (addresses.some(({ address }) => !isPublicAddress(address)))
+      return fail('private-address', 'The attachment resolved to a non-public address.', {
+        host: url.hostname,
+      });
+    let response: PinnedResponse | undefined;
+    let lastError: unknown;
+    for (const address of addresses) {
+      try {
+        response = await this.#request(url, address, limits.timeoutMs);
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (response === undefined) {
+      return fail(
+        lastError instanceof Error && /timed out/i.test(lastError.message) ? 'timeout' : 'network',
+        'The attachment could not be retrieved safely.',
+        { host: url.hostname },
+      );
+    }
+    if (response.status >= 300 && response.status < 400) {
+      response.discard?.();
+      if (redirects >= limits.maxRedirects)
+        return fail('redirect', 'The attachment exceeded the redirect limit.', {
+          host: url.hostname,
+        });
+      const location = redirectLocation(response);
+      if (location === undefined)
+        return fail('redirect', 'The attachment redirect had no location.', {
+          host: url.hostname,
+        });
+      let redirected: URL;
+      try {
+        redirected = validateResourceUrl(new URL(location, url).href);
+      } catch {
+        return fail('redirect', 'The attachment redirected outside allowed public HTTPS URLs.', {
+          host: url.hostname,
+        });
+      }
+      if (
+        redirected.hostname.toLowerCase() !== url.hostname.toLowerCase() ||
+        (redirected.port !== '' && redirected.port !== '443') ||
+        !options.allowedHosts.some(
+          (host) => redirected.hostname.toLowerCase() === host.toLowerCase(),
+        )
+      )
+        return fail('redirect', 'The attachment redirected away from its own host or port.', {
+          host: redirected.hostname,
+        });
+      return this.#fetchBytesFrom(redirected, visited, redirects + 1, limits, options);
+    }
+    if (response.status < 200 || response.status >= 300) {
+      response.discard?.();
+      return fail('http-status', `The attachment returned HTTP ${response.status}.`, {
+        httpStatus: response.status,
+        host: url.hostname,
+      });
+    }
+    const mediaType = mediaTypeOf(response.headers['content-type']);
+    if (options.allowedTypes !== undefined && !options.allowedTypes.includes(mediaType)) {
+      response.discard?.();
+      return fail('content-type', 'The attachment did not return an accepted type.', {
+        host: url.hostname,
+      });
+    }
+    const declaredLength = Number(response.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > limits.maxBytes) {
+      response.discard?.();
+      return fail('too-large', 'The attachment exceeded the size limit.', {
+        host: url.hostname,
+      });
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for await (const chunk of response.body) {
+        size += chunk.byteLength;
+        if (size > limits.maxBytes) {
+          response.discard?.();
+          return fail('too-large', 'The attachment exceeded the size limit.', {
+            host: url.hostname,
+          });
+        }
+        chunks.push(chunk);
+      }
+    } catch {
+      return fail('network', 'The attachment body could not be read.', { host: url.hostname });
+    }
+    return { ok: true, bytes: Buffer.concat(chunks), mediaType };
   }
 
   async #fetchFrom(
