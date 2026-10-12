@@ -980,9 +980,11 @@ describe('independent real-provider probe (review round 2, A)', () => {
     t.raw
       .prepare('UPDATE assistant_conversations SET title = ? WHERE conversation_id = ?')
       .run('Build sk-abcdefghijklmnop', 'conv-1');
+    // `generateText` speaks the streaming endpoint (Slice 3 T7), so the
+    // fixture answers one SSE frame, not a bare JSON body.
     const fetcher = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       new Response(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           candidates: [
             {
               content: {
@@ -990,7 +992,7 @@ describe('independent real-provider probe (review round 2, A)', () => {
               },
             },
           ],
-        }),
+        })}\n\n`,
         { status: 200 },
       ),
     );

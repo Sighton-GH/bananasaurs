@@ -290,6 +290,7 @@ export const assistantDailyDigestHandler = (
         state: outcome,
         stage: 'done',
         finishedAt: deps.now(),
+        errorCode: null,
         updatedAt: deps.now(),
       });
       runRepo.appendRunEvent(scope, runId, deps.now(), {
