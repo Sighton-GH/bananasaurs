@@ -242,7 +242,7 @@ export const runToolLoop = async (input: {
   /** Called once when a hand-over happens, with the entry and its successors. */
   readonly onEscalated?: ((entry: ChainEntry, next: readonly ChainEntry[]) => void) | undefined;
   /** Per-run throttled fan-out; metadata-only ledger recording always runs. */
-  readonly onProgress?: ((progress: StreamProgress) => void) | undefined;
+  readonly onProgress?: ((progress: StreamProgress) => void | Promise<void>) | undefined;
   /** Unthrottled deltas; service/job completion owns finished and buffer drop. */
   readonly live?:
     { append(runId: string, answerDelta: string, reasoningDelta: string): void } | undefined;
@@ -294,6 +294,9 @@ export const runToolLoop = async (input: {
       close: () => {
         open = false;
       },
+      // The public provider contract says void, but both streaming adapters
+      // await the runtime return value and abort-race callback settlement.
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
       onProgress: (progress) => {
         if (!open) return;
         const nowMs = input.now();
@@ -309,7 +312,7 @@ export const runToolLoop = async (input: {
           msSinceLastByte: progress.msSinceLastByte,
         };
         recorder.event({ kind: 'model-progress', ...stamped });
-        input.onProgress?.(stamped);
+        return input.onProgress?.(stamped);
       },
       onChunk: (chunk) => {
         // A settled or failed call must never resurrect a dropped buffer.

@@ -13,7 +13,7 @@ import {
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
-import type { ChainEntry } from './model-chain.js';
+import { makeProvider, type ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { assistantKeyCooldownsRepo, assistantProvidersRepo } from '@bananasaurs/storage';
 import {
@@ -2850,4 +2850,73 @@ it('wires guard-retry capabilities, progress and live chunks, then closes the re
   expect(append).toHaveBeenCalledExactlyOnceWith('r-retry', 'retry delta', 'thought');
   seen[1]?.onChunk?.({ text: 'late retry', reasoning: 'late' });
   expect(append).toHaveBeenCalledTimes(1);
+});
+
+describe('async downstream progress through the real adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const streamAnswer = (): void => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+      ),
+    );
+  };
+
+  it('holds provider settlement until downstream progress resolves', async () => {
+    streamAnswer();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const callbackEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let settled = false;
+    const running = runToolLoop(
+      baseInput([entry({ provider: makeProvider('openrouter', 'k', 'free') })], {
+        onProgress: () => {
+          entered();
+          return pending;
+        },
+      }),
+    ).then((loop) => {
+      settled = true;
+      return loop;
+    });
+    await callbackEntered;
+    // Wait a task tick, not just one microtask: the adapter can finish parsing
+    // the whole stream if the wrapper discards the callback promise.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    const settledBeforeRelease = settled;
+    release();
+    const loop = await running;
+    expect(settledBeforeRelease).toBe(false);
+    expect(loop.text).toBe('done');
+    expect(loop.outcome).toBe('answered');
+  });
+
+  it('lets the adapter sanitise an async progress rejection as a retryable outage', async () => {
+    streamAnswer();
+    const rejection = Promise.reject(new Error('invented private callback detail'));
+    // Avoid an unhandled rejection in the red run, where the broken wrapper
+    // discards the promise before the adapter can attach its own handler.
+    void rejection.catch(() => undefined);
+    const loop = await runToolLoop(
+      baseInput([entry({ provider: makeProvider('openrouter', 'k', 'free') })], {
+        onProgress: () => rejection,
+      }),
+    );
+    expect(loop.outcome).toBe('failed');
+    expect(loop.text).toBe('');
+    expect(loop.lastError).toMatchObject({ kind: 'outage', retryable: true });
+    expect(loop.lastError?.message).not.toContain('invented private callback detail');
+  });
 });
