@@ -100,20 +100,21 @@
 
 ## Context
 
-Job-lanes merged, so the body-read code it wrapped can be replaced with streaming. OpenRouter sends `: OPENROUTER PROCESSING` keepalive comments and reports mid-stream failures as `finish_reason: "error"` inside a 200 response. Gemini 3 uses `thinkingConfig.thinkingLevel` (`low` tool rounds, `medium` answer; never `minimal`, which errors on 3.8 Flash) with `includeThoughts: true` for thought summaries. The 60 s job-lanes total becomes time-to-first-byte. D5(b) keeps thinking live plus saved in the trace; ADR 0129 stays metadata-only for the ledger.
+Job-lanes merged, so the body-read code it wrapped can be replaced with streaming. OpenRouter sends `: OPENROUTER PROCESSING` keepalive comments and reports mid-stream failures as `finish_reason: "error"` inside a 200 response. Gemini 3 uses `thinkingConfig.thinkingLevel` (`low` tool rounds, `medium` answer; never `minimal`, which errors on 3.8 Flash) with `includeThoughts: true` for thought summaries. The 60 s job-lanes total becomes time-to-first-byte. Slice 6 merged first and left real capability tables (`GEMINI_MODEL_TABLE`, daemon `capabilitiesForEntry`), persistent cooldowns and the escalation hand-over (light round 1 → standard from round 2). D5(b) keeps thinking live plus saved in the trace; ADR 0129 stays metadata-only for the ledger.
 
 ## Decision
 
 1. Stream every provider: OpenAI-compatible sends `stream: true` plus `stream_options: { include_usage: true }`, parses SSE `data:` lines, ignores `:` comments, assembles `delta.content`, `delta.reasoning`, `delta.tool_calls` (args concatenated per index, parsed when complete); Gemini calls `:streamGenerateContent?alt=sse`, assembling text, `functionCall` and `thought: true` parts separately, echoing raw parts back so thought signatures survive tool rounds.
-2. Timeouts: idle `assistant.providerIdleTimeoutMs` 45,000 re-armed on every byte (keepalives count); ceiling `assistant.providerMaxCallMs` 300,000; `assistant.providerTimeoutMs` 60,000 becomes time-to-first-byte. Typing stays alive while bytes arrive.
-3. Finish reasons: `error` or `choices[].error` → retryable `ProviderError`, partial text kept for the trace and never delivered; `length` with text → delivered with code-built `-# (cut short)`; `length` with no text → today's empty-answer path. `maxOutputTokens` default 2,048 → 4,096.
-4. Progress: `model-progress { round, answerChars, reasoningChars, keepalives, msSinceLastByte }` at most every 3 s, bumping `updatedAt`; renders as `Receiving… 1,240 chars of answer, 3,100 chars of thinking`.
-5. Live text: in-memory per-run buffer capped at 8,000 chars each of answer and thinking; `GET /api/assistant/runs/:runId/live` gated like traces; StepLog polls every 2 s (no browser SSE); buffer dropped at finish; thinking saved under trace `reasoning` per round, capped. OpenRouter gets `reasoning: { exclude: false }` only when the model supports it (after Slice 6: gated on capabilities); Gemini returns thought summaries via `includeThoughts`.
+2. Timeouts: idle `assistant.providerIdleTimeoutMs` 45,000 re-armed on every byte (keepalives count); ceiling `assistant.providerMaxCallMs` 300,000; `assistant.providerTimeoutMs` 60,000 becomes time-to-first-byte. Typing stays alive with its ceiling raised to the hard ceiling for the run.
+3. Finish reasons: `error` or `choices[].error` → retryable `ProviderError`, partial text discarded and never delivered or stored (only the progress counters already emitted remain); `length`/`MAX_TOKENS` with text → delivered with code-built `\n\n-# (cut short)` after the guard; `length` with no text → today's empty-answer path. `maxOutputTokens` default 2,048 → 4,096.
+4. Progress: `model-progress { round, answerChars, reasoningChars, keepalives, msSinceLastByte }` at most every 3 s per run on one shared throttle across the escalation hand-over, bumping `updatedAt`; renders as `Receiving… 1,240 chars of answer, 3,100 chars of thinking`. Discord shows one code-built `Working on it…` notice per run (posted once, edited at most every 10 s, deleted after delivery, idempotent on the staged cursor, Write-gated).
+5. Live text: in-memory per-run buffer capped at 8,000 chars each of answer and thinking; `GET /api/assistant/runs/:runId/live` gated like traces; StepLog polls every 2 s (no browser SSE); buffer dropped at finish; thinking saved under trace `reasoning` per round, capped. A thinking parameter is never sent when the entry capabilities forbid it: OpenRouter gets `reasoning: { exclude: false }` only for `reasoning: true` models (NIM never); Gemini sends `thinkingLevel` only for `levels` models, legacy `thinkingBudget` only for `budget` models, and neither plus no `includeThoughts` for `none` models. Gemini returns thought summaries via `includeThoughts`. A model that exposes no reasoning shows only the progress counters.
 
 ## Consequences
 
 - One trickling stream can hold a job lane up to 300 s by design; four lanes stay the cap.
 - Thinking text may echo member messages; it is visible with trace capability only, noted in PRIVACY.md, and deleted with the conversation.
+- The Discord progress notice is one extra post plus edits per channel run, inside that run's reply scope; it never carries model or member text, so it cannot ping.
 - No new outbound destination; no migration.
 ```
 
@@ -128,7 +129,7 @@ Job-lanes merged, so the body-read code it wrapped can be replaced with streamin
 ### S3-T2: Contracts and run-event schema   ·   Wave 1
 **Owns:** Modify: `packages/core/src/providers/contracts.ts`; Modify: `packages/core/src/assistant/run-events.ts`; Test: `packages/core/src/assistant/run-events.test.ts`
 **Reads (do not edit):** `packages/core/src/providers/errors.ts`, `apps/daemon/src/assistant/run-recorder.ts`
-**Interfaces:** Consumes: none · Produces: `export interface StreamProgress { readonly round: number; readonly answerChars: number; readonly reasoningChars: number; readonly keepalives: number; readonly msSinceLastByte: number }`; `GenerateTextRequest` gains `thinkingLevel?: 'low' | 'medium' | 'high'` and `onProgress?: (progress: StreamProgress) => void`; `GenerateTextResponse` gains `reasoning?: string`; run event `model-progress { round, answerChars, reasoningChars, keepalives, msSinceLastByte }`
+**Interfaces:** Consumes: none · Produces: `export interface StreamProgress { readonly round: number; readonly answerChars: number; readonly reasoningChars: number; readonly keepalives: number; readonly msSinceLastByte: number }`; `export interface StreamChunk { readonly text: string; readonly reasoning: string }`; `GenerateTextRequest` gains `thinkingLevel?: 'low' | 'medium' | 'high'`, `capabilities?: ModelCapabilities`, `onProgress?: (progress: StreamProgress) => void`, `onChunk?: (chunk: StreamChunk) => void`; `GenerateTextResponse` gains `reasoning?: string`; run event `model-progress { round, answerChars, reasoningChars, keepalives, msSinceLastByte }`
 
 - [ ] **Step 1: Write the failing test** — in `packages/core/src/assistant/run-events.test.ts`, inside `describe('runEventSchema (ADR 0129 §6)', …)`, add:
 
@@ -162,7 +163,88 @@ it('rejects a model-progress event carrying text', () => {
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: FAIL with `model-progress` not in the union
 
-- [ ] **Step 3: Implement** — anchor: `packages/core/src/providers/contracts.ts` lines 42–75 (`GenerateTextRequest` with `thinkingBudget`, `GenerateTextResponse` with `text`, `model`, `finishReason`). Replacement adds after the `thinkingBudget` line: `readonly thinkingLevel?: 'low' | 'medium' | 'high';` and after the `tools` line: `readonly onProgress?: (progress: StreamProgress) => void;`, adds the `StreamProgress` interface above `GenerateTextRequest`, and adds `readonly reasoning?: string;` to `GenerateTextResponse` after `text`. Anchor: `packages/core/src/assistant/run-events.ts` the `model-result` object (lines 83–103). Append a new `.strict()` object after the `model-skipped` object (lines 104–113): `{ kind: z.literal('model-progress'), round: int >= 0, answerChars: int >= 0, reasoningChars: int >= 0, keepalives: int >= 0, msSinceLastByte: int >= 0 }`. (after Slice 6: keep the new ProviderError quota fields `quotaScope 'day' | 'minute'`, `retryAfterMs`, `learnedLimit` untouched when adapters are rewritten; keep the `GeminiModelProfile` table entry type name from contracts §3 — the existing `GeminiModelInfo` in `packages/core/src/providers/gemini.ts` is a different interface and must not be renamed or reused.)
+- [ ] **Step 3: Implement** — anchor: `packages/core/src/providers/contracts.ts` lines 42–53 (`GenerateTextRequest` with `thinkingBudget` at line 50 and `tools` at line 52) and lines 64–75 (`GenerateTextResponse` with `text`, `model`, `finishReason`). The file imports nothing today; `model-capabilities.ts` imports nothing either, so a type-only import cannot cycle. Replacement in full:
+
+```ts
+import type { ModelCapabilities } from './model-capabilities.js';
+
+export type ProviderCapability =
+  'text' | 'streaming' | 'structured-output' | 'tools' | 'vision' | 'usage';
+```
+
+(keep every interface between unchanged) then above `GenerateTextRequest` add:
+
+```ts
+/** Throttled stream counters: metadata only, safe for the run ledger. */
+export interface StreamProgress {
+  readonly round: number;
+  readonly answerChars: number;
+  readonly reasoningChars: number;
+  readonly keepalives: number;
+  readonly msSinceLastByte: number;
+}
+
+/** Unthrottled text deltas for the live buffer; never stored in the ledger. */
+export interface StreamChunk {
+  readonly text: string;
+  readonly reasoning: string;
+}
+```
+
+and extend the request after the `thinkingBudget` line, keeping the field order stable:
+
+```ts
+  /** Hint for providers with a thinking budget (Gemini); ignored elsewhere. */
+  readonly thinkingBudget?: number;
+  /**
+   * Explicit thinking level (Gemini 3). Absent means the adapter derives
+   * `low` for tool rounds and `medium` for the answer. Never `minimal`.
+   * Never sent when the entry capabilities forbid thinking.
+   */
+  readonly thinkingLevel?: 'low' | 'medium' | 'high';
+  /**
+   * Per-entry capabilities from daemon `capabilitiesForEntry`. Absent means
+   * the adapter's conservative built-in default (unknown models get no
+   * thinking parameter and no reasoning request).
+   */
+  readonly capabilities?: ModelCapabilities;
+  /** Offered only by providers with the `tools` capability. */
+  readonly tools?: readonly ToolDeclaration[];
+  /** Throttled progress counters (metadata only, safe for the ledger). */
+  readonly onProgress?: (progress: StreamProgress) => void;
+  /** Unthrottled text deltas for the live buffer; never stored in the ledger. */
+  readonly onChunk?: (chunk: StreamChunk) => void;
+```
+
+and add to `GenerateTextResponse` after `text`:
+
+```ts
+  /** Empty when the model only asked for tools. */
+  readonly text: string;
+  /**
+   * Non-answer reasoning (OpenRouter `delta.reasoning`, Gemini thought
+   * summaries). Absent when the model exposed none. Saved per round under
+   * trace `reasoning`, never delivered to members.
+   */
+  readonly reasoning?: string;
+```
+
+Anchor: `packages/core/src/assistant/run-events.ts` the `finished` object (lines 158–167, the last union member). Append after it — contracts §4: unions grow at the end, Slice 6's `routed` (lines 114–120) stays where it is:
+
+```ts
+  z
+    .object({
+      kind: z.literal('model-progress'),
+      round: z.number().int().nonnegative(),
+      answerChars: z.number().int().nonnegative(),
+      reasoningChars: z.number().int().nonnegative(),
+      keepalives: z.number().int().nonnegative(),
+      msSinceLastByte: z.number().int().nonnegative(),
+    })
+    .strict(),
+```
+
+Keep every existing ProviderError quota field (`quotaScope`, `retryAfterMs`, `learnedLimit`) untouched: this task does not open the adapters. Do not rename the existing `GeminiModelInfo` in `packages/core/src/providers/gemini.ts` (lines 338–344): it lists key-visible models and is a different interface from Slice 6's `GeminiModelProfile`.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/assistant/run-events.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` then `npx eslint packages/core/src/providers/contracts.ts packages/core/src/assistant/run-events.ts packages/core/src/assistant/run-events.test.ts` · exit 0
@@ -217,7 +299,54 @@ describe('parseSseStream', () => {
 ```
 
 - [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: FAIL with cannot find module `./sse.js`
-- [ ] **Step 3: Implement** — full `packages/core/src/providers/sse.ts`: buffer text across chunks, split on `\n`, hold a trailing partial line, on blank line flush the pending `data:` lines; a line starting with `:` yields keepalive; `data: [DONE]` ends the stream; strip one leading space after `data:`; join multiple data lines with `\n`. Accept both `ReadableStream<Uint8Array>` (read via `getReader`, decode with `TextDecoder` streaming) and `AsyncIterable<string>`.
+- [ ] **Step 3: Implement** — create `packages/core/src/providers/sse.ts` in full (no existing file; both adapters import it in S3-T6/S3-T7):
+
+```ts
+export async function* parseSseStream(
+  body: ReadableStream<Uint8Array> | AsyncIterable<string>,
+): AsyncGenerator<SseEvent> {
+  let buffer = '';
+  if (Symbol.asyncIterator in (body as AsyncIterable<string>)) {
+    for await (const chunk of body as AsyncIterable<string>) buffer += chunk;
+  } else {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+      }
+      buffer += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  const pendingData: string[] = [];
+  const lines = buffer.split('\n');
+  // A trailing partial line with no terminating blank line still counts:
+  // test feeds always end with `\n\n`, live streams end with `[DONE]`.
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, '');
+    if (line === '') {
+      if (pendingData.length === 0) continue;
+      const data = pendingData.splice(0).join('\n');
+      if (data === '[DONE]') return;
+      yield { data, keepalive: false };
+    } else if (line.startsWith(':')) {
+      yield { data: '', keepalive: true };
+    } else if (line.startsWith('data:')) {
+      pendingData.push(line.startsWith('data: ') ? line.slice(6) : line.slice(5));
+    }
+  }
+  if (pendingData.length > 0) {
+    const data = pendingData.join('\n');
+    if (data !== '[DONE]') yield { data, keepalive: false };
+  }
+}
+```
+
+Ship the normalised version below: it reassembles chunks split mid-line because concatenation happens before splitting, decodes split UTF-8 via the streaming `TextDecoder`, and stops at `data: [DONE]`. `AsyncIterable<string>` exists so the unit tests feed strings without a Response.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/sse.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` then `npx eslint packages/core/src/providers/sse.ts packages/core/src/providers/sse.test.ts` · exit 0
