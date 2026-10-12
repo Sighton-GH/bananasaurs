@@ -59,6 +59,7 @@ import {
 import {
   attachmentMarker,
   buildConversationContext,
+  quoteEnvelopeFor,
   HISTORY_CHARS,
   HISTORY_TURNS,
 } from '../assistant/conversation-context.js';
@@ -1154,10 +1155,13 @@ export const assistantInvokeHandler = (deps: {
                   kind: 'text',
                   sizeBytes: Buffer.byteLength(fetched.text, 'utf8'),
                 });
+                // Redact the full byte-capped body before cutting: a secret
+                // spanning the character limit must never leak its prefix.
+                const redacted = redactEvidenceText(fetched.text).text;
                 const cut =
-                  fetched.text.length > attachmentCaps.textMaxChars
-                    ? `${fetched.text.slice(0, attachmentCaps.textMaxChars)}\n(cut after ${attachmentCaps.textMaxChars.toLocaleString('en-CA')} characters)`
-                    : fetched.text;
+                  redacted.length > attachmentCaps.textMaxChars
+                    ? `${redacted.slice(0, attachmentCaps.textMaxChars)}\n(cut after ${attachmentCaps.textMaxChars.toLocaleString('en-CA')} characters)`
+                    : redacted;
                 texts.push(textEnvelopeFor(source.fileName, cut));
               }
               // Embed thumbnails (media.discordapp.net or the CDN) read as images
@@ -1241,11 +1245,7 @@ export const assistantInvokeHandler = (deps: {
                 quoted.attachments ?? [],
                 quoted.embeds ?? [],
               );
-              if (quotedFiles.markers.length > 0 || quotedFiles.texts.length > 0) {
-                quoteEnvelope = [quoteEnvelope, ...quotedFiles.markers, ...quotedFiles.texts]
-                  .filter((part) => part !== undefined && part !== '')
-                  .join('\n');
-              }
+              quoteEnvelope = quoteEnvelopeFor(quoted, quotedFiles);
             }
             // ADR 0089: channel context for mentions. The channel's recent
             // messages (and, in a thread, the thread's starter) travel as

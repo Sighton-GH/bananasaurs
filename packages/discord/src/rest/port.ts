@@ -23,7 +23,7 @@ import {
   type RESTPatchAPIGuildRolePositionsJSONBody,
   type RESTPostAPIGuildRoleJSONBody,
 } from 'discord.js';
-import { DiscordApiError, unicodeEmojiChars } from '@bananasaurs/core';
+import { DiscordApiError, unicodeEmojiChars, validateResourceUrl } from '@bananasaurs/core';
 import type {
   AuditLogEntry,
   DiscordMember,
@@ -125,9 +125,25 @@ const toFetchedAttachments = (message: APIMessageWithMember): FetchedAttachment[
     url: a.url ?? a.proxy_url ?? undefined,
   }));
 
+/** Selection only; the byte fetcher still validates, pins DNS and checks redirects. */
+const usableThumbnailProxy = (raw: string | undefined): boolean => {
+  if (raw === undefined) return false;
+  try {
+    const url = validateResourceUrl(raw);
+    return (
+      (url.port === '' || url.port === '443') &&
+      (url.hostname === 'cdn.discordapp.com' || url.hostname === 'media.discordapp.net')
+    );
+  } catch {
+    return false;
+  }
+};
+
 const toFetchedEmbeds = (message: APIMessageWithMember): FetchedEmbed[] =>
   (message.embeds ?? []).map((e) => {
-    const thumbnailUrl = e.thumbnail?.url ?? e.thumbnail?.proxy_url;
+    const thumbnailUrl = usableThumbnailProxy(e.thumbnail?.proxy_url)
+      ? e.thumbnail?.proxy_url
+      : (e.thumbnail?.url ?? e.thumbnail?.proxy_url);
     return {
       ...(e.title === undefined ? {} : { title: e.title }),
       ...(e.description === undefined ? {} : { description: e.description }),

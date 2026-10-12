@@ -104,7 +104,7 @@ const mimeFromMagic = (bytes: Uint8Array): string | undefined => {
 
 export const textEnvelopeFor = (name: string, text: string): string => {
   const clean = neutraliseMarkers(redactEvidenceText(text).text);
-  return `[UNTRUSTED ATTACHMENT name=${JSON.stringify(neutraliseMarkers(name))}]\n${clean}\n[/UNTRUSTED ATTACHMENT]`;
+  return `[UNTRUSTED ATTACHMENT name=${JSON.stringify(safeAttachmentLabel(name))}]\n${clean}\n[/UNTRUSTED ATTACHMENT]`;
 };
 
 export type AttachmentFetchResult =
@@ -146,50 +146,51 @@ export const fetchAttachment = async (
   forceKind?: AttachmentKind,
 ): Promise<AttachmentFetchResult> => {
   const kind = forceKind ?? classifyAttachment(source);
+  const label = safeAttachmentLabel(source.fileName);
   if (kind === 'unsupported')
     return {
       ok: false,
       code: 'unsupported',
-      note: `${source.fileName} is not a text file, image or PDF.`,
+      note: `${label} is not a text file, image or PDF.`,
     };
   const maxBytes =
     kind === 'text' ? caps.textMaxBytes : kind === 'image' ? caps.imageMaxBytes : caps.pdfMaxBytes;
   if (source.sizeBytes > maxBytes)
-    return { ok: false, code: 'too-large', note: `${source.fileName} is over the size limit.` };
+    return { ok: false, code: 'too-large', note: `${label} is over the size limit.` };
   if (source.url === undefined || source.url === '')
-    return { ok: false, code: 'missing-url', note: `${source.fileName} has no download link.` };
+    return { ok: false, code: 'missing-url', note: `${label} has no download link.` };
   let parsed: URL;
   let host: string;
   try {
     parsed = new URL(source.url);
     host = parsed.hostname.toLowerCase();
   } catch {
-    return { ok: false, code: 'bad-host', note: `${source.fileName} has no valid download link.` };
+    return { ok: false, code: 'bad-host', note: `${label} has no valid download link.` };
   }
   if (parsed.port !== '' && parsed.port !== '443')
     return {
       ok: false,
       code: 'bad-host',
-      note: `${source.fileName} is not on the attachment host.`,
+      note: `${label} is not on the attachment host.`,
     };
   if (!ATTACHMENT_HOSTS.some((h) => host === h))
     return {
       ok: false,
       code: 'bad-host',
-      note: `${source.fileName} is not on the attachment host.`,
+      note: `${label} is not on the attachment host.`,
     };
   const fetched = await deps.fetchBytes(source.url, maxBytes);
   if (!fetched.ok)
-    return { ok: false, code: 'fetch-failed', note: `${source.fileName} could not be downloaded.` };
+    return { ok: false, code: 'fetch-failed', note: `${label} could not be downloaded.` };
   if (kind === 'image' || kind === 'pdf') {
     const sniffed = sniffMediaKind(fetched.bytes);
     if (sniffed === 'animated-gif')
-      return { ok: false, code: 'animated', note: `${source.fileName} is an animated image.` };
+      return { ok: false, code: 'animated', note: `${label} is an animated image.` };
     if ((kind === 'image' && sniffed !== 'image') || (kind === 'pdf' && sniffed !== 'pdf'))
       return {
         ok: false,
         code: 'bad-magic',
-        note: `${source.fileName} is not the file type it claims to be.`,
+        note: `${label} is not the file type it claims to be.`,
       };
     return {
       ok: true,
