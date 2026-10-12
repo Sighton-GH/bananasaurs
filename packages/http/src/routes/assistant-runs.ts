@@ -163,7 +163,10 @@ export const registerAssistantRunRoutes = (
     if (run === undefined) return reply.status(404).send({ error: 'not-found' });
     const live = getLiveBuffer().read(request.params.runId);
     const showText = canReadConfig(session);
-    return reply.status(200).send({
+    return reply
+      .header('cache-control', 'no-store')
+      .status(200)
+      .send({
       answer: live?.answer ?? '',
       thinking: showText ? (live?.thinking ?? '') : '',
     });

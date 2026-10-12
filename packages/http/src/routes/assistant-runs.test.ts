@@ -124,6 +124,20 @@ describe('assistant run routes', () => {
     expect(ok.json()).toEqual({ answer: 'hello Sam L', thinking: 'why this answer' });
   });
 
+  it('marks live text as never cached', async () => {
+    const { cookie } = await signIn();
+    grant('audit.read');
+    seedRun('run-1');
+    getLiveBuffer().append('run-1', 'hello Sam L', 'why this answer');
+    const ok = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/runs/run-1/live',
+      headers: { cookie },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.headers['cache-control']).toBe('no-store');
+  });
+
   it('withholds live thinking without config.read while returning the answer', async () => {
     grant('audit.read');
     const { cookie } = await signIn();
