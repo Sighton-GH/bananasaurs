@@ -622,10 +622,13 @@ export const assistantInvokeHandler = (deps: {
       // verified-missing finish is the only case that appends. Page the whole
       // ledger (bounded) so a terminal event past the first 1,000 rows - a
       // long run - is still found; the oldest page alone cannot prove absence.
+      // T12g: hitting the page bound without reaching the end of the ledger
+      // is also 'unknown', never 'none'.
       let hasFinished: boolean | 'unknown' = false;
       try {
         if (deps.conversations !== undefined) {
           let afterSeq = 0;
+          let reachedEnd = false;
           for (let pages = 0; pages < 64; pages += 1) {
             const page = runRepo.listRunEvents(
               deps.conversations.scope,
@@ -638,9 +641,13 @@ export const assistantInvokeHandler = (deps: {
               break;
             }
             const lastSeq = page.at(-1)?.seq;
-            if (lastSeq === undefined || page.length < 1_000) break;
+            if (lastSeq === undefined || page.length < 1_000) {
+              reachedEnd = true;
+              break;
+            }
             afterSeq = lastSeq;
           }
+          if (hasFinished === false && !reachedEnd) hasFinished = 'unknown';
         }
       } catch {
         /* Ledger availability must not disable retention cleanup. */

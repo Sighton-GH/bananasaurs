@@ -3558,6 +3558,50 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     expect(getLiveBuffer().read(id)).toBeUndefined();
   });
 
+  it('T12g hitting the ledger page bound without reaching the end adds no second finish', async () => {
+    const id = 'terminal-t12g-page-bound';
+    observe(id);
+    const h = harness(async (input) => streamed(input), { logChannelId: '666666666666666666' });
+    const error = new Error('fixture log channel unavailable');
+    let logDown = true;
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666' && logDown) throw error;
+      return { channelId, messageId: '829000000000000065' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 3,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    logDown = false;
+    // The ledger never ends: every page is full and holds no finish. The scan
+    // bound is reached, which is "unknown", not "none": no second finish.
+    const realList = runRepo.listRunEvents;
+    let seq = 0;
+    let fake = true;
+    vi.spyOn(runRepo, 'listRunEvents').mockImplementation((...args) => {
+      if (!fake) return realList(...args);
+      const rows = Array.from({ length: 1_000 }, () => {
+        seq += 1;
+        return {
+          seq,
+          at: NOW,
+          event: { kind: 'guard' as const, removed: 0 },
+        };
+      });
+      return rows;
+    });
+    const second = await h.run(mention(id), 2, first.cursor, jobId);
+    fake = false;
+    expect(second.error).toBeUndefined();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+  });
+
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
     const h = harness(async () => ({ ok: true, content: 'answer' }));
     await h.run(mention('rec-1'));
