@@ -17,6 +17,105 @@ const response = (): Response =>
   });
 
 describe('OpenAI-compatible providers', () => {
+  it('pins the native PDF plugin on the streaming OpenRouter body (ADR 0149)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'free-model',
+      messages: [
+        {
+          role: 'user',
+          text: '',
+          media: [
+            { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' },
+          ],
+        },
+      ],
+    });
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
+    expect(body.stream).toBe(true);
+    expect(body.plugins).toEqual([{ id: 'file-parser', pdf: { engine: 'native' } }]);
+  });
+
+  it('sends images as data-url parts and PDFs as file parts with the native plugin (ADR 0149)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'google/gemma-4-31b-it:free',
+      messages: [
+        {
+          role: 'user',
+          text: 'read this',
+          media: [
+            { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' },
+            { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' },
+          ],
+        },
+      ],
+    });
+    const [, init] = fetch.mock.calls[0] ?? [];
+    const body = JSON.parse(init?.body as string) as {
+      stream?: boolean;
+      plugins?: unknown;
+      messages: { role: string; content: unknown }[];
+    };
+    expect(body.stream).toBe(true);
+    expect(body.messages.at(-1)).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'read this' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } },
+        {
+          type: 'file',
+          file: { filename: 'report.pdf', file_data: 'data:application/pdf;base64,amVm' },
+        },
+      ],
+    });
+    expect(body.plugins).toEqual([{ id: 'file-parser', pdf: { engine: 'native' } }]);
+    expect(init?.body as string).not.toContain('discordapp');
+  });
+
+  it('sends no plugins without a PDF and keeps text-only turns as strings (ADR 0149)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'free-model',
+      messages: [
+        {
+          role: 'user',
+          text: 'hello',
+          media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'a.png' }],
+        },
+      ],
+    });
+    const [, imageInit] = fetch.mock.calls[0] ?? [];
+    const imageBody = JSON.parse(imageInit?.body as string) as {
+      stream?: boolean;
+      plugins?: unknown;
+      messages: { role: string; content: unknown }[];
+    };
+    expect(imageBody.plugins).toBeUndefined();
+    expect(imageBody.messages.at(-1)?.content).toContainEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,aGk=' },
+    });
+
+    const textFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    const textProvider = createOpenRouterProvider({ apiKey: 'secret', fetch: textFetch });
+    await textProvider.generateText({
+      model: 'free-model',
+      messages: [{ role: 'user', text: 'hello' }],
+    });
+    const [, textInit] = textFetch.mock.calls[0] ?? [];
+    const textBody = JSON.parse(textInit?.body as string) as {
+      stream?: boolean;
+      plugins?: unknown;
+      messages: { role: string; content: unknown }[];
+    };
+    expect(textBody.plugins).toBeUndefined();
+    expect(textBody.messages.at(-1)).toEqual({ role: 'user', content: 'hello' });
+  });
+
   it.each([
     ['openrouter', createOpenRouterProvider, 'https://openrouter.ai/api/v1/chat/completions'],
     ['nvidia-nim', createNvidiaNimProvider, 'https://integrate.api.nvidia.com/v1/chat/completions'],
