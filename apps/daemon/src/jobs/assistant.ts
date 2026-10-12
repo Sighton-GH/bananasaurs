@@ -52,6 +52,7 @@ import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import {
   classifyAttachment,
   fetchAttachment,
+  safeAttachmentLabel,
   textEnvelopeFor,
   type AttachmentCaps,
 } from '../assistant/attachments.js';
@@ -1146,7 +1147,7 @@ export const assistantInvokeHandler = (deps: {
                 if (fetched.kind !== 'text') continue;
                 markers.push(attachmentMarker(source));
                 attachmentSummary.push({
-                  name: source.fileName,
+                  name: safeAttachmentLabel(source.fileName),
                   kind: 'text',
                   sizeBytes: Buffer.byteLength(fetched.text, 'utf8'),
                 });
@@ -1192,7 +1193,7 @@ export const assistantInvokeHandler = (deps: {
                     name: fetched.name,
                   });
                   attachmentSummary.push({
-                    name: fetched.name,
+                    name: safeAttachmentLabel(fetched.name),
                     kind: fetched.kind,
                     sizeBytes: fetched.sizeBytes,
                   });

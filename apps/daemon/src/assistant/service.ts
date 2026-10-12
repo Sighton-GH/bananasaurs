@@ -79,6 +79,7 @@ import {
   NOOP_RUN_RECORDER,
   type RunRecorder,
 } from './run-recorder.js';
+import { safeAttachmentLabel } from './attachments.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
@@ -1356,7 +1357,7 @@ export const createAssistantService = (
               ...(input.history ?? []),
               {
                 role: 'user',
-                text: `[attached files: ${mediaForLoop.map((m) => m.name).join(', ')}]`,
+                text: `[attached files: ${mediaForLoop.map((m) => safeAttachmentLabel(m.name)).join(', ')}]`,
                 media: mediaForLoop,
               },
             ];

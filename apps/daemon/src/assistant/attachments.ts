@@ -203,3 +203,21 @@ export const fetchAttachment = async (
   const text = Buffer.from(fetched.bytes).toString('utf8').replaceAll('\u0000', '');
   return { ok: true, kind: 'text', name: source.fileName, text };
 };
+
+// eslint-disable-next-line no-control-regex -- deliberately flattening control characters in hostile file names.
+const LABEL_CONTROL_OR_BRACKET = /[\u0000-\u001f\u007f-\u009f\u2028\u2029[\]]/g;
+
+/**
+ * ADR 0149: a file name is hostile evidence. Redacted, marker-neutralised,
+ * flattened to one line with no brackets, and bounded, so it can never close
+ * a marker, mint a message envelope or add role-like lines.
+ */
+export const safeAttachmentLabel = (name: string): string => {
+  const cleaned = neutraliseMarkers(redactEvidenceText(name).text)
+    .replace(LABEL_CONTROL_OR_BRACKET, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48)
+    .trim();
+  return cleaned === '' ? 'file' : cleaned;
+};
