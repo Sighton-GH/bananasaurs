@@ -490,6 +490,12 @@ export const assistantInvokeHandler = (deps: {
     // leave an open ticket nobody was told about.
     const prior = parseCursor(context.cursor);
     const reached = prior === undefined ? -1 : stageRank(prior.stage);
+    // T12d: true once the run's answered/refused finish is recorded. Already
+    // true on a retry whose cursor passed the answered stage (the finish is
+    // recorded with the cursor save, before any post-answer stage), so it
+    // survives the fresh recorder a retry builds; set again below when this
+    // attempt records the finish itself.
+    let answerFinishRecorded = reached >= stageRank('answered');
     if (
       prior === undefined &&
       payload.interaction !== undefined &&
@@ -1644,6 +1650,7 @@ export const assistantInvokeHandler = (deps: {
               ? {}
               : { traceId: `trace_${key}` }),
           });
+          answerFinishRecorded = true;
         }
         // ADR 0093 decision 3: every conversation whose summary this run
         // looked back at is linked with kind `recalled`. The insert is
@@ -1768,11 +1775,30 @@ export const assistantInvokeHandler = (deps: {
           ? !(err instanceof RetryAfterError)
           : context.attempts >= maxAttempts
       ) {
-        recorder.event({
-          kind: 'finished',
-          outcome: 'failed',
-          durationMs: Math.max(0, deps.now() - startedAt),
-        });
+        // T12d: a run whose answered/refused finish is already recorded keeps
+        // that outcome - the member has their answer, so a post-answer
+        // delivery failure must not append a second finished that flips the
+        // run to failed. A retry's `started` event moved the row back to
+        // running, so re-close it with the staged outcome (a direct row
+        // patch, not a second finished event); a same-attempt failure needs
+        // no patch because the finish already closed the row. Retention must
+        // not depend on the append: drop the live buffer directly by run id
+        // instead (stop appending first, drop last).
+        if (answerFinishRecorded) {
+          if (reached >= stageRank('answered') && prior !== undefined) {
+            recorder.update({
+              state: prior.result.ok ? 'answered' : (prior.result.outcome ?? 'refused'),
+              stage: 'done',
+            });
+          }
+          getLiveBuffer().drop(payload.invocationId);
+        } else {
+          recorder.event({
+            kind: 'finished',
+            outcome: 'failed',
+            durationMs: Math.max(0, deps.now() - startedAt),
+          });
+        }
       }
       throw err;
     }

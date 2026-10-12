@@ -2809,6 +2809,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     opts: {
       readonly noConversations?: boolean;
       readonly behaviours?: readonly AssistantBehaviour[];
+      readonly logChannelId?: string;
     } = {},
   ) => {
     const inputs: AssistantInvocation[] = [];
@@ -2841,7 +2842,7 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       respond: async () => undefined,
       send,
       logger: pino({ level: 'silent' }),
-      logChannelId: () => undefined,
+      logChannelId: () => opts.logChannelId,
       now: () => nowMs,
       ...(opts.noConversations
         ? {}
@@ -2894,6 +2895,11 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
 
   const kindsOf = (runId: string): string[] =>
     runRepo.listRunEvents(scope(), runId, 0, 50).map((r) => r.event.kind);
+
+  const finishedOutcomes = (runId: string): string[] =>
+    runRepo
+      .listRunEvents(scope(), runId, 0, 50)
+      .flatMap((row) => (row.event.kind === 'finished' ? [row.event.outcome] : []));
 
   let lastStreamRequest: GenerateTextRequest | undefined;
   // Exercise the actual streaming loop, not a pre-seeded shared map.
@@ -3255,6 +3261,122 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
     await h.run(mention(id));
     expect(order).toEqual(['finished', 'drop']);
     expect(kindsOf(id).filter((k) => k === 'finished')).toHaveLength(1);
+  });
+
+  it('T12d an answered run keeps its outcome when the escalation send exhausts the budget', async () => {
+    const id = 'terminal-answered-escalation';
+    const order = observe(id);
+    const h = harness(async (input) => {
+      const result = await streamed(input);
+      return {
+        ...result,
+        escalation: {
+          channelId: '555555555555555555',
+          reviewerRoleIds: [],
+          ticketId: 'fixture-ticket',
+        },
+      };
+    });
+    const error = new Error('fixture escalation channel unavailable');
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '555555555555555555') throw error;
+      return { channelId, messageId: '829000000000000051' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    // Attempt 1: the answer lands and the run finishes answered, then the
+    // escalation send rejects while budget remains.
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    // Attempt 2 from the durable cursor: the escalation send rejects on the
+    // final attempt. The member has their answer, so the ledger must keep
+    // 'answered' - never a second finished, never 'failed' - while the error
+    // still propagates so the worker marks the job failed.
+    const last = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('answered');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
+  });
+
+  it('T12d an answered run keeps its outcome when the log send exhausts the budget', async () => {
+    const id = 'terminal-answered-log';
+    const order = observe(id);
+    const h = harness(streamed, { logChannelId: '666666666666666666' });
+    const error = new Error('fixture log channel unavailable');
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666') throw error;
+      return { channelId, messageId: '829000000000000052' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    const last = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    expect(finishedOutcomes(id)).toEqual(['answered']);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('answered');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
+  });
+
+  it('T12d a refused run keeps its outcome when the log send exhausts the budget', async () => {
+    const id = 'terminal-refused-log';
+    const order = observe(id);
+    const h = harness(
+      async (input) => {
+        await streamed(input);
+        return {
+          ok: false as const,
+          outcome: 'refused' as const,
+          content: 'I cannot help with that.',
+        };
+      },
+      { logChannelId: '666666666666666666' },
+    );
+    const error = new Error('fixture log channel unavailable');
+    h.send.mockImplementation(async (channelId: string) => {
+      if (channelId === '666666666666666666') throw error;
+      return { channelId, messageId: '829000000000000053' };
+    });
+    const jobId = jobRepo.enqueue(scope(), {
+      kind: JOB_KINDS.assistantInvoke,
+      payload: JSON.stringify(mention(id)),
+      dedupeKey: id,
+      maxAttempts: 2,
+      now: NOW,
+    }).jobId!;
+    const first = await h.run(mention(id), 1, null, jobId);
+    expect(first.error).toBe(error);
+    expect(first.cursor).not.toBeNull();
+    expect(finishedOutcomes(id)).toEqual(['refused']);
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    const last = await h.run(mention(id), 2, first.cursor, jobId);
+    expect(last.error).toBe(error);
+    expect(h.inputs).toHaveLength(1);
+    expect(finishedOutcomes(id)).toEqual(['refused']);
+    expect(runRepo.getRun(scope(), id)?.state).toBe('refused');
+    expect(getLiveBuffer().read(id)).toBeUndefined();
+    expect(order).toEqual(['chunk', 'finished', 'drop', 'drop']);
   });
 
   it('the happy path records started, conversation, delivering, delivered, finished', async () => {
