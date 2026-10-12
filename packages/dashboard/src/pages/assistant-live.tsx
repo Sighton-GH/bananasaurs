@@ -227,11 +227,12 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
     );
   }
 
+  const finished = events.some((e) => e.event.kind === 'finished');
   const firstAt = events.length > 0 ? (events[0]?.at ?? 0) : 0;
   const maxMs = Math.max(0, ...events.map((e) => timedMs(e) ?? 0));
 
   return (
-    <>
+    <div className="grid gap-3">
       <Card title="Step log">
         <DataState
           resource={resource}
@@ -265,7 +266,7 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
         </DataState>
         {live.stale && <p className="mt-2 text-xs text-ink-muted">Reconnecting…</p>}
       </Card>
-      <LiveText runId={runId} />
-    </>
+      <LiveText runId={runId} finished={finished} />
+    </div>
   );
 }

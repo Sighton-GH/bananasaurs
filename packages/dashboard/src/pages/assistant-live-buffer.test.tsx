@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunEvent } from '@bananasaurs/core';
 import { renderWithSession, stubFetch } from '../test-support.js';
@@ -24,6 +24,41 @@ describe('LiveText', () => {
     expect(details).not.toBeNull();
     expect(details?.open).toBe(false);
     expect(mock).toHaveBeenCalled();
+  });
+});
+
+describe('LiveText details', () => {
+  it('opens the thinking when the summary is clicked', async () => {
+    stubFetch([{ url: runLiveUrl('run-1'), body: { answer: 'a', thinking: 'deep thought' } }]);
+    renderWithSession(<LiveText runId="run-1" />);
+    const summary = await screen.findByText('Thinking');
+    fireEvent.click(summary);
+    expect(summary.closest('details')?.open).toBe(true);
+  });
+
+  it('keeps polling every 2 s while the run is live', async () => {
+    vi.useFakeTimers();
+    const mock = stubFetch([{ url: runLiveUrl('run-1'), body: { answer: 'a', thinking: '' } }]);
+    renderWithSession(<LiveText runId="run-1" />);
+    await act(async () => {});
+    expect(mock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops polling once the run is finished', async () => {
+    vi.useFakeTimers();
+    const mock = stubFetch([{ url: runLiveUrl('run-1'), body: { answer: 'done', thinking: '' } }]);
+    renderWithSession(<LiveText runId="run-1" finished />);
+    await act(async () => {});
+    expect(mock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('done')).toBeTruthy();
   });
 });
 

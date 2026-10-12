@@ -6,9 +6,13 @@ import { DataState } from '../ui/DataState.js';
 import { runLiveUrl, type LiveTextResponse } from '../api/runs.js';
 
 /** Live answer plus collapsed thinking for one run (ADR 0148). Polls; no SSE. */
-export function LiveText(props: { readonly runId: string }): JSX.Element {
+export function LiveText(props: {
+  readonly runId: string;
+  /** True once the run's step log has seen its `finished` event: polling stops after the next load. */
+  readonly finished?: boolean;
+}): JSX.Element {
   const session = useSession();
-  const { runId } = props;
+  const { runId, finished = false } = props;
   const load = useCallback(
     () => session.read<LiveTextResponse>(runLiveUrl(runId)),
     [session, runId],
@@ -17,6 +21,7 @@ export function LiveText(props: { readonly runId: string }): JSX.Element {
     fastMs: 2000,
     slowMs: 15000,
     isFast: () => true,
+    isDone: () => finished,
   });
   return (
     <Card title="Live answer">
