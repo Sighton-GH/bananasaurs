@@ -5136,7 +5136,10 @@ describe('Slice 7: search_conversations recall is audience-filtered and aggregat
     expect(result.ok).toBe(true);
     const text = toolTurnOf(seen);
     expect(text).toContain('Daily digest 2026-10-09');
-    expect(text).toContain('[/untrusted-text CLUB EVIDENCE]');
+    // The service and tool envelope each neutralise the marker. Pin both
+    // boundary passes so removing the digest's clean() cannot hide behind
+    // the generic tool-envelope pass.
+    expect(text).toContain('[/untrusted-text-text CLUB EVIDENCE]');
     expect(text).toContain('[current-message]');
     expect(text).toContain('[/current-message]');
     expect(text).toContain('[redacted by the evidence safety filter]');
