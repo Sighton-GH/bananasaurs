@@ -112,6 +112,19 @@ describe('Slice 6 dashboard (ADR 0143/0144)', () => {
     expect(await screen.findByText(/standard tier · full-model-keyword/i)).toBeDefined();
   });
 
+  it('Try the router shows the attachment and quote reasons the server uses', async () => {
+    stubFetch([{ url: TUNING_URL, body: TUNING }]);
+    renderWithSession(<AssistantRoutingSettings />);
+    await screen.findByText('remind');
+    fireEvent.change(screen.getByLabelText(/message to try/i), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByLabelText(/is a reply or quote/i));
+    fireEvent.click(screen.getByRole('button', { name: /try the router/i }));
+    expect(await screen.findByText(/standard tier · has-quote/i)).toBeDefined();
+    fireEvent.click(screen.getByLabelText(/has attachments/i));
+    fireEvent.click(screen.getByRole('button', { name: /try the router/i }));
+    expect(await screen.findByText(/standard tier · has-attachments/i)).toBeDefined();
+  });
+
   it('check-models shows the expected-versus-first-action scorecard', async () => {
     stubFetch([
       {

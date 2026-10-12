@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { routeRun } from '@bananasaurs/core';
 import { ApiError } from '../api.js';
 import { TUNING_URL, tuningKeyUrl, type TuningListResponse } from '../api/tuning.js';
 import { useSession } from '../app/session.js';
@@ -61,31 +62,32 @@ const DEFAULTS: Values = {
 };
 
 /**
- * Local mirror of the daemon's deterministic router so the try-box needs no
- * request (and spends no AI call). Same order of checks and the same reasons.
+ * The try-box runs the daemon's own deterministic router (`routeRun` from
+ * core), so it needs no request, spends no AI call and cannot drift from the
+ * server's checks or reasons.
  */
 export const tryRoute = (
   text: string,
   v: Values,
   earlierTurns = 0,
-): { tier: Tier; reason: string } => {
-  if (!v.enabled) return { tier: 'standard', reason: 'router-off' };
-  const clean = text
-    .trim()
-    .toLowerCase()
-    .replace(/[.!?…\s]+$/g, '');
-  const emoji = /^\p{Extended_Pictographic}[\p{Extended_Pictographic}\s]*$/u.test(text.trim());
-  if (emoji || v.greetings.some((g) => clean === g.toLowerCase())) {
-    return { tier: 'light', reason: 'greeting' };
-  }
-  if (text.length > v.maxChars) return { tier: 'standard', reason: 'long-message' };
-  const lowered = text.toLowerCase();
-  if (v.keywords.some((k) => lowered.includes(k.toLowerCase()))) {
-    return { tier: 'standard', reason: 'full-model-keyword' };
-  }
-  if (earlierTurns > v.longThread) return { tier: 'standard', reason: 'long-thread' };
-  return { tier: 'light', reason: 'short-and-simple' };
-};
+  flags: { readonly hasAttachments?: boolean; readonly hasQuoteOrReply?: boolean } = {},
+): { tier: Tier; reason: string } =>
+  routeRun(
+    {
+      text,
+      hasAttachments: flags.hasAttachments === true,
+      hasQuoteOrReply: flags.hasQuoteOrReply === true,
+      earlierTurns,
+    },
+    {
+      enabled: v.enabled,
+      maxChars: v.maxChars,
+      fullModelKeywords: v.keywords,
+      greetingPatterns: v.greetings,
+      longThreadTurns: v.longThread,
+      escalateOnTool: v.escalate,
+    },
+  );
 
 const asTier = (x: unknown, fallback: Tier): Tier =>
   x === 'light' || x === 'standard' ? x : fallback;
@@ -201,6 +203,8 @@ export function AssistantRoutingSettings() {
   const [values, setValues] = useState<Values>(DEFAULTS);
   const [error, setError] = useState<string | undefined>(undefined);
   const [sample, setSample] = useState('');
+  const [sampleAttachments, setSampleAttachments] = useState(false);
+  const [sampleQuote, setSampleQuote] = useState(false);
   const [routed, setRouted] = useState<{ tier: Tier; reason: string } | undefined>(undefined);
 
   useEffect(() => {
@@ -326,8 +330,29 @@ export function AssistantRoutingSettings() {
           <Field label="Message to try">
             <Input value={sample} onChange={(event) => setSample(event.target.value)} />
           </Field>
+          <Checkbox
+            label="Has attachments"
+            checked={sampleAttachments}
+            onChange={(event) => setSampleAttachments(event.target.checked)}
+          />
+          <Checkbox
+            label="Is a reply or quote"
+            checked={sampleQuote}
+            onChange={(event) => setSampleQuote(event.target.checked)}
+          />
           <div className="flex items-center gap-3">
-            <Button onClick={() => setRouted(tryRoute(sample, values))}>Try the router</Button>
+            <Button
+              onClick={() =>
+                setRouted(
+                  tryRoute(sample, values, 0, {
+                    hasAttachments: sampleAttachments,
+                    hasQuoteOrReply: sampleQuote,
+                  }),
+                )
+              }
+            >
+              Try the router
+            </Button>
             {routed !== undefined && (
               <span role="status">{`${routed.tier === 'light' ? 'Light' : 'Standard'} tier · ${routed.reason}`}</span>
             )}
