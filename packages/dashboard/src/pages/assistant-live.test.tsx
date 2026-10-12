@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import type { RunEvent } from '@bananasaurs/core';
 import { renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
-import { activeRunsUrl, describeRunEvent } from '../api/runs.js';
+import { activeRunsUrl, describeRunEvent, runEventsUrl, runLiveUrl } from '../api/runs.js';
 import { SessionProvider } from '../app/session.js';
 import { InProgressPanel, PendingTurn, StepLog } from './assistant-live.js';
 
@@ -196,7 +196,7 @@ function stubRunsOnce() {
   const calls: string[] = [];
   const mock = vi.fn((input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    calls.push(url);
+    if (!url.endsWith('/live')) calls.push(url);
     const body = calls.length === 1 ? { runs: [RUN] } : { runs: [] };
     return Promise.resolve(
       new Response(JSON.stringify(body), {
@@ -343,7 +343,7 @@ describe('PendingTurn', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        calls.push(url);
+        if (!url.endsWith('/live')) calls.push(url);
         const body = calls.length === 1 ? { runs: [runA] } : { runs: [runB] };
         return Promise.resolve(
           new Response(JSON.stringify(body), {
@@ -400,6 +400,22 @@ const E3 = {
 };
 
 describe('StepLog', () => {
+  it('mounts LiveText, which fetches the gated /live route for the same run', async () => {
+    const mock = stubFetch([
+      { url: runEventsUrl('run-1', 0), body: { events: [E1, E2] } },
+      { url: runLiveUrl('run-1'), body: { answer: 'hi Sam L', thinking: '' } },
+    ]);
+    renderWithSession(
+      <Router>
+        <StepLog runId="run-1" />
+      </Router>,
+    );
+    expect(await screen.findByText('hi Sam L')).toBeTruthy();
+    const urls = mock.mock.calls.map((c) => String(c[0]));
+    expect(urls).toContain(runLiveUrl('run-1'));
+    expect(urls).toContain(runEventsUrl('run-1', 0));
+  });
+
   it('appends incremental polls without duplicating rows', async () => {
     vi.useFakeTimers();
     const calls: string[] = [];
@@ -408,7 +424,7 @@ describe('StepLog', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        calls.push(url);
+        if (!url.endsWith('/live')) calls.push(url);
         const body = url.includes('after=2') ? { events: [E3] } : { events: [E1, E2] };
         return Promise.resolve(
           new Response(JSON.stringify(body), {
@@ -448,7 +464,7 @@ describe('StepLog', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        calls.push(url);
+        if (!url.endsWith('/live')) calls.push(url);
         const body = url.includes('after=2') ? { events: [E3] } : { events: [E1, E2] };
         return Promise.resolve(
           new Response(JSON.stringify(body), {
@@ -501,7 +517,7 @@ describe('StepLog', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        calls.push(url);
+        if (!url.endsWith('/live')) calls.push(url);
         const events = url.includes('after=0')
           ? url.includes('/run-a/')
             ? [aQueued, aDone]
