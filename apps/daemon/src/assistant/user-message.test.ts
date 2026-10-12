@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildUserMessage } from './user-message.js';
 
 describe('buildUserMessage', () => {
-  it('tells the model attachments read only only when included (ADR 0149)', () => {
+  it('tells the model the attachment line is independent of position (ADR 0149)', () => {
     expect(buildUserMessage({ question: 'hi', askerName: 'Sam L' })).toContain(
       'You can read an attachment only if its contents are included here.',
     );

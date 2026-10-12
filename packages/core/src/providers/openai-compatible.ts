@@ -550,7 +550,10 @@ const toWireMessage = (
           ? { type: 'image_url', image_url: { url: `data:${m.mediaType};base64,${m.dataBase64}` } }
           : {
               type: 'file',
-              file: { filename: m.name, file_data: `data:${m.mediaType};base64,${m.dataBase64}` },
+              file: {
+                filename: 'document.pdf',
+                file_data: `data:${m.mediaType};base64,${m.dataBase64}`,
+              },
             },
       ),
     ],
