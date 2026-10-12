@@ -65,6 +65,7 @@ export * as searchKeysRepo from './repos/search-keys.js';
 export * as traceRepo from './repos/traces.js';
 export * as runRepo from './repos/runs.js';
 export * as conversationRepo from './repos/conversations.js';
+export * as digestRepo from './repos/digests.js';
 export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
 export * as loggingRepo from './repos/logging.js';

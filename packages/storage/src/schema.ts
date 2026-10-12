@@ -2494,7 +2494,7 @@ export const assistantRuns = sqliteTable(
     ),
     check(
       'assistant_runs_source',
-      sql`${t.source} IN ('mention','slash-command','dashboard-test')`,
+      sql`${t.source} IN ('mention','slash-command','dashboard-test','daily-digest')`,
     ),
     index('assistant_runs_state').on(t.guildId, t.state, t.updatedAt),
     index('assistant_runs_conversation').on(t.guildId, t.conversationId),
@@ -2531,6 +2531,31 @@ export const assistantRunEvents = sqliteTable(
     check('assistant_run_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_run_events_ok', sql`${t.ok} IS NULL OR ${t.ok} IN (0,1)`),
     index('assistant_run_events_kind').on(t.guildId, t.kind, t.at),
+  ],
+);
+
+// ADR 0150: one row per guild per local day holding that day's digest. The
+// summary JSON carries the validated output plus the conversation bonds
+// (id, channel, title) the recall filter needs; `summary_text` is the
+// rendered searchable copy. Rows die with the guild through the FK, and
+// older than the conversation retention through the prune job.
+export const assistantDailyDigests = sqliteTable(
+  'assistant_daily_digests',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    day: text('day').notNull(),
+    summaryJson: text('summary_json').notNull(),
+    summaryText: text('summary_text').notNull(),
+    proposalsJson: text('proposals_json').notNull().default('[]'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.day] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_daily_digests_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_daily_digests_day', sql`length(${t.day}) = 10`),
+    index('assistant_daily_digests_recent').on(t.guildId, t.day),
   ],
 );
 
