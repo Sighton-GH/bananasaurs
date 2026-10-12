@@ -528,15 +528,15 @@ const assistantInvokeDetail = z.object({
     })
     .optional(),
   /**
-   * ADR 0093: the conversations whose summaries this run looked back at
-   * (`search_conversations` hits). Carried so the invoke job can link them
-   * with kind `recalled`; never written to the stored trace.
-   */
-  /**
    * Slice 3: saved thinking per round, carried so a retry that skips the
    * invoke still writes it into the trace (capTrace truncates on store).
    */
   reasoning: assistantTraceSchema.shape.reasoning,
+  /**
+   * ADR 0093: the conversations whose summaries this run looked back at
+   * (`search_conversations` hits). Carried so the invoke job can link them
+   * with kind `recalled`; never written to the stored trace.
+   */
   recalled: z.array(z.string().min(1)).optional(),
 });
 
