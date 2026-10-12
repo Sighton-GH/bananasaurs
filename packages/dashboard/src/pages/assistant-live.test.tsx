@@ -411,7 +411,7 @@ describe('StepLog', () => {
       </Router>,
     );
     expect(await screen.findByText('hi Sam L')).toBeTruthy();
-    const urls = mock.mock.calls.map((c) => String(c[0]));
+    const urls = mock.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : ''));
     expect(urls).toContain(runLiveUrl('run-1'));
     expect(urls).toContain(runEventsUrl('run-1', 0));
   });
