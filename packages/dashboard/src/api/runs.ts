@@ -13,6 +13,14 @@ export const activeRunsUrl = (): string => `${RUNS_URL}?active=1&limit=50`;
 export const runEventsUrl = (runId: string, after: number): string =>
   `${RUNS_URL}/${encodeURIComponent(runId)}/events?after=${String(after)}`;
 
+export const runLiveUrl = (runId: string): string =>
+  `${RUNS_URL}/${encodeURIComponent(runId)}/live`;
+
+export interface LiveTextResponse {
+  readonly answer: string;
+  readonly thinking: string;
+}
+
 export interface LiveRun extends RunRow {
   readonly label: string;
   readonly stalled: boolean;
