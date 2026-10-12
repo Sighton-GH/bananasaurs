@@ -983,13 +983,23 @@ Keep every existing error-mapping branch and every ProviderError field (no `quot
 
 ### S3-T7: Gemini streaming   ·   Wave 3
 **Owns:** Modify: `packages/core/src/providers/gemini.ts`; Test: `packages/core/src/providers/gemini.test.ts`
-**Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts`, `packages/core/src/providers/errors.ts`
-**Interfaces:** Consumes: `parseSseStream` from S3-T3; `StreamProgress` from S3-T2 · Produces: `GeminiProvider.generateText` streams `:streamGenerateContent?alt=sse` with `thinkingLevel` and `includeThoughts`, returning `reasoning` and raw `providerParts`
+**Reads (do not edit):** `packages/core/src/providers/sse.ts` (S3-T3), `packages/core/src/providers/contracts.ts` (`StreamProgress`, `StreamChunk`, `thinkingLevel`, `capabilities`), `packages/core/src/providers/errors.ts`, `packages/core/src/providers/model-capabilities.ts` (`geminiCapabilities`, `ModelCapabilities`)
+**Interfaces:** Consumes: `parseSseStream` from S3-T3; `StreamProgress`, `StreamChunk` from S3-T2 · Produces: `GeminiProvider.generateText` streams `:streamGenerateContent?alt=sse` with capability-gated `thinkingConfig` (`levels` → `thinkingLevel`, `budget` → legacy `thinkingBudget`, `none` → neither plus no `includeThoughts`), returning `reasoning` and raw `providerParts`; constructor options `idleTimeoutMs` (default 45,000) and `maxCallMs` (default 300,000)
 
-- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/gemini.test.ts`, using its `ok()` and `vi.fn` fetch style, add:
+- [ ] **Step 1: Write the failing test** — in `packages/core/src/providers/gemini.test.ts` (imports `GeminiProvider`, `ProviderError` and the `ok()` JSON helper at lines 1–10; `vi.fn` fetch style). The adapter will always call `:streamGenerateContent?alt=sse`, so convert every existing 200-JSON mock: wrap each payload now passed to `ok({...})` in an SSE helper added at the top of the `describe` block:
 
 ```ts
-it('streams text, thought and functionCall parts with thinkingLevel', async () => {
+const sse = (...payloads: unknown[]): Response =>
+  new Response(
+    `${payloads.map((p) => `data: ${JSON.stringify(p)}\n\n`).join('')}data: [DONE]\n\n`,
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+```
+
+i.e. `ok({ candidates: [...] })` becomes `sse({ candidates: [...] })` with the identical object. Non-2xx error-path mocks stay unchanged. Update every URL assertion from `:generateContent` to `:streamGenerateContent?alt=sse` (e.g. lines 44–46). The existing `sends thinkingConfig when thinkingBudget is set` test (line 312) must now pass explicit budget capabilities (see gating tests below), or it fails: an unknown test model defaults to thinking `none`, which sends no `thinkingConfig` at all. Then add:
+
+```ts
+it('streams text, thought and functionCall parts with thinkingLevel low for tool rounds', async () => {
   const body =
     'data: {"candidates":[{"content":{"parts":[{"text":"hel"}]}}]}\n\n' +
     'data: {"candidates":[{"content":{"parts":[{"text":"背景","thought":true}]}}]}\n\n' +
@@ -998,18 +1008,97 @@ it('streams text, thought and functionCall parts with thinkingLevel', async () =
     new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
   );
   const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  const chunks: Array<{ text: string; reasoning: string }> = [];
   const res = await provider.generateText({
     model: 'gemini-3.8-flash',
     messages: [{ role: 'user', text: 'hi Sam L' }],
     tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+    onChunk: (c) => { chunks.push({ ...c }); },
   });
   expect(res.text).toBe('hel');
   expect(res.reasoning).toBe('背景');
   expect(res.toolCalls).toEqual([{ name: 'search_sources', args: { que: 1 } }]);
   expect(res.providerParts).toBeDefined();
+  expect(chunks.map((c) => c.text).join('')).toBe('hel');
+  expect(chunks.map((c) => c.reasoning).join('')).toBe('背景');
   const [url, init] = fetch.mock.calls[0] ?? [];
   expect(String(url)).toContain(':streamGenerateContent?alt=sse');
-  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'low' });
+  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({
+    thinkingLevel: 'low',
+    includeThoughts: true,
+  });
+});
+
+it('uses thinkingLevel medium for the answer call and echoes providerParts', async () => {
+  const body =
+    'data: {"candidates":[{"content":{"parts":[{"text":"done"}]}}]}\n\n' +
+    'data: {"candidates":[{"content":{"parts":[{"text":"thought sum","thought":true}]}}]}\n\n';
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  const res = await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi Alex P' }],
+  });
+  expect(res.text).toBe('done');
+  expect(res.reasoning).toBe('thought sum');
+  expect(res.providerParts).toBeDefined();
+  const [, init] = fetch.mock.calls[0] ?? [];
+  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({
+    thinkingLevel: 'medium',
+    includeThoughts: true,
+  });
+});
+
+it('an explicit thinkingLevel wins over the tools derivation', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi' }],
+    tools: [{ name: 'search_sources', description: 'Search.', parameters: { type: 'object' } }],
+    thinkingLevel: 'high',
+  });
+  const [, init] = fetch.mock.calls[0] ?? [];
+  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({
+    thinkingLevel: 'high',
+    includeThoughts: true,
+  });
+});
+
+it('sends no thinking parameter for a model without thinking support', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'gemini-9.9-ultra',
+    messages: [{ role: 'user', text: 'hi' }],
+    thinkingLevel: 'low',
+    thinkingBudget: 512,
+  });
+  const sent = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
+  expect(sent['generationConfig']).toBeUndefined();
+});
+
+it('keeps the legacy thinkingBudget only for budget-family models', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    sse({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }),
+  );
+  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+  await provider.generateText({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', text: 'hi' }],
+    thinkingBudget: 512,
+    capabilities: { tools: true, image: true, pdf: true, reasoning: true, thinking: 'budget' },
+  });
+  expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string).generationConfig.thinkingConfig).toEqual({
+    thinkingBudget: 512,
+    includeThoughts: true,
+  });
 });
 
 it('an idle stream throws a retryable timeout', async () => {
@@ -1019,30 +1108,9 @@ it('an idle stream throws a retryable timeout', async () => {
   const provider = new GeminiProvider({ apiKey: 'secret', fetch, timeoutMs: 50 });
   const err = await provider
     .generateText({ model: 'gemini-3.8-flash', messages: [{ role: 'user', text: 'hi' }] })
-
     .catch((e: unknown) => e);
   expect(err).toBeInstanceOf(ProviderError);
   expect(err).toMatchObject({ kind: 'timeout', retryable: true });
-});
-
-it('uses thinkingLevel medium for the answer call and echoes providerParts', async () => {
-  const body =
-    'data: {"candidates":[{"content":{"parts":[{"text":"done"}]}}]}\n\n' +
-    'data: {"candidates":[{"content":{"parts":[{"text":"thought sum","thought":true}]}}]}\n\n' +
-    'data: {"candidates":[{"content":{"parts":[{"text":"done"}],"finishReason":"STOP"}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3,"thoughtsTokenCount":1}}\n\n';
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-    new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-  );
-  const provider = new GeminiProvider({ apiKey: 'secret', fetch });
-  const res = await provider.generateText({
-    model: 'gemini-3.8-flash',
-    messages: [{ role: 'user', text: 'hi Alex P' }],
-  });
-  expect(res.text).toBe('donedone');
-  expect(res.reasoning).toBe('thought sum');
-  expect(res.providerParts).toBeDefined();
-  const [, init] = fetch.mock.calls[0] ?? [];
-  expect(JSON.parse(init?.body as string).generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'medium' });
 });
 
 it('surfaces MAX_TOKENS with text, usage and thinking tokens', async () => {
@@ -1062,14 +1130,146 @@ it('surfaces MAX_TOKENS with text, usage and thinking tokens', async () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL with `:generateContent` URL and no `thinkingLevel`
-- [ ] **Step 3: Implement** — anchor: `GeminiProvider.generateText` URL `:generateContent`, `generationConfig` with `thinkingBudget`, and the single-JSON parse (lines ~137–297). Replacement: call `:streamGenerateContent?alt=sse`; send `generationConfig.thinkingConfig: { thinkingLevel }` where level is explicit `request.thinkingLevel` else tools offered → `'low'` else `'medium'` (never `minimal`); always send `includeThoughts: true` (after Slice 6: gate on the entry `GeminiModelProfile` table `capabilities.thinking !== 'none'` and reasoning on `capabilities.reasoning` — the name `GeminiModelInfo` already exists in `packages/core/src/providers/gemini.ts` for a different interface, so the Slice 6 type keeps the new name); stream `response.body` through `parseSseStream`, assembling non-thought `text` as content, `thought: true` text as reasoning, `functionCall` parts as tool calls, and `thoughtSignature` bytes into the echoed raw parts; echo the raw parts back as `providerParts` so thought signatures survive tool rounds; count every `:` comment as a keepalive and re-arm the idle timer on it; fire `onProgress` at most every 3 s with `{ round: 0, answerChars, reasoningChars, keepalives, msSinceLastByte }`; record time-to-first-byte from the existing `timeoutMs` and abort on first-byte, idle (45 s default, re-armed on every byte) and ceiling (300 s) timers; keep the empty-answer, `MAX_TOKENS` (pass through with text and usage so S3-T8 can append `-# (cut short)`) and `SAFETY` mappings, usage mapping incl. `thoughtsTokenCount → thinkingTokens`, and every ProviderError field (after Slice 6: plus `quotaScope`, `retryAfterMs`, `learnedLimit`).
+- [ ] **Step 2: Run it and watch it fail** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: FAIL with `:generateContent` URL, no `thinkingLevel`, and every unconverted JSON mock failing
+- [ ] **Step 3: Implement** — in `packages/core/src/providers/gemini.ts`, against the current code:
+
+(a) Options: extend `GeminiProviderOptions` (lines 91–96) with `readonly idleTimeoutMs?: number; readonly maxCallMs?: number;`, add the private fields beside `timeoutMs` (line 124), default them in the constructor (line 132) to `options.idleTimeoutMs ?? 45_000` and `options.maxCallMs ?? 300_000`.
+
+(b) Imports: add `import { parseSseStream } from './sse.js';` and `import { geminiCapabilities, type ModelCapabilities } from './model-capabilities.js';`. Keep `geminiResponseSchema` (lines 16–52), `toContents` (lines 60–89), `statusKind`, `isTimeoutError`, the fetch catch mapping (lines 179–188), the 401/403 and 429 branches (lines 191–233, quota `quotaScope`/`retryAfterMs`/`learnedLimit` untouched) and the generic non-ok branch (lines 227–234) exactly as they are. Do not rename `GeminiModelInfo` (lines 338–344).
+
+(c) Replace the request-body build (lines 143–166) with capability-gated thinking:
+
+```ts
+// Capability gate: an unknown model resolves to TEXT_AND_TOOLS_ONLY
+// (thinking 'none'), so no thinking parameter goes out blind. Explicit
+// request.thinkingLevel wins; otherwise tools offered means a tool round
+// ('low'), no tools means the answer ('medium'). Never 'minimal'.
+const capabilities: ModelCapabilities =
+  request.capabilities ?? geminiCapabilities(request.model);
+const wantsTools = request.tools !== undefined && request.tools.length > 0;
+const thinkingLevel = request.thinkingLevel ?? (wantsTools ? 'low' : 'medium');
+const thinkingConfig =
+  capabilities.thinking === 'levels'
+    ? { thinkingLevel, includeThoughts: true }
+    : capabilities.thinking === 'budget' && request.thinkingBudget !== undefined
+      ? { thinkingBudget: request.thinkingBudget, includeThoughts: true }
+      : undefined;
+const body = {
+  contents: toContents(request.messages),
+  ...(request.tools !== undefined && request.tools.length > 0
+    ? { tools: [{ functionDeclarations: request.tools }] }
+    : {}),
+  ...(request.systemInstruction
+    ? { system_instruction: { parts: [{ text: request.systemInstruction }] } }
+    : {}),
+  ...(request.maxOutputTokens !== undefined ||
+  request.temperature !== undefined ||
+  thinkingConfig !== undefined
+    ? {
+        generationConfig: {
+          ...(request.maxOutputTokens !== undefined
+            ? { maxOutputTokens: request.maxOutputTokens }
+            : {}),
+          ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          ...(thinkingConfig === undefined ? {} : { thinkingConfig }),
+        },
+      }
+    : {}),
+};
+```
+
+(d) Replace the URL (line 171) `:generateContent` with `:streamGenerateContent?alt=sse`, and compose the same three timers as S3-T6 (linked `AbortController`, ceiling `maxCallMs`, first-byte `timeoutMs`, idle `idleTimeoutMs` re-armed per SSE event including keepalives, `clearTimers` in `finally`; caller-signal abort listener as in S3-T6).
+
+(e) Replace the single-JSON parse and assembly (lines 236–333) with the streaming loop. After the `!response.ok` branches, `response.body === null` throws `invalid-response` like S3-T6. Then:
+
+```ts
+let text = '';
+let reasoning = '';
+let finishReason: string | undefined;
+let usage: z.infer<typeof geminiResponseSchema>['usageMetadata'];
+let modelVersion: string | undefined;
+const toolCalls: { id?: string; name: string; args: unknown }[] = [];
+const rawParts: unknown[] = [];
+let answerChars = 0;
+let reasoningChars = 0;
+let keepalives = 0;
+let lastByteAt = Date.now();
+let lastEmitAt = 0;
+const emitProgress = (): void => { ...same 3 s throttle as S3-T6, round: 0... };
+try {
+  for await (const event of parseSseStream(response.body)) {
+    lastByteAt = Date.now();
+    ...same first-byte/idle bookkeeping as S3-T6...;
+    if (event.keepalive) {
+      keepalives += 1;
+      emitProgress();
+      continue;
+    }
+    const parsed = geminiResponseSchema.safeParse(JSON.parse(event.data));
+    if (!parsed.success)
+      throw new ProviderError('invalid-response', 'Gemini returned an invalid chunk', false, { cause: parsed.error });
+    const candidate = parsed.data.candidates[0];
+    if (parsed.data.modelVersion !== undefined) modelVersion = parsed.data.modelVersion;
+    if (parsed.data.usageMetadata !== undefined) usage = parsed.data.usageMetadata;
+    if (candidate?.finishReason !== undefined) finishReason = candidate.finishReason;
+    let deltaText = '';
+    let deltaReasoning = '';
+    for (const part of candidate?.content?.parts ?? []) {
+      if (part.functionCall !== undefined) {
+        toolCalls.push({
+          ...(part.functionCall.id === undefined ? {} : { id: part.functionCall.id }),
+          name: part.functionCall.name,
+          args: part.functionCall.args ?? {},
+        });
+      } else if (part.thought === true) {
+        reasoning += part.text ?? '';
+        deltaReasoning += part.text ?? '';
+        reasoningChars += (part.text ?? '').length;
+      } else if (part.text !== undefined) {
+        text += part.text;
+        deltaText += part.text;
+        answerChars += part.text.length;
+      }
+    }
+    // The raw parts, not the parsed ones: Zod drops fields it does not know
+    // (thoughtSignature), and Gemini rejects a tool turn echoed without them.
+    const raw = (JSON.parse(event.data) as { candidates?: { content?: { parts?: unknown } }[] }).candidates?.[0]?.content?.parts;
+    if (Array.isArray(raw)) rawParts.push(...raw);
+    if (deltaText !== '' || deltaReasoning !== '') request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
+    emitProgress();
+  }
+} catch (error) {
+  if (error instanceof ProviderError) throw error;
+  if (isTimeoutError(error))
+    throw new ProviderError('timeout', 'Gemini stream timed out', true, { cause: error, host: this.host });
+  throw new ProviderError('outage', 'Gemini stream failed', true, { cause: error, host: this.host });
+} finally {
+  clearTimers();
+}
+```
+
+Parse `event.data` once into a local (`const rawJson = JSON.parse(event.data) as unknown`) and reuse it for both the Zod parse and the raw-parts extraction — the sketch above parses twice for clarity; ship the single-parse version.
+
+(f) Keep the empty-answer mapping with the same branches (`MAX_TOKENS` / `SAFETY` / generic), reading `finishReason`, `usage` and `modelVersion` from the loop accumulators. A thoughts-only stream (reasoning but no text and no calls) still takes this path: thoughts are never delivered as the answer. Return:
+
+```ts
+return {
+  text,
+  model: modelVersion ?? request.model,
+  ...(finishReason ? { finishReason } : {}),
+  ...(toolCalls.length === 0 ? {} : { toolCalls, providerParts: rawParts }),
+  ...(reasoning === '' ? {} : { reasoning }),
+  ...(usage ? { usage: { ...same usage mapping as today, incl. thoughtsTokenCount → thinkingTokens... } } : {}),
+};
+```
+
+`MAX_TOKENS` with text returns with text, reasoning and usage intact so S3-T8 can append `-# (cut short)`. Keep every ProviderError field on every path.
 - [ ] **Step 4: Run it and watch it pass** — `npx vitest run packages/core/src/providers/gemini.test.ts --maxWorkers=1` · Expected: PASS
 - [ ] **Step 5: Typecheck** — `npx tsc --build` · Expected: exit 0
 - [ ] **Step 6: Format and lint** — `npx prettier --write packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` then `npx eslint packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts` · exit 0
 - [ ] **Step 7: Commit** — `git add packages/core/src/providers/gemini.ts packages/core/src/providers/gemini.test.ts && git commit -m "Slice 3 T7: Gemini streaming"`
 
-**Done when:** the SSE endpoint assembles text, thought and function calls; `thinkingLevel` is `low` with tools and `medium` without; thought signatures survive via raw `providerParts`; keepalives re-arm the idle timer; `MAX_TOKENS` keeps text plus usage; idle streams time out retryably.
+**Done when:** the SSE endpoint assembles text, thought and function calls; `thinkingLevel` is `low` with tools and `medium` without and explicit levels win; no thinking parameter goes out for `none` models (unknown models included); thought signatures survive via raw `providerParts`; keepalives re-arm the idle timer; `MAX_TOKENS` keeps text plus usage; idle streams time out retryably; every pre-existing JSON mock is converted to SSE.
 
 ### S3-T8: Tool loop wiring and finish reasons   ·   Wave 4
 **Owns:** Modify: `apps/daemon/src/assistant/tool-loop.ts`; Test: `apps/daemon/src/assistant/tool-loop.test.ts`
