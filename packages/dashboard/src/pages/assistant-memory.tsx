@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { AssistantDigestSettings } from '../components/assistant-digest-settings.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -79,6 +80,7 @@ export function AssistantMemoryPage() {
       <DataState resource={memory.resource}>
         {(data) => (
           <div className="space-y-4">
+            <AssistantDigestSettings />
             <Card title="Server card">
               <p className="mb-2 text-sm text-ink-muted">
                 Stable identity and operating context included in every API system prompt.

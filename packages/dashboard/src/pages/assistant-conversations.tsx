@@ -14,6 +14,7 @@ import {
   type RetentionDays,
   type RetentionResponse,
 } from '../api/conversations.js';
+import { AssistantDigestList } from '../components/assistant-digest-list.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -193,6 +194,9 @@ export function AssistantConversationsPage() {
       />
       <div className="mb-4">
         <RetentionCard />
+      </div>
+      <div className="mb-4">
+        <AssistantDigestList />
       </div>
       <form onSubmit={apply} className="mb-4 flex max-w-3xl flex-wrap items-end gap-3">
         <Field label="Channel" hint="The channel id. Empty means everywhere.">
