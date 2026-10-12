@@ -273,6 +273,36 @@ describe('createRunRecorder', () => {
     expect(runRepo.getRun(scope, 'run-latch')?.stage).toBe('done');
   });
 
+  it('a failed finished append does not latch: the next finish attempt appends', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    runRepo.ensureRun(scope, {
+      runId: 'run-retry-finish',
+      userId: USER,
+      behaviourId: 'club',
+      source: 'mention',
+      queuedAt: NOW,
+    });
+    const write = runRepo.appendRunEvent;
+    const append = vi
+      .spyOn(runRepo, 'appendRunEvent')
+      .mockImplementationOnce(() => {
+        throw new Error('fixture write failure');
+      })
+      .mockImplementation((...args) => write(...args));
+    const recorder = recorderFor('run-retry-finish');
+    const finished = { kind: 'finished', outcome: 'answered', durationMs: 1 } as const;
+    expect(() => recorder.event(finished)).not.toThrow();
+    expect(() => recorder.event(finished)).not.toThrow();
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(
+      runRepo.listRunEvents(scope, 'run-retry-finish', 0, 10).map((r) => r.event.kind),
+    ).toEqual(['finished']);
+    expect(runRepo.getRun(scope, 'run-retry-finish')).toMatchObject({
+      state: 'answered',
+      stage: 'done',
+    });
+  });
+
   it('update() writes a direct run-row patch', () => {
     const scope = t.scopes.forGuild(GUILD);
     runRepo.ensureRun(scope, {
