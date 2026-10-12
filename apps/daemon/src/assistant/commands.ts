@@ -13,6 +13,7 @@ import {
   type KnownMessage,
   type Logger,
   type MessageEvent,
+  type StreamProgress,
   type Subscriber,
 } from '@bananasaurs/core';
 import { routeAssistantMention } from '@bananasaurs/discord';
@@ -104,6 +105,11 @@ export interface AssistantInvocation {
   readonly summaryVersion?: number | undefined;
   /** ADR 0129 §6: the run's step log; absent means nothing is recorded. */
   readonly recorder?: RunRecorder | undefined;
+  /**
+   * Slice 3: throttled stream progress for dashboard readers. Absent means
+   * no fan-out. Metadata only — never model or member text.
+   */
+  readonly onProgress?: ((progress: StreamProgress) => void) | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
@@ -168,6 +174,12 @@ export interface AssistantTraceDetail {
   readonly toolCalls: AssistantTrace['toolCalls'];
   readonly usage: AssistantTrace['usage'];
   readonly guard: AssistantTrace['guard'];
+  /**
+   * Slice 3: saved thinking per round (OpenRouter reasoning, Gemini thought
+   * summaries), each capped at 8,000 chars, at most 12. Written to the stored
+   * trace; shown collapsed to trace-capable viewers only.
+   */
+  readonly reasoning?: readonly { readonly round: number; readonly text: string }[] | undefined;
   readonly model?: string | undefined;
   readonly finishReason?: string | undefined;
   readonly web?: boolean | undefined;

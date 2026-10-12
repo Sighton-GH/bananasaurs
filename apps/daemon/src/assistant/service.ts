@@ -5,6 +5,7 @@ import {
   clipHeading,
   compileAssistantContext,
   estimateTokens,
+  getLiveBuffer,
   JOB_KINDS,
   nextOccurrence,
   neutraliseMarkers,
@@ -1454,6 +1455,8 @@ export const createAssistantService = (
         guildId: scope.guildId,
         runId: input.invocationId,
         recorder,
+        ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
+        live: getLiveBuffer(),
         now,
         citations,
         isCitable: isKnownResource,
@@ -1574,6 +1577,13 @@ export const createAssistantService = (
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
+        // Slice 3: saved thinking per round; capTrace owns the 8,000-char
+        // truncation (and its marker) at the storage boundary.
+        ...(loop.reasoning.length === 0
+          ? {}
+          : {
+              reasoning: loop.reasoning.slice(0, 12).map((r) => ({ round: r.round, text: r.text })),
+            }),
         ...(loop.web ? { web: true } : {}),
         ...(loop.answeredBy === undefined ? {} : { answeredBy: { ...loop.answeredBy } }),
         // ADR 0093: the conversations this run looked back at, for the
@@ -1828,6 +1838,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
           runId: userTurnId,
           now,
           logger,
+          live: getLiveBuffer(),
         });
       } catch (err) {
         logger.warn(
@@ -1894,6 +1905,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
               ? { removed: [] }
               : { ...detail.guard, removed: [...detail.guard.removed] },
           ...(detail?.included === undefined ? {} : { included: { ...detail.included } }),
+          ...(detail?.reasoning === undefined
+            ? {}
+            : { reasoning: detail.reasoning.slice(0, 12).map((r) => ({ ...r })) }),
         });
         if (err instanceof LocalLimitError) {
           result = {
@@ -1989,6 +2003,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         sections: detail?.sections ?? [],
         toolCalls: detail?.toolCalls ?? [],
         guard: detail?.guard ?? { removed: [] },
+        ...(detail?.reasoning === undefined
+          ? {}
+          : { reasoning: detail.reasoning.slice(0, 12).map((r) => ({ ...r })) }),
         ...(traceError === undefined ? {} : { error: traceError }),
         ...(detail?.included === undefined
           ? {}

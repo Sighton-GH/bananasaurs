@@ -532,6 +532,11 @@ const assistantInvokeDetail = z.object({
    * (`search_conversations` hits). Carried so the invoke job can link them
    * with kind `recalled`; never written to the stored trace.
    */
+  /**
+   * Slice 3: saved thinking per round, carried so a retry that skips the
+   * invoke still writes it into the trace (capTrace truncates on store).
+   */
+  reasoning: assistantTraceSchema.shape.reasoning,
   recalled: z.array(z.string().min(1)).optional(),
 });
 

@@ -3,6 +3,7 @@ import { ChannelType, type Client } from 'discord.js';
 import type { DiscordPort } from '@bananasaurs/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getLiveBuffer,
   parseConfig,
   parseGuildId,
   ProviderError,
@@ -10,6 +11,7 @@ import {
   type GenerateTextRequest,
   type GenerateTextResponse,
   type RunEvent,
+  type StreamProgress,
   type TextProvider,
 } from '@bananasaurs/core';
 import {
@@ -396,6 +398,67 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       undefined,
       chain,
     );
+
+  it('forwards entry capabilities and input onProgress into provider requests', async () => {
+    const seen: GenerateTextRequest[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req: GenerateTextRequest) => {
+        seen.push(req);
+        req.onProgress?.({
+          round: 0,
+          answerChars: 5,
+          reasoningChars: 0,
+          keepalives: 0,
+          msSinceLastByte: 10,
+        });
+        return { text: 'ok', model: 'm' };
+      },
+    };
+    const progressed: StreamProgress[] = [];
+    const service = serviceWith(() => [
+      usable(provider, {
+        capabilities: { tools: true, image: false, pdf: false, reasoning: false, thinking: 'none' },
+      }),
+    ]);
+    const result = await service.invoke({
+      ...ask,
+      invocationId: 'int-progress-1',
+      onProgress: (p: StreamProgress) => {
+        progressed.push(p);
+      },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(seen[0]?.capabilities).toEqual({
+      tools: true,
+      image: false,
+      pdf: false,
+      reasoning: false,
+      thinking: 'none',
+    });
+    expect(progressed).toHaveLength(1);
+    expect(progressed[0]).toMatchObject({ round: 1, answerChars: 5 });
+  });
+
+  it('appends streamed chunks to the live buffer under the run id', async () => {
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req: GenerateTextRequest) => {
+        req.onChunk?.({ text: 'he', reasoning: 'th' });
+        req.onChunk?.({ text: 'llo', reasoning: 'ink' });
+        return { text: 'hello', model: 'm' };
+      },
+    };
+    const service = serviceWith(() => [usable(provider)]);
+    const result = await service.invoke({ ...ask, invocationId: 'int-live-1' });
+    expect(result).toMatchObject({ ok: true });
+    expect(getLiveBuffer().read('int-live-1')).toEqual({ answer: 'hello', thinking: 'think' });
+    // A direct service call has no recorder to close the run; clean up the
+    // shared buffer so no entry is left behind.
+    getLiveBuffer().drop('int-live-1');
+  });
 
   it('every entry busy throws retryable so the job retries into BUSY_REPLY', async () => {
     const { provider, calls } = fakeProvider([new ProviderError('rate-limit', 'HTTP 429', true)]);

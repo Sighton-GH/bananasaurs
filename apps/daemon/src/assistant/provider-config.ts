@@ -5,6 +5,7 @@ import {
   type GeminiModelInfo,
   type Logger,
 } from '@bananasaurs/core';
+import { capabilitiesForEntry } from './model-capabilities.js';
 import {
   assistantProviderRepo,
   assistantKeyCooldownsRepo,
@@ -283,6 +284,8 @@ export const createProviderConfigStore = (
     listGeminiModels({ apiKey }),
   options: {
     readonly providerTimeoutMs?: () => number;
+    readonly providerIdleTimeoutMs?: () => number;
+    readonly providerMaxCallMs?: () => number;
     readonly now?: () => number;
     readonly logger?: Pick<Logger, 'warn'> | undefined;
     readonly modelCatalogue?: OpenRouterModelCatalogue | undefined;
@@ -525,6 +528,13 @@ export const createProviderConfigStore = (
       assistantProvidersRepo.removeKey(instance, keyId);
     },
     chain() {
+      // Slice 3: per-entry capabilities from the shared Gemini table or the
+      // OpenRouter catalogue; unlisted models are text plus tools only.
+      const emptyCatalogue: OpenRouterModelCatalogue = {
+        peek: () => undefined,
+        refresh: () => Promise.resolve(),
+      };
+      const catalogue = options.modelCatalogue ?? emptyCatalogue;
       return resolveModelChain({
         instance,
         config: envBase ?? { AI_PROVIDER: 'off', AI_PROFILE_COST_CLASS: 'unknown' },
@@ -534,7 +544,19 @@ export const createProviderConfigStore = (
         ...(options.providerTimeoutMs === undefined
           ? {}
           : { providerTimeoutMs: options.providerTimeoutMs }),
-      });
+        ...(options.providerIdleTimeoutMs === undefined
+          ? {}
+          : { providerIdleTimeoutMs: options.providerIdleTimeoutMs }),
+        ...(options.providerMaxCallMs === undefined
+          ? {}
+          : { providerMaxCallMs: options.providerMaxCallMs }),
+      }).map((entry) => ({
+        ...entry,
+        capabilities: capabilitiesForEntry(
+          { providerId: entry.providerId, model: entry.model },
+          catalogue,
+        ),
+      }));
     },
     saveChain(rows, now) {
       assistantProvidersRepo.setModelChain(
