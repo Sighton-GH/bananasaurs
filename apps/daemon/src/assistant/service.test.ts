@@ -1393,7 +1393,11 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(result.ok).toBe(true);
     const lastText = requests[0]?.messages.at(-1)?.text ?? '';
     expect(lastText).toContain('[CURRENT MESSAGE from="Ama"]\nsecond question\n[/CURRENT MESSAGE]');
-    expect(lastText.endsWith("[/CURRENT MESSAGE]\n\nAnswer Ama's current message.")).toBe(true);
+    expect(
+      lastText.endsWith(
+        "[/CURRENT MESSAGE]\n\nYou can read an attachment only if its contents appear below.\n\nAnswer Ama's current message.",
+      ),
+    ).toBe(true);
   });
 
   it('places pre-retrieved evidence before the current-message block', async () => {
