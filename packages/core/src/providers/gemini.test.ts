@@ -1368,3 +1368,298 @@ describe('listGeminiModels (ADR 0068)', () => {
     });
   });
 });
+
+describe('round 4 sanitizing boundaries', () => {
+  const key = 'AIza_ROUND4_DIAGNOSTIC_SECRET';
+  const request = { model: 'unknown', messages: [{ role: 'user' as const, text: 'hi' }] };
+  const frame = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n';
+  const capture = (promise: Promise<unknown>): Promise<unknown> => promise.catch((e: unknown) => e);
+  const safe = (error: unknown): void => {
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(inspect(error, { depth: 20, showHidden: true })).not.toContain(key);
+    expect(JSON.stringify(error)).not.toContain(key);
+  };
+  const provider = (response: Response): GeminiProvider =>
+    new GeminiProvider({
+      apiKey: key,
+      fetch: async () => response,
+      timeoutMs: 100,
+      maxCallMs: 200,
+    });
+
+  it.each(['proxy', 'name-getter'])('settles hostile abort reason %s', async (shape) => {
+    const caller = new AbortController();
+    const reason =
+      shape === 'proxy'
+        ? new Proxy(
+            {},
+            {
+              getPrototypeOf() {
+                throw new Error(key);
+              },
+            },
+          )
+        : Object.defineProperty(new DOMException('', 'TimeoutError'), 'name', {
+            get() {
+              throw new Error(key);
+            },
+          });
+    const p = new GeminiProvider({
+      apiKey: key,
+      fetch: async () => new Promise(() => {}),
+      timeoutMs: 10,
+      maxCallMs: 20,
+    });
+    const pending = capture(p.generateText({ ...request, signal: caller.signal }));
+    caller.abort(reason);
+    const result = await Promise.race([
+      pending,
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+    safe(result);
+    expect(result).toMatchObject({ kind: 'outage' });
+  });
+
+  it.each(['ok', 'status', 'body', 'getReader', 'cancel', 'releaseLock', 'locked', 'undefined'])(
+    'sanitizes Response %s',
+    async (shape) => {
+      const response = new Response(shape === 'cancel' ? '{}' : frame, {
+        status: shape === 'cancel' ? 503 : 200,
+      });
+      let unlock: (() => void) | undefined;
+      if (['ok', 'status', 'body'].includes(shape)) {
+        if (shape === 'status') Object.defineProperty(response, 'ok', { value: false });
+        Object.defineProperty(response, shape, {
+          get() {
+            throw new Error(key);
+          },
+        });
+      }
+      if (shape === 'getReader')
+        response.body!.getReader = () => {
+          throw new Error(key);
+        };
+      if (shape === 'cancel')
+        response.body!.cancel = () => {
+          throw new Error(key);
+        };
+      if (shape === 'releaseLock') {
+        const original = response.body!.getReader.bind(response.body);
+        response.body!.getReader = (() => {
+          const reader = original();
+          reader.releaseLock = () => {
+            throw new Error(key);
+          };
+          return reader;
+        }) as typeof response.body.getReader;
+      }
+      if (shape === 'locked') {
+        const reader = response.body!.getReader();
+        unlock = () => reader.releaseLock();
+      }
+      const result = await capture(
+        provider(
+          shape === 'undefined' ? (undefined as unknown as Response) : response,
+        ).generateText(request),
+      );
+      unlock?.();
+      if (shape === 'releaseLock') expect(result).toMatchObject({ text: 'ok' });
+      else safe(result);
+      if (shape === 'cancel') expect(result).toMatchObject({ kind: 'outage', status: 503 });
+    },
+  );
+
+  it.each([200, 429])('cleanup cannot replace a primary safe error for HTTP %s', async (status) => {
+    const primary = new ProviderError('quota', 'safe', false, { quotaScope: 'day' });
+    const response = new Response(
+      new ReadableStream({
+        pull() {
+          throw primary;
+        },
+      }),
+      { status },
+    );
+    const original = response.body!.getReader.bind(response.body);
+    response.body!.getReader = (() => {
+      const reader = original();
+      reader.cancel = () => {
+        throw new Error(key);
+      };
+      reader.releaseLock = () => {
+        throw new Error(key);
+      };
+      return reader;
+    }) as typeof response.body.getReader;
+    expect(await capture(provider(response).generateText(request))).toBe(primary);
+  });
+
+  it('reports thought-only empty answers', async () => {
+    const response = new Response(
+      'data: {"candidates":[{"content":{"parts":[{"text":"thinking","thought":true}]},"finishReason":"MAX_TOKENS"}]}\n\n',
+    );
+    expect(await capture(provider(response).generateText(request))).toMatchObject({
+      emptyAnswer: { reasoningOnly: true },
+    });
+  });
+
+  it.each(['line', 'event'])('makes oversized SSE %s non-retryable', async (shape) => {
+    const data =
+      shape === 'line'
+        ? 'data: ' + 'x'.repeat(1_048_577)
+        : ('data: ' + 'x'.repeat(1_048_570) + '\n').repeat(9);
+    const result = await capture(provider(new Response(data)).generateText(request));
+    safe(result);
+    expect(result).toMatchObject({ kind: 'invalid-response', retryable: false });
+  });
+
+  it.each(['onChunk', 'onProgress'])('observes async %s rejection', async (callback) => {
+    const result = await capture(
+      provider(new Response(frame)).generateText({
+        ...request,
+        [callback]: async () => {
+          throw new Error(key);
+        },
+      }),
+    );
+    safe(result);
+  });
+
+  it.each(['onChunk', 'onProgress'])(
+    'bounds a pending async %s and observes a late rejection',
+    async (callback) => {
+      let reject!: (error: Error) => void;
+      const pending = new Promise<void>((_, fail) => {
+        reject = fail;
+      });
+      const p = new GeminiProvider({
+        apiKey: key,
+        fetch: async () => new Response(frame),
+        timeoutMs: 10,
+        idleTimeoutMs: 10,
+        maxCallMs: 20,
+      });
+      const result = await capture(p.generateText({ ...request, [callback]: () => pending }));
+      safe(result);
+      expect(result).toMatchObject({ kind: 'timeout' });
+      reject(new Error(key));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+  );
+
+  it('does not classify source errors with SSE-bound messages as parser bounds', async () => {
+    const result = await capture(
+      provider(
+        new Response(
+          new ReadableStream({
+            pull() {
+              throw new Error('SSE event exceeds 8388608 characters');
+            },
+          }),
+        ),
+      ).generateText(request),
+    );
+    expect(result).toMatchObject({ kind: 'outage', retryable: true });
+  });
+
+  it.each(['locked', 'getReader', 'cancel', 'releaseLock'])(
+    'sanitizes model-list reader %s',
+    async (shape) => {
+      const response = ok({ models: [] });
+      let unlock: (() => void) | undefined;
+      const body = response.body!;
+      if (shape === 'locked') {
+        const reader = body.getReader();
+        unlock = () => reader.releaseLock();
+      } else if (shape === 'getReader')
+        body.getReader = () => {
+          throw new Error(key);
+        };
+      else {
+        const original = body.getReader.bind(body);
+        body.getReader = (() => {
+          const reader = original();
+          if (shape === 'cancel')
+            reader.cancel = () => {
+              throw new Error(key);
+            };
+          else
+            reader.releaseLock = () => {
+              throw new Error(key);
+            };
+          return reader;
+        }) as typeof body.getReader;
+      }
+      const result = await capture(listGeminiModels({ apiKey: key, fetch: async () => response }));
+      unlock?.();
+      if (shape === 'cancel' || shape === 'releaseLock') expect(result).toEqual([]);
+      else safe(result);
+    },
+  );
+
+  it('caps model-list reads before requesting further chunks and cancels', async () => {
+    let pulls = 0;
+    const cancel = vi.fn();
+    const response = new Response(
+      new ReadableStream(
+        {
+          pull(output) {
+            pulls++;
+            if (pulls > 1) output.close();
+            else output.enqueue(new Uint8Array(8_388_609));
+          },
+          cancel,
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+    const result = await capture(listGeminiModels({ apiKey: key, fetch: async () => response }));
+    safe(result);
+    expect(result).toMatchObject({ kind: 'invalid-response', retryable: false });
+    expect(pulls).toBe(1);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('drops raw model-list causes but retains safe network evidence', async () => {
+    const error = Object.assign(new Error(key), { code: 'ECONNRESET' });
+    const result = await capture(
+      listGeminiModels({
+        apiKey: key,
+        fetch: async () => {
+          throw error;
+        },
+      }),
+    );
+    safe(result);
+    expect(result).toMatchObject({
+      host: 'generativelanguage.googleapis.com',
+      netCode: 'ECONNRESET',
+    });
+    expect((result as ProviderError).cause).toBeUndefined();
+  });
+
+  it.each(['json', 'oversized', 'stalled', 'undefined', 'body-getter'])(
+    'bounds and sanitizes model-list %s',
+    async (shape) => {
+      const response =
+        shape === 'stalled'
+          ? new Response(new ReadableStream({ pull() {} }))
+          : new Response(shape === 'oversized' ? ' '.repeat(8_388_609) : key);
+      if (shape === 'body-getter')
+        Object.defineProperty(response, 'body', {
+          get() {
+            throw new Error(key);
+          },
+        });
+      const result = await capture(
+        listGeminiModels({
+          apiKey: key,
+          timeoutMs: 10,
+          fetch: async () =>
+            shape === 'undefined' ? (undefined as unknown as Response) : response,
+        }),
+      );
+      safe(result);
+      expect(result).toMatchObject({ kind: shape === 'stalled' ? 'timeout' : 'invalid-response' });
+    },
+  );
+});

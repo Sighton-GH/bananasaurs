@@ -112,6 +112,33 @@ const statusKind = (status: number): ProviderErrorKind => {
 const isTimeoutError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'TimeoutError';
 
+/** Cleanup is best-effort, including synchronous throws and rejected promises. */
+const bestEffort = (action: () => unknown): void => {
+  try {
+    void Promise.resolve(action()).catch(() => {});
+  } catch {
+    // Never replace a primary failure or a completed answer with cleanup errors.
+  }
+};
+const cancelResponse = (response: Response): void => {
+  bestEffort(() => response.body?.cancel());
+};
+
+// sse.ts exposes bounds as plain Errors. Only recognize these at iterator.next,
+// never when an injected source or consumer callback is the origin.
+const isSseBoundError = (error: unknown): boolean => {
+  try {
+    if (utilTypes.isProxy(error) || !utilTypes.isNativeError(error)) return false;
+    const message = Object.getOwnPropertyDescriptor(error, 'message')?.value as unknown;
+    return (
+      message === 'SSE line exceeds 1048576 characters' ||
+      message === 'SSE event exceeds 8388608 characters'
+    );
+  } catch {
+    return false;
+  }
+};
+
 const FINISH_REASONS = new Set([
   'FINISH_REASON_UNSPECIFIED',
   'STOP',
@@ -359,22 +386,18 @@ export class GeminiProvider implements TextProvider {
     });
     // A pre-aborted caller can reject before the first race is attached.
     void aborted.catch(() => {});
+    let abortReason: DOMException | undefined;
     const onAbort = (): void => {
-      rejectAbort(
-        isTimeoutError(signal.reason)
-          ? new DOMException('Gemini request timed out', 'TimeoutError')
-          : new DOMException('Gemini request aborted', 'AbortError'),
-      );
+      abortReason = this.safeClassify(signal.reason).timeout
+        ? new DOMException('Gemini request timed out', 'TimeoutError')
+        : new DOMException('Gemini request aborted', 'AbortError');
+      rejectAbort(abortReason);
     };
     const checkAbort = (): void => {
       if (signal.aborted)
-        throw isTimeoutError(signal.reason)
-          ? new DOMException('Gemini request timed out', 'TimeoutError')
-          : new DOMException('Gemini request aborted', 'AbortError');
+        throw abortReason ?? new DOMException('Gemini request aborted', 'AbortError');
     };
-    const cancelBody = (response: Response): void => {
-      if (response.body !== null) void response.body.cancel().catch(() => {});
-    };
+    const cancelBody = cancelResponse;
     signal.addEventListener('abort', onAbort, { once: true });
     const callerAbort = (): void => {
       controller.abort(request.signal?.reason);
@@ -511,8 +534,8 @@ export class GeminiProvider implements TextProvider {
               if (retained !== undefined) throw retained;
               if (signal.aborted) {
                 throw new ProviderError(
-                  isTimeoutError(signal.reason) ? 'timeout' : 'outage',
-                  isTimeoutError(signal.reason)
+                  abortReason?.name === 'TimeoutError' ? 'timeout' : 'outage',
+                  abortReason?.name === 'TimeoutError'
                     ? 'Gemini request timed out'
                     : 'Gemini request aborted',
                   true,
@@ -521,8 +544,8 @@ export class GeminiProvider implements TextProvider {
               }
               body = undefined;
             } finally {
-              void reader.cancel().catch(() => {});
-              reader.releaseLock();
+              bestEffort(() => reader.cancel());
+              bestEffort(() => reader.releaseLock());
             }
           }
           const quota = parseGeminiQuotaError(body);
@@ -567,26 +590,32 @@ export class GeminiProvider implements TextProvider {
       let keepalives = 0;
       let lastByteAt = Date.now();
       let lastEmitAt: number | undefined;
-      const emitProgress = (): void => {
+      const emitProgress = async (): Promise<void> => {
         const now = Date.now();
         if (lastEmitAt !== undefined && now - lastEmitAt < 3_000) return;
         lastEmitAt = now;
-        request.onProgress?.({
-          round: 0,
-          answerChars: text.length,
-          reasoningChars: reasoning.length,
-          keepalives,
-          msSinceLastByte: now - lastByteAt,
-        });
+        await Promise.race([
+          Promise.resolve(
+            request.onProgress?.({
+              round: 0,
+              answerChars: text.length,
+              reasoningChars: reasoning.length,
+              keepalives,
+              msSinceLastByte: now - lastByteAt,
+            }),
+          ),
+          aborted,
+        ]);
       };
       // Observe raw byte arrivals before parsing: fragmented SSE lines count as
       // activity too. The wrapper makes abort independent of source cooperation.
       const reader = (response.body as ReadableStream<Uint8Array>).getReader();
       let exhausted = false;
       const releaseReader = (): void => {
-        if (!exhausted) void reader.cancel().catch(() => {});
-        reader.releaseLock();
+        if (!exhausted) bestEffort(() => reader.cancel());
+        bestEffort(() => reader.releaseLock());
       };
+      let sourceFailure: unknown;
       const bytes = new ReadableStream<Uint8Array>({
         async pull(output) {
           try {
@@ -604,20 +633,40 @@ export class GeminiProvider implements TextProvider {
             }
             output.enqueue(chunk.value);
           } catch (error) {
+            sourceFailure = error;
             output.error(error);
           }
         },
       });
+      const events = async function* () {
+        const iterator = parseSseStream(bytes);
+        try {
+          for (;;) {
+            let next: Awaited<ReturnType<typeof iterator.next>>;
+            try {
+              next = await iterator.next();
+            } catch (error) {
+              if (error !== sourceFailure && isSseBoundError(error))
+                throw new ProviderError('invalid-response', 'Gemini SSE bound exceeded', false);
+              throw error;
+            }
+            if (next.done) return;
+            yield next.value;
+          }
+        } finally {
+          await iterator.return(undefined);
+        }
+      };
       try {
-        for await (const event of parseSseStream(bytes)) {
+        for await (const event of events()) {
           checkAbort();
           if (event.keepalive) {
             keepalives += 1;
-            emitProgress();
+            await emitProgress();
             continue;
           }
           if (event.data === '') {
-            emitProgress();
+            await emitProgress();
             continue;
           }
           let rawJson: unknown;
@@ -654,8 +703,13 @@ export class GeminiProvider implements TextProvider {
             .candidates?.[0]?.content?.parts;
           if (Array.isArray(raw)) rawParts.push(...(raw as unknown[]));
           if (deltaText !== '' || deltaReasoning !== '')
-            request.onChunk?.({ text: deltaText, reasoning: deltaReasoning });
-          emitProgress();
+            // Typed void callbacks can still return promises. Observe them and
+            // keep slow callbacks inside the existing cancellation ceiling.
+            await Promise.race([
+              Promise.resolve(request.onChunk?.({ text: deltaText, reasoning: deltaReasoning })),
+              aborted,
+            ]);
+          await emitProgress();
           checkAbort();
         }
         checkAbort();
@@ -681,7 +735,7 @@ export class GeminiProvider implements TextProvider {
           ...(emptyUsage?.thoughtsTokenCount !== undefined
             ? { reasoningTokens: emptyUsage.thoughtsTokenCount }
             : {}),
-          reasoningOnly: false,
+          reasoningOnly: reasoning !== '',
         };
         if (finishReason === 'MAX_TOKENS') {
           throw new ProviderError(
@@ -728,6 +782,17 @@ export class GeminiProvider implements TextProvider {
             }
           : {}),
       };
+    } catch (error) {
+      // Covers Response getters, reader setup and all other post-fetch work.
+      const retained = this.retainedProviderError(error);
+      if (retained !== undefined) throw retained;
+      const { timeout, netCode } = this.safeClassify(error);
+      throw new ProviderError(
+        timeout ? 'timeout' : 'outage',
+        timeout ? 'Gemini request timed out' : 'Gemini response handling failed',
+        true,
+        { host: this.host, ...(netCode === undefined ? {} : { netCode }) },
+      );
     } finally {
       clearTimers();
     }
@@ -779,37 +844,101 @@ export const listGeminiModels = async (options: {
   let pageToken: string | undefined;
   for (let page = 0; page < 10; page += 1) {
     const url = `${base}/models?pageSize=1000${pageToken === undefined ? '' : `&pageToken=${encodeURIComponent(pageToken)}`}`;
-    let response: Response;
+    const controller = new AbortController();
+    const timedOut = new ProviderError('timeout', 'Gemini model list timed out', true, { host });
+    let rejectTimeout!: (error: ProviderError) => void;
+    const expired = new Promise<never>((_, reject) => {
+      rejectTimeout = reject;
+    });
+    void expired.catch(() => {});
+    const timer = setTimeout(() => {
+      controller.abort();
+      rejectTimeout(timedOut);
+    }, options.timeoutMs ?? 15_000);
+    let response: Response | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let localFailure: ProviderError | undefined;
+    let fetching = true;
+    let parsed: z.SafeParseSuccess<z.infer<typeof modelListSchema>>;
+    const invalidList = (): never => {
+      localFailure = new ProviderError(
+        'invalid-response',
+        'Gemini returned an invalid model list',
+        false,
+        { host },
+      );
+      throw localFailure;
+    };
     try {
-      response = await fetchImpl(url, {
+      const fetched = fetchImpl(url, {
         headers: { 'x-goog-api-key': options.apiKey },
-        signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+        signal: controller.signal,
+      }).then((result) => {
+        if (controller.signal.aborted) {
+          cancelResponse(result);
+          throw timedOut;
+        }
+        return result;
       });
+      response = await Promise.race([fetched, expired]);
+      fetching = false;
+      if (!response.ok) {
+        const status = response.status;
+        const kind = statusKind(status);
+        localFailure = new ProviderError(
+          kind,
+          `Gemini model list failed with HTTP ${status}`,
+          kind === 'rate-limit' || kind === 'outage',
+          { status, host },
+        );
+        throw localFailure;
+      }
+      if (response.body === null) invalidList();
+      reader = (response.body as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      let bytesRead = 0;
+      for (;;) {
+        const chunk = await Promise.race([reader.read(), expired]);
+        if (chunk.done) break;
+        bytesRead += chunk.value.byteLength;
+        // Generous for 1000 models with descriptions, but never an unbounded read.
+        if (bytesRead > 8_388_608) invalidList();
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+      let raw: unknown;
+      try {
+        raw = JSON.parse(text) as unknown;
+      } catch {
+        invalidList();
+      }
+      const result = modelListSchema.safeParse(raw);
+      if (!result.success) invalidList();
+      parsed = result as z.SafeParseSuccess<z.infer<typeof modelListSchema>>;
     } catch (error) {
+      if (controller.signal.aborted) throw timedOut;
+      if (localFailure !== undefined && error === localFailure) throw localFailure;
       let netCode: string | undefined;
       try {
         netCode = netCodeOf(error);
       } catch {
         netCode = undefined;
       }
-      throw new ProviderError('outage', 'Gemini model list request failed', true, {
-        cause: error,
-        host,
-        ...(netCode === undefined ? {} : { netCode }),
-      });
-    }
-    if (!response.ok) {
-      const kind = statusKind(response.status);
       throw new ProviderError(
-        kind,
-        `Gemini model list failed with HTTP ${response.status}`,
-        kind === 'rate-limit' || kind === 'outage',
-        { status: response.status, host },
+        fetching ? 'outage' : 'invalid-response',
+        fetching ? 'Gemini model list request failed' : 'Gemini returned an invalid model list',
+        fetching,
+        { host, ...(netCode === undefined ? {} : { netCode }) },
       );
+    } finally {
+      clearTimeout(timer);
+      if (reader !== undefined) {
+        const cleanupReader = reader;
+        bestEffort(() => cleanupReader.cancel());
+        bestEffort(() => cleanupReader.releaseLock());
+      } else if (response !== undefined) cancelResponse(response);
     }
-    const parsed = modelListSchema.safeParse(await response.json());
-    if (!parsed.success)
-      throw new ProviderError('invalid-response', 'Gemini returned an invalid model list', false);
     for (const model of parsed.data.models) {
       const id = model.name.replace(/^models\//, '');
       if (!model.supportedGenerationMethods.includes('generateContent') || NOT_TEXT.test(id))
