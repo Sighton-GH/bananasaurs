@@ -1307,6 +1307,41 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.inputs[0]?.channelContext).toContain('(skipped: at most 1 images per message)');
   });
 
+  it.each([
+    { real: 4, thumbs: 1, kept: 4 },
+    { real: 2, thumbs: 3, kept: 4 },
+  ])(
+    'thumbnail skip note names the cap, not the remaining slots ($real images, $thumbs thumbnails)',
+    async ({ real, thumbs, kept }) => {
+      const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
+      h.fetchMessageContent.mockResolvedValue({
+        authorId: '111111111111111111',
+        authorName: 'Sam L',
+        content: 'pictures',
+        attachments: Array.from({ length: real }, (_, i) => ({
+          attachmentId: String(i + 1),
+          fileName: `p${i}.png`,
+          contentType: 'image/png',
+          sizeBytes: 100,
+          url: `https://cdn.discordapp.com/attachments/1/2/p${i}.png`,
+        })),
+        embeds: Array.from({ length: thumbs }, (_, i) => ({
+          thumbnailUrl: `https://media.discordapp.net/t${i}.png`,
+        })),
+      });
+      h.fetchAttachmentBytes.mockImplementation(mediaBytes);
+      await h.run(
+        mention({
+          invocationId: `inv-att-thumb-${real}-${thumbs}`,
+          messageId: '810000000000000028',
+        }),
+      );
+      expect(h.inputs[0]?.media).toHaveLength(kept);
+      expect(h.inputs[0]?.channelContext).toContain('(skipped: at most 4 images per message)');
+      expect(h.inputs[0]?.channelContext).not.toMatch(/at most [0-3] images/);
+    },
+  );
+
   it('reads the replied-to message image and an embed thumbnail (ADR 0149)', async () => {
     const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
     h.fetchMessageContent.mockResolvedValue({

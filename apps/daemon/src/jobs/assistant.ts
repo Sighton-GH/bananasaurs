@@ -1170,6 +1170,7 @@ export const assistantInvokeHandler = (deps: {
               const readMedia = async (
                 list: readonly FetchedAttachment[],
                 max: number,
+                cap: number,
                 label: string,
                 forceKind?: 'image',
               ): Promise<void> => {
@@ -1200,7 +1201,7 @@ export const assistantInvokeHandler = (deps: {
                 }
                 for (const source of list.slice(max)) {
                   markers.push(
-                    `${attachmentMarker(source)} (skipped: at most ${max} ${label} per message)`,
+                    `${attachmentMarker(source)} (skipped: at most ${cap} ${label} per message)`,
                   );
                 }
               };
@@ -1210,14 +1211,25 @@ export const assistantInvokeHandler = (deps: {
               // only for thumbnails, which have no usable filename.
               const realImages = imageList.filter((x) => !thumbSet.has(x));
               const realMax = Math.min(attachmentCaps.imageMaxCount, realImages.length);
-              await readMedia(realImages, attachmentCaps.imageMaxCount, 'images');
+              await readMedia(
+                realImages,
+                attachmentCaps.imageMaxCount,
+                attachmentCaps.imageMaxCount,
+                'images',
+              );
               await readMedia(
                 thumbnails,
                 Math.max(0, attachmentCaps.imageMaxCount - realMax),
+                attachmentCaps.imageMaxCount,
                 'images',
                 'image',
               );
-              await readMedia(pdfSources, attachmentCaps.pdfMaxCount, 'PDFs');
+              await readMedia(
+                pdfSources,
+                attachmentCaps.pdfMaxCount,
+                attachmentCaps.pdfMaxCount,
+                'PDFs',
+              );
               return { markers, texts };
             };
             // The quoted message's files join its envelope as evidence.

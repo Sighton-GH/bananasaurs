@@ -204,8 +204,10 @@ export const fetchAttachment = async (
   return { ok: true, kind: 'text', name: source.fileName, text };
 };
 
-// eslint-disable-next-line no-control-regex -- deliberately flattening control characters in hostile file names.
-const LABEL_CONTROL_OR_BRACKET = /[\u0000-\u001f\u007f-\u009f\u2028\u2029[\]]/g;
+/* eslint-disable no-control-regex -- deliberately flattening control characters in hostile file names. */
+const LABEL_CONTROL_OR_BRACKET =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\p{Cf}[\]]/gu;
+/* eslint-enable no-control-regex */
 
 /**
  * ADR 0149: a file name is hostile evidence. Redacted, marker-neutralised,
