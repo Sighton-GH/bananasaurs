@@ -4,6 +4,15 @@
 
 ---
 
+**Assistant streaming (Slice 3, ADR 0148, no migration).**
+
+- **Streaming:** OpenRouter/NIM send `stream: true` with usage; Gemini uses `:streamGenerateContent?alt=sse`. SSE comments ignored, tool args joined per index, thought parts kept apart, raw parts echoed for signatures.
+- **Timeouts:** idle 45 s (`assistant.providerIdleTimeoutMs`) re-armed per byte, ceiling 300 s (`assistant.providerMaxCallMs`), first byte 60 s (`assistant.providerTimeoutMs`). `assistant.maxOutputTokens` default 4,096.
+- **Finish reasons:** mid-stream `error` is retryable and its partial text is discarded; `length`/`MAX_TOKENS` with text adds a code-built cut-short marker after the guard; `length` empty keeps the empty-answer path.
+- **Live dashboard:** per-run buffer (8,000 chars answer plus 8,000 thinking, dropped at finish), `GET /api/assistant/runs/:runId/live`, `model-progress` steps at most every 3 s on one run-shared throttle, thinking saved per round under trace `reasoning` (8,000 chars each, at most 12 rounds). On Discord only the typing indicator changes (kept alive to the ceiling).
+- **Thinking gate:** a thinking parameter never goes out when the entry capabilities forbid it (unknown models get none); `ChainEntry.capabilities` is optional and store-populated (contracts §3 deviation noted).
+- **Integration status:** the bullets above describe the Slice 3 contract, not a completed rollout. At base `59fe3e9e`, the shared SSE parser, settings, trace schema, Gemini adapter and live-buffer route are merged. OpenAI-compatible streaming (T6), tool-loop wiring (T8), dashboard live text (T10) and daemon wiring (T12) remain pending. In particular, live-buffer appends, saved trace reasoning, store-populated capabilities and the raised typing ceiling are not yet wired end to end. T12 is planned to persist reasoning with the existing trace retention rules; its implementation has not been verified here.
+
 **Slice 6 — provider key pools, cooldowns, Gemini chain and routing (ADRs 0143–0144, migration `key_pools_routing`).**
 
 - **Key pools:** a chain entry uses one key or every enabled key of its provider; the pick is deterministic (most daily requests left, then least-recent use, then key id). Keys sharing a project label share one daily ledger bucket, enforced across the bucket at reserve time. Bulk paste dedupes by SHA-256 fingerprint without exposing secrets.
