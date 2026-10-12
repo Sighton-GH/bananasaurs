@@ -122,15 +122,34 @@ const blockOf = (conv: DigestConversationInput): string =>
     '[/CONVERSATION]',
   ].join('\n');
 
+const assertCap = (maxChars: number): void => {
+  if (!Number.isInteger(maxChars) || maxChars < 1) {
+    throw new RangeError(`digest cap must be a whole number of at least 1, got ${maxChars}`);
+  }
+};
+
+/** Longest prefix of at most `units` UTF-16 units that never splits a surrogate pair. */
+const sliceUnits = (text: string, units: number): string => {
+  let end = Math.max(0, Math.min(units, text.length));
+  if (end > 0 && end < text.length) {
+    const before = text.charCodeAt(end - 1);
+    const after = text.charCodeAt(end);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end -= 1;
+  }
+  return text.slice(0, end);
+};
+
 /**
  * The whole model input, oldest blocks dropped first until it fits. A single
  * block larger than the cap keeps its newest lines, and the header is cut
- * last. The result never exceeds `maxChars`.
+ * last. The result never exceeds `maxChars` UTF-16 units and never splits a
+ * surrogate pair. `maxChars` below 1 or fractional throws a RangeError.
  */
 export const buildDigestInput = (
   convs: readonly DigestConversationInput[],
   maxChars: number,
 ): string => {
+  assertCap(maxChars);
   const blocks = convs.map(blockOf);
   while (blocks.length > 1 && blocks.join('\n').length > maxChars) blocks.shift();
   if (blocks.length === 1 && (blocks[0]?.length ?? 0) > maxChars) {
@@ -139,21 +158,39 @@ export const buildDigestInput = (
     if (kept.join('\n').length > maxChars) {
       const closing = kept[kept.length - 1] ?? '';
       const budget = maxChars - closing.length - 1;
-      kept[0] = budget >= 2 ? `${(kept[0] ?? '').slice(0, budget - 1)}]` : '';
+      kept[0] = budget >= 2 ? `${sliceUnits(kept[0] ?? '', budget - 1)}]` : '';
     }
-    return kept.join('\n').slice(0, Math.max(0, maxChars));
+    return sliceUnits(kept.join('\n'), maxChars);
   }
-  return blocks.join('\n').slice(0, Math.max(0, maxChars));
+  return sliceUnits(blocks.join('\n'), maxChars);
 };
 
-/** Split built input into chunks of at most `maxChars`, on line edges where possible. */
+/**
+ * Split built input into chunks of at most `maxChars` UTF-16 units, on line
+ * edges where possible. Over-long lines are cut on code point edges. With a cap
+ * smaller than one code point (cap 1 and a non-BMP character) that code point
+ * is dropped, never emitted over the cap. `maxChars` below 1 throws a RangeError.
+ */
 export const splitDigestInput = (text: string, maxChars: number): readonly string[] => {
+  assertCap(maxChars);
   if (text.length <= maxChars) return [text];
-  const limit = Math.max(1, maxChars);
+  const limit = maxChars;
   const lines: string[] = [];
   for (const line of text.split('\n')) {
-    if (line.length <= limit) lines.push(line);
-    else for (let i = 0; i < line.length; i += limit) lines.push(line.slice(i, i + limit));
+    if (line.length <= limit) {
+      lines.push(line);
+      continue;
+    }
+    let piece = '';
+    for (const cp of line) {
+      if (cp.length > limit) continue;
+      if (piece.length + cp.length > limit) {
+        lines.push(piece);
+        piece = '';
+      }
+      piece += cp;
+    }
+    if (piece.length > 0) lines.push(piece);
   }
   const chunks: string[] = [];
   let current: string[] = [];

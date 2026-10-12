@@ -130,3 +130,36 @@ describe('digest input cap is never exceeded', () => {
     expect(buildDigestInput(one('T', ['hello world']), 10).length).toBeLessThanOrEqual(10);
   });
 });
+
+describe('digest cap edge cases', () => {
+  const wellFormed = (s: string): boolean =>
+    !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s);
+  it('splits a long line without cutting an emoji', () => {
+    const chunks = splitDigestInput(`${'q'.repeat(79)}\u{1F600}`, 80);
+    expect(chunks.every((c) => c.length <= 80 && wellFormed(c))).toBe(true);
+    expect(chunks.join('')).toBe(`${'q'.repeat(79)}\u{1F600}`);
+  });
+  it('trims a header inside an emoji run without a lone surrogate', () => {
+    const convs = [
+      { conversationId: 'c1', title: '\u{1F600}'.repeat(20), summaryText: null, lines: ['hi'] },
+    ];
+    for (let cap = 20; cap <= 40; cap += 1) {
+      const text = buildDigestInput(convs, cap);
+      expect(text.length).toBeLessThanOrEqual(cap);
+      expect(wellFormed(text)).toBe(true);
+    }
+  });
+  it('drops a non-BMP character at cap 1 and splits ASCII one per chunk', () => {
+    expect(splitDigestInput('a\u{1F600}b', 1)).toEqual(['a', 'b']);
+  });
+  it('rejects zero, negative and fractional caps', () => {
+    expect(() => splitDigestInput('x', 0)).toThrow(RangeError);
+    expect(() => splitDigestInput('x', -1)).toThrow(RangeError);
+    expect(() => buildDigestInput([], 0)).toThrow(RangeError);
+    expect(() => buildDigestInput([], 1.5)).toThrow(RangeError);
+  });
+  it('accepts cap 1', () => {
+    expect(splitDigestInput('x', 1)).toEqual(['x']);
+    expect(buildDigestInput([], 1)).toBe('');
+  });
+});
