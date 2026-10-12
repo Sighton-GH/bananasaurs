@@ -11,8 +11,8 @@
 
 | Round | Slices | Starts from | Plans |
 |---|---|---|---|
-| 1 | **6** key pools, cooldowns, Gemini chain, routing · **2** new abilities | `harness-slices-plan` tip | ready |
-| 2 | **3** streaming · **5** daily digest | `main` after round 1 merges | refreshed by the controller first |
+| 1 | **6** key pools, cooldowns, Gemini chain, routing · **2** new abilities | `harness-slices-plan` tip | built and merged (`harness-round1`, migrations 0107–0108) |
+| 2 | **3** streaming · **5** daily digest | `main` after round 1 merges (`harness-round2-plan` tip) | refreshed 2026-10-11, ready |
 | 3 | **4** attachments | `main` after round 2 merges | refreshed by the controller first |
 
 Slices in one round run at the same time on separate branches. Each produces its own bundle. The controller
@@ -45,6 +45,8 @@ migrations when merging bundles. At most **one task per slice** touches `schema.
 | 2 | `parallel_search_source` | widen the `search_source` CHECK to include `parallel` |
 | 5 | `daily_digests` | `assistant_daily_digests` table; run `source` CHECK gains `daily-digest`; memory-proposal source gains `daily-digest` if it has a CHECK |
 | 3, 4 | none | — |
+
+Round 1 shipped 0107 (`key_pools_routing`) and 0108 (`parallel_search_source`). On the round 2 base drizzle-kit gives Slice 5 0109.
 
 ## 3. Cross-slice types (names are fixed)
 
@@ -85,7 +87,7 @@ export function capabilitiesForEntry(
 ```
 
 `ChainEntry` (`apps/daemon/src/assistant/model-chain.ts`) gains `readonly tier: ChainTier`,
-`readonly pool: 'key' | 'provider'` and `readonly capabilities: ModelCapabilities`.
+`readonly pool: 'key' | 'provider'` (round 1). Round 1 did not add `capabilities`; Slice 3 adds `readonly capabilities?: ModelCapabilities` (optional, filled per request by the provider store).
 
 **Slice 6 produces, Slice 5 consumes:**
 

@@ -6,7 +6,7 @@
 **Goal:** Once a day the bot summarises that day's conversations and drafts memory proposals the owner reviews; nothing becomes memory without approval.
 **Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §Slice 5 (5a–5e), decisions D1, D10(a), §4.7
 **ADRs:** 0150  **Migration:** daily_digests
-**Base:** main @ 0371edc3
+**Base:** `harness-round2-plan` tip = main after round 1 (`harness-round1` @ 149c2b08: Slices 6+2 merged)
 
 ## Refresh notes (controller, 2026-10-11 — what changed from the DRAFT and why)
 

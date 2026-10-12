@@ -6,7 +6,7 @@
 **Goal:** Every provider streams its answer with an idle timeout and a hard ceiling, finish reasons are checked, and the dashboard shows live progress plus saved thinking.
 **Spec:** docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md §Slice 3 (3a–3e), D5(b), D6, §4.7
 **ADRs:** 0148   **Migration:** none
-**Base:** main @ 0371edc3 (working tree also contains merged Slices 6+2: key pools, cooldowns, routing with escalation hand-over, capabilities)
+**Base:** `harness-round2-plan` tip = main after round 1 (`harness-round1` @ 149c2b08: Slices 6+2 merged — key pools, cooldowns, routing with escalation hand-over, names, pings, task tools, Parallel)
 
 ## Refresh notes (READY refresh, 2026-10-12)
 
