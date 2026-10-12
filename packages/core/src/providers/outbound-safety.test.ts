@@ -3,6 +3,7 @@ import type { GenerateTextRequest } from './contracts.js';
 import {
   assertOutboundRequestSafe,
   detectWithheldEvidence,
+  redactEvidenceText,
   scanOutboundRequest,
 } from './outbound-safety.js';
 
@@ -106,6 +107,52 @@ describe('scanOutboundRequest false-positive regressions (review finding 2)', ()
       safe: true,
       findings: [],
     });
+  });
+
+  // A conversation about binary encoding was refused five turns running: the
+  // assistant's own reply, spelled out as 8-bit bytes, sat in the history, and
+  // pairs of bytes such as "01110111 00100000" are 16 digits that pass Luhn.
+  // No card number starts with 0 or 1, so a byte can never begin one.
+  it.each([['01110111 00100000'], ['01100001 01100011'], ['01110100 01101000']] as const)(
+    'allows a Luhn-valid pair of binary bytes: %s',
+    (text) => {
+      expect(scanOutboundRequest(request(`\`\`\`\n${text}\n\`\`\``))).toEqual({
+        safe: true,
+        findings: [],
+      });
+    },
+  );
+
+  it('allows a whole sentence written out as 8-bit binary', () => {
+    const binary = [...'Now use binary encoding on each character to give this entire message']
+      .map((char) => char.charCodeAt(0).toString(2).padStart(8, '0'))
+      .join(' ');
+    expect(scanOutboundRequest(request(binary))).toEqual({ safe: true, findings: [] });
+  });
+
+  it.each([
+    ['Mastercard 2-series', '2223 0031 2200 3222'],
+    ['Amex', '3782 822463 10005'],
+    ['Mastercard 5-series', '5555 5555 5555 4444'],
+    ['Discover', '6011 1111 1111 1117'],
+  ] as const)('still detects a card from every issuer range: %s', (_name, text) => {
+    expect(scanOutboundRequest(request(text)).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'personal-data', detector: 'credit-card-number' }),
+      ]),
+    );
+  });
+});
+
+describe('redactEvidenceText card numbers', () => {
+  it('leaves binary bytes alone', () => {
+    const text = '01110111 00100000 01100001 01100011';
+    expect(redactEvidenceText(text)).toEqual({ text, detectors: [] });
+  });
+  it('still redacts a card number', () => {
+    expect(redactEvidenceText('card 4242 4242 4242 4242 on file').detectors).toEqual([
+      'credit-card-number',
+    ]);
   });
 });
 
