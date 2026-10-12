@@ -6,6 +6,7 @@ import {
   type GenerationMessage,
 } from '@bananasaurs/core';
 import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
+import { safeAttachmentLabel } from './attachments.js';
 
 /**
  * Builds the conversation half of a provider request (Task 14, ADR 0072).
@@ -54,7 +55,7 @@ export const attachmentMarker = (file: {
   readonly contentType?: string | undefined;
   readonly sizeBytes: number;
 }): string =>
-  `[attached: ${neutraliseMarkers(file.fileName)}, ${neutraliseMarkers(file.contentType ?? 'unknown type')}, ${Math.max(1, Math.round(file.sizeBytes / 1024))} KB]`;
+  `[attached: ${safeAttachmentLabel(file.fileName)}, ${safeAttachmentLabel(file.contentType ?? 'unknown type')}, ${file.sizeBytes === 0 ? 'unknown size' : `${Math.max(1, Math.round(file.sizeBytes / 1024))} KB`}]`;
 
 const embedMarker = (embed: {
   readonly title?: string | undefined;
@@ -63,10 +64,10 @@ const embedMarker = (embed: {
 }): string | undefined => {
   const head = [embed.providerName, embed.title]
     .filter((part): part is string => part !== undefined && part !== '')
-    .map(neutraliseMarkers)
+    .map(safeAttachmentLabel)
     .join(': ');
   if (head === '') return undefined;
-  return `[embed: ${head}${embed.description === undefined ? '' : ` — ${neutraliseMarkers(embed.description)}`}]`;
+  return `[embed: ${head}${embed.description === undefined ? '' : ` — ${embed.description === '' ? '' : safeAttachmentLabel(embed.description)}`}]`;
 };
 
 export interface ConversationContextInput {
@@ -95,12 +96,16 @@ export interface ConversationContext {
 }
 
 /** A quoted message as untrusted evidence inside the user turn. */
-export const quoteEnvelopeFor = (quoted: QuotedMessage): string => {
+export const quoteEnvelopeFor = (
+  quoted: QuotedMessage,
+  /** Internally rendered status markers and text envelopes, never raw fetched content. */
+  files?: { readonly markers: readonly string[]; readonly texts: readonly string[] },
+): string => {
   const markers = [
-    ...(quoted.attachments ?? []).map(attachmentMarker),
+    ...(files?.markers ?? (quoted.attachments ?? []).map(attachmentMarker)),
     ...(quoted.embeds ?? []).flatMap((e) => embedMarker(e) ?? []),
   ];
-  return `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(safeDisplayName(quoted.authorName) ?? 'a member')}]\n${[neutraliseMarkers(quoted.content), ...markers].join('\n')}\n[/UNTRUSTED QUOTED MESSAGE]`;
+  return `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(safeDisplayName(quoted.authorName) ?? 'a member')}]\n${[neutraliseMarkers(quoted.content), ...markers, ...(files?.texts ?? [])].join('\n')}\n[/UNTRUSTED QUOTED MESSAGE]`;
 };
 
 /** ADR 0085: every earlier user turn reads `[Name, 3 min ago] …`. */

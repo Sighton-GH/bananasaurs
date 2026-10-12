@@ -2020,20 +2020,68 @@ describe('ADR 0018 — refuse, do not retry or wait', () => {
   });
 });
 
-
 describe('T15 thumbnail selection', () => {
   it.each([
-    ['https://i.ytimg.com/thumb.png', 'https://media.discordapp.net/thumb.png', 'https://media.discordapp.net/thumb.png'],
-    ['https://cdn.discordapp.com/original.png', 'https://media.discordapp.net/thumb.png', 'https://media.discordapp.net/thumb.png'],
-    ['https://cdn.discordapp.com/original.png', 'https://elsewhere.test/proxy.png', 'https://cdn.discordapp.com/original.png'],
-    ['https://cdn.discordapp.com/original.png', 'https://media.discordapp.net.evil.test/proxy.png', 'https://cdn.discordapp.com/original.png'],
-    ['https://cdn.discordapp.com/original.png', 'https://media.discordapp.net:444/proxy.png', 'https://cdn.discordapp.com/original.png'],
-    ['https://cdn.discordapp.com/original.png', 'https://user:pass@media.discordapp.net/proxy.png', 'https://cdn.discordapp.com/original.png'],
-    ['https://cdn.discordapp.com/original.png', 'http://media.discordapp.net/proxy.png', 'https://cdn.discordapp.com/original.png'],
-    ['https://cdn.discordapp.com/original.png', undefined, 'https://cdn.discordapp.com/original.png'],
-    ['https://i.ytimg.com/thumb.png', 'https://elsewhere.test/proxy.png', 'https://i.ytimg.com/thumb.png'],
+    [
+      'https://i.ytimg.com/thumb.png',
+      'https://media.discordapp.net/thumb.png',
+      'https://media.discordapp.net/thumb.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      'https://media.discordapp.net/thumb.png',
+      'https://media.discordapp.net/thumb.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      'https://elsewhere.test/proxy.png',
+      'https://cdn.discordapp.com/original.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      'https://media.discordapp.net.evil.test/proxy.png',
+      'https://cdn.discordapp.com/original.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      'https://media.discordapp.net:444/proxy.png',
+      'https://cdn.discordapp.com/original.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      'https://user:pass@media.discordapp.net/proxy.png',
+      'https://cdn.discordapp.com/original.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      'http://media.discordapp.net/proxy.png',
+      'https://cdn.discordapp.com/original.png',
+    ],
+    [
+      'https://cdn.discordapp.com/original.png',
+      undefined,
+      'https://cdn.discordapp.com/original.png',
+    ],
+    [
+      'https://i.ytimg.com/thumb.png',
+      'https://elsewhere.test/proxy.png',
+      'https://i.ytimg.com/thumb.png',
+    ],
   ])('chooses only a usable CDN proxy (%s, %s)', async (url, proxy_url, expected) => {
-    const { port } = harness([{ status: 200, body: { id: MESSAGE, channel_id: CHANNEL, author: { id: USER, username: 'sam' }, content: '', embeds: [{ thumbnail: { url, proxy_url } }] } }]);
-    expect((await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE))?.embeds?.[0]?.thumbnailUrl).toBe(expected);
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'sam' },
+          content: '',
+          embeds: [{ thumbnail: { url, proxy_url } }],
+        },
+      },
+    ]);
+    expect(
+      (await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE))?.embeds?.[0]?.thumbnailUrl,
+    ).toBe(expected);
   });
 });
