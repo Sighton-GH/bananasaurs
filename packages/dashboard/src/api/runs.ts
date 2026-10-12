@@ -115,6 +115,12 @@ export const describeRunEvent: (event: RunEvent) => string = (event) => {
       return event.tier === 'light'
         ? `Tried the light model first (${event.reason})`
         : `Tried the standard model first (${event.reason})`;
+    case 'model-progress': {
+      const parts: string[] = [];
+      if (event.answerChars > 0) parts.push(`${num(event.answerChars)} chars of answer`);
+      if (event.reasoningChars > 0) parts.push(`${num(event.reasoningChars)} chars of thinking`);
+      return parts.length > 0 ? `Receiving… ${parts.join(', ')}` : 'Receiving…';
+    }
     default: {
       // A new event kind fails typecheck here; at runtime (a daemon newer
       // than this page) the row still renders instead of crashing.

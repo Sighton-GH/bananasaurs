@@ -622,6 +622,8 @@ export type {
   ProviderCapability,
   ProviderEligibility,
   ProviderUsage,
+  StreamChunk,
+  StreamProgress,
   TextProvider,
   ToolCall,
   ToolDeclaration,
